@@ -22,13 +22,13 @@ use std::collections::BTreeMap;
 
 use base58::{FromBase58, ToBase58};
 use dialog_artifacts::inspect::{
-    EntrySummary, KeyComponent, KeySummary, NodeSummary, SpanSummary, inspect_blob_records,
-    inspect_entries, inspect_keys, inspect_manifest, inspect_node, inspect_spans, key_components,
-    separator_components,
+    BlobEntrySummary, EntrySummary, KeyComponent, KeySummary, NodeSummary, SpanSummary,
+    inspect_blob_records, inspect_entries, inspect_keys, inspect_manifest, inspect_node,
+    inspect_spans, key_components, separator_components,
 };
 use dialog_artifacts::{
-    ATTRIBUTE_KEY_TAG, Artifact, COVERAGE_KEY_TAG, Datum, DialogArtifactsError, ENTITY_KEY_TAG,
-    HISTORY_KEY_TAG, Key, VALUE_KEY_TAG, Value,
+    ATTRIBUTE_KEY_TAG, Artifact, BLOB_KEY_TAG, COVERAGE_KEY_TAG, Datum, DialogArtifactsError,
+    ENTITY_KEY_TAG, Entity, HISTORY_KEY_TAG, Key, VALUE_KEY_TAG, Value,
 };
 use dialog_query::Term;
 use dialog_repository::{
@@ -285,9 +285,10 @@ async fn node_row<Env: SelectProvider>(
 /// One `tree/child` conclusion per child of the index node at `hash`.
 ///
 /// Each row is self-contained: it names the child (`child` field + the
-/// row's `this`), its sibling position (`at`), and the child's own node
-/// fields (kind/size/count), read from the child block. A segment
-/// node has no children and yields no rows.
+/// row's `this`), its sibling position (`at`), the child's own node
+/// fields (kind/size/count), read from the child block, and the ops the
+/// parent still buffers against that span (`pending`). A segment node has
+/// no children and yields no rows.
 async fn child_rows<Env: SelectProvider>(
     branch: &Branch,
     env: &Env,
@@ -315,9 +316,17 @@ async fn child_rows<Env: SelectProvider>(
             None => {
                 let mut fields: BTreeMap<String, Ipld> = BTreeMap::new();
                 fields.insert("cached".into(), Ipld::Bool(false));
+                // The parent's span records the subtree's advisory scale, so
+                // an unfetched child still says how much sits beneath it.
+                fields.insert("scale".into(), Ipld::Integer(span.scale as i128));
                 fields
             }
         };
+        // Ops buffered against this span IN THE PARENT — work destined for
+        // this subtree that has not been written down into it. Distinct
+        // from the child's own `novelty` (what it buffers for its own
+        // children), and known whether or not the child is cached.
+        fields.insert("pending".into(), Ipld::Integer(span.novelty as i128));
         // The child's boundary in the outline is its SPAN SEPARATOR — the
         // left-edge key of the subtree it roots — for both cached and remote
         // children. This is the right thing to show on the left: an index node
@@ -358,7 +367,14 @@ async fn entry_rows<Env: SelectProvider>(
     env: &Env,
     hash: Blake3Hash,
 ) -> Result<Vec<Conclusion>, FormulaError> {
-    let bytes = read_node(branch, env, hash).await?;
+    segment_rows(read_node(branch, env, hash).await?)
+}
+
+/// The `tree/entry` rows a segment node's bytes decode to — the whole of
+/// what `tree/entry` does once the block is in hand, so the decoding is
+/// exercisable over a node built in a test rather than only through a
+/// branch.
+fn segment_rows(bytes: Vec<u8>) -> Result<Vec<Conclusion>, FormulaError> {
     if inspect_node(bytes.clone())?.kind != "segment" {
         return Ok(vec![]); // an index has no entries
     }
@@ -368,10 +384,17 @@ async fn entry_rows<Env: SelectProvider>(
     let mut rows = Vec::with_capacity(entries.len());
     for entry in entries {
         let key_hex = bytes_hex(&entry.key);
+        // Decode the key ONCE: the components are both the row's
+        // self-describing `key-parts` and where the value type is read
+        // from when the value itself is not in the key (a spill).
+        let components = key_components(&entry.key);
         let mut fields: BTreeMap<String, Ipld> = BTreeMap::new();
         fields.insert("key".into(), Ipld::String(key_hex.clone()));
         // The decoded, self-describing key components for the entry's key row.
-        fields.insert("key-parts".into(), Ipld::List(key_parts(&entry.key)));
+        fields.insert(
+            "key-parts".into(),
+            Ipld::List(components.iter().map(component_part).collect()),
+        );
         fields.insert("at".into(), Ipld::Integer(entry.at as i128));
         if let Some(key) = keys.get(entry.at as usize) {
             fields.insert("rank".into(), Ipld::Integer(key.rank as i128));
@@ -408,38 +431,18 @@ async fn entry_rows<Env: SelectProvider>(
 
         // A segment holds asserted facts; a retraction is a tombstone. The
         // entity/attribute/value all live IN the key (the datum carries only
-        // causal metadata), so reconstruct the fact from the key — standing
-        // in a placeholder for a spilled value, since the inspector has no
-        // store to fetch the block.
+        // causal metadata), so reconstruct the fact from the key.
         //
-        // Only EAV-shaped keys reconstruct. A history, coverage or blob
-        // key decodes to no artifact, and treating that as fatal used to
-        // abort the WHOLE entry list — one history record and the segment
-        // rendered empty. Such an entry keeps its key components and
-        // metadata and simply reports no fact.
+        // A history or coverage key carries the same fact behind a version
+        // prefix, so it reconstructs too (see [`fact_key`]) — without that,
+        // those rows reported no entity, attribute or value at all and the
+        // whole record read as blank. A blob key names content rather than a
+        // fact and reconstructs nothing; it keeps its key components and
+        // metadata, and its own fields are merged in below.
         if entry.state == "removed" {
             fields.insert("retracted".into(), Ipld::Bool(true));
         } else {
-            let key = Key::from(entry.key.clone());
-            let datum = Datum {
-                cause: None,
-                blob: None,
-                version: None,
-                collapsed: Vec::new(),
-                supersedes: Vec::new(),
-                retraction: false,
-            };
-            if let Ok(artifact) = Artifact::from_key_datum_placeholder(&key, &datum) {
-                fields.insert("entity".into(), Ipld::String(artifact.of.to_string()));
-                fields.insert("attribute".into(), Ipld::String(artifact.the.to_string()));
-                fields.insert(
-                    "type".into(),
-                    Ipld::String(artifact.is.data_type().to_string()),
-                );
-                if let Some(ipld) = value_to_ipld(&artifact.is) {
-                    fields.insert("value".into(), ipld);
-                }
-            }
+            fields.extend(fact_fields(&entry.key, &components, entry.spill.is_some()));
         }
 
         rows.push(Conclusion {
@@ -453,20 +456,128 @@ async fn entry_rows<Env: SelectProvider>(
     // referenced hash, its size and record version) lives in a parallel
     // index. Merge it in by segment position so a blob row is a blob row
     // rather than an entry that appears to say nothing.
-    for record in inspect_blob_records(bytes)? {
-        if let Some(row) = rows
+    //
+    // A record that does not decode (an encoding version this build does
+    // not know) is not fatal: the rest of the segment still reads, and the
+    // undecodable rows keep their keys. Propagating the error instead
+    // blanked the whole segment over one unknown record.
+    for record in inspect_blob_records(bytes).unwrap_or_default() {
+        let Some(row) = rows
             .iter_mut()
             .find(|row| row.fields.get("at") == Some(&Ipld::Integer(record.at as i128)))
-        {
-            row.fields
-                .insert("blob".into(), Ipld::String(bytes_hex(&record.blob)));
-            row.fields
-                .insert("blob-size".into(), Ipld::Integer(record.size as i128));
-            row.fields
-                .insert("blob-version".into(), Ipld::Integer(record.version as i128));
-        }
+        else {
+            continue;
+        };
+        row.fields.extend(blob_fields(&record));
     }
     Ok(rows)
+}
+
+/// The fields a blob-index row carries: the referenced hash, the entity it
+/// is addressed by, its size, and the record's encoding version.
+///
+/// The hash reads as the `#<base58>` every other hash in `tree/*` uses, and
+/// as the `blob:<base58>` ENTITY the same bytes are named by everywhere
+/// else in the branch — so a blob row names the subject its metadata facts
+/// (`xyz.tonk.blob/name` and friends) hang off, rather than a bare hex run
+/// that matches nothing else on screen.
+fn blob_fields(record: &BlobEntrySummary) -> BTreeMap<String, Ipld> {
+    let mut fields: BTreeMap<String, Ipld> = BTreeMap::new();
+    match Blake3Hash::try_from(record.blob.as_slice()) {
+        Ok(hash) => {
+            fields.insert("blob".into(), Ipld::String(to_base58(&hash)));
+            if let Ok(entity) = Entity::from_blob(&hash) {
+                fields.insert("entity".into(), Ipld::String(entity.to_string()));
+            }
+        }
+        // Not 32 bytes: not a hash we can render as one.
+        Err(_) => {
+            fields.insert("blob".into(), Ipld::String(bytes_hex(&record.blob)));
+        }
+    }
+    fields.insert("blob-size".into(), Ipld::Integer(record.size as i128));
+    fields.insert("blob-version".into(), Ipld::Integer(record.version as i128));
+    fields
+}
+
+/// The fact an entry's key carries, as the row's `entity` / `attribute` /
+/// `type` / `value` fields. Empty for a key that carries no fact (a blob
+/// record) or does not decode under its ordering.
+///
+/// `components` is the key's already-decoded components (the value type is
+/// read from there when the value itself is not in the key), and `spilled`
+/// says whether the value spilled to the archive.
+fn fact_fields(key: &[u8], components: &[KeyComponent], spilled: bool) -> BTreeMap<String, Ipld> {
+    let mut fields: BTreeMap<String, Ipld> = BTreeMap::new();
+    let Some(key) = fact_key(key) else {
+        return fields;
+    };
+    // The entity, attribute and value all live in the key; the datum
+    // carries only causal metadata, so a placeholder one is enough to
+    // reconstruct with.
+    let datum = Datum {
+        cause: None,
+        blob: None,
+        version: None,
+        collapsed: Vec::new(),
+        supersedes: Vec::new(),
+        retraction: false,
+    };
+    let Ok(artifact) = Artifact::from_key_datum_placeholder(&key, &datum) else {
+        return fields;
+    };
+    fields.insert("entity".into(), Ipld::String(artifact.of.to_string()));
+    fields.insert("attribute".into(), Ipld::String(artifact.the.to_string()));
+    if spilled {
+        // A spilled value's bytes live in an archive block the inspector has
+        // no store to fetch, and the placeholder artifact stands a
+        // `<spilled value>` STRING in for them — whose type would misreport
+        // the value's own. Report the type the key records and no value; the
+        // row's `spill` reference is what there is to show.
+        if let Some(vtype) = components.iter().find(|part| part.kind == "vtype") {
+            fields.insert("type".into(), Ipld::String(vtype.text.clone()));
+        }
+    } else {
+        fields.insert(
+            "type".into(),
+            Ipld::String(artifact.is.data_type().to_string()),
+        );
+        if let Some(ipld) = value_to_ipld(&artifact.is) {
+            fields.insert("value".into(), ipld);
+        }
+    }
+    fields
+}
+
+/// The EAV-shaped key an entry's fact reconstructs from, or `None` for an
+/// entry that carries no fact.
+///
+/// An entity / attribute / value key is one already. A history or coverage
+/// key is the *same* fact behind a fixed-width version prefix — tag ‖
+/// origin(32) ‖ edition(8) ‖ entity ‖ attribute ‖ value slot — so dropping
+/// the prefix and re-tagging the tail yields exactly the entity-ordered key
+/// the record's claim reconstructs from. (This mirrors what dialog's own
+/// `key_components` does to decode those keys.) A blob key names content,
+/// not a fact, and has nothing to reconstruct.
+fn fact_key(bytes: &[u8]) -> Option<Key> {
+    /// Width of the version prefix a history/coverage key carries after its
+    /// tag: a 32-byte origin and an 8-byte big-endian edition.
+    const VERSION_PREFIX: usize = 32 + 8;
+
+    match bytes.first().copied()? {
+        ENTITY_KEY_TAG | ATTRIBUTE_KEY_TAG | VALUE_KEY_TAG => Some(Key::from(bytes.to_vec())),
+        HISTORY_KEY_TAG | COVERAGE_KEY_TAG => {
+            let tail = bytes.get(1 + VERSION_PREFIX..)?;
+            if tail.is_empty() {
+                return None;
+            }
+            let mut synthetic = Vec::with_capacity(1 + tail.len());
+            synthetic.push(ENTITY_KEY_TAG);
+            synthetic.extend_from_slice(tail);
+            Some(Key::from(synthetic))
+        }
+        _ => None,
+    }
 }
 
 /// Convert a decoded [`Value`] to [`Ipld`] for the wire. Mirrors
@@ -546,9 +657,24 @@ fn prefix_fields(tag: Option<u8>, component: &KeyComponent) -> Vec<Ipld> {
         // A history or coverage separator opens with a 32-byte origin
         // and an 8-byte big-endian edition — raw binary, which renders
         // as a run of overlapping control glyphs if passed through as
-        // text. Report them as the version they encode.
+        // text. Report them as the version they encode, then read what
+        // follows as the entity-ordered fact fields it is.
         Some(HISTORY_KEY_TAG) | Some(COVERAGE_KEY_TAG) => {
             return version_fields(&component.bytes);
+        }
+        // A blob separator's prefix is part of a 32-byte content hash:
+        // raw binary with no text in it at all, which as utf8-lossy text
+        // renders as a run of replacement characters. Report it as the
+        // hash prefix it is.
+        Some(BLOB_KEY_TAG) => {
+            return vec![component_part(&KeyComponent {
+                kind: "blob",
+                text: format!(
+                    "blob:{}",
+                    bytes_hex(&component.bytes).trim_start_matches("0x")
+                ),
+                bytes: component.bytes.clone(),
+            })];
         }
         // An unknown tag has no field layout at all, so leave it opaque
         // rather than colouring it by a layout it does not have.
@@ -560,12 +686,19 @@ fn prefix_fields(tag: Option<u8>, component: &KeyComponent) -> Vec<Ipld> {
     // before splitting — otherwise it fuses with the value that follows
     // and every later field lands one slot early (an attribute showing
     // up where the value belongs).
+    let peel_vtype = tag == Some(VALUE_KEY_TAG);
+    field_parts(&component.bytes, order, peel_vtype)
+}
+
+/// Split a run of NUL-delimited key fields into components, labelling each
+/// by its position in `order`. `peel_vtype` takes the leading byte as a
+/// value-type tag first (the value ordering opens with one rather than
+/// with a delimited field).
+fn field_parts(bytes: &[u8], order: &[&'static str], peel_vtype: bool) -> Vec<Ipld> {
     let mut parts = Vec::new();
-    let mut rest = component.bytes.as_slice();
+    let mut rest = bytes;
     let mut next = 0usize;
-    if tag == Some(VALUE_KEY_TAG)
-        && let Some((vtype, tail)) = rest.split_first()
-    {
+    if peel_vtype && let Some((vtype, tail)) = rest.split_first() {
         parts.push(component_part(&KeyComponent {
             kind: "vtype",
             text: value_type_name(*vtype),
@@ -623,14 +756,15 @@ fn version_fields(bytes: &[u8]) -> Vec<Ipld> {
             text: format!("@{n}"),
             bytes: edition.to_vec(),
         }));
-        let tail = &rest[EDITION..];
-        if !tail.is_empty() {
-            parts.push(component_part(&KeyComponent {
-                kind: "entity",
-                text: String::from_utf8_lossy(tail).into_owned(),
-                bytes: tail.to_vec(),
-            }));
-        }
+        // What follows the version is the fact, in the entity ordering —
+        // NUL-delimited entity, attribute, value slot, cut wherever the
+        // front-coding ended. Split it like any other separator tail
+        // rather than painting the whole run as one entity.
+        parts.extend(field_parts(
+            &rest[EDITION..],
+            &["entity", "attribute", "vtype", "value"],
+            false,
+        ));
     } else if !rest.is_empty() {
         parts.push(component_part(&KeyComponent {
             kind: "opaque",
@@ -839,5 +973,342 @@ mod tests {
 
         assert_eq!(parts[0], ("index".to_owned(), "history".to_owned()));
         assert_eq!(parts[1].0, "opaque");
+    }
+
+    /// Build the `(origin, edition)` version a history/coverage key is
+    /// written under.
+    fn version(edition: u64) -> dialog_artifacts::history::Version {
+        dialog_artifacts::history::Version::new(
+            dialog_artifacts::history::Origin([0xab; 32]),
+            dialog_artifacts::history::Edition::new(edition),
+        )
+    }
+
+    /// Read a fields map's string field.
+    fn text(fields: &BTreeMap<String, Ipld>, key: &str) -> Option<String> {
+        match fields.get(key) {
+            Some(Ipld::String(s)) => Some(s.clone()),
+            _ => None,
+        }
+    }
+
+    /// A history record carries the SAME fact as the entry it records,
+    /// behind a version prefix. The inspector used to reconstruct only
+    /// EAV-shaped keys, so every history row rendered with a blank entity
+    /// and value and its ordering name squatting in the attribute column.
+    #[dialog_common::test]
+    fn it_reconstructs_the_fact_a_history_record_carries() {
+        let of: dialog_artifacts::Entity = "test:subject".parse().expect("entity parses");
+        let the: dialog_artifacts::Attribute = "test/name".parse().expect("attribute parses");
+        let is = Value::String("Zaphod".into());
+        let key = dialog_artifacts::history_key(
+            &version(7),
+            &of,
+            &the,
+            &is,
+            &dialog_search_tree::Manifest::default(),
+        );
+
+        let fields = fact_fields(key.as_ref(), &key_components(key.as_ref()), false);
+
+        assert_eq!(text(&fields, "entity").as_deref(), Some("test:subject"));
+        assert_eq!(text(&fields, "attribute").as_deref(), Some("test/name"));
+        assert_eq!(text(&fields, "type").as_deref(), Some("String"));
+        assert_eq!(fields.get("value"), Some(&Ipld::String("Zaphod".into())));
+    }
+
+    /// A coverage entry keeps the claim it covers in its key but carries
+    /// the value only as a spilled reference (that is what keeps the
+    /// region value-free). The row reports the entity and attribute, the
+    /// value type the KEY records — not the `<spilled value>` placeholder's
+    /// `String` — and no value.
+    #[dialog_common::test]
+    fn it_reconstructs_a_coverage_record_without_inventing_a_value() {
+        let of: dialog_artifacts::Entity = "test:subject".parse().expect("entity parses");
+        let the: dialog_artifacts::Attribute = "test/age".parse().expect("attribute parses");
+        let key = dialog_artifacts::coverage_key(&version(3), &of, &the, &Value::UnsignedInt(42));
+
+        let fields = fact_fields(key.as_ref(), &key_components(key.as_ref()), true);
+
+        assert_eq!(text(&fields, "entity").as_deref(), Some("test:subject"));
+        assert_eq!(text(&fields, "attribute").as_deref(), Some("test/age"));
+        assert_eq!(text(&fields, "type").as_deref(), Some("Bytes"));
+        assert_eq!(fields.get("value"), None, "a spilled value is not invented");
+    }
+
+    /// An ordinary fact key still reconstructs, in every ordering.
+    #[dialog_common::test]
+    fn it_reconstructs_a_fact_in_every_ordering() {
+        let artifact = dialog_artifacts::Artifact {
+            the: "test/name".parse().expect("attribute parses"),
+            of: "test:subject".parse().expect("entity parses"),
+            is: Value::String("Trillian".into()),
+            cause: None,
+        };
+        let manifest = dialog_search_tree::Manifest::default();
+        use dialog_artifacts::KeyType as _;
+        for key in [
+            dialog_artifacts::EntityKey::<Key>::from_artifact(&artifact, &manifest)
+                .bytes()
+                .to_vec(),
+            dialog_artifacts::AttributeKey::<Key>::from_artifact(&artifact, &manifest)
+                .bytes()
+                .to_vec(),
+            dialog_artifacts::ValueKey::<Key>::from_artifact(&artifact, &manifest)
+                .bytes()
+                .to_vec(),
+        ] {
+            let fields = fact_fields(&key, &key_components(&key), false);
+            assert_eq!(text(&fields, "entity").as_deref(), Some("test:subject"));
+            assert_eq!(text(&fields, "attribute").as_deref(), Some("test/name"));
+            assert_eq!(fields.get("value"), Some(&Ipld::String("Trillian".into())));
+        }
+    }
+
+    /// A blob key names content, not a fact: it reconstructs nothing, and
+    /// the row is furnished by its blob record instead.
+    #[dialog_common::test]
+    fn it_reports_no_fact_for_a_blob_key() {
+        let key = dialog_artifacts::BlobKey::new(&[0x11; 32]).into_key();
+
+        let fields = fact_fields(key.as_ref(), &key_components(key.as_ref()), false);
+
+        assert!(fields.is_empty(), "a blob key carries no fact: {fields:?}");
+    }
+
+    /// A blob row names its blob the way the rest of the branch does: the
+    /// `#<base58>` content hash, and the `blob:<base58>` entity the same
+    /// bytes carry their metadata facts under. A raw hex run named nothing
+    /// the inspector could cross-reference.
+    #[dialog_common::test]
+    fn it_names_a_blob_row_by_its_hash_and_entity() {
+        let hash = [0x11u8; 32];
+        let record = BlobEntrySummary {
+            at: 0,
+            blob: hash.to_vec(),
+            version: 1,
+            size: 4096,
+        };
+
+        let fields = blob_fields(&record);
+
+        assert_eq!(
+            text(&fields, "blob").as_deref(),
+            Some(to_base58(&hash).as_str())
+        );
+        assert_eq!(
+            text(&fields, "entity"),
+            Some(
+                dialog_artifacts::Entity::from_blob(&hash)
+                    .expect("blob entity")
+                    .to_string()
+            )
+        );
+        assert_eq!(fields.get("blob-size"), Some(&Ipld::Integer(4096)));
+        assert_eq!(fields.get("blob-version"), Some(&Ipld::Integer(1)));
+    }
+
+    /// A blob hash that is not 32 bytes is not renderable as one, and
+    /// falls back to hex rather than being dropped.
+    #[dialog_common::test]
+    fn it_falls_back_to_hex_for_an_unrenderable_blob_hash() {
+        let record = BlobEntrySummary {
+            at: 0,
+            blob: vec![0x01, 0x02],
+            version: 1,
+            size: 2,
+        };
+
+        let fields = blob_fields(&record);
+
+        assert_eq!(text(&fields, "blob").as_deref(), Some("0x0102"));
+        assert_eq!(fields.get("entity"), None);
+    }
+
+    /// Build a segment node holding `entries`, the way the tree stores
+    /// them, so the decode runs over real node bytes.
+    fn segment(entries: Vec<(Key, dialog_artifacts::State<Datum>)>) -> Vec<u8> {
+        use dialog_search_tree::{Entry, PersistentNodeBody};
+        let entries: Vec<Entry<Key, dialog_artifacts::State<Datum>>> = entries
+            .into_iter()
+            .map(|(key, value)| Entry { key, value })
+            .collect();
+        PersistentNodeBody::<dialog_artifacts::State<Datum>>::segment_from_entries::<Key>(
+            entries,
+            dialog_search_tree::Manifest::default(),
+        )
+        .expect("segment builds")
+        .as_bytes()
+        .expect("segment serializes")
+        .as_ref()
+        .to_vec()
+    }
+
+    /// The row for the entry at `ordering`, of the rows `segment_rows`
+    /// produced.
+    fn row_of<'a>(rows: &'a [Conclusion], ordering: &str) -> &'a Conclusion {
+        rows.iter()
+            .find(|row| row.fields.get("ordering") == Some(&Ipld::String(ordering.into())))
+            .unwrap_or_else(|| panic!("a {ordering} row among {rows:?}"))
+    }
+
+    /// A segment holds more than facts, and every kind of entry in one has
+    /// to read as what it is. Over a real node carrying a fact, a history
+    /// record, a coverage record and a blob reference: each row names its
+    /// index, and the three that carry a fact report its entity, attribute
+    /// and value — the history row used to report none of them.
+    #[dialog_common::test]
+    fn it_decodes_every_region_of_a_mixed_segment() {
+        use dialog_artifacts::{KeyType as _, State};
+        let manifest = dialog_search_tree::Manifest::default();
+        let of: dialog_artifacts::Entity = "test:subject".parse().expect("entity parses");
+        let the: dialog_artifacts::Attribute = "test/name".parse().expect("attribute parses");
+        let is = Value::String("Ford".into());
+        let at = version(9);
+
+        let fact = dialog_artifacts::Artifact {
+            the: the.clone(),
+            of: of.clone(),
+            is: is.clone(),
+            cause: None,
+        };
+        let datum = |version| {
+            State::Added(Datum {
+                cause: None,
+                blob: None,
+                version,
+                collapsed: Vec::new(),
+                supersedes: Vec::new(),
+                retraction: false,
+            })
+        };
+        let blob_hash = [0x22u8; 32];
+        let mut record = vec![1u8];
+        record.extend_from_slice(&1234u64.to_be_bytes());
+
+        let mut entries = vec![
+            (
+                Key::from(
+                    dialog_artifacts::EntityKey::<Key>::from_artifact(&fact, &manifest)
+                        .bytes()
+                        .to_vec(),
+                ),
+                datum(Some(at)),
+            ),
+            (
+                dialog_artifacts::history_key(&at, &of, &the, &is, &manifest),
+                datum(Some(at)),
+            ),
+            (
+                dialog_artifacts::coverage_key(&at, &of, &the, &is),
+                datum(Some(at)),
+            ),
+            (
+                dialog_artifacts::BlobKey::new(&blob_hash).into_key(),
+                State::Added(Datum {
+                    cause: None,
+                    blob: Some(record),
+                    version: None,
+                    collapsed: Vec::new(),
+                    supersedes: Vec::new(),
+                    retraction: false,
+                }),
+            ),
+        ];
+        // A segment stores its entries in key order.
+        entries.sort_by(|a, b| a.0.as_ref().cmp(b.0.as_ref()));
+
+        let rows = segment_rows(segment(entries)).expect("segment decodes");
+
+        assert_eq!(rows.len(), 4, "every entry yields a row: {rows:?}");
+
+        // The fact and the history record both read as the fact they carry.
+        for ordering in ["entity", "history"] {
+            let fields = &row_of(&rows, ordering).fields;
+            assert_eq!(
+                fields.get("entity"),
+                Some(&Ipld::String("test:subject".into())),
+                "{ordering} row names its entity: {fields:?}"
+            );
+            assert_eq!(
+                fields.get("attribute"),
+                Some(&Ipld::String("test/name".into())),
+                "{ordering} row names its attribute: {fields:?}"
+            );
+            assert_eq!(
+                fields.get("value"),
+                Some(&Ipld::String("Ford".into())),
+                "{ordering} row carries its value: {fields:?}"
+            );
+        }
+
+        // The history row also carries the revision that wrote it.
+        let history = &row_of(&rows, "history").fields;
+        assert_eq!(history.get("edition"), Some(&Ipld::Integer(9)));
+
+        // Coverage keeps the claim but not its value (that is what keeps
+        // the region cheap to diff), so it names the claim and its spill.
+        let coverage = &row_of(&rows, "coverage").fields;
+        assert_eq!(
+            coverage.get("entity"),
+            Some(&Ipld::String("test:subject".into()))
+        );
+        assert_eq!(coverage.get("value"), None, "coverage carries no value");
+        assert!(
+            matches!(coverage.get("spill"), Some(Ipld::String(s)) if s.starts_with('#')),
+            "coverage names the value it covers by reference: {coverage:?}"
+        );
+
+        // The blob row names its content, by hash and by the entity the
+        // same bytes carry their metadata under, plus the size.
+        let blob = &row_of(&rows, "blob").fields;
+        assert_eq!(blob.get("blob"), Some(&Ipld::String(to_base58(&blob_hash))));
+        assert_eq!(
+            blob.get("entity"),
+            Some(&Ipld::String(
+                Entity::from_blob(&blob_hash)
+                    .expect("blob entity")
+                    .to_string()
+            ))
+        );
+        assert_eq!(blob.get("blob-size"), Some(&Ipld::Integer(1234)));
+    }
+
+    /// A blob separator is part of a raw content hash — no text in it at
+    /// all. Passing it through as utf8-lossy text painted the outline with
+    /// replacement characters; it reads as the hash prefix it is.
+    #[dialog_common::test]
+    fn it_renders_a_blob_separator_as_a_hash_prefix() {
+        let mut bytes = vec![BLOB_KEY_TAG];
+        bytes.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+
+        let parts = kinds(&separator_parts(&bytes));
+
+        assert_eq!(parts[0], ("index".to_owned(), "blob".to_owned()));
+        assert_eq!(parts[1], ("blob".to_owned(), "blob:deadbeef".to_owned()));
+    }
+
+    /// Past a history separator's version prefix the bytes are the fact,
+    /// NUL-delimited under the entity ordering. They split into their own
+    /// fields rather than being painted as one long entity.
+    #[dialog_common::test]
+    fn it_splits_the_fact_behind_a_history_separator() {
+        let mut bytes = vec![HISTORY_KEY_TAG];
+        bytes.extend_from_slice(&[0xab; 32]);
+        bytes.extend_from_slice(&4u64.to_be_bytes());
+        bytes.extend_from_slice(b"test:subject\0test/name");
+
+        let parts = kinds(&separator_parts(&bytes));
+
+        assert_eq!(
+            parts,
+            vec![
+                ("index".to_owned(), "history".to_owned()),
+                ("origin".to_owned(), format!("origin:{}", "ab".repeat(32))),
+                ("edition".to_owned(), "@4".to_owned()),
+                ("entity".to_owned(), "test:subject".to_owned()),
+                ("attribute".to_owned(), "test/name".to_owned()),
+            ]
+        );
     }
 }
