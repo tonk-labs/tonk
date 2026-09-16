@@ -4,6 +4,16 @@ compatibility_date = "2026-01-01"
 compatibility_flags = ["nodejs_compat"]
 routes = [{ pattern = "tonk.network", custom_domain = true }]
 
+# Run near the bucket, D1 and KV rather than near the client. Every
+# object operation calls the R2 binding, and the buckets live in Europe:
+# from a client on the US west coast the worker paid a transatlantic
+# round trip per object on top of the client's own hop (400 to 800 ms
+# of server wait per block in a sign-in HAR). Placed near its storage
+# the worker's calls are local, and the client pays its one hop once.
+# `cf-placement` on a response says where it ran.
+[placement]
+mode = "smart"
+
 [observability]
 enabled = true
 head_sampling_rate = 1
