@@ -11,6 +11,7 @@
 
 use std::collections::HashMap;
 
+use dialog_iroh_remote::site::IrohAddress;
 use dialog_remote_ucan_s3::UcanAddress;
 use dialog_repository::{Branch, SiteAddress, Upstream};
 use dialog_varsig::Did;
@@ -118,6 +119,24 @@ pub async fn add(
     add_with_revocation(site, name, endpoint, subject_override, None).await
 }
 
+/// Read an endpoint as whichever kind of address it names.
+///
+/// No flag chooses between them, because the address already says: a
+/// `did:key` is a peer and a URL is an access service, and there is no
+/// string that is plausibly both. A flag would be a second place for
+/// the answer to live and a second place for it to be wrong.
+fn site_address(endpoint: &str) -> Result<SiteAddress, RemoteError> {
+    if endpoint.starts_with("did:key:") {
+        let peer = IrohAddress::parse_uri(endpoint)
+            .map_err(|error| RemoteError::Io(format!("not a peer address: {error}")))?;
+        return Ok(SiteAddress::from(peer));
+    }
+
+    url::Url::parse(endpoint)
+        .map_err(|error| RemoteError::Io(format!("not an access-service URL: {error}")))?;
+    Ok(SiteAddress::from(UcanAddress::new(endpoint)))
+}
+
 /// Register a remote and its explicit invitation-revocation relay atomically.
 pub async fn add_with_revocation(
     site: &TonkSite,
@@ -130,7 +149,7 @@ pub async fn add_with_revocation(
         url::Url::parse(revocation_url)
             .map_err(|error| RemoteError::Io(format!("invalid revocation URL: {error}")))?;
     }
-    let address = SiteAddress::from(UcanAddress::new(endpoint));
+    let address = site_address(endpoint)?;
 
     // Dialog-side: provision the remote handle. This stamps a
     // RemoteAddress cell so subsequent push/pull can reach the
@@ -455,5 +474,46 @@ fn decode_endpoint(address: &remote_dom::Address) -> Option<String> {
     match site {
         SiteAddress::Ucan(ucan) => Some(ucan.endpoint().to_owned()),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod peer_address_tests {
+    use super::*;
+
+    /// A peer serving its own store is the whole point of `tonk rtc
+    /// listen`, and `Store` is the bound that decides whether it can.
+    /// Asserting it here means a new effect on the responder breaks this
+    /// build rather than the listener at run time.
+    #[test]
+    fn tonk_storage_can_answer_a_peer() {
+        fn serves<S: dialog_iroh_remote::serve::Store>() {}
+        serves::<
+            dialog_storage::provider::storage::Storage<
+                dialog_storage::provider::storage::NativeSpace,
+            >,
+        >();
+    }
+
+    /// The address chooses the transport, so the two forms must not be
+    /// confusable — and a malformed one has to be refused rather than
+    /// quietly filed as the other kind.
+    #[test]
+    fn an_address_says_which_kind_of_remote_it_is() {
+        let peer = site_address("did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK")
+            .expect("a did:key is a peer");
+        assert!(matches!(peer, SiteAddress::Iroh(_)));
+
+        let service = site_address("https://access.example.com").expect("a URL is a service");
+        assert!(matches!(service, SiteAddress::Ucan(_)));
+
+        assert!(
+            site_address("did:key:not-base58").is_err(),
+            "a broken did:key is refused, not treated as a URL"
+        );
+        assert!(
+            site_address("access.example.com").is_err(),
+            "a bare host is not an endpoint"
+        );
     }
 }

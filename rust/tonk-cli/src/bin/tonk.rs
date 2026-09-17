@@ -693,21 +693,26 @@ enum RtcCommand {
 
 #[derive(Subcommand, Debug)]
 enum RemoteCommand {
-    /// Register a UCAN-S3 access-service remote
+    /// Register a remote: an access service, or a peer
     ///
     /// Writes the dialog remote handle and the meta-branch
     /// `Remote` concept browsers read. When no upstream is wired
     /// yet, the new remote becomes `main`'s upstream (an existing
     /// upstream is never touched — re-point with `set-upstream`).
+    ///
+    /// The address says which kind it is: a URL is an access
+    /// service, a `did:key` is a peer — as printed by `tonk rtc
+    /// listen`, optionally carrying `?route=` hints for reaching it
+    /// with no network to resolve on.
     #[command(
-        after_help = "Examples:\n  tonk remote add prod https://access.example.com --revocation-url https://artifacts.example.com/revocations"
+        after_help = "Examples:\n  tonk remote add prod https://access.example.com --revocation-url https://artifacts.example.com/revocations\n  tonk remote add laptop did:key:z6Mk..."
     )]
     Add {
         /// Local name for the remote.
         #[arg(value_name = "NAME")]
         name: String,
-        /// UCAN access-service endpoint URL.
-        #[arg(value_name = "URL")]
+        /// Access-service URL, or a peer's `did:key`.
+        #[arg(value_name = "ADDRESS")]
         url: String,
         /// Immutable-artifact relay used for invitation revocations.
         #[arg(long, value_name = "URL")]
