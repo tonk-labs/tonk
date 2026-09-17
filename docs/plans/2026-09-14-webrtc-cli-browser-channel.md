@@ -523,12 +523,40 @@ native, both can open UDP sockets, real hole punching, no relay in the
 data path. WebRTC is in this design only because browsers cannot do
 that.
 
-Row one is the primary case and it is the one that needs **no
-rendezvous at all**. The port is fixed, so the browser synthesizes the
-route rather than learning it, and a wrong guess is refused rather than
-trusted: iroh's TLS authenticates by endpoint key, so an unrelated
-process on that port cannot complete a connection. Guessing is safe
-precisely because the fingerprint stopped being a security boundary.
+Row one is the primary case, and what it needs is **no per-dial
+signalling** — not "no address at all", which an earlier version of this
+paragraph claimed and which is wrong in a way worth spelling out,
+because it cost a day.
+
+Of the three things a dialer needs, two are derivable and one is not:
+
+| | Derivable by the browser? |
+| --- | --- |
+| The port | Yes — it is fixed. |
+| The candidates | Yes — loopback, for the same-machine case. |
+| The CLI's DTLS fingerprint | **No.** |
+
+The fingerprint is not derivable and cannot be skipped. `webrtc-rs` has
+`disable_certificate_fingerprint_verification`, which is what lets the
+*CLI* accept a browser certificate minted per page load; a browser has
+no such knob. It verifies the remote certificate against the
+`a=fingerprint` line in whatever SDP it was handed, and the SDP here is
+one it fabricated, so a placeholder fails the DTLS handshake outright.
+`decodeAddress` in `rtc.mjs` refuses an address without one, and
+`the_published_address_carries_everything_a_dialer_needs` pins that the
+listener publishes it.
+
+"The fingerprint stopped being a security boundary" is true and is a
+different claim: iroh's TLS authenticates by endpoint key, so reaching
+the port grants nothing and an unrelated process there cannot complete
+a connection. The fingerprint is still load-bearing for the *handshake*
+even once it is no longer load-bearing for *authentication*.
+
+So the address is published once and cached forever — the certificate
+is persisted precisely so it survives a restart — and nothing travels
+per dial. That is the property the design actually has, and it is
+enough: discovery tolerates unbounded latency, the handshake involves
+no sync, and a `did:key?route=custom:…` carries the whole record.
 
 Row two is configuration, not discovery — the operator supplies an
 address, exactly as they would for a non-default port. Browsers cannot
