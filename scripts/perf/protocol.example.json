@@ -1,0 +1,164 @@
+{
+  "bootstrap": {
+    "draws": 10000,
+    "pairing": "cycle/block/seed/slot",
+    "quantile": "linear",
+    "seed": 20260916
+  },
+  "diagnostics_enabled": true,
+  "experiments": {},
+  "frozen": false,
+  "schema_version": 1,
+  "selections": [
+    {
+      "fixture": {
+        "cache_state": "fresh-profile-empty-http-and-service-worker",
+        "dataset_sha256": "ef4c970fce9dc639ad8770e8ee025de886e753fdd942f451400ec85bf6e5e55a",
+        "input_sequence": "open-share-menu-v1",
+        "recipe": "fresh-anonymous-nested-welcome-v1",
+        "selector": ".wp-h1"
+      },
+      "metrics": {
+        "bytes": {
+          "kind": "resource"
+        },
+        "first_input_event_timing_ms": {
+          "kind": "paint"
+        },
+        "first_input_ms": {
+          "kind": "paint"
+        },
+        "navigation_to_headline_observed_ms": {
+          "kind": "latency"
+        },
+        "navigation_to_usable_ms": {
+          "kind": "startup"
+        },
+        "navigation_to_usable_observed_ms": {
+          "kind": "latency"
+        },
+        "requests": {
+          "kind": "resource"
+        }
+      },
+      "profile": "desktop",
+      "profile_settings": {
+        "cpu_slowdown": 1,
+        "download_bytes_per_second": -1,
+        "latency_ms": 0,
+        "upload_bytes_per_second": -1,
+        "viewport_height": 800,
+        "viewport_width": 1280
+      },
+      "scenario": "S1"
+    },
+    {
+      "fixture": {
+        "cache_state": "same-profile-browser-process-cold-worker-cold-http-disk-cache-warm",
+        "dataset_sha256": "e7a0a47f81c645773038db6a7405eb71e43551f09c462d9c395cd82e98a06bce",
+        "input_sequence": "provision-linked-profile; quit-browser; restart-same-profile; navigate-root",
+        "recipe": "linked-active-returning-local-browser-restart-v1",
+        "selector": "[data-spaces-view] a.srow"
+      },
+      "metrics": {
+        "account_sweeps": {
+          "kind": "resource"
+        },
+        "bytes": {
+          "kind": "resource"
+        },
+        "local_content_ready_ms": {
+          "kind": "startup"
+        },
+        "local_content_ready_observed_ms": {
+          "kind": "latency"
+        },
+        "offline_authorization": {
+          "kind": "resource"
+        },
+        "requests": {
+          "kind": "resource"
+        },
+        "writer_waits": {
+          "kind": "resource"
+        }
+      },
+      "profile": "desktop",
+      "profile_settings": {
+        "cpu_slowdown": 1,
+        "download_bytes_per_second": -1,
+        "latency_ms": 0,
+        "upload_bytes_per_second": -1,
+        "viewport_height": 800,
+        "viewport_width": 1280
+      },
+      "scenario": "S2"
+    },
+    {
+      "fixture": {
+        "cache_state": "same-session-after-fixture-provisioning-http-and-worker-warm",
+        "dataset_sha256": "9fb1a62555411a85b6a7ef4cf7471b746a4ed18e45e1465119c51664da9bf815",
+        "input_sequence": "navigate-direct-space-link; webdriver-click-space; webdriver-escape; webdriver-click-space; webdriver-escape; webdriver-click-share; webdriver-escape; webdriver-click-share",
+        "recipe": "fresh-anonymous-seeded-welcome-direct-space-v1",
+        "selector": "tonk-fab[space]"
+      },
+      "metrics": {
+        "bytes": {
+          "kind": "resource"
+        },
+        "input_to_next_paint_ms": {
+          "kind": "paint"
+        },
+        "menu_ready_ms": {
+          "kind": "completion"
+        },
+        "requests": {
+          "kind": "resource"
+        },
+        "route_ready_ms": {
+          "kind": "startup"
+        },
+        "route_ready_observed_ms": {
+          "kind": "latency"
+        },
+        "share_menu_first_input_event_timing_ms": {
+          "kind": "paint"
+        },
+        "share_menu_first_ready_observed_ms": {
+          "kind": "latency"
+        },
+        "share_menu_repeated_input_event_timing_ms": {
+          "kind": "paint"
+        },
+        "share_menu_repeated_ready_observed_ms": {
+          "kind": "latency"
+        },
+        "space_menu_first_input_event_timing_ms": {
+          "kind": "paint"
+        },
+        "space_menu_first_ready_observed_ms": {
+          "kind": "latency"
+        },
+        "space_menu_repeated_input_event_timing_ms": {
+          "kind": "paint"
+        },
+        "space_menu_repeated_ready_observed_ms": {
+          "kind": "latency"
+        },
+        "subscription_counts": {
+          "kind": "resource"
+        }
+      },
+      "profile": "desktop",
+      "profile_settings": {
+        "cpu_slowdown": 1,
+        "download_bytes_per_second": -1,
+        "latency_ms": 0,
+        "upload_bytes_per_second": -1,
+        "viewport_height": 800,
+        "viewport_width": 1280
+      },
+      "scenario": "S3"
+    }
+  ]
+}

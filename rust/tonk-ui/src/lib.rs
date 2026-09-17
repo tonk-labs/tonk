@@ -62,3 +62,56 @@ mod identity;
 /// Real-browser service-worker load-time upgrade tests.
 #[cfg(test)]
 mod service_worker_upgrade;
+
+/// Opt-in release-artifact browser performance smoke runner.
+#[cfg(test)]
+mod performance;
+
+/// Frozen disposable browser fixtures for performance scenarios.
+#[cfg(test)]
+mod performance_fixtures;
+
+#[cfg(all(
+    test,
+    not(target_arch = "wasm32"),
+    any(feature = "integration-tests", feature = "web-integration-tests")
+))]
+mod performance_support;
+
+#[cfg(all(
+    test,
+    not(target_arch = "wasm32"),
+    any(feature = "integration-tests", feature = "web-integration-tests")
+))]
+mod performance_restart;
+
+#[cfg(test)]
+mod performance_transport;
+
+#[cfg(all(
+    test,
+    not(target_arch = "wasm32"),
+    any(feature = "integration-tests", feature = "web-integration-tests")
+))]
+mod performance_s3;
+
+#[cfg(all(
+    test,
+    not(target_arch = "wasm32"),
+    any(feature = "integration-tests", feature = "web-integration-tests")
+))]
+mod performance_s2_fixture;
+
+#[cfg(all(
+    test,
+    not(target_arch = "wasm32"),
+    any(feature = "integration-tests", feature = "web-integration-tests")
+))]
+mod performance_s2;
+
+#[cfg(all(
+    test,
+    not(target_arch = "wasm32"),
+    any(feature = "integration-tests", feature = "web-integration-tests")
+))]
+mod performance_s6;

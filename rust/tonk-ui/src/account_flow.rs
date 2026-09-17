@@ -1065,6 +1065,356 @@ mod tests {
         Ok(())
     }
 
+    const S2_EMAIL: &str = "s2-returning@example.com";
+    const S2_SPACE_LABEL: &str = "S2 Returning Local";
+    const S2_MARKER: &str = "s2-returning-local-v1";
+    const S2_MARKER_ATTRIBUTE: &str = "xyz.tonk.perf/s2-returning-local-v1";
+
+    /// Runtime identities created while provisioning the frozen S2 fixture.
+    /// The performance record must not persist these disposable values.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub(crate) struct S2AccountFixture {
+        pub(crate) worker_started_at: u64,
+        pub(crate) space_key: String,
+        pub(crate) space_subject: String,
+    }
+
+    /// Runtime repository population created for the S6 sync experiment.
+    /// Subjects stay in memory and are used only to configure the local test
+    /// server's request probe; performance receipts persist counts, not DIDs.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub(crate) struct S6AccountFixture {
+        pub(crate) active_key: String,
+        pub(crate) active_subject: String,
+        pub(crate) inactive_keys: Vec<String>,
+        pub(crate) inactive_subjects: Vec<String>,
+        pub(crate) delayed_subjects: Vec<String>,
+    }
+
+    impl S2AccountFixture {
+        /// Re-read the linked account and authored local content after the
+        /// caller has restarted Chrome with the same disposable profile.
+        pub(crate) async fn verify_restored(&self, driver: &WebDriver) -> Result<u64> {
+            let customer = get_json(driver, "/api/customer").await?;
+            anyhow::ensure!(
+                s2_response_body("restored customer read", &customer)?["status"] == "Active",
+                "S2 restored customer is not active"
+            );
+            let account = get_json(driver, "/api/account").await?;
+            anyhow::ensure!(
+                s2_response_body("restored account read", &account)?["status"] == "registered",
+                "S2 restored account is not registered"
+            );
+            let pending = get_json(driver, "/api/customer/pending").await?;
+            let pending = s2_response_body("restored pending-work read", &pending)?;
+            let pending_count = pending.as_array().map(Vec::len);
+            let custody_pending = pending
+                .as_array()
+                .is_some_and(|queue| queue.iter().any(|work| work["kind"] == "publishCustody"));
+            anyhow::ensure!(
+                pending_count.is_some() && !custody_pending,
+                "S2 restored pending queue is invalid or contains custody work; count={pending_count:?} custody_pending={custody_pending}"
+            );
+            let summary = account_summary(driver).await?;
+            let summary = s2_response_body("restored account summary", &summary)?;
+            anyhow::ensure!(
+                summary["email"] == S2_EMAIL
+                    && summary["displayName"] == "Tab Owner"
+                    && summary["passkey"].is_object(),
+                "S2 restored account facts changed; email_matches={} display_name_matches={} passkey_present={}",
+                summary["email"] == S2_EMAIL,
+                summary["displayName"] == "Tab Owner",
+                summary["passkey"].is_object()
+            );
+
+            let profile = get_json(driver, "/api/profile").await?;
+            let profile = s2_response_body("restored profile read", &profile)?;
+            let spaces = profile["space"]
+                .as_array()
+                .context("S2 restored profile omitted its space roster")?;
+            anyhow::ensure!(
+                spaces.len() == 2,
+                "S2 restored profile must contain exactly two spaces; count={}",
+                spaces.len()
+            );
+            let fixture_space = spaces
+                .iter()
+                .find(|space| space["key"].as_str() == Some(&self.space_key))
+                .context("S2 restored profile lost the fixture space")?;
+            anyhow::ensure!(
+                fixture_space["subject"] == self.space_subject,
+                "S2 restored fixture subject changed"
+            );
+            let welcome = spaces
+                .iter()
+                .find(|space| space["key"].as_str() != Some(&self.space_key))
+                .context("S2 restored profile lost the Welcome seed entry")?;
+            let welcome_key = welcome["key"]
+                .as_str()
+                .context("S2 restored Welcome entry has no routing key")?;
+            let welcome_repository =
+                get_json(driver, &format!("/api/repository/{welcome_key}")).await?;
+            let welcome_repository =
+                s2_response_body("restored Welcome repository read", &welcome_repository)?;
+            anyhow::ensure!(
+                welcome_repository["label"] == "Welcome to Tonk",
+                "S2 restored profile lost the authored Welcome label"
+            );
+
+            let repository =
+                get_json(driver, &format!("/api/repository/{}", self.space_key)).await?;
+            let repository = s2_response_body("restored repository read", &repository)?;
+            anyhow::ensure!(
+                repository["subject"] == self.space_subject
+                    && repository["label"] == S2_SPACE_LABEL,
+                "S2 restored repository identity changed; subject_matches={} label_matches={}",
+                repository["subject"] == self.space_subject,
+                repository["label"] == S2_SPACE_LABEL
+            );
+            anyhow::ensure!(
+                repository["remote"]["origin"].is_object()
+                    && repository["branch"]["main"]["upstream"]["remote"] == "origin",
+                "S2 restored repository lost origin/main"
+            );
+            anyhow::ensure!(
+                owner_sees(driver, &self.space_key, S2_MARKER).await?,
+                "S2 restored content branch lost its fixture marker"
+            );
+
+            let health = get_json(driver, "/api/health").await?;
+            s2_response_body("restored health read", &health)?["startedAt"]
+                .as_u64()
+                .context("S2 restored worker reported no start time")
+        }
+    }
+
+    fn s2_response_body<'a>(
+        operation: &str,
+        response: &'a serde_json::Value,
+    ) -> Result<&'a serde_json::Value> {
+        anyhow::ensure!(
+            response.get("error").is_none(),
+            "S2 {operation} transport failed"
+        );
+        let status = response["status"].as_u64();
+        anyhow::ensure!(
+            status.is_some_and(|status| (200..300).contains(&status)),
+            "S2 {operation} returned non-success status {status:?}"
+        );
+        Ok(&response["body"])
+    }
+
+    /// Create the exact linked-account/local-content state used by S2.
+    /// This is setup-only: the caller must quit this browser and reopen its
+    /// retained profile before starting a returning-user measurement.
+    pub(crate) async fn provision_s2_account_fixture(
+        driver: &WebDriver,
+        env: &TestEnvironment,
+    ) -> Result<S2AccountFixture> {
+        sign_up(driver, env, S2_EMAIL).await?;
+
+        let customer = get_json(driver, "/api/customer").await?;
+        anyhow::ensure!(
+            s2_response_body("customer read", &customer)?["status"] == "Active",
+            "S2 disposable customer is not active"
+        );
+        let account = get_json(driver, "/api/account").await?;
+        anyhow::ensure!(
+            s2_response_body("account read", &account)?["status"] == "registered",
+            "S2 disposable account is not registered"
+        );
+        let pending = get_json(driver, "/api/customer/pending").await?;
+        let pending = s2_response_body("pending-work read", &pending)?;
+        let pending_count = pending.as_array().map(Vec::len);
+        let custody_pending = pending
+            .as_array()
+            .is_some_and(|queue| queue.iter().any(|work| work["kind"] == "publishCustody"));
+        anyhow::ensure!(
+            pending_count.is_some() && !custody_pending,
+            "S2 pending queue is invalid or contains custody work; count={pending_count:?} custody_pending={custody_pending}"
+        );
+        let summary = account_summary(driver).await?;
+        let summary = s2_response_body("account summary", &summary)?;
+        anyhow::ensure!(
+            summary["email"] == S2_EMAIL
+                && summary["displayName"] == "Tab Owner"
+                && summary["passkey"].is_object(),
+            "S2 account facts did not settle; email_matches={} display_name_matches={} passkey_present={}",
+            summary["email"] == S2_EMAIL,
+            summary["displayName"] == "Tab Owner",
+            summary["passkey"].is_object()
+        );
+
+        let space_key = create_space_awaiting_remote(driver, S2_SPACE_LABEL, true).await?;
+        let declaration = format!(
+            "attribute!: &{S2_MARKER}\n  the:         {S2_MARKER_ATTRIBUTE}\n  as:          text\n  cardinality: one\n  description: S2 returning local fixture marker\n"
+        );
+        let wrote = post_yaml(
+            driver,
+            &format!("/api/repository/{space_key}/branch/main/evaluate"),
+            &declaration,
+        )
+        .await?;
+        let marker_status = wrote["status"].as_u64();
+        anyhow::ensure!(
+            wrote.get("error").is_none()
+                && marker_status.is_some_and(|status| (200..300).contains(&status)),
+            "S2 marker write failed; transport_failed={} status={marker_status:?}",
+            wrote.get("error").is_some()
+        );
+        anyhow::ensure!(
+            owner_sees(driver, &space_key, S2_MARKER).await?,
+            "S2 marker did not resolve on the local content branch"
+        );
+        let pushed = post_json(
+            driver,
+            &format!("/api/repository/{space_key}/branch/main/sync/push"),
+            serde_json::json!({}),
+        )
+        .await?;
+        s2_response_body("fixture marker push", &pushed)?;
+
+        let profile = get_json(driver, "/api/profile").await?;
+        let profile = s2_response_body("profile read", &profile)?;
+        let spaces = profile["space"]
+            .as_array()
+            .context("S2 profile response omitted its space roster")?;
+        anyhow::ensure!(
+            spaces.len() == 2,
+            "S2 fixture requires Welcome plus one returning space; count={}",
+            spaces.len()
+        );
+        let fixture_space = spaces
+            .iter()
+            .find(|space| space["key"].as_str() == Some(&space_key))
+            .context("S2 fixture space is absent from the profile roster")?;
+        let space_subject = fixture_space["subject"]
+            .as_str()
+            .filter(|subject| !subject.is_empty())
+            .context("S2 fixture space has no subject")?
+            .to_owned();
+        let welcome = spaces
+            .iter()
+            .find(|space| space["key"].as_str() != Some(&space_key))
+            .context("S2 profile lost the Welcome seed entry")?;
+        let welcome_key = welcome["key"]
+            .as_str()
+            .context("S2 Welcome entry has no routing key")?;
+        let welcome_repository =
+            get_json(driver, &format!("/api/repository/{welcome_key}")).await?;
+        let welcome_repository = s2_response_body("Welcome repository read", &welcome_repository)?;
+        anyhow::ensure!(
+            welcome_repository["label"] == "Welcome to Tonk",
+            "S2 profile lost the authored Welcome label"
+        );
+
+        let repository = get_json(driver, &format!("/api/repository/{space_key}")).await?;
+        let repository = s2_response_body("fixture repository read", &repository)?;
+        anyhow::ensure!(
+            repository["subject"] == space_subject && repository["label"] == S2_SPACE_LABEL,
+            "S2 repository identity does not match the profile roster; subject_matches={} label_matches={}",
+            repository["subject"] == space_subject,
+            repository["label"] == S2_SPACE_LABEL
+        );
+        anyhow::ensure!(
+            repository["remote"]["origin"].is_object()
+                && repository["branch"]["main"]["upstream"]["remote"] == "origin",
+            "S2 fixture repository did not settle on origin/main"
+        );
+
+        let health = get_json(driver, "/api/health").await?;
+        let worker_started_at = s2_response_body("health read", &health)?["startedAt"]
+            .as_u64()
+            .context("S2 setup worker reported no start time")?;
+        Ok(S2AccountFixture {
+            worker_started_at,
+            space_key,
+            space_subject,
+        })
+    }
+
+    /// Extend the proven S2 linked-account fixture to the exact repository
+    /// population used by S6: one active and nineteen inactive cached spaces.
+    /// The built-in Welcome seed is excluded from delay shaping because its
+    /// post-activation remote attachment is asynchronous; the active space and
+    /// eighteen other created spaces must be attached to origin/main.
+    pub(crate) async fn provision_s6_account_fixture(
+        driver: &WebDriver,
+        env: &TestEnvironment,
+    ) -> Result<S6AccountFixture> {
+        let active = provision_s2_account_fixture(driver, env).await?;
+        for index in 1..=18 {
+            create_space_awaiting_remote(driver, &format!("S6 Cached {index:02}"), true).await?;
+        }
+
+        let profile = get_json(driver, "/api/profile").await?;
+        let profile = s2_response_body("S6 profile read", &profile)?;
+        let spaces = profile["space"]
+            .as_array()
+            .context("S6 profile response omitted its space roster")?;
+        anyhow::ensure!(
+            spaces.len() == 20,
+            "S6 fixture requires exactly twenty cached spaces; count={}",
+            spaces.len()
+        );
+
+        let mut inactive_keys = Vec::with_capacity(19);
+        let mut inactive_subjects = Vec::with_capacity(19);
+        let mut delayed_subjects = Vec::with_capacity(18);
+        let mut welcome_count = 0;
+        for space in spaces {
+            let key = space["key"]
+                .as_str()
+                .context("S6 profile space has no routing key")?;
+            let subject = space["subject"]
+                .as_str()
+                .filter(|subject| !subject.is_empty())
+                .context("S6 profile space has no subject")?;
+            let repository = get_json(driver, &format!("/api/repository/{key}")).await?;
+            let repository = s2_response_body("S6 repository read", &repository)?;
+            anyhow::ensure!(
+                repository["subject"] == subject,
+                "S6 repository {key} does not match its roster subject"
+            );
+            let remote_backed = repository["remote"]["origin"].is_object()
+                && repository["branch"]["main"]["upstream"]["remote"] == "origin";
+            let welcome = repository["label"] == "Welcome to Tonk";
+            if key == active.space_key {
+                anyhow::ensure!(
+                    subject == active.space_subject && remote_backed && !welcome,
+                    "S6 active repository identity or origin/main changed while extending the fixture"
+                );
+            } else {
+                inactive_keys.push(key.to_owned());
+                inactive_subjects.push(subject.to_owned());
+                if welcome {
+                    welcome_count += 1;
+                } else {
+                    anyhow::ensure!(
+                        remote_backed,
+                        "S6 created repository {key} did not settle on origin/main"
+                    );
+                    delayed_subjects.push(subject.to_owned());
+                }
+            }
+        }
+        anyhow::ensure!(
+            inactive_keys.len() == 19
+                && inactive_subjects.len() == 19
+                && delayed_subjects.len() == 18
+                && welcome_count == 1,
+            "S6 fixture did not partition into one active, eighteen shaped inactive spaces and one unshaped Welcome"
+        );
+
+        Ok(S6AccountFixture {
+            active_key: active.space_key,
+            active_subject: active.space_subject,
+            inactive_keys,
+            inactive_subjects,
+            delayed_subjects,
+        })
+    }
+
     /// Create an account and stop, leaving the customer `Registered`
     /// with its activation email unopened — the window in which the
     /// service refuses everything and the client queues it.
@@ -7238,3 +7588,11 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    any(feature = "integration-tests", feature = "web-integration-tests")
+))]
+pub(crate) use tests::{
+    S2AccountFixture, S6AccountFixture, provision_s2_account_fixture, provision_s6_account_fixture,
+};

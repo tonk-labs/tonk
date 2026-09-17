@@ -39,7 +39,7 @@ mod native {
     use thirtyfour::extensions::cdp::ChromeDevTools;
     use thirtyfour::{
         CapabilitiesHelper, ChromeCapabilities, ChromiumLikeCapabilities, DesiredCapabilities,
-        WebDriver,
+        PageLoadStrategy, WebDriver,
     };
     use tonk_access_service::helpers::{AccessServiceAddress, AccessServiceSettings};
     use tonk_worker_api::DeploymentConfig;
@@ -186,11 +186,17 @@ mod native {
     }
 
     impl TestEnvironment {
-        fn chrome_capabilities(&self) -> Result<ChromeCapabilities> {
-            let profile = tempfile::Builder::new()
-                .prefix("chrome-profile-")
-                .tempdir_in(&self.browser_profile_root)?
-                .keep();
+        fn chrome_capabilities(
+            &self,
+            retained_profile: Option<&std::path::Path>,
+        ) -> Result<ChromeCapabilities> {
+            let profile = match retained_profile {
+                Some(profile) => self.checked_test_profile(profile)?,
+                None => tempfile::Builder::new()
+                    .prefix("chrome-profile-")
+                    .tempdir_in(&self.browser_profile_root)?
+                    .keep(),
+            };
             let mut caps = DesiredCapabilities::chrome();
             // NOTE: Discovered arcana while reverse engineering
             // wasm-bindgen-test-runner. TL;DR Chrome will crash when running as
@@ -241,6 +247,23 @@ mod native {
                 )?;
             }
 
+            // The profiler drains these logs after its timed endpoint. Keep
+            // tracing absent from ordinary integration/browser sessions.
+            if std::env::var_os("TONK_PERF_REQUEST").is_some()
+                && std::env::var("TONK_PERF_TRACE").as_deref() != Ok("0")
+            {
+                let mut logging = serde_json::json!({ "performance": "ALL" });
+                if std::env::var("TONK_E2E_CHROME_LOG").is_ok() {
+                    logging["browser"] = serde_json::json!("ALL");
+                }
+                caps.insert_base_capability("goog:loggingPrefs".to_string(), logging);
+                caps.add_experimental_option("perfLoggingPrefs", serde_json::json!({
+                    "enableNetwork": true,
+                    "enablePage": true,
+                    "traceCategories": "devtools.timeline,disabled-by-default-devtools.timeline.frame"
+                }))?;
+            }
+
             Ok(caps)
         }
 
@@ -254,14 +277,60 @@ mod native {
         /// Creates an isolated browser session without visiting the application.
         /// Profilers must install observation and start timing before navigating.
         pub async fn blank_driver(&self) -> Result<WebDriver> {
+            self.blank_driver_for_profile(None, true).await
+        }
+
+        /// The profiler owns its readiness wait instead of waiting for the
+        /// WebDriver page-load event, including during empty-page setup.
+        #[cfg(test)]
+        pub(crate) async fn performance_driver(&self) -> Result<WebDriver> {
+            self.blank_driver_for_profile(None, false).await
+        }
+
+        /// Restart a disposable fixture profile without erasing its local data.
+        /// The previous driver must be quit first. Only direct child directories
+        /// of this test environment's profile root are accepted.
+        #[cfg(test)]
+        pub(crate) async fn blank_driver_with_profile(
+            &self,
+            profile: &std::path::Path,
+        ) -> Result<WebDriver> {
+            self.blank_driver_for_profile(Some(profile), true).await
+        }
+
+        pub(crate) fn checked_test_profile(
+            &self,
+            profile: &std::path::Path,
+        ) -> Result<std::path::PathBuf> {
+            let root = std::fs::canonicalize(&self.browser_profile_root)?;
+            let profile = std::fs::canonicalize(profile)?;
+            if !profile.is_dir() || profile.parent() != Some(root.as_path()) {
+                return Err(anyhow!(
+                    "retained profile must be a disposable directory under this test environment"
+                ));
+            }
+            Ok(profile)
+        }
+
+        async fn blank_driver_for_profile(
+            &self,
+            retained_profile: Option<&std::path::Path>,
+            wait_for_page_load: bool,
+        ) -> Result<WebDriver> {
             let started = std::time::Instant::now();
             let safari = std::env::var("TONK_TEST_BROWSER").as_deref() == Ok("safari");
+            if safari && retained_profile.is_some() {
+                return Err(anyhow!("retained disposable profiles require Chrome"));
+            }
             let driver = if safari {
                 let mut caps = DesiredCapabilities::safari();
                 caps.accept_insecure_certs(true)?;
                 WebDriver::new(&self.chromedriver.to_string(), caps).await?
             } else {
-                let caps = self.chrome_capabilities()?;
+                let mut caps = self.chrome_capabilities(retained_profile)?;
+                if !wait_for_page_load {
+                    caps.set_page_load_strategy(PageLoadStrategy::None)?;
+                }
                 WebDriver::new(&self.chromedriver.to_string(), caps).await?
             };
             record_diagnostic(format!(
@@ -276,6 +345,21 @@ mod native {
                 .set_page_load_timeout(std::time::Duration::from_secs(60))
                 .await?;
             driver.goto("about:blank").await?;
+            if !wait_for_page_load {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                loop {
+                    if driver.current_url().await?.as_str() == "about:blank" {
+                        break;
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        driver.quit().await?;
+                        return Err(anyhow!(
+                            "profiling browser did not reach its blank document"
+                        ));
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                }
+            }
             #[cfg(test)]
             if !safari {
                 // Install before the first navigation so failures from the
@@ -400,13 +484,9 @@ mod native {
         Ok(driver_with_prf_authenticator(env).await?.0)
     }
 
-    /// Creates a WebDriver and returns the PRF-capable virtual authenticator's
-    /// id so tests can inspect credential side effects.
+    /// Installs the account tests' PRF authenticator on a caller-owned driver.
     #[cfg(test)]
-    pub(crate) async fn driver_with_prf_authenticator(
-        env: &TestEnvironment,
-    ) -> Result<(WebDriver, String)> {
-        let driver = env.driver().await?;
+    pub(crate) async fn add_prf_virtual_authenticator(driver: &WebDriver) -> Result<String> {
         let devtools = ChromeDevTools::new(driver.handle.clone());
         devtools.execute_cdp("WebAuthn.enable").await?;
         let authenticator = devtools
@@ -430,6 +510,17 @@ mod native {
             .as_str()
             .ok_or_else(|| anyhow!("Chrome omitted the virtual authenticator id"))?
             .to_string();
+        Ok(authenticator_id)
+    }
+
+    /// Creates a WebDriver and returns the PRF-capable virtual authenticator's
+    /// id so tests can inspect credential side effects.
+    #[cfg(test)]
+    pub(crate) async fn driver_with_prf_authenticator(
+        env: &TestEnvironment,
+    ) -> Result<(WebDriver, String)> {
+        let driver = env.driver().await?;
+        let authenticator_id = add_prf_virtual_authenticator(&driver).await?;
         // Polled from the test side: a single waiting script is bounded
         // by chromedriver's script timeout, which a cold machine still
         // compiling the app's wasm can outlast. Account tests navigate
@@ -600,6 +691,22 @@ mod native {
                     .to_str()
                     .ok_or_else(|| anyhow!("service-worker root is not valid UTF-8"))?,
             ]);
+            // Performance samples must serve the exact supplied release, never
+            // the artifact baked into a previously built test-server wrapper.
+            if let Some(artifact) = std::env::var_os("TONK_UI_RELEASE_ARTIFACT") {
+                let artifact = std::fs::canonicalize(artifact)?;
+                for member in [
+                    "index.html",
+                    "service_worker.js",
+                    "version.json",
+                    "asset-manifest.json",
+                ] {
+                    if !artifact.join(member).is_file() {
+                        return Err(anyhow!("release artifact is missing {member}"));
+                    }
+                }
+                test_server.env("TONK_UI_TEST_ARTIFACT", artifact);
+            }
             let mut web_server = ManagedChild::new(
                 test_server
                     // Pin Caddy's data dir so its per-run internal CA
@@ -934,8 +1041,8 @@ mod native {
                 Ok(std::path::PathBuf::from(argument))
             };
 
-            let first = profile_from(env.chrome_capabilities()?)?;
-            let second = profile_from(env.chrome_capabilities()?)?;
+            let first = profile_from(env.chrome_capabilities(None)?)?;
+            let second = profile_from(env.chrome_capabilities(None)?)?;
             assert_ne!(first, second);
             assert!(first.starts_with(&browser_profile_root));
             assert!(second.starts_with(&browser_profile_root));

@@ -39,13 +39,204 @@ use hyper::header::{
 use hyper::server::conn::http1;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use std::collections::HashMap;
-use std::sync::Arc;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeSet, HashMap};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 
 /// In-memory shortcut store: object key → (unix-seconds expiry, target).
 type Shortcuts = Arc<RwLock<HashMap<String, (u64, String)>>>;
+
+/// Test-only observation and shaping for repository permit requests.
+///
+/// Performance fixtures configure runtime repository subjects after setup, then
+/// read the events back without requiring any instrumentation in the release
+/// artifact under test. Configuration resets the event ledger so provisioning
+/// traffic cannot leak into a measured interval.
+#[derive(Default)]
+struct SyncProbe {
+    enabled: AtomicBool,
+    config: Mutex<SyncProbeConfig>,
+    events: Mutex<Vec<SyncProbeEvent>>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct SyncProbeConfig {
+    #[serde(default)]
+    delay_ms: u64,
+    #[serde(default)]
+    delayed_subjects: BTreeSet<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct SyncProbeEvent {
+    sequence: usize,
+    command: String,
+    subject: String,
+    delayed: bool,
+    delay_ms: u64,
+    observed_at_epoch_ms: u128,
+}
+
+impl SyncProbe {
+    fn configure(&self, config: SyncProbeConfig) -> Result<(), &'static str> {
+        if config.delay_ms > 5_000 {
+            return Err("delay_ms must be at most 5000");
+        }
+        if config.delayed_subjects.len() > 100 {
+            return Err("delayed_subjects must contain at most 100 subjects");
+        }
+        *self
+            .config
+            .lock()
+            .map_err(|_| "sync probe config poisoned")? = config;
+        self.events
+            .lock()
+            .map_err(|_| "sync probe event ledger poisoned")?
+            .clear();
+        self.enabled.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    fn record(&self, command: String, subject: String) -> Result<u64, &'static str> {
+        if !self.enabled.load(Ordering::Acquire) {
+            return Ok(0);
+        }
+        let config = self
+            .config
+            .lock()
+            .map_err(|_| "sync probe config poisoned")?
+            .clone();
+        let delayed = config.delayed_subjects.contains(&subject) && config.delay_ms > 0;
+        let delay_ms = if delayed { config.delay_ms } else { 0 };
+        let mut events = self
+            .events
+            .lock()
+            .map_err(|_| "sync probe event ledger poisoned")?;
+        let sequence = events.len() + 1;
+        events.push(SyncProbeEvent {
+            sequence,
+            command,
+            subject,
+            delayed,
+            delay_ms,
+            observed_at_epoch_ms: epoch_millis(),
+        });
+        Ok(delay_ms)
+    }
+
+    fn snapshot(&self) -> Result<serde_json::Value, &'static str> {
+        let config = self
+            .config
+            .lock()
+            .map_err(|_| "sync probe config poisoned")?
+            .clone();
+        let events = self
+            .events
+            .lock()
+            .map_err(|_| "sync probe event ledger poisoned")?
+            .clone();
+        Ok(serde_json::json!({
+            "config": config,
+            "event_count": events.len(),
+            "delayed_event_count": events.iter().filter(|event| event.delayed).count(),
+            "events": events,
+        }))
+    }
+}
+
+fn epoch_millis() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|time| time.as_millis())
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod sync_probe_tests {
+    use super::*;
+
+    fn subjects(values: &[&str]) -> BTreeSet<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    #[test]
+    fn unconfigured_probe_does_not_record_requests() {
+        let probe = SyncProbe::default();
+        assert_eq!(
+            probe.record("/resolve".into(), "subject".into()).unwrap(),
+            0
+        );
+        assert_eq!(probe.snapshot().unwrap()["event_count"], 0);
+        assert!(!probe.enabled.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn it_records_only_configured_subjects_as_delayed() {
+        let probe = SyncProbe::default();
+        probe
+            .configure(SyncProbeConfig {
+                delay_ms: 75,
+                delayed_subjects: subjects(&["did:key:idle"]),
+            })
+            .unwrap();
+
+        assert_eq!(
+            probe
+                .record("/resolve".to_owned(), "did:key:active".to_owned())
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            probe
+                .record("/resolve".to_owned(), "did:key:idle".to_owned())
+                .unwrap(),
+            75
+        );
+        let snapshot = probe.snapshot().unwrap();
+        assert_eq!(snapshot["event_count"], 2);
+        assert_eq!(snapshot["delayed_event_count"], 1);
+        assert_eq!(snapshot["events"][0]["sequence"], 1);
+        assert_eq!(snapshot["events"][0]["delayed"], false);
+        assert_eq!(snapshot["events"][1]["sequence"], 2);
+        assert_eq!(snapshot["events"][1]["delayed"], true);
+    }
+
+    #[test]
+    fn configuring_the_probe_resets_events_and_bounds_the_fixture() {
+        let probe = SyncProbe::default();
+        probe
+            .configure(SyncProbeConfig {
+                delay_ms: 10,
+                delayed_subjects: subjects(&["did:key:idle"]),
+            })
+            .unwrap();
+        probe
+            .record("/resolve".to_owned(), "did:key:idle".to_owned())
+            .unwrap();
+
+        probe.configure(SyncProbeConfig::default()).unwrap();
+        assert_eq!(probe.snapshot().unwrap()["event_count"], 0);
+        assert!(
+            probe
+                .configure(SyncProbeConfig {
+                    delay_ms: 5_001,
+                    delayed_subjects: BTreeSet::new(),
+                })
+                .is_err()
+        );
+        assert!(
+            probe
+                .configure(SyncProbeConfig {
+                    delay_ms: 0,
+                    delayed_subjects: (0..101).map(|index| format!("subject-{index}")).collect(),
+                })
+                .is_err()
+        );
+    }
+}
 
 /// A running UCAN access service test server instance.
 pub struct AccessServer {
@@ -85,6 +276,8 @@ struct RegistrationState {
     /// request, so the custody cell is written the way any other cell
     /// write is authorized.
     authorizer: Arc<tokio::sync::RwLock<ServerAuthorizer>>,
+    /// Test-only request observation and delay, disabled until configured.
+    sync_probe: SyncProbe,
     /// Signs the permits `/ucan/` answers with and verifies them at
     /// `/object/`, derived from `service_seed` as the worker derives it.
     permit_key: PermitKey,
@@ -230,6 +423,7 @@ impl AccessServer {
             purger,
             revocations,
             authorizer: authorizer.clone(),
+            sync_probe: SyncProbe::default(),
             permit_key,
             endpoint: endpoint.clone(),
             objects,
@@ -486,6 +680,49 @@ async fn handle_request(
                 .unwrap(),
         ));
     }
+    if req.method() == Method::GET && req.uri().path() == "/_test/sync-probe" {
+        let response = match registration.sync_probe.snapshot() {
+            Ok(snapshot) => Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "application/json")
+                .body(Full::new(Bytes::from(
+                    serde_json::to_vec_pretty(&snapshot).expect("sync probe snapshot serializes"),
+                )))
+                .unwrap(),
+            Err(message) => Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Full::new(Bytes::from(message)))
+                .unwrap(),
+        };
+        return Ok(cors_response(response));
+    }
+    if req.method() == Method::POST && req.uri().path() == "/_test/sync-probe" {
+        use http_body_util::BodyExt;
+
+        let config = req
+            .into_body()
+            .collect()
+            .await
+            .ok()
+            .and_then(|body| serde_json::from_slice::<SyncProbeConfig>(&body.to_bytes()).ok());
+        let response = match config {
+            Some(config) => match registration.sync_probe.configure(config) {
+                Ok(()) => Response::builder()
+                    .status(StatusCode::NO_CONTENT)
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+                Err(message) => Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(Full::new(Bytes::from(message)))
+                    .unwrap(),
+            },
+            None => Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .body(Full::new(Bytes::from("invalid sync probe configuration")))
+                .unwrap(),
+        };
+        return Ok(cors_response(response));
+    }
     // Lookup by email address. Mirrors the Worker handler, and is matched
     // before the probe below: that one strips `/customer/` and treats the
     // whole remainder as a DID, so it would otherwise swallow this path.
@@ -664,6 +901,27 @@ async fn handle_request(
     };
     if body_bytes.len() as u64 > MAX_BODY_BYTES {
         return Ok(cors_response(too_large_response()));
+    }
+
+    // Record and optionally shape only repository data-plane requests. Account
+    // registration/deletion commands are handled below and must not become
+    // performance-fixture traffic.
+    if registration.sync_probe.enabled.load(Ordering::Acquire)
+        && registration_command(&body_bytes).is_none()
+        && !crate::deletion::is_deletion(&body_bytes)
+        && !crate::deletion::is_purge(&body_bytes)
+        && !crate::revoke::is_revocation(&body_bytes)
+        && let Ok(chain) = dialog_ucan_core::InvocationChain::try_from(body_bytes.as_ref())
+        && let Some(subject) = crate::provisioning::container_subject(&body_bytes)
+    {
+        let command = format!("/{}", chain.command().0.join("/"));
+        match registration.sync_probe.record(command, subject) {
+            Ok(delay_ms) if delay_ms > 0 => {
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            }
+            Ok(_) => {}
+            Err(message) => eprintln!("sync probe could not record request: {message}"),
+        }
     }
 
     // Registration commands ride the same endpoint; anything else falls
