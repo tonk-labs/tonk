@@ -4629,7 +4629,10 @@ mod tests {
                     "the copy-link row never answered the click; it is showing {last:?}",
                 ));
             }
-            tokio::time::sleep(Duration::from_millis(250)).await;
+            // Tighter than the usual 250ms: `copied` reverts to `idle`
+            // after `COPIED_LINGER_MS`, so a slow poll could sample either
+            // side of the whole answer and read a resting row as a dead one.
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
 
@@ -5355,14 +5358,24 @@ mod tests {
             "the row must report what the click did, got {state:?}",
         );
 
-        // And a real invite came back. The url is overlay-only, so this
-        // reads the row the control settles its clipboard write from —
-        // the same one the person ends up holding.
-        let invite = await_share_link(&driver, &key).await?;
-        assert!(
-            invite.contains("#"),
-            "an invite carries its membership seed in the fragment, got {invite:?}",
-        );
+        // And a real invite came back.
+        //
+        // Which evidence says so depends on how far the copy got, because
+        // a SUCCESSFUL copy evicts the row: the control awaits the
+        // clipboard write's own promise and then drops the invite rather
+        // than leaving a url carrying a membership seed in a subscribable
+        // overlay. So `copied` is itself the proof, and reading the row
+        // afterwards would be racing the eviction. Only when the write did
+        // not land — the headless browser grants no clipboard permission
+        // on every platform — is the row still there to read, and then it
+        // is what proves the mint ran.
+        if state != "copied" {
+            let invite = await_share_link(&driver, &key).await?;
+            assert!(
+                invite.contains('#'),
+                "an invite carries its membership seed in the fragment, got {invite:?}",
+            );
+        }
 
         driver.quit().await?;
         Ok(())
