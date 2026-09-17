@@ -40,13 +40,24 @@ one per document. Inert until Alt goes down.
 
 | gesture | effect |
 | --- | --- |
-| Alt + hover a display | outline it |
-| rest there past 300ms | observation on: slots boxed and labelled |
+| Alt + hover a display | outline it, with a **pin** button above its top-left |
+| rest there past 300ms | observation on: slots and commands marked |
 | move to another display | dwell restarts there |
 | move off / release Alt | observation off |
-| Alt + click | pin the observation; survives Alt release and moving away |
-| Alt + click the pinned display | release it |
+| click the pin (Alt still held) | pin the observation; survives Alt release |
+| click it again | release it |
 | Escape | release everything |
+
+Pinning is a click on the overlay's own chrome, not a modifier-click on the
+page. A modifier-click would have to be swallowed — inspecting a button must
+never dispatch the command that button carries — and that takes the gesture
+away from every app for as long as the overlay is mounted. The pin costs the
+page nothing. `<tonk-introspect alt-click>` restores alt-click pinning for a
+page that wants it.
+
+Moving onto the overlay's own chrome does not count as moving off the display:
+pointer events that retarget to the overlay host are ignored by the machine,
+which is what makes reaching for the pin possible at all.
 
 Alt state is read off the *pointer* event, not remembered from a `keydown`. A
 sealed guest iframe that has never had focus receives no key events, but every
@@ -63,10 +74,35 @@ A `<tonk-display>` renders inside a sealed guest iframe, and a nested
 `<tonk-site>` opens more below it. Events do not cross those boundaries and
 neither does hit-testing, so each frame runs its own overlay over its own
 displays. That falls out correctly for hovering — the frame under the pointer
-is the frame that receives the pointer — but it means a panel drawn in a small
-nested frame is clipped by that frame. Hoisting panels to the top document
-needs the `__tonkRuntime` window-message relay that the theme and press signals
-already cascade through (`tonk-portal/src/bridge.rs`).
+is the frame that receives the pointer — and it means a panel drawn in a nested
+frame is clipped by that frame. Accepted: sites run full screen, so the clip is
+the viewport. If that stops being true, hoisting panels to the top document
+would go through the `__tonkRuntime` window-message relay the theme and press
+signals already cascade through (`tonk-portal/src/bridge.rs`).
+
+## Marking something with no extent
+
+A slot that rendered an empty string has nothing to box, and that is exactly
+the case an author most wants to see. So a marker is not always a box:
+
+- **Extent** — the slot rendered glyphs. Box them.
+- **Point** — the slot is empty. Tick the caret position it would have
+  occupied: the trailing edge of the previous sibling, else the leading edge
+  of the next, else the parent's content corner. `<p>Hello {name}</p>` with
+  `name` absent ticks immediately after `Hello `, which answers "it would be
+  here" rather than "it is missing somewhere".
+- **Edge** — the slot wrote an element property (`with="main@{repo}"`,
+  `html:hidden={x}`). Tick the element's top edge instead of filling it: the
+  element is where the value went, but the element is not the value, and a
+  filled box says otherwise.
+
+Every marker carries a label badge whatever its placement, so an empty slot is
+still named. Badges that would collide are pushed down and joined to their
+anchor by a dashed leader. Badge width is arithmetic off the label length
+(monospace at 11px), not a layout read, so the collision pass never forces a
+reflow.
+
+At most 160 markers are painted at once; the readout says when that bit.
 
 ## Cost when closed
 
@@ -82,18 +118,25 @@ else runs, no rAF loop is scheduled, and no snapshot is built.
       the concept, facet, mode, subject count, slot count, and the two
       mismatches worth seeing — concept fields no slot renders, and template
       fields the concept does not declare.
-- [ ] **2. Observe commands.** Indicators on every element carrying an
-      `on<event>`/`on:<name>` binding, labelled with the command it posts and
-      the event that triggers it, bouncing when one actually dispatches. The
-      DOM half is readable from `data-on<event>`; the event type behind the
-      `on:` form lives on the resolved declaration in `events::delegate`'s
-      `EventTable`, which needs surfacing. Dispatch hooks into
-      `delegate::handle_event` where a binding wins.
+- [x] **2. Observe commands.** Every element carrying an `on<event>` or
+      `on:<name>` binding is outlined and labelled `click -> space/create`, and
+      bounces when it actually posts. The older form carries its trigger in the
+      attribute name; the newer one names a declaration, and only the
+      `EventTable` says which platform event that declaration reads — so
+      `Delegate` now retains its table. A binding whose declaration did not
+      resolve is drawn **inert** rather than hidden: it installs no listener
+      and will never fire, which was previously invisible. The bounce is raised
+      at the two points the winning binding is known
+      (`delegate::try_binding`, `binding::resolve_binding`), because dispatch
+      walks up until a binding resolves and the element that posted is not
+      always the one clicked.
 - [ ] **3. Concept panel.** The matched concept's fields and the observed
       subject's values, read-only; hovering a row highlights the slots that
-      read it (`Slot::reads` is already there for this). In directory mode the
-      panel is per-row — the repeat already stamps `with=<this>` on each row,
-      so the row under the pointer is identifiable.
+      read it (`Slot::reads` is already there for this), and hovering a slot
+      badge highlights the row. Lists every slot including the empty ones,
+      which is the complete answer the Point marker only gestures at. In
+      directory mode the panel is per-row — the repeat already stamps
+      `with=<this>` on each row, so the row under the pointer is identifiable.
 - [ ] **4. View panel.** The template source the slide mounted
       (`Slide::display`), read-only, with the slot under the pointer located
       in it.
@@ -106,17 +149,17 @@ else runs, no rAF loop is scheduled, and no snapshot is built.
 
 ## Known limits
 
-- **An attribute slot has no region.** `with="main@{repo}"`, `html:hidden={x}`
-  — there is nothing on screen to box. It borrows its element's rect, which is
-  the closest honest answer, and the detail belongs in a panel.
-- **A slot that rendered an empty string has no box** — a `Range` over an empty
-  text node measures zero. It is hidden rather than drawn as a hairline, which
-  means "the field is missing" looks the same as "the field is not there",
-  exactly the case an author most wants to see. The readout's *unrendered*
-  and *not on the concept* lines are the partial answer; a panel listing every
-  slot including the empty ones is the real one (step 3).
-- **Alt+click is taken** for as long as the overlay is mounted. Only while a
-  display is under the pointer, but an app that wants alt-click loses it there.
+- **A caret position is a guess in the hard cases.** The sibling-edge walk
+  covers `Hello {name}` and `{name} trailing`, but a slot alone in an empty
+  block falls back to the parent's corner, which is the right area and not the
+  right spot. A panel listing every slot (step 3) is the complete answer.
+- **Badge collision is resolved by pushing down only.** Dense layouts still
+  produce a stack of badges to one side of the thing they name, joined by
+  leaders. Legible, not pretty.
 - **The snapshot is rebuilt every 30 frames** while observing, so a row
   appearing shows up within half a second rather than immediately. Positions
-  are recomputed every frame.
+  are recomputed every frame. Slot *values* also only refresh on that cadence,
+  which does not matter yet because nothing displays them — step 3 will need it
+  tightened.
+- **Command enumeration walks every element** under the display on each
+  rebuild. Painting is bounded by the marker cap; the walk is not.

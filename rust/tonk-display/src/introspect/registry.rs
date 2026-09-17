@@ -23,6 +23,7 @@ use std::rc::{Rc, Weak};
 
 use web_sys::{Element, Node};
 
+use super::command::Command;
 use super::slot::{Slot, Snapshot};
 
 /// What a `<tonk-display>` can say about itself: everything in a
@@ -32,6 +33,13 @@ pub trait DisplayFacts {
     /// display currently has resolved. `host` is the element itself,
     /// for the attributes the author wrote on it.
     fn facts(&self, host: &Element) -> Snapshot;
+
+    /// Every interaction the rendered markup binds, paired with the
+    /// element that binds it. The display owns this rather than the
+    /// view because only it holds the resolved event declarations —
+    /// an `on:<name>` attribute names a declaration, and only the
+    /// table says which platform event that declaration reads.
+    fn commands(&self, host: &Element) -> Vec<(Command, Element)>;
 }
 
 /// What a `<tonk-view>` can say about itself: the slots its renderer
@@ -55,6 +63,9 @@ thread_local! {
     /// Nodes whose slot value changed since the overlay last drained
     /// this. Only filled while [`armed`].
     static CHANGES: RefCell<Vec<Node>> = const { RefCell::new(Vec::new()) };
+    /// Elements that posted a command since the last drain, with the
+    /// command they posted. Only filled while [`armed`].
+    static DISPATCHES: RefCell<Vec<(Element, String)>> = const { RefCell::new(Vec::new()) };
     static DISPLAYS: RefCell<Vec<Entry<dyn DisplayFacts>>> =
         const { RefCell::new(Vec::new()) };
     static VIEWS: RefCell<Vec<Entry<dyn ViewFacts>>> = const { RefCell::new(Vec::new()) };
@@ -78,6 +89,7 @@ pub fn set_armed(on: bool) {
     ARMED.with(|armed| armed.set(on));
     if !on {
         CHANGES.with(|changes| changes.borrow_mut().clear());
+        DISPATCHES.with(|dispatches| dispatches.borrow_mut().clear());
     }
 }
 
@@ -95,6 +107,24 @@ pub fn note_change(node: &Node) {
 /// Take every change recorded since the last drain.
 pub fn drain_changes() -> Vec<Node> {
     CHANGES.with(|changes| std::mem::take(&mut *changes.borrow_mut()))
+}
+
+/// Record that `bound` posted `command`. Called from the dispatch
+/// path at the point the winning binding is known — which is not
+/// always the element that was clicked, since dispatch walks up until
+/// a binding resolves. Already behind an [`armed`] check.
+pub fn note_dispatch(bound: &Element, command: &str) {
+    DISPATCHES.with(|dispatches| {
+        let mut dispatches = dispatches.borrow_mut();
+        if dispatches.len() < CHANGE_CAP {
+            dispatches.push((bound.clone(), command.to_owned()));
+        }
+    });
+}
+
+/// Take every dispatch recorded since the last drain.
+pub fn drain_dispatches() -> Vec<(Element, String)> {
+    DISPATCHES.with(|dispatches| std::mem::take(&mut *dispatches.borrow_mut()))
 }
 
 /// Register a `<tonk-display>`'s state against its host element.
@@ -160,6 +190,27 @@ pub fn slots_under(host: &Element) -> Vec<(Slot, Option<Node>)> {
         }
     });
     out
+}
+
+/// The interactions bound inside `host`, paired with their elements.
+pub fn commands_under(host: &Element) -> Vec<(Command, Element)> {
+    DISPLAYS.with(|displays| {
+        let mut displays = displays.borrow_mut();
+        prune(&mut displays);
+        let Some(entry) = displays
+            .iter()
+            .find(|entry| entry.host.is_same_node(Some(host.as_ref())))
+        else {
+            return Vec::new();
+        };
+        let Some(state) = entry.state.upgrade() else {
+            return Vec::new();
+        };
+        let Ok(state) = state.try_borrow() else {
+            return Vec::new();
+        };
+        state.commands(host)
+    })
 }
 
 /// Whether `display` is the nearest `<tonk-display>` above `view`.

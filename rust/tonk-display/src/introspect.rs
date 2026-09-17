@@ -37,6 +37,7 @@
 //! need the `__tonkRuntime` message relay the theme and press signals
 //! already use.
 
+pub mod command;
 pub mod mode;
 pub mod slot;
 
@@ -48,4 +49,4 @@ pub mod registry;
 #[cfg(target_arch = "wasm32")]
 pub use overlay::register;
 #[cfg(target_arch = "wasm32")]
-pub use registry::{armed, note_change};
+pub use registry::{armed, note_change, note_dispatch};

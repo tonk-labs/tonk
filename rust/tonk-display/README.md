@@ -73,17 +73,33 @@ In both modes the query engine emits one flat row per tuple, so cardinality-many
 
 `tonk_display::register()` also registers and mounts `<tonk-introspect>`, an
 overlay that makes this pipeline visible at the point of use. Hold Alt and the
-display under the pointer outlines; rest there for 300ms and observation
-switches on, boxing every slot the template filled and labelling it with the
-field that fed it. A value that changes while observation is on flashes where
-it landed. Alt-click pins the observation so you can move the pointer away;
-alt-click again to release it, or Escape.
+display under the pointer outlines, with a **pin** button above its corner;
+rest there for 300ms and observation switches on. Click the pin (Alt still
+held) to keep the observation while the pointer goes elsewhere; click it again,
+or press Escape, to release.
 
-Slot colour is the field's origin: a concept field, `{this}`, a
-`{dom.host/*}` host attribute, or an iteration key. The corner readout names
-the concept, the facet, the mode, the subject and slot counts, and the two
-mismatches worth seeing — fields the concept declares that no slot renders,
-and fields a slot reads that the concept does not declare.
+Observation marks two things:
+
+- **Slots** — every interpolation the template filled, labelled with the field
+  that fed it and coloured by where that field came from: a concept field,
+  `{this}`, a `{dom.host/*}` host attribute, or an iteration key. A value that
+  changes flashes where it landed.
+- **Commands** — every element binding an `on<event>` or `on:<name>`
+  interaction, labelled `click -> space/create`, bouncing when it actually
+  posts. A binding whose event declaration did not resolve is drawn *inert*: it
+  installs no listener and will never fire, which is otherwise invisible.
+
+A marker is not always a box. A slot that rendered an empty string has nothing
+to box, so it ticks the caret position the value would have occupied. A slot
+that wrote an element property ticks that element's top edge rather than
+filling it — the element is where the value went, but the element is not the
+value. Every marker carries its label whatever its placement, and badges that
+would collide are pushed down and joined to their anchor by a leader.
+
+The corner readout names the concept, the facet, the mode, the subject, slot
+and command counts, and the two mismatches worth seeing — fields the concept
+declares that no slot renders, and fields a slot reads that the concept does
+not declare.
 
 The overlay reads the renderer's binding plan and value cache rather than the
 rendered DOM, because the DOM cannot answer the question: a rendered
@@ -91,11 +107,13 @@ rendered DOM, because the DOM cannot answer the question: a rendered
 as a JS property left no attribute behind at all.
 
 It is inert until Alt goes down — one `mousemove` listener that reads `altKey`
-and returns, plus a bool read on the renderer's change path. Remove the
-`<tonk-introspect>` element to opt out entirely.
+and returns, plus a bool read on the renderer's change path. It takes no
+gesture from the page: pinning is a click on its own chrome, not a
+modifier-click on your markup. `<tonk-introspect alt-click>` restores
+alt-click pinning if you want it. Remove the element to opt out entirely.
 
 See `/plan/display-introspection.md` for the design and the steps still open
-(command indicators, the concept and view panels, editing).
+(the concept and view panels, editing).
 
 ## Modules
 

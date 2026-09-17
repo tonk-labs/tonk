@@ -13,6 +13,41 @@
 //! been clicked, which is the common case for a page of sealed views.
 //! `keyup` is still listened for, as the one way to notice Alt going
 //! up while the pointer sits perfectly still.
+//!
+//! ## Pinning without taking a gesture
+//!
+//! Observation is pinned by clicking the overlay's own pin affordance,
+//! not by a modifier-click on the page. A modifier-click would have to
+//! be swallowed — inspecting a button must never dispatch the command
+//! that button carries — and that means taking the gesture away from
+//! every app for as long as the overlay is mounted. The pin is overlay
+//! chrome with `pointer-events: auto`, so it costs the page nothing.
+//! `<tonk-introspect alt-click>` restores alt-click pinning for a page
+//! that wants it and knows what it is giving up.
+//!
+//! Moving the pointer onto the overlay's own chrome does not count as
+//! moving off the display: the machine ignores pointer events whose
+//! target retargets to the overlay host, which is what makes reaching
+//! for the pin possible at all.
+//!
+//! ## Marking something with no extent
+//!
+//! A slot that rendered an empty string has nothing to box, and that
+//! is exactly the case an author most wants to see. So a marker is not
+//! always a box:
+//!
+//! - **Extent** — the slot rendered glyphs. Box them.
+//! - **Point** — the slot is empty. Find the caret position it would
+//!   have occupied (the trailing edge of the previous sibling, the
+//!   leading edge of the next, or the parent's content corner) and
+//!   draw a tick there.
+//! - **Edge** — the slot wrote a property of an element rather than
+//!   text. Tick the element's top edge instead of filling it: the
+//!   element is where the value went, but the element is not the value.
+//!
+//! Every marker carries a label badge whatever its placement, so an
+//! empty slot is still named. Badges that would collide are pushed
+//! down and joined to their anchor by a leader line.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -26,18 +61,39 @@ use web_sys::{
     window,
 };
 
+use super::command::Command;
 use super::mode::{Input, Machine, TargetId};
 use super::registry;
 use super::slot::{Origin, Slot, SlotKind};
 
-/// How long a change flash stays up.
+/// How long a change flash or a dispatch bounce stays up.
 const FLASH_MS: i32 = 700;
 
 /// How often the snapshot is rebuilt while observing, in frames.
 /// Positions are recomputed every frame regardless — this is only
-/// about re-asking the renderer what its slots are, which catches
-/// rows appearing and vanishing.
+/// about re-asking the renderer what its slots are, which catches rows
+/// appearing and vanishing.
 const RESNAPSHOT_FRAMES: u32 = 30;
+
+/// The most markers painted at once. A directory of a few hundred rows
+/// would otherwise put thousands of elements on the layer and make the
+/// frame budget the thing being debugged. The readout says when this
+/// bit.
+const MARKER_CAP: usize = 160;
+
+/// Badge geometry, in CSS pixels. The font is monospace at 11px, so a
+/// label's width is arithmetic rather than a layout read — which keeps
+/// the collision pass off the critical path.
+const BADGE_HEIGHT: f64 = 13.0;
+const BADGE_CHAR: f64 = 6.2;
+const BADGE_PADDING: f64 = 6.0;
+
+/// The element name, in one place.
+const NAME: &str = "tonk-introspect";
+
+/// Set this attribute on the element to restore alt-click pinning. Off
+/// by default: see the note on pinning above.
+const ALT_CLICK: &str = "alt-click";
 
 /// The element.
 #[derive(Default)]
@@ -46,10 +102,11 @@ pub struct TonkIntrospect {
     listeners: RefCell<Vec<Bound>>,
 }
 
-/// A document listener plus the closure owning its JS memory.
+/// A listener plus the closure owning its JS memory.
 struct Bound {
     target: web_sys::EventTarget,
     event: String,
+    capture: bool,
     closure: Closure<dyn FnMut(Event)>,
 }
 
@@ -58,23 +115,28 @@ impl Drop for Bound {
         let _ = self.target.remove_event_listener_with_callback_and_bool(
             &self.event,
             self.closure.as_ref().unchecked_ref(),
-            true,
+            self.capture,
         );
     }
 }
 
 /// Everything painted, and the state deciding what to paint.
 struct Overlay {
-    /// The fixed-position layer every box lives in, inside the
+    /// The overlay's own host element, so a pointer event that
+    /// retargets to it can be told apart from one on the page.
+    host: Element,
+    /// The fixed-position layer every marker lives in, inside the
     /// element's shadow root so page CSS cannot reach it.
     layer: Element,
     /// The outline around the tracked display.
     outline: Element,
-    /// The corner readout: concept, facet, subject and slot counts.
+    /// The pin affordance. The one thing on the layer that takes
+    /// pointer events.
+    pin: Element,
+    /// The corner readout.
     hud: Element,
     machine: Machine,
-    /// Displays seen so far, indexed by [`TargetId`]. Only grows
-    /// while Alt is held over new displays.
+    /// Displays seen so far, indexed by [`TargetId`].
     targets: Vec<Element>,
     /// What is currently painted.
     painted: Option<Painted>,
@@ -87,21 +149,73 @@ struct Overlay {
     /// Whether anything is currently drawn. Together with the
     /// machine's phase this is what keeps an idle pointer free: a
     /// `mousemove` with Alt up over a page that has nothing painted
-    /// asks for no frame at all, so it costs the `altKey` read and
-    /// nothing else.
+    /// asks for no frame at all.
     painting: bool,
 }
 
 /// The painted state for one observed display.
 struct Painted {
     target: TargetId,
-    /// One box per slot, with the node it tracks. The `Slot` is kept
-    /// so a rebuild can tell whether anything actually changed shape.
-    boxes: Vec<(Element, Node, Slot)>,
-    /// A cheap fingerprint of the slot set, so an unchanged snapshot
-    /// reuses its boxes and keeps their identity (and any running
-    /// animation) intact.
+    slots: Vec<Marker>,
+    commands: Vec<Marker>,
+    /// A fingerprint of what was described, so an unchanged snapshot
+    /// reuses its markers and keeps their identity intact.
     signature: String,
+}
+
+/// One painted marker: the tick or box on the thing, the badge naming
+/// it, and the leader joining them when the badge had to move.
+struct Marker {
+    mark: Element,
+    badge: Element,
+    leader: Element,
+    /// What the marker tracks. A slot tracks the node it wrote into; a
+    /// command tracks the element that binds it.
+    anchor: Node,
+    /// How to place it, decided by what it is.
+    style: MarkerStyle,
+    /// The badge text, fixed at build time.
+    label: String,
+}
+
+/// What kind of thing a marker is tracking.
+enum MarkerStyle {
+    /// A text slot: box its glyphs, or tick its caret when empty.
+    Text,
+    /// A slot that wrote an element property: tick the element's edge.
+    Property,
+    /// A bound interaction: outline the element that binds it.
+    Interaction,
+}
+
+/// Where a marker goes this frame.
+enum Placement {
+    /// Box a region.
+    Extent {
+        left: f64,
+        top: f64,
+        width: f64,
+        height: f64,
+    },
+    /// Tick a caret position — something with no extent of its own.
+    Point { left: f64, top: f64, height: f64 },
+    /// Tick an element's top edge.
+    Edge { left: f64, top: f64, width: f64 },
+    /// Nothing on screen.
+    Offscreen,
+}
+
+impl Placement {
+    /// Where the badge wants to sit, and where its leader would start.
+    fn anchor(&self) -> Option<(f64, f64)> {
+        match *self {
+            Placement::Extent { left, top, .. } | Placement::Point { left, top, .. } => {
+                Some((left, top))
+            }
+            Placement::Edge { left, top, .. } => Some((left, top)),
+            Placement::Offscreen => None,
+        }
+    }
 }
 
 impl CustomElement for TonkIntrospect {
@@ -174,9 +288,6 @@ pub fn register() {
     }
 }
 
-/// The element name, in one place.
-const NAME: &str = "tonk-introspect";
-
 impl Overlay {
     fn build(host: &Element, document: &Document) -> Option<Self> {
         let root = host.shadow_root().or_else(|| {
@@ -187,20 +298,21 @@ impl Overlay {
         style.set_text_content(Some(CSS));
         let _ = root.append_child(&style);
 
-        let layer = document.create_element("div").ok()?;
-        let _ = layer.set_attribute("part", "layer");
-        let _ = layer.set_attribute("class", "layer");
-        let outline = document.create_element("div").ok()?;
-        let _ = outline.set_attribute("class", "outline");
-        let hud = document.create_element("div").ok()?;
-        let _ = hud.set_attribute("class", "hud");
+        let layer = element(document, "div", "layer")?;
+        let outline = element(document, "div", "outline")?;
+        let pin = element(document, "button", "pin")?;
+        pin.set_text_content(Some("pin"));
+        let hud = element(document, "div", "hud")?;
         let _ = layer.append_child(&outline);
+        let _ = layer.append_child(&pin);
         let _ = layer.append_child(&hud);
         let _ = root.append_child(&layer);
 
         Some(Self {
+            host: host.clone(),
             layer,
             outline,
+            pin,
             hud,
             machine: Machine::default(),
             targets: Vec::new(),
@@ -210,6 +322,11 @@ impl Overlay {
             age: 0,
             painting: false,
         })
+    }
+
+    /// Whether this page asked for alt-click pinning as well.
+    fn alt_click_pins(&self) -> bool {
+        self.host.has_attribute(ALT_CLICK)
     }
 
     /// The id for `host`, assigning one if this is the first sighting.
@@ -236,13 +353,14 @@ impl Overlay {
         }
         self.painting = false;
         self.drop_painted();
+        hide(&self.outline);
+        hide(&self.pin);
+        hide(&self.hud);
+        registry::set_armed(false);
         // Nothing holds a `TargetId` now, so the table can be
         // renumbered: drop the displays that have since detached
         // rather than keep their subtrees alive for the session.
         self.targets.retain(|target| target.is_connected());
-        let _ = self.outline.set_attribute("style", "display:none");
-        let _ = self.hud.set_attribute("style", "display:none");
-        registry::set_armed(false);
         if let Some(handle) = self.frame.take()
             && let Some(win) = window()
         {
@@ -252,45 +370,62 @@ impl Overlay {
 
     fn drop_painted(&mut self) {
         if let Some(painted) = self.painted.take() {
-            for (element, _, _) in painted.boxes {
-                element.remove();
+            for marker in painted.slots.into_iter().chain(painted.commands) {
+                marker.mark.remove();
+                marker.badge.remove();
+                marker.leader.remove();
             }
         }
     }
 }
 
-/// A slot set's fingerprint: enough to notice a row appearing, a
-/// binding changing shape, or the observed display swapping template.
-fn signature(slots: &[(Slot, Option<Node>)]) -> String {
-    let mut out = String::new();
-    for (slot, _) in slots {
-        out.push_str(&slot.label());
-        out.push('\u{1f}');
-    }
-    out
+fn element(document: &Document, tag: &str, class: &str) -> Option<Element> {
+    let element = document.create_element(tag).ok()?;
+    let _ = element.set_attribute("class", class);
+    Some(element)
+}
+
+fn hide(element: &Element) {
+    let _ = element.set_attribute("style", "display:none");
 }
 
 fn install_listeners(document: &Document, overlay: &Rc<RefCell<Overlay>>) -> Vec<Bound> {
     let mut bound = Vec::new();
     let target: web_sys::EventTarget = document.clone().into();
 
-    bound.push(listen(&target, "mousemove", overlay, |overlay, event| {
-        let Some(mouse) = event.dyn_ref::<MouseEvent>() else {
-            return;
-        };
-        let over = display_under(mouse).map(|host| overlay.borrow_mut().target_of(&host));
-        let input = Input::Pointer {
-            alt: mouse.alt_key(),
-            over,
-            at: js_sys::Date::now(),
-        };
-        overlay.borrow_mut().machine.apply(input);
-    }));
+    bound.push(listen(
+        &target,
+        "mousemove",
+        true,
+        overlay,
+        |overlay, event| {
+            let Some(mouse) = event.dyn_ref::<MouseEvent>() else {
+                return;
+            };
+            // Reaching for the overlay's own chrome is not leaving the
+            // display. Without this the outline vanishes the moment the
+            // pointer crosses onto the pin.
+            if on_overlay(overlay, event) {
+                return;
+            }
+            let over = display_under(mouse).map(|host| overlay.borrow_mut().target_of(&host));
+            let input = Input::Pointer {
+                alt: mouse.alt_key(),
+                over,
+                at: js_sys::Date::now(),
+            };
+            overlay.borrow_mut().machine.apply(input);
+        },
+    ));
 
-    // Alt-click pins the observation. Swallowed in the capture phase
-    // so the view's own click handler does not also fire — inspecting
-    // a button must never dispatch the command that button carries.
-    bound.push(listen(&target, "click", overlay, |overlay, event| {
+    // Alt-click pinning, only for a page that asked for it. It has to
+    // be swallowed in the capture phase — inspecting a button must
+    // never dispatch the command that button carries — which is
+    // precisely why it is not the default.
+    bound.push(listen(&target, "click", true, overlay, |overlay, event| {
+        if !overlay.borrow().alt_click_pins() {
+            return;
+        }
         let Some(mouse) = event.dyn_ref::<MouseEvent>() else {
             return;
         };
@@ -306,7 +441,7 @@ fn install_listeners(document: &Document, overlay: &Rc<RefCell<Overlay>>) -> Vec
         overlay.borrow_mut().machine.apply(Input::Toggle { over });
     }));
 
-    bound.push(listen(&target, "keyup", overlay, |overlay, event| {
+    bound.push(listen(&target, "keyup", true, overlay, |overlay, event| {
         let Some(key) = event.dyn_ref::<KeyboardEvent>() else {
             return;
         };
@@ -315,21 +450,55 @@ fn install_listeners(document: &Document, overlay: &Rc<RefCell<Overlay>>) -> Vec
         }
     }));
 
-    bound.push(listen(&target, "keydown", overlay, |overlay, event| {
-        let Some(key) = event.dyn_ref::<KeyboardEvent>() else {
-            return;
-        };
-        if key.key() == "Escape" {
-            overlay.borrow_mut().machine.apply(Input::Clear);
-        }
-    }));
+    bound.push(listen(
+        &target,
+        "keydown",
+        true,
+        overlay,
+        |overlay, event| {
+            let Some(key) = event.dyn_ref::<KeyboardEvent>() else {
+                return;
+            };
+            if key.key() == "Escape" {
+                overlay.borrow_mut().machine.apply(Input::Clear);
+            }
+        },
+    ));
+
+    // The pin itself. Bubble phase on the button, so nothing on the
+    // page is involved at all.
+    let pin = overlay.borrow().pin.clone();
+    bound.push(listen(
+        pin.as_ref(),
+        "click",
+        false,
+        overlay,
+        |overlay, event| {
+            event.stop_propagation();
+            let over = overlay.borrow().machine.highlighted();
+            if let Some(over) = over {
+                overlay.borrow_mut().machine.apply(Input::Toggle { over });
+            }
+        },
+    ));
 
     bound
+}
+
+/// Whether an event landed on the overlay's own chrome. Shadow content
+/// retargets to the host, so comparing against the host covers the pin
+/// and everything else on the layer.
+fn on_overlay(overlay: &Rc<RefCell<Overlay>>, event: &Event) -> bool {
+    let Some(target) = event.target().and_then(|t| t.dyn_into::<Node>().ok()) else {
+        return false;
+    };
+    target.is_same_node(Some(overlay.borrow().host.as_ref()))
 }
 
 fn listen(
     target: &web_sys::EventTarget,
     event: &str,
+    capture: bool,
     overlay: &Rc<RefCell<Overlay>>,
     handler: impl Fn(&Rc<RefCell<Overlay>>, &Event) + 'static,
 ) -> Bound {
@@ -341,18 +510,19 @@ fn listen(
     let _ = target.add_event_listener_with_callback_and_bool(
         event,
         closure.as_ref().unchecked_ref(),
-        true,
+        capture,
     );
     Bound {
         target: target.clone(),
         event: event.to_owned(),
+        capture,
         closure,
     }
 }
 
-/// The `<tonk-display>` under a pointer event, if any. `closest`
-/// gives the innermost one, which is the right answer: a display
-/// nested inside another's template is its own thing to inspect.
+/// The `<tonk-display>` under a pointer event, if any. `closest` gives
+/// the innermost one, which is the right answer: a display nested
+/// inside another's template is its own thing to inspect.
 fn display_under(event: &MouseEvent) -> Option<Element> {
     event
         .target()
@@ -416,25 +586,27 @@ fn paint(overlay: &Rc<RefCell<Overlay>>) {
     }
     overlay.borrow_mut().painting = true;
 
-    paint_outline(overlay, highlighted);
+    paint_frame(overlay, highlighted);
     match observed {
         Some(target) => paint_observation(overlay, target),
         None => {
             overlay.borrow_mut().drop_painted();
-            let _ = overlay.borrow().hud.set_attribute("style", "display:none");
+            hide(&overlay.borrow().hud);
         }
     }
 
     // Keep the loop alive while anything is tracked: positions follow
-    // scrolling and layout, and a latched observation has no pointer
+    // scrolling and layout, and a pinned observation has no pointer
     // events to drive it.
     schedule(overlay);
 }
 
-fn paint_outline(overlay: &Rc<RefCell<Overlay>>, target: Option<TargetId>) {
+/// The outline around the tracked display, and the pin hanging off it.
+fn paint_frame(overlay: &Rc<RefCell<Overlay>>, target: Option<TargetId>) {
     let state = overlay.borrow();
     let Some(element) = target.and_then(|target| state.element(target)) else {
-        let _ = state.outline.set_attribute("style", "display:none");
+        hide(&state.outline);
+        hide(&state.pin);
         return;
     };
     let rect = element.get_bounding_client_rect();
@@ -452,6 +624,24 @@ fn paint_outline(overlay: &Rc<RefCell<Overlay>>, target: Option<TargetId>) {
     let _ = state
         .outline
         .set_attribute("class", if latched { "outline pinned" } else { "outline" });
+
+    // The pin sits above the outline's top-left, or just inside when
+    // the display is against the top of the viewport.
+    let top = if rect.top() >= BADGE_HEIGHT + 2.0 {
+        rect.top() - BADGE_HEIGHT - 2.0
+    } else {
+        rect.top() + 2.0
+    };
+    state
+        .pin
+        .set_text_content(Some(if latched { "pinned" } else { "pin" }));
+    let _ = state
+        .pin
+        .set_attribute("class", if latched { "pin pinned" } else { "pin" });
+    let _ = state.pin.set_attribute(
+        "style",
+        &format!("display:block;left:{}px;top:{top}px", rect.left()),
+    );
 }
 
 fn paint_observation(overlay: &Rc<RefCell<Overlay>>, target: TargetId) {
@@ -480,14 +670,16 @@ fn paint_observation(overlay: &Rc<RefCell<Overlay>>, target: TargetId) {
 
     reposition(overlay);
     flash_changes(overlay);
+    bounce_dispatches(overlay);
 }
 
-/// Re-ask the renderer for its slots and rebuild the boxes if the set
-/// has actually changed shape.
+/// Re-ask the display and its renderer what is there, and rebuild the
+/// markers if the set has actually changed shape.
 fn rebuild(overlay: &Rc<RefCell<Overlay>>, target: TargetId, host: &Element) {
     let slots = registry::slots_under(host);
+    let commands = registry::commands_under(host);
     let facts = registry::display_facts(host);
-    let signature = signature(&slots);
+    let signature = signature(&slots, &commands);
 
     {
         let mut state = overlay.borrow_mut();
@@ -504,42 +696,117 @@ fn rebuild(overlay: &Rc<RefCell<Overlay>>, target: TargetId, host: &Element) {
     let Some(document) = window().and_then(|w| w.document()) else {
         return;
     };
+    let layer = overlay.borrow().layer.clone();
 
-    let mut boxes = Vec::new();
+    let mut budget = MARKER_CAP;
+    let mut slot_markers = Vec::new();
     for (slot, node) in slots {
+        if budget == 0 {
+            break;
+        }
         let Some(node) = node else {
             continue;
         };
-        let Ok(element) = document.create_element("div") else {
-            continue;
+        let style = match slot.kind {
+            SlotKind::Text => MarkerStyle::Text,
+            SlotKind::Attribute { .. } => MarkerStyle::Property,
         };
-        let _ = element.set_attribute("class", &format!("slot {}", origin_class(slot.origin)));
-        let label = document.create_element("span");
-        if let Ok(label) = label {
-            let _ = label.set_attribute("class", "tag");
-            label.set_text_content(Some(&slot.label()));
-            let _ = element.append_child(&label);
+        let classes = format!("mark slot {}", origin_class(slot.origin));
+        if let Some(marker) = build_marker(&document, &layer, &classes, slot.label(), node, style) {
+            slot_markers.push(marker);
+            budget -= 1;
         }
-        let _ = overlay.borrow().layer.append_child(&element);
-        boxes.push((element, node, slot));
     }
 
+    let mut command_markers = Vec::new();
+    for (command, element) in commands {
+        if budget == 0 {
+            break;
+        }
+        let classes = if command.is_live() {
+            "mark command".to_owned()
+        } else {
+            "mark command inert".to_owned()
+        };
+        if let Some(marker) = build_marker(
+            &document,
+            &layer,
+            &classes,
+            command.label(),
+            element.into(),
+            MarkerStyle::Interaction,
+        ) {
+            command_markers.push(marker);
+            budget -= 1;
+        }
+    }
+
+    let truncated = budget == 0;
     let mut state = overlay.borrow_mut();
     state.drop_painted();
-    let count = boxes.len();
+    let counts = (slot_markers.len(), command_markers.len());
     state.painted = Some(Painted {
         target,
-        boxes,
+        slots: slot_markers,
+        commands: command_markers,
         signature,
     });
-    write_hud(&state.hud, facts.as_ref(), count);
+    write_hud(&state.hud, facts.as_ref(), counts, truncated);
 }
 
-fn write_hud(hud: &Element, facts: Option<&super::slot::Snapshot>, slots: usize) {
+fn build_marker(
+    document: &Document,
+    layer: &Element,
+    classes: &str,
+    label: String,
+    anchor: Node,
+    style: MarkerStyle,
+) -> Option<Marker> {
+    let mark = element(document, "div", classes)?;
+    let badge = element(document, "div", &classes.replace("mark", "badge"))?;
+    badge.set_text_content(Some(&label));
+    let leader = element(document, "div", &classes.replace("mark", "leader"))?;
+    let _ = layer.append_child(&mark);
+    let _ = layer.append_child(&leader);
+    let _ = layer.append_child(&badge);
+    Some(Marker {
+        mark,
+        badge,
+        leader,
+        anchor,
+        style,
+        label,
+    })
+}
+
+/// A fingerprint of what is being shown: enough to notice a row
+/// appearing, a binding changing shape, or the display swapping
+/// template.
+fn signature(slots: &[(Slot, Option<Node>)], commands: &[(Command, Element)]) -> String {
+    let mut out = String::new();
+    for (slot, _) in slots {
+        out.push_str(&slot.label());
+        out.push('\u{1f}');
+    }
+    out.push('\u{1e}');
+    for (command, _) in commands {
+        out.push_str(&command.label());
+        out.push('\u{1f}');
+    }
+    out
+}
+
+fn write_hud(
+    hud: &Element,
+    facts: Option<&super::slot::Snapshot>,
+    counts: (usize, usize),
+    truncated: bool,
+) {
     let Some(facts) = facts else {
-        let _ = hud.set_attribute("style", "display:none");
+        hide(hud);
         return;
     };
+    let (slots, commands) = counts;
     let model = facts
         .model
         .clone()
@@ -552,7 +819,7 @@ fn write_hud(hud: &Element, facts: Option<&super::slot::Snapshot>, slots: usize)
         "detail"
     };
     let mut text = format!(
-        "{model} · {facet} · {mode} · {} subject(s) · {slots} slot(s)",
+        "{model} · {facet} · {mode} · {} subject(s) · {slots} slot(s) · {commands} command(s)",
         facts.subjects.len()
     );
     let unbound = facts.unbound_fields();
@@ -563,50 +830,190 @@ fn write_hud(hud: &Element, facts: Option<&super::slot::Snapshot>, slots: usize)
     if !undeclared.is_empty() {
         text.push_str(&format!("\nnot on the concept: {}", undeclared.join(", ")));
     }
+    if truncated {
+        text.push_str(&format!("\nshowing the first {MARKER_CAP} markers"));
+    }
     hud.set_text_content(Some(&text));
     let _ = hud.set_attribute("style", "display:block");
 }
 
-/// Move every slot box onto its node's current rect.
+/// Place every marker on its anchor's current geometry, then lay the
+/// badges out so they do not sit on top of each other.
 fn reposition(overlay: &Rc<RefCell<Overlay>>) {
     let state = overlay.borrow();
     let Some(painted) = state.painted.as_ref() else {
         return;
     };
-    for (element, node, slot) in &painted.boxes {
-        match rect_of(node, slot) {
-            Some((left, top, width, height)) => {
-                let _ = element.set_attribute(
-                    "style",
-                    &format!(
-                        "display:block;left:{left}px;top:{top}px;width:{width}px;height:{height}px"
-                    ),
-                );
-            }
-            None => {
-                let _ = element.set_attribute("style", "display:none");
-            }
+    // Badges already placed this frame, as (left, top, right). A new
+    // badge that would overlap one is pushed below it and joined to
+    // its anchor by a leader.
+    let mut placed: Vec<(f64, f64, f64)> = Vec::new();
+    for marker in painted.slots.iter().chain(painted.commands.iter()) {
+        let placement = place(&marker.anchor, &marker.style);
+        apply_mark(marker, &placement);
+        apply_badge(marker, &placement, &mut placed);
+    }
+}
+
+fn apply_mark(marker: &Marker, placement: &Placement) {
+    match *placement {
+        Placement::Extent {
+            left,
+            top,
+            width,
+            height,
+        } => {
+            let _ = marker.mark.set_attribute(
+                "style",
+                &format!(
+                    "display:block;left:{left}px;top:{top}px;width:{width}px;height:{height}px"
+                ),
+            );
+            let _ = marker.mark.set_attribute("data-shape", "extent");
+        }
+        Placement::Point { left, top, height } => {
+            let _ = marker.mark.set_attribute(
+                "style",
+                &format!("display:block;left:{left}px;top:{top}px;width:2px;height:{height}px"),
+            );
+            let _ = marker.mark.set_attribute("data-shape", "point");
+        }
+        Placement::Edge { left, top, width } => {
+            let _ = marker.mark.set_attribute(
+                "style",
+                &format!("display:block;left:{left}px;top:{top}px;width:{width}px;height:2px"),
+            );
+            let _ = marker.mark.set_attribute("data-shape", "edge");
+        }
+        Placement::Offscreen => {
+            hide(&marker.mark);
+            hide(&marker.badge);
+            hide(&marker.leader);
         }
     }
 }
 
-/// The viewport rect a slot occupies.
-///
-/// A text slot has no element of its own, so its box comes from a
-/// `Range` over the text node — which is also why a slot that
-/// rendered an empty string has no box at all and is hidden rather
-/// than drawn as a hairline. An attribute slot has no region in
-/// principle; it borrows its element's, which is the honest answer to
-/// "where did `with={repo}` land".
-fn rect_of(node: &Node, slot: &Slot) -> Option<(f64, f64, f64, f64)> {
-    let rect = match (&slot.kind, node.dyn_ref::<Element>()) {
-        (SlotKind::Attribute { .. }, Some(element)) => element.get_bounding_client_rect(),
-        _ => {
-            let range = Range::new().ok()?;
-            range.select_node_contents(node).ok()?;
-            range.get_bounding_client_rect()
-        }
+fn apply_badge(marker: &Marker, placement: &Placement, placed: &mut Vec<(f64, f64, f64)>) {
+    let Some((anchor_left, anchor_top)) = placement.anchor() else {
+        return;
     };
+    let width = marker.label.chars().count() as f64 * BADGE_CHAR + BADGE_PADDING;
+    // Above the anchor by default, which is where a label reads
+    // without covering the thing it names.
+    let mut top = anchor_top - BADGE_HEIGHT - 1.0;
+    if top < 0.0 {
+        top = anchor_top + 1.0;
+    }
+    let right = anchor_left + width;
+    while placed.iter().any(|(other_left, other_top, other_right)| {
+        (top - other_top).abs() < BADGE_HEIGHT && anchor_left < *other_right && right > *other_left
+    }) {
+        top += BADGE_HEIGHT + 1.0;
+    }
+    placed.push((anchor_left, top, right));
+
+    let _ = marker.badge.set_attribute(
+        "style",
+        &format!("display:block;left:{anchor_left}px;top:{top}px"),
+    );
+
+    // A badge that stayed put needs no leader; one that was pushed
+    // down gets a dashed line back to what it names.
+    let settled = top + BADGE_HEIGHT + 1.0;
+    if (settled - anchor_top).abs() < 1.5 {
+        hide(&marker.leader);
+        return;
+    }
+    let (line_top, line_height) = if top > anchor_top {
+        (anchor_top, top - anchor_top)
+    } else {
+        (settled, anchor_top - settled)
+    };
+    let _ = marker.leader.set_attribute(
+        "style",
+        &format!("display:block;left:{anchor_left}px;top:{line_top}px;height:{line_height}px"),
+    );
+}
+
+/// Decide where a marker goes from what its anchor currently measures.
+fn place(anchor: &Node, style: &MarkerStyle) -> Placement {
+    match style {
+        MarkerStyle::Interaction => match anchor.dyn_ref::<Element>() {
+            Some(element) => from_rect(&element.get_bounding_client_rect())
+                .map(|(left, top, width, height)| Placement::Extent {
+                    left,
+                    top,
+                    width,
+                    height,
+                })
+                .unwrap_or(Placement::Offscreen),
+            None => Placement::Offscreen,
+        },
+        // The element is where the value went, but the element is not
+        // the value — so tick its edge rather than filling it, which
+        // would read as "this whole region is the value".
+        MarkerStyle::Property => match anchor.dyn_ref::<Element>() {
+            Some(element) => from_rect(&element.get_bounding_client_rect())
+                .map(|(left, top, width, _)| Placement::Edge { left, top, width })
+                .unwrap_or(Placement::Offscreen),
+            None => Placement::Offscreen,
+        },
+        MarkerStyle::Text => match text_extent(anchor) {
+            Some((left, top, width, height)) => Placement::Extent {
+                left,
+                top,
+                width,
+                height,
+            },
+            // No glyphs: the value is empty, which is the case an
+            // author most wants to see. Point at where it would be.
+            None => caret(anchor)
+                .map(|(left, top, height)| Placement::Point { left, top, height })
+                .unwrap_or(Placement::Offscreen),
+        },
+    }
+}
+
+/// The box a text node's glyphs occupy, or `None` when it has none.
+fn text_extent(node: &Node) -> Option<(f64, f64, f64, f64)> {
+    let range = Range::new().ok()?;
+    range.select_node_contents(node).ok()?;
+    from_rect(&range.get_bounding_client_rect())
+}
+
+/// Where an empty text node's value would appear.
+///
+/// The caret position is the trailing edge of whatever precedes it,
+/// else the leading edge of whatever follows, else the parent's
+/// content corner. `<p>Hello {name}</p>` with `name` absent therefore
+/// ticks immediately after `Hello `, which is the answer a reader
+/// wants: not "this is missing somewhere" but "it would be here".
+fn caret(node: &Node) -> Option<(f64, f64, f64)> {
+    if let Some(previous) = node.previous_sibling()
+        && let Some((left, top, width, height)) = extent_of(&previous)
+    {
+        return Some((left + width, top, height));
+    }
+    if let Some(next) = node.next_sibling()
+        && let Some((left, top, _, height)) = extent_of(&next)
+    {
+        return Some((left, top, height));
+    }
+    let parent = node.parent_element()?;
+    let (left, top, _, height) = from_rect(&parent.get_bounding_client_rect())?;
+    Some((left, top, height.min(16.0)))
+}
+
+/// The box any node occupies — element rect or text range.
+fn extent_of(node: &Node) -> Option<(f64, f64, f64, f64)> {
+    match node.dyn_ref::<Element>() {
+        Some(element) => from_rect(&element.get_bounding_client_rect()),
+        None => text_extent(node),
+    }
+}
+
+/// A rect, unless it is degenerate.
+fn from_rect(rect: &web_sys::DomRect) -> Option<(f64, f64, f64, f64)> {
     if rect.width() <= 0.0 && rect.height() <= 0.0 {
         return None;
     }
@@ -614,60 +1021,50 @@ fn rect_of(node: &Node, slot: &Slot) -> Option<(f64, f64, f64, f64)> {
 }
 
 /// Drain the renderer's change queue and flash where each write
-/// landed. A flash is its own transient element rather than a class
-/// on the slot box, so a value that changes twice in quick succession
-/// shows twice instead of restarting one animation.
+/// landed. A flash is its own transient element rather than a class on
+/// the marker, so a value that changes twice in quick succession shows
+/// twice instead of restarting one animation.
 fn flash_changes(overlay: &Rc<RefCell<Overlay>>) {
-    let changed = registry::drain_changes();
-    if changed.is_empty() {
-        return;
+    for node in registry::drain_changes() {
+        let placement = extent_of(&node)
+            .or_else(|| caret(&node).map(|(left, top, height)| (left, top, 2.0, height)));
+        if let Some((left, top, width, height)) = placement {
+            transient(overlay, "flash", left, top, width.max(2.0), height);
+        }
     }
+}
+
+/// Drain the dispatch queue and bounce the element that posted.
+fn bounce_dispatches(overlay: &Rc<RefCell<Overlay>>) {
+    for (element, _command) in registry::drain_dispatches() {
+        if let Some((left, top, width, height)) = from_rect(&element.get_bounding_client_rect()) {
+            transient(overlay, "bounce", left, top, width, height);
+        }
+    }
+}
+
+/// Drop a self-retiring marker on the layer.
+fn transient(overlay: &Rc<RefCell<Overlay>>, class: &str, left: f64, top: f64, w: f64, h: f64) {
     let Some(win) = window() else {
         return;
     };
     let Some(document) = win.document() else {
         return;
     };
-    let layer = overlay.borrow().layer.clone();
-    for node in changed {
-        let Some((left, top, width, height)) = rect_of_node(&node) else {
-            continue;
-        };
-        let Ok(element) = document.create_element("div") else {
-            continue;
-        };
-        let _ = element.set_attribute("class", "flash");
-        let _ = element.set_attribute(
-            "style",
-            &format!("left:{left}px;top:{top}px;width:{width}px;height:{height}px"),
-        );
-        let _ = layer.append_child(&element);
-        let doomed = element.clone();
-        let retire = Closure::once_into_js(move || {
-            doomed.remove();
-        });
-        let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(
-            retire.unchecked_ref(),
-            FLASH_MS,
-        );
-    }
-}
-
-/// The rect of a node whose slot kind is not known — element if it is
-/// one, otherwise the text range.
-fn rect_of_node(node: &Node) -> Option<(f64, f64, f64, f64)> {
-    let rect = match node.dyn_ref::<Element>() {
-        Some(element) => element.get_bounding_client_rect(),
-        None => {
-            let range = Range::new().ok()?;
-            range.select_node_contents(node).ok()?;
-            range.get_bounding_client_rect()
-        }
+    let Some(marker) = element(&document, "div", class) else {
+        return;
     };
-    if rect.width() <= 0.0 && rect.height() <= 0.0 {
-        return None;
-    }
-    Some((rect.left(), rect.top(), rect.width(), rect.height()))
+    let _ = marker.set_attribute(
+        "style",
+        &format!("left:{left}px;top:{top}px;width:{w}px;height:{h}px"),
+    );
+    let _ = overlay.borrow().layer.append_child(&marker);
+    let doomed = marker.clone();
+    let retire = Closure::once_into_js(move || {
+        doomed.remove();
+    });
+    let _ =
+        win.set_timeout_with_callback_and_timeout_and_arguments_0(retire.unchecked_ref(), FLASH_MS);
 }
 
 fn origin_class(origin: Origin) -> &'static str {
@@ -683,30 +1080,47 @@ fn origin_class(origin: Origin) -> &'static str {
 /// styles cannot reach it and it cannot reach the page.
 const CSS: &str = "\
 :host { position: fixed; inset: 0; pointer-events: none; z-index: 2147483000; }
-.layer { position: fixed; inset: 0; pointer-events: none; font: 11px/1.4 ui-monospace, monospace; }
+.layer { position: fixed; inset: 0; pointer-events: none;
+         font: 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .outline { position: fixed; display: none; box-sizing: border-box;
-           border: 1px solid color-mix(in srgb, currentColor 30%, #4f8cff);
-           background: color-mix(in srgb, #4f8cff 6%, transparent); border-radius: 2px; }
+           border: 1px solid #4f8cff; background: color-mix(in srgb, #4f8cff 5%, transparent);
+           border-radius: 2px; }
 .outline.pinned { border-style: dashed; border-width: 2px; }
-.slot { position: fixed; display: none; box-sizing: border-box; border: 1px solid; border-radius: 2px; }
-.slot .tag { position: absolute; left: 0; bottom: 100%; padding: 0 3px;
-             white-space: nowrap; color: #fff; border-radius: 2px 2px 0 0; }
-.slot.from-concept { border-color: #22a06b; background: color-mix(in srgb, #22a06b 10%, transparent); }
-.slot.from-concept .tag { background: #22a06b; }
-.slot.from-subject { border-color: #8250df; background: color-mix(in srgb, #8250df 10%, transparent); }
-.slot.from-subject .tag { background: #8250df; }
-.slot.from-host { border-color: #bf8700; background: color-mix(in srgb, #bf8700 10%, transparent); }
-.slot.from-host .tag { background: #bf8700; }
-.slot.from-key { border-color: #0969da; background: color-mix(in srgb, #0969da 10%, transparent); }
-.slot.from-key .tag { background: #0969da; }
+.pin { position: fixed; display: none; pointer-events: auto; cursor: pointer;
+       height: 13px; padding: 0 5px; font: inherit; line-height: 13px; color: #fff;
+       background: #4f8cff; border: 0; border-radius: 2px 2px 0 0; }
+.pin.pinned { background: #1f6feb; }
+.mark { position: fixed; display: none; box-sizing: border-box; border-radius: 1px; }
+.mark[data-shape=extent] { border: 1px solid var(--ink); background: var(--wash); }
+.mark[data-shape=point] { background: var(--ink); }
+.mark[data-shape=edge] { background: var(--ink); }
+.badge { position: fixed; display: none; height: 13px; line-height: 13px; padding: 0 3px;
+         white-space: nowrap; color: #fff; background: var(--ink); border-radius: 2px; }
+.leader { position: fixed; display: none; width: 0; border-left: 1px dashed var(--ink); }
+.from-concept { --ink: #22a06b; --wash: color-mix(in srgb, #22a06b 10%, transparent); }
+.from-subject { --ink: #8250df; --wash: color-mix(in srgb, #8250df 10%, transparent); }
+.from-host    { --ink: #bf8700; --wash: color-mix(in srgb, #bf8700 10%, transparent); }
+.from-key     { --ink: #0969da; --wash: color-mix(in srgb, #0969da 10%, transparent); }
+.command      { --ink: #d6336c; --wash: color-mix(in srgb, #d6336c 8%, transparent); }
+.command.inert { --ink: #c92a2a; }
+.mark.command[data-shape=extent] { border-style: dashed; }
+.mark.command.inert[data-shape=extent] { border-style: dotted; border-width: 2px; }
 .flash { position: fixed; box-sizing: border-box; border: 2px solid #e8590c; border-radius: 2px;
          background: color-mix(in srgb, #e8590c 30%, transparent);
          animation: tonk-introspect-flash 700ms ease-out forwards; }
+.bounce { position: fixed; box-sizing: border-box; border: 2px solid #d6336c; border-radius: 3px;
+          background: color-mix(in srgb, #d6336c 22%, transparent);
+          animation: tonk-introspect-bounce 700ms cubic-bezier(.2,.9,.3,1) forwards; }
 @keyframes tonk-introspect-flash {
   from { opacity: 1; transform: scale(1.06); }
   to   { opacity: 0; transform: scale(1); }
 }
-.hud { position: fixed; display: none; right: 8px; bottom: 8px; max-width: 46ch;
-       padding: 6px 8px; white-space: pre-wrap; color: #fff; background: rgba(20,20,24,.92);
-       border-radius: 3px; }
+@keyframes tonk-introspect-bounce {
+  0%   { opacity: 1; transform: scale(1); }
+  35%  { opacity: 1; transform: scale(1.09); }
+  to   { opacity: 0; transform: scale(1); }
+}
+.hud { position: fixed; display: none; right: 8px; bottom: 8px; max-width: 52ch;
+       padding: 6px 8px; white-space: pre-wrap; line-height: 1.4; color: #fff;
+       background: rgba(20,20,24,.92); border-radius: 3px; }
 ";

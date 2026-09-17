@@ -329,6 +329,71 @@ impl crate::introspect::registry::DisplayFacts for Inner {
             slots: Vec::new(),
         }
     }
+
+    fn commands(&self, host: &Element) -> Vec<(crate::introspect::command::Command, Element)> {
+        use crate::introspect::command::commands_on;
+        // A display with no bound interactions has no delegate, which
+        // is not the same as one whose declarations failed to resolve:
+        // the first has nothing to show, the second has bindings that
+        // will never fire. Both reach `commands_on`, which reports an
+        // unresolved trigger rather than hiding the binding.
+        let table = self
+            .delegate
+            .as_ref()
+            .map(crate::events::delegate::Delegate::table);
+        let mut next_id = 0;
+        let mut out = Vec::new();
+        let Ok(elements) = host.query_selector_all("*") else {
+            return out;
+        };
+        for index in 0..elements.length() {
+            let Some(element) = elements
+                .item(index)
+                .and_then(|node| node.dyn_into::<Element>().ok())
+            else {
+                continue;
+            };
+            // Markup belonging to a display nested inside this one is
+            // that display's to explain, not ours.
+            if !owned_by(host, &element) {
+                continue;
+            }
+            let attributes = attributes_of(&element);
+            for command in commands_on(
+                &attributes,
+                |declaration| {
+                    table
+                        .and_then(|table| table.get(declaration))
+                        .map(|event| event.event_type.clone())
+                },
+                &mut next_id,
+            ) {
+                out.push((command, element.clone()));
+            }
+        }
+        out
+    }
+}
+
+/// Whether `host` is the nearest `<tonk-display>` above `element`.
+fn owned_by(host: &Element, element: &Element) -> bool {
+    element
+        .closest("tonk-display")
+        .ok()
+        .flatten()
+        .is_some_and(|nearest| nearest.is_same_node(Some(host.as_ref())))
+}
+
+/// One element's attributes as `(name, value)` pairs.
+fn attributes_of(element: &Element) -> Vec<(String, String)> {
+    let attributes = element.attributes();
+    let mut out = Vec::with_capacity(attributes.length() as usize);
+    for index in 0..attributes.length() {
+        if let Some(attribute) = attributes.item(index) {
+            out.push((attribute.name(), attribute.value()));
+        }
+    }
+    out
 }
 
 /// The custom element.
