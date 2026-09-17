@@ -4581,6 +4581,126 @@ mod tests {
         Ok(outcome.json().as_str().map(str::to_owned))
     }
 
+    /// What the FABB's copy-link row says it is doing.
+    ///
+    /// The row's `data-share-state` IS the control's answer to a click:
+    /// `idle` at rest, `copying` while the mint is out, then `copied` or
+    /// `failed`. Absent means the control has not stamped a state at all.
+    ///
+    /// Read rather than the label text because the label is four spans
+    /// switched by CSS, and a hidden span's `textContent` still reads.
+    async fn share_row_state(driver: &WebDriver) -> Result<Option<String>> {
+        enter_guest(driver).await?;
+        let outcome = driver
+            .execute(
+                r##"
+                const bar = document.querySelector("tonk-fab");
+                const row = bar && bar.querySelector("[data-share-link]");
+                if (!row) return null;
+                return row.getAttribute("data-share-state");
+                "##,
+                Vec::new(),
+            )
+            .await?;
+        driver.enter_default_frame().await?;
+        Ok(outcome.json().as_str().map(str::to_owned))
+    }
+
+    /// Record what the FABB's share control hands the clipboard.
+    ///
+    /// Two reasons this is not [`watch_clipboard`]. It patches `write`, not
+    /// `writeText`: `<tonk-share>` opens a `ClipboardItem` holding a PROMISE
+    /// while the user activation is still live and resolves it when the mint
+    /// returns, which is the only way to copy the result of an async
+    /// operation. And it runs inside the sealed guest, because that is the
+    /// document the bar lives in.
+    ///
+    /// Reading the hook rather than the real clipboard is not a shortcut
+    /// around a permission. The write itself is refused here with
+    /// `NotAllowedError: Document is not focused` — a headless window is
+    /// never focused — so the control settles on `failed` in this harness
+    /// however well it works in a real browser. What the control HANDED the
+    /// clipboard is the product behaviour under test; whether this particular
+    /// Chrome accepted it is the harness's business.
+    async fn watch_guest_clipboard(driver: &WebDriver) -> Result<()> {
+        enter_guest(driver).await?;
+        driver
+            .execute(
+                r##"
+                window.__tonkWrote = "";
+                const clipboard = navigator.clipboard;
+                const write = clipboard.write.bind(clipboard);
+                clipboard.write = (items) => {
+                    const item = items && items[0];
+                    if (item && item.getType) {
+                        item.getType("text/plain")
+                            .then((blob) => blob.text())
+                            .then((text) => { window.__tonkWrote = text; })
+                            .catch(() => {});
+                    }
+                    // Hand the refusal back unchanged: the control has to see
+                    // the same answer it would without this hook, or the test
+                    // would be watching a flow nobody ships.
+                    return write(items);
+                };
+                "##,
+                Vec::new(),
+            )
+            .await?;
+        driver.enter_default_frame().await?;
+        Ok(())
+    }
+
+    /// The text the control handed the clipboard, once it has.
+    async fn guest_copied_text(driver: &WebDriver) -> Result<String> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            enter_guest(driver).await?;
+            let text = driver
+                .execute(r##"return window.__tonkWrote || "";"##, Vec::new())
+                .await?;
+            driver.enter_default_frame().await?;
+            let text = text.json().as_str().unwrap_or_default().to_owned();
+            if !text.is_empty() {
+                return Ok(text);
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!("the bar never handed the clipboard anything"));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    /// Wait for the copy-link row to leave its resting state.
+    ///
+    /// This is the assertion the FABB share regression needed and did not
+    /// have. A share control bound to no space returns before dispatching
+    /// anything, so the row sits on `idle` for ever: no mint, no spinner,
+    /// no refusal. Every other test in this file reached a share link
+    /// through the registration ceremony's own button, which drives a
+    /// different control, so all of them stayed green while picking
+    /// "copy link" from the bar did nothing at all.
+    async fn await_share_row_working(driver: &WebDriver) -> Result<String> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let mut last;
+        loop {
+            last = share_row_state(driver).await?;
+            match last.as_deref() {
+                Some(state) if state != "idle" => return Ok(state.to_owned()),
+                _ => {}
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "the copy-link row never answered the click; it is showing {last:?}",
+                ));
+            }
+            // Tighter than the usual 250ms: `copied` reverts to `idle`
+            // after `COPIED_LINGER_MS`, so a slow poll could sample either
+            // side of the whole answer and read a resting row as a dead one.
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     /// Wait for the bar to offer `expected` (`account` or `link`).
     async fn await_share_row(driver: &WebDriver, expected: &str) -> Result<()> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
@@ -5267,6 +5387,66 @@ mod tests {
     /// An enrolled account stays an account everywhere while its email is
     /// still unconfirmed.
     ///
+    /// Copy a share link from the FABB, on an account that can mint one.
+    ///
+    /// The one path nothing covered. Every other share test here reaches a
+    /// link through the registration ceremony's own "copy share link"
+    /// button, or asserts the bar's row LABEL without picking it — so the
+    /// bar could offer `copy link`, take the click, and do nothing, with
+    /// the whole suite green. It did: the bar stamped `<tonk-share>` with
+    /// its space once, before the route had resolved one, and never again,
+    /// leaving the control bound to nothing for the life of the page.
+    ///
+    /// The order of the assertions is the point. First the row has to
+    /// ANSWER — leave `idle` — because that is the half a control bound to
+    /// no space skips; only then is it worth asking whether a link came
+    /// back.
+    #[dialog_common::test]
+    async fn it_copies_a_share_link_from_the_bar(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        sign_up(&driver, &env, "barsharer@example.com").await?;
+
+        // Waiting for the remote: a space with none refuses to mint, and
+        // this test is about the control, not about that refusal.
+        let key = create_space_awaiting_remote(&driver, "Shared From The Bar", true).await?;
+        await_url_containing(&driver, &format!("/space/{key}")).await?;
+
+        // An active account offers the copy row, not the login row.
+        open_share_stack(&driver).await?;
+        await_share_row(&driver, "link").await?;
+
+        watch_guest_clipboard(&driver).await?;
+        click_share_row(&driver, "[data-share-link]").await?;
+
+        let state = await_share_row_working(&driver).await?;
+        assert!(
+            matches!(state.as_str(), "copying" | "copied" | "failed"),
+            "the row must report what the click did, got {state:?}",
+        );
+
+        // What the person ends up holding. Asserted on the text the control
+        // handed the clipboard rather than on the invite row, because the row
+        // is evicted the moment a copy succeeds — the url carries a
+        // membership seed in its fragment and is not left sitting in a
+        // subscribable overlay — so reading it back would race that eviction
+        // on exactly the runs that went best.
+        let invite = guest_copied_text(&driver).await?;
+        let (address, seed) = invite
+            .split_once('#')
+            .ok_or_else(|| anyhow!("an invite carries its seed in a fragment, got {invite:?}"))?;
+        assert!(
+            address.contains("/join?") && address.contains("access="),
+            "the copied link must be a join address carrying a delegation, got {address:?}",
+        );
+        assert!(
+            !seed.is_empty(),
+            "the copied link must carry a membership seed, got {invite:?}",
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
     /// The account customer row has no provider until activation. The FABB
     /// used to require that optional field in its query, so this exact state
     /// resolved as no row: the space offered "log in to share" and raised the

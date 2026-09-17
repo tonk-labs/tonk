@@ -226,12 +226,12 @@ fn restamp_space(this: &HtmlElement, space: &str) {
     if space.is_empty() {
         return;
     }
-    for (selector, attribute, value) in [
-        ("ui-space-name", "space", space.to_string()),
-        ("ui-member-roster", "space", space.to_string()),
-        ("ui-space-switcher", "current", space.to_string()),
-        ("ui-sync-status", "with", format!("main@{space}")),
-    ] {
+    // The same table `markup::stacks_html` stamps from, so a slot cannot
+    // be authored here and forgotten there: `<tonk-share>` was, and a bar
+    // that came up blank kept a share control bound to no space — silently
+    // dropping every click on "copy link".
+    for &(selector, attribute, prefix) in crate::markup::SPACE_BINDINGS {
+        let value = format!("{prefix}{space}");
         if let Ok(Some(child)) = this.query_selector(selector) {
             // Only when it changes: every one of these targets observes
             // the attribute, and a redundant write still fires its
