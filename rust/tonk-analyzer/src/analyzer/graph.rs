@@ -446,6 +446,46 @@ pub(crate) fn push(syntax: &Syntax) -> Result<Graph, AnalyzeError> {
 fn collect_view_needs(fields: &[Field], needs: &mut Vec<Need>) {
     collect_view_model_needs(fields, needs);
     collect_view_binding_needs(fields, needs);
+    collect_view_embed_needs(fields, needs);
+}
+
+/// The views a template's `with:href=<name>@<entity>` embeds read
+/// from. Only the entity half needs resolving: the name half is a key
+/// in that view's own `style:` / `font:` map, which is data, not a
+/// reference.
+///
+/// A reference that names no entity reads the enclosing view's own
+/// content, so there is nothing to prefetch for it — the assertion
+/// being lowered already has those blocks in hand.
+///
+/// Both spellings are prefetched for the same reason the command half
+/// is: a template writes the entity as a published name or as a URI,
+/// and the one that does not apply resolves to nothing, which costs a
+/// lookup and no correctness.
+fn collect_view_embed_needs(fields: &[Field], needs: &mut Vec<Need>) {
+    for field in fields {
+        if field.name != "show" {
+            continue;
+        }
+        let FieldValue::Nested(entries) = &field.value else {
+            continue;
+        };
+        for entry in entries {
+            let FieldValue::Literal(tonk_notation::Scalar::String(template)) = &entry.value else {
+                continue;
+            };
+            for embed in tonk_template::embed::scan(template) {
+                let Some(name) = embed.entity else {
+                    continue;
+                };
+                let range = entry.value_range;
+                if let Ok(entity) = name.parse::<Entity>() {
+                    needs.push(Need::ConceptByEntity { entity, range });
+                }
+                needs.push(Need::Concept { name, range });
+            }
+        }
+    }
 }
 
 /// The concept a view's `this:` names, in both spellings a reference
