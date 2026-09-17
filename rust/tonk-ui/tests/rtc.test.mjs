@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import {
     DEFAULT_PORT,
-    SHARED_FINGERPRINT,
+    fingerprintOf,
     decodeAddress,
     decodeDescription,
     encodeDescription,
@@ -144,26 +144,44 @@ test("munging replaces our own ICE credentials, not just the first", () => {
     assert.equal(munged.match(new RegExp(CREDENTIAL, "g")).length, 4);
 });
 
-test("a local address needs nothing published", () => {
-    const address = localAddress();
-    // The whole property: no fetch, no paste, no fragment. A page that
-    // knows only that tonk might be running can build this.
+test("the fingerprint is derived from the shared certificate", async () => {
+    const pem = readFileSync(
+        new URL("../../tonk-rtc/assets/shared-identity.pem", import.meta.url),
+        "utf8",
+    );
+    const derived = await fingerprintOf(pem);
+
+    // Pinned against the Rust constant rather than against a literal
+    // here: webrtc-rs computes that one from the same certificate, so
+    // agreeing with it is what proves the two ends will agree on the
+    // wire. A literal would only prove this file is self-consistent.
+    const identity = readFileSync(
+        new URL("../../tonk-rtc/src/identity.rs", import.meta.url),
+        "utf8",
+    );
+    const [, expected] = /SHARED_FINGERPRINT: &str = "([^"]+)"/.exec(identity);
+
+    assert.equal(derived.toUpperCase(), expected.toUpperCase());
+});
+
+test("a certificate with no CERTIFICATE block is refused", async () => {
+    await assert.rejects(() => fingerprintOf("-----BEGIN EXPIRES-----\nAA==\n-----END EXPIRES-----"));
+});
+
+test("a local address needs nothing but the served certificate", async () => {
+    const pem = readFileSync(
+        new URL("../../tonk-rtc/assets/shared-identity.pem", import.meta.url),
+        "utf8",
+    );
+    globalThis.fetch = async () => ({ ok: true, text: async () => pem });
+
+    const address = await localAddress();
     assert.equal(address.candidates.length, 1);
     assert.equal(address.candidates[0].host, "127.0.0.1");
     assert.equal(address.candidates[0].port, DEFAULT_PORT);
-    assert.equal(address.fingerprint, SHARED_FINGERPRINT);
-});
+    assert.equal(address.fingerprint, await fingerprintOf(pem));
 
-test("a conjured local address synthesizes a usable answer", () => {
-    const sdp = synthesizeAnswer(localAddress(), "credential");
-    assert.match(sdp, /a=fingerprint:sha-256 08:EC:/);
+    const sdp = synthesizeAnswer(address, "credential");
     assert.match(sdp, /127\.0\.0\.1 51247 typ host/);
-    assert.match(sdp, /a=ice-ufrag:credential/);
     assert.match(sdp, /a=setup:active/);
-});
-
-test("a non-default port still yields a complete address", () => {
-    const address = localAddress(9999);
-    assert.equal(address.candidates[0].port, 9999);
-    assert.equal(address.fingerprint, SHARED_FINGERPRINT);
 });

@@ -171,30 +171,34 @@ mod tests {
         );
     }
 
-    /// The page cannot compute this value and cannot be handed it, so
-    /// the two copies have to be kept in step by something. This is
-    /// that something: it reads the browser half and compares.
+    /// The browser derives this fingerprint rather than transcribing it,
+    /// so what has to stay in step is narrower than it was: the page
+    /// must reach the same certificate, and must agree on the port.
     ///
-    /// A path rather than an `include_str!` because `tonk-ui` is a
-    /// sibling crate and this is a test, not a build input — if the
-    /// layout moves, the test says so rather than the build breaking.
+    /// Agreement on the *value* is pinned from the other side, in
+    /// `rtc.mjs`'s own tests, because that is where the derivation
+    /// lives. This checks the two things a Rust change could break.
     #[test]
-    fn the_browser_half_agrees_on_the_fingerprint() {
-        let rtc_mjs =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tonk-ui/assets/rtc.mjs");
-        let source = std::fs::read_to_string(&rtc_mjs)
-            .unwrap_or_else(|error| panic!("could not read {}: {error}", rtc_mjs.display()));
+    fn the_browser_half_reaches_the_same_certificate() {
+        let ui = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tonk-ui");
 
+        let index = std::fs::read_to_string(ui.join("index.html")).expect("tonk-ui/index.html");
         assert!(
-            source.contains(SHARED_FINGERPRINT),
-            "rtc.mjs does not carry the shared fingerprint; a dial would fail DTLS with no \
-             explanation. Update SHARED_FINGERPRINT there to {SHARED_FINGERPRINT}"
+            index.contains("../tonk-rtc/assets/shared-identity.pem"),
+            "index.html no longer copies the shared certificate into the dist, so the page \
+             would fetch a 404 and every dial would fail with no explanation"
         );
 
+        let source = std::fs::read_to_string(ui.join("assets/rtc.mjs")).expect("rtc.mjs");
         let port = format!("DEFAULT_PORT = {}", crate::dial::DEFAULT_PORT);
         assert!(
             source.contains(&port),
             "rtc.mjs disagrees about the default port; expected `{port}`"
+        );
+        assert!(
+            !source.contains(SHARED_FINGERPRINT),
+            "rtc.mjs transcribes the fingerprint again; it should derive it from the \
+             certificate so there is only one copy to get wrong"
         );
     }
 

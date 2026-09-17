@@ -167,35 +167,64 @@ export function decodeAddress(encoded) {
 export const DEFAULT_PORT = 51247;
 
 /**
- * The DTLS fingerprint every `tonk` listener presents.
+ * Where the shared certificate is served from.
  *
- * Mirrors `tonk_rtc::identity::SHARED_FINGERPRINT`, and is the other
- * half. A browser must write a fingerprint into the description it
- * fabricates and has no way to skip that check, so this value has to be
- * known in advance — it cannot be derived from a public key, and
- * deriving a per-peer certificate would need both sides to produce
- * byte-identical DER, which Safari's non-deterministic Ed25519 rules
- * out.
- *
- * It is a published constant, not a secret. Reaching the port grants
- * nothing: every invocation over the channel carries a signed UCAN and
- * is verified before any work is done.
+ * Copied into the dist from `tonk-rtc/assets` by a `data-trunk`
+ * directive, so there is exactly one copy of it in the repository. This
+ * is the page's own origin, not the CLI's — an https page cannot reach
+ * `http://127.0.0.1`, which is why the fingerprint has to be known in
+ * advance rather than asked for.
  */
-export const SHARED_FINGERPRINT =
-    "sha-256 08:EC:77:D3:24:82:FE:18:D7:9D:A2:E3:BC:A1:12:00:07:80:33:9D:E0:00:DE:77:FE:D0:51:73:3A:86:39:95";
+export const SHARED_IDENTITY_URL = "/shared-identity.pem";
+
+/**
+ * The DTLS fingerprint of a certificate, in the form an SDP
+ * `a=fingerprint` line takes.
+ *
+ * Derived, not transcribed. The certificate's private key is public by
+ * design, so both ends can compute this from the same bytes, and a
+ * constant copied into this file by hand would be one more thing to
+ * keep in step and one more way to be silently wrong.
+ */
+export async function fingerprintOf(pem) {
+    const block = /-----BEGIN CERTIFICATE-----([\s\S]*?)-----END CERTIFICATE-----/.exec(pem);
+    if (!block) throw new Error("no CERTIFICATE block in the shared identity");
+    const der = Uint8Array.from(atob(block[1].replace(/\s+/g, "")), (c) => c.charCodeAt(0));
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", der));
+    const octets = [...digest].map((b) => b.toString(16).padStart(2, "0").toUpperCase());
+    return `sha-256 ${octets.join(":")}`;
+}
+
+let pending;
+
+/**
+ * The fingerprint every `tonk` listener presents.
+ *
+ * Fetched once and memoized: it is a static asset on this origin, so
+ * this is a cache hit after the first dial.
+ */
+export function sharedFingerprint(url = SHARED_IDENTITY_URL) {
+    pending ??= fetch(url)
+        .then((response) => {
+            if (!response.ok) throw new Error(`could not read ${url}: ${response.status}`);
+            return response.text();
+        })
+        .then(fingerprintOf);
+    return pending;
+}
 
 /**
  * The address of a `tonk` listening on this machine.
  *
  * Nothing is exchanged to get here: the candidate is loopback, the port
- * is fixed, and the fingerprint is the shared constant. This is what
- * `decodeAddress` returns for a peer that published nothing, and it is
- * the only case where an address can be conjured rather than read.
+ * is fixed, and the fingerprint comes from a certificate this origin
+ * already serves. It is the only case where an address can be conjured
+ * rather than read.
  */
-export function localAddress(port = DEFAULT_PORT) {
+export async function localAddress(port = DEFAULT_PORT) {
     return {
         candidates: [{ host: "127.0.0.1", port }],
-        fingerprint: SHARED_FINGERPRINT,
+        fingerprint: await sharedFingerprint(),
     };
 }
 

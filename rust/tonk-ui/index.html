@@ -922,6 +922,11 @@
         <link data-trunk rel="copy-file" href="./assets/service_worker.js" />
         <link data-trunk rel="copy-file" href="./assets/doctor.mjs" />
         <link data-trunk rel="copy-file" href="./assets/rtc.mjs" />
+        <!-- The certificate every tonk listener presents. One copy in the
+             repository, served here so the page can derive its fingerprint
+             rather than carry a transcription of it. Public by design:
+             see `tonk_rtc::identity`. -->
+        <link data-trunk rel="copy-file" href="../tonk-rtc/assets/shared-identity.pem" />
         <link
             data-trunk
             rel="copy-file"
