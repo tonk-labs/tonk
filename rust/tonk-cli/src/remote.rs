@@ -495,6 +495,20 @@ mod peer_address_tests {
         >();
     }
 
+    /// The operator is the handle with spaces *in* it.
+    ///
+    /// A `Storage` routes by subject, but its pool is a pure cache that
+    /// callers fill, so a freshly built one answers `SubjectNotFound` to
+    /// everything. The operator has already loaded this site's spaces
+    /// and provides the same nine effects by delegating to that same
+    /// routed storage — so it is what a responder serves from, and a
+    /// fresh handle would serve nothing at all.
+    #[test]
+    fn the_operator_can_answer_a_peer() {
+        fn serves<S: dialog_iroh_remote::serve::Store>() {}
+        serves::<dialog_operator::Operator<dialog_storage::provider::storage::NativeSpace>>();
+    }
+
     /// The address chooses the transport, so the two forms must not be
     /// confusable — and a malformed one has to be refused rather than
     /// quietly filed as the other kind.
