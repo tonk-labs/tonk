@@ -1,0 +1,31 @@
+{
+  "attempted_runs": 12,
+  "complete": true,
+  "consistent_browser": true,
+  "expected_pairs": 6,
+  "failures": [],
+  "kind": "identical-artifact-calibration",
+  "median_difference_interval": {
+    "coverage": 0.96875,
+    "lower_ms": -54.51016600000003,
+    "order_statistic": 1,
+    "upper_ms": 123.09487499999977
+  },
+  "median_difference_ms": 14.950207999999975,
+  "order_medians_ms": {
+    "AB": 47.742541000000074,
+    "BA": -39.72199999999975
+  },
+  "paired_differences_ms": [
+    -39.72199999999975,
+    -17.842125000000124,
+    47.742541000000074,
+    -54.51016600000003,
+    97.34154199999989,
+    123.09487499999977
+  ],
+  "precision_budget_ms": 100,
+  "precision_pass": false,
+  "scope": "A/A precision only; requires independent repeat and sensitivity validation",
+  "successful_runs": 12
+}

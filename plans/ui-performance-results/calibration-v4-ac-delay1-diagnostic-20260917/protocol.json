@@ -1,0 +1,126 @@
+{
+  "cooldown_seconds": 2,
+  "environment_admission": {
+    "blocked_process_names": [
+      "cargo",
+      "cc1",
+      "clang",
+      "clang++",
+      "make",
+      "ninja",
+      "rustc",
+      "wasm-opt"
+    ],
+    "checks": "before-and-after-each-session",
+    "require_unchanged_power": true,
+    "version": 1
+  },
+  "fixture": {
+    "cache_state": "fresh-profile-empty-http-and-service-worker",
+    "dataset_sha256": "ef4c970fce9dc639ad8770e8ee025de886e753fdd942f451400ec85bf6e5e55a",
+    "input_sequence": "open-share-menu-v1",
+    "recipe": "fresh-anonymous-nested-welcome-v1",
+    "selector": ".wp-h1"
+  },
+  "headline_delay_B_ms": 1,
+  "headline_delay_method": "webdriver-inner-frame-visibility-v1",
+  "kind": "s1-aa-calibration-v4",
+  "limitations": [
+    "includes WebDriver polling and transport overhead",
+    "is not LCP, exact presentation time, or field INP",
+    "does not provide complete request or byte accounting"
+  ],
+  "measurement": "navigation-to-usable-observed-v3",
+  "observer_diagnostics_version": 1,
+  "page_load_strategy": "none",
+  "pairs": 6,
+  "poll_interval_ms": 50,
+  "post_timing_checks": [
+    "trusted WebDriver share click",
+    "visible log in to share action",
+    "visible 1 member roster row",
+    "served artifact identity",
+    "screenshot"
+  ],
+  "precision_budget_ms": 100,
+  "profile": "desktop",
+  "profile_settings": {
+    "cpu_slowdown": 1,
+    "download_bytes_per_second": -1,
+    "latency_ms": 0,
+    "upload_bytes_per_second": -1,
+    "viewport_height": 800,
+    "viewport_width": 1280
+  },
+  "runs": 10,
+  "scenario": "S1",
+  "schedule": [
+    [
+      0,
+      "B",
+      "BA"
+    ],
+    [
+      0,
+      "A",
+      "BA"
+    ],
+    [
+      1,
+      "A",
+      "AB"
+    ],
+    [
+      1,
+      "B",
+      "AB"
+    ],
+    [
+      2,
+      "A",
+      "AB"
+    ],
+    [
+      2,
+      "B",
+      "AB"
+    ],
+    [
+      3,
+      "A",
+      "AB"
+    ],
+    [
+      3,
+      "B",
+      "AB"
+    ],
+    [
+      4,
+      "B",
+      "BA"
+    ],
+    [
+      4,
+      "A",
+      "BA"
+    ],
+    [
+      5,
+      "B",
+      "BA"
+    ],
+    [
+      5,
+      "A",
+      "BA"
+    ]
+  ],
+  "schema_version": 1,
+  "seed": 2026091750,
+  "timeout_ms": 120000,
+  "viewport": [
+    1280,
+    800
+  ]
+}

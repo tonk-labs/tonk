@@ -1,0 +1,30 @@
+{
+  "attempted_runs": 8,
+  "complete": false,
+  "consistent_browser": true,
+  "expected_difference_ms": 500,
+  "expected_pairs": 20,
+  "failures": [
+    {
+      "error": "runner_error",
+      "sequence": 7,
+      "status": "harness_error"
+    }
+  ],
+  "kind": "headline-delay-control",
+  "median_difference_interval": null,
+  "median_difference_ms": 577.0480420000001,
+  "order_medians_ms": {
+    "AB": 577.0480420000001,
+    "BA": 546.577
+  },
+  "paired_differences_ms": [
+    577.0480420000001,
+    500.2716250000001,
+    592.8823749999999
+  ],
+  "precision_budget_ms": 100,
+  "precision_pass": false,
+  "scope": "Local observed readiness only; A/A requires independent repeat and sensitivity validation",
+  "successful_runs": 7
+}

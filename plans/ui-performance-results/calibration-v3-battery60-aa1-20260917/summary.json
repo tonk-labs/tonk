@@ -1,0 +1,51 @@
+{
+  "attempted_runs": 51,
+  "complete": false,
+  "consistent_browser": true,
+  "expected_difference_ms": 0,
+  "expected_pairs": 60,
+  "failures": [],
+  "kind": "identical-artifact-calibration",
+  "median_difference_interval": {
+    "coverage": 0.9567147493362427,
+    "lower_ms": -141.10004200000026,
+    "order_statistic": 8,
+    "upper_ms": 74.07466700000009
+  },
+  "median_difference_ms": -44.14395900000022,
+  "order_medians_ms": {
+    "AB": -46.22356300000013,
+    "BA": -18.191624000000047
+  },
+  "paired_differences_ms": [
+    -48.30316700000003,
+    909.3612089999999,
+    -87.38920800000005,
+    -181.7723329999999,
+    578.7996250000001,
+    -280.0992920000001,
+    -44.14395900000022,
+    -58.74533300000007,
+    81.36879199999976,
+    -282.6793759999996,
+    -141.10004200000026,
+    -231.090917,
+    28.578708000000006,
+    -18.191624000000047,
+    22.21908399999984,
+    -130.8402500000002,
+    -150.75866600000018,
+    74.07466700000009,
+    -156.12295800000015,
+    -322.274042,
+    379.83716700000014,
+    218.60862499999985,
+    27.99545799999987,
+    162.31904200000008,
+    213.7161669999998
+  ],
+  "precision_budget_ms": 100,
+  "precision_pass": false,
+  "scope": "Local observed readiness only; A/A requires independent repeat and sensitivity validation",
+  "successful_runs": 51
+}

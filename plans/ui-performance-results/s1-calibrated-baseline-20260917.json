@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "kind": "s1-calibrated-observed-baseline",
+  "measurement": "navigation-to-usable-observed-v3",
+  "calibration_protocol": "s1-aa-calibration-v5",
+  "date": "2026-09-17",
+  "scope": "Local fresh-profile desktop Chrome; observed readiness, not presentation time or INP",
+  "artifact_build": "7c0b391f8bd92952",
+  "artifact_sha256": "7ba1cac21c201e91cdb46646848ae87d772f61b42ec39a08229f4f52763e1489",
+  "browser": "Chrome/153.0.8010.48",
+  "power": "AC Power",
+  "viewport": [
+    1280,
+    800
+  ],
+  "reference": {
+    "collection": "calibration-v5-ac-aa1-20260917",
+    "sessions": 120,
+    "median_ms": 1224.6498335,
+    "q1_ms": 1199.99086425,
+    "q3_ms": 1255.9973229999998,
+    "min_ms": 1152.421833,
+    "max_ms": 1597.3246250000002,
+    "runs_sha256": "50207cd46697ef53bfd76eef98a09fb6c4eda1dfa24c43cdd9007c9c13a45c7d"
+  },
+  "repeat": {
+    "collection": "calibration-v5-ac-aa2-20260917",
+    "sessions": 120,
+    "median_ms": 1221.077583,
+    "q1_ms": 1196.7866665000001,
+    "q3_ms": 1243.53653075,
+    "min_ms": 1148.7949580000002,
+    "max_ms": 1460.430209,
+    "runs_sha256": "9239c82d5c23574dfbc2b58b58a08f5cd6acb68eb033334b2238c9dc160e664d"
+  },
+  "calibration": {
+    "passed": true,
+    "sessions": 360,
+    "failures": 0,
+    "environment_receipts": 720,
+    "paired_median_interval_coverage": 0.972659866131922,
+    "precision_budget_ms": 100,
+    "aa1_interval_ms": [
+      -30.906540999999834,
+      16.54166700000019
+    ],
+    "aa2_interval_ms": [
+      -25.343209000000115,
+      18.813750000000027
+    ],
+    "matched_control": {
+      "collection": "calibration-v5-ac-delay500-20260917",
+      "doses_ms": [
+        1,
+        501
+      ],
+      "expected_difference_ms": 500,
+      "median_difference_ms": 461.49935500000004,
+      "interval_ms": [
+        446.02137500000003,
+        497.48012500000004
+      ],
+      "runs_sha256": "ddca097d0bacf372ef92a3848ac146fab24019483e078d1a5a6dafdee99e0134"
+    }
+  },
+  "limitations": [
+    "Intervals assume independent pairs and do not establish zero bias.",
+    "Before/after admission checks do not prove continuous host idleness.",
+    "Not calibration for historical ABBA comparisons, other workloads, devices, or production networks.",
+    "No product optimization verdict."
+  ]
+}

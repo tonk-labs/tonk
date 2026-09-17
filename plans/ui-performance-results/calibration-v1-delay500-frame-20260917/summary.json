@@ -1,0 +1,32 @@
+{
+  "attempted_runs": 12,
+  "complete": true,
+  "consistent_browser": true,
+  "expected_difference_ms": 500,
+  "expected_pairs": 6,
+  "failures": [],
+  "kind": "headline-delay-control",
+  "median_difference_interval": {
+    "coverage": 0.96875,
+    "lower_ms": 250.38933300000008,
+    "order_statistic": 1,
+    "upper_ms": 1431.1202919999998
+  },
+  "median_difference_ms": 496.7285834999999,
+  "order_medians_ms": {
+    "AB": 495.51270799999975,
+    "BA": 553.7808749999999
+  },
+  "paired_differences_ms": [
+    250.38933300000008,
+    1431.1202919999998,
+    497.94445900000005,
+    495.51270799999975,
+    553.7808749999999,
+    475.22745799999984
+  ],
+  "precision_budget_ms": 100,
+  "precision_pass": false,
+  "scope": "Local observed readiness only; A/A requires independent repeat and sensitivity validation",
+  "successful_runs": 12
+}
