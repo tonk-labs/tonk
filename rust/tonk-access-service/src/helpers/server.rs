@@ -305,8 +305,13 @@ fn request_host(req: &Request<Incoming>) -> String {
 /// The largest `/ucan/` body the harness accepts, matching the worker's default.
 const MAX_BODY_BYTES: u64 = 64 * 1024;
 
+/// The largest body a request carrying its invocation in
+/// `Authorization` may have: the bytes a write stores, bounded as the
+/// worker bounds them.
+const MAX_PAYLOAD_BYTES: u64 = 32 * 1024 * 1024;
+
 /// `413`, naming the limit so a caller can act on it.
-fn too_large_response() -> Response<http_body_util::Full<bytes::Bytes>> {
+fn too_large_response(limit: u64) -> Response<http_body_util::Full<bytes::Bytes>> {
     Response::builder()
         .status(StatusCode::PAYLOAD_TOO_LARGE)
         .header(CONTENT_TYPE, "application/json")
@@ -315,7 +320,7 @@ fn too_large_response() -> Response<http_body_util::Full<bytes::Bytes>> {
                 "error": {
                     "code": "PAYLOAD_TOO_LARGE",
                     "message": format!(
-                        "request body exceeds the {MAX_BODY_BYTES}-byte limit for /ucan/"
+                        "request body exceeds the {limit}-byte limit for /ucan/"
                     ),
                 }
             })
@@ -633,6 +638,23 @@ async fn handle_request(
         ));
     }
 
+    // An invocation under the UCAN scheme in `Authorization` is
+    // performed in this request, its body being the bytes the operation
+    // stores, so it is bounded by the object size the worker accepts.
+    // A request that carries none is the permit flow: a container in
+    // the body, bounded by a chain's size.
+    let credential = req
+        .headers()
+        .get(hyper::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| dialog_remote_ucan::is_credential(value))
+        .map(str::to_owned);
+    let limit = if credential.is_some() {
+        MAX_PAYLOAD_BYTES
+    } else {
+        MAX_BODY_BYTES
+    };
+
     // Refused on size alone, before anything is decoded — the same
     // limit the worker applies, so a request rejected in production is
     // rejected here too.
@@ -641,9 +663,9 @@ async fn handle_request(
         .get(hyper::header::CONTENT_LENGTH)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<u64>().ok())
-        && declared > MAX_BODY_BYTES
+        && declared > limit
     {
-        return Ok(cors_response(too_large_response()));
+        return Ok(cors_response(too_large_response(limit)));
     }
 
     // Read request body
@@ -662,9 +684,29 @@ async fn handle_request(
             ));
         }
     };
-    if body_bytes.len() as u64 > MAX_BODY_BYTES {
-        return Ok(cors_response(too_large_response()));
+    if body_bytes.len() as u64 > limit {
+        return Ok(cors_response(too_large_response(limit)));
     }
+
+    // From here on `body_bytes` is the container, as the body used to
+    // carry it, and `payload` the bytes a performed write stores.
+    let (body_bytes, payload) = match &credential {
+        Some(credential) => match dialog_remote_ucan::credential_container(credential)
+            .and_then(|container| container.to_bytes())
+        {
+            Ok(container) => (Bytes::from(container), body_bytes),
+            Err(error) => {
+                let reason = dialog_capability::access::AuthorizeError::Malformed {
+                    detail: format!("the credential does not carry a container: {error}"),
+                };
+                return Ok(cors_response(authorize_error_response(
+                    authorize_status(&reason),
+                    &reason,
+                )));
+            }
+        },
+        None => (body_bytes, Bytes::new()),
+    };
 
     // Registration commands ride the same endpoint; anything else falls
     // through to the presign path untouched. Mirrors the Worker handler.
@@ -897,6 +939,15 @@ async fn handle_request(
         eprintln!("metering write failed: {error}");
     }
     match outcome {
+        // An invocation that arrived in `Authorization` is performed
+        // here, against the local S3 the permit names, and answered
+        // with the outcome the object route would have given.
+        Ok(descriptor) if credential.is_some() => {
+            let range = dialog_remote_ucan_s3::helpers::read_range(&body_bytes);
+            Ok(cors_response(
+                dialog_remote_ucan_s3::helpers::perform(descriptor, payload, range).await,
+            ))
+        }
         Ok(descriptor) => {
             // What the client gets is the authorized operation signed
             // for this server's `/object/` path, as the worker answers
@@ -1240,7 +1291,7 @@ fn cors_response<T>(mut response: Response<T>) -> Response<T> {
     );
     headers.insert(
         ACCESS_CONTROL_ALLOW_HEADERS,
-        "Content-Type, Range".parse().unwrap(),
+        "Authorization, Content-Type, Range".parse().unwrap(),
     );
     headers.insert(
         ACCESS_CONTROL_EXPOSE_HEADERS,
