@@ -12,6 +12,7 @@
 //!
 //! [analyze]: https://github.com/dialog-db/tonk-workers/tree/main/rust/tonk-schema/src/interpret.rs
 
+use base64::Engine as _;
 use lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range};
 use saphyr::{MarkedYaml, Scalar as SaphyrScalar, ScanError, YamlData, YamlLoader};
 use saphyr_parser::{Event, Marker, Parser, ScalarStyle, Span, SpannedEventReceiver, StrInput};
@@ -276,6 +277,13 @@ fn scalar_to_marked_yaml<'input>(event: Event<'input>, span: Span) -> MarkedYaml
         unreachable!("scalar_to_marked_yaml called on non-scalar event");
     };
     let data = match style {
+        // `!!binary` IS a core-schema handle, but saphyr's core-schema
+        // parse only knows `bool`/`int`/`float`/`null`/`str` and answers
+        // `None` for anything else — which would discard the text before
+        // it could be decoded. Claim it first, in every style: base64 is
+        // written as a `|` block far more often than as a plain scalar,
+        // so the style guard below would miss the common spelling.
+        _ if is_binary_tag(tag.as_deref()) => YamlData::Representation(value, style, tag),
         ScalarStyle::Plain | ScalarStyle::DoubleQuoted | ScalarStyle::SingleQuoted
             if tag.as_ref().is_some_and(|t| !t.is_yaml_core_schema()) =>
         {
@@ -287,6 +295,16 @@ fn scalar_to_marked_yaml<'input>(event: Event<'input>, span: Span) -> MarkedYaml
         }
     };
     MarkedYaml { span, data }
+}
+
+/// Whether `tag` is YAML 1.1's `!!binary`, whose content is base64.
+///
+/// Matched on the expanded handle rather than the `!!` shorthand: that
+/// is what the parser hands us once the document's tag directives are
+/// applied, so an author who rebinds the handle still gets the same
+/// meaning.
+fn is_binary_tag(tag: Option<&saphyr_parser::Tag>) -> bool {
+    tag.is_some_and(|tag| tag.is_yaml_core_schema() && tag.suffix == "binary")
 }
 
 fn yaml_to_data<'input>(yaml: saphyr::Yaml<'input>) -> YamlData<'input, MarkedYaml<'input>> {
@@ -968,6 +986,26 @@ fn walk_field_value(
             // (uppercase, spaces, punctuation), which means they
             // are unambiguously string literals.
             Some(FieldValue::Literal(Scalar::String(s.as_ref().to_owned())))
+        }
+        YamlData::Representation(text, style, tag) if is_binary_tag(tag.as_deref()) => {
+            // `!!binary` content is base64 with insignificant
+            // whitespace (a `|` block wraps it across lines), so the
+            // decoder is fed the text with every space and newline
+            // removed. A body that is not base64 is a diagnostic
+            // rather than a silent empty value: the author asked for
+            // bytes, and there is no sensible text reading of a
+            // failed decode.
+            let packed: String = text.as_ref().split_whitespace().collect();
+            match base64::engine::general_purpose::STANDARD.decode(&packed) {
+                Ok(bytes) => Some(FieldValue::Literal(Scalar::Bytes(bytes))),
+                Err(failure) => {
+                    out.push(error(
+                        range_of(value),
+                        format!("`!!binary` content is not valid base64: {failure}"),
+                    ));
+                    None
+                }
+            }
         }
         YamlData::Representation(text, style, _) => {
             // A plain (unquoted) scalar can be a symbol, a
@@ -1878,6 +1916,100 @@ person:
             &age.value,
             FieldValue::Literal(Scalar::UnsignedInteger(28))
         ));
+    }
+
+    /// `!!binary` is YAML 1.1's standard tag for base64 content. It is a
+    /// CORE-SCHEMA handle whose suffix saphyr does not know, so without
+    /// claiming it before the core-schema parse the text is discarded
+    /// before anything can decode it.
+    #[dialog_common::test]
+    fn it_parses_binary_field_value() {
+        let syntax = parse_clean(
+            r#"
+resource:
+  this: ?sheet
+  content: !!binary aGVsbG8=
+"#,
+        );
+        let Expression::Query(q) = &syntax.expressions[0] else {
+            panic!("expected Query");
+        };
+        let content = q.fields.iter().find(|f| f.name == "content").unwrap();
+        let FieldValue::Literal(Scalar::Bytes(bytes)) = &content.value else {
+            panic!("expected bytes, got {:?}", content.value);
+        };
+        assert_eq!(bytes, b"hello");
+    }
+
+    /// The spelling that matters: base64 of anything sizeable is written
+    /// as a `|` block. A literal block is normally taken as text before
+    /// the tag is ever consulted, so this is the case the tag check has
+    /// to run ahead of.
+    #[dialog_common::test]
+    fn it_parses_binary_written_as_a_literal_block() {
+        let syntax = parse_clean(
+            r#"
+resource:
+  this: ?sheet
+  content: !!binary |
+    aGVsbG8s
+    IHdvcmxk
+"#,
+        );
+        let Expression::Query(q) = &syntax.expressions[0] else {
+            panic!("expected Query");
+        };
+        let content = q.fields.iter().find(|f| f.name == "content").unwrap();
+        let FieldValue::Literal(Scalar::Bytes(bytes)) = &content.value else {
+            panic!("expected bytes, got {:?}", content.value);
+        };
+        // The block's line breaks are transfer whitespace, not content:
+        // both lines are one base64 stream.
+        assert_eq!(bytes, b"hello, world");
+    }
+
+    /// Bytes that are not text: a decoded value keeps every byte,
+    /// including those no string could carry.
+    #[dialog_common::test]
+    fn it_decodes_binary_that_is_not_valid_text() {
+        let syntax = parse_clean(
+            r#"
+resource:
+  this: ?icon
+  content: !!binary /w7/
+"#,
+        );
+        let Expression::Query(q) = &syntax.expressions[0] else {
+            panic!("expected Query");
+        };
+        let content = q.fields.iter().find(|f| f.name == "content").unwrap();
+        let FieldValue::Literal(Scalar::Bytes(bytes)) = &content.value else {
+            panic!("expected bytes, got {:?}", content.value);
+        };
+        assert_eq!(bytes, &[0xffu8, 0x0e, 0xff]);
+    }
+
+    /// A body that is not base64 is reported. The author asked for
+    /// bytes, and there is no sensible text reading of a failed decode
+    /// — silently keeping the source text would hand a stylesheet's
+    /// worth of base64 to something expecting bytes.
+    #[dialog_common::test]
+    fn it_reports_binary_content_that_is_not_base64() {
+        let parsed = parse(
+            r#"
+resource:
+  this: ?sheet
+  content: !!binary "not base64!"
+"#,
+        );
+        assert!(
+            parsed
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("not valid base64")),
+            "expected a base64 diagnostic, got: {:#?}",
+            parsed.diagnostics
+        );
     }
 
     #[dialog_common::test]

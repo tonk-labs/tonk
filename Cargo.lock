@@ -5128,6 +5128,7 @@ dependencies = [
 name = "tonk-notation"
 version = "0.6.15"
 dependencies = [
+ "base64",
  "dialog-common",
  "lsp-types",
  "saphyr",
