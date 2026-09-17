@@ -211,6 +211,60 @@ pub fn view_predicate() -> Value {
     })
 }
 
+/// The `style` dictionary's own predicate.
+///
+/// Separate from [`view_predicate`] for the reason
+/// [`view_bindings_query`] is separate from [`view_query`]: a view
+/// declaring no style would match nothing if `style` were pinned in
+/// the view query, and the display would render no template at all.
+pub fn style_predicate() -> Value {
+    json!({
+        "with": {
+            "style": {
+                "the": { "domain": "xyz.tonk.view.style", "keyed": "dictionary" },
+                "as": "Text",
+                "cardinality": "one"
+            }
+        }
+    })
+}
+
+/// The `font` dictionary's own predicate. Bytes rather than text —
+/// the dictionary a name lives in is what says how to read it.
+pub fn font_predicate() -> Value {
+    json!({
+        "with": {
+            "font": {
+                "the": { "domain": "xyz.tonk.view.font", "keyed": "dictionary" },
+                "as": "Bytes",
+                "cardinality": "one"
+            }
+        }
+    })
+}
+
+/// Build the query that reads a view's embeddable styles — every
+/// `style:` entry of the view instance whose `this` IS `view_entity`.
+///
+/// One flat row per key, folded by [`crate::fold::select_rows`] and
+/// read by [`crate::fold::style_content`], exactly as `show` is.
+pub fn style_query(view_entity: &str) -> Result<Query, serde_json::Error> {
+    let mut terms: IndexMap<String, Value> = IndexMap::new();
+    terms.insert("this".into(), json!(view_entity));
+    terms.insert("style".into(), json!({ "?": { "name": "style" } }));
+    terms.insert("style/key".into(), json!({ "?": { "name": "style/key" } }));
+    serde_json::from_value(json!({ "terms": terms, "predicate": style_predicate() }))
+}
+
+/// Build the query that reads a view's embeddable fonts.
+pub fn font_query(view_entity: &str) -> Result<Query, serde_json::Error> {
+    let mut terms: IndexMap<String, Value> = IndexMap::new();
+    terms.insert("this".into(), json!(view_entity));
+    terms.insert("font".into(), json!({ "?": { "name": "font" } }));
+    terms.insert("font/key".into(), json!({ "?": { "name": "font/key" } }));
+    serde_json::from_value(json!({ "terms": terms, "predicate": font_predicate() }))
+}
+
 /// Build the query that reads a view's compiled bindings — the
 /// `event!:` declarations its templates bind, resolved at lowering.
 ///
