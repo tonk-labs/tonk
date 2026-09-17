@@ -56,6 +56,8 @@ mod component;
 #[cfg(target_arch = "wasm32")]
 mod element;
 #[cfg(target_arch = "wasm32")]
+mod embed;
+#[cfg(target_arch = "wasm32")]
 mod fallback;
 #[cfg(target_arch = "wasm32")]
 mod notation;

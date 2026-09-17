@@ -2669,6 +2669,11 @@ fn mount_view_slide(
     // carousel must still resolve counter's own view, while a counter
     // display inside counter's OWN template must not.
     stamp_model_chain(host, &view_el, owner, facet);
+    // Read the embeds the template declares and inject what they name
+    // into the document head. From the template TEXT, not the mounted
+    // DOM: the markup below becomes the ROW template, so a `<link>`
+    // left in it would be cloned once per rendered row.
+    crate::embed::resolve_embeds(host, display, owner);
 
     let item: Element = if let Some(carousel) = inner.carousel.as_ref() {
         let wrapper = document.create_element("wa-carousel-item").ok()?;
