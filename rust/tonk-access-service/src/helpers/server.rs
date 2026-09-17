@@ -944,9 +944,16 @@ async fn handle_request(
         // with the outcome the object route would have given.
         Ok(descriptor) if credential.is_some() => {
             let range = dialog_remote_ucan_s3::helpers::read_range(&body_bytes);
-            Ok(cors_response(
-                dialog_remote_ucan_s3::helpers::perform(descriptor, payload, range).await,
-            ))
+            let mut response =
+                dialog_remote_ucan_s3::helpers::perform(descriptor, payload, range).await;
+            if let Ok(chain) = dialog_ucan_core::InvocationChain::try_from(body_bytes.as_ref()) {
+                for (name, value) in crate::describe::describe(&chain) {
+                    if let Ok(value) = HeaderValue::from_str(&value) {
+                        response.headers_mut().insert(name, value);
+                    }
+                }
+            }
+            Ok(cors_response(response))
         }
         Ok(descriptor) => {
             // What the client gets is the authorized operation signed
@@ -1295,7 +1302,7 @@ fn cors_response<T>(mut response: Response<T>) -> Response<T> {
     );
     headers.insert(
         ACCESS_CONTROL_EXPOSE_HEADERS,
-        "Content-Type, ETag, Content-Length, Content-Range"
+        "Content-Type, ETag, Content-Length, Content-Range, UCAN-Command, UCAN-Subject, UCAN-Arguments"
             .parse()
             .unwrap(),
     );

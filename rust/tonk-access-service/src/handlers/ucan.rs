@@ -97,7 +97,7 @@ fn with_cors_headers(response: Response) -> Response {
     );
     let _ = headers.set(
         "Access-Control-Expose-Headers",
-        "Content-Type, Content-Length, Content-Range, ETag, Server-Timing",
+        "Content-Type, Content-Length, Content-Range, ETag, Server-Timing, UCAN-Command, UCAN-Subject, UCAN-Arguments",
     );
     response.with_headers(headers)
 }
@@ -457,6 +457,7 @@ async fn perform(
     let authorized = Date::now().as_millis();
     screen_provisioning(container_bytes, env).await?;
     let screened = Date::now().as_millis();
+    let described = crate::describe::describe(verified.chain());
 
     // A write's bytes are the body, metered as declared; the layer
     // reads them as they arrive.
@@ -486,6 +487,9 @@ async fn perform(
     let _ = headers.set("Content-Type", answer.content_type);
     if let Some(version) = &answer.version {
         let _ = headers.set("ETag", &format!("\"{version}\""));
+    }
+    for (name, value) in &described {
+        let _ = headers.set(name, value);
     }
     let _ = headers.set(
         "Server-Timing",

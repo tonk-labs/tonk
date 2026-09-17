@@ -48,6 +48,7 @@ use worker::*;
 pub(crate) const PREFLIGHT_MAX_AGE: &str = "86400";
 
 pub mod deletion;
+pub mod describe;
 pub mod email;
 mod error;
 mod handlers;
