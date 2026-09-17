@@ -3,7 +3,9 @@
 //! Handles POST /ucan/ requests by:
 //! 1. Reading the CBOR-encoded UCAN container from the request body
 //! 2. Passing it to UcanAuthorizer for verification and authorization
-//! 3. Returning the serialized AuthorizedRequest as CBOR
+//! 3. Reissuing the authorized operation as a service-signed permit
+//!    against this worker's `/object/` path (see [`crate::permit`])
+//! 4. Returning the serialized permit as CBOR
 //!
 //! Served outside the Router, straight from the fetch event: recording
 //! an invocation must outlive the response, and only the event's
@@ -12,10 +14,11 @@
 use crate::error::Refusal;
 #[cfg(target_arch = "wasm32")]
 use crate::handlers::registration::handle as handle_registration;
+use crate::permit::{Claims, PERMIT_TTL, PermitKey};
 #[cfg(target_arch = "wasm32")]
 use crate::registration::registration_command;
 use dialog_capability::access::AuthorizeError;
-use dialog_remote_s3::{Address, S3Error, s3::S3Credential};
+use dialog_remote_s3::{Address, S3Error};
 use dialog_remote_ucan_s3::UcanAuthorizer;
 use worker::*;
 
@@ -84,7 +87,10 @@ fn with_cors_headers(response: Response) -> Response {
     let _ = headers.set("Access-Control-Allow-Origin", "*");
     let _ = headers.set("Access-Control-Allow-Methods", "POST, OPTIONS");
     let _ = headers.set("Access-Control-Allow-Headers", "Content-Type");
-    let _ = headers.set("Access-Control-Expose-Headers", "Content-Type");
+    let _ = headers.set(
+        "Access-Control-Expose-Headers",
+        "Content-Type, Server-Timing",
+    );
     response.with_headers(headers)
 }
 
@@ -195,7 +201,19 @@ pub async fn serve(mut req: Request, env: Env, ctx: Context) -> Result<Response>
             .map(with_cors_headers);
     }
 
-    let (response, metered) = match presign(&body_bytes, &env).await {
+    // Permits are redeemed where they were issued: the origin the
+    // client reached this service at is the one its `/object/` URLs
+    // name, so a preview alias and a custom domain each answer for
+    // themselves.
+    let origin = match req.url() {
+        Ok(url) => url.origin().ascii_serialization(),
+        Err(error) => {
+            let refusal = Refusal::unclassified(format!("request url: {error}"));
+            return Ok(with_cors_headers(refusal.to_response()?));
+        }
+    };
+
+    let (response, metered) = match presign(&body_bytes, &origin, &env).await {
         Ok((response, bytes)) => (response, Some(("ok", None, bytes))),
         Err(failure) => {
             failure.emit();
@@ -248,13 +266,16 @@ fn record_invocation(
     }
 }
 
-/// Authorize the container and answer the presigned request, together
+/// Authorize the container and answer the signed permit, together
 /// with the declared write bytes when the permit carries them.
 async fn presign(
     body_bytes: &[u8],
+    origin: &str,
     env: &Env,
 ) -> std::result::Result<(Response, u64), PresignFailure> {
+    let started = Date::now().as_millis();
     let authorizer = create_authorizer(env).map_err(PresignFailure::authorization)?;
+    let permit_key = permit_key(env).map_err(PresignFailure::authorization)?;
 
     // Revocation is checked inside the chain walk rather than after it,
     // so every proof is measured against the principals entitled to
@@ -276,9 +297,11 @@ async fn presign(
         .await
         .map_err(map_access_error)
         .map_err(PresignFailure::authorization)?;
+    let authorized = Date::now().as_millis();
 
     #[cfg(target_arch = "wasm32")]
     screen_provisioning(body_bytes, env).await?;
+    let screened = Date::now().as_millis();
 
     // Write permits carry the declared size as a signed Content-Length,
     // which is the exact byte figure metering records.
@@ -289,13 +312,33 @@ async fn presign(
         .and_then(|(_, value)| value.parse().ok())
         .unwrap_or(0);
 
-    let cbor_bytes = serde_ipld_dagcbor::to_vec(&authorized_request)
+    // The authorizer described the operation against its placeholder
+    // address; what the client gets is that operation signed for this
+    // service's own `/object/` path.
+    let expires = Date::now().as_millis() / 1_000 + PERMIT_TTL;
+    let permit = Claims::lift(&authorized_request, authorizer_address(), expires)
+        .and_then(|claims| permit_key.issue(origin, &claims))
+        .map_err(Refusal::unclassified)
+        .map_err(PresignFailure::authorization)?;
+
+    let cbor_bytes = serde_ipld_dagcbor::to_vec(&permit)
         .map_err(|e| Refusal::unclassified(format!("failed to serialize response: {e}")))
         .map_err(PresignFailure::authorization)?;
     Response::from_bytes(cbor_bytes)
         .map(|r| {
             let headers = Headers::new();
             let _ = headers.set("Content-Type", "application/cbor");
+            // Where the redeem's time went: the chain verify with its
+            // revocation lookups, the servability screen, and the whole.
+            let _ = headers.set(
+                "Server-Timing",
+                &format!(
+                    "authorize;dur={}, screen;dur={}, total;dur={}",
+                    authorized.saturating_sub(started),
+                    screened.saturating_sub(authorized),
+                    Date::now().as_millis().saturating_sub(started)
+                ),
+            );
             (r.with_headers(headers), bytes)
         })
         .map_err(|e| Refusal::unclassified(format!("response error: {e}")))
@@ -476,13 +519,55 @@ thread_local! {
     /// The authorizer built by this isolate, if it has built one.
     static AUTHORIZER: std::cell::OnceCell<UcanAuthorizer> =
         const { std::cell::OnceCell::new() };
+    /// The permit key derived by this isolate, if it has derived one.
+    static PERMIT_KEY: std::cell::OnceCell<PermitKey> = const { std::cell::OnceCell::new() };
+}
+
+/// The address every authorizer describes requests against. See
+/// [`authorizer_address`].
+static ADDRESS: std::sync::LazyLock<Address> = std::sync::LazyLock::new(|| {
+    Address::builder("https://object.invalid")
+        .region("auto")
+        .bucket("objects")
+        .build()
+        .expect("the placeholder address is well-formed")
+});
+
+/// The key permits are signed and verified with, derived once per
+/// isolate from the service seed. A failed derivation is not cached.
+pub(crate) fn permit_key(env: &Env) -> std::result::Result<PermitKey, Refusal> {
+    PERMIT_KEY.with(|cached| {
+        if let Some(key) = cached.get() {
+            return Ok(key.clone());
+        }
+        let seed = env
+            .secret("SERVICE_SECRET_KEY")
+            .map_err(|e| Refusal::unclassified(format!("Missing SERVICE_SECRET_KEY: {e}")))?
+            .to_string();
+        let key = PermitKey::derive(&seed).map_err(Refusal::unclassified)?;
+        let _ = cached.set(key.clone());
+        Ok(key)
+    })
+}
+
+/// The address the authorizer describes requests against.
+///
+/// It is a placeholder. The authorizer needs an S3 address to turn a
+/// verified invocation into a request, but nothing here talks S3 any
+/// more: the request is read back off the permit ([`Claims::lift`])
+/// and performed over the R2 binding, or reissued for the client to
+/// present at `/object/`. The host does not resolve on purpose, so a
+/// permit that escaped this translation fails loudly instead of
+/// reaching a bucket.
+pub(crate) fn authorizer_address() -> &'static Address {
+    &ADDRESS
 }
 
 /// The UcanAuthorizer for this isolate.
 ///
-/// It is built from deployment configuration — vars and secrets that
-/// an isolate cannot see change — so reading the bindings once and
-/// reusing the result costs nothing in freshness. A failed build is
+/// Built once and reused: what it carries across requests is its
+/// `did:web` resolution cache, which is what makes a chain issued by a
+/// web identity cheap to verify the second time. A failed build is
 /// not cached: the next request tries again.
 pub(crate) fn create_authorizer(env: &Env) -> std::result::Result<UcanAuthorizer, Refusal> {
     AUTHORIZER.with(|cached| {
@@ -495,42 +580,11 @@ pub(crate) fn create_authorizer(env: &Env) -> std::result::Result<UcanAuthorizer
     })
 }
 
-/// Create UcanAuthorizer from environment configuration.
-fn build_authorizer(env: &Env) -> std::result::Result<UcanAuthorizer, Refusal> {
-    // Get R2 configuration from environment
-    let account_id = env
-        .var("R2_ACCOUNT_ID")
-        .map_err(|e| Refusal::unclassified(format!("Missing R2_ACCOUNT_ID: {e}")))?
-        .to_string();
-
-    let access_key_id = env
-        .secret("R2_ACCESS_KEY_ID")
-        .map_err(|e| Refusal::unclassified(format!("Missing R2_ACCESS_KEY_ID: {e}")))?
-        .to_string();
-
-    let secret_access_key = env
-        .secret("R2_SECRET_ACCESS_KEY")
-        .map_err(|e| Refusal::unclassified(format!("Missing R2_SECRET_ACCESS_KEY: {e}")))?
-        .to_string();
-
-    let bucket = env
-        .var("R2_BUCKET_NAME")
-        .map_err(|e| Refusal::unclassified(format!("Missing R2_BUCKET_NAME: {e}")))?
-        .to_string();
-
-    // Build R2 endpoint URL
-    let endpoint = format!("https://{}.r2.cloudflarestorage.com", account_id);
-
-    // Create S3 credentials for R2 (using "auto" region as R2 requires)
-    let address = Address::builder(&endpoint)
-        .region("auto")
-        .bucket(&bucket)
-        .build()
-        .map_err(|e| Refusal::unclassified(format!("Failed to create address: {e}")))?;
-
-    let credential = S3Credential::new(access_key_id, secret_access_key);
-
-    Ok(UcanAuthorizer::new(address, Some(credential)))
+/// Create the authorizer: verification only, describing requests
+/// against the placeholder [`authorizer_address`] with no credential,
+/// since nothing it produces is ever presigned.
+fn build_authorizer(_env: &Env) -> std::result::Result<UcanAuthorizer, Refusal> {
+    Ok(UcanAuthorizer::new(authorizer_address().clone(), None))
 }
 
 /// The typed refusal for an authorization failure: the reason itself
