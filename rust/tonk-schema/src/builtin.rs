@@ -168,6 +168,25 @@ fn view_descriptor() -> ConceptDefinition {
                     "cardinality": "one",
                     "optional": true,
                     "description": "dag-cbor of the event descriptors resolved at lowering"
+                },
+                // Content the templates embed with `with:href`, keyed
+                // the same way `show` is: its own domain, so a style
+                // named `ui` cannot collide with the template named
+                // `ui` above, and one style can be superseded without
+                // restating the rest.
+                //
+                // Untyped, because a style is text but a font embedded
+                // the same way is bytes (`!!binary`). What says how to
+                // read one is the element embedding it, not the fact.
+                //
+                // Not marked optional: a keyed collection is
+                // zero-or-more already, so a view declaring no style
+                // matches with an empty map and `optional` would be
+                // widening what is already widest.
+                "style": {
+                    "the": { "domain": "xyz.tonk.view.style", "keyed": "dictionary" },
+                    "cardinality": "one",
+                    "description": "Content the templates embed, keyed by name"
                 }
             }
         }))
