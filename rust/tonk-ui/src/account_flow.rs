@@ -6359,6 +6359,7 @@ mod tests {
 
     #[cfg(feature = "connection-invites")]
     #[dialog_common::test]
+    // Storybook HANDOFF-22: signup preserves the signed approval request.
     async fn it_declines_a_terminal_request_after_fresh_browser_sign_in(
         env: TestEnvironment,
     ) -> Result<()> {
@@ -6384,16 +6385,16 @@ mod tests {
         // Provider-free Settings raises the existing account ceremony first.
         run_cluster_ceremony(&browser, "terminal-fresh-decline@example.com").await?;
         activate_in_another_tab(&browser, &env, "terminal-fresh-decline@example.com").await?;
-        await_signup_hub(&browser).await?;
-        // The printed signed request is still usable after completing sign-in.
-        goto(&browser, approval_url.as_str()).await?;
+        wait_for_absent(&browser, "#tonk-register").await?;
+        // Signup must return to this exact request without manually reopening it.
         enter_hub(&browser).await?;
-        wait_for_text_containing(&browser, "[data-terminal-status]", "0 selected").await?;
+        wait_for_displayed(&browser, "[data-terminal-decline]").await?;
+        assert_eq!(browser.current_url().await?, approval_url);
         click_terminal_decision(&browser, "[data-terminal-decline]").await?;
         await_terminal_decision(
             &browser,
             &request.id(),
-            "request declined. the terminal keeps its existing setup.",
+            "request cancelled. you can close this tab.",
         )
         .await?;
         let output = finish_link(&mut child, &mut stdout, &mut stderr, prefix).await?;
@@ -6582,6 +6583,80 @@ mod tests {
     /// The test never imports browser/account signing material into the CLI.
     #[cfg(feature = "connection-invites")]
     #[dialog_common::test]
+    // Storybook HANDOFF-21: recover signup into the original scoped invitation.
+    async fn it_returns_from_agent_invite_signup_and_connects_the_original_space(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let browser = driver_with_prf(&env).await?;
+        goto(&browser, env.tonk_web.as_str()).await?;
+        wait_for_service_worker(&browser).await?;
+        let key = create_space_awaiting_remote(&browser, "Before signup", false).await?;
+        await_url_containing(&browser, &format!("/space/{key}")).await?;
+        let original = browser.current_url().await?;
+        enter_space_view(&browser).await?;
+        wait_for_displayed(&browser, "[data-invite-account]").await?;
+        click(&browser, "[data-invite-account]")
+            .await
+            .context("open invite account setup")?;
+        browser.enter_default_frame().await?;
+        run_cluster_ceremony(&browser, "agent-recovery@example.com").await?;
+        activate_in_another_tab(&browser, &env, "agent-recovery@example.com").await?;
+        wait_for_absent(&browser, "#tonk-register").await?;
+        enter_space_view(&browser).await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
+        let copy = "[data-agent-mode=scoped] .agent-prompt__copy";
+        loop {
+            if let Ok(button) = browser.find(By::Css(copy)).await
+                && button.is_displayed().await.unwrap_or(false)
+            {
+                break;
+            }
+            if let Ok(button) = browser.find(By::Css("[data-invite-action=sync]")).await
+                && button.is_displayed().await.unwrap_or(false)
+            {
+                button.click().await.context("enable invitation sync")?;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                let state = browser.execute("return {mode:document.querySelector('tonk-agent-invite-controls')?.getAttribute('mode'),status:document.querySelector('[data-agent-handoff-status]')?.textContent,buttons:[...document.querySelectorAll('[data-invite-action]')].map(b=>({action:b.dataset.inviteAction,hidden:b.hidden}))}", vec![]).await?;
+                anyhow::bail!(
+                    "invitation did not become ready after signup: {}",
+                    state.json()
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!(browser.current_url().await?, original);
+        let invite = copied_agent_bearer(&browser)
+            .await
+            .context("copy recovered invitation")?;
+        let profile = tempfile::tempdir()?;
+        let output = tonk_command_in(&env, &profile)
+            .args(["connect", &invite, "--name", "recovered-space"])
+            .env("TONK_CONNECTION_ORIGIN", env.tonk_web.as_str())
+            .output()
+            .await?;
+        anyhow::ensure!(
+            output.status.success(),
+            "agent import failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(profile.path().join("spaces/spaces.json"))?)?;
+        assert!(
+            registry["spaces"]
+                .as_object()
+                .unwrap()
+                .values()
+                .any(|entry| entry["connection"]["subject"]
+                    .as_str()
+                    .is_some_and(|subject| subject.ends_with(&key)))
+        );
+        browser.quit().await?;
+        Ok(())
+    }
+
+    #[cfg(feature = "connection-invites")]
+    #[dialog_common::test]
     async fn it_connects_with_an_ordinary_bearer_after_the_issuer_closes(
         env: TestEnvironment,
     ) -> Result<()> {
@@ -6709,8 +6784,12 @@ mod tests {
         wait_for_text_containing(&browser, &row, "setup confirmation received").await?;
         capture_connection_management(&browser, &group_id, "connection").await?;
         click(&browser, &format!("[data-connection-revoke='{group_id}']")).await?;
-        wait_for_text_containing(&browser, &row, "revocation acknowledged for 6 of 6 grants")
-            .await?;
+        wait_for_text_containing(
+            &browser,
+            &row,
+            "access removal confirmed for 6 of 6 permissions",
+        )
+        .await?;
         assert_eq!(
             browser
                 .execute(
@@ -7200,7 +7279,7 @@ mod tests {
         )
         .await?;
         enter_space_view(&browser).await?;
-        wait_for_displayed(&browser, ".connection-invite-new").await?;
+        wait_for_displayed(&browser, "[data-invite-action=new]").await?;
         let copy_controls = browser.find_all(By::Css(".agent-prompt__copy")).await?;
         for control in copy_controls {
             assert!(
@@ -7241,8 +7320,12 @@ mod tests {
         wait_for_text_containing(&browser, &row, "setup confirmation received").await?;
         capture_connection_management(&browser, &first_id, "connection-two").await?;
         click(&browser, &format!("[data-connection-revoke='{first_id}']")).await?;
-        wait_for_text_containing(&browser, &row, "revocation acknowledged for 6 of 6 grants")
-            .await?;
+        wait_for_text_containing(
+            &browser,
+            &row,
+            "access removal confirmed for 6 of 6 permissions",
+        )
+        .await?;
         browser.enter_default_frame().await?;
         let groups = get_json(&browser, "/api/account/connections").await?;
         let sibling = successful_body("sibling remains active", &groups)

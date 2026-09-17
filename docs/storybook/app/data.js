@@ -1733,7 +1733,7 @@ window.STORYBOOK_DATA = {
       "file": "verification/accounts.md",
       "id": "HANDOFF-21",
       "priority": "P1",
-      "result": "Plan 002 final CLI refuses old links/flags without mutation; multiple-holder browser journey passes (68.00s) on artifact eebc5c6a953f7630. Prior service/KV/D1 and import/restart evidence remains. Layout, keyboard focus and no animation checked; guest reduced-motion preference, external release, Safari and global propagation remain unverified."
+      "result": "Current artifact 8f6fd822f2ec2f3a: anonymous-space signup/verification returns to the same space and CLI import passes (8.09s); issuer-closed import/edit/reconnect/revoke passes (12.19s); independent invitations and CLI accounts pass (19.00s). Execution and fixes. Synthetic-passkey Chrome/local services only; Safari, production, physical passkeys, and external email remain unverified."
     },
     {
       "claim": "Exact selected-space terminal grants (Selected terminal spaces).",
@@ -1741,7 +1741,7 @@ window.STORYBOOK_DATA = {
       "file": "verification/accounts.md",
       "id": "HANDOFF-22",
       "priority": "P1",
-      "result": "Verified locally on snapshot artifact d7f3967a6db1fa1a: selections 26.97s, decline 8.83s, offline revoked-then-fresh addition 36.98s and conversion 13.95s pass; checkpoint and earlier captures. Snapshot regression fails before and passes after fix; attribution of every earlier refusal remains uncertain and needs staging monitoring. Lower-layer codec, CLI recovery, worker, HTTP and SQLite/D1 gates pass. External release, CI, Safari and global propagation remain unrun."
+      "result": "Current artifact 8f6fd822f2ec2f3a: exact one/two/all selection passes (18.68s); signup automatically returns to the pending request and cancel preserves CLI state (6.40s); offline additions/revocations/re-add pass (21.94s). Execution and fixes. Earlier lower-layer and conversion evidence remains; Safari, CI, production, and global propagation remain unverified."
     },
     {
       "claim": "Device list identifies self separately from shared rows (Resolve).",

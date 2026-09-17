@@ -1079,6 +1079,9 @@ fn finish_linking(this: &HtmlElement) {
             stack.set_hidden(false);
         }
     }
+    if this.get_attribute("view").as_deref() == Some("settings") {
+        open_settings_view(this);
+    }
 }
 
 /// Whether a linking ceremony exists (visible or suspended) — the body

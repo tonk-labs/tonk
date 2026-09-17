@@ -1101,7 +1101,10 @@ view!:
         .space-unknown-narrator { padding:10px 14px; color:var(--edge-soft);
           font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:13px;
           font-weight:400; line-height:1.55; text-wrap:pretty; }
-        .space-unknown-run { display:flex; }
+        .space-unknown-run { display:flex; flex-wrap:wrap; gap:7px; }
+        .space-unknown-run > * { flex:1 1 180px; }
+        tonk-space-login { display:block; }
+        button.space-unknown-home { border:0; border-radius:0; font:inherit; }
         .space-unknown-home { width:100%; min-height:40px; padding:8px 10px;
           display:flex; align-items:flex-end; justify-content:flex-end; gap:8px;
           background:var(--edge-ink); color:var(--edge-on); text-decoration:none;
@@ -1154,8 +1157,8 @@ view!:
              row means the link opens nothing this account holds.
 
              So the panel is a nested display over `tonk:space`, and
-             "invalid link" moves into ITS `no-model` — reached only
-             when there is genuinely no directory row. -->
+             account-access recovery moves into ITS `no-model` — reached
+             only when this profile has no directory row. -->
         <!-- Light-DOM slots must be hidden in the template too: before the
              display initializes they otherwise paint as ordinary content. -->
         <div slot="no-model" hidden class="space-unknown">
@@ -1169,10 +1172,25 @@ view!:
               <tonk-title text="Not here — Tonk"></tonk-title>
               <a class="space-unknown-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
               <div class="space-unknown-wall">
-                <h1 class="space-unknown-statement">invalid link</h1>
-                <p class="space-unknown-narrator">The address in your browser opens this space only if you already have access. To join, you need an invite link. Ask someone in the space to open <strong>share</strong>, choose <strong>copy link</strong>, and send you that link. Open it in your browser to join.</p>
+                <h1 class="space-unknown-statement">this account does not have this space</h1>
+                <p class="space-unknown-narrator">if you already have access, sign in to the account you use for this space. otherwise, ask someone in the space to open <strong>share</strong>, choose <strong>copy link</strong>, and send you an invite.</p>
                 <!-- A plain anchor lets the guest relay navigation to the host. -->
                 <div class="space-unknown-run">
+                  <tonk-component>
+                    <script type="tonk/module">
+                      customElements.get("tonk-space-login") ||
+                        customElements.define("tonk-space-login", class extends HTMLElement {
+                          connectedCallback() {
+                            this.onclick = event => {
+                              if (!event.target.closest("button")) return;
+                              globalThis.tonk.register(JSON.stringify({ reason: "space-login" }));
+                            };
+                          }
+                          disconnectedCallback() { this.onclick = null; }
+                        });
+                    </script>
+                    <tonk-space-login><button class="space-unknown-home" type="button">sign in<span aria-hidden="true">&#9656;</span></button></tonk-space-login>
+                  </tonk-component>
                   <a class="space-unknown-home" href="/">go to home<span aria-hidden="true">&#9656;</span></a>
                 </div>
               </div>

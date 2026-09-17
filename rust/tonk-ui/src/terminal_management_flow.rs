@@ -51,7 +51,7 @@ async fn add_space(browser: &WebDriver, request: &str, subject: &str) -> Result<
     wait_for_text_containing(
         browser,
         "[data-terminal-management-result]",
-        "selected access was sent",
+        "access was sent.",
     )
     .await?;
     Ok(())
@@ -97,6 +97,12 @@ async fn capture_terminal_management(browser: &WebDriver, request: &str) -> Resu
             .await?
             .send_keys(Key::Tab)
             .await?;
+        assert_eq!(
+            browser.execute("return document.activeElement.matches('details > summary')", vec![]).await?.json(),
+            &serde_json::json!(true),
+            "keyboard must reach terminal details before add spaces"
+        );
+        browser.active_element().await?.send_keys(Key::Tab).await?;
         let focus = browser.execute(r#"const node=document.activeElement, style=getComputedStyle(node);return {
             add:node.matches('[data-terminal-add-open]'), visible:node.matches(':focus-visible'),
             ring:style.outlineStyle!=='none'||style.boxShadow!=='none', height:node.getBoundingClientRect().height,
@@ -178,7 +184,7 @@ async fn it_manages_offline_terminal_additions_and_revocations(env: TestEnvironm
     await_terminal_decision(
         &browser,
         &request.id(),
-        "selected access was sent. check the terminal for completed setup.",
+        "spaces approved. return to your terminal to finish.",
     )
     .await?;
     let output = finish_link(&mut child, &mut stdout, &mut stderr, prefix).await?;
@@ -264,7 +270,7 @@ async fn it_manages_offline_terminal_additions_and_revocations(env: TestEnvironm
     wait_for_text_containing(
         &browser,
         &format!("[data-connection-id='{old_id}']"),
-        "revocation acknowledged for 6 of 6 grants",
+        "access removal confirmed for 6 of 6 permissions",
     )
     .await?;
     let revoked = groups(&browser, &request.id()).await?;
@@ -354,7 +360,7 @@ async fn it_manages_offline_terminal_additions_and_revocations(env: TestEnvironm
     wait_for_text_containing(
         &browser,
         &format!("[data-connection-id='{stale_id}']"),
-        "revocation acknowledged for 6 of 6 grants",
+        "access removal confirmed for 6 of 6 permissions",
     )
     .await?;
     assert_eq!(
@@ -506,7 +512,7 @@ async fn it_manages_offline_terminal_additions_and_revocations(env: TestEnvironm
     wait_for_text_containing(
         &browser,
         "[data-terminal-management-result]",
-        "revocation acknowledged for 24 of 24 grants",
+        "access removal confirmed for 24 of 24 permissions",
     )
     .await?;
     let final_groups = groups(&browser, &request.id()).await?;

@@ -276,6 +276,27 @@ fn it_hides_space_absence_slots_before_display_initialization() {
 }
 
 #[test]
+fn absent_space_offers_sign_in_without_changing_hidden_slot_lifecycle() {
+    let missing = PROFILE_LIBRARY
+        .split("<div slot=\"no-model\" hidden class=\"space-unknown\">")
+        .nth(1)
+        .expect("missing-space fallback stays hidden before display initialization");
+    assert!(missing.contains("<div slot=\"no-model\" hidden>"));
+    assert!(
+        missing.contains("globalThis.tonk.register(JSON.stringify({ reason: \"space-login\" }));")
+    );
+    assert!(missing.contains("type=\"button\">sign in"));
+    assert!(missing.contains("sign in to the account you use for this space"));
+    assert!(!missing.contains("invalid link"));
+    assert!(
+        !missing.contains("returnPath"),
+        "the host derives the trusted return route"
+    );
+    assert!(PROFILE_LIBRARY.contains("slot=\"no-entity\" hidden"));
+    assert!(missing.contains("<span slot=\"no-view\" hidden></span>"));
+}
+
+#[test]
 fn it_styles_the_absent_space_as_tonk_edge_chrome() {
     let absent = PROFILE_LIBRARY
         .split("/* The absent-space state")
@@ -319,7 +340,7 @@ fn it_styles_the_absent_space_as_tonk_edge_chrome() {
     for contract in [
         "class=\"space-unknown-mast\"",
         "class=\"space-unknown-wall\"",
-        "invalid link",
+        "this account does not have this space",
         "class=\"space-unknown-home\" href=\"/\">go to home",
     ] {
         assert!(
@@ -329,7 +350,7 @@ fn it_styles_the_absent_space_as_tonk_edge_chrome() {
     }
     // Two, and they must stay two: the absent-space panel says one of
     // exactly two things. A space the account's directory row names is
-    // DOWNLOADING; one it does not name is an invalid link. Collapsing
+    // DOWNLOADING; one it does not name offers account/invite recovery. Collapsing
     // them is the bug this pins -- a space that is merely still
     // arriving was told it did not have access.
     assert_eq!(
@@ -588,7 +609,7 @@ fn it_keeps_machine_instructions_in_the_production_copy_prompt() {
         include_str!("../../tonk-core/assets/library/onboarding-agent.yaml"),
     ] {
         let copied = library
-            .split("copy-label=\"Copy prompt\"")
+            .split("copy-label=\"copy prompt\"")
             .nth(1)
             .and_then(|tail| tail.split("</wa-copy-button>").next())
             .expect("the agent prompt copy button");
@@ -600,7 +621,7 @@ fn it_keeps_machine_instructions_in_the_production_copy_prompt() {
         );
         assert!(
             !library
-                .split("copy-label=\"Copy prompt\"")
+                .split("copy-label=\"copy prompt\"")
                 .next()
                 .unwrap_or_default()
                 .contains(command),
@@ -1185,7 +1206,8 @@ fn it_renders_all_grant_set_receipts_without_claiming_agent_presence() {
         .unwrap();
     assert!(receipt.contains("directory: |"));
     assert!(receipt.contains("entity={this} model=tonk:agent-connection"));
-    assert!(receipt.contains("agent connection acknowledged"));
+    assert!(receipt.contains("agent setup confirmed"));
+    assert!(receipt.contains("not whether the agent is online"));
     assert!(receipt.contains("data-this={this}"));
     assert!(!receipt.contains("Your agent connected"));
     assert!(

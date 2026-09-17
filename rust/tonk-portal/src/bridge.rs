@@ -279,11 +279,11 @@ const BOOTSTRAP_JS: &str = r#"(function(){
     // a `window` and a user gesture, which the guest's opaque realm and
     // the service worker both lack. The guest posts the refusal class so
     // the host can word the prompt. Fire-and-forget (no response).
-    register:function(reason){
+    register:function(reason,relay){
       var opener=document.activeElement;
       // Even an unfocused opener needs the ceremony's terminal event.
       var token=mint();
-      if(token){ registerFocus.set(token,opener); }
+      if(token){ registerFocus.set(token,{opener:opener,relay:typeof relay==="function"?relay:null}); }
       ready.then(function(){port.postMessage({v:1,type:"register",reason:reason,focusToken:token});});
     },
     // Same-origin request performed by the HOST: the opaque guest can't reach a
@@ -335,12 +335,16 @@ const BOOTSTRAP_JS: &str = r#"(function(){
         h.resolve(env.delegation); return;
       }
       case "custody-open": {
+        var custody=registerFocus.get(env.focusToken);
+        if(custody&&custody.relay){custody.relay(env.type);}
         window.dispatchEvent(new Event("tonk:custody-opened")); return;
       }
       case "custody-focus":
       case "register-focus": {
-        var opener=registerFocus.get(env.focusToken);
+        var registration=registerFocus.get(env.focusToken);
+        var opener=registration&&registration.opener;
         registerFocus.delete(env.focusToken);
+        if(registration&&registration.relay){registration.relay(env.type);opener=null;}
         // The top-page ceremony has been torn down. Its opener may have been
         // replaced by a profile-fact render while the ceremony was running,
         // so signal the guest window even when that old node can no longer
@@ -354,7 +358,10 @@ const BOOTSTRAP_JS: &str = r#"(function(){
         return;
       }
       case "register-focus-discard": {
-        registerFocus.delete(env.focusToken); return;
+        var discarded=registerFocus.get(env.focusToken);
+        registerFocus.delete(env.focusToken);
+        if(discarded&&discarded.relay){discarded.relay(env.type);}
+        return;
       }
       case "fetch-result": {
         var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
@@ -1993,8 +2000,42 @@ fn handle_register(state: &Rc<RefCell<PortalState>>, port: &MessagePort, data: &
     REGISTER_HANDLER.with(|handler| {
         if let Some(handler) = handler.borrow().as_ref() {
             handler(&reason, focus_return);
+        } else if let Some(window) = window()
+            && let Ok(tonk) = Reflect::get(&window, &"tonk".into())
+            && let Ok(register) = Reflect::get(&tonk, &"register".into())
+            && let Some(register) = register.dyn_ref::<js_sys::Function>()
+        {
+            // A sealed guest may itself host portals. Only the outer shell
+            // owns account UI; relay through this guest's established port.
+            let _ = relay_register(register, &tonk, &reason, focus_return);
         }
     });
+}
+
+fn relay_register(
+    register: &js_sys::Function,
+    receiver: &JsValue,
+    reason: &str,
+    focus_return: Option<RegisterFocusReturn>,
+) -> Result<(), JsValue> {
+    let held = Rc::new(RefCell::new(focus_return));
+    let callback = Closure::<dyn FnMut(String)>::new(move |kind: String| {
+        if kind == "custody-open" {
+            if let Some(reply) = held.borrow().as_ref() {
+                reply.show_custody();
+            }
+        } else if let Some(reply) = held.borrow_mut().take() {
+            match kind.as_str() {
+                "register-focus" => reply.restore(),
+                "custody-focus" => reply.restore_custody(),
+                // Dropping an unhandled reply discards only this child's token.
+                _ => {}
+            }
+        }
+    })
+    .into_js_value();
+    register.call2(receiver, &reason.into(), &callback)?;
+    Ok(())
 }
 
 /// A one-shot return path to the exact control in a sealed guest that asked
@@ -2054,8 +2095,8 @@ type RegisterHandler = Box<dyn Fn(&str, Option<RegisterFocusReturn>)>;
 
 thread_local! {
     /// What to do when a guest asks for registration. `None` until the
-    /// shell installs one, which is correct for a page with no account
-    /// UI: the ask is dropped rather than half-performed.
+    /// shell installs one. Nested sealed guests relay through their existing
+    /// parent port; a page with neither handler nor bridge drops the request.
     static REGISTER_HANDLER: std::cell::RefCell<Option<RegisterHandler>> =
         const { std::cell::RefCell::new(None) };
 }
@@ -4336,6 +4377,43 @@ mod tests {
 
         let returned = listener.wait_for("register-focus").await;
         assert_eq!(get_str(&returned, "focusToken").as_deref(), Some("focus-2"));
+    }
+
+    #[dialog_common::test]
+    async fn it_relays_nested_registration_focus_and_discard_to_the_child_port() {
+        for terminal in ["register-focus", "custody-focus", "register-focus-discard"] {
+            let channel = MessageChannel::new().expect("message channel");
+            let listener = PortListener::attach(&channel.port2());
+            let reply = RegisterFocusReturn {
+                port: channel.port1(),
+                frame: None,
+                token: "inner-opener".into(),
+                handled: false,
+            };
+            let outer_register = js_sys::Function::new_with_args(
+                "reason, relay",
+                &format!(
+                    "if(reason!=='needs-account')throw Error('wrong reason');relay('custody-open');relay('{terminal}');"
+                ),
+            );
+            relay_register(
+                &outer_register,
+                &JsValue::NULL,
+                "needs-account",
+                Some(reply),
+            )
+            .unwrap();
+            let opened = listener.wait_for("custody-open").await;
+            assert_eq!(
+                get_str(&opened, "focusToken").as_deref(),
+                Some("inner-opener")
+            );
+            let returned = listener.wait_for(terminal).await;
+            assert_eq!(
+                get_str(&returned, "focusToken").as_deref(),
+                Some("inner-opener")
+            );
+        }
     }
 
     #[dialog_common::test]

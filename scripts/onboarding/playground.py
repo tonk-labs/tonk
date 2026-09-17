@@ -57,8 +57,8 @@ def agent_library(core):
     rule = 'rule!:\n  description: Joins the repository name' + rule
     view = core.split('view!:\n  this: tonk:agent-invite\n', 1)[1].split('\n# Connection receipt', 1)[0]
     view = 'view!:\n  this: tonk:agent-invite\n' + view
-    view = view.replace('Then tell it what you want to build.', 'Then tell it what you want to build on the Agent playground page.')
-    view = view.replace('Your agent will connect to this space.', 'Your agent will connect to this space and be instructed to work only on the Agent playground page.')
+    view = view.replace('then tell it what you want to build.', 'then tell it what you want to build on the Agent playground page.')
+    view = view.replace('keep it private.', 'keep it private. the prompt asks your agent to work on the Agent playground page, but the link gives access to the whole space.')
     view = view.replace("You're helping build the &quot;{name}&quot; Tonk space.", "You're helping build only the &quot;Agent playground&quot; page in the &quot;{name}&quot; Tonk space.")
     view = view.replace('Ask me what I want to build.', 'Ask me what I want to build on the Agent playground page.')
     old = 'Finish with `npx --yes @tonk/cli space home &lt;concept&gt;` to put the result on the space home.'

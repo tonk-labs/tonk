@@ -182,6 +182,15 @@ fn open_with_return(guest_restore: Option<Box<dyn FnOnce()>>) {
     let _ = host.set_attribute("aria-labelledby", "tonk-register-head");
     let _ = host.set_attribute("aria-describedby", "tonk-register-status");
     host.set_inner_html(DIALOG_HTML);
+    if let Some(location) = web_sys::window().map(|window| window.location())
+        && let Some(path) = terminal_approval_return(
+            &location.pathname().unwrap_or_default(),
+            &location.search().unwrap_or_default(),
+            &location.hash().unwrap_or_default(),
+        )
+    {
+        let _ = host.set_attribute(RETURN_PATH, &path);
+    }
     let _ = body.append_child(&host);
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -2089,9 +2098,7 @@ pub(crate) fn finish_ceremony() {
             // Close FIRST: the reload used to take the dialog down with
             // the document, and a route change does not. Leaving it up
             // parks a finished ceremony over the Hub.
-            close();
-            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-            tonk_host::navigate_to("/");
+            finish_account_navigation(&host);
         }
         return;
     }
@@ -2110,10 +2117,8 @@ pub(crate) fn finish_ceremony() {
             return;
         }
         if (signing_in || named.is_some()) && pending_share().is_none() {
-            // See above: close the ceremony, then route to the Hub.
-            close();
-            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-            tonk_host::navigate_to("/");
+            // Close the ceremony, then resume terminal approval or return to the Hub.
+            finish_account_navigation(&host);
             return;
         }
         match named {
@@ -2620,9 +2625,62 @@ pub fn adopt_stashed_share() {
 /// so "return to space" can actually return there.
 const SHARE_RETURN: &str = "tonk-share-return";
 
-/// Where the finished ceremony returns to — stamped on the dialog host by
-/// [`adopt_stashed_share`] when the linking screen replaced the space page.
+/// Where the ceremony returns: a captured terminal approval URL, or the
+/// interrupted share adopted by [`adopt_stashed_share`].
 const RETURN_PATH: &str = "data-return-path";
+
+/// Preserve only the local terminal approval route, including its signed
+/// fragment. Never take a redirect destination from a query parameter.
+fn terminal_approval_return(path: &str, search: &str, hash: &str) -> Option<String> {
+    (path == "/settings/link" && hash.starts_with("#tonk-terminal-v1="))
+        .then(|| format!("{path}{search}{hash}"))
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn finish_account_navigation(host: &web_sys::Element) {
+    let saved = host.get_attribute(RETURN_PATH);
+    let destination = account_completion_destination(saved.as_deref());
+    close();
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        // The login overlay can leave the URL unchanged. In that case the
+        // router still needs to render the now-signed-in space picker.
+        let same_approval = web_sys::window().is_some_and(|window| {
+            let location = window.location();
+            destination != "/"
+                && format!(
+                    "{}{}{}",
+                    location.pathname().unwrap_or_default(),
+                    location.search().unwrap_or_default(),
+                    location.hash().unwrap_or_default()
+                ) == destination
+        });
+        tonk_host::navigate_to(destination);
+        if same_approval
+            && let Some(window) = web_sys::window()
+            && let Ok(event) = web_sys::Event::new("popstate")
+        {
+            let _ = window.dispatch_event(&event);
+        }
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    let _ = destination;
+}
+
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+fn account_completion_destination(saved: Option<&str>) -> &str {
+    saved
+        .filter(|value| {
+            if value.starts_with("/space/") {
+                return true;
+            }
+            value.split_once('#').is_some_and(|(path, fragment)| {
+                path.split('?').next() == Some("/settings/link")
+                    && fragment.starts_with("tonk-terminal-v1=")
+            })
+        })
+        .unwrap_or("/")
+}
 
 /// Return to the surface the ceremony replaced.
 ///
@@ -2666,7 +2724,33 @@ fn return_to_previous() {
 /// is unopened, so the dialog says so instead of offering to create a
 /// second one.
 pub fn describe(payload: &str) {
-    let request = parse_request(payload);
+    let mut request = parse_request(payload);
+    let agent_invite = matches!(
+        request.reason.as_str(),
+        "agent-invite-account" | "agent-invite-activation"
+    );
+    if agent_invite || request.reason == "space-login" {
+        if let Some(window) = web_sys::window()
+            && let Some(host) = window
+                .document()
+                .and_then(|document| document.get_element_by_id(DIALOG_ID))
+        {
+            let location = window.location();
+            let path = location.pathname().unwrap_or_default();
+            if path.starts_with("/space/") {
+                let destination = format!(
+                    "{}{}{}",
+                    path,
+                    location.search().unwrap_or_default(),
+                    location.hash().unwrap_or_default()
+                );
+                let _ = host.set_attribute(RETURN_PATH, &destination);
+            }
+        }
+        if request.reason == "agent-invite-activation" {
+            request.reason = tonk_worker_api::share::BLOCKED_NEEDS_ACTIVATION.into();
+        }
+    }
     remember_space(&request.space);
     let Some(document) = web_sys::window().and_then(|window| window.document()) else {
         return;
@@ -2701,13 +2785,21 @@ pub fn describe(payload: &str) {
     if request.reason != tonk_worker_api::share::BLOCKED_NEEDS_ACTIVATION {
         return;
     }
-    set_status("Your account is waiting on its email. Open the link we sent, then share again.");
+    set_status(if agent_invite {
+        "open the verification email, then return here to invite your agent."
+    } else {
+        "Your account is waiting on its email. Open the link we sent, then share again."
+    });
     if let Some(head) = document
         .query_selector("#tonk-register-head")
         .ok()
         .flatten()
     {
-        head.set_text_content(Some("confirm your email to share"));
+        head.set_text_content(Some(if agent_invite {
+            "verify your email"
+        } else {
+            "confirm your email to share"
+        }));
     }
 }
 
@@ -2750,6 +2842,100 @@ fn on_click(host: &Element, selector: &str, handler: impl Fn() + 'static) {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn it_returns_agent_invite_setup_to_the_original_space() {
+        let window = web_sys::window().unwrap();
+        let document = window.document().unwrap();
+        let history = window.history().unwrap();
+        let original = window.location().href().unwrap();
+        let target = "/space/did:key:example/open/playground?view=agent#section";
+        for reason in [
+            "agent-invite-account",
+            "agent-invite-activation",
+            "space-login",
+        ] {
+            history
+                .replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(target))
+                .unwrap();
+            let host = document.create_element("dialog").unwrap();
+            host.set_id(super::DIALOG_ID);
+            document.body().unwrap().append_child(&host).unwrap();
+            super::describe(&format!(r#"{{"reason":"{reason}"}}"#));
+            assert_eq!(
+                host.get_attribute(super::RETURN_PATH).as_deref(),
+                Some(target)
+            );
+            history
+                .replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some("/"))
+                .unwrap();
+            super::finish_account_navigation(&host);
+            assert_eq!(
+                format!(
+                    "{}{}{}",
+                    window.location().pathname().unwrap(),
+                    window.location().search().unwrap(),
+                    window.location().hash().unwrap()
+                ),
+                target
+            );
+            assert!(!host.is_connected());
+        }
+        history
+            .replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&original))
+            .unwrap();
+    }
+
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn it_restores_terminal_approval_when_the_login_dialog_closes() {
+        let window = web_sys::window().unwrap();
+        let document = window.document().unwrap();
+        let history = window.history().unwrap();
+        let original = window.location().href().unwrap();
+        let target = "/settings/link#tonk-terminal-v1=signed-request";
+        for current in ["/", target] {
+            history
+                .replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(current))
+                .unwrap();
+            let host = document.create_element("dialog").unwrap();
+            host.set_id(super::DIALOG_ID);
+            host.set_attribute(super::RETURN_PATH, target).unwrap();
+            document.body().unwrap().append_child(&host).unwrap();
+            super::finish_account_navigation(&host);
+            assert_eq!(window.location().pathname().unwrap(), "/settings/link");
+            assert_eq!(
+                window.location().hash().unwrap(),
+                "#tonk-terminal-v1=signed-request"
+            );
+            assert!(!host.is_connected());
+        }
+        history
+            .replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&original))
+            .unwrap();
+    }
+
+    #[dialog_common::test]
+    fn it_returns_to_terminal_approval_after_account_completion() {
+        let path = super::terminal_approval_return(
+            "/settings/link",
+            "?source=cli",
+            "#tonk-terminal-v1=signed-request",
+        )
+        .unwrap();
+        assert_eq!(super::account_completion_destination(Some(&path)), path);
+        for other in [
+            None,
+            Some("/"),
+            Some("https://elsewhere.test/settings/link#tonk-terminal-v1=x"),
+            Some("//elsewhere.test/settings/link#tonk-terminal-v1=x"),
+            Some("/settings/link#other"),
+            Some("/settings/link?next=https://elsewhere.test"),
+        ] {
+            assert_eq!(super::account_completion_destination(other), "/");
+        }
+        assert!(super::terminal_approval_return("/settings", "", "#tonk-terminal-v1=x").is_none());
+    }
 
     use tonk_identity::custody::CustodyDenial;
 

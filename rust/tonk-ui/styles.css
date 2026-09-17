@@ -2259,6 +2259,8 @@ ui-account-settings .terminal-space .expl { margin: 4px 0 0; color: var(--soft);
 ui-account-settings .terminal-link .terminal-permission { margin: 0; max-width: none; }
 ui-account-settings .terminal-link [data-terminal-status] { margin-top: 12px; overflow-wrap: anywhere; }
 ui-account-settings .terminal-link [data-terminal-status]:empty { margin: 0; }
+ui-account-settings .terminal-link [data-terminal-create] { margin-top: 12px; }
+ui-account-settings .terminal-link [data-terminal-create][hidden] { display: none; }
 ui-account-settings .terminal-link button { min-height: 32px; }
 ui-account-settings .terminal-link .link-foot { flex-wrap: wrap; gap: 0; margin-top: 0;
     background: none; border: 0; box-shadow: none; }
