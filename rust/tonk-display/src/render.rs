@@ -37,8 +37,9 @@
 use std::collections::BTreeMap;
 
 use crate::template::{
-    Binding, BindingKind, BindingPlan, PlanNode, RepeatPlan, Snapshot, apply_attribute_binding,
-    extract_plan_with_scalars, navigate, render_segments_with_shadow, single_field_value,
+    Binding, BindingKind, BindingPlan, PlanNode, RepeatPlan, Segment, Snapshot,
+    apply_attribute_binding, extract_plan_with_scalars, navigate, render_segments_with_shadow,
+    single_field_value,
 };
 use ipld_core::ipld::Ipld;
 use tonk_schema::conclusion::Conclusion;
@@ -46,6 +47,7 @@ use wasm_bindgen::JsCast;
 use web_sys::{Document, DocumentFragment, Element, Node, window};
 
 use crate::events::preprocess::{self, Bindings};
+use crate::introspect::slot::{Origin, Slot, SlotKind, SlotScope};
 
 /// Stateful renderer for one `<tonk-view>`. Holds the template, the
 /// split plan, and (after the first apply) the mounted-state tree.
@@ -163,6 +165,43 @@ impl Renderer {
     /// re-applies through the binding diff.
     pub fn host_attributes(&self) -> std::collections::BTreeSet<String> {
         tonk_template::host_attributes(&self.plan)
+    }
+
+    /// Describe every slot currently mounted, paired with the node it
+    /// writes into — what the introspection overlay paints.
+    ///
+    /// The walk mirrors [`update_nodes`]: plan and mounted tree are
+    /// positionally parallel, so zipping them gives each binding its
+    /// cached last-rendered value. Nothing is re-read from the DOM,
+    /// because the DOM cannot answer the questions being asked —
+    /// a rendered `with="main@repo"` does not say which half was a
+    /// field, and a binding applied as a JS property left no
+    /// attribute behind at all.
+    pub fn describe(&self) -> Vec<(Slot, Option<Node>)> {
+        let mut out = Vec::new();
+        let Some(mounted) = self.mounted.as_ref() else {
+            return out;
+        };
+        let mut next_id = 0;
+        describe_nodes(
+            &self.plan.chrome,
+            &mounted.chrome,
+            &mounted.root,
+            &SlotScope::Chrome,
+            &mut next_id,
+            &mut out,
+        );
+        for (this, row) in &mounted.repeat.rows {
+            describe_nodes(
+                &self.plan.repeat.body,
+                &row.body,
+                &row.root,
+                &SlotScope::Row { this: this.clone() },
+                &mut next_id,
+                &mut out,
+            );
+        }
+        out
     }
 
     /// Apply an entity frame. First call mounts; subsequent calls
@@ -724,6 +763,16 @@ fn update_node(
             let rendered = render_binding(b, member, shadow);
             if *last_value != rendered {
                 write_binding(scope_root, b, &rendered, member, shadow);
+                // An open introspection overlay flashes where a value
+                // landed. This is the one place that knows a write was
+                // a *change* rather than a repaint, so the signal is
+                // raised here — behind a bool read, so a closed hood
+                // costs nothing.
+                if crate::introspect::armed()
+                    && let Some(node) = navigate(scope_root, &b.path)
+                {
+                    crate::introspect::note_change(&node);
+                }
                 *last_value = rendered;
             }
         }
@@ -1009,6 +1058,94 @@ fn collect_keyed_values(value: Option<Ipld>, entity_key: &str) -> Vec<(String, I
     }
 }
 
+/// Walk one scope's plan/mounted pair, collecting slots. Recurses
+/// into iterations, which carry their own scope (the subject plus the
+/// field and key being iterated).
+fn describe_nodes(
+    plan: &[PlanNode],
+    mounted: &[MountedNode],
+    scope_root: &Node,
+    scope: &SlotScope,
+    next_id: &mut u32,
+    out: &mut Vec<(Slot, Option<Node>)>,
+) {
+    for (plan_node, mounted_node) in plan.iter().zip(mounted.iter()) {
+        match (plan_node, mounted_node) {
+            (PlanNode::Binding(binding), MountedNode::Binding { last_value }) => {
+                let Some(slot) = describe_binding(binding, last_value, scope, next_id) else {
+                    continue;
+                };
+                out.push((slot, navigate(scope_root, &binding.path)));
+            }
+            (PlanNode::Iteration { field, body, .. }, MountedNode::Iteration { rows, .. }) => {
+                for (key, row) in rows {
+                    let nested = SlotScope::Iteration {
+                        this: subject_of(scope).to_owned(),
+                        field: field.clone(),
+                        key: key.clone(),
+                    };
+                    describe_nodes(body, &row.body, &row.root, &nested, next_id, out);
+                }
+            }
+            _ => {
+                // Plan and mounted shapes diverged — impossible for a
+                // constant plan, and not worth a panic in a debug tool.
+            }
+        }
+    }
+}
+
+/// Turn one leaf binding into a [`Slot`]. Returns `None` for a
+/// binding with no `{field}` references at all — nothing to introspect.
+fn describe_binding(
+    binding: &Binding,
+    last_value: &str,
+    scope: &SlotScope,
+    next_id: &mut u32,
+) -> Option<Slot> {
+    let (segments, kind) = match &binding.kind {
+        BindingKind::Text { segments } => (segments, SlotKind::Text),
+        BindingKind::Attribute {
+            attr_name,
+            segments,
+            force_attribute,
+        } => (
+            segments,
+            SlotKind::Attribute {
+                name: attr_name.clone(),
+                forced: *force_attribute,
+            },
+        ),
+    };
+    let fields: Vec<String> = segments
+        .iter()
+        .filter_map(|segment| match segment {
+            Segment::Field(name) => Some(name.clone()),
+            Segment::Text(_) => None,
+        })
+        .collect();
+    let origin = Origin::of(fields.first()?);
+    let id = *next_id;
+    *next_id += 1;
+    Some(Slot {
+        id,
+        fields,
+        origin,
+        kind,
+        scope: scope.clone(),
+        value: last_value.to_owned(),
+    })
+}
+
+/// The subject a scope belongs to. Chrome renders against the lead
+/// conclusion and has no subject of its own.
+fn subject_of(scope: &SlotScope) -> &str {
+    match scope {
+        SlotScope::Chrome => "",
+        SlotScope::Row { this } | SlotScope::Iteration { this, .. } => this,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1029,6 +1166,126 @@ mod tests {
             Renderer::from_snapshot_with_scalars(snapshot, &std::collections::BTreeSet::new()),
             host,
         )
+    }
+
+    /// Slot labels in mount order — the shape `describe` reports,
+    /// without dragging DOM nodes into the assertion.
+    fn labels(renderer: &Renderer) -> Vec<String> {
+        renderer
+            .describe()
+            .iter()
+            .map(|(slot, _)| slot.label())
+            .collect()
+    }
+
+    #[dialog_common::test]
+    fn it_describes_nothing_before_the_first_frame() {
+        let (renderer, _host) = renderer("<p>{title}</p>");
+        assert!(renderer.describe().is_empty());
+    }
+
+    #[dialog_common::test]
+    fn it_describes_a_text_slot_with_the_value_it_rendered() {
+        let (mut renderer, _host) = renderer("<p>{title}</p>");
+        renderer.apply(&[row("did:key:a", &[("title", "Hello")])]);
+        let described = renderer.describe();
+        assert_eq!(described.len(), 1);
+        let (slot, node) = &described[0];
+        assert_eq!(slot.fields, ["title"]);
+        assert_eq!(slot.value, "Hello");
+        assert_eq!(slot.origin, Origin::Concept);
+        assert_eq!(slot.kind, SlotKind::Text);
+        assert_eq!(
+            slot.scope,
+            SlotScope::Row {
+                this: "did:key:a".into()
+            }
+        );
+        assert!(node.is_some(), "a mounted text slot resolves to its node");
+    }
+
+    #[dialog_common::test]
+    fn it_describes_an_attribute_slot_by_the_attribute_it_writes() {
+        let (mut renderer, _host) = renderer("<a href=\"/e/{this}\">{title}</a>");
+        renderer.apply(&[row("did:key:a", &[("title", "Hello")])]);
+        let mut found = labels(&renderer);
+        found.sort();
+        assert_eq!(found, ["href=this", "title"]);
+    }
+
+    #[dialog_common::test]
+    fn it_classifies_a_host_reference_as_coming_from_the_host() {
+        let (mut renderer, _host) = renderer("<p>{title}</p><b>{dom.host/data-active}</b>");
+        let mut fields: BTreeMap<String, Ipld> = BTreeMap::new();
+        fields.insert("title".into(), Ipld::String("Hello".into()));
+        fields.insert("dom.host/data-active".into(), Ipld::String("yes".into()));
+        renderer.apply(&[Conclusion {
+            this: "did:key:a".into(),
+            fields,
+        }]);
+        let origins: Vec<Origin> = renderer
+            .describe()
+            .iter()
+            .map(|(slot, _)| slot.origin)
+            .collect();
+        assert!(origins.contains(&Origin::Host));
+        assert!(origins.contains(&Origin::Concept));
+    }
+
+    #[dialog_common::test]
+    fn it_describes_one_slot_set_per_repeat_row() {
+        let (mut renderer, _host) = renderer("<li>{title}</li>");
+        renderer.apply(&[
+            row("did:key:a", &[("title", "One")]),
+            row("did:key:b", &[("title", "Two")]),
+        ]);
+        let subjects: Vec<SlotScope> = renderer
+            .describe()
+            .iter()
+            .map(|(slot, _)| slot.scope.clone())
+            .collect();
+        assert_eq!(
+            subjects,
+            [
+                SlotScope::Row {
+                    this: "did:key:a".into()
+                },
+                SlotScope::Row {
+                    this: "did:key:b".into()
+                },
+            ]
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_scopes_a_slot_inside_an_iteration_to_its_key() {
+        let (mut renderer, _host) = renderer("<ul><li>{tags}</li></ul>");
+        let mut fields: BTreeMap<String, Ipld> = BTreeMap::new();
+        fields.insert(
+            "tags".into(),
+            Ipld::List(vec![
+                Ipld::String("red".into()),
+                Ipld::String("blue".into()),
+            ]),
+        );
+        renderer.apply(&[Conclusion {
+            this: "did:key:a".into(),
+            fields,
+        }]);
+        let described = renderer.describe();
+        assert_eq!(described.len(), 2, "one slot per iterated value");
+        for (slot, _) in &described {
+            assert!(
+                matches!(&slot.scope, SlotScope::Iteration { field, .. } if field == "tags"),
+                "got {:?}",
+                slot.scope
+            );
+        }
+        let values: Vec<&str> = described
+            .iter()
+            .map(|(slot, _)| slot.value.as_str())
+            .collect();
+        assert!(values.contains(&"red") && values.contains(&"blue"));
     }
 
     /// One conclusion with string fields.

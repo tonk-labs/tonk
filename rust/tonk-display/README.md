@@ -69,6 +69,34 @@ The presence of the `entity` attribute selects the mode:
 
 In both modes the query engine emits one flat row per tuple, so cardinality-many fields and multiple subjects arrive as separate rows. [`select_rows`] (in `fold`) groups rows by `this` and folds each group into one conclusion per subject, collapsing multi-valued fields to a list in first-seen order (identical values stay a scalar). Detail mode is then just a one-conclusion frame and directory mode a many-conclusion frame, rendered by the same repeat machinery.
 
+## Introspection
+
+`tonk_display::register()` also registers and mounts `<tonk-introspect>`, an
+overlay that makes this pipeline visible at the point of use. Hold Alt and the
+display under the pointer outlines; rest there for 300ms and observation
+switches on, boxing every slot the template filled and labelling it with the
+field that fed it. A value that changes while observation is on flashes where
+it landed. Alt-click pins the observation so you can move the pointer away;
+alt-click again to release it, or Escape.
+
+Slot colour is the field's origin: a concept field, `{this}`, a
+`{dom.host/*}` host attribute, or an iteration key. The corner readout names
+the concept, the facet, the mode, the subject and slot counts, and the two
+mismatches worth seeing — fields the concept declares that no slot renders,
+and fields a slot reads that the concept does not declare.
+
+The overlay reads the renderer's binding plan and value cache rather than the
+rendered DOM, because the DOM cannot answer the question: a rendered
+`with="main@repo"` does not say which half was a field, and a binding applied
+as a JS property left no attribute behind at all.
+
+It is inert until Alt goes down — one `mousemove` listener that reads `altKey`
+and returns, plus a bool read on the renderer's change path. Remove the
+`<tonk-introspect>` element to opt out entirely.
+
+See `/plan/display-introspection.md` for the design and the steps still open
+(command indicators, the concept and view panels, editing).
+
 ## Modules
 
 - [`element`](src/element.rs): the `<tonk-display>` orchestrator: lifecycle, the three subscriptions, mode selection, slide mounting (wasm only).
@@ -78,3 +106,6 @@ In both modes the query engine emits one flat row per tuple, so cardinality-many
 - [`render`](src/render.rs): the mounted-state DOM renderer for a `<tonk-view>` frame (wasm only).
 - [`fold`](src/fold.rs): `select_rows`, the multi-row to conclusion-per-subject collapser. Target-independent.
 - [`notation_format`](src/notation_format.rs): conclusion-to-`head!:` notation formatter, also used by `tonk-ui`.
+- [`introspect`](src/introspect.rs): the `<tonk-introspect>` overlay. The
+  state machine and slot description are target-independent; the element is
+  wasm only.

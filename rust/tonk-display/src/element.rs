@@ -294,6 +294,43 @@ impl Inner {
     }
 }
 
+impl crate::introspect::registry::DisplayFacts for Inner {
+    fn facts(&self, host: &Element) -> crate::introspect::slot::Snapshot {
+        use crate::introspect::slot::{Snapshot, declared_fields};
+        Snapshot {
+            model: host.get_attribute("model").filter(|v| !v.is_empty()),
+            model_entity: self.model_entity.clone(),
+            // `effective_facet` needs the whole `Inner`, and the
+            // mode default it applies is what actually rendered —
+            // reporting the bare attribute would hide the `ui` /
+            // `directory` choice, which is half of what an author
+            // is trying to see.
+            facet: Some(effective_facet(self)),
+            directory: self.directory,
+            subjects: self
+                .last_frame
+                .iter()
+                .map(|conclusion| conclusion.this.clone())
+                .collect(),
+            // In single-view mode there is exactly one slide. In
+            // carousel mode there are several and the one on screen
+            // is the carousel's business, so report the first
+            // rather than guess.
+            template: self
+                .slides
+                .values()
+                .next()
+                .map(|slide| slide.display.clone()),
+            fields: self
+                .portal_descriptor
+                .as_deref()
+                .map(declared_fields)
+                .unwrap_or_default(),
+            slots: Vec::new(),
+        }
+    }
+}
+
 /// The custom element.
 #[derive(Default)]
 pub struct TonkDisplay {
@@ -332,6 +369,10 @@ impl CustomElement for TonkDisplay {
         // Install reset / update / error JS methods on the host
         // so the tonk-host invokes them by name when frames arrive.
         install_method_delegates(&host, &state);
+        // Let the introspection overlay ask this display what it
+        // resolved. The registry holds a `Weak`, so it neither keeps a
+        // detached display alive nor needs unregistering.
+        crate::introspect::registry::register_display(&host, &state);
         *self.inner.borrow_mut() = Some(state.clone());
         start_flows(&host, state);
     }
