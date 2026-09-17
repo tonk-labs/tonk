@@ -175,9 +175,11 @@ fn view_descriptor() -> ConceptDefinition {
                 // `ui` above, and one style can be superseded without
                 // restating the rest.
                 //
-                // Untyped, because a style is text but a font embedded
-                // the same way is bytes (`!!binary`). What says how to
-                // read one is the element embedding it, not the fact.
+                // Stylesheets the templates embed with `with:href`,
+                // keyed the way `show` is: its own domain, so a style
+                // named `ui` cannot collide with the template named
+                // `ui` above, and one style can be superseded without
+                // restating the rest.
                 //
                 // Not marked optional: a keyed collection is
                 // zero-or-more already, so a view declaring no style
@@ -185,8 +187,24 @@ fn view_descriptor() -> ConceptDefinition {
                 // widening what is already widest.
                 "style": {
                     "the": { "domain": "xyz.tonk.view.style", "keyed": "dictionary" },
+                    "as": "Text",
                     "cardinality": "one",
-                    "description": "Content the templates embed, keyed by name"
+                    "description": "Stylesheets the templates embed, keyed by name"
+                },
+                // Font files, the binary sibling of `style`. Separate
+                // rather than one untyped dictionary because the
+                // dictionary a name lives in is what says how to read
+                // it: a style is CSS text, a font is bytes written as
+                // `!!binary`. A `<ui-font>` registers one as a family
+                // for the document, so a stylesheet names the family
+                // and never carries a `url()` — which is what keeps a
+                // blob-URL stylesheet from having a relative URL it
+                // cannot resolve.
+                "font": {
+                    "the": { "domain": "xyz.tonk.view.font", "keyed": "dictionary" },
+                    "as": "Bytes",
+                    "cardinality": "one",
+                    "description": "Font files the templates register, keyed by name"
                 }
             }
         }))

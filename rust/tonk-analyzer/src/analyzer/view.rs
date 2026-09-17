@@ -42,6 +42,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use tonk_notation::{Application as SyntaxApplication, Field, FieldValue, HeadName, Scalar};
 use tonk_schema::resolution::ConceptDefinition;
 use tonk_template::bindings::{Bindings, EventBinding, scan};
+use tonk_template::embed;
 use tonk_template::event::{EventDescriptor, Source, event_descriptor, parse_string_source};
 use tonk_template::fields::{self, FieldReference};
 
@@ -236,6 +237,10 @@ pub(crate) fn compile_bindings(
             if let Some(model) = &model {
                 check_interpolations(&template, entry.value_range, model)?;
             }
+            // Independent of the model: an embed reads the view's own
+            // content maps, not the concept it renders, so this is
+            // checkable even for a view whose `this:` does not resolve.
+            check_embeds(assertion, &template, entry.value_range)?;
             found.extend(scan(&template).into_iter().map(|binding| {
                 let range = offset_range(
                     entry.value_range,
@@ -413,6 +418,79 @@ impl Model {
 /// and renders **nothing** when it misses — so a typo costs a value on
 /// the page and produces no other symptom. This is the same failure the
 /// `on:` checks catch, on the other half of the template.
+/// The keys a view declares under one of its content dictionaries.
+///
+/// Absent map, or a map whose entries are not keyed literals, reads as
+/// an empty set — a view that declares nothing embeds nothing, which
+/// is exactly what the check should catch.
+fn declared_keys(assertion: &SyntaxApplication, dictionary: &str) -> BTreeSet<String> {
+    assertion
+        .fields
+        .iter()
+        .find(|field| field.name == dictionary)
+        .and_then(|field| match &field.value {
+            FieldValue::Nested(entries) => Some(entries),
+            _ => None,
+        })
+        .map(|entries| entries.iter().map(|entry| entry.name.clone()).collect())
+        .unwrap_or_default()
+}
+
+/// Check the embeds a template makes against what the view declares.
+///
+/// Only a reference reading the view's OWN content is checkable here:
+/// one carrying an entity (`base@other/concept`) reads another view's
+/// map, which lives on the branch rather than in this document, so it
+/// resolves at render the way a declaration seeded by an earlier
+/// document does.
+///
+/// A name is accepted when EITHER dictionary declares it. The scan
+/// reports the attribute, not the element carrying it, so which map a
+/// given embed reads is not knowable here — `<link>` reads `style:`
+/// and `<ui-font>` reads `font:`, and telling them apart would mean
+/// widening the shared template walk to carry tag names.
+fn check_embeds(
+    assertion: &SyntaxApplication,
+    template: &str,
+    value_range: lsp_types::Range,
+) -> Result<(), AnalyzeError> {
+    let embeds = embed::scan(template);
+    if embeds.is_empty() {
+        return Ok(());
+    }
+    let styles = declared_keys(assertion, "style");
+    let fonts = declared_keys(assertion, "font");
+    for reference in embeds {
+        if reference.entity.is_some()
+            || styles.contains(&reference.name)
+            || fonts.contains(&reference.name)
+        {
+            continue;
+        }
+        let mut known: Vec<String> = styles.union(&fonts).cloned().collect();
+        known.sort();
+        let known = if known.is_empty() {
+            "This view declares no `style:` or `font:`.".to_owned()
+        } else {
+            format!("Declared: {}.", known.join(", "))
+        };
+        return Err(AnalyzeError::at(
+            AnalyzeErrorKind::UnknownEmbed {
+                reference: reference.name.clone(),
+                dictionary: "style".to_owned(),
+                known,
+            },
+            offset_range(
+                value_range,
+                template,
+                reference.offset,
+                embed::HREF_ATTRIBUTE.chars().count(),
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn check_interpolations(
     template: &str,
     value_range: lsp_types::Range,
@@ -630,6 +708,64 @@ view!:
             }
         }
         None
+    }
+
+    /// A view embedding a style it declares lowers.
+    #[dialog_common::test]
+    fn it_accepts_an_embed_the_view_declares() {
+        let source = r#"
+view!:
+  this: tonk:demo
+  show:
+    ui: |
+      <link rel=stylesheet with:href=base>
+  style:
+    base: |
+      body { color: red; }
+"#;
+        lower(source).expect("an embed the view declares lowers");
+    }
+
+    /// A reference naming no declared content embeds nothing, and
+    /// nothing reports it — the page is simply unstyled. So it fails
+    /// the lowering instead.
+    #[dialog_common::test]
+    fn it_rejects_an_embed_the_view_does_not_declare() {
+        let source = r#"
+view!:
+  this: tonk:demo
+  show:
+    ui: |
+      <link rel=stylesheet with:href=missing>
+  style:
+    base: |
+      body { color: red; }
+"#;
+        let error = lower(source).expect_err("a dangling embed fails the lowering");
+        assert_eq!(error.kind.code(), "E_UNKNOWN_EMBED", "{error}");
+        assert!(
+            error.to_string().contains("missing"),
+            "the diagnostic quotes the reference: {error}",
+        );
+        assert!(
+            error.to_string().contains("base"),
+            "and lists what the view does declare: {error}",
+        );
+    }
+
+    /// A reference carrying an entity reads ANOTHER view's map, which
+    /// lives on the branch rather than in this document — so it is not
+    /// this check's to reject.
+    #[dialog_common::test]
+    fn it_leaves_a_cross_view_embed_to_resolve_at_render() {
+        let source = r#"
+view!:
+  this: tonk:demo
+  show:
+    ui: |
+      <link rel=stylesheet with:href=base@other/concept>
+"#;
+        lower(source).expect("a cross-view embed is not rejected here");
     }
 
     #[dialog_common::test]

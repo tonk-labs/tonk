@@ -405,6 +405,25 @@ pub enum AnalyzeErrorKind {
         /// by value.
         known: String,
     },
+    /// A `with:href` embed names content the view does not declare.
+    /// The reference resolves to nothing and the element embeds
+    /// nothing — an unstyled page, with no error anywhere — so a typo
+    /// fails the lowering instead.
+    ///
+    /// Only an embed reading the view's OWN content is checked here: a
+    /// reference carrying an entity reads another view's map, which is
+    /// on the branch rather than in this document.
+    #[error("`with:href={reference}` names no `{dictionary}:` this view declares. {known}")]
+    UnknownEmbed {
+        /// The reference as written, for a diagnostic to quote.
+        reference: String,
+        /// Which map it would have read (`style` or `font`).
+        dictionary: String,
+        /// The keys the view does declare, rendered. One string rather
+        /// than a list so the error type stays small enough to return
+        /// by value.
+        known: String,
+    },
     /// A bound `event!:` sources a command field from a `{name}` the
     /// view's model does not declare. The interpolation is resolved in
     /// the same scope a template's is, so the same miss applies: the
@@ -645,6 +664,7 @@ impl AnalyzeErrorKind {
             Self::UnknownBoundCommand { .. } => "E_UNKNOWN_BOUND_COMMAND",
             Self::EventCommandMismatch { .. } => "E_EVENT_COMMAND_MISMATCH",
             Self::UnknownTemplateField { .. } => "E_UNKNOWN_TEMPLATE_FIELD",
+            Self::UnknownEmbed { .. } => "E_UNKNOWN_EMBED",
             Self::UnknownEventSourceField { .. } => "E_UNKNOWN_EVENT_SOURCE_FIELD",
             Self::InvalidViewBindings { .. } => "E_INVALID_VIEW_BINDINGS",
             Self::UnknownField { .. } => "E_UNKNOWN_FIELD",
