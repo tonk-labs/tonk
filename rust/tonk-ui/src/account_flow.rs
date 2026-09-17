@@ -2101,6 +2101,78 @@ mod tests {
         Ok(())
     }
 
+    /// The hub's chrome travels with its view, not with an injected
+    /// stylesheet.
+    ///
+    /// `tonk-ui/styles.css` used to carry these rules and was handed to
+    /// every sealed guest; they are now the `space` view's own
+    /// `style: ui`, embedded by `with:href`. So the values asserted here
+    /// can ONLY have arrived by the embed resolving and injecting — if
+    /// it silently does nothing, `.hub-page` falls back to a transparent
+    /// background and default text color, and this fails.
+    ///
+    /// `/settings` renders the same chrome and embeds the same style
+    /// cross-view (`ui@space`), which is the arrangement that keeps one
+    /// declaration dressing both pages.
+    #[dialog_common::test]
+    async fn it_dresses_the_hub_from_the_view_that_declares_its_style(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        wait_for_service_worker(&driver).await?;
+
+        goto(&driver, env.tonk_web.as_str()).await?;
+        enter_hub(&driver).await?;
+        let hub = driver
+            .execute(
+                r#"const page = document.querySelector('.hub-page');
+                   const style = getComputedStyle(page);
+                   return {
+                     background: style.backgroundColor,
+                     color: style.color,
+                     embedded: document.querySelectorAll('style[data-tonk-embed]').length,
+                   };"#,
+                Vec::new(),
+            )
+            .await?;
+        let hub = hub.json();
+        // `--page: #e8e6e4` and `--ink: #38182a` from the view's own
+        // token block. A transparent background here means the style
+        // never arrived.
+        assert_eq!(
+            hub["background"], "rgb(232, 230, 228)",
+            "the hub must wear the page token its view declares; got {hub}",
+        );
+        assert_eq!(
+            hub["color"], "rgb(56, 24, 42)",
+            "the hub must wear the ink token its view declares; got {hub}",
+        );
+        assert_eq!(
+            hub["embedded"], 1,
+            "exactly one embed node, however often the view re-renders; got {hub}",
+        );
+
+        // The settings route reads the same declaration cross-view.
+        driver.enter_default_frame().await?;
+        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
+        enter_hub(&driver).await?;
+        let settings = driver
+            .execute(
+                r#"const style = getComputedStyle(document.querySelector('.hub-page'));
+                   return { background: style.backgroundColor };"#,
+                Vec::new(),
+            )
+            .await?;
+        assert_eq!(
+            settings.json()["background"],
+            "rgb(232, 230, 228)",
+            "/settings embeds the same style as the hub (`ui@space`)",
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
     #[dialog_common::test]
     async fn it_returns_bare_join_visits_home(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
