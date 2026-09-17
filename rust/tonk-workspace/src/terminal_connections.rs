@@ -54,8 +54,16 @@ pub(crate) fn refresh(host: &HtmlElement) {
     list.set_text_content(Some("loading terminal access…"));
     let host = host.clone();
     spawn_local(async move {
-        let rows = tonk_host::get_json("/api/account/terminal-links")
-            .await
+        let response = tonk_host::get_json("/api/account/terminal-links").await;
+        if !current(&host, &token) {
+            return;
+        }
+        crate::agent_connections::show_load_result(
+            &host,
+            "[data-terminal-connections]",
+            response.as_ref().err().and_then(|e| e.status),
+        );
+        let rows = response
             .ok()
             .and_then(|s| serde_json::from_str::<Vec<TerminalConnectionSummary>>(&s).ok());
         if !current(&host, &token) {
@@ -91,8 +99,10 @@ fn render(parent: &Element, terminal: &TerminalConnectionSummary) -> Option<()> 
     )
     .ok()?;
     append(&row, "b", "lft", &terminal.label)?;
+    let details = append(&row, "details", "expl", "")?;
+    append(&details, "summary", "", "terminal details")?;
     append(
-        &row,
+        &details,
         "p",
         "expl",
         &format!("terminal key: {}", terminal.recipient),
@@ -102,21 +112,21 @@ fn render(parent: &Element, terminal: &TerminalConnectionSummary) -> Option<()> 
         "p",
         "expl",
         &format!(
-            "delivery: {}. access is checked when used; this does not show whether the terminal is online.",
-            terminal.delivery_status
+            "{}. permission to sync is checked when the terminal connects; this does not show whether the terminal is online.",
+            if terminal.delivery_status == "delivered" {
+                "access sent"
+            } else {
+                "access waiting to be sent"
+            }
         ),
     )?;
     if terminal.delivery_status == "pending" {
-        button(
-            &row,
-            "retry initial delivery",
-            "data-terminal-retry-initial",
-        )?;
+        button(&row, "retry sending access", "data-terminal-retry-initial")?;
     }
     for pending in &terminal.pending_additions {
         let button = button(
             &row,
-            "retry pending space delivery",
+            "retry sending added spaces",
             "data-terminal-retry-addition",
         )?;
         let payload = serde_json::to_string(&TerminalConnectionAddRequest {
@@ -131,7 +141,7 @@ fn render(parent: &Element, terminal: &TerminalConnectionSummary) -> Option<()> 
     }
     let actions = append(&row, "div", "srowd", "")?;
     button(&actions, "add spaces", "data-terminal-add-open")?;
-    let revoke = button(&actions, "revoke all access", "data-terminal-revoke-all")?;
+    let revoke = button(&actions, "remove all access", "data-terminal-revoke-all")?;
     if terminal
         .spaces
         .iter()
@@ -232,25 +242,17 @@ pub(crate) fn open_add(target: &Element) {
                     &seat,
                     "p",
                     "expl",
-                    "access already granted; finish revocation before granting again",
+                    "access already added; finish removing it before adding it again",
                 );
             } else if !space.can_delegate {
-                let _ = append(
-                    &seat,
-                    "p",
-                    "expl",
-                    space
-                        .reason
-                        .as_deref()
-                        .unwrap_or("this account cannot delegate this space"),
-                );
+                let _ = append(&seat, "p", "expl", "ask the space owner for access.");
             }
         }
-        let _ = button(&seat, "grant selected spaces", "data-terminal-add-submit");
+        let _ = button(&seat, "add selected spaces", "data-terminal-add-submit");
         let _ = button(&seat, "cancel selection", "data-terminal-add-cancel");
         status(
             &row,
-            "new grants last 90 days. the terminal can receive them when it next checks for additions.",
+            "new access lasts 90 days. return to the terminal and run tonk link --resume with its request ID to receive it.",
         );
     });
 }
@@ -267,7 +269,7 @@ pub(crate) fn cancel_add(target: &Element) {
     }
     status(
         &row,
-        "selection closed. any previously sent grants remain listed after refresh.",
+        "selection closed. any access already sent remains listed after refresh.",
     );
 }
 pub(crate) fn submit_add(host: &HtmlElement, target: &Element) {
@@ -341,7 +343,7 @@ pub(crate) fn submit_add(host: &HtmlElement, target: &Element) {
         payload
     };
     busy(&row, true);
-    status(&row, "sending the complete selection…");
+    status(&row, "sending the selected access…");
     let host = host.clone();
     spawn_local(async move {
         let result =
@@ -373,19 +375,19 @@ pub(crate) fn submit_add(host: &HtmlElement, target: &Element) {
                 {
                     status(
                         &row,
-                        "the receipt did not match this selection. refresh to check saved grants.",
+                        "the confirmation did not match your selection. refresh to check which spaces were added.",
                     );
                     return;
                 }
                 refresh(&host);
                 announce(
                     &host,
-                    "selected access was sent. the terminal can receive it when it next checks for additions.",
+                    "access was sent. return to the terminal and resume its link request to receive the added spaces.",
                 );
             }
             None => status(
                 &row,
-                "delivery could not be confirmed. grant selected spaces retries the same decision; refresh to inspect saved grants.",
+                "sending access could not be confirmed. choose add selected spaces to retry, or refresh to check what was saved.",
             ),
         }
     });
@@ -411,7 +413,7 @@ fn revoke_groups(host: &HtmlElement, target: &Element, groups: Option<Vec<String
     }
     let payload = serde_json::json!({"groupIds": groups}).to_string();
     busy(&row, true);
-    status(&row, "sending terminal grant revocations…");
+    status(&row, "removing terminal access…");
     let host = host.clone();
     spawn_local(async move {
         let result = tonk_host::post_json(
@@ -437,13 +439,13 @@ fn revoke_groups(host: &HtmlElement, target: &Element, groups: Option<Vec<String
                 announce(
                     &host,
                     &format!(
-                        "revocation acknowledged for {acknowledged} of {total} grants. retry revoke all for any remaining grants. local copies and edits remain."
+                        "access removal confirmed for {acknowledged} of {total} permissions. retry remove all access for any remaining permissions. local copies and edits remain."
                     ),
                 );
             }
             _ => status(
                 &row,
-                "revocation could not be confirmed. retry or refresh for each grant's acknowledgement. local copies and edits remain.",
+                "access removal could not be confirmed. retry or refresh to check progress. local copies and edits remain.",
             ),
         }
     });
@@ -465,7 +467,7 @@ pub(crate) fn retry_addition(host: &HtmlElement, target: &Element) {
     if seat.has_child_nodes() {
         status(
             &row,
-            "close the current selection before retrying a saved delivery",
+            "close the current selection before retrying previously sent access",
         );
         return;
     }
@@ -483,7 +485,7 @@ pub(crate) fn retry_initial(host: &HtmlElement, target: &Element) {
         return;
     }
     busy(&row, true);
-    status(&row, "retrying the saved initial delivery…");
+    status(&row, "retrying the original access request…");
     let host = host.clone();
     spawn_local(async move {
         let result = tonk_host::post_json(&format!("/api/account/terminal-links/{id}/retry"), "{}")
@@ -500,12 +502,12 @@ pub(crate) fn retry_initial(host: &HtmlElement, target: &Element) {
             refresh(&host);
             announce(
                 &host,
-                "initial delivery acknowledged. check the terminal for completed setup.",
+                "access was sent. check the terminal to finish setup.",
             );
         } else {
             status(
                 &row,
-                "initial delivery could not be confirmed. if the approval window expired before delivery, start a new tonk link request.",
+                "sending access could not be confirmed. if the request expired before access was sent, run tonk link again.",
             );
         }
     });
@@ -554,9 +556,21 @@ mod tests {
             }],
         };
         render(&list, &terminal).unwrap();
+        let details = list.query_selector("details").unwrap().unwrap();
+        assert!(!details.has_attribute("open"));
+        assert_eq!(
+            details
+                .query_selector("summary")
+                .unwrap()
+                .unwrap()
+                .text_content()
+                .as_deref(),
+            Some("terminal details")
+        );
+        assert!(details.text_content().unwrap().contains("did:key:terminal"));
         let content = list.text_content().unwrap();
-        assert!(content.contains("revocation acknowledged for 5 of 6 grants"));
-        assert!(content.contains("retry revocation"));
+        assert!(content.contains("access removal confirmed for 5 of 6 permissions"));
+        assert!(content.contains("retry removing access"));
         assert!(content.contains("this does not show whether the terminal is online"));
         assert!(
             !list

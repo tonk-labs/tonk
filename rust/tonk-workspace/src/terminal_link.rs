@@ -128,6 +128,9 @@ pub(crate) fn reload(host: &HtmlElement) {
         list.set_text_content(None);
     }
     status(host, "loading spaces…");
+    if let Some(create) = node(host, "[data-terminal-create]") {
+        let _ = create.set_attribute("hidden", "");
+    }
     let host = host.clone();
     spawn_local(async move {
         let request = LinkRequest::from_url(&url, now()).await;
@@ -193,12 +196,7 @@ pub(crate) fn reload(host: &HtmlElement) {
             && !host.has_attribute("data-terminal-complete")
             && !host.has_attribute("data-terminal-busy")
         {
-            enabled(&host, "[data-terminal-approve]", false);
-            enabled(&host, "[data-terminal-decline]", false);
-            status(
-                &host,
-                "this approval request expired. run tonk link again in the terminal.",
-            );
+            show_expired(&host);
         }
     });
 }
@@ -245,6 +243,23 @@ fn choices(host: &HtmlElement) -> Vec<HtmlInputElement> {
         .collect()
 }
 
+fn show_expired(host: &HtmlElement) {
+    for input in choices(host) {
+        input.set_disabled(true);
+    }
+    for selector in [
+        "[data-terminal-all]",
+        "[data-terminal-approve]",
+        "[data-terminal-decline]",
+    ] {
+        enabled(host, selector, false);
+    }
+    status(
+        host,
+        "this approval request expired. run tonk link again in the terminal.",
+    );
+}
+
 pub(crate) fn selection_changed(host: &HtmlElement, all_changed: bool) {
     if host.has_attribute("data-terminal-busy")
         || host.has_attribute("data-terminal-complete")
@@ -252,9 +267,25 @@ pub(crate) fn selection_changed(host: &HtmlElement, all_changed: bool) {
     {
         return;
     }
+    if host.has_attribute("data-terminal-ready")
+        && host
+            .get_attribute("data-terminal-deadline")
+            .and_then(|value| value.parse::<u64>().ok())
+            .is_some_and(|deadline| deadline <= now())
+    {
+        show_expired(host);
+        return;
+    }
     let all =
         node(host, "[data-terminal-all]").and_then(|node| node.dyn_into::<HtmlInputElement>().ok());
     let choices = choices(host);
+    if let Some(create) = node(host, "[data-terminal-create]") {
+        if choices.is_empty() && host.has_attribute("data-terminal-ready") {
+            let _ = create.remove_attribute("hidden");
+        } else {
+            let _ = create.set_attribute("hidden", "");
+        }
+    }
     let eligible: Vec<_> = choices
         .iter()
         .filter(|input| input.get_attribute("data-terminal-eligible").as_deref() == Some("true"))
@@ -447,6 +478,12 @@ mod tests {
         host.set_attribute("data-terminal-deadline", &(now() + 60).to_string())
             .unwrap();
         let list = node(&host, "[data-terminal-spaces]").unwrap();
+        selection_changed(&host, false);
+        assert!(
+            !node(&host, "[data-terminal-create]")
+                .unwrap()
+                .has_attribute("hidden")
+        );
         for (name, subject, allowed) in [
             ("Project notes", "did:key:owned", true),
             ("Team space", "did:key:shared", true),
@@ -482,6 +519,11 @@ mod tests {
             .unwrap();
         all.set_checked(true);
         selection_changed(&host, true);
+        assert!(
+            node(&host, "[data-terminal-create]")
+                .unwrap()
+                .has_attribute("hidden")
+        );
         let inputs = choices(&host);
         assert!(inputs[0].checked() && inputs[1].checked());
         assert!(!inputs[2].checked() && inputs[2].disabled());
@@ -520,6 +562,24 @@ mod tests {
                 .text_content()
                 .unwrap()
                 .is_empty()
+        );
+        host.set_attribute("data-terminal-deadline", "1").unwrap();
+        all.set_checked(true);
+        selection_changed(&host, true);
+        assert!(all.disabled());
+        assert!(choices(&host).iter().all(|input| input.disabled()));
+        assert!(
+            node(&host, "[data-terminal-decline]")
+                .unwrap()
+                .has_attribute("disabled")
+        );
+        selection_changed(&host, false);
+        assert!(
+            node(&host, "[data-terminal-status]")
+                .unwrap()
+                .text_content()
+                .unwrap()
+                .contains("expired. run tonk link again")
         );
         host.remove();
     }
