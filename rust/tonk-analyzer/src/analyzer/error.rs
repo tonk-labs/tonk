@@ -424,6 +424,17 @@ pub enum AnalyzeErrorKind {
         /// by value.
         known: String,
     },
+    /// A `with:href` embed names a view that resolves to nothing. The
+    /// content it would read does not exist to be read, so the element
+    /// embeds nothing — the same silent miss an undeclared name makes,
+    /// one level out.
+    #[error("`with:href={reference}` names no view — `{view}` resolves to nothing")]
+    UnknownEmbedView {
+        /// The reference as written, for a diagnostic to quote.
+        reference: String,
+        /// The entity half that failed to resolve.
+        view: String,
+    },
     /// A bound `event!:` sources a command field from a `{name}` the
     /// view's model does not declare. The interpolation is resolved in
     /// the same scope a template's is, so the same miss applies: the
@@ -665,6 +676,7 @@ impl AnalyzeErrorKind {
             Self::EventCommandMismatch { .. } => "E_EVENT_COMMAND_MISMATCH",
             Self::UnknownTemplateField { .. } => "E_UNKNOWN_TEMPLATE_FIELD",
             Self::UnknownEmbed { .. } => "E_UNKNOWN_EMBED",
+            Self::UnknownEmbedView { .. } => "E_UNKNOWN_EMBED_VIEW",
             Self::UnknownEventSourceField { .. } => "E_UNKNOWN_EVENT_SOURCE_FIELD",
             Self::InvalidViewBindings { .. } => "E_INVALID_VIEW_BINDINGS",
             Self::UnknownField { .. } => "E_UNKNOWN_FIELD",

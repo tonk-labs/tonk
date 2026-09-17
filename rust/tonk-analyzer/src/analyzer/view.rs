@@ -240,7 +240,7 @@ pub(crate) fn compile_bindings(
             // Independent of the model: an embed reads the view's own
             // content maps, not the concept it renders, so this is
             // checkable even for a view whose `this:` does not resolve.
-            check_embeds(assertion, &template, entry.value_range)?;
+            check_embeds(assertion, &template, entry.value_range, scope)?;
             found.extend(scan(&template).into_iter().map(|binding| {
                 let range = offset_range(
                     entry.value_range,
@@ -453,6 +453,7 @@ fn check_embeds(
     assertion: &SyntaxApplication,
     template: &str,
     value_range: lsp_types::Range,
+    scope: &Scope,
 ) -> Result<(), AnalyzeError> {
     let embeds = embed::scan(template);
     if embeds.is_empty() {
@@ -461,10 +462,29 @@ fn check_embeds(
     let styles = declared_keys(assertion, "style");
     let fonts = declared_keys(assertion, "font");
     for reference in embeds {
-        if reference.entity.is_some()
-            || styles.contains(&reference.name)
-            || fonts.contains(&reference.name)
-        {
+        // A cross-view reference: the KEY lives on the branch and is
+        // not checkable here, but the view holding it must at least
+        // resolve. The graph prefetched both spellings, so a miss here
+        // means the name refers to nothing rather than that the
+        // resolve phase was not asked.
+        if let Some(view) = &reference.entity {
+            if resolve_concept(view, scope).is_none() {
+                return Err(AnalyzeError::at(
+                    AnalyzeErrorKind::UnknownEmbedView {
+                        reference: format!("{}@{view}", reference.name),
+                        view: view.clone(),
+                    },
+                    offset_range(
+                        value_range,
+                        template,
+                        reference.offset,
+                        embed::HREF_ATTRIBUTE.chars().count(),
+                    ),
+                ));
+            }
+            continue;
+        }
+        if styles.contains(&reference.name) || fonts.contains(&reference.name) {
             continue;
         }
         let mut known: Vec<String> = styles.union(&fonts).cloned().collect();
@@ -753,11 +773,12 @@ view!:
         );
     }
 
-    /// A reference carrying an entity reads ANOTHER view's map, which
-    /// lives on the branch rather than in this document — so it is not
-    /// this check's to reject.
+    /// A reference carrying an entity reads ANOTHER view's map. The
+    /// KEY is not checkable here — it lives on the branch — but the
+    /// view holding it must resolve, or the embed reads content that
+    /// does not exist.
     #[dialog_common::test]
-    fn it_leaves_a_cross_view_embed_to_resolve_at_render() {
+    fn it_rejects_an_embed_naming_a_view_that_does_not_resolve() {
         let source = r#"
 view!:
   this: tonk:demo
@@ -765,7 +786,36 @@ view!:
     ui: |
       <link rel=stylesheet with:href=base@other/concept>
 "#;
-        lower(source).expect("a cross-view embed is not rejected here");
+        let error = lower(source).expect_err("a dangling view fails the lowering");
+        assert_eq!(error.kind.code(), "E_UNKNOWN_EMBED_VIEW", "{error}");
+        assert!(
+            error.to_string().contains("other/concept"),
+            "the diagnostic names the view that did not resolve: {error}",
+        );
+    }
+
+    /// The key half of a cross-view reference stays unchecked: it is a
+    /// key in that view's own map, which is data on the branch rather
+    /// than anything this document declares.
+    #[dialog_common::test]
+    fn it_leaves_a_cross_view_key_to_resolve_at_render() {
+        let source = r#"
+concept!: &other
+  this: tonk:other
+  description: Another model.
+  with:
+    title:
+      description: The title.
+      the: xyz.tonk.other/title
+      as: text
+
+view!:
+  this: tonk:demo
+  show:
+    ui: |
+      <link rel=stylesheet with:href=anything@tonk:other>
+"#;
+        lower(source).expect("a resolvable view's key is not checked here");
     }
 
     #[dialog_common::test]
