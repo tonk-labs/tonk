@@ -11,7 +11,8 @@ use dialog_artifacts::Index;
 use dialog_artifacts::tree::TreeStorageBridge;
 use dialog_common::Blake3Hash as NodeHash;
 use dialog_repository::{
-    NetworkedIndex, PushError, RepositoryArchiveExt as _, RepositoryMemoryExt as _, Upstream,
+    NetworkedIndex, PushError, RepositoryArchiveExt as _, RepositoryMemoryExt as _, Revision,
+    Upstream,
 };
 use dialog_search_tree::{
     ContentAddressedStorage as TreeStorage, DialogSearchTreeError, TreeDifference,
@@ -72,7 +73,13 @@ impl<'a> Push<'a> {
     }
 
     /// Execute the push.
-    pub async fn perform<Env>(self, env: &Env) -> Result<(), ReactorError>
+    ///
+    /// Answers with the revision upstream now stands at, or `None` when
+    /// there was nothing to push. A caller that would otherwise read the
+    /// upstream head back — to colour a status, to compare against local
+    /// — takes it from here rather than paying another round trip for a
+    /// cell this call just settled.
+    pub async fn perform<Env>(self, env: &Env) -> Result<Option<Revision>, ReactorError>
     where
         Env: LoadProvider + BranchOpenProvider + PushProvider,
     {
@@ -86,7 +93,7 @@ impl<'a> Push<'a> {
         // divergent paths the diff visits. Uploads before the failure are
         // content-addressed, so retrying after hydration is idempotent.
         let error = match cached.handle().push().perform(env).await {
-            Ok(_) => return Ok(()),
+            Ok(pushed) => return Ok(pushed),
             Err(error) if is_missing_local_tree_node(&error) => error,
             Err(error) => return Err(error.into()),
         };
@@ -118,8 +125,7 @@ impl<'a> Push<'a> {
         .await
         .map_err(PushError::from)?;
 
-        cached.handle().push().perform(env).await?;
-        Ok(())
+        Ok(cached.handle().push().perform(env).await?)
     }
 }
 

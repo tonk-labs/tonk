@@ -220,7 +220,12 @@ pub async fn is_sync_enabled(tonk: &crate::worker::TonkState, repo: &str, branch
 /// sync against). Best-effort: a failure to acquire/fetch is logged, not
 /// surfaced — the caller's sync result already carried the real outcome.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn publish_settled_status(tonk: &crate::worker::TonkState, repo: &str, branch: &str) {
+async fn publish_settled_status(
+    tonk: &crate::worker::TonkState,
+    repo: &str,
+    branch: &str,
+    observed: Option<Option<Revision>>,
+) {
     let account = super::account_state::is_account_key(tonk, repo).await;
     // A user space paused mid-sync keeps `paused`. Account-system replicas
     // ignore user pause preferences and always remain in the sync population.
@@ -250,23 +255,30 @@ async fn publish_settled_status(tonk: &crate::worker::TonkState, repo: &str, bra
         return;
     }
 
-    let remote = match handle.fetch().perform(&tonk.operator).await {
-        Ok(remote) => remote,
-        Err(e) => {
-            log!("publish_settled_status: fetch {repo}/{branch} failed: {e}");
-            // An unserved subject is not offline: the service answered,
-            // and said no. Settle on `local` — the same status the
-            // failure path stamps — or the chip would flap between the
-            // two on every sweep.
-            let status = match classified_service_failure(&e) {
-                Some(TonkWorkerError::Upstream {
-                    code: Some(code), ..
-                }) if code == "NOT_PROVISIONED" => tonk_schema::Replica::local_status(),
-                _ => tonk_schema::Replica::offline_status(),
-            };
-            publish_sync_status_attr(tonk, repo, branch, status).await;
-            return;
-        }
+    // The caller usually knows where upstream stands: a push that
+    // landed says so in its answer, and re-reading the cell to colour a
+    // chip is a round trip that learns nothing. Only a caller with
+    // nothing to hand fetches.
+    let remote = match observed {
+        Some(remote) => remote,
+        None => match handle.fetch().perform(&tonk.operator).await {
+            Ok(remote) => remote,
+            Err(e) => {
+                log!("publish_settled_status: fetch {repo}/{branch} failed: {e}");
+                // An unserved subject is not offline: the service answered,
+                // and said no. Settle on `local` — the same status the
+                // failure path stamps — or the chip would flap between the
+                // two on every sweep.
+                let status = match classified_service_failure(&e) {
+                    Some(TonkWorkerError::Upstream {
+                        code: Some(code), ..
+                    }) if code == "NOT_PROVISIONED" => tonk_schema::Replica::local_status(),
+                    _ => tonk_schema::Replica::offline_status(),
+                };
+                publish_sync_status_attr(tonk, repo, branch, status).await;
+                return;
+            }
+        },
     };
 
     let state = SyncState::from(classify(local.as_ref(), remote.as_ref()));
@@ -1128,17 +1140,25 @@ pub async fn sync(
         .perform(&tonk_state.operator)
         .await
     {
-        Ok(_) => {
+        Ok(pushed) => {
             log!("Push succeeded: {}@{}", params.branch, params.repo);
             let after = session.handle().revision();
             announce_head(&params.repo, &params.branch, after.clone());
-            // Settle the chip: re-classify against the upstream and publish the
+            // Settle the chip: classify against the upstream and publish the
             // resolved status (e.g. `synced`), or it stays stuck on `pending`/
             // `syncing…` — the `sync` op only flipped it to `pending` at the
             // start. Done per-branch as this one finishes, so a slow branch
-            // never pins another's chip.
+            // never pins another's chip. A push that landed answers with the
+            // revision upstream now stands at, so the chip is coloured from
+            // what the push already learned rather than from another read of
+            // the same cell. `Ok(None)` means there was nothing to push, which
+            // leaves upstream where the pull above saw it.
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-            publish_settled_status(&tonk_state, &params.repo, &params.branch).await;
+            publish_settled_status(&tonk_state, &params.repo, &params.branch, Some(pushed)).await;
+            // Off the worker there is no chip to settle, so the revision
+            // the push answered with has no reader.
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+            let _ = pushed;
             Ok(Json(SyncResponse {
                 success: true,
                 disposition: SyncDisposition::Completed,
@@ -1150,9 +1170,11 @@ pub async fn sync(
         Err(e) => {
             log!("Push failed: {}@{}: {e:?}", params.branch, params.repo);
             // Still settle the chip — a failed push leaves us `ahead`, not
-            // `pending`; classify so the chip reflects reality.
+            // `pending`; classify so the chip reflects reality. A push that
+            // did not land says nothing about where upstream stands, so this
+            // is the one caller that has to ask.
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-            publish_settled_status(&tonk_state, &params.repo, &params.branch).await;
+            publish_settled_status(&tonk_state, &params.repo, &params.branch, None).await;
             let _ = (before, after_pull);
             let error = sync_failure(&e);
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
