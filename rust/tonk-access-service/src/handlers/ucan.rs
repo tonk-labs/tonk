@@ -93,7 +93,7 @@ fn with_cors_headers(response: Response) -> Response {
     let _ = headers.set("Access-Control-Allow-Methods", "POST, OPTIONS");
     let _ = headers.set(
         "Access-Control-Allow-Headers",
-        "Authorization, Content-Type, Accept, Range",
+        "Authorization, Cache-Control, Content-Type, Accept, Range",
     );
     let _ = headers.set(
         "Access-Control-Expose-Headers",
@@ -287,7 +287,7 @@ async fn serve_invocation(
         Err(refusal) => return refusal.to_response(),
     };
 
-    let served = match perform(container, &container_bytes, &mut req, &env).await {
+    let served = match perform(container, &container_bytes, &mut req, &env, &ctx).await {
         Ok(Some(answer)) => Ok(answer),
         Ok(None) => presign(&container_bytes, &origin, &env).await,
         Err(failure) => Err(failure),
@@ -436,7 +436,9 @@ async fn perform(
     container_bytes: &[u8],
     req: &mut Request,
     env: &Env,
+    ctx: &Context,
 ) -> std::result::Result<Option<(Response, u64)>, PresignFailure> {
+    use crate::cached::{Cached, worker::WorkerCache};
     use crate::revocation::{checker::IndexedRevocations, index::kv::KvRevocationIndex};
     use dialog_remote_ucan::{Access, Answer, Content, Payload};
 
@@ -447,9 +449,12 @@ async fn perform(
     let revocations = env
         .kv("REVOCATIONS_KV")
         .map_err(|_| PresignFailure::authorization(unavailable()))?;
-    let access =
-        Access::with_shared_resolver(crate::objects::Objects::new(bucket), shared_resolver())
-            .with_revocations(IndexedRevocations(KvRevocationIndex::new(revocations)));
+    // Content-addressed objects are served from the data center's cache
+    // when it holds them, and every one read or written fills it.
+    let objects = Cached::new(crate::objects::Objects::new(bucket), WorkerCache::default())
+        .with_mode(cache_mode(req));
+    let access = Access::with_shared_resolver(objects, shared_resolver())
+        .with_revocations(IndexedRevocations(KvRevocationIndex::new(revocations)));
 
     let verified = access.verify(container).await.map_err(|refusal| {
         PresignFailure::authorization(Refusal::Authorization(refusal.reason().clone()))
@@ -478,6 +483,15 @@ async fn perform(
         Answer::Performed(answer) => answer,
     };
     let stored = Date::now().as_millis();
+    let cache = access.provider().outcome();
+    let fills = access.provider().take_fills();
+    if !fills.is_empty() {
+        ctx.wait_until(async move {
+            for fill in fills {
+                fill.await;
+            }
+        });
+    }
 
     let bytes = match answer.length {
         Some(length) if length > 0 => length,
@@ -494,11 +508,12 @@ async fn perform(
     let _ = headers.set(
         "Server-Timing",
         &format!(
-            "authorize;dur={}, screen;dur={}, store;dur={}, total;dur={}",
+            "authorize;dur={}, screen;dur={}, store;dur={}, total;dur={}, cache;desc={}",
             authorized.saturating_sub(started),
             screened.saturating_sub(authorized),
             stored.saturating_sub(screened),
-            Date::now().as_millis().saturating_sub(started)
+            Date::now().as_millis().saturating_sub(started),
+            cache.as_str()
         ),
     );
     let response = match answer.body {
@@ -559,8 +574,32 @@ async fn perform(
     _container_bytes: &[u8],
     _req: &mut Request,
     _env: &Env,
+    _ctx: &Context,
 ) -> std::result::Result<Option<(Response, u64)>, PresignFailure> {
     Ok(None)
+}
+
+/// Whether the request asks to read past the cache: `Cache-Control:
+/// no-cache` or `no-store`, as HTTP says it, or `cache=bypass` in the
+/// query, which a deployment config can carry on the endpoint URL. The
+/// cache is still filled either way.
+#[cfg(target_arch = "wasm32")]
+fn cache_mode(req: &Request) -> crate::cached::Mode {
+    let by_header = req
+        .headers()
+        .get("cache-control")
+        .ok()
+        .flatten()
+        .is_some_and(|value| value.contains("no-cache") || value.contains("no-store"));
+    let by_query = req.url().is_ok_and(|url| {
+        url.query_pairs()
+            .any(|(name, value)| name == "cache" && value == "bypass")
+    });
+    if by_header || by_query {
+        crate::cached::Mode::Bypass
+    } else {
+        crate::cached::Mode::ReadThrough
+    }
 }
 
 async fn presign(

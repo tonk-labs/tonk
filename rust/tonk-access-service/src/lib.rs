@@ -47,6 +47,7 @@ use worker::*;
 /// mid-load, roughly doubling the requests a cold load pays for.
 pub(crate) const PREFLIGHT_MAX_AGE: &str = "86400";
 
+pub mod cached;
 pub mod deletion;
 pub mod describe;
 pub mod email;

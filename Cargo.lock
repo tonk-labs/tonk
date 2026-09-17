@@ -1359,8 +1359,10 @@ name = "dialog-remote-ucan"
 version = "0.1.0"
 source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
 dependencies = [
+ "anyhow",
  "async-trait",
  "base58",
+ "bytes",
  "dialog-capability",
  "dialog-common",
  "dialog-did-web",
@@ -1370,10 +1372,14 @@ dependencies = [
  "dialog-ucan-core",
  "dialog-varsig",
  "futures-util",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "reqwest 0.12.28",
  "serde",
  "serde_ipld_dagcbor",
  "serde_json",
+ "tokio",
  "tracing",
 ]
 

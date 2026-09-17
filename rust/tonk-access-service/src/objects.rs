@@ -15,7 +15,7 @@ use base58::ToBase58;
 use dialog_capability::{Capability, Policy, Provider};
 use dialog_common::Blake3Hash;
 use dialog_effects::archive::prelude::{GetExt, PutExt};
-use dialog_effects::archive::{self, ArchiveError, Catalog};
+use dialog_effects::archive::{self, ArchiveError};
 use dialog_effects::blob::prelude::{BlobImportExt as _, BlobReadExt as _};
 use dialog_effects::blob::{self, BlobError, BlobReader, BlobSink, BlobSource, BlobWriter};
 use dialog_effects::memory::prelude::{PublishExt, RetractExt};
@@ -27,10 +27,12 @@ use worker::js_sys::Uint8Array;
 use worker::wasm_bindgen::JsValue;
 use worker::{Bucket, ByteStream, Range};
 
+use crate::cached::{blob_key, block_key};
 use crate::handlers::object::store;
 use crate::permit::{Claims, Method, Precondition};
 
 /// The bucket behind the access service, as a provider.
+#[derive(Clone)]
 pub struct Objects {
     bucket: Bucket,
 }
@@ -40,29 +42,6 @@ impl Objects {
     pub fn new(bucket: Bucket) -> Self {
         Self { bucket }
     }
-}
-
-fn block_key<Fx>(capability: &Capability<Fx>, digest: &Blake3Hash) -> String
-where
-    Fx: Policy<Of = Catalog>,
-{
-    format!(
-        "{}/{}/{}",
-        capability.subject(),
-        Catalog::of(capability).catalog,
-        digest.as_bytes().to_base58()
-    )
-}
-
-fn blob_key<Fx>(capability: &Capability<Fx>, digest: &Blake3Hash) -> String
-where
-    Fx: Policy<Of = blob::Blob>,
-{
-    format!(
-        "{}/blob/{}",
-        capability.subject(),
-        digest.as_bytes().to_base58()
-    )
 }
 
 fn cell_key<Fx>(capability: &Capability<Fx>) -> String
@@ -215,8 +194,15 @@ impl Provider<memory::Retract> for Objects {
 
 /// The bucket's stream of an object's bytes, as the source a blob read
 /// answers with.
-struct Streamed {
+pub(crate) struct Streamed {
     stream: ByteStream,
+}
+
+impl Streamed {
+    /// The source over `stream`.
+    pub(crate) fn new(stream: ByteStream) -> Self {
+        Self { stream }
+    }
 }
 
 #[async_trait::async_trait(?Send)]
