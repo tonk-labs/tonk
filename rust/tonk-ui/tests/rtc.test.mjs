@@ -2,7 +2,18 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
-import { decodeAddress, decodeDescription, encodeDescription, freshCredential, isLoopback, mungeOffer, synthesizeAnswer } from "../assets/rtc.mjs";
+import {
+    DEFAULT_PORT,
+    SHARED_FINGERPRINT,
+    decodeAddress,
+    decodeDescription,
+    encodeDescription,
+    freshCredential,
+    isLoopback,
+    localAddress,
+    mungeOffer,
+    synthesizeAnswer,
+} from "../assets/rtc.mjs";
 
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const scripts = [...html.matchAll(/<script(?: type="module")?>([\s\S]*?)<\/script>/g)].map(match => match[1]);
@@ -131,4 +142,28 @@ test("munging replaces our own ICE credentials, not just the first", () => {
     assert.ok(!munged.includes("AbCd"), "a stale ufrag survived");
     assert.ok(!munged.includes("originalpassword"), "a stale password survived");
     assert.equal(munged.match(new RegExp(CREDENTIAL, "g")).length, 4);
+});
+
+test("a local address needs nothing published", () => {
+    const address = localAddress();
+    // The whole property: no fetch, no paste, no fragment. A page that
+    // knows only that tonk might be running can build this.
+    assert.equal(address.candidates.length, 1);
+    assert.equal(address.candidates[0].host, "127.0.0.1");
+    assert.equal(address.candidates[0].port, DEFAULT_PORT);
+    assert.equal(address.fingerprint, SHARED_FINGERPRINT);
+});
+
+test("a conjured local address synthesizes a usable answer", () => {
+    const sdp = synthesizeAnswer(localAddress(), "credential");
+    assert.match(sdp, /a=fingerprint:sha-256 08:EC:/);
+    assert.match(sdp, /127\.0\.0\.1 51247 typ host/);
+    assert.match(sdp, /a=ice-ufrag:credential/);
+    assert.match(sdp, /a=setup:active/);
+});
+
+test("a non-default port still yields a complete address", () => {
+    const address = localAddress(9999);
+    assert.equal(address.candidates[0].port, 9999);
+    assert.equal(address.fingerprint, SHARED_FINGERPRINT);
 });

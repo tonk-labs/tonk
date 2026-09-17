@@ -159,6 +159,47 @@ export function decodeAddress(encoded) {
 }
 
 /**
+ * The port a listening `tonk` binds by default.
+ *
+ * Mirrors `tonk_rtc::dial::DEFAULT_PORT`. A dialer assumes it, which is
+ * half of what makes dialling need no address.
+ */
+export const DEFAULT_PORT = 51247;
+
+/**
+ * The DTLS fingerprint every `tonk` listener presents.
+ *
+ * Mirrors `tonk_rtc::identity::SHARED_FINGERPRINT`, and is the other
+ * half. A browser must write a fingerprint into the description it
+ * fabricates and has no way to skip that check, so this value has to be
+ * known in advance — it cannot be derived from a public key, and
+ * deriving a per-peer certificate would need both sides to produce
+ * byte-identical DER, which Safari's non-deterministic Ed25519 rules
+ * out.
+ *
+ * It is a published constant, not a secret. Reaching the port grants
+ * nothing: every invocation over the channel carries a signed UCAN and
+ * is verified before any work is done.
+ */
+export const SHARED_FINGERPRINT =
+    "sha-256 08:EC:77:D3:24:82:FE:18:D7:9D:A2:E3:BC:A1:12:00:07:80:33:9D:E0:00:DE:77:FE:D0:51:73:3A:86:39:95";
+
+/**
+ * The address of a `tonk` listening on this machine.
+ *
+ * Nothing is exchanged to get here: the candidate is loopback, the port
+ * is fixed, and the fingerprint is the shared constant. This is what
+ * `decodeAddress` returns for a peer that published nothing, and it is
+ * the only case where an address can be conjured rather than read.
+ */
+export function localAddress(port = DEFAULT_PORT) {
+    return {
+        candidates: [{ host: "127.0.0.1", port }],
+        fingerprint: SHARED_FINGERPRINT,
+    };
+}
+
+/**
  * A fresh ICE credential for one dial.
  *
  * Used as this page's own ufrag AND password, and as both of the CLI's

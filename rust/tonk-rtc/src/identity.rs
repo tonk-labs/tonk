@@ -11,11 +11,45 @@
 //!   identity the second dialer checks the published fingerprint
 //!   against a different certificate and refuses.
 //!
-//! So the certificate is generated once, persisted as PEM by the
-//! caller, and reused. This module does not choose where that PEM
-//! lives — it round-trips through [`Identity::to_pem`] and
-//! [`Identity::from_pem`] so the CLI can put it wherever it keeps
-//! local state.
+//! So the certificate is generated once and reused. It round-trips
+//! through [`Identity::to_pem`] and [`Identity::from_pem`], so a caller
+//! that wants a per-machine one can put the PEM wherever it keeps local
+//! state.
+//!
+//! # The shared identity, and why a private key is in this repository
+//!
+//! [`Identity::shared`] is a certificate checked into the source tree,
+//! private key and all. That is deliberate and it is not a leak: it
+//! exists precisely so that **nothing has to be exchanged** before a
+//! browser can dial.
+//!
+//! A dialer has to write a fingerprint into the description it
+//! fabricates, and a browser cannot skip that check the way
+//! `webrtc-rs` can. Two of the three things it needs are derivable —
+//! the port is fixed, the candidate is loopback — and the fingerprint
+//! is not, because it is a hash of a certificate signed by a key only
+//! the listener holds. Deriving one per peer was the obvious
+//! alternative and does not survive contact: both sides would have to
+//! produce byte-identical DER, which needs a deterministic signature,
+//! and Safari's Ed25519 does not produce one.
+//!
+//! So the fingerprint is made *known* instead of derived, by being the
+//! same everywhere. What that costs is exactly this: anyone can stand
+//! up a listener presenting this certificate, and any process on the
+//! machine can open a channel to one. Neither is new — `dial` already
+//! records that reachability is not permission, because the ufrag is
+//! chosen by the dialer and there is no secret to withhold. What
+//! guards the connection is what has always guarded it: every
+//! invocation carries a signed UCAN and is verified before any work is
+//! done, and where iroh rides on top, its TLS authenticates the peer by
+//! endpoint key under RFC 7250. An impostor on the port completes DTLS
+//! and then fails closed.
+//!
+//! Treat this file as a published constant, never as a secret. Rotating
+//! it means changing what every browser expects, so
+//! [`shared_fingerprint_is_pinned`] fails loudly if it moves.
+//!
+//! [`shared_fingerprint_is_pinned`]: #
 
 use webrtc::peer_connection::certificate::RTCCertificate;
 
@@ -37,7 +71,28 @@ impl std::fmt::Debug for Identity {
     }
 }
 
+/// The certificate every tonk listener presents, and every dialer
+/// expects. Public by design — see the module note.
+const SHARED_PEM: &str = include_str!("../assets/shared-identity.pem");
+
+/// The fingerprint of [`SHARED_PEM`], in SDP form.
+///
+/// Duplicated in `tonk-ui`'s `rtc.mjs`, because the page has to write
+/// it into a description it fabricates and cannot compute it. The test
+/// below pins this against the certificate itself; keeping the page in
+/// step is the job of the test that asserts they match.
+pub const SHARED_FINGERPRINT: &str = "sha-256 08:EC:77:D3:24:82:FE:18:D7:9D:A2:E3:BC:A1:12:00:07:80:33:9D:E0:00:DE:77:FE:D0:51:73:3A:86:39:95";
+
 impl Identity {
+    /// The identity every listener shares, so a dialer needs no address.
+    ///
+    /// This is what makes "nothing is exchanged" true: a browser that
+    /// knows the port knows everything, because the fingerprint is a
+    /// constant it already has.
+    pub fn shared() -> Result<Self, PeerError> {
+        Self::from_pem(SHARED_PEM)
+    }
+
     /// Mint a fresh identity.
     ///
     /// ECDSA P-256 rather than Ed25519: it is what every browser's DTLS
@@ -102,6 +157,55 @@ mod tests {
         let (algorithm, value) = fingerprint.split_once(' ').expect("algorithm and value");
         assert_eq!(algorithm, "sha-256");
         assert_eq!(value.split(':').count(), 32, "sha-256 is 32 octets");
+    }
+
+    /// The page writes this exact string into the description it
+    /// fabricates, so if the certificate moves and this does not, every
+    /// dial fails with a DTLS mismatch and nothing says why.
+    #[test]
+    fn the_shared_fingerprint_is_pinned() {
+        assert_eq!(
+            Identity::shared().unwrap().fingerprint().to_uppercase(),
+            SHARED_FINGERPRINT.to_uppercase(),
+            "the shared certificate changed; rtc.mjs must be updated in the same commit"
+        );
+    }
+
+    /// The page cannot compute this value and cannot be handed it, so
+    /// the two copies have to be kept in step by something. This is
+    /// that something: it reads the browser half and compares.
+    ///
+    /// A path rather than an `include_str!` because `tonk-ui` is a
+    /// sibling crate and this is a test, not a build input — if the
+    /// layout moves, the test says so rather than the build breaking.
+    #[test]
+    fn the_browser_half_agrees_on_the_fingerprint() {
+        let rtc_mjs =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tonk-ui/assets/rtc.mjs");
+        let source = std::fs::read_to_string(&rtc_mjs)
+            .unwrap_or_else(|error| panic!("could not read {}: {error}", rtc_mjs.display()));
+
+        assert!(
+            source.contains(SHARED_FINGERPRINT),
+            "rtc.mjs does not carry the shared fingerprint; a dial would fail DTLS with no \
+             explanation. Update SHARED_FINGERPRINT there to {SHARED_FINGERPRINT}"
+        );
+
+        let port = format!("DEFAULT_PORT = {}", crate::dial::DEFAULT_PORT);
+        assert!(
+            source.contains(&port),
+            "rtc.mjs disagrees about the default port; expected `{port}`"
+        );
+    }
+
+    /// Every listener presents the same one: that is the whole point,
+    /// and it is what a per-machine identity would quietly undo.
+    #[test]
+    fn the_shared_identity_is_the_same_everywhere() {
+        assert_eq!(
+            Identity::shared().unwrap().fingerprint(),
+            Identity::shared().unwrap().fingerprint()
+        );
     }
 
     #[test]

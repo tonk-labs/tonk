@@ -113,12 +113,22 @@ fn identity_path() -> Result<std::path::PathBuf> {
     Ok(data.join("tonk").join("rtc-identity.pem"))
 }
 
-/// Load this machine's WebRTC certificate, minting one the first time.
+/// The certificate this listener presents.
 ///
-/// Persisted because a published address names its fingerprint: mint a
-/// fresh one per run and every address handed out before a restart
-/// stops authenticating this side.
+/// The shared one, so a browser needs nothing published: it already
+/// knows the fingerprint, the port is fixed, and the candidate is
+/// loopback — which is the whole "nothing is exchanged" property. See
+/// `tonk_rtc::identity` for why a public certificate is sound here.
+///
+/// A per-machine identity is still minted and persisted when
+/// `TONK_RTC_PRIVATE_IDENTITY` is set, for anyone who would rather hand
+/// out an address than share a certificate. It costs a dialer the
+/// address it would otherwise not have needed.
 fn rtc_identity() -> Result<tonk_rtc::Identity> {
+    if std::env::var_os("TONK_RTC_PRIVATE_IDENTITY").is_none() {
+        return tonk_rtc::Identity::shared()
+            .context("the shared WebRTC certificate would not load");
+    }
     let path = identity_path()?;
     if let Ok(pem) = std::fs::read_to_string(&path)
         && let Ok(identity) = tonk_rtc::Identity::from_pem(&pem)
