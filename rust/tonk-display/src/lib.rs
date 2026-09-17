@@ -65,6 +65,8 @@ pub mod element_source;
 // announcing half (`assets/element-runtime.js`) on purpose — neither
 // knows how the other works.
 #[cfg(target_arch = "wasm32")]
+mod embed;
+#[cfg(target_arch = "wasm32")]
 mod fallback;
 #[cfg(target_arch = "wasm32")]
 mod notation;
