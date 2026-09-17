@@ -4581,6 +4581,58 @@ mod tests {
         Ok(outcome.json().as_str().map(str::to_owned))
     }
 
+    /// What the FABB's copy-link row says it is doing.
+    ///
+    /// The row's `data-share-state` IS the control's answer to a click:
+    /// `idle` at rest, `copying` while the mint is out, then `copied` or
+    /// `failed`. Absent means the control has not stamped a state at all.
+    ///
+    /// Read rather than the label text because the label is four spans
+    /// switched by CSS, and a hidden span's `textContent` still reads.
+    async fn share_row_state(driver: &WebDriver) -> Result<Option<String>> {
+        enter_guest(driver).await?;
+        let outcome = driver
+            .execute(
+                r##"
+                const bar = document.querySelector("tonk-fab");
+                const row = bar && bar.querySelector("[data-share-link]");
+                if (!row) return null;
+                return row.getAttribute("data-share-state");
+                "##,
+                Vec::new(),
+            )
+            .await?;
+        driver.enter_default_frame().await?;
+        Ok(outcome.json().as_str().map(str::to_owned))
+    }
+
+    /// Wait for the copy-link row to leave its resting state.
+    ///
+    /// This is the assertion the FABB share regression needed and did not
+    /// have. A share control bound to no space returns before dispatching
+    /// anything, so the row sits on `idle` for ever: no mint, no spinner,
+    /// no refusal. Every other test in this file reached a share link
+    /// through the registration ceremony's own button, which drives a
+    /// different control, so all of them stayed green while picking
+    /// "copy link" from the bar did nothing at all.
+    async fn await_share_row_working(driver: &WebDriver) -> Result<String> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let mut last;
+        loop {
+            last = share_row_state(driver).await?;
+            match last.as_deref() {
+                Some(state) if state != "idle" => return Ok(state.to_owned()),
+                _ => {}
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "the copy-link row never answered the click; it is showing {last:?}",
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
     /// Wait for the bar to offer `expected` (`account` or `link`).
     async fn await_share_row(driver: &WebDriver, expected: &str) -> Result<()> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
@@ -5267,6 +5319,55 @@ mod tests {
     /// An enrolled account stays an account everywhere while its email is
     /// still unconfirmed.
     ///
+    /// Copy a share link from the FABB, on an account that can mint one.
+    ///
+    /// The one path nothing covered. Every other share test here reaches a
+    /// link through the registration ceremony's own "copy share link"
+    /// button, or asserts the bar's row LABEL without picking it — so the
+    /// bar could offer `copy link`, take the click, and do nothing, with
+    /// the whole suite green. It did: the bar stamped `<tonk-share>` with
+    /// its space once, before the route had resolved one, and never again,
+    /// leaving the control bound to nothing for the life of the page.
+    ///
+    /// The order of the assertions is the point. First the row has to
+    /// ANSWER — leave `idle` — because that is the half a control bound to
+    /// no space skips; only then is it worth asking whether a link came
+    /// back.
+    #[dialog_common::test]
+    async fn it_copies_a_share_link_from_the_bar(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        sign_up(&driver, &env, "barsharer@example.com").await?;
+
+        // Waiting for the remote: a space with none refuses to mint, and
+        // this test is about the control, not about that refusal.
+        let key = create_space_awaiting_remote(&driver, "Shared From The Bar", true).await?;
+        await_url_containing(&driver, &format!("/space/{key}")).await?;
+
+        // An active account offers the copy row, not the login row.
+        open_share_stack(&driver).await?;
+        await_share_row(&driver, "link").await?;
+
+        click_share_row(&driver, "[data-share-link]").await?;
+
+        let state = await_share_row_working(&driver).await?;
+        assert!(
+            matches!(state.as_str(), "copying" | "copied" | "failed"),
+            "the row must report what the click did, got {state:?}",
+        );
+
+        // And a real invite came back. The url is overlay-only, so this
+        // reads the row the control settles its clipboard write from —
+        // the same one the person ends up holding.
+        let invite = await_share_link(&driver, &key).await?;
+        assert!(
+            invite.contains("#"),
+            "an invite carries its membership seed in the fragment, got {invite:?}",
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
     /// The account customer row has no provider until activation. The FABB
     /// used to require that optional field in its query, so this exact state
     /// resolved as no row: the space offered "log in to share" and raised the
