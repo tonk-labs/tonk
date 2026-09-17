@@ -858,6 +858,7 @@ fn scalar_to_value(scalar: &Scalar) -> Value {
         Scalar::UnsignedInteger(u) => Value::UnsignedInt(*u),
         Scalar::Float(f) => Value::Float(*f),
         Scalar::Boolean(b) => Value::Boolean(*b),
+        Scalar::Bytes(bytes) => Value::Bytes(bytes.clone()),
         // dialog's `Value` has no Null variant; encode an explicit
         // absence as an empty string so the digest stays total.
         // This only matters for `null` literals in `with:` slots,
