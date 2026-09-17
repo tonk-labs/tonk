@@ -4606,6 +4606,71 @@ mod tests {
         Ok(outcome.json().as_str().map(str::to_owned))
     }
 
+    /// Record what the FABB's share control hands the clipboard.
+    ///
+    /// Two reasons this is not [`watch_clipboard`]. It patches `write`, not
+    /// `writeText`: `<tonk-share>` opens a `ClipboardItem` holding a PROMISE
+    /// while the user activation is still live and resolves it when the mint
+    /// returns, which is the only way to copy the result of an async
+    /// operation. And it runs inside the sealed guest, because that is the
+    /// document the bar lives in.
+    ///
+    /// Reading the hook rather than the real clipboard is not a shortcut
+    /// around a permission. The write itself is refused here with
+    /// `NotAllowedError: Document is not focused` — a headless window is
+    /// never focused — so the control settles on `failed` in this harness
+    /// however well it works in a real browser. What the control HANDED the
+    /// clipboard is the product behaviour under test; whether this particular
+    /// Chrome accepted it is the harness's business.
+    async fn watch_guest_clipboard(driver: &WebDriver) -> Result<()> {
+        enter_guest(driver).await?;
+        driver
+            .execute(
+                r##"
+                window.__tonkWrote = "";
+                const clipboard = navigator.clipboard;
+                const write = clipboard.write.bind(clipboard);
+                clipboard.write = (items) => {
+                    const item = items && items[0];
+                    if (item && item.getType) {
+                        item.getType("text/plain")
+                            .then((blob) => blob.text())
+                            .then((text) => { window.__tonkWrote = text; })
+                            .catch(() => {});
+                    }
+                    // Hand the refusal back unchanged: the control has to see
+                    // the same answer it would without this hook, or the test
+                    // would be watching a flow nobody ships.
+                    return write(items);
+                };
+                "##,
+                Vec::new(),
+            )
+            .await?;
+        driver.enter_default_frame().await?;
+        Ok(())
+    }
+
+    /// The text the control handed the clipboard, once it has.
+    async fn guest_copied_text(driver: &WebDriver) -> Result<String> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            enter_guest(driver).await?;
+            let text = driver
+                .execute(r##"return window.__tonkWrote || "";"##, Vec::new())
+                .await?;
+            driver.enter_default_frame().await?;
+            let text = text.json().as_str().unwrap_or_default().to_owned();
+            if !text.is_empty() {
+                return Ok(text);
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!("the bar never handed the clipboard anything"));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
     /// Wait for the copy-link row to leave its resting state.
     ///
     /// This is the assertion the FABB share regression needed and did not
@@ -5350,6 +5415,7 @@ mod tests {
         open_share_stack(&driver).await?;
         await_share_row(&driver, "link").await?;
 
+        watch_guest_clipboard(&driver).await?;
         click_share_row(&driver, "[data-share-link]").await?;
 
         let state = await_share_row_working(&driver).await?;
@@ -5358,24 +5424,24 @@ mod tests {
             "the row must report what the click did, got {state:?}",
         );
 
-        // And a real invite came back.
-        //
-        // Which evidence says so depends on how far the copy got, because
-        // a SUCCESSFUL copy evicts the row: the control awaits the
-        // clipboard write's own promise and then drops the invite rather
-        // than leaving a url carrying a membership seed in a subscribable
-        // overlay. So `copied` is itself the proof, and reading the row
-        // afterwards would be racing the eviction. Only when the write did
-        // not land — the headless browser grants no clipboard permission
-        // on every platform — is the row still there to read, and then it
-        // is what proves the mint ran.
-        if state != "copied" {
-            let invite = await_share_link(&driver, &key).await?;
-            assert!(
-                invite.contains('#'),
-                "an invite carries its membership seed in the fragment, got {invite:?}",
-            );
-        }
+        // What the person ends up holding. Asserted on the text the control
+        // handed the clipboard rather than on the invite row, because the row
+        // is evicted the moment a copy succeeds — the url carries a
+        // membership seed in its fragment and is not left sitting in a
+        // subscribable overlay — so reading it back would race that eviction
+        // on exactly the runs that went best.
+        let invite = guest_copied_text(&driver).await?;
+        let (address, seed) = invite
+            .split_once('#')
+            .ok_or_else(|| anyhow!("an invite carries its seed in a fragment, got {invite:?}"))?;
+        assert!(
+            address.contains("/join?") && address.contains("access="),
+            "the copied link must be a join address carrying a delegation, got {address:?}",
+        );
+        assert!(
+            !seed.is_empty(),
+            "the copied link must carry a membership seed, got {invite:?}",
+        );
 
         driver.quit().await?;
         Ok(())
