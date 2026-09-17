@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use dialog_operator::{Operator, Profile};
 use dialog_query::{Output as _, Query, Term};
-use dialog_remote_ucan_s3::UcanAddress;
+use dialog_remote_ucan::UcanAddress;
 use dialog_repository::{Branch, SiteAddress};
 use dialog_storage::provider::storage::NativeSpace;
 use dialog_varsig::Did;

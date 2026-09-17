@@ -53,6 +53,8 @@ mod error;
 mod handlers;
 pub mod lookup;
 pub mod metering;
+#[cfg(target_arch = "wasm32")]
+pub mod objects;
 pub mod observability;
 pub mod permit;
 pub mod provisioning;

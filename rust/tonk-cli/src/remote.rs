@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 
-use dialog_remote_ucan_s3::UcanAddress;
+use dialog_remote_ucan::UcanAddress;
 use dialog_repository::{Branch, LoadRemoteError, SiteAddress, Upstream};
 use dialog_varsig::Did;
 use serde::{Deserialize, Serialize};

@@ -1,0 +1,197 @@
+//! The bucket as a provider of the effects the access layer performs.
+//!
+//! [`dialog_remote_ucan::Access`] decodes and verifies an invocation and
+//! hands the operation it authorizes here as a capability. Every object
+//! lives at the key the permit route would have addressed it by, so a
+//! block written through one path is read through the other: blocks at
+//! `{subject}/{catalog}/{digest}`, cells at `{subject}/{space}/{cell}`.
+//! A cell's version is the object's `ETag`, unquoted, which is what a
+//! client reads off the permit route's answer and echoes back as a
+//! precondition.
+
+use base58::ToBase58;
+use dialog_capability::{Capability, Policy, Provider};
+use dialog_common::Blake3Hash;
+use dialog_effects::archive::prelude::{GetExt, PutExt};
+use dialog_effects::archive::{self, ArchiveError, Catalog};
+use dialog_effects::memory::prelude::{PublishExt, RetractExt};
+use dialog_effects::memory::{self, Cell, Edition, MemoryError, Space, Version};
+use sha2_0_10::{Digest, Sha256};
+use worker::Bucket;
+use worker::js_sys::Uint8Array;
+use worker::wasm_bindgen::JsValue;
+
+use crate::handlers::object::store;
+use crate::permit::{Claims, Method, Precondition};
+
+/// The bucket behind the access service, as a provider.
+pub struct Objects {
+    bucket: Bucket,
+}
+
+impl Objects {
+    /// The provider over `bucket`.
+    pub fn new(bucket: Bucket) -> Self {
+        Self { bucket }
+    }
+}
+
+fn block_key<Fx>(capability: &Capability<Fx>, digest: &Blake3Hash) -> String
+where
+    Fx: Policy<Of = Catalog>,
+{
+    format!(
+        "{}/{}/{}",
+        capability.subject(),
+        Catalog::of(capability).catalog,
+        digest.as_bytes().to_base58()
+    )
+}
+
+fn cell_key<Fx>(capability: &Capability<Fx>) -> String
+where
+    Fx: Policy<Of = Cell>,
+{
+    format!(
+        "{}/{}/{}",
+        capability.subject(),
+        Space::of(capability).space,
+        Cell::of(capability).cell
+    )
+}
+
+fn claims(method: Method, key: String, body: Option<&[u8]>, precondition: Precondition) -> Claims {
+    Claims {
+        method,
+        key,
+        expires: 0,
+        sha256: body.map(|body| Sha256::digest(body).to_vec()),
+        precondition,
+    }
+}
+
+/// A version as the precondition an object store compares: the `ETag`
+/// the client was given, which the store quotes on the wire.
+fn version_text(version: &Version) -> String {
+    String::from_utf8_lossy(version.as_bytes()).into_owned()
+}
+
+/// The `ETag` the store answered with, as the version a client holds.
+fn version_of(etag: &str) -> Version {
+    Version::from(etag.trim_matches('"'))
+}
+
+async fn read(bucket: &Bucket, key: &str) -> Result<Option<(Vec<u8>, String)>, String> {
+    let object = bucket
+        .get(key)
+        .execute()
+        .await
+        .map_err(|error| format!("get {key}: {error}"))?;
+    let Some(object) = object else {
+        return Ok(None);
+    };
+    let etag = object.http_etag();
+    let bytes = object
+        .body()
+        .ok_or_else(|| format!("get {key}: the object came without a body"))?
+        .bytes()
+        .await
+        .map_err(|error| format!("get {key}: {error}"))?;
+    Ok(Some((bytes, etag)))
+}
+
+#[async_trait::async_trait(?Send)]
+impl Provider<archive::Get> for Objects {
+    async fn execute(
+        &self,
+        capability: Capability<archive::Get>,
+    ) -> Result<Option<Vec<u8>>, ArchiveError> {
+        let key = block_key(&capability, capability.digest());
+        read(&self.bucket, &key)
+            .await
+            .map(|found| found.map(|(bytes, _)| bytes))
+            .map_err(ArchiveError::Storage)
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl Provider<archive::Put> for Objects {
+    async fn execute(&self, capability: Capability<archive::Put>) -> Result<(), ArchiveError> {
+        let content = capability.content();
+        let key = block_key(&capability, &Blake3Hash::hash(content));
+        let claims = claims(Method::Put, key, Some(content), Precondition::None);
+        let value: JsValue = Uint8Array::from(content).into();
+        store::put(&self.bucket, &claims, value)
+            .await
+            .map(|_| ())
+            .map_err(|error| ArchiveError::Storage(format!("put {}: {error}", claims.key)))
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl Provider<memory::Resolve> for Objects {
+    async fn execute(
+        &self,
+        capability: Capability<memory::Resolve>,
+    ) -> Result<Option<Edition<Vec<u8>>>, MemoryError> {
+        let key = cell_key(&capability);
+        read(&self.bucket, &key)
+            .await
+            .map(|found| {
+                found.map(|(content, etag)| Edition {
+                    content,
+                    version: version_of(&etag),
+                })
+            })
+            .map_err(MemoryError::Storage)
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl Provider<memory::Publish> for Objects {
+    async fn execute(
+        &self,
+        capability: Capability<memory::Publish>,
+    ) -> Result<Version, MemoryError> {
+        let key = cell_key(&capability);
+        let precondition = match capability.when() {
+            Some(version) => Precondition::IfMatch(version_text(version)),
+            None => Precondition::IfNoneMatch,
+        };
+        let content = capability.content();
+        let claims = claims(Method::Put, key, Some(content), precondition);
+        let value: JsValue = Uint8Array::from(content).into();
+        match store::put(&self.bucket, &claims, value).await {
+            Ok(Some(etag)) => Ok(version_of(&etag)),
+            Ok(None) => Err(MemoryError::VersionMismatch {
+                expected: capability.when().cloned(),
+                actual: None,
+            }),
+            Err(error) => Err(MemoryError::Storage(format!("put {}: {error}", claims.key))),
+        }
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl Provider<memory::Retract> for Objects {
+    async fn execute(&self, capability: Capability<memory::Retract>) -> Result<(), MemoryError> {
+        let key = cell_key(&capability);
+        let claims = claims(
+            Method::Delete,
+            key,
+            None,
+            Precondition::IfMatch(version_text(capability.when())),
+        );
+        match store::delete(&self.bucket, &claims).await {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(MemoryError::VersionMismatch {
+                expected: Some(capability.when().clone()),
+                actual: None,
+            }),
+            Err(error) => Err(MemoryError::Storage(format!(
+                "delete {}: {error}",
+                claims.key
+            ))),
+        }
+    }
+}

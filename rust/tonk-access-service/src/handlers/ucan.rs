@@ -86,10 +86,13 @@ fn with_cors_headers(response: Response) -> Response {
     let headers = response.headers().clone();
     let _ = headers.set("Access-Control-Allow-Origin", "*");
     let _ = headers.set("Access-Control-Allow-Methods", "POST, OPTIONS");
-    let _ = headers.set("Access-Control-Allow-Headers", "Content-Type");
+    let _ = headers.set(
+        "Access-Control-Allow-Headers",
+        "Content-Type, Accept, Range",
+    );
     let _ = headers.set(
         "Access-Control-Expose-Headers",
-        "Content-Type, Server-Timing",
+        "Content-Type, Content-Length, Content-Range, ETag, Server-Timing",
     );
     response.with_headers(headers)
 }
@@ -124,6 +127,34 @@ fn max_body_bytes(env: &Env) -> u64 {
         .unwrap_or(DEFAULT_MAX_BODY_BYTES)
 }
 
+/// The limit for a request that asks for the operation's outcome: its
+/// container may carry the bytes a write stores, so it is bounded by
+/// the object size the service accepts rather than by a chain's size.
+const DEFAULT_MAX_PAYLOAD_BYTES: u64 = 32 * 1024 * 1024;
+
+/// The media type a client names in `Accept` to ask for the outcome of
+/// the operation instead of a permit to perform it.
+pub const OUTCOME_MEDIA_TYPE: &str = "application/octet-stream";
+
+fn max_payload_bytes(env: &Env) -> u64 {
+    env.var("UCAN_MAX_PAYLOAD_BYTES")
+        .ok()
+        .and_then(|value| value.to_string().parse().ok())
+        .unwrap_or(DEFAULT_MAX_PAYLOAD_BYTES)
+        .max(max_body_bytes(env))
+}
+
+/// Whether the request asks for the operation's outcome: the client
+/// names [`OUTCOME_MEDIA_TYPE`] in `Accept`. A client after a permit
+/// names only the permit's media type, or nothing.
+fn wants_outcome(req: &Request) -> bool {
+    req.headers()
+        .get("accept")
+        .ok()
+        .flatten()
+        .is_some_and(|accept| accept.contains(OUTCOME_MEDIA_TYPE))
+}
+
 /// What the caller said it was sending, when it said.
 fn declared_length(req: &Request) -> Option<u64> {
     req.headers()
@@ -147,13 +178,22 @@ fn too_large(limit: u64) -> Result<Response> {
 /// POST /ucan/ → Authorize UCAN invocation and return presigned S3
 /// request, recording the invocation in ingest under `ctx.wait_until`.
 pub async fn serve(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
+    // A request after the operation's outcome may carry the bytes a
+    // write stores, so it is bounded by the object size; a request
+    // after a permit is a container of tokens and bounded by that.
+    let outcome_wanted = wants_outcome(&req);
+    let limit = if outcome_wanted {
+        max_payload_bytes(&env)
+    } else {
+        max_body_bytes(&env)
+    };
     // Refused on size alone, before anything is decoded: a body this
     // large is not a UCAN we failed to parse, and running the parser
     // over it is the work the limit exists to avoid.
     if let Some(declared) = declared_length(&req)
-        && declared > max_body_bytes(&env)
+        && declared > limit
     {
-        return Ok(with_cors_headers(too_large(max_body_bytes(&env))?));
+        return Ok(with_cors_headers(too_large(limit)?));
     }
     let body_bytes = match req.bytes().await {
         Ok(bytes) => bytes,
@@ -166,8 +206,8 @@ pub async fn serve(mut req: Request, env: Env, ctx: Context) -> Result<Response>
         }
     };
     // A request that declared nothing, or lied about it.
-    if body_bytes.len() as u64 > max_body_bytes(&env) {
-        return Ok(with_cors_headers(too_large(max_body_bytes(&env))?));
+    if body_bytes.len() as u64 > limit {
+        return Ok(with_cors_headers(too_large(limit)?));
     }
 
     // Registration commands ride the same endpoint; anything else falls
@@ -213,7 +253,17 @@ pub async fn serve(mut req: Request, env: Env, ctx: Context) -> Result<Response>
         }
     };
 
-    let (response, metered) = match presign(&body_bytes, &origin, &env).await {
+    let performed = if outcome_wanted {
+        perform(&body_bytes, &env).await
+    } else {
+        Ok(None)
+    };
+    let served = match performed {
+        Ok(Some(answer)) => Ok(answer),
+        Ok(None) => presign(&body_bytes, &origin, &env).await,
+        Err(failure) => Err(failure),
+    };
+    let (response, metered) = match served {
         Ok((response, bytes)) => (response, Some(("ok", None, bytes))),
         Err(failure) => {
             failure.emit();
@@ -268,14 +318,23 @@ fn record_invocation(
 
 /// Authorize the container and answer the signed permit, together
 /// with the declared write bytes when the permit carries them.
-async fn presign(
+/// When the stages of verifying an invocation finished, in
+/// milliseconds since the epoch, for `Server-Timing`.
+struct Stages {
+    started: u64,
+    authorized: u64,
+    screened: u64,
+}
+
+/// Verify the invocation's chain, its revocations and the subject's
+/// provisioning, and read the operation it authorizes: the same three
+/// steps whether the answer is a permit or the operation's outcome.
+async fn authorize(
     body_bytes: &[u8],
-    origin: &str,
     env: &Env,
-) -> std::result::Result<(Response, u64), PresignFailure> {
+) -> std::result::Result<(dialog_remote_s3::Permit, Stages), PresignFailure> {
     let started = Date::now().as_millis();
     let authorizer = create_authorizer(env).map_err(PresignFailure::authorization)?;
-    let permit_key = permit_key(env).map_err(PresignFailure::authorization)?;
 
     // Revocation is checked inside the chain walk rather than after it,
     // so every proof is measured against the principals entitled to
@@ -302,6 +361,112 @@ async fn presign(
     #[cfg(target_arch = "wasm32")]
     screen_provisioning(body_bytes, env).await?;
     let screened = Date::now().as_millis();
+
+    Ok((
+        authorized_request,
+        Stages {
+            started,
+            authorized,
+            screened,
+        },
+    ))
+}
+
+/// Carry the operation out in the request that proved it, for a client
+/// that asked for the outcome, through the access layer over this
+/// service's bucket: the layer decodes and verifies the invocation and
+/// checks a write's payload against what the invocation bound; this
+/// service screens the subject's provisioning between the two, as it
+/// does before issuing a permit. `None` when the layer does not perform
+/// the operation (a blob stream), which the caller answers with a
+/// permit instead. Never answers with a permit's media type, which is
+/// how the client tells the two answers apart.
+#[cfg(target_arch = "wasm32")]
+async fn perform(
+    body_bytes: &[u8],
+    env: &Env,
+) -> std::result::Result<Option<(Response, u64)>, PresignFailure> {
+    use crate::revocation::{checker::IndexedRevocations, index::kv::KvRevocationIndex};
+    use dialog_remote_ucan::{Access, Answer};
+
+    let started = Date::now().as_millis();
+    let bucket = env.bucket("BUCKET").map_err(|e| {
+        PresignFailure::authorization(Refusal::unclassified(format!("Missing BUCKET: {e}")))
+    })?;
+    let revocations = env
+        .kv("REVOCATIONS_KV")
+        .map_err(|_| PresignFailure::authorization(unavailable()))?;
+    let access =
+        Access::with_shared_resolver(crate::objects::Objects::new(bucket), shared_resolver())
+            .with_revocations(IndexedRevocations(KvRevocationIndex::new(revocations)));
+
+    let verified = access.verify(body_bytes).await.map_err(|refusal| {
+        PresignFailure::authorization(Refusal::Authorization(refusal.reason().clone()))
+    })?;
+    let authorized = Date::now().as_millis();
+    screen_provisioning(body_bytes, env).await?;
+    let screened = Date::now().as_millis();
+    let metered = verified.payload().map_or(0, |payload| payload.len() as u64);
+
+    let answer = match access.perform(verified).await {
+        Answer::Unsupported => return Ok(None),
+        Answer::Refused(refusal) => {
+            return Err(PresignFailure::authorization(Refusal::Authorization(
+                refusal.reason().clone(),
+            )));
+        }
+        Answer::Performed(answer) => answer,
+    };
+    let stored = Date::now().as_millis();
+
+    let bytes = if answer.body.is_empty() {
+        metered
+    } else {
+        answer.body.len() as u64
+    };
+    let headers = Headers::new();
+    let _ = headers.set("Content-Type", answer.content_type);
+    if let Some(version) = &answer.version {
+        let _ = headers.set("ETag", &format!("\"{version}\""));
+    }
+    let _ = headers.set(
+        "Server-Timing",
+        &format!(
+            "authorize;dur={}, screen;dur={}, store;dur={}, total;dur={}",
+            authorized.saturating_sub(started),
+            screened.saturating_sub(authorized),
+            stored.saturating_sub(screened),
+            Date::now().as_millis().saturating_sub(started)
+        ),
+    );
+    let response = Response::from_bytes(answer.body)
+        .map_err(|e| Refusal::unclassified(format!("response error: {e}")))
+        .map_err(PresignFailure::authorization)?
+        .with_status(answer.status)
+        .with_headers(headers);
+    Ok(Some((response, bytes)))
+}
+
+/// Off the worker runtime there is no bucket to perform against; every
+/// request is answered with a permit.
+#[cfg(not(target_arch = "wasm32"))]
+async fn perform(
+    _body_bytes: &[u8],
+    _env: &Env,
+) -> std::result::Result<Option<(Response, u64)>, PresignFailure> {
+    Ok(None)
+}
+
+async fn presign(
+    body_bytes: &[u8],
+    origin: &str,
+    env: &Env,
+) -> std::result::Result<(Response, u64), PresignFailure> {
+    let (authorized_request, stages) = authorize(body_bytes, env).await?;
+    let started = stages.started;
+    let authorized = stages.authorized;
+    let screened = stages.screened;
+    let permit_key = permit_key(env).map_err(PresignFailure::authorization)?;
 
     // Write permits carry the declared size as a signed Content-Length,
     // which is the exact byte figure metering records.
@@ -521,6 +686,24 @@ thread_local! {
         const { std::cell::OnceCell::new() };
     /// The permit key derived by this isolate, if it has derived one.
     static PERMIT_KEY: std::cell::OnceCell<PermitKey> = const { std::cell::OnceCell::new() };
+    /// The issuer resolver the access layer verifies with, one per
+    /// isolate so its cache of resolved `did:web` documents outlives a
+    /// request.
+    static RESOLVER: std::cell::OnceCell<std::sync::Arc<dialog_remote_ucan_s3::DefaultResolver>> =
+        const { std::cell::OnceCell::new() };
+}
+
+#[cfg(target_arch = "wasm32")]
+fn shared_resolver() -> std::sync::Arc<dialog_remote_ucan_s3::DefaultResolver> {
+    RESOLVER.with(|cached| {
+        cached
+            .get_or_init(|| {
+                std::sync::Arc::new(dialog_did_web::CachingResolver::new(
+                    dialog_did_web::WebResolver::new(),
+                ))
+            })
+            .clone()
+    })
 }
 
 /// The address every authorizer describes requests against. See

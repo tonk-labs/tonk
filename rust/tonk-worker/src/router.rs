@@ -1380,7 +1380,7 @@ pub mod tests {
         use super::repository::{
             BranchConfiguration, RemoteConfiguration, RepositoryConfiguration,
         };
-        use dialog_remote_ucan_s3::UcanAddress;
+        use dialog_remote_ucan::UcanAddress;
         use dialog_repository::SiteAddress;
 
         let config = RepositoryConfiguration::default()
@@ -2502,7 +2502,7 @@ pub mod tests {
         use super::repository::{
             BranchConfiguration, RemoteConfiguration, RepositoryConfiguration,
         };
-        use dialog_remote_ucan_s3::UcanAddress;
+        use dialog_remote_ucan::UcanAddress;
         use dialog_repository::SiteAddress;
 
         let state = test_state().await;

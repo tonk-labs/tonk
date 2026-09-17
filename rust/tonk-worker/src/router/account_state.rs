@@ -11,7 +11,7 @@ use std::collections::HashSet;
 use std::sync::Mutex;
 
 use dialog_query::{Output as _, Query, Term};
-use dialog_remote_ucan_s3::UcanAddress;
+use dialog_remote_ucan::UcanAddress;
 use dialog_repository::{RemoteAddress, RemoteRepository, Repository, SiteAddress, Upstream};
 use dialog_ucan_core::DelegationChain;
 use dialog_varsig::Principal;

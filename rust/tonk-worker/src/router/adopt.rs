@@ -656,9 +656,9 @@ mod tests {
         // mount is attempted and fails rather than being skipped.
         let foreign = Ed25519Signer::generate().await.unwrap();
         let subject: dialog_varsig::Did = foreign.did();
-        let address = dialog_repository::SiteAddress::from(
-            dialog_remote_ucan_s3::UcanAddress::new("https://unreachable.invalid/ucan/"),
-        );
+        let address = dialog_repository::SiteAddress::from(dialog_remote_ucan::UcanAddress::new(
+            "https://unreachable.invalid/ucan/",
+        ));
         let configuration = super::super::repository::RepositoryConfiguration::default()
             .remote(
                 "origin",
@@ -711,7 +711,7 @@ mod tests {
         let configuration = RepositoryConfiguration::default().remote(
             "origin",
             RemoteConfiguration::new(dialog_repository::SiteAddress::from(
-                dialog_remote_ucan_s3::UcanAddress::new("https://sync.example.test/ucan/"),
+                dialog_remote_ucan::UcanAddress::new("https://sync.example.test/ucan/"),
             )),
         );
         let repository: dialog_repository::Repository = tonk
@@ -754,7 +754,7 @@ mod tests {
             .remote(
                 "origin",
                 RemoteConfiguration::new(dialog_repository::SiteAddress::from(
-                    dialog_remote_ucan_s3::UcanAddress::new("https://sync.example.test/ucan/"),
+                    dialog_remote_ucan::UcanAddress::new("https://sync.example.test/ucan/"),
                 )),
             )
             .branch(
@@ -825,7 +825,7 @@ mod tests {
             .remote(
                 "origin",
                 RemoteConfiguration::new(dialog_repository::SiteAddress::from(
-                    dialog_remote_ucan_s3::UcanAddress::new("https://sync.example.test/ucan/"),
+                    dialog_remote_ucan::UcanAddress::new("https://sync.example.test/ucan/"),
                 )),
             )
             .branch(
@@ -1171,7 +1171,7 @@ mod tests {
             .remote(
                 "origin",
                 RemoteConfiguration::new(dialog_repository::SiteAddress::from(
-                    dialog_remote_ucan_s3::UcanAddress::new("https://sync.example.test/ucan/"),
+                    dialog_remote_ucan::UcanAddress::new("https://sync.example.test/ucan/"),
                 ))
                 .subject(subject.clone()),
             )
@@ -1288,7 +1288,7 @@ mod tests {
         // device on the account created it and the rows synced in.
         let foreign = Ed25519Signer::generate().await.unwrap();
         let subject: dialog_varsig::Did = foreign.did();
-        let address = SiteAddress::from(dialog_remote_ucan_s3::UcanAddress::new(
+        let address = SiteAddress::from(dialog_remote_ucan::UcanAddress::new(
             "https://sync.example.test/ucan/",
         ));
         let configuration = super::super::repository::RepositoryConfiguration::default()
@@ -1355,7 +1355,7 @@ mod tests {
 
         let foreign = Ed25519Signer::generate().await.unwrap();
         let subject: dialog_varsig::Did = foreign.did();
-        let address = SiteAddress::from(dialog_remote_ucan_s3::UcanAddress::new(
+        let address = SiteAddress::from(dialog_remote_ucan::UcanAddress::new(
             "https://sync.example.test/ucan/",
         ));
         let configuration = super::super::repository::RepositoryConfiguration::default()
@@ -1426,7 +1426,7 @@ mod tests {
             .remote(
                 "origin",
                 super::super::repository::RemoteConfiguration::new(SiteAddress::from(
-                    dialog_remote_ucan_s3::UcanAddress::new("https://sync.example.test/ucan/"),
+                    dialog_remote_ucan::UcanAddress::new("https://sync.example.test/ucan/"),
                 ))
                 .subject(subject.clone()),
             )
