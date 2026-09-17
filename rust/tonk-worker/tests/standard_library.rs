@@ -43,10 +43,7 @@ const ISSUE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/issue.y
 /// library supplies its geometry, so their visual contract is checked here
 /// together.
 const HUB_ACCOUNT_MARKUP: &str = include_str!("../../tonk-workspace/src/ui_hub_account.html");
-/// The shared stylesheet: the theme tokens and the hub chrome's CSS,
-/// which moved out of the directory view so the /settings route (its
-/// own view, same chrome) is styled by the same block.
-const HUB_STYLES: &str = include_str!("../../tonk-ui/styles.css");
+
 const SETTINGS_PANEL_MARKUP: &str =
     include_str!("../../tonk-workspace/src/ui_account_settings.html");
 
@@ -248,7 +245,7 @@ fn it_uses_the_shared_native_dialog_for_hub_space_removal() {
 #[test]
 fn it_keeps_keyboard_focus_visible_on_inverted_hub_controls() {
     assert!(
-        HUB_STYLES
+        PROFILE_LIBRARY
             .contains("box-shadow:inset 0 0 0 2px var(--on-ink), inset 0 0 0 4px var(--ink);"),
         "Hub focus rings need both palette poles so selected and ordinary controls stay visible",
     );
@@ -387,10 +384,15 @@ fn it_styles_the_absent_space_as_tonk_edge_chrome() {
 
 #[test]
 fn it_keeps_the_hub_on_the_shared_theme_tokens() {
-    // Colors live in ONE place — the theme block at the top of
-    // `tonk-ui/styles.css`, injected into every sealed guest. The hub must
-    // CONSUME the shared tokens without restating a palette of its own; a
-    // local literal here is the drift this contract exists to prevent.
+    // Colors live in ONE place — the token block at the top of the hub's
+    // own `style: ui`, which travels with the view. The hub must CONSUME
+    // those tokens rather than restating a color at each use; a raw hex in
+    // a rule is the drift this contract exists to prevent.
+    //
+    // The tokens are LITERAL by design (the fabb wireframes' values), not
+    // aliases over a component library's theme: that is what lets the page
+    // carry its own colors instead of depending on a stylesheet the host
+    // injects into every guest.
     for consumed in [
         "background:var(--page)",
         "color:var(--ink)",
@@ -399,11 +401,13 @@ fn it_keeps_the_hub_on_the_shared_theme_tokens() {
         "var(--wash-p)",
     ] {
         assert!(
-            HUB_STYLES.contains(consumed),
+            PROFILE_LIBRARY.contains(consumed),
             "the Hub must consume the shared theme token `{consumed}`",
         );
     }
-    for restated in [
+    // The literals belong to the token block and nowhere else: declared
+    // once, consumed by name everywhere after.
+    for declared in [
         "--page:#",
         "--ink:#",
         "--cur:#",
@@ -411,8 +415,9 @@ fn it_keeps_the_hub_on_the_shared_theme_tokens() {
         "--frost:rgba(",
     ] {
         assert!(
-            !PROFILE_LIBRARY.contains(restated),
-            "the Hub must not restate the palette locally (`{restated}`)",
+            PROFILE_LIBRARY.contains(declared),
+            "the Hub's token block must declare `{declared}` — the palette \
+             travels with the view, not with an injected stylesheet",
         );
     }
 }
@@ -425,7 +430,7 @@ fn it_builds_one_centered_hub_launcher_with_a_settings_route() {
         ".hc-view",
     ] {
         assert!(
-            HUB_STYLES.contains(contract),
+            PROFILE_LIBRARY.contains(contract),
             "the centered Hub launcher must contain `{contract}`",
         );
     }
@@ -433,7 +438,7 @@ fn it_builds_one_centered_hub_launcher_with_a_settings_route() {
         PROFILE_LIBRARY.contains("create new space"),
         "the centered Hub launcher must contain `create new space`",
     );
-    let hubbar = HUB_STYLES
+    let hubbar = PROFILE_LIBRARY
         .split(".hubbar {")
         .nth(1)
         .and_then(|css| css.split('}').next())
@@ -446,7 +451,7 @@ fn it_builds_one_centered_hub_launcher_with_a_settings_route() {
     }
     for (selector, width) in [(".hc-acct {", "width:144px"), (".hc-view {", "width:432px")] {
         assert!(
-            css_rule(HUB_STYLES, selector).contains(width),
+            css_rule(PROFILE_LIBRARY, selector).contains(width),
             "the proportional desktop Hub cell `{selector}` must contain `{width}`",
         );
     }
@@ -501,7 +506,7 @@ fn it_mints_an_invite_when_copying_a_hub_space_link() {
         ("failed", "failed"),
     ] {
         assert!(
-            HUB_STYLES.contains(&format!(
+            PROFILE_LIBRARY.contains(&format!(
                 "data-share-state=\"{state}\"] [data-share-copy-label=\"{label}\"]"
             )),
             "the Hub invite action must display its `{label}` answer in `{state}` state"
@@ -512,30 +517,30 @@ fn it_mints_an_invite_when_copying_a_hub_space_link() {
 #[test]
 fn it_aligns_the_hub_space_actions_in_one_flex_context() {
     assert!(
-        css_rule(HUB_STYLES, ".verbs ui-copy-link,").contains("display:contents"),
+        css_rule(PROFILE_LIBRARY, ".verbs ui-copy-link,").contains("display:contents"),
         "the copy-link host must not offset its button from delete or leave"
     );
     assert!(
-        css_rule(HUB_STYLES, ".verbs {").contains("gap:18px"),
+        css_rule(PROFILE_LIBRARY, ".verbs {").contains("gap:18px"),
         "desktop Hub actions must remain a close visual group"
     );
 }
 
 #[test]
 fn it_separates_the_account_roster_into_independent_blocks() {
-    let menu = css_rule(HUB_STYLES, ".account-menu {");
+    let menu = css_rule(PROFILE_LIBRARY, ".account-menu {");
     for contract in ["display:flex", "flex-direction:column", "gap:7px"] {
         assert!(
             menu.contains(contract),
             "the account roster must contain `{contract}`",
         );
     }
-    let profiles = css_rule(HUB_STYLES, ".account-menu__profiles {");
+    let profiles = css_rule(PROFILE_LIBRARY, ".account-menu__profiles {");
     assert!(
         profiles.contains("gap:7px"),
         "profiles must keep the same 7px rhythm as Hub space rows",
     );
-    let row = css_rule(HUB_STYLES, ".account-menu__row {");
+    let row = css_rule(PROFILE_LIBRARY, ".account-menu__row {");
     assert!(
         row.contains("box-shadow:0 0 0 1px var(--ring)"),
         "each account row must carry its own ring",
@@ -814,7 +819,7 @@ fn it_declares_mobile_target_and_input_floors_for_hub_and_join() {
         ".account-menu__row, .srow, .snew { min-height:44px; }",
     ] {
         assert!(
-            HUB_STYLES.contains(contract),
+            PROFILE_LIBRARY.contains(contract),
             "mobile Hub CSS must contain `{contract}`"
         );
     }
