@@ -48,6 +48,17 @@ const GATHER_DEADLINE: Duration = Duration::from_secs(3);
 /// `chrome://webrtc-internals` dump.
 pub const CHANNEL_LABEL: &str = "tonk";
 
+/// Label for a channel carrying iroh datagrams rather than text.
+///
+/// One listener answers both: a dial for the chat prototype and a dial
+/// for the peer remote arrive at the same address and are told apart
+/// here. Distinct labels rather than a negotiated mode, because the
+/// dialer already has to name a label and this costs nothing.
+///
+/// A channel under this label must be unreliable and unordered — see
+/// `transport`'s note on why a reliable one is actively harmful.
+pub const DATAGRAM_LABEL: &str = "tonk-iroh";
+
 /// Anything that can go wrong bringing a peer up.
 #[derive(Debug, thiserror::Error)]
 pub enum PeerError {

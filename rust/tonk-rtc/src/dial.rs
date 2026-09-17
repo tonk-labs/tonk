@@ -59,7 +59,7 @@ use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
 use crate::identity::Identity;
 use crate::mux::Watching;
-use crate::peer::{CHANNEL_LABEL, PeerError, Session};
+use crate::peer::{CHANNEL_LABEL, DATAGRAM_LABEL, PeerError, Session};
 
 /// The port a listener binds unless told otherwise.
 ///
@@ -127,12 +127,26 @@ impl Address {
     }
 }
 
+/// A dialer that opened a datagram channel.
+///
+/// Carries the peer connection so it stays alive: dropping it tears the
+/// channel down, and the channel is the route.
+pub struct Dialer {
+    /// The ICE credential this dial announced, which is the only handle
+    /// this side has for a browser with no address of its own.
+    pub ufrag: String,
+    /// The unreliable, unordered channel the datagrams ride.
+    pub channel: Arc<RTCDataChannel>,
+    _connection: Arc<RTCPeerConnection>,
+}
+
 /// A listening peer, waiting to be dialed.
 ///
 /// Holds the shared socket and every peer connection built for a dial;
 /// dropping it tears all of them down.
 pub struct Listener {
     address: Address,
+    datagrams: AsyncMutex<mpsc::UnboundedReceiver<Dialer>>,
     incoming: AsyncMutex<mpsc::UnboundedReceiver<Session>>,
     /// Kept alive for the listener's life. The accept loop owns the
     /// per-dial connections; this is the handle that stops it.
@@ -197,6 +211,7 @@ async fn answer_dial(
     identity: &Identity,
     mux: Arc<UDPMuxDefault>,
     sessions: mpsc::UnboundedSender<Session>,
+    datagrams: mpsc::UnboundedSender<Dialer>,
 ) -> Result<Arc<RTCPeerConnection>, PeerError> {
     let mut settings = SettingEngine::default();
     // The dialer chose this ufrag and used it for both of its own ICE
@@ -231,14 +246,30 @@ async fn answer_dial(
     );
 
     let owner = connection.clone();
+    let dialer = ufrag.to_owned();
     connection.on_data_channel(Box::new(move |channel: Arc<RTCDataChannel>| {
         let sessions = sessions.clone();
+        let datagrams = datagrams.clone();
         let owner = owner.clone();
+        let dialer = dialer.clone();
         Box::pin(async move {
-            if channel.label() != CHANNEL_LABEL {
-                return;
+            match channel.label() {
+                CHANNEL_LABEL => {
+                    let _ = sessions.send(Session::attach(owner, channel));
+                }
+                // The ufrag names this dial and nothing else: a dialer
+                // chose it, used it for both its ICE fields, and the mux
+                // routed on it. That makes it the one handle this side
+                // has for a browser that has no address of its own.
+                DATAGRAM_LABEL => {
+                    let _ = datagrams.send(Dialer {
+                        ufrag: dialer,
+                        channel,
+                        _connection: owner,
+                    });
+                }
+                _ => {}
             }
-            let _ = sessions.send(Session::attach(owner, channel));
         })
     }));
 
@@ -278,7 +309,9 @@ pub async fn listen(identity: Identity, port: u16) -> Result<Listener, PeerError
     let mux = UDPMuxDefault::new(UDPMuxParams::new(watching));
 
     let (sessions, incoming) = mpsc::unbounded_channel();
+    let (datagrams, dialers) = mpsc::unbounded_channel();
     let accepting = {
+        let datagrams = datagrams.clone();
         let identity = identity.clone();
         let mux = mux.clone();
         tokio::spawn(async move {
@@ -299,7 +332,15 @@ pub async fn listen(identity: Identity, port: u16) -> Result<Listener, PeerError
                     continue;
                 }
 
-                match answer_dial(&ufrag, &identity, mux.clone(), sessions.clone()).await {
+                match answer_dial(
+                    &ufrag,
+                    &identity,
+                    mux.clone(),
+                    sessions.clone(),
+                    datagrams.clone(),
+                )
+                .await
+                {
                     Ok(connection) => connections.push(connection),
                     // One dial failing is not the listener failing —
                     // anyone can send a packet to an open port.
@@ -317,6 +358,7 @@ pub async fn listen(identity: Identity, port: u16) -> Result<Listener, PeerError
             fingerprint: identity.fingerprint(),
         },
         incoming: AsyncMutex::new(incoming),
+        datagrams: AsyncMutex::new(dialers),
         _accepting: accepting,
     })
 }
@@ -333,6 +375,15 @@ impl Listener {
     /// listener serves many dials over its life.
     pub async fn accept(&self) -> Option<Session> {
         self.incoming.lock().await.recv().await
+    }
+
+    /// Wait for the next dialer to open a *datagram* channel.
+    ///
+    /// The other half of [`Self::accept`]: one address answers both, and
+    /// the label the dialer chose decides which queue its channel lands
+    /// in. `None` once the listener is torn down.
+    pub async fn accept_datagram(&self) -> Option<Dialer> {
+        self.datagrams.lock().await.recv().await
     }
 }
 
