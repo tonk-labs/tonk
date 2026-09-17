@@ -498,11 +498,61 @@ view!:
   this: tonk:connection-invite-controls
   show:
     ui: |
-      <button class="connection-invite-new" on:new-agent-invite=tonk:new-agent-invite>new invite</button>
+      <tonk-component>
+        <script type="tonk/module">
+          customElements.get("tonk-agent-invite-controls") ||
+            customElements.define("tonk-agent-invite-controls", class extends HTMLElement {
+              static observedAttributes = ["mode"];
+              connectedCallback() {
+                this.observer = new MutationObserver(() => this.render());
+                this.observer.observe(this, { childList: true, subtree: true });
+                this.afterRegistration = () => {
+                  if (["account", "activation"].includes(this.getAttribute("mode"))) {
+                    this.dispatchEvent(new CustomEvent("mount", { bubbles: true }));
+                  }
+                };
+                window.addEventListener("tonk:registration-closed", this.afterRegistration);
+                this.onclick = event => {
+                  const button = event.target.closest("[data-invite-account]");
+                  if (!button || button.hidden) return;
+                  globalThis.tonk.register(JSON.stringify({
+                    reason: this.getAttribute("mode") === "activation"
+                      ? "agent-invite-activation" : "agent-invite-account"
+                  }));
+                };
+                this.render();
+              }
+              disconnectedCallback() {
+                this.observer?.disconnect();
+                window.removeEventListener("tonk:registration-closed", this.afterRegistration);
+                this.onclick = null;
+              }
+              attributeChangedCallback() { if (this.isConnected) this.render(); }
+              render() {
+                const mode = this.getAttribute("mode");
+                for (const button of this.querySelectorAll("[data-invite-action]")) {
+                  button.hidden = !button.dataset.inviteAction.split(" ").includes(mode);
+                }
+                const account = this.querySelector("[data-invite-account]");
+                if (account) {
+                  const label = mode === "activation" ? "verify account" : "create an account or sign in";
+                  if (account.textContent !== label) account.textContent = label;
+                }
+              }
+            });
+        </script>
+      </tonk-component>
+      <tonk-agent-invite-controls mode={mode} on:invite=tonk:agent-handoff>
+        <button class="connection-invite-new" data-invite-account data-invite-action="account activation" hidden>create an account or sign in</button>
+        <button class="connection-invite-new" data-invite-action="retry" hidden on:new-agent-invite=tonk:new-agent-invite>try again</button>
+        <button class="connection-invite-new" data-invite-action="new" hidden on:new-agent-invite=tonk:new-agent-invite>new invite</button>
+        <button class="connection-invite-new" data-invite-action="sync" hidden on:new-agent-invite=tonk:new-agent-invite>turn on sync</button>
+      </tonk-agent-invite-controls>
       <style>
+        tonk-agent-invite-controls [hidden] { display: none !important; }
         .connection-invite-new {
-          min-height: 44px; padding: 0 16px; border: 0; border-radius: 0;
-          background: transparent; color: var(--fabb-ink, #38182a);
+          min-height: 36px; padding: 0 16px; border: 0; border-radius: 0;
+          background: transparent; color: var(--wa-color-text-normal);
           box-shadow: inset 0 0 0 1px currentColor;
           font: 600 13px/1 'IBM Plex Sans Condensed', 'Bahnschrift', 'Arial Narrow', sans-serif;
           letter-spacing: .02em; cursor: pointer;
@@ -663,8 +713,8 @@ view!:
           .agent-prompt p { margin: 0; line-height: var(--wa-line-height-normal); text-wrap: pretty; }
           .agent-prompt__action { display: flex; flex-wrap: wrap; gap: var(--wa-space-s); align-items: center; }
           .agent-prompt__copy {
-            --agent-copy-ink: var(--fabb-ink, #38182a);
-            --agent-copy-surface: var(--fabb-on-ink, #f7f6f5);
+            --agent-copy-ink: var(--wa-color-neutral-on-loud);
+            --agent-copy-surface: var(--wa-color-text-normal);
           }
           .agent-prompt__copy::part(button) {
             box-sizing: border-box;
@@ -695,7 +745,7 @@ view!:
           .agent-prompt__copy::part(button):focus-visible {
             background: var(--agent-copy-surface);
             color: var(--agent-copy-ink);
-            outline: 2px solid var(--agent-copy-ink);
+            outline: 2px solid var(--wa-color-text-normal);
             outline-offset: 3px;
           }
           .agent-prompt__copy::part(copy-icon),
@@ -712,7 +762,7 @@ view!:
           }
           .agent-prompt__new {
             min-height: 44px; padding: 0 16px; border: 0; border-radius: 0;
-            background: transparent; color: var(--fabb-ink, #38182a);
+            background: transparent; color: var(--wa-color-text-normal);
             box-shadow: inset 0 0 0 1px currentColor;
             font: 600 13px/1 'IBM Plex Sans Condensed', 'Bahnschrift', 'Arial Narrow', sans-serif;
             letter-spacing: .02em; cursor: pointer;
@@ -721,14 +771,15 @@ view!:
           .agent-prompt__new:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
           .agent-prompt__note { color: var(--wa-color-text-quiet); font-size: var(--wa-font-size-s); }
         </style>
-        <p>Copy the prompt and give it to an agent of your choice. Then tell it what you want to build.</p>
         <div data-agent-mode="unsupported" hidden>
-          <p class="agent-prompt__note">This older invitation cannot connect an agent. Create a new agent invitation from an updated Tonk deployment. To access your own spaces from the terminal, run <code>tonk link</code>.</p>
+          <p class="agent-prompt__note">this invitation is no longer supported. reload tonk to get the latest version, then create a new invite. to connect your own terminal, run <code>tonk link</code>.</p>
+          <button class="agent-prompt__new" on:new-agent-invite=tonk:new-agent-invite>new invite</button>
         </div>
         <div data-agent-mode="scoped" hidden>
-        <p class="agent-prompt__note">Your agent will connect to this space. This link grants build access to anyone who has it until it expires or you revoke it. You can close Tonk after copying. The connection receipt confirms a completed sync; it does not show whether an agent is online.</p>
+        <p>copy the prompt and give it to your agent. then tell it what you want to build.</p>
+        <p class="agent-prompt__note">anyone with this link can read and change this space until it expires or you revoke it. keep it private. you can close tonk after copying.</p>
         <div class="agent-prompt__action">
-          <wa-copy-button class="agent-prompt__copy" copy-label="Copy prompt" success-label="Prompt copied" error-label="Could not copy" value="You're helping build the &quot;{name}&quot; Tonk space.
+          <wa-copy-button class="agent-prompt__copy" copy-label="copy prompt" success-label="prompt copied" error-label="could not copy" value="You're helping build the &quot;{name}&quot; Tonk space.
 
       Connect to the exact space this prompt came from:
 
@@ -741,8 +792,9 @@ view!:
             <span slot="success-icon" aria-hidden="true">prompt copied</span>
             <span slot="error-icon" aria-hidden="true">could not copy</span>
           </wa-copy-button>
-          <button class="agent-prompt__new" on:new-agent-invite=tonk:new-agent-invite aria-label="Create another independent agent invite">new invite</button>
+          <button class="agent-prompt__new" on:new-agent-invite=tonk:new-agent-invite aria-label="create another agent invite">new invite</button>
         </div>
+        <p class="agent-prompt__note">creating a new invite does not cancel earlier ones.</p>
         </div>
       </div>
       </tonk-agent-prompt>
@@ -784,7 +836,7 @@ view!:
     ui: |
       <details open class="agent-connection" data-this={this}>
         <summary aria-label="Dismiss agent connection notification">×</summary>
-        <span role="status">agent connection acknowledged</span>
+        <span role="status">agent setup confirmed</span><span class="agent-connection-note">this confirms a completed sync, not whether the agent is online.</span>
         <style>
           .agent-connection {
             position: relative;
@@ -795,9 +847,9 @@ view!:
             width: 100%;
             min-height: 44px;
             padding: 12px 52px 12px 24px;
-            background: rgb(253 252 252 / 72%);
-            color: #38182a;
-            box-shadow: 0 0 0 1px rgb(56 24 42 / 85%);
+            background: var(--wa-color-surface-raised);
+            color: var(--wa-color-text-normal);
+            box-shadow: 0 0 0 1px var(--wa-color-neutral-border-normal);
             -webkit-backdrop-filter: blur(12px) saturate(1.5);
             backdrop-filter: blur(12px) saturate(1.5);
             font: 400 13px/1.45 var(--wa-font-family-body);
@@ -805,6 +857,7 @@ view!:
             animation: agent-connection-enter .4s cubic-bezier(.25,.46,.45,.94) both,
               agent-connection-exit .4s ease-out 120s forwards;
           }
+          .agent-connection-note { display: block; margin-top: 4px; color: var(--wa-color-text-quiet); }
           .agent-connection:not([open]) { display: none; }
           .agent-connection > summary {
             box-sizing: border-box;
@@ -840,14 +893,7 @@ view!:
             from { opacity: 1; transform: translateY(0); }
             to { opacity: 0; transform: translateY(12px); visibility: hidden; }
           }
-          @media (prefers-color-scheme: dark) {
-            .agent-connection > summary:hover { background: rgb(226 223 221 / 9%); }
-            .agent-connection {
-              background: rgb(29 24 25 / 72%);
-              color: #e2dfdd;
-              box-shadow: 0 0 0 1px rgb(226 223 221 / 55%);
-            }
-          }
+
           @media (prefers-reduced-motion: reduce) {
             .agent-connection { animation-duration: 0s; }
           }

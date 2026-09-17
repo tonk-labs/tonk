@@ -138,7 +138,8 @@ async fn issue_to_recipient(
     now: Timestamp,
     expires: Timestamp,
 ) -> Result<SpaceGrantBundle, TonkWorkerError> {
-    require_grant_deadline(&ancestors, expires).map_err(failure)?;
+    require_grant_deadline(&ancestors, expires)
+        .map_err(|error| TonkWorkerError::Forbidden(error.to_string()))?;
     if ancestors.len() != scopes.len() {
         return Err(failure("issuer proof count mismatch"));
     }
@@ -160,6 +161,37 @@ async fn issue_to_recipient(
     SpaceGrantBundle::validate(chains, recipient, scopes, remote, now)
         .await
         .map_err(failure)
+}
+
+/// Keep a conclusive permission refusal distinct from an unavailable decision.
+fn issuer_proof_failure(error: dialog_capability::access::AuthorizeError) -> TonkWorkerError {
+    use dialog_capability::access::{AuthorizeError, Recourse};
+    match error {
+        AuthorizeError::UnavailableProof { .. }
+        | AuthorizeError::Unavailable { .. }
+        | AuthorizeError::Malformed { .. }
+        | AuthorizeError::Declined {
+            recourse: Recourse::Retry,
+            ..
+        } => failure(error),
+        AuthorizeError::UnprovenSubject { .. }
+        | AuthorizeError::CommandEscalation { .. }
+        | AuthorizeError::PolicyViolation { .. }
+        | AuthorizeError::InvalidAudience { .. }
+        | AuthorizeError::NotValidBefore { .. }
+        | AuthorizeError::Expired { .. }
+        | AuthorizeError::Revoked { .. }
+        | AuthorizeError::InvalidSignature { .. }
+        | AuthorizeError::Declined {
+            recourse: Recourse::None,
+            ..
+        } => {
+            tonk_common::log!("invitation issuer permission refused: {error}");
+            TonkWorkerError::Forbidden(
+                "this account cannot grant the requested space access".into(),
+            )
+        }
+    }
 }
 
 async fn issuer_ancestors(
@@ -189,7 +221,7 @@ async fn issuer_ancestors(
                 .invoke(Prove::<Ucan>::new(tonk.profile.did(), scope.clone()))
                 .perform(&tonk.operator)
                 .await
-                .map_err(failure)?,
+                .map_err(issuer_proof_failure)?,
         };
         let mut certificates = proof.proofs.into_iter();
         let first = certificates
@@ -201,7 +233,8 @@ async fn issuer_ancestors(
         }
         ancestors.push(chain);
     }
-    require_grant_deadline(&ancestors, expires).map_err(failure)?;
+    require_grant_deadline(&ancestors, expires)
+        .map_err(|error| TonkWorkerError::Forbidden(error.to_string()))?;
     Ok(ancestors)
 }
 
@@ -1228,6 +1261,72 @@ mod tests {
         )
     }
     #[test]
+    fn connection_issuer_classifies_permission_refusal_without_hiding_retry() {
+        use dialog_capability::access::{AuthorizeError, Recourse};
+        for error in [
+            AuthorizeError::UnavailableProof {
+                link: "missing-proof".into(),
+            },
+            AuthorizeError::Unavailable {
+                detail: "storage unavailable".into(),
+            },
+            AuthorizeError::Malformed {
+                detail: "undecodable proof".into(),
+            },
+            AuthorizeError::Declined {
+                recourse: Recourse::Retry,
+                reason: "activation pending".into(),
+            },
+        ] {
+            assert!(matches!(
+                issuer_proof_failure(error),
+                TonkWorkerError::Internal(_)
+            ));
+        }
+        let did: Did = "did:key:z6MkrCD1csqtgdj8sRHYRPGLYcMFXAoDhkgvHNq2FML2xqCX"
+            .parse()
+            .unwrap();
+        for error in [
+            AuthorizeError::UnprovenSubject {
+                claimed: did.clone(),
+                authorized: did.clone(),
+            },
+            AuthorizeError::CommandEscalation {
+                claimed: "/use".into(),
+                authorized: "/use/get".into(),
+            },
+            AuthorizeError::PolicyViolation {
+                predicate: "main only".into(),
+            },
+            AuthorizeError::InvalidAudience {
+                claimed: did.clone(),
+                authorized: did.clone(),
+            },
+            AuthorizeError::NotValidBefore {
+                not_before: 20,
+                at: 10,
+            },
+            AuthorizeError::Expired {
+                expiration: 10,
+                at: 20,
+            },
+            AuthorizeError::Revoked {
+                subject: did.clone(),
+            },
+            AuthorizeError::InvalidSignature { issuer: did },
+            AuthorizeError::Declined {
+                recourse: Recourse::None,
+                reason: "permission refused".into(),
+            },
+        ] {
+            assert!(matches!(
+                issuer_proof_failure(error),
+                TonkWorkerError::Forbidden(_)
+            ));
+        }
+    }
+
+    #[test]
     fn terminal_snapshot_preserves_reviewed_membership_across_presentation_changes() {
         let mut rows = vec![tonk_worker_api::TerminalLinkSpace {
             repo: "space-a".into(),
@@ -1870,6 +1969,7 @@ mod tests {
         )
         .await
         .unwrap_err();
+        assert!(matches!(&error, TonkWorkerError::Forbidden(_)), "{error}");
         assert!(error.to_string().contains(&limit), "{error}");
     }
     #[cfg(not(target_arch = "wasm32"))]

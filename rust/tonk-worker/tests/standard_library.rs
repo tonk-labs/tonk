@@ -619,7 +619,7 @@ fn it_keeps_machine_instructions_in_the_production_copy_prompt() {
         include_str!("../../tonk-core/assets/library/onboarding-agent.yaml"),
     ] {
         let copied = library
-            .split("copy-label=\"Copy prompt\"")
+            .split("copy-label=\"copy prompt\"")
             .nth(1)
             .and_then(|tail| tail.split("</wa-copy-button>").next())
             .expect("the agent prompt copy button");
@@ -631,7 +631,7 @@ fn it_keeps_machine_instructions_in_the_production_copy_prompt() {
         );
         assert!(
             !library
-                .split("copy-label=\"Copy prompt\"")
+                .split("copy-label=\"copy prompt\"")
                 .next()
                 .unwrap_or_default()
                 .contains(command),
@@ -1216,7 +1216,8 @@ fn it_renders_all_grant_set_receipts_without_claiming_agent_presence() {
         .unwrap();
     assert!(receipt.contains("directory: |"));
     assert!(receipt.contains("entity={this} model=tonk:agent-connection"));
-    assert!(receipt.contains("agent connection acknowledged"));
+    assert!(receipt.contains("agent setup confirmed"));
+    assert!(receipt.contains("not whether the agent is online"));
     assert!(receipt.contains("data-this={this}"));
     assert!(!receipt.contains("Your agent connected"));
     assert!(
