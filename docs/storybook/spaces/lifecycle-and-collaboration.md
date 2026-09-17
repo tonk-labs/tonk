@@ -89,6 +89,26 @@ This is a source-derived presentation decision for `SPACE-11`, `UI-04`,
 `WEB-04`, and `WEB-05`. The focused query, DOM-frame, and profile-library tests
 cover the authored contract; running-product browser evidence remains distinct.
 
+### FABB stack pointer-tolerance decision
+
+The 7px between two rows of a stack is presentation, not dead ground. Each row
+answers the half-gap above and below it, so a pointer travelling down a stack
+is always on a row and a press aimed just off a row still lands on it. A
+stack's outer edges keep their reach to themselves: the page above it and the
+bar below it stay free.
+
+A sub-stack opened by hover — the space switcher hanging off `open` — stands
+for a further 320ms once the pointer leaves the row that opened it, and coming
+back inside that beat cancels the retreat. Entering a different row ends its
+neighbour's grace at once, so only one sub-stack is ever up. Nothing else
+changes: a row picked open stays open until the stack closes, keyboard focus
+still opens and closes a sub-stack directly, and a coarse pointer still gets
+in-place disclosure rather than sideways flight.
+
+This source-and-browser-tested interaction decision refines `SPACE-11` and
+`UI-04` on 2026-09-16. No screenshot was recaptured because the stack's gaps,
+geometry, and resting appearance are unchanged to the pixel.
+
 ## The interaction, event by event
 
 ```mermaid

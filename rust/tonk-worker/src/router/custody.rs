@@ -637,6 +637,11 @@ async fn complete_login(
             log!("login: the account link did not finish: {error}");
         }
         stamp_account_linking(&deferred, account_entity, false).await;
+        // The page has what it needs; the push follows now rather than
+        // holding the "linking" marker until the last PUT lands.
+        if let Err(error) = crate::router::account_state::push_account_main(&deferred).await {
+            log!("login: the push behind the link did not land: {error}");
+        }
     });
     Ok(profile_changed)
 }
