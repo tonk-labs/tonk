@@ -794,6 +794,97 @@ view!:
         );
     }
 
+    /// An omitted NAME resolves to `ui`, so the check reads the view's
+    /// `ui:` style — not some other key that happens to exist.
+    #[dialog_common::test]
+    fn an_omitted_name_resolves_to_the_ui_style() {
+        let accepted = r#"
+view!:
+  this: tonk:demo
+  show:
+    ui: |
+      <link rel=stylesheet with:href="">
+  style:
+    ui: |
+      body { color: red; }
+"#;
+        lower(accepted).expect("the empty reference reads the `ui:` style");
+
+        // The same template against a view declaring every OTHER key
+        // must fail, or the default is not actually resolving to `ui`.
+        let rejected = r#"
+view!:
+  this: tonk:demo
+  show:
+    ui: |
+      <link rel=stylesheet with:href="">
+  style:
+    base: |
+      body { color: red; }
+"#;
+        let error = lower(rejected).expect_err("`ui` is not declared here");
+        assert_eq!(error.kind.code(), "E_UNKNOWN_EMBED", "{error}");
+        assert!(
+            error.to_string().contains("ui"),
+            "the diagnostic quotes the defaulted name: {error}",
+        );
+    }
+
+    /// An omitted ENTITY resolves to the view doing the embedding, so
+    /// the check reads THIS view's map rather than skipping as it does
+    /// for a cross-view reference.
+    #[dialog_common::test]
+    fn an_omitted_entity_resolves_to_the_embedding_view() {
+        let source = r#"
+view!:
+  this: tonk:demo
+  show:
+    ui: |
+      <link rel=stylesheet with:href=base>
+"#;
+        let error = lower(source).expect_err("a view declaring no style cannot embed one");
+        assert_eq!(error.kind.code(), "E_UNKNOWN_EMBED", "{error}");
+        assert!(
+            error.to_string().contains("declares no"),
+            "and says the view declares nothing: {error}",
+        );
+    }
+
+    /// Both halves omitted: `ui` of the embedding view.
+    #[dialog_common::test]
+    fn omitting_both_halves_resolves_to_this_views_ui_style() {
+        let source = r#"
+view!:
+  this: tonk:demo
+  show:
+    ui: |
+      <link rel=stylesheet with:href="">
+  style:
+    ui: |
+      body { color: red; }
+  font:
+    gestalte: !!binary aGk=
+"#;
+        lower(source).expect("the bare reference reads this view's `ui:` style");
+    }
+
+    /// A name declared under `font:` rather than `style:` is accepted:
+    /// the scan reports the attribute, not the element, so which map a
+    /// reference reads is not knowable at lowering.
+    #[dialog_common::test]
+    fn it_accepts_a_name_declared_under_font() {
+        let source = r#"
+view!:
+  this: tonk:demo
+  show:
+    ui: |
+      <ui-font with:href=gestalte family=Gestalte></ui-font>
+  font:
+    gestalte: !!binary aGk=
+"#;
+        lower(source).expect("a font key is a declared name");
+    }
+
     /// The key half of a cross-view reference stays unchecked: it is a
     /// key in that view's own map, which is data on the branch rather
     /// than anything this document declares.
