@@ -1279,7 +1279,7 @@ dependencies = [
 [[package]]
 name = "dialog-artifacts"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#beb35ab471101ec36fff102b6ca13170e22c7fd2"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#78c5fbc73ff53dda975fc78867c66bf1b5b57ca2"
 dependencies = [
  "arrayref",
  "async-stream",
@@ -1318,7 +1318,7 @@ dependencies = [
 [[package]]
 name = "dialog-capability"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#beb35ab471101ec36fff102b6ca13170e22c7fd2"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#78c5fbc73ff53dda975fc78867c66bf1b5b57ca2"
 dependencies = [
  "async-trait",
  "base58",
@@ -1341,7 +1341,7 @@ dependencies = [
 [[package]]
 name = "dialog-common"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#beb35ab471101ec36fff102b6ca13170e22c7fd2"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#78c5fbc73ff53dda975fc78867c66bf1b5b57ca2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1369,7 +1369,7 @@ dependencies = [
 [[package]]
 name = "dialog-credentials"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#beb35ab471101ec36fff102b6ca13170e22c7fd2"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#78c5fbc73ff53dda975fc78867c66bf1b5b57ca2"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -1395,7 +1395,7 @@ dependencies = [
 [[package]]
 name = "dialog-csv"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#beb35ab471101ec36fff102b6ca13170e22c7fd2"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#78c5fbc73ff53dda975fc78867c66bf1b5b57ca2"
 dependencies = [
  "async-trait",
  "base58",
@@ -1410,7 +1410,7 @@ dependencies = [
 [[package]]
 name = "dialog-did-web"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#beb35ab471101ec36fff102b6ca13170e22c7fd2"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#78c5fbc73ff53dda975fc78867c66bf1b5b57ca2"
 dependencies = [
  "async-trait",
  "base58",
@@ -1433,7 +1433,7 @@ dependencies = [
 [[package]]
 name = "dialog-effects"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#beb35ab471101ec36fff102b6ca13170e22c7fd2"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#78c5fbc73ff53dda975fc78867c66bf1b5b57ca2"
 dependencies = [
  "async-trait",
  "base58",
@@ -1448,7 +1448,7 @@ dependencies = [
 [[package]]
 name = "dialog-identity"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#beb35ab471101ec36fff102b6ca13170e22c7fd2"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#78c5fbc73ff53dda975fc78867c66bf1b5b57ca2"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -1464,9 +1464,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "dialog-iroh-remote"
+version = "0.1.0"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#78c5fbc73ff53dda975fc78867c66bf1b5b57ca2"
+dependencies = [
+ "async-trait",
+ "blake3",
+ "dialog-capability",
+ "dialog-common",
+ "dialog-did-web",
+ "dialog-effects",
+ "dialog-ucan",
+ "dialog-ucan-core",
+ "dialog-varsig",
+ "ipld-core",
+ "iroh",
+ "iroh-base",
+ "serde",
+ "serde_ipld_dagcbor",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "wasm-bindgen-futures",
+]
+
+[[package]]
 name = "dialog-macros"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#beb35ab471101ec36fff102b6ca13170e22c7fd2"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#78c5fbc73ff53dda975fc78867c66bf1b5b57ca2"
 dependencies = [
  "blake3",
  "convert_case 0.6.0",
@@ -1478,12 +1503,13 @@ dependencies = [
 [[package]]
 name = "dialog-network"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#beb35ab471101ec36fff102b6ca13170e22c7fd2"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#78c5fbc73ff53dda975fc78867c66bf1b5b57ca2"
 dependencies = [
  "async-trait",
  "dialog-capability",
  "dialog-common",
  "dialog-effects",
+ "dialog-iroh-remote",
  "dialog-remote-fs",
  "dialog-remote-s3",
  "dialog-remote-ucan-s3",
@@ -1493,7 +1519,7 @@ dependencies = [
 [[package]]
 name = "dialog-operator"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#beb35ab471101ec36fff102b6ca13170e22c7fd2"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#78c5fbc73ff53dda975fc78867c66bf1b5b57ca2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1531,7 +1557,7 @@ dependencies = [
 [[package]]
 name = "dialog-query"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#beb35ab471101ec36fff102b6ca13170e22c7fd2"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#78c5fbc73ff53dda975fc78867c66bf1b5b57ca2"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1591,7 +1617,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-fs"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#beb35ab471101ec36fff102b6ca13170e22c7fd2"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#78c5fbc73ff53dda975fc78867c66bf1b5b57ca2"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -1608,7 +1634,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-s3"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#beb35ab471101ec36fff102b6ca13170e22c7fd2"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#78c5fbc73ff53dda975fc78867c66bf1b5b57ca2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1648,7 +1674,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-ucan-s3"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#beb35ab471101ec36fff102b6ca13170e22c7fd2"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#78c5fbc73ff53dda975fc78867c66bf1b5b57ca2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1686,7 +1712,7 @@ dependencies = [
 [[package]]
 name = "dialog-repository"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#beb35ab471101ec36fff102b6ca13170e22c7fd2"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#78c5fbc73ff53dda975fc78867c66bf1b5b57ca2"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1725,7 +1751,7 @@ dependencies = [
 [[package]]
 name = "dialog-search-tree"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#beb35ab471101ec36fff102b6ca13170e22c7fd2"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#78c5fbc73ff53dda975fc78867c66bf1b5b57ca2"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1755,7 +1781,7 @@ dependencies = [
 [[package]]
 name = "dialog-storage"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#beb35ab471101ec36fff102b6ca13170e22c7fd2"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#78c5fbc73ff53dda975fc78867c66bf1b5b57ca2"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1802,7 +1828,7 @@ dependencies = [
 [[package]]
 name = "dialog-ucan"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#beb35ab471101ec36fff102b6ca13170e22c7fd2"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#78c5fbc73ff53dda975fc78867c66bf1b5b57ca2"
 dependencies = [
  "async-trait",
  "base58",
@@ -1823,7 +1849,7 @@ dependencies = [
 [[package]]
 name = "dialog-ucan-core"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#beb35ab471101ec36fff102b6ca13170e22c7fd2"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#78c5fbc73ff53dda975fc78867c66bf1b5b57ca2"
 dependencies = [
  "dialog-varsig",
  "futures",
@@ -1849,7 +1875,7 @@ dependencies = [
 [[package]]
 name = "dialog-varsig"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#beb35ab471101ec36fff102b6ca13170e22c7fd2"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=worker%2Flucid-gates-kcfeve#78c5fbc73ff53dda975fc78867c66bf1b5b57ca2"
 dependencies = [
  "dialog-common",
  "ed25519-dalek 2.2.0",
@@ -2748,7 +2774,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "tokio",
  "tower-service",
  "tracing",
@@ -3971,7 +3997,7 @@ dependencies = [
  "pin-project-lite",
  "rustc-hash",
  "rustls",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
@@ -4014,7 +4040,7 @@ checksum = "4dc50afea61aff926e150a36c31f06094608848e114a3fe667d76ec233163b1c"
 dependencies = [
  "cfg_aliases",
  "libc",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "tracing",
  "windows-sys 0.61.2",
 ]
@@ -4799,7 +4825,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -4838,7 +4864,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "tracing",
  "windows-sys 0.61.2",
 ]
@@ -7028,6 +7054,12 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "bytes",
+ "dialog-capability",
+ "dialog-common",
+ "dialog-did-web",
+ "dialog-effects",
+ "dialog-iroh-remote",
+ "dialog-operator",
  "env_logger",
  "getrandom 0.4.3",
  "iroh",

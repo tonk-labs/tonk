@@ -200,7 +200,9 @@ dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", branch
 dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "worker/lucid-gates-kcfeve" }
 dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "worker/lucid-gates-kcfeve" }
 dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", branch = "worker/lucid-gates-kcfeve" }
+dialog-did-web = { git = "https://github.com/dialog-db/dialog-db.git", branch = "worker/lucid-gates-kcfeve" }
 dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", branch = "worker/lucid-gates-kcfeve" }
+dialog-iroh-remote = { git = "https://github.com/dialog-db/dialog-db.git", branch = "worker/lucid-gates-kcfeve" }
 dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", branch = "worker/lucid-gates-kcfeve" }
 dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "worker/lucid-gates-kcfeve" }
 dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "worker/lucid-gates-kcfeve" }

@@ -73,6 +73,15 @@ rcgen = "0.13"
 # above are: tokio's `net` pulls `mio`, which does not build for wasm.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 anyhow = { workspace = true }
+# Proving the two halves compose: dialog's peer remote over this
+# crate's transport. `transport` brings `IrohChannel` and the accept
+# loop; `helpers` brings a store to answer from.
+dialog-capability = { workspace = true }
+dialog-common = { workspace = true }
+dialog-did-web = { workspace = true }
+dialog-effects = { workspace = true }
+dialog-iroh-remote = { workspace = true, features = ["transport", "helpers"] }
+dialog-operator = { workspace = true, features = ["helpers"] }
 # `env_logger` surfaces the `log` records the ICE/DTLS stack emits, which
 # is how the direct-dial spike tells "rejected the binding request" apart
 # from "never received one".
