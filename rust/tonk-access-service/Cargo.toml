@@ -40,6 +40,7 @@ blake3 = { workspace = true }
 bs58 = { workspace = true }
 ed25519-dalek = { workspace = true }
 hkdf = { workspace = true }
+hmac = { workspace = true }
 sha2_0_10 = { workspace = true }
 
 # Serialization
@@ -47,6 +48,7 @@ base64 = { workspace = true }
 hex = { workspace = true }
 ipld-core = { workspace = true }
 serde = { workspace = true }
+serde_bytes = { workspace = true }
 serde_ipld_dagcbor = { workspace = true }
 serde_json = { workspace = true }
 
@@ -54,6 +56,7 @@ getrandom = { workspace = true }
 urlencoding = { workspace = true }
 getrandom_0_2 = { workspace = true }
 # Utilities
+futures-util = { workspace = true }
 thiserror = { workspace = true }
 url = { workspace = true }
 

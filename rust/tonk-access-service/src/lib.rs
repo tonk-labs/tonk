@@ -2,11 +2,15 @@
 //!
 //! This service provides UCAN-authorized access to R2 storage.
 //! It receives UCAN invocation containers, verifies them using `UcanAuthorizer`,
-//! and returns pre-signed S3 request descriptors.
+//! and returns a service-signed permit for the one object operation the
+//! invocation authorizes, served by this same worker over its R2
+//! binding (see the [`permit`] module).
 //!
 //! ## Endpoints
 //!
 //! - `POST /ucan/` - Authorize a UCAN invocation container
+//! - `GET|PUT|DELETE /object/{key}` - Perform a permitted object
+//!   operation; the permit travels in the query string
 //! - `PUT /@` - Store a same-origin shortcut target (see the
 //!   [`shortcut`] module)
 //! - `GET /@/{hash}` - Permanent relative redirect to the stored target, with
@@ -23,10 +27,11 @@
 //!
 //! ## Response Format
 //!
-//! On success, returns a CBOR-encoded `AuthorizedRequest` with:
-//! - `url`: Pre-signed S3 URL
+//! On success, returns a CBOR-encoded `Permit` with:
+//! - `url`: the `/object/{key}` URL at this service, carrying the signed
+//!   permit
 //! - `method`: HTTP method (GET, PUT, DELETE)
-//! - `headers`: Headers to include in the request
+//! - `headers`: Headers to include in the request (none)
 //!
 //! On failure, returns an error response with appropriate HTTP status code.
 
@@ -49,6 +54,7 @@ mod handlers;
 pub mod lookup;
 pub mod metering;
 pub mod observability;
+pub mod permit;
 pub mod provisioning;
 pub mod registration;
 pub mod revocation;
@@ -97,6 +103,13 @@ async fn main(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .get_async("/health", handlers::health::handle)
         // UCAN authorization CORS preflight; POST is served above.
         .options_async("/ucan/", handlers::ucan::handle_options)
+        // Permitted object operations: the bytes behind a `/ucan/`
+        // answer. The key is everything after the prefix, slashes
+        // included.
+        .options_async("/object/*key", handlers::object::handle_options)
+        .get_async("/object/*key", handlers::object::handle_get)
+        .put_async("/object/*key", handlers::object::handle_put)
+        .delete_async("/object/*key", handlers::object::handle_delete)
         // Shortcut service: permissionless same-origin link shortening
         .options_async("/@", handlers::shortcut::handle_options)
         .put_async("/@", handlers::shortcut::handle_put)
