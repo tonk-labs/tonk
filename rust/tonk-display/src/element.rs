@@ -3122,6 +3122,114 @@ mod tests {
         );
     }
 
+    /// One `style:` row, as the branch would answer a style query.
+    #[cfg(target_arch = "wasm32")]
+    fn style_rows(view: &str, name: &str, content: &str) -> Vec<Conclusion> {
+        let mut styles = std::collections::BTreeMap::new();
+        styles.insert(name.to_owned(), Ipld::String(content.to_owned()));
+        vec![Conclusion {
+            this: view.to_owned(),
+            fields: BTreeMap::from([("style".to_owned(), Ipld::Map(styles))]),
+        }]
+    }
+
+    /// Yield enough microtasks for the resolver's spawned task to run
+    /// its query round trip and inject.
+    #[cfg(target_arch = "wasm32")]
+    async fn settle() {
+        for _ in 0..8 {
+            let _ =
+                wasm_bindgen_futures::JsFuture::from(Promise::resolve(&JsValue::UNDEFINED)).await;
+        }
+    }
+
+    /// A template that declares an embed gets the content it names,
+    /// in the document head.
+    ///
+    /// The whole point of the `with:href` path: the style is NOT in
+    /// the rendered row (that markup becomes the row template and
+    /// would be cloned per row), it is one node in `<head>`.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn it_injects_the_style_a_template_embeds() {
+        let document = window().expect("window").document().expect("document");
+        crate::embed::clear_injected(&document);
+        let stub = stub_query_host(
+            style_rows("tonk:demo", "base", "body { color: rgb(1, 2, 3) }"),
+            |_| {},
+        );
+
+        crate::embed::resolve_embeds(
+            &stub.host,
+            r#"<link rel=stylesheet with:href=base>"#,
+            "tonk:demo",
+        );
+        settle().await;
+
+        let injected = document
+            .query_selector("style[data-tonk-embed]")
+            .expect("query")
+            .expect("the embed is injected into the head");
+        assert_eq!(
+            injected.text_content().unwrap_or_default(),
+            "body { color: rgb(1, 2, 3) }",
+            "the injected node carries the content the view declared",
+        );
+        crate::embed::clear_injected(&document);
+    }
+
+    /// Re-mounting a view does not stack a second copy of its style.
+    ///
+    /// A display re-renders on every frame, so without the marker
+    /// check the head would grow one `<style>` per render.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn it_injects_one_node_however_often_a_view_mounts() {
+        let document = window().expect("window").document().expect("document");
+        crate::embed::clear_injected(&document);
+        let stub = stub_query_host(style_rows("tonk:demo", "base", "p { margin: 0 }"), |_| {});
+
+        for _ in 0..3 {
+            crate::embed::resolve_embeds(
+                &stub.host,
+                r#"<link rel=stylesheet with:href=base>"#,
+                "tonk:demo",
+            );
+            settle().await;
+        }
+
+        let nodes = document
+            .query_selector_all("style[data-tonk-embed]")
+            .expect("query");
+        assert_eq!(
+            nodes.length(),
+            1,
+            "three mounts of one view share one injected node",
+        );
+        crate::embed::clear_injected(&document);
+    }
+
+    /// A template declaring no embed injects nothing — the resolver
+    /// costs a template that embeds nothing no query at all.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn a_template_with_no_embed_injects_nothing() {
+        let document = window().expect("window").document().expect("document");
+        crate::embed::clear_injected(&document);
+        // No host claims queries: if the resolver queried anyway, the
+        // dispatch would fail rather than answer, and nothing could be
+        // injected — so this also pins that it does not try.
+        let stub = unclaimed_host();
+
+        crate::embed::resolve_embeds(&stub.host, r#"<p>{title}</p>"#, "tonk:demo");
+        settle().await;
+
+        let nodes = document
+            .query_selector_all("style[data-tonk-embed]")
+            .expect("query");
+        assert_eq!(nodes.length(), 0, "nothing declared, nothing injected");
+    }
+
     /// A declaration the artifact does NOT carry still goes to the
     /// branch — the fallback a view seeded before this field existed
     /// depends on.
