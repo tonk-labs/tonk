@@ -172,6 +172,10 @@ pub struct TonkSite {
     pub reactor: Reactor,
     /// Exact profile-local account and space registry used to open this site.
     pub account_store: crate::space::SpaceStore,
+    /// The environment this site's space is mounted in. Shared, so a
+    /// caller can mount the registry's other spaces alongside it and
+    /// serve them all from one place — see [`mount_space`].
+    pub storage: Storage<NativeSpace>,
 }
 
 impl TonkSite {
@@ -190,7 +194,7 @@ impl TonkSite {
         let root = root
             .canonicalize()
             .with_context(|| format!("could not canonicalize {}", root.display()))?;
-        let (profile, operator) = build_profile_and_operator(&root, &config).await?;
+        let (profile, operator, storage) = build_profile_and_operator(&root, &config).await?;
 
         // Ask the data itself before anything opens a branch — opening it is
         // what fails on old data, and it fails deep enough to be unreadable.
@@ -247,6 +251,7 @@ impl TonkSite {
             repository,
             reactor,
             account_store: config.account_store,
+            storage,
         })
     }
 
@@ -284,7 +289,7 @@ impl TonkSite {
             .canonicalize()
             .with_context(|| format!("could not canonicalize {}", root.display()))?;
 
-        let (profile, operator) = build_profile_and_operator(&root, &config).await?;
+        let (profile, operator, storage) = build_profile_and_operator(&root, &config).await?;
 
         // Try to load first. If absent, create + persist a
         // repo→profile delegation chain so the profile can later
@@ -323,6 +328,7 @@ impl TonkSite {
             repository,
             reactor,
             account_store: config.account_store,
+            storage,
         };
 
         // Seed the standard library into a freshly-created repo, the
@@ -750,8 +756,8 @@ pub async fn mount_delegated_at(
     let root = root
         .canonicalize()
         .with_context(|| format!("could not canonicalize {}", root.display()))?;
-    let (profile, operator) = build_profile_and_operator(&root, &config).await?;
-    mount_delegated_inner(&root, profile, operator, chain, config, true).await
+    let (profile, operator, storage) = build_profile_and_operator(&root, &config).await?;
+    mount_delegated_inner(&root, profile, operator, storage, chain, config, true).await
 }
 
 /// Mount with profile/operator state already prepared by the invite parser.
@@ -764,16 +770,18 @@ pub(crate) async fn mount_delegated_with(
     root: &Path,
     profile: Profile,
     operator: Operator<NativeSpace>,
+    storage: Storage<NativeSpace>,
     chain: DelegationChain,
     config: SiteConfig,
 ) -> Result<TonkSite> {
-    mount_delegated_inner(root, profile, operator, chain, config, false).await
+    mount_delegated_inner(root, profile, operator, storage, chain, config, false).await
 }
 
 async fn mount_delegated_inner(
     root: &Path,
     profile: Profile,
     operator: Operator<NativeSpace>,
+    storage: Storage<NativeSpace>,
     chain: DelegationChain,
     config: SiteConfig,
     require_reusable: bool,
@@ -893,6 +901,7 @@ async fn mount_delegated_inner(
         repository,
         reactor,
         account_store: config.account_store,
+        storage,
     })
 }
 
@@ -1361,22 +1370,62 @@ pub async fn transplant_at_with(
 /// The identity-minting half of a transplant: the same bootstrap a
 /// fresh creation runs, over a store that already holds the data.
 async fn mint_fresh_subject(root: &Path, config: &SiteConfig) -> Result<()> {
-    let (profile, operator) = build_profile_and_operator(root, config).await?;
+    let (profile, operator, _storage) = build_profile_and_operator(root, config).await?;
     bootstrap_repository(&profile, &operator, config).await?;
     Ok(())
 }
 
+/// The store is handed back alongside the operator because a caller may
+/// need to mount more than the one space the operator is rooted at.
+/// Cloning it yields a second handle onto the *same* pool, which is what
+/// makes a second space mountable into the environment the first is
+/// already served from — see [`mount_space`].
 pub(crate) async fn build_profile_and_operator(
     root: &Path,
     config: &SiteConfig,
-) -> Result<(Profile, Operator<NativeSpace>)> {
+) -> Result<(Profile, Operator<NativeSpace>, Storage<NativeSpace>)> {
     let storage = Storage::<NativeSpace>::default();
     let profile = Profile::open(config.profile_name.clone())
         .at(config.profile_directory.clone())
         .perform(&storage)
         .await
         .with_context(|| format!("failed to open profile '{}'", config.profile_name))?;
-    let operator = derive_operator_for_profile(root, &profile, storage).await?;
+    let operator = derive_operator_for_profile(root, &profile, storage.clone()).await?;
 
-    Ok((profile, operator))
+    Ok((profile, operator, storage))
+}
+
+/// Mount the space at `root` into `storage`, and say which space it is.
+///
+/// Below the operator on purpose. `space::Load` resolves a name against
+/// *the operator's* base directory, and an operator has one — so an
+/// operator rooted at one site cannot mount another. This addresses the
+/// location outright, which is what lets a single environment hold every
+/// space in the registry rather than the one it was opened for.
+///
+/// Mounting is what makes a space routable: `Storage`'s router keys on
+/// the subject DID and answers `SubjectNotFound` for anything not in its
+/// pool, so a space nothing has mounted is a space no invocation can
+/// reach, however readable its directory is.
+pub async fn mount_space(storage: &Storage<NativeSpace>, root: &Path) -> Result<Did> {
+    use dialog_capability::did;
+    use dialog_effects::storage::{self as storage_fx, LocationExt as _};
+
+    let root = root
+        .to_str()
+        .with_context(|| format!("non-UTF-8 path: {}", root.display()))?
+        .to_owned();
+
+    let credential = Subject::from(did!("local:storage"))
+        .attenuate(storage_fx::Storage)
+        .attenuate(storage_fx::Location::new(
+            storage_fx::Directory::At(root.clone()),
+            REPO_NAME,
+        ))
+        .load()
+        .perform(storage)
+        .await
+        .with_context(|| format!("could not mount the space at {root}"))?;
+
+    Ok(credential.did())
 }

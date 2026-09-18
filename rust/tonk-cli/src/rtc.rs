@@ -375,6 +375,100 @@ mod tests {
 mod serving {
     use super::*;
 
+    /// Every space this machine holds, served as one peer.
+    ///
+    /// `tonk rtc serve` used to serve the *selected* space: one
+    /// operator, one mounted repository, and an invocation naming
+    /// anything else answered `SubjectNotFound`. A peer is the machine
+    /// though, not whichever space a shell happened to be pointed at,
+    /// so this mounts the registry and serves all of it.
+    ///
+    /// Mounting is eager, at startup, rather than on first invocation.
+    /// A lazy mount belongs in the router's miss path, which is where
+    /// `SubjectNotFound` is decided and is several layers below anything
+    /// that knows what a registry is. Eager costs one credential read
+    /// per registered space and makes the answer to "what do you hold"
+    /// true by construction: the peer offers exactly what it mounted, so
+    /// nothing it lists can fail to route.
+    ///
+    /// The names come from the registry because nothing else has them.
+    /// A `Storage` pool is keyed by DID and its own `peer::Spaces`
+    /// answer is nameless for that reason; `spaces.json` is where a
+    /// space is called `notes`, and a browser listing spaces it has
+    /// never opened has nowhere else to read a label from.
+    #[derive(dialog_capability::Provider)]
+    pub struct Served {
+        /// Everything but the inventory. The operator routes each
+        /// invocation to the space its subject names, over the storage
+        /// every mount landed in.
+        #[provide(
+            dialog_effects::archive::Get,
+            dialog_effects::archive::Put,
+            dialog_effects::archive::Import,
+            dialog_effects::blob::Read,
+            dialog_effects::blob::Write,
+            dialog_effects::blob::Import,
+            dialog_effects::memory::Resolve,
+            dialog_effects::memory::Publish,
+            dialog_effects::memory::Retract,
+            dialog_effects::peer::Hello
+        )]
+        operator: dialog_operator::Operator<dialog_storage::provider::storage::NativeSpace>,
+
+        /// What the registry calls each space that mounted, in the order
+        /// the registry lists them.
+        offers: Vec<dialog_effects::peer::Offer>,
+    }
+
+    /// Mount every registered space into `site`'s environment.
+    ///
+    /// A space that will not mount is reported and skipped rather than
+    /// failing the serve: one unreadable directory should not take the
+    /// other spaces offline, and a peer that silently omitted it would
+    /// leave the operator staring at a space the CLI still lists.
+    pub async fn mount_registry(site: &crate::site::TonkSite) -> Result<Served> {
+        let registry = site
+            .account_store
+            .load()
+            .context("could not read the space registry")?;
+
+        let mut offers = Vec::with_capacity(registry.spaces.len());
+        for (name, entry) in &registry.spaces {
+            match crate::site::mount_space(&site.storage, &entry.site).await {
+                Ok(subject) => offers.push(dialog_effects::peer::Offer {
+                    subject,
+                    name: Some(name.clone()),
+                }),
+                Err(error) => {
+                    eprintln!("warning: not serving '{name}': {error:#}");
+                }
+            }
+        }
+
+        Ok(Served {
+            operator: site.operator.inner().clone(),
+            offers,
+        })
+    }
+
+    impl Served {
+        /// What this peer will offer, for the caller that prints it.
+        pub fn offers(&self) -> &[dialog_effects::peer::Offer] {
+            &self.offers
+        }
+    }
+
+    /// The registry, as the peer offers it.
+    #[async_trait::async_trait]
+    impl dialog_capability::Provider<dialog_effects::peer::Spaces> for Served {
+        async fn execute(
+            &self,
+            _input: dialog_capability::Capability<dialog_effects::peer::Spaces>,
+        ) -> Result<Vec<dialog_effects::peer::Offer>, dialog_effects::peer::PeerError> {
+            Ok(self.offers.clone())
+        }
+    }
+
     /// Where this machine's iroh identity lives.
     ///
     /// Separate from the WebRTC certificate because they name different
@@ -428,6 +522,11 @@ mod serving {
     /// neither — it derives the port and the fingerprint from the
     /// rendezvous phrase — but a peer elsewhere does.
     pub async fn serve(site: &crate::site::TonkSite, options: ListenOptions) -> Result<()> {
+        // Before the listener binds: a peer that cannot mount anything
+        // should say so at startup rather than accept dials and refuse
+        // every invocation.
+        let served = mount_registry(site).await?;
+
         let port = options
             .port
             .unwrap_or_else(|| tonk_rtc::rendezvous::port(tonk_rtc::rendezvous::RENDEZVOUS));
@@ -460,7 +559,20 @@ mod serving {
             addrs: [iroh::TransportAddr::Custom(route)].into_iter().collect(),
         });
 
-        println!("serving {} to peers that dial in.\n", site.root.display());
+        match served.offers() {
+            [] => println!("no spaces to serve; `tonk space new <name>` makes one.\n"),
+            offers => {
+                println!("serving {} space(s) to peers that dial in:\n", offers.len());
+                for offer in offers {
+                    println!(
+                        "  {}  {}",
+                        offer.name.as_deref().unwrap_or("-"),
+                        offer.subject
+                    );
+                }
+                println!();
+            }
+        }
         println!("  tonk remote add <name> '{}'\n", peer.to_uri());
         println!("listening on port {port}; ctrl-c to stop.\n");
 
@@ -480,11 +592,10 @@ mod serving {
             })
         };
 
-        // The operator, not a fresh `Storage`: it is the handle with this
-        // site's spaces already loaded, and it routes each invocation to
-        // the right one by subject.
+        // The registry, not the selected space: a peer is this machine,
+        // and an invocation naming any space it holds has to route.
         let responder = std::sync::Arc::new(dialog_iroh_remote::serve::Responder::new(
-            site.operator.inner().clone(),
+            served,
             dialog_did_web::CachingResolver::new(dialog_did_web::WebResolver::new()),
         ));
         dialog_iroh_remote::transport::accept(endpoint, responder).await;
@@ -495,4 +606,4 @@ mod serving {
 }
 
 #[cfg(feature = "rtc")]
-pub use serving::serve;
+pub use serving::{Served, serve};

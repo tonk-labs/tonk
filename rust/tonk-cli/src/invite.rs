@@ -411,7 +411,7 @@ pub async fn claim(
         .canonicalize()
         .map_err(|e| InviteError::Io(format!("could not canonicalize {}: {e}", root.display())))?;
 
-    let (profile, operator) = site::build_profile_and_operator(&root, &config)
+    let (profile, operator, storage) = site::build_profile_and_operator(&root, &config)
         .await
         .map_err(|e| InviteError::Io(e.to_string()))?;
 
@@ -464,9 +464,10 @@ pub async fn claim(
     // Install only the reusable root-ending authority and verifier-backed
     // repository. Invite-specific roster/provenance writes remain below.
     let chain = claimed.chain.clone();
-    let joined = site::mount_delegated_with(&root, profile, operator, claimed.chain, config)
-        .await
-        .map_err(|e| InviteError::Io(format!("failed to mount joined site: {e:#}")))?;
+    let joined =
+        site::mount_delegated_with(&root, profile, operator, storage, claimed.chain, config)
+            .await
+            .map_err(|e| InviteError::Io(format!("failed to mount joined site: {e:#}")))?;
     std::fs::write(
         joined.root.join(CLAIMED_INVITATION_FILE),
         invitation.this.to_string(),

@@ -481,32 +481,33 @@ fn decode_endpoint(address: &remote_dom::Address) -> Option<String> {
 mod peer_address_tests {
     use super::*;
 
-    /// A peer serving its own store is the whole point of `tonk rtc
-    /// listen`, and `Store` is the bound that decides whether it can.
-    /// Asserting it here means a new effect on the responder breaks this
-    /// build rather than the listener at run time.
-    #[test]
-    fn tonk_storage_can_answer_a_peer() {
-        fn serves<S: dialog_iroh_remote::serve::Store>() {}
-        serves::<
-            dialog_storage::provider::storage::Storage<
-                dialog_storage::provider::storage::NativeSpace,
-            >,
-        >();
-    }
-
-    /// The operator is the handle with spaces *in* it.
+    /// The operator is the handle with spaces *in* it, and the one with
+    /// an identity to answer for them.
     ///
-    /// A `Storage` routes by subject, but its pool is a pure cache that
-    /// callers fill, so a freshly built one answers `SubjectNotFound` to
-    /// everything. The operator has already loaded this site's spaces
-    /// and provides the same nine effects by delegating to that same
-    /// routed storage — so it is what a responder serves from, and a
-    /// fresh handle would serve nothing at all.
+    /// A bare `Storage` is neither, which is why it is not asserted
+    /// here: its pool is a cache callers fill, so a fresh one answers
+    /// `SubjectNotFound` to everything, and it has no profile or
+    /// operator DID with which to answer `peer::Hello` at all. It used
+    /// to be asserted, and the claim was simply false — `Store` grew
+    /// `Hello` and nothing made a store able to answer it.
     #[test]
     fn the_operator_can_answer_a_peer() {
         fn serves<S: dialog_iroh_remote::serve::Store>() {}
         serves::<dialog_operator::Operator<dialog_storage::provider::storage::NativeSpace>>();
+    }
+
+    /// What `rtc serve` actually hands the responder.
+    ///
+    /// `Served` forwards nine effects to the operator and answers the
+    /// tenth — `peer::Spaces` — from the registry, so the bound is the
+    /// thing that keeps those two halves adding up to a whole store. An
+    /// effect added to the responder and not to `Served`'s forwarding
+    /// list breaks this build rather than the listener at run time.
+    #[cfg(feature = "rtc")]
+    #[test]
+    fn the_registry_store_can_answer_a_peer() {
+        fn serves<S: dialog_iroh_remote::serve::Store>() {}
+        serves::<crate::rtc::Served>();
     }
 
     /// The address chooses the transport, so the two forms must not be
