@@ -114,6 +114,20 @@ pub use web::{attach, datagram_channel};
 /// endpoint do not collide. "tonkrtc1" as bytes.
 pub const TRANSPORT_ID: u64 = u64::from_be_bytes(*b"tonkrtc1");
 
+/// The `CustomAddr` naming the local rendezvous peer.
+///
+/// Both ends call this, which is the point: iroh matches a route by
+/// this value, so a listener and a dialer that computed it differently
+/// would never find each other. See
+/// [`rendezvous::transport_tag`](crate::rendezvous::transport_tag) for
+/// why it is a hash of the phrase rather than the listener's routes.
+pub fn rendezvous_addr(phrase: &str, side: crate::rendezvous::Side) -> CustomAddr {
+    CustomAddr::from_parts(
+        TRANSPORT_ID,
+        &crate::rendezvous::transport_tag(phrase, side),
+    )
+}
+
 /// How many outbound datagrams may queue for one peer before they are
 /// dropped.
 ///

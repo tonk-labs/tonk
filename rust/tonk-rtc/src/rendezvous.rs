@@ -193,6 +193,46 @@ pub fn port(phrase: &str) -> u16 {
     49152 + offset
 }
 
+/// Which end of a local rendezvous a transport address names.
+///
+/// Two names rather than one, because a transport maps an address to a
+/// carrier in both directions: a listener that attached its dialer
+/// under its *own* address would alias itself, and a reply would have
+/// nowhere unambiguous to go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    /// The `tonk` answering dials.
+    Listener,
+    /// The page that dialed it.
+    Dialer,
+}
+
+impl Side {
+    fn label(self) -> &'static str {
+        match self {
+            Side::Listener => "listener",
+            Side::Dialer => "dialer",
+        }
+    }
+}
+
+/// The transport address both ends name one side of the rendezvous by.
+///
+/// iroh routes a datagram by `CustomAddr`, so the two ends have to agree
+/// on these before either can speak. Seeding them with the listener's
+/// dial record — candidates and fingerprint — is what a *remote* dialer
+/// needs, and is exactly what a local page cannot reproduce: it derives
+/// a loopback candidate while the listener publishes every address it is
+/// reachable on, so the two would hash differently and no route would
+/// ever match.
+///
+/// So the local rendezvous names each side from the phrase instead. That
+/// carries no routing information and does not need to: on this machine
+/// the port is derived and the candidate is loopback.
+pub fn transport_tag(phrase: &str, side: Side) -> Vec<u8> {
+    Sha256::digest(format!("{phrase}#transport#{}", side.label()).as_bytes())[..16].to_vec()
+}
+
 /// Why a phrase yields no certificate.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum KeyError {

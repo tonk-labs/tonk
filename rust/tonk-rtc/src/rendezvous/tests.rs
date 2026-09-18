@@ -135,3 +135,25 @@ fn p256_signs_deterministically() {
          reproducible and every dial will fail the DTLS check"
     );
 }
+
+/// Both ends derive the same peer name, which is what makes a route
+/// match at all — and a different phrase names a different peer.
+#[test]
+fn the_transport_tag_is_a_function_of_the_phrase_and_the_side() {
+    assert_eq!(
+        transport_tag(RENDEZVOUS, Side::Listener),
+        transport_tag(RENDEZVOUS, Side::Listener)
+    );
+    assert_eq!(transport_tag(RENDEZVOUS, Side::Listener).len(), 16);
+
+    // The two sides must differ, or a listener would attach its dialer
+    // under its own address and a reply would alias the request.
+    assert_ne!(
+        transport_tag(RENDEZVOUS, Side::Listener),
+        transport_tag(RENDEZVOUS, Side::Dialer)
+    );
+    assert_ne!(
+        transport_tag(RENDEZVOUS, Side::Listener),
+        transport_tag("tonk/rtc/rendezvous/v2", Side::Listener)
+    );
+}
