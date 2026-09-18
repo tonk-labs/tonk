@@ -30,6 +30,12 @@
       <p class="expl" data-connections-status role="status" aria-live="polite"></p>
       <div data-connections-list></div>
     </section>
+    <section data-terminal-connections hidden aria-label="terminal access">
+      <div class="srowd"><span>terminal access</span><button class="cta" type="button" data-terminal-management-refresh>refresh</button></div>
+      <p class="expl">add or remove spaces while the terminal is offline. revoking access preserves downloaded copies and unsynced edits. service enforcement can take time.</p>
+      <p class="expl" data-terminal-management-result role="status" aria-live="polite" tabindex="-1"></p>
+      <div data-terminal-connections-list></div>
+    </section>
     <div class="sect">sign out</div>
     <div class="srowd">
       <span>disconnect this account; keep local spaces on this device</span>
@@ -48,14 +54,31 @@
     <div class="srowd"><span>device</span><b class="lft" data-link-did></b></div>
     <p class="expl">
       approving gives that terminal the same access to your account as this
-      browser: every space, on every device. decline if you did not request
-      account access from this device yourself.
+      browser: every space, on every device. decline if you did not just run
+      <code>tonk account login</code> or <code>tonk join --agent</code> yourself.
     </p>
     <div class="link-foot">
       <button class="m-cancel" type="button" data-link-decline>decline</button>
       <button class="m-go" type="button" data-link-approve>approve with passkey</button>
     </div>
   </div>
+  <section class="pane terminal-link" data-pane="terminal-link" hidden aria-labelledby="terminal-link-heading">
+    <header class="terminal-header">
+      <div class="terminal-heading-row"><h1 id="terminal-link-heading" class="terminal-heading">link spaces</h1><button class="cta" type="button" data-terminal-refresh>refresh</button></div>
+      <p class="terminal-intro">choose the spaces to use in <strong data-terminal-name>this terminal</strong>.</p>
+    </header>
+    <div class="terminal-toolbar"><label class="terminal-choice"><input type="checkbox" data-terminal-all disabled>select all</label></div>
+    <div class="terminal-spaces" data-terminal-spaces role="group" aria-label="Spaces"></div>
+    <div class="terminal-footer">
+      <p class="expl terminal-permission">this terminal can read and edit these spaces for 90 days. only continue if you started this request.</p>
+      <p class="expl" data-terminal-status role="status" aria-live="polite" tabindex="-1">loading spaces…</p>
+      <a class="cta" data-terminal-create hidden href="/" target="_blank" rel="noopener" aria-label="create a space (opens in a new tab)">create a space</a>
+    </div>
+    <div class="link-foot">
+      <button class="m-cancel" type="button" data-terminal-decline disabled>cancel</button>
+      <button class="m-go" type="button" data-terminal-approve disabled>link spaces</button>
+    </div>
+  </section>
   <p class="expl" data-ceremony-status role="status" aria-live="polite" hidden></p>
   <div data-custody-seat aria-hidden="true"></div>
 </div>

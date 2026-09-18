@@ -1,4 +1,5 @@
 //! Account-managed ordinary grants. Invitation secrets leave only through transient UI.
+pub(super) mod terminal_management;
 use super::{
     AppState,
     create_invite::{RemoteRequirement, generate_ephemeral, resolve_remote_url},
@@ -548,6 +549,545 @@ pub async fn list(
     Ok(Json(result))
 }
 
+/// Minimal projection of an already recorded passkey custody identity.
+#[derive(dialog_query::Concept, Clone, Debug)]
+pub struct KnownCustody {
+    this: dialog_artifacts::Entity,
+    credential_id: tonk_schema::domain::recovery::CredentialId,
+}
+
+/// Refuse known internal identities even if a stale row labels one a user space.
+async fn ensure_terminal_subject(tonk: &TonkState, subject: &Did) -> Result<(), TonkWorkerError> {
+    use tonk_schema::{Replica, prelude::DidExt as _};
+    let root = super::identity::local_root(tonk).await?;
+    if subject == &root.root_did || subject == &tonk.profile.did() {
+        return Err(TonkWorkerError::Forbidden(
+            "account and profile data cannot be granted to a terminal".into(),
+        ));
+    }
+    if root.encryption_key.as_ref() == Some(subject) {
+        return Err(TonkWorkerError::Forbidden(
+            "account custody data cannot be granted to a terminal".into(),
+        ));
+    }
+    let branch = tonk
+        .reactor
+        .profile_repository()
+        .branch("main")
+        .acquire(&tonk.operator)
+        .await
+        .map_err(failure)?;
+    let rows: Vec<Replica> = branch
+        .handle()
+        .query()
+        .select(Query::<Replica> {
+            this: Term::from(Replica::new(tonk.profile.did(), subject.clone()).this),
+            subject: Term::var("subject"),
+            profile: Term::var("profile"),
+            kind: Term::var("kind"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(failure)?;
+    if rows
+        .iter()
+        .any(|row| row.kind != Replica::repository_kind())
+    {
+        return Err(TonkWorkerError::Forbidden(
+            "internal account and ledger replicas cannot be granted to a terminal".into(),
+        ));
+    }
+    let custody: Vec<KnownCustody> = branch
+        .handle()
+        .query()
+        .select(Query::<KnownCustody> {
+            this: Term::from(subject.this()),
+            credential_id: Term::var("credential"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(failure)?;
+    if !custody.is_empty() {
+        return Err(TonkWorkerError::Forbidden(
+            "passkey custody data cannot be granted to a terminal".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// List this profile's real spaces, including explicit inability to delegate.
+/// A displayed all-current selection is an immutable list of these subjects.
+#[wasm_compat]
+pub async fn terminal_spaces(
+    State(state): State<AppState>,
+) -> Result<Json<tonk_worker_api::TerminalLinkSpaces>, TonkWorkerError> {
+    enabled()?;
+    let tonk = state.read().await;
+    Ok(Json(selection_snapshot(&tonk).await?))
+}
+
+async fn selection_snapshot(
+    tonk: &TonkState,
+) -> Result<tonk_worker_api::TerminalLinkSpaces, TonkWorkerError> {
+    use tonk_schema::domain::replica::Profile as ProfileEntity;
+    use tonk_schema::{Replica, prelude::DidExt as _};
+    let root = super::identity::local_root(tonk).await?;
+    let meta = tonk
+        .reactor
+        .profile_repository()
+        .branch("main")
+        .acquire(&tonk.operator)
+        .await
+        .map_err(failure)?;
+    let replicas: Vec<Replica> = meta
+        .handle()
+        .query()
+        .select(Query::<Replica> {
+            this: Term::var("this"),
+            subject: Term::var("subject"),
+            profile: Term::from(ProfileEntity(tonk.profile.did().this())),
+            kind: Term::from(Replica::repository_kind()),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(failure)?;
+    let now = Timestamp::now();
+    let expires = Timestamp::try_from((now.to_unix() + DEFAULT_GRANT_TTL_SECONDS) as i128)
+        .map_err(failure)?;
+    let mut spaces = Vec::new();
+    for replica in replicas {
+        let subject: Did = replica.subject.0.to_string().parse().map_err(failure)?;
+        if replica.this != Replica::new(tonk.profile.did(), subject.clone()).this {
+            return Err(failure("space replica identity mismatch"));
+        }
+        let repo = subject.repo_key().to_owned();
+        let mut name = repo.clone();
+        let result = async {
+            ensure_terminal_subject(tonk, &subject).await?;
+            let repository = tonk
+                .profile
+                .repository(&repo)
+                .load()
+                .perform(&tonk.operator)
+                .await
+                .map_err(failure)?;
+            if repository.did() != subject {
+                return Err(failure("space subject changed"));
+            }
+            name = super::repository::repository_display_name(tonk, &repository, &repo)
+                .await
+                .unwrap_or_else(|| repo.clone());
+            match resolve_remote_url(tonk, &repository).await? {
+                RemoteRequirement::Ready(_) => {}
+                RemoteRequirement::Refused(_) => {
+                    return Err(failure("space needs a configured sync remote"));
+                }
+            }
+            issuer_ancestors(tonk, &candidate_build_scopes(&subject), now, expires).await?;
+            Ok::<(), TonkWorkerError>(())
+        }
+        .await;
+        spaces.push(tonk_worker_api::TerminalLinkSpace {
+            repo,
+            subject: subject.to_string(),
+            name,
+            can_delegate: result.is_ok(),
+            reason: result.err().map(|error| error.to_string()),
+        });
+    }
+    spaces.sort_by(|left, right| left.subject.cmp(&right.subject));
+    spaces.dedup_by(|left, right| left.subject == right.subject);
+    let snapshot = selection_fingerprint(&root.bytes, &spaces)?;
+    Ok(tonk_worker_api::TerminalLinkSpaces {
+        max_spaces: tonk_invite::terminal::MAX_SELECTED_SPACES,
+        account: root.root_did.to_string(),
+        snapshot,
+        spaces,
+        grant_lifetime_seconds: DEFAULT_GRANT_TTL_SECONDS,
+    })
+}
+
+fn selection_fingerprint(
+    root: &[u8],
+    spaces: &[tonk_worker_api::TerminalLinkSpace],
+) -> Result<String, TonkWorkerError> {
+    // Review pins the verified account proof and the actual space identities.
+    // Names and availability diagnostics may change while background sync runs;
+    // the submitted explicit selection is checked against current authority by
+    // prepare_terminal_selection before any grants are staged.
+    let identities: Vec<_> = spaces
+        .iter()
+        .map(|space| (&space.repo, &space.subject))
+        .collect();
+    let mut fingerprint = blake3::Hasher::new();
+    fingerprint.update(b"tonk-terminal-selection-v2\0");
+    fingerprint.update(root);
+    fingerprint.update(&serde_json::to_vec(&identities).map_err(failure)?);
+    Ok(fingerprint.finalize().to_hex().to_string())
+}
+
+async fn prepare_terminal_selection(
+    tonk: &TonkState,
+    snapshot: &tonk_worker_api::TerminalLinkSpaces,
+    subjects: &[String],
+    request: &tonk_invite::terminal::LinkRequest,
+    now: Timestamp,
+) -> Result<(Vec<SpaceGrantBundle>, Vec<PublicGroup>), TonkWorkerError> {
+    let expires = Timestamp::try_from((now.to_unix() + DEFAULT_GRANT_TTL_SECONDS) as i128)
+        .map_err(failure)?;
+    let mut bundles = Vec::new();
+    let mut selected_groups = Vec::new();
+    for subject in subjects {
+        ensure_terminal_subject(tonk, &subject.parse().map_err(failure)?).await?;
+        let selected = snapshot
+            .spaces
+            .iter()
+            .find(|space| &space.subject == subject)
+            .ok_or_else(|| failure("selected space is not in the current snapshot"))?;
+        if !selected.can_delegate {
+            return Err(TonkWorkerError::Forbidden(
+                selected.reason.clone().unwrap_or_else(|| {
+                    "selected space cannot delegate the requested build access".into()
+                }),
+            ));
+        }
+        let repository = tonk
+            .profile
+            .repository(&selected.repo)
+            .load()
+            .perform(&tonk.operator)
+            .await
+            .map_err(failure)?;
+        let remote = match resolve_remote_url(tonk, &repository).await? {
+            RemoteRequirement::Ready(remote) => remote.access_url,
+            RemoteRequirement::Refused(_) => {
+                return Err(failure("selected space has no sync remote"));
+            }
+        };
+        let scopes = candidate_build_scopes(&repository.did());
+        let ancestors = issuer_ancestors(tonk, &scopes, now, expires).await?;
+        let bundle = issue_to_recipient(
+            request.recipient(),
+            tonk.profile.signer().signer().clone(),
+            ancestors,
+            &scopes,
+            &remote,
+            now,
+            expires,
+        )
+        .await?;
+        selected_groups.push(PublicGroup {
+            terminal_request: Some(request.id()),
+            version: 1,
+            id: grant_set_id(subject, request.recipient().as_str(), &cids(&bundle)),
+            account: snapshot.account.clone(),
+            repo: selected.repo.clone(),
+            subject: subject.clone(),
+            recipient: request.recipient().to_string(),
+            label: request.label().to_owned(),
+            remote: remote.to_string(),
+            issued_at: now.to_unix(),
+            chains: bundle
+                .chains()
+                .iter()
+                .map(|chain| chain.to_bytes().map(hex::encode).map_err(failure))
+                .collect::<Result<_, _>>()?,
+        });
+        bundles.push(bundle);
+    }
+    Ok((bundles, selected_groups))
+}
+
+async fn record_terminal_delivery(
+    tonk: &TonkState,
+    entity: dialog_artifacts::Entity,
+    receipt: &[u8],
+) -> Result<(), TonkWorkerError> {
+    tonk.reactor
+        .profile_repository()
+        .branch("main")
+        .transaction()
+        .assert(fields::TerminalLinkDelivered {
+            this: entity,
+            delivery_receipt: fields::DeliveryReceipt(
+                String::from_utf8(receipt.to_vec()).map_err(failure)?,
+            ),
+        })
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(failure)?;
+    Ok(())
+}
+
+async fn terminal_endpoint(
+    tonk: &TonkState,
+    request: &tonk_invite::terminal::LinkRequest,
+) -> Result<url::Url, TonkWorkerError> {
+    let provider = super::account::provider(tonk)
+        .await
+        .ok_or_else(|| failure("account has no attached delivery service"))?;
+    let origin = url::Url::parse(&provider).map_err(failure)?;
+    let loopback = origin
+        .host_str()
+        .is_some_and(|host| host == "localhost" || host == "127.0.0.1" || host == "[::1]");
+    if !(origin.scheme() == "https" || origin.scheme() == "http" && loopback)
+        || !origin.username().is_empty()
+        || origin.password().is_some()
+    {
+        return Err(failure("invalid configured terminal delivery origin"));
+    }
+    let response =
+        super::http::terminal_request(&origin.join("/.well-known/tonk").map_err(failure)?, None)
+            .await?;
+    let config: tonk_worker_api::DeploymentConfig =
+        serde_json::from_slice(&response.body).map_err(failure)?;
+    if config.service_did.as_deref() != Some(request.service().as_str()) {
+        return Err(TonkWorkerError::Forbidden(
+            "terminal request names a different delivery service".into(),
+        ));
+    }
+    origin.join("/connection/delivery").map_err(failure)
+}
+
+#[wasm_compat]
+pub async fn terminal_approve(
+    State(state): State<AppState>,
+    Json(input): Json<tonk_worker_api::TerminalLinkApproveRequest>,
+) -> Result<Json<tonk_worker_api::TerminalLinkApprovalReceipt>, TonkWorkerError> {
+    terminal_decide(state, input, false).await.map(Json)
+}
+
+#[wasm_compat]
+pub async fn terminal_decline(
+    State(state): State<AppState>,
+    Json(input): Json<tonk_worker_api::TerminalLinkDeclineRequest>,
+) -> Result<Json<tonk_worker_api::TerminalLinkApprovalReceipt>, TonkWorkerError> {
+    terminal_decide(
+        state,
+        tonk_worker_api::TerminalLinkApproveRequest {
+            request: input.request,
+            snapshot: input.snapshot,
+            subjects: Vec::new(),
+        },
+        true,
+    )
+    .await
+    .map(Json)
+}
+
+static TERMINAL_APPROVAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+async fn terminal_decide(
+    state: AppState,
+    input: tonk_worker_api::TerminalLinkApproveRequest,
+    declined: bool,
+) -> Result<tonk_worker_api::TerminalLinkApprovalReceipt, TonkWorkerError> {
+    let _serial = TERMINAL_APPROVAL.lock().await;
+    enabled()?;
+    // One exclusive state guard pins the selected profile, account key and replica set
+    // through preparation, durable public staging and mailbox acknowledgement.
+    let tonk = state.write().await;
+    let now = Timestamp::now();
+    if input.request.len() > 32 * 1024
+        || (!declined && input.subjects.is_empty())
+        || input.subjects.len() > tonk_invite::terminal::MAX_SELECTED_SPACES
+    {
+        return Err(failure("invalid terminal approval size or selection"));
+    }
+    let bytes = hex::decode(&input.request).map_err(failure)?;
+    let request = tonk_invite::terminal::LinkRequest::inspect(&bytes)
+        .await
+        .map_err(failure)?;
+    let root = super::identity::local_root(&tonk).await?;
+    let endpoint = terminal_endpoint(&tonk, &request).await?;
+    if request
+        .expected_account()
+        .is_some_and(|expected| expected != &root.root_did)
+    {
+        return Err(TonkWorkerError::Forbidden(
+            "terminal request names another account".into(),
+        ));
+    }
+    let mut subjects = input.subjects;
+    subjects.sort();
+    if subjects.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(failure("duplicate selected space"));
+    }
+    let entity: dialog_artifacts::Entity = format!("id:tonk:terminal-approval:{}", request.id())
+        .parse()
+        .map_err(failure)?;
+    let account = tonk
+        .reactor
+        .profile_repository()
+        .branch("main")
+        .acquire(&tonk.operator)
+        .await
+        .map_err(failure)?;
+    let cached: Vec<fields::TerminalLinkApproval> = account
+        .handle()
+        .query()
+        .select(Query::<fields::TerminalLinkApproval> {
+            this: Term::from(entity.clone()),
+            account: Term::from(fields::Account(root.root_did.to_string())),
+            approval: Term::var("approval"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(failure)?;
+    if cached.len() > 1 {
+        return Err(failure("conflicting saved terminal approvals"));
+    }
+    let approval = if let Some(saved) = cached.first() {
+        let approval = tonk_invite::terminal::Approval::validate(
+            &hex::decode(&saved.approval.0).map_err(failure)?,
+            now.to_unix(),
+        )
+        .await
+        .map_err(failure)?;
+        let saved_subjects: Vec<_> = approval
+            .bundles()
+            .iter()
+            .map(|bundle| bundle.subject().to_string())
+            .collect();
+        if approval.request().bytes() != bytes
+            || approval.account() != &root.root_did
+            || saved_subjects != subjects
+            || approval.is_declined() != declined
+        {
+            return Err(TonkWorkerError::Conflict(
+                "a different complete selection was already approved".into(),
+            ));
+        }
+        approval
+    } else {
+        tonk_invite::terminal::LinkRequest::validate(&bytes, now.to_unix())
+            .await
+            .map_err(failure)?;
+        let snapshot = selection_snapshot(&tonk).await?;
+        if snapshot.snapshot != input.snapshot || snapshot.account != root.root_did.as_str() {
+            return Err(TonkWorkerError::Conflict(
+                "account or current spaces changed; review the selection again".into(),
+            ));
+        }
+        let (bundles, selected_groups) =
+            prepare_terminal_selection(&tonk, &snapshot, &subjects, &request, now).await?;
+        let approval = if declined {
+            tonk_invite::terminal::Approval::sign_decline(
+                tonk.profile.signer().signer(),
+                &request,
+                root.delegation,
+                now.to_unix(),
+            )
+            .await
+            .map_err(failure)?
+        } else {
+            tonk_invite::terminal::Approval::sign(
+                tonk.profile.signer().signer(),
+                &request,
+                root.delegation,
+                bundles,
+                now.to_unix(),
+            )
+            .await
+            .map_err(failure)?
+        };
+        // All bundles have been verified before any public group is published.
+        account
+            .handle()
+            .delegations()
+            .retain_all(
+                approval
+                    .bundles()
+                    .iter()
+                    .flat_map(|bundle| bundle.chains().iter().cloned().map(UcanDelegation))
+                    .collect::<Vec<_>>(),
+            )
+            .perform(&tonk.operator)
+            .await
+            .map_err(failure)?;
+        let mut transaction = tonk
+            .reactor
+            .profile_repository()
+            .branch("main")
+            .transaction();
+        for group in selected_groups {
+            transaction = transaction.assert(AgentGrantGroup {
+                this: group_entity(&group.id)?,
+                account: fields::Account(group.account.clone()),
+                subject: fields::Subject(group.subject.clone()),
+                public_record: fields::PublicRecord(
+                    serde_json::to_string(&group).map_err(failure)?,
+                ),
+            });
+        }
+        transaction
+            .assert(fields::TerminalLinkApproval {
+                this: entity.clone(),
+                account: fields::Account(root.root_did.to_string()),
+                approval: fields::Approval(hex::encode(approval.bytes())),
+            })
+            .commit()
+            .perform(&tonk.operator)
+            .await
+            .map_err(failure)?;
+        approval
+    };
+    publish_terminal_approval(&tonk, &approval, entity, &endpoint).await
+}
+
+async fn publish_terminal_approval(
+    tonk: &TonkState,
+    approval: &tonk_invite::terminal::Approval,
+    entity: dialog_artifacts::Entity,
+    endpoint: &url::Url,
+) -> Result<tonk_worker_api::TerminalLinkApprovalReceipt, TonkWorkerError> {
+    let response = super::http::terminal_request(endpoint, Some(approval.bytes())).await?;
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct Receipt {
+        request_id: String,
+        recorded: bool,
+    }
+    let receipt: Receipt = serde_json::from_slice(&response.body).map_err(failure)?;
+    if receipt.request_id != approval.request().id() {
+        return Err(failure("service acknowledged another terminal request"));
+    }
+    record_terminal_delivery(tonk, entity, &response.body).await?;
+    let ids: Vec<_> = approval
+        .bundles()
+        .iter()
+        .map(|bundle| {
+            grant_set_id(
+                bundle.subject().as_str(),
+                approval.request().recipient().as_str(),
+                &cids(bundle),
+            )
+        })
+        .collect();
+    let mut connections = Vec::new();
+    for group in groups(tonk).await?.into_iter().filter(|group| {
+        group.terminal_request.as_deref() == Some(receipt.request_id.as_str())
+            && ids.contains(&group.id)
+    }) {
+        connections.push(summarize(tonk, &group).await?);
+    }
+    if connections.len() != approval.bundles().len() {
+        return Err(failure(
+            "saved terminal groups do not match complete approval",
+        ));
+    }
+    Ok(tonk_worker_api::TerminalLinkApprovalReceipt {
+        request_id: receipt.request_id,
+        recorded: receipt.recorded,
+        connections,
+    })
+}
+
 // The ordinary invitation publisher requires `/` over the space. A member
 // holding `/use` can withdraw their own issued leaf without gaining that right:
 // sign as its issuer, or delegate the account's withdrawal of its witnessed path.
@@ -784,6 +1324,602 @@ mod tests {
                 TonkWorkerError::Forbidden(_)
             ));
         }
+    }
+
+    #[test]
+    fn terminal_snapshot_preserves_reviewed_membership_across_presentation_changes() {
+        let mut rows = vec![tonk_worker_api::TerminalLinkSpace {
+            repo: "space-a".into(),
+            subject: "did:key:space-a".into(),
+            name: "space-a".into(),
+            can_delegate: false,
+            reason: Some("space needs a configured sync remote".into()),
+        }];
+        let reviewed = selection_fingerprint(b"verified account proof", &rows).unwrap();
+        // A name/remote may arrive from background sync after rendering. The
+        // exact selected subject must still pass current issuance validation.
+        rows[0].name = "Garden".into();
+        rows[0].can_delegate = true;
+        rows[0].reason = None;
+        assert_eq!(
+            selection_fingerprint(b"verified account proof", &rows).unwrap(),
+            reviewed,
+            "unchanged account and subject membership acquired a stale snapshot"
+        );
+        assert_ne!(
+            selection_fingerprint(b"another account proof", &rows).unwrap(),
+            reviewed
+        );
+        let mut changed = rows.clone();
+        changed[0].subject = "did:key:space-b".into();
+        assert_ne!(
+            selection_fingerprint(b"verified account proof", &changed).unwrap(),
+            reviewed
+        );
+        changed = rows.clone();
+        changed[0].repo = "space-b".into();
+        assert_ne!(
+            selection_fingerprint(b"verified account proof", &changed).unwrap(),
+            reviewed
+        );
+        assert_ne!(
+            selection_fingerprint(b"verified account proof", &[]).unwrap(),
+            reviewed
+        );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn terminal_selection_proves_owned_shared_and_reports_read_only() -> anyhow::Result<()> {
+        use super::super::repository::{
+            BranchConfiguration, RemoteConfiguration, RepositoryConfiguration,
+        };
+        use dialog_credentials::{Credential, Ed25519Verifier};
+        use dialog_effects::{
+            space::{Space, SpaceExt as _},
+            storage::Directory,
+        };
+        use dialog_operator::Profile;
+        use dialog_repository::{Repository, SiteAddress};
+        use dialog_storage::provider::storage::Storage;
+        use tonk_schema::prelude::DidExt as _;
+        let directory =
+            std::env::temp_dir().join(format!("tonk-terminal-selection-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&directory)?;
+        let location = Directory::At(directory.to_string_lossy().into_owned());
+        let storage = Storage::default();
+        let profile = Profile::open("selection")
+            .at(location.clone())
+            .perform(&storage)
+            .await?;
+        let registry = crate::device::Registry {
+            profile: "selection".into(),
+            directory: location,
+        };
+        let tonk =
+            crate::worker::boot_state(storage, "selection".into(), profile, registry).await?;
+        let root = Ed25519Signer::import(&[61; 32]).await?;
+        let device =
+            tonk_identity::delegation::mint_device_delegation(root.clone(), &tonk.profile.did())
+                .await?;
+        super::super::identity::persist_root(
+            &tonk,
+            tonk_worker_api::SaveRootRequest {
+                credential_id: "selection".into(),
+                delegation_hex: hex::encode(device.to_bytes()?),
+                passkey: None,
+                encryption_key: None,
+            },
+        )
+        .await?;
+        let now = Timestamp::now();
+        let deadline =
+            Timestamp::try_from((now.to_unix() + DEFAULT_GRANT_TTL_SECONDS + 3600) as i128)?;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let remote: url::Url = format!("http://{address}/ucan/").parse()?;
+        let config = RepositoryConfiguration::default()
+            .remote(
+                "origin",
+                RemoteConfiguration::new(SiteAddress::from(
+                    dialog_remote_ucan_s3::UcanAddress::new(remote.clone()),
+                )),
+            )
+            .branch(
+                "main",
+                BranchConfiguration::default().upstream("origin", "main"),
+            );
+        let mut subjects = Vec::new();
+        for command in [vec![], vec!["use".into()], vec!["use".into(), "get".into()]] {
+            let owner = Ed25519Signer::generate().await?;
+            let subject = owner.did();
+            let grant = DelegationBuilder::new()
+                .issuer(Signer::from(owner))
+                .audience(&root.did())
+                .subject(dialog_ucan_core::subject::Subject::Specific(
+                    subject.clone(),
+                ))
+                .command(command)
+                .expiration(deadline)
+                .try_build()
+                .await?;
+            tonk.profile
+                .access()
+                .save(UcanDelegation(DelegationChain::new(grant)))
+                .perform(&tonk.operator)
+                .await?;
+            let verifier: Ed25519Verifier = subject.as_str().parse()?;
+            let credential = Subject::from(tonk.profile.did())
+                .attenuate(Space::new(subject.repo_key()))
+                .create(Credential::from(verifier))
+                .perform(&tonk.operator)
+                .await?;
+            let repository = Repository::from(credential);
+            super::super::repository::record_replica_meta(&tonk, &repository, "selection", &config)
+                .await?;
+            subjects.push(subject);
+        }
+        let snapshot = selection_snapshot(&tonk).await?;
+        assert_eq!(snapshot.spaces.len(), 3);
+        for subject in &subjects[..2] {
+            let entry = snapshot
+                .spaces
+                .iter()
+                .find(|entry| entry.subject == subject.as_str())
+                .unwrap();
+            assert!(entry.can_delegate, "{:?}", entry.reason);
+            let scopes = candidate_build_scopes(subject);
+            let expires = Timestamp::try_from((now.to_unix() + DEFAULT_GRANT_TTL_SECONDS) as i128)?;
+            let ancestors = issuer_ancestors(&tonk, &scopes, now, expires).await?;
+            let terminal = Ed25519Signer::import(&[65; 32]).await?.did();
+            let bundle = issue_to_recipient(
+                &terminal,
+                tonk.profile.signer().signer().clone(),
+                ancestors,
+                &scopes,
+                &remote,
+                now,
+                expires,
+            )
+            .await?;
+            assert_eq!(bundle.recipient(), &terminal);
+            assert_eq!(bundle.chains().len(), 6);
+        }
+        let readonly = snapshot
+            .spaces
+            .iter()
+            .find(|entry| entry.subject == subjects[2].as_str())
+            .unwrap();
+        assert!(!readonly.can_delegate);
+        assert!(
+            readonly
+                .reason
+                .as_ref()
+                .is_some_and(|reason| !reason.is_empty())
+        );
+        assert_eq!(selection_snapshot(&tonk).await?.snapshot, snapshot.snapshot);
+        // The worker's actual publication boundary: the service fixture checks
+        // complete signatures while the service crate tests customer/revocation
+        // authorization and durable create-only semantics independently.
+        let service = Ed25519Signer::import(&[66; 32]).await?.did();
+        let terminal = Signer::from(Ed25519Signer::import(&[65; 32]).await?);
+        let seen = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::<Vec<u8>>::new()));
+        let posted = seen.clone();
+        let advertised = service.to_string();
+        let additions = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::<Vec<u8>>::new()));
+        let appended = additions.clone();
+        let addition_fail_once = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reject_addition = addition_fail_once.clone();
+        let revoked = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
+        let revoked_targets = revoked.clone();
+        let fail_once = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reject_next = fail_once.clone();
+        let app = axum::Router::new()
+            .route("/.well-known/tonk", axum::routing::get(move || {
+                let service = advertised.clone();
+                async move { Json(serde_json::json!({"serviceDid":service})) }
+            }))
+            .route("/connection/addition", axum::routing::post(move |body: axum::body::Bytes| {
+                let appended = appended.clone();
+                let reject_addition = reject_addition.clone();
+                async move {
+                    let addition = tonk_invite::terminal::Addition::validate(&body, Timestamp::now().to_unix()).await.unwrap();
+                    appended.lock().await.push(body.to_vec());
+                    if reject_addition.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                        return (axum::http::StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error":"retry"})));
+                    }
+                    (axum::http::StatusCode::OK, Json(serde_json::json!({"deliveryId":addition.id(),"recorded":true})))
+                }
+            }))
+            .route("/ucan/", axum::routing::post(move |body: axum::body::Bytes| {
+                let revoked_targets = revoked_targets.clone();
+                let reject_next = reject_next.clone();
+                async move {
+                    let checked = tonk_identity::revocation::verify(&body).await.unwrap();
+                    revoked_targets.lock().await.push(checked.target_cid.clone());
+                    if reject_next.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                        return (axum::http::StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error":"retry"})));
+                    }
+                    (axum::http::StatusCode::OK, Json(serde_json::to_value(tonk_account::customer::RevokeReceipt { revoked: checked.target_cid.parse().unwrap(), subject: checked.subject, recorded: true }).unwrap()))
+                }
+            }))
+            .route("/connection/delivery", axum::routing::post(move |body: axum::body::Bytes| {
+                let posted = posted.clone();
+                async move {
+                    let approval = tonk_invite::terminal::Approval::validate(&body, Timestamp::now().to_unix()).await.unwrap();
+                    posted.lock().await.push(body.to_vec());
+                    Json(serde_json::json!({"requestId":approval.request().id(),"recorded":true}))
+                }
+            }));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let provider = tonk_account::AccountProviderRecord::attach(
+            &format!("http://{address}/ucan/"),
+            now.to_unix(),
+        )?;
+        tonk.profile
+            .credential()
+            .site(tonk_account::ACCOUNT_PROVIDER_CREDENTIAL_SITE)
+            .save(provider.encode()?)
+            .perform(&tonk.operator)
+            .await?;
+        let state = std::sync::Arc::new(tokio::sync::RwLock::new(tonk));
+        let request = tonk_invite::terminal::LinkRequest::sign(
+            &terminal,
+            &service,
+            [67; 32],
+            now.to_unix(),
+            now.to_unix() + 600,
+            "Work terminal",
+            Some(&root.did()),
+        )
+        .await?;
+        let input = tonk_worker_api::TerminalLinkApproveRequest {
+            request: hex::encode(request.bytes()),
+            snapshot: snapshot.snapshot.clone(),
+            subjects: vec![subjects[1].to_string()],
+        };
+        let receipt = terminal_decide(state.clone(), input.clone(), false).await?;
+        assert_eq!(receipt.connections.len(), 1);
+        assert_eq!(receipt.connections[0].subject, subjects[1].as_str());
+        terminal_decide(state.clone(), input.clone(), false).await?;
+        {
+            let posted = seen.lock().await;
+            assert_eq!(
+                posted[0], posted[1],
+                "retry publishes byte-identical complete approval"
+            );
+        }
+        let mut changed = input;
+        changed.subjects = vec![subjects[0].to_string()];
+        assert!(
+            terminal_decide(state.clone(), changed, false)
+                .await
+                .is_err()
+        );
+        assert_eq!(seen.lock().await.len(), 2);
+        let rejected = tonk_invite::terminal::LinkRequest::sign(
+            &terminal,
+            &service,
+            [68; 32],
+            now.to_unix(),
+            now.to_unix() + 600,
+            "Rejected selection",
+            Some(&root.did()),
+        )
+        .await?;
+        let input = tonk_worker_api::TerminalLinkApproveRequest {
+            request: hex::encode(rejected.bytes()),
+            snapshot: snapshot.snapshot.clone(),
+            subjects: vec![subjects[0].to_string(), subjects[2].to_string()],
+        };
+        assert!(terminal_decide(state.clone(), input, false).await.is_err());
+        {
+            let tonk = state.read().await;
+            assert_eq!(
+                groups(&tonk).await?.len(),
+                1,
+                "mixed selection failure publishes no partial groups"
+            );
+        }
+        let both = tonk_invite::terminal::LinkRequest::sign(
+            &terminal,
+            &service,
+            [69; 32],
+            now.to_unix(),
+            now.to_unix() + 600,
+            "Two spaces",
+            Some(&root.did()),
+        )
+        .await?;
+        let input = tonk_worker_api::TerminalLinkApproveRequest {
+            request: hex::encode(both.bytes()),
+            snapshot: snapshot.snapshot.clone(),
+            subjects: subjects[..2].iter().map(ToString::to_string).collect(),
+        };
+        assert_eq!(
+            terminal_decide(state.clone(), input, false)
+                .await?
+                .connections
+                .len(),
+            2
+        );
+        let declined = tonk_invite::terminal::LinkRequest::sign(
+            &terminal,
+            &service,
+            [70; 32],
+            now.to_unix(),
+            now.to_unix() + 600,
+            "Declined",
+            Some(&root.did()),
+        )
+        .await?;
+        let input = tonk_worker_api::TerminalLinkApproveRequest {
+            request: hex::encode(declined.bytes()),
+            snapshot: snapshot.snapshot.clone(),
+            subjects: Vec::new(),
+        };
+        assert!(
+            terminal_decide(state.clone(), input.clone(), true)
+                .await?
+                .connections
+                .is_empty()
+        );
+        assert!(terminal_decide(state.clone(), input, false).await.is_err());
+        let posted = seen.lock().await;
+        assert_eq!(posted.len(), 4);
+        let last = tonk_invite::terminal::Approval::validate(
+            posted.last().unwrap(),
+            Timestamp::now().to_unix(),
+        )
+        .await?;
+        assert!(last.is_declined());
+        assert!(last.bundles().is_empty());
+        drop(posted);
+        let listed = terminal_management::list(State(state.clone())).await?.0;
+        assert_eq!(listed.len(), 2);
+        assert!(
+            listed
+                .iter()
+                .all(|terminal| terminal.delivery_status == "delivered")
+        );
+        let add = tonk_worker_api::TerminalConnectionAddRequest {
+            snapshot: snapshot.snapshot.clone(),
+            subjects: vec![subjects[0].to_string()],
+            operation_id: "first-add".into(),
+        };
+        addition_fail_once.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            terminal_management::add(State(state.clone()), Path(request.id()), Json(add.clone()))
+                .await
+                .is_err()
+        );
+        let pending = terminal_management::list(State(state.clone())).await?.0;
+        assert_eq!(
+            pending
+                .iter()
+                .find(|item| item.request_id == request.id())
+                .unwrap()
+                .delivery_status,
+            "pending"
+        );
+        assert_eq!(
+            pending
+                .iter()
+                .find(|item| item.request_id == request.id())
+                .unwrap()
+                .pending_additions[0]
+                .operation_id,
+            "first-add"
+        );
+        let added =
+            terminal_management::add(State(state.clone()), Path(request.id()), Json(add.clone()))
+                .await?
+                .0;
+        assert_eq!(added.connections.len(), 1);
+        assert_eq!(added.connections[0].recipient, terminal.did().as_str());
+        let delivered = terminal_management::list(State(state.clone())).await?.0;
+        assert_eq!(
+            delivered
+                .iter()
+                .find(|item| item.request_id == request.id())
+                .unwrap()
+                .delivery_status,
+            "delivered"
+        );
+        {
+            let rows = additions.lock().await;
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[0], rows[1]);
+        }
+        let repeated = tonk_worker_api::TerminalConnectionAddRequest {
+            snapshot: snapshot.snapshot.clone(),
+            subjects: vec![subjects[0].to_string()],
+            operation_id: "unwanted-duplicate".into(),
+        };
+        assert!(
+            terminal_management::add(State(state.clone()), Path(request.id()), Json(repeated))
+                .await
+                .is_err()
+        );
+        fail_once.store(true, std::sync::atomic::Ordering::SeqCst);
+        let partial = terminal_management::revoke(
+            State(state.clone()),
+            Path(request.id()),
+            Json(tonk_worker_api::TerminalConnectionRevokeRequest { group_ids: None }),
+        )
+        .await?
+        .0;
+        assert_eq!(partial.len(), 2);
+        assert!(partial.iter().any(|group| group.status == "partial"));
+        assert_eq!(revoked.lock().await.len(), 12);
+        let complete = terminal_management::revoke(
+            State(state.clone()),
+            Path(request.id()),
+            Json(tonk_worker_api::TerminalConnectionRevokeRequest { group_ids: None }),
+        )
+        .await?
+        .0;
+        assert!(complete.iter().all(|group| group.status == "revoked"));
+        assert_eq!(
+            revoked.lock().await.len(),
+            13,
+            "retry sends only the missing standard revocation"
+        );
+        let readd = tonk_worker_api::TerminalConnectionAddRequest {
+            snapshot: snapshot.snapshot,
+            subjects: vec![subjects[0].to_string()],
+            operation_id: "fresh-re-add".into(),
+        };
+        let renewed =
+            terminal_management::add(State(state.clone()), Path(request.id()), Json(readd))
+                .await?
+                .0;
+        assert_eq!(
+            renewed.connections[0].recipient,
+            added.connections[0].recipient
+        );
+        assert_ne!(renewed.connections[0].id, added.connections[0].id);
+        assert!(renewed.connections[0].targets.iter().all(|new| {
+            added.connections[0]
+                .targets
+                .iter()
+                .all(|old| old.cid != new.cid)
+        }));
+        let initial_retry = terminal_management::retry(State(state.clone()), Path(request.id()))
+            .await?
+            .0;
+        assert_eq!(
+            initial_retry.connections.len(),
+            1,
+            "initial retry never absorbs later additions or mints replacements"
+        );
+        let listed = terminal_management::list(State(state.clone())).await?.0;
+        let sibling = listed
+            .iter()
+            .find(|terminal| terminal.request_id == both.id())
+            .unwrap();
+        assert!(sibling.spaces.iter().all(|space| space.status == "active"));
+        // Retained internal identities remain forbidden even when a stale
+        // replica row is relabelled as an ordinary selectable space.
+        {
+            let tonk = state.read().await;
+            let custody = Ed25519Signer::import(&[71; 32]).await?.did();
+            let ledger = Ed25519Signer::import(&[72; 32]).await?.did();
+            tonk.reactor
+                .profile_repository()
+                .branch("main")
+                .transaction()
+                .assert(tonk_schema::Replica::new(tonk.profile.did(), root.did()))
+                .assert(tonk_schema::Replica::new(
+                    tonk.profile.did(),
+                    custody.clone(),
+                ))
+                .assert(tonk_schema::RecoveryPasskey::new(
+                    &custody,
+                    "custody-fixture",
+                    now.to_unix(),
+                    "test",
+                ))
+                .assert(
+                    tonk_schema::Replica::with_kind(
+                        tonk.profile.did(),
+                        ledger.clone(),
+                        tonk_schema::Replica::ledger_kind(),
+                    )
+                    .unwrap(),
+                )
+                .commit()
+                .perform(&tonk.operator)
+                .await?;
+            let blocked = selection_snapshot(&tonk).await?;
+            for subject in [root.did(), custody] {
+                let entry = blocked
+                    .spaces
+                    .iter()
+                    .find(|entry| entry.subject == subject.as_str())
+                    .unwrap();
+                assert!(!entry.can_delegate);
+                assert!(
+                    entry
+                        .reason
+                        .as_ref()
+                        .is_some_and(|reason| reason.contains("cannot be granted"))
+                );
+                let mut forged = blocked.clone();
+                forged
+                    .spaces
+                    .iter_mut()
+                    .find(|entry| entry.subject == subject.as_str())
+                    .unwrap()
+                    .can_delegate = true;
+                assert!(
+                    prepare_terminal_selection(
+                        &tonk,
+                        &forged,
+                        &[subject.to_string()],
+                        &request,
+                        Timestamp::now()
+                    )
+                    .await
+                    .is_err()
+                );
+            }
+            assert!(ensure_terminal_subject(&tonk, &ledger).await.is_err());
+        }
+        server.abort();
+        drop(state);
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn terminal_issuer_uses_exact_public_recipient_and_rejects_missing_rights() {
+        let (signer, ancestors, scopes, now) = fixture(DEFAULT_GRANT_TTL_SECONDS + 60).await;
+        let terminal = Ed25519Signer::import(&[57; 32]).await.unwrap().did();
+        let remote = "https://sync.example.test/ucan/".parse().unwrap();
+        let deadline =
+            Timestamp::try_from((now.to_unix() + DEFAULT_GRANT_TTL_SECONDS) as i128).unwrap();
+        let bundle = issue_to_recipient(
+            &terminal,
+            signer.clone(),
+            ancestors.clone(),
+            &scopes,
+            &remote,
+            now,
+            deadline,
+        )
+        .await
+        .unwrap();
+        assert_eq!(bundle.recipient(), &terminal);
+        assert_eq!(bundle.chains().len(), 6);
+        assert_eq!(bundle.expires_at(), deadline);
+        assert!(
+            bundle
+                .chains()
+                .iter()
+                .all(|chain| chain.audience() == &terminal)
+        );
+        let mut missing = ancestors;
+        missing.pop();
+        assert!(
+            issue_to_recipient(
+                &terminal,
+                signer.clone(),
+                missing,
+                &scopes,
+                &remote,
+                now,
+                deadline,
+            )
+            .await
+            .is_err()
+        );
+        let (_, limited, _, _) = fixture(3600).await;
+        assert!(
+            issue_to_recipient(&terminal, signer, limited, &scopes, &remote, now, deadline,)
+                .await
+                .is_err()
+        );
     }
 
     #[dialog_common::test]

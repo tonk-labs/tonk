@@ -55,3 +55,35 @@ pub struct AgentGrantRevocationIntent {
     pub this: Entity,
     pub requested_at: RequestedAt,
 }
+
+#[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[domain("xyz.tonk.terminal-link")]
+pub struct Approval(pub String);
+/// Complete signed public approval, atomically retained with all selected groups.
+/// Re-publication after an interrupted HTTP request sends the identical bytes.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct TerminalLinkApproval {
+    pub this: Entity,
+    pub account: Account,
+    pub approval: Approval,
+}
+
+#[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[domain("xyz.tonk.terminal-link")]
+pub struct Addition(pub String);
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct TerminalLinkAddition {
+    pub this: Entity,
+    pub account: Account,
+    pub addition: Addition,
+}
+
+#[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[domain("xyz.tonk.terminal-link")]
+pub struct DeliveryReceipt(pub String);
+/// A matched service receipt, retained separately from authority grants.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct TerminalLinkDelivered {
+    pub this: Entity,
+    pub delivery_receipt: DeliveryReceipt,
+}

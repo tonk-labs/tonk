@@ -85,6 +85,41 @@ pub struct ValidatedConnection {
 }
 
 impl ValidatedConnection {
+    /// Validate selected public grants using a key generated and retained locally.
+    /// This constructor never serializes a bearer URL or imports account authority.
+    pub async fn from_local_key(
+        seed: [u8; 32],
+        grants: &SpaceGrantBundle,
+        trusted_remote: &Url,
+        now: Timestamp,
+    ) -> Result<Self> {
+        let invite = AgentInvite::new(
+            seed,
+            grants.chains().to_vec(),
+            &candidate_build_scopes(grants.subject()),
+            trusted_remote,
+            now,
+        )
+        .await?;
+        Ok(Self {
+            binding: derive_binding(invite.grants()),
+            invite,
+            validated_at: now.to_unix(),
+            directory: None,
+            terminal_request: None,
+        })
+    }
+
+    /// Record the public terminal request which delivered these scoped grants.
+    pub fn with_terminal_request(mut self, request_id: &str) -> Result<Self> {
+        ensure!(
+            request_id.len() == 64 && request_id.bytes().all(|b| b.is_ascii_hexdigit()),
+            "invalid terminal request id"
+        );
+        self.terminal_request = Some(request_id.to_owned());
+        Ok(self)
+    }
+
     /// Retain the original requested final directory before credential checkpoints.
     pub fn with_directory(mut self, directory: &Path) -> Result<Self> {
         self.directory = Some(directory.canonicalize()?);
@@ -545,6 +580,20 @@ pub async fn import_at(
     save_manifest(&root, &manifest)?;
     drop(site);
     Ok(manifest.binding)
+}
+
+/// Reopen only the retained identity and grant set, including for offline work
+/// after expiry/revocation. No missing credential is generated or recovered.
+pub(crate) async fn open_published(
+    root: &Path,
+    binding: &ConnectionBinding,
+    store: crate::space::SpaceStore,
+) -> Result<crate::site::TonkSite> {
+    ensure!(
+        read_manifest(root)?.phase == Phase::Ready,
+        "published connection checkpoint is incomplete"
+    );
+    open_bound(root, binding, store).await
 }
 
 /// Reopen the retained connection, recovering an interrupted local mount if needed.

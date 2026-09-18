@@ -68,7 +68,7 @@ async fn connection_receipt_is_visible_only_in_the_connected_space() -> anyhow::
     let route =
         tonk_cli::render::RenderRoute::parse("id:tonk:agent-connection@tonk:agent-connection")?;
     let html = tonk_cli::render::render(&connected.site, &route).await?;
-    assert!(html.contains("agent setup confirmed"));
+    assert!(html.contains("agent connection acknowledged"));
     assert!(html.contains("Dismiss agent connection notification"));
     let untouched = other.eval_inline(query).await?;
     assert!(untouched.response.matches_after[0].results.is_empty());
@@ -82,18 +82,18 @@ async fn agent_prompt_is_copyable_without_showing_machine_instructions() -> anyh
         r#"tonk/agent-invite!:
   this: id:test:prompt
   name: "Test space"
-  link: "https://example.test/join#tonk-agent-v1=secret"
+  link: "https://example.test/join?access=proof#secret"
   account: did:key:expected-account
 "#,
     )
     .await?;
     let route = tonk_cli::render::RenderRoute::parse("id:test:prompt@tonk:agent-invite")?;
     let html = tonk_cli::render::render(&test.site, &route).await?;
-    assert!(html.contains("copy the prompt and give it to your agent."));
-    assert!(html.contains("copy-label=\"copy prompt\""));
+    assert!(html.contains("Copy the prompt and give it to an agent of your choice."));
+    assert!(html.contains("copy-label=\"Copy prompt\""));
     assert!(
         html.contains(
-            "npx --yes @tonk/cli connect 'https://example.test/join#tonk-agent-v1=secret'"
+            "npx --yes @tonk/cli connect 'https://example.test/join?access=proof#secret'"
         )
     );
     assert!(
@@ -355,7 +355,7 @@ async fn connect_rejects_open_invite_before_mutation() -> anyhow::Result<()> {
             .output()?;
         assert!(!output.status.success());
         assert!(String::from_utf8_lossy(&output.stderr).contains("unsupported_agent_invitation"));
-        assert!(String::from_utf8_lossy(&output.stderr).contains("copy a new space invitation"));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("tonk link"));
         assert!(
             !home.path().join("spaces").exists(),
             "legacy open invite must fail before local account/space writes"

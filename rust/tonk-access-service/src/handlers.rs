@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod deletion;
+pub mod delivery;
 pub mod health;
 pub mod info;
 pub mod lookup;

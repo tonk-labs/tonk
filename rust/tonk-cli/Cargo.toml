@@ -18,6 +18,11 @@ path = "src/bin/tonk.rs"
 # `tests/common.rs` from being built as its own empty test
 # binary; list the real test binaries here explicitly.
 [[test]]
+name = "terminal_commands"
+path = "tests/terminal_commands.rs"
+required-features = ["integration-tests"]
+
+[[test]]
 name = "live_migration"
 path = "tests/live_migration.rs"
 
@@ -113,6 +118,11 @@ path = "tests/agents.rs"
 [[test]]
 name = "account_spaces"
 path = "tests/account_spaces.rs"
+required-features = ["integration-tests"]
+
+[[test]]
+name = "account_interrupt"
+path = "tests/account_interrupt.rs"
 required-features = ["integration-tests"]
 
 [[test]]

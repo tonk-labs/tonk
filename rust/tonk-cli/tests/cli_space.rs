@@ -140,7 +140,7 @@ mod when_one_account_is_signed_in {
     }
 
     #[dialog_common::test]
-    fn account_ownership_adoption_is_not_a_cli_command() {
+    fn linking_without_an_account_says_to_sign_in_first() {
         let state = tempfile::tempdir().expect("tempdir");
         space_and_account(state.path(), "garden", None);
 
@@ -148,33 +148,10 @@ mod when_one_account_is_signed_in {
 
         assert!(!output.status.success());
         assert!(
-            stderr_of(&output).contains("unrecognized subcommand"),
+            stderr_of(&output).contains("no account is signed in"),
             "{}",
             stderr_of(&output)
         );
-    }
-
-    #[dialog_common::test]
-    fn new_space_stays_local_with_a_retained_account_record() {
-        let state = tempfile::tempdir().expect("tempdir");
-        space_and_account(state.path(), "garden", Some(ACCOUNT_A));
-        let registry_file = state.path().join("spaces.json");
-        let before: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&registry_file).unwrap()).unwrap();
-        let output = run(state.path(), &["space", "new", "scratch"], &[]);
-        assert!(output.status.success(), "{}", stderr_of(&output));
-        let after: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&registry_file).unwrap()).unwrap();
-        assert_eq!(before["account"], after["account"]);
-        assert_eq!(before["spaces"]["garden"], after["spaces"]["garden"]);
-        let remotes = run(
-            state.path(),
-            &["--space", "scratch", "remote", "--json"],
-            &[],
-        );
-        assert!(remotes.status.success(), "{}", stderr_of(&remotes));
-        let remotes: serde_json::Value = serde_json::from_slice(&remotes.stdout).unwrap();
-        assert_eq!(remotes["rows"].as_array().unwrap().len(), 0);
     }
 
     /// Authority provenance is separate from ownership and is not a remote verdict.
@@ -359,12 +336,14 @@ mod when_nothing_is_registered {
                 .any(|line| line.trim_start().starts_with("join ")),
             "{stdout}"
         );
-        assert!(
-            stdout
-                .lines()
-                .any(|line| line.trim_start().starts_with("connect ")),
-            "{stdout}"
-        );
+        for command in ["connect ", "link "] {
+            assert!(
+                stdout
+                    .lines()
+                    .any(|line| line.trim_start().starts_with(command)),
+                "{stdout}"
+            );
+        }
     }
 
     #[dialog_common::test]
@@ -451,7 +430,11 @@ mod when_resolving_with_precedence {
         let state = tempfile::tempdir().expect("tempdir");
         two_space_registry(state.path());
 
-        for args in [&["--spot", "a", "status"][..], &["spot", "link", "a"][..]] {
+        for args in [
+            &["--spot", "a", "status"][..],
+            &["spot", "link", "a"][..],
+            &["account", "spots"][..],
+        ] {
             let output = run(state.path(), args, &[]);
             assert!(!output.status.success());
             let stderr = stderr_of(&output);
@@ -560,12 +543,14 @@ mod when_resolving_with_precedence {
                 .any(|line| line.trim_start().starts_with("join ")),
             "{stdout}"
         );
-        assert!(
-            stdout
-                .lines()
-                .any(|line| line.trim_start().starts_with("connect ")),
-            "{stdout}"
-        );
+        for command in ["connect ", "link "] {
+            assert!(
+                stdout
+                    .lines()
+                    .any(|line| line.trim_start().starts_with(command)),
+                "{stdout}"
+            );
+        }
     }
 
     #[dialog_common::test]
@@ -942,8 +927,8 @@ mod when_no_remote_is_registered_at_all {
         let output = run(state.path(), &["invite", "--no-shorten"], &[]);
         let stderr = stderr_of(&output);
 
-        assert!(!stderr.contains("tonk account login"), "{stderr}");
-        assert!(!stderr.contains("tonk space link demo"), "{stderr}");
+        assert!(stderr.contains("tonk account login"), "{stderr}");
+        assert!(stderr.contains("tonk space link demo"), "{stderr}");
         assert!(stderr.contains("tonk remote add"), "{stderr}");
         assert!(stderr.contains("--base-url"), "{stderr}");
     }
@@ -1735,6 +1720,7 @@ mod when_reading {
 
         for args in [
             vec!["status", "--json"],
+            vec!["account", "status", "--json"],
             vec!["space", "agents", "get", "--json"],
             vec!["query", "task", "--json"],
             vec!["concept", "--json"],

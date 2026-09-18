@@ -366,6 +366,8 @@
                     "$SHORTCUT_ORIGIN"
                   printf '\n[[proxies]]\nbackend = "%s/customer/"\n' \
                     "$SHORTCUT_ORIGIN"
+                  printf '\n[[proxies]]\nbackend = "%s/connection/"\n' \
+                    "$SHORTCUT_ORIGIN"
                 } >>"$TRUNK_CONFIG_GENERATED"
               else
                 echo "dev:web: no local access service, so /@ is unproxied; invite links stay long"
@@ -667,6 +669,9 @@
                       reverse_proxy localhost:$ACCESS_SERVICE_PORT
                   }
                   handle /customer/* {
+                      reverse_proxy localhost:$ACCESS_SERVICE_PORT
+                  }
+                  handle /connection/* {
                       reverse_proxy localhost:$ACCESS_SERVICE_PORT
                   }
                   handle {

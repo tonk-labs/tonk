@@ -5,6 +5,10 @@
     any(feature = "integration-tests", feature = "web-integration-tests")
 ))]
 mod tests {
+    #[cfg(feature = "connection-invites")]
+    mod terminal_management {
+        include!("terminal_management_flow.rs");
+    }
     use std::path::PathBuf;
     use std::process::{ExitStatus, Stdio};
     use std::time::Duration;
@@ -5365,7 +5369,6 @@ mod tests {
     }
 
     #[dialog_common::test]
-    #[ignore = "historical CLI account catalogue workflow; CLI account commands are retired"]
     async fn it_backs_up_a_claimed_space_for_another_account_device(
         env: TestEnvironment,
     ) -> Result<()> {
@@ -6071,6 +6074,511 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "connection-invites")]
+    async fn capture_terminal_selection(browser: &WebDriver) -> Result<()> {
+        if std::env::var_os("TONK_HANDOFF_TEST_ARTIFACTS").is_none() {
+            return Ok(());
+        }
+        for (name, width, height, dark) in [
+            ("desktop", 1200, 900, false),
+            ("narrow", 390, 844, false),
+            ("short-dark", 390, 540, true),
+        ] {
+            browser.enter_default_frame().await?;
+            browser.set_window_rect(0, 0, width, height).await?;
+            ChromeDevTools::new(browser.handle.clone())
+                .execute_cdp_with_params(
+                    "Emulation.setDeviceMetricsOverride",
+                    serde_json::json!({
+                        "width": width, "height": height, "deviceScaleFactor": 1, "mobile": false,
+                    }),
+                )
+                .await?;
+            ChromeDevTools::new(browser.handle.clone()).execute_cdp_with_params(
+                "Emulation.setEmulatedMedia", serde_json::json!({ "features": [
+                    { "name": "prefers-reduced-motion", "value": "reduce" },
+                    { "name": "prefers-color-scheme", "value": if dark { "dark" } else { "light" } },
+                ] })).await?;
+            let outer = browser.execute("return document.documentElement.scrollWidth <= document.documentElement.clientWidth", vec![]).await?;
+            assert_eq!(outer.json(), &serde_json::json!(true));
+            enter_hub(browser).await?;
+            element(browser, "[data-terminal-name]")
+                .await?
+                .scroll_into_view()
+                .await?;
+            capture_handoff_page(browser, &format!("terminal-selection-{name}-request")).await?;
+            element(browser, "[data-terminal-decline]")
+                .await?
+                .send_keys(Key::Tab)
+                .await?;
+            let state = browser.execute(r#"const node=document.activeElement;const style=getComputedStyle(node);
+                return {approve:node.matches('[data-terminal-approve]'), visible:node.matches(':focus-visible'),
+                    ring:style.outlineStyle !== 'none' || style.boxShadow !== 'none',
+                    height:node.getBoundingClientRect().height, animation:style.animationName,
+                    overflow:document.documentElement.scrollWidth > document.documentElement.clientWidth};"#, vec![]).await?;
+            assert_eq!(state.json()["approve"], true, "{state:?}");
+            assert_eq!(state.json()["visible"], true, "{state:?}");
+            assert_eq!(state.json()["ring"], true, "{state:?}");
+            assert!(state.json()["height"].as_f64().unwrap() >= 44.0);
+            assert_eq!(state.json()["animation"], "none");
+            assert_eq!(state.json()["overflow"], false, "{state:?}");
+            capture_handoff_page(browser, &format!("terminal-selection-{name}-approve")).await?;
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "connection-invites")]
+    async fn click_terminal_decision(browser: &WebDriver, selector: &str) -> Result<()> {
+        // Observe the actual guest request without extra candidate reads or retries.
+        // Retain only HTTP status and the public error, never request credentials.
+        browser
+            .execute(
+                r#"window.__terminalDecision = null;
+            const original = window.fetch;
+            window.fetch = async function(input, init) {
+                const target = String(input);
+                const tracked = /\/api\/account\/terminal-links\/(approve|decline)$/.test(target);
+                const response = await original.call(this, input, init);
+                if (tracked) {
+                    window.__terminalDecision = {status:response.status};
+                    response.clone().json().then(body => {
+                        window.__terminalDecision.error = body.error ?? null;
+                    }).catch(() => {});
+                }
+                return response;
+            };"#,
+                vec![],
+            )
+            .await?;
+        click(browser, selector).await
+    }
+
+    #[cfg(feature = "connection-invites")]
+    async fn await_terminal_decision(
+        browser: &WebDriver,
+        _request_id: &str,
+        message: &str,
+    ) -> Result<()> {
+        if let Err(error) = wait_for_text(browser, "[data-terminal-status]", message).await {
+            let response = browser
+                .execute("return window.__terminalDecision ?? null", vec![])
+                .await?;
+            return Err(error.context(format!(
+                "original terminal decision response: {}",
+                response.json()
+            )));
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "connection-invites")]
+    struct PendingTerminal {
+        child: Child,
+        stdout: BufReader<tokio::process::ChildStdout>,
+        stderr: tokio::process::ChildStderr,
+        prefix: String,
+        approval_url: url::Url,
+        request: tonk_invite::terminal::LinkRequest,
+    }
+
+    #[cfg(feature = "connection-invites")]
+    async fn start_terminal(
+        env: &TestEnvironment,
+        profile: &TempDir,
+        extra: &[&str],
+    ) -> Result<PendingTerminal> {
+        let mut command = tonk_command_in(env, profile);
+        command
+            .args([
+                "link",
+                "--no-open",
+                "--label",
+                "Selected terminal",
+                "--via",
+                env.tonk_web.as_str(),
+            ])
+            .args(extra)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let mut child = command.spawn()?;
+        let mut stdout = BufReader::new(child.stdout.take().context("CLI stdout")?);
+        let stderr = child.stderr.take().context("CLI stderr")?;
+        let mut prefix = String::new();
+        let approval_url = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let mut line = String::new();
+                anyhow::ensure!(
+                    stdout.read_line(&mut line).await? != 0,
+                    "tonk link exited before printing its signed request"
+                );
+                prefix.push_str(&line);
+                if let Ok(url) = url::Url::parse(line.trim())
+                    && url
+                        .fragment()
+                        .is_some_and(|f| f.starts_with("tonk-terminal-v1="))
+                {
+                    return Ok::<_, anyhow::Error>(url);
+                }
+            }
+        })
+        .await
+        .context("waiting for signed terminal request")??;
+        assert_eq!(approval_url.path(), "/settings/link");
+        let request = tonk_invite::terminal::LinkRequest::from_url(
+            approval_url.as_str(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_secs(),
+        )
+        .await?;
+        Ok(PendingTerminal {
+            child,
+            stdout,
+            stderr,
+            prefix,
+            approval_url,
+            request,
+        })
+    }
+
+    /// ACCT-C15 / HANDOFF-22: a real CLI retains its key while the browser
+    /// approves exactly one, several, or all current spaces over authenticated polling.
+    #[cfg(feature = "connection-invites")]
+    #[dialog_common::test]
+    async fn it_links_exact_browser_selected_spaces_to_a_cli_owned_key(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let browser = driver_with_prf(&env).await?;
+        sign_up(&browser, &env, "selected-terminal@example.com").await?;
+        for name in ["Terminal first", "Terminal second", "Terminal third"] {
+            let repo = create_space_awaiting_remote(&browser, name, true).await?;
+            let reply = post_json(
+                &browser,
+                &format!("/api/repository/{repo}/branch/main/sync/push"),
+                serde_json::json!({}),
+            )
+            .await?;
+            successful_body("publish selected source", &reply);
+        }
+        for selection in [1, 2, usize::MAX] {
+            let profile = tempfile::tempdir()?;
+            let PendingTerminal {
+                mut child,
+                mut stdout,
+                mut stderr,
+                prefix,
+                approval_url,
+                request,
+            } = start_terminal(&env, &profile, &[]).await?;
+            assert!(request.expected_account().is_none());
+            goto(&browser, approval_url.as_str()).await?;
+            enter_hub(&browser).await?;
+            wait_for_text(&browser, "[data-terminal-name]", "Selected terminal").await?;
+            wait_for_displayed(&browser, "[data-terminal-subject]:not([disabled])").await?;
+            let choices = browser
+                .find_all(By::Css("[data-terminal-subject]:not([disabled])"))
+                .await?;
+            anyhow::ensure!(choices.len() >= 3, "missing current eligible spaces");
+            let count = selection.min(choices.len());
+            let mut selected = Vec::new();
+            for choice in choices.iter().take(count) {
+                selected.push(
+                    choice
+                        .attr("data-terminal-subject")
+                        .await?
+                        .context("subject")?,
+                );
+                if selection != usize::MAX {
+                    choice.click().await?;
+                }
+            }
+            if selection == usize::MAX {
+                click(&browser, "[data-terminal-all]").await?;
+            }
+            capture_handoff_page(&browser, &format!("terminal-selection-{count}")).await?;
+            if selection == 1 {
+                capture_terminal_selection(&browser).await?;
+            }
+            click_terminal_decision(&browser, "[data-terminal-approve]").await?;
+            await_terminal_decision(
+                &browser,
+                &request.id(),
+                "spaces approved. return to your terminal to finish.",
+            )
+            .await?;
+            browser.enter_default_frame().await?;
+            let output = finish_link(&mut child, &mut stdout, &mut stderr, prefix).await?;
+            anyhow::ensure!(
+                output.status.success(),
+                "terminal import failed: {}",
+                output.stderr
+            );
+            let registry: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(profile.path().join("spaces/spaces.json"))?)?;
+            assert!(
+                registry
+                    .get("account")
+                    .is_none_or(serde_json::Value::is_null)
+            );
+            let entries = registry["spaces"].as_object().context("space registry")?;
+            let mut installed: Vec<_> = entries
+                .values()
+                .map(|entry| entry["connection"]["subject"].as_str().unwrap().to_owned())
+                .collect();
+            installed.sort();
+            selected.sort();
+            assert_eq!(
+                installed, selected,
+                "initial publication must be the complete exact selection"
+            );
+            for entry in entries.values() {
+                assert_eq!(
+                    entry["connection"]["recipient"],
+                    request.recipient().to_string()
+                );
+                assert_eq!(
+                    entry["connection"]["grant_cids"].as_array().unwrap().len(),
+                    6
+                );
+            }
+            let account = run_cli(&env, &profile, &["account".into(), "space".into()]).await?;
+            assert!(
+                !account.status.success(),
+                "terminal grants must not authorize account catalogue access"
+            );
+            assert!(
+                account.stderr.contains("no account is signed in"),
+                "{}",
+                account.stderr
+            );
+        }
+        browser.quit().await?;
+        Ok(())
+    }
+
+    #[cfg(feature = "connection-invites")]
+    #[dialog_common::test]
+    // Storybook HANDOFF-22: signup preserves the signed approval request.
+    async fn it_declines_a_terminal_request_after_fresh_browser_sign_in(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let browser = driver_with_prf(&env).await?;
+        let profile = tempfile::tempdir()?;
+        let created = run_cli(
+            &env,
+            &profile,
+            &["space".into(), "new".into(), "untouched".into()],
+        )
+        .await?;
+        anyhow::ensure!(created.status.success(), "{}", created.stderr);
+        let before = std::fs::read(profile.path().join("spaces/spaces.json"))?;
+        let PendingTerminal {
+            mut child,
+            mut stdout,
+            mut stderr,
+            prefix,
+            approval_url,
+            request,
+        } = start_terminal(&env, &profile, &[]).await?;
+        goto(&browser, approval_url.as_str()).await?;
+        // Provider-free Settings raises the existing account ceremony first.
+        run_cluster_ceremony(&browser, "terminal-fresh-decline@example.com").await?;
+        activate_in_another_tab(&browser, &env, "terminal-fresh-decline@example.com").await?;
+        wait_for_absent(&browser, "#tonk-register").await?;
+        // Signup must return to this exact request without manually reopening it.
+        enter_hub(&browser).await?;
+        wait_for_displayed(&browser, "[data-terminal-decline]").await?;
+        assert_eq!(browser.current_url().await?, approval_url);
+        click_terminal_decision(&browser, "[data-terminal-decline]").await?;
+        await_terminal_decision(
+            &browser,
+            &request.id(),
+            "request cancelled. you can close this tab.",
+        )
+        .await?;
+        let output = finish_link(&mut child, &mut stdout, &mut stderr, prefix).await?;
+        assert!(!output.status.success());
+        assert!(output.stderr.contains("declined"), "{}", output.stderr);
+        assert_eq!(
+            std::fs::read(profile.path().join("spaces/spaces.json"))?,
+            before
+        );
+        browser.quit().await?;
+        Ok(())
+    }
+
+    fn snapshot_replica_files(
+        root: &std::path::Path,
+    ) -> Result<std::collections::BTreeMap<PathBuf, Vec<u8>>> {
+        fn walk(
+            root: &std::path::Path,
+            dir: &std::path::Path,
+            files: &mut std::collections::BTreeMap<PathBuf, Vec<u8>>,
+        ) -> Result<()> {
+            for entry in std::fs::read_dir(dir)? {
+                let entry = entry?;
+                let kind = entry.file_type()?;
+                if kind.is_dir() {
+                    walk(root, &entry.path(), files)?;
+                } else if kind.is_file() {
+                    files.insert(
+                        entry.path().strip_prefix(root)?.to_owned(),
+                        std::fs::read(entry.path())?,
+                    );
+                }
+            }
+            Ok(())
+        }
+        let mut files = std::collections::BTreeMap::new();
+        walk(root, root, &mut files)?;
+        Ok(files)
+    }
+
+    /// ACCT-C15: explicit conversion preserves the original replica and its
+    /// unsynced history while deactivating only the approved legacy attachment.
+    #[cfg(feature = "connection-invites")]
+    #[dialog_common::test]
+    async fn it_converts_an_account_attachment_without_rebinding_legacy_edits(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let browser = driver_with_prf(&env).await?;
+        sign_up(&browser, &env, "terminal-conversion@example.com").await?;
+        let repo = create_space_awaiting_remote(&browser, "Scoped selection", true).await?;
+        let pushed = post_json(
+            &browser,
+            &format!("/api/repository/{repo}/branch/main/sync/push"),
+            serde_json::json!({}),
+        )
+        .await?;
+        successful_body("publish conversion selection", &pushed);
+        let linked = link_cli(&browser, &env).await?;
+        let profile = linked.profile;
+        let created = run_cli(
+            &env,
+            &profile,
+            &["space".into(), "new".into(), "legacy".into()],
+        )
+        .await?;
+        anyhow::ensure!(created.status.success(), "{}", created.stderr);
+        let document = "attribute!: &conversion-local\n  description: Keep this unsynced legacy edit\n  the: test.conversion/local\n  as: text\n  cardinality: one\n";
+        let edit = run_cli(
+            &env,
+            &profile,
+            &[
+                "--space".into(),
+                "legacy".into(),
+                "eval".into(),
+                "-c".into(),
+                document.into(),
+                "--no-sync".into(),
+            ],
+        )
+        .await?;
+        anyhow::ensure!(edit.status.success(), "{}", edit.stderr);
+        let before: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(profile.path().join("spaces/spaces.json"))?)?;
+        let legacy = before["spaces"]["legacy"].clone();
+        let site = std::path::Path::new(legacy["site"].as_str().context("legacy site")?);
+        let files = snapshot_replica_files(site)?;
+        let PendingTerminal {
+            mut child,
+            mut stdout,
+            mut stderr,
+            prefix,
+            approval_url,
+            request,
+        } = start_terminal(&env, &profile, &["--convert-account"]).await?;
+        assert!(request.expected_account().is_some());
+        goto(&browser, approval_url.as_str()).await?;
+        enter_hub(&browser).await?;
+        wait_for_text_containing(&browser, "[data-terminal-status]", "0 selected").await?;
+        let rows = browser.find_all(By::Css(".terminal-space")).await?;
+        let mut selected = None;
+        for row in rows {
+            if row.text().await?.contains("Scoped selection") {
+                let input = row.find(By::Css("[data-terminal-subject]")).await?;
+                selected = input.attr("data-terminal-subject").await?;
+                input.click().await?;
+                break;
+            }
+        }
+        let selected = selected.context("selected conversion space")?;
+        click_terminal_decision(&browser, "[data-terminal-approve]").await?;
+        wait_for_text(
+            &browser,
+            "[data-terminal-status]",
+            "spaces approved. return to your terminal to finish.",
+        )
+        .await?;
+        let output = finish_link(&mut child, &mut stdout, &mut stderr, prefix).await?;
+        anyhow::ensure!(
+            output.status.success(),
+            "conversion failed: {}",
+            output.stderr
+        );
+        let after: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(profile.path().join("spaces/spaces.json"))?)?;
+        assert_eq!(after["spaces"]["legacy"], legacy);
+        assert_eq!(after["bindings"], before["bindings"]);
+        // Compare privately: an assertion failure must not dump credential bytes.
+        assert!(
+            snapshot_replica_files(site)? == files,
+            "conversion modified a retained legacy replica"
+        );
+        let status = run_cli(
+            &env,
+            &profile,
+            &["account".into(), "status".into(), "--json".into()],
+        )
+        .await?;
+        anyhow::ensure!(status.status.success(), "{}", status.stderr);
+        let status: serde_json::Value = serde_json::from_str(&status.stdout)?;
+        assert_eq!(status["signedIn"], false);
+        let local = run_cli(
+            &env,
+            &profile,
+            &["--space".into(), "legacy".into(), "show".into()],
+        )
+        .await?;
+        anyhow::ensure!(
+            local.status.success(),
+            "local legacy read failed: {}",
+            local.stderr
+        );
+        assert!(local.stdout.contains("Keep this unsynced legacy edit"));
+        let old_push = run_cli(
+            &env,
+            &profile,
+            &["--space".into(), "legacy".into(), "push".into()],
+        )
+        .await?;
+        assert!(
+            !old_push.status.success(),
+            "inactive legacy attachment dispatched remote work"
+        );
+        assert!(old_push.stderr.contains("account"), "{}", old_push.stderr);
+        let aliases = after["spaces"].as_object().context("space entries")?;
+        let alias = aliases
+            .iter()
+            .find(|(_, entry)| entry["connection"]["subject"] == selected)
+            .map(|(name, _)| name)
+            .context("new scoped alias")?;
+        let new_push = run_cli(
+            &env,
+            &profile,
+            &["--space".into(), alias.clone(), "push".into()],
+        )
+        .await?;
+        anyhow::ensure!(
+            new_push.status.success(),
+            "scoped alias failed: {}",
+            new_push.stderr
+        );
+        browser.quit().await?;
+        Ok(())
+    }
+
     /// ACCT-C14 / HANDOFF-21: an actual browser-issued bearer works after its issuing browser exits.
     /// The test never imports browser/account signing material into the CLI.
     #[cfg(feature = "connection-invites")]
@@ -6547,17 +7055,11 @@ mod tests {
     async fn it_keeps_copied_agent_grants_independent_of_cli_accounts(
         env: TestEnvironment,
     ) -> Result<()> {
-        // Emulate a retained pre-upgrade registry without invoking the retired
-        // account-login command. Exact ambient-authority isolation is also
-        // covered by the native connection import tests.
-        let retained_profile = tempfile::tempdir()?;
-        let registry_file = retained_profile.path().join("spaces/spaces.json");
-        std::fs::create_dir_all(registry_file.parent().context("registry parent")?)?;
-        let retained = serde_json::json!({
-            "spaces": {},
-            "account": { "root": "did:key:z6MkgMn9hDxTd2saBSAouyTpPLWUmzrVTXfS1N5yB4TjJ3qL" }
-        });
-        std::fs::write(&registry_file, serde_json::to_vec(&retained)?)?;
+        let unrelated = driver_with_prf(&env).await?;
+        sign_up(&unrelated, &env, "agent-unrelated@example.com").await?;
+        let linked = link_cli(&unrelated, &env).await?;
+        unrelated.quit().await?;
+        let registry_file = linked.profile.path().join("spaces/spaces.json");
         let before: serde_json::Value = serde_json::from_slice(&std::fs::read(&registry_file)?)?;
         anyhow::ensure!(
             before["account"].is_object(),
@@ -6722,14 +7224,13 @@ mod tests {
             blob.starts_with("blob:"),
             "blob add omitted its content reference"
         );
-        let second_registry =
-            import_agent_bearer(&env, &retained_profile, &first, "holder").await?;
+        let second_registry = import_agent_bearer(&env, &linked.profile, &first, "holder").await?;
         assert_eq!(
             second_registry["spaces"]["holder"]["connection"],
             first_registry["spaces"]["holder"]["connection"]
         );
         let sibling_registry =
-            import_agent_bearer(&env, &retained_profile, &second, "sibling").await?;
+            import_agent_bearer(&env, &linked.profile, &second, "sibling").await?;
         anyhow::ensure!(
             sibling_registry["spaces"]["holder"]["site"]
                 != sibling_registry["spaces"]["sibling"]["site"],
@@ -6744,7 +7245,7 @@ mod tests {
         }
         let readback = run_cli(
             &env,
-            &retained_profile,
+            &linked.profile,
             &[
                 "--space".into(),
                 "holder".into(),
@@ -6841,7 +7342,7 @@ mod tests {
                 .all(|target| target["acknowledged"] == false)
         );
         browser.quit().await?;
-        for holder in [&empty, &retained_profile] {
+        for holder in [&empty, &linked.profile] {
             let denied = run_cli(
                 &env,
                 holder,
@@ -6860,7 +7361,7 @@ mod tests {
         }
         let survives = run_cli(
             &env,
-            &retained_profile,
+            &linked.profile,
             &["--space".into(), "sibling".into(), "connect".into()],
         )
         .await?;
@@ -6875,7 +7376,6 @@ mod tests {
     }
 
     #[dialog_common::test]
-    #[ignore = "historical CLI account login workflow; use scoped invitations"]
     async fn it_links_the_cli_through_the_browser_callback(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
         sign_up(&driver, &env, EMAIL).await?;
@@ -6933,7 +7433,6 @@ mod tests {
     /// account is what makes there be something to delegate — then flows
     /// straight into the approval panel.
     #[dialog_common::test]
-    #[ignore = "historical CLI account login workflow; use scoped invitations"]
     async fn it_registers_before_linking_a_cli_from_a_fresh_browser(
         env: TestEnvironment,
     ) -> Result<()> {
@@ -6968,7 +7467,6 @@ mod tests {
     /// that. The endpoints it discovers must therefore match the
     /// deployment the ceremony ran on, not any harness-side address.
     #[dialog_common::test]
-    #[ignore = "historical CLI account login workflow; use scoped invitations"]
     async fn it_links_without_being_told_the_account_service(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
         sign_up(&driver, &env, EMAIL).await?;
