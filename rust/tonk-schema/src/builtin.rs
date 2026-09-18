@@ -169,13 +169,37 @@ fn view_descriptor() -> ConceptDefinition {
                     "optional": true,
                     "description": "dag-cbor of the event descriptors resolved at lowering"
                 },
-                // Content the templates embed with `with:href`, keyed
+                // The embeds the templates make, resolved at lowering:
+                // each `with:src` reference paired with the entity it
+                // actually reads from. One compiled artifact for the
+                // same reason `bindings` is one — the references are
+                // resolved together and mean nothing apart.
+                //
+                // This field is what keeps the analyzer's check and the
+                // renderer's query asking the SAME question. While the
+                // reference was re-read at render time, the subject was
+                // whatever the caller passed, and a caller passing the
+                // wrong one produced an unstyled page with no error
+                // anywhere — the check had verified a name on a subject
+                // the query never asked about.
+                //
+                // Optional: a view lowered before this pass existed
+                // carries no `embeds`, which is the renderer's signal to
+                // fall back to reading the reference out of the template.
+                "embeds": {
+                    "the": "xyz.tonk.view/embeds",
+                    "as": "Record",
+                    "cardinality": "one",
+                    "optional": true,
+                    "description": "dag-cbor of the embed subjects resolved at lowering"
+                },
+                // Content the templates embed with `with:src`, keyed
                 // the same way `show` is: its own domain, so a style
                 // named `ui` cannot collide with the template named
                 // `ui` above, and one style can be superseded without
                 // restating the rest.
                 //
-                // Stylesheets the templates embed with `with:href`,
+                // Stylesheets the templates embed with `with:src`,
                 // keyed the way `show` is: its own domain, so a style
                 // named `ui` cannot collide with the template named
                 // `ui` above, and one style can be superseded without
@@ -195,7 +219,7 @@ fn view_descriptor() -> ConceptDefinition {
                 // rather than one untyped dictionary because the
                 // dictionary a name lives in is what says how to read
                 // it: a style is CSS text, a font is bytes written as
-                // `!!binary`. A `<ui-font>` registers one as a family
+                // `!!binary`. A `<font-family>` registers one as a family
                 // for the document, so a stylesheet names the family
                 // and never carries a `url()` — which is what keeps a
                 // blob-URL stylesheet from having a relative URL it

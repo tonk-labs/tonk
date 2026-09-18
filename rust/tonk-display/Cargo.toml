@@ -65,6 +65,11 @@ web-sys = { workspace = true, features = [
     "ShadowRootInit",
     "ShadowRootMode",
     "Url",
+    "CssStyleDeclaration",
+    "XmlHttpRequest",
+    "FontFace",
+    "FontFaceSet",
+    "FontFaceDescriptors",
 ] }
 
 [dev-dependencies]

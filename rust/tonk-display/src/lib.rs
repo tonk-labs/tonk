@@ -60,6 +60,8 @@ mod embed;
 #[cfg(target_arch = "wasm32")]
 mod fallback;
 #[cfg(target_arch = "wasm32")]
+mod font;
+#[cfg(target_arch = "wasm32")]
 mod notation;
 #[cfg(target_arch = "wasm32")]
 mod render;
@@ -87,6 +89,7 @@ pub fn register() {
     notation::register();
     element::register();
     fallback::register();
+    font::register();
     component::register();
     upload::register();
 }
