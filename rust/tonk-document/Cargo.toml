@@ -15,6 +15,11 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 
+# automerge draws its actor ids from getrandom, which has no default
+# backend on wasm32-unknown-unknown.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { workspace = true }
+
 [dev-dependencies]
 dialog-common = { workspace = true, features = ["helpers"] }
 tokio = { workspace = true, features = ["macros", "rt"] }

@@ -5028,6 +5028,7 @@ dependencies = [
  "blake3",
  "bs58",
  "dialog-common",
+ "getrandom 0.4.3",
  "hex",
  "serde",
  "serde_json",
