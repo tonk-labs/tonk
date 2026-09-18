@@ -147,6 +147,7 @@
           cargoChecks
           rustToolchain
           wasm-bindgen-cli
+          wasmCcEnv
           ;
 
         wbg-pool = import ./nix/wbg-pool.nix {
@@ -214,6 +215,13 @@
             "WBG_POOL_BROWSER_ARGS" =
               "--disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding";
           }
+          # `dev:web` runs trunk in this shell rather than through a
+          # derivation, so the wasm C toolchain has to be here too — the
+          # same attrset the wasm derivations use, so a shell build and a
+          # `nix build` cannot disagree about which compiler compiles
+          # ring. See `wasmCcEnv` in nix/rust.nix for why the stdenv one
+          # will not do.
+          // wasmCcEnv
           // lib.optionalAttrs stdenv.isLinux {
             "CHROME" = "${chromium}/bin/chromium";
             "CHROMEDRIVER" = "${chromedriver}/bin/chromedriver";
