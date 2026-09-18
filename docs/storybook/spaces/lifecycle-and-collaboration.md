@@ -85,10 +85,14 @@ The in-place FABB rename remains an edit while ordinary whitespace is typed;
 Enter or leaving the field commits the complete trimmed name. A blank space's
 agent prompt has one textual contract: the text on screen and the value copied
 by its button include the same task, commands, and final build guidance.
+The rename starts in a single-line text control with its caret after the current
+name, so Safari accepts the first typed character inside the FABB shadow root.
 
 This source-and-browser-tested interaction decision refines `SPACE-03`,
-`SPACE-04`, and `DATA-02` on 2026-09-02. No screenshot was recaptured because
-the resting FABB and prompt geometry are unchanged.
+`SPACE-04`, and `DATA-02` on 2026-09-02, with the Safari caret boundary refined
+by a focused Safari shadow-root reproduction and FABB browser regression on
+2026-09-17. No screenshot was recaptured because the resting FABB and prompt
+geometry are unchanged.
 
 ### Space-switcher and absent-space presentation decision
 
