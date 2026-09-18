@@ -29,7 +29,6 @@ pub fn start() {
     tonk_guest::guest_host::install();
 
     tonk_display::register();
-    tonk_board::register();
     tonk_workspace::register();
     tonk_tree::register();
     tonk_fab::register();
