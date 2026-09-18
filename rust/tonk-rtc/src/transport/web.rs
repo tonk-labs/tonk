@@ -14,7 +14,8 @@ use js_sys::{ArrayBuffer, Uint8Array};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{
-    MessageEvent, RtcDataChannel, RtcDataChannelInit, RtcDataChannelType, RtcPeerConnection,
+    MessageEvent, MessagePort, RtcDataChannel, RtcDataChannelInit, RtcDataChannelType,
+    RtcPeerConnection,
 };
 
 use super::{Port, WebRtcTransport};
@@ -76,4 +77,64 @@ pub fn attach(transport: &Arc<WebRtcTransport>, peer: CustomAddr, channel: RtcDa
             let _ = sending.send_with_u8_array(&datagram);
         }
     });
+}
+
+/// Relay a data channel to a [`MessagePort`], and back.
+///
+/// The page half of [`super::relay`]. The worker holds the transport and
+/// the iroh endpoint; the page holds the peer connection, because
+/// `RTCPeerConnection` is `[Exposed=Window]` and does not exist in a
+/// worker. This is the pipe between them, and it interprets nothing —
+/// datagrams cross in both directions and the page never learns what
+/// they mean.
+///
+/// # Transferred, not copied
+///
+/// Every datagram crosses `postMessage`, which is far more traffic than
+/// an application-level bridge carries, so each one moves as an
+/// `ArrayBuffer` in the transfer list. The buffer is neutered here
+/// rather than cloned; a structured clone per packet would put a memcpy
+/// and an allocation in the middle of the data path.
+///
+/// # Closing is explicit
+///
+/// A closed channel posts `null` rather than closing the port. A closed
+/// `MessagePort` fires no event, so a silent close would leave iroh
+/// holding a route to nowhere — the worker end reads that `null` as the
+/// signal to detach.
+pub fn relay(channel: RtcDataChannel, port: MessagePort) {
+    channel.set_binary_type(RtcDataChannelType::Arraybuffer);
+
+    // Channel -> port.
+    let to_worker = port.clone();
+    let inbound = Closure::<dyn FnMut(MessageEvent)>::new(move |event: MessageEvent| {
+        if let Ok(buffer) = event.data().dyn_into::<ArrayBuffer>() {
+            let transfer = js_sys::Array::of1(&buffer);
+            let _ = to_worker.post_message_with_transferable(&buffer, &transfer);
+        }
+    });
+    channel.set_onmessage(Some(inbound.as_ref().unchecked_ref()));
+    inbound.forget();
+
+    // Port -> channel. A send can fail while the channel is closing,
+    // which is ordinary: QUIC treats a lost datagram as loss and
+    // retransmits, so there is nothing to report here.
+    let sending = channel.clone();
+    let outbound = Closure::<dyn FnMut(MessageEvent)>::new(move |event: MessageEvent| {
+        if let Ok(buffer) = event.data().dyn_into::<ArrayBuffer>() {
+            let _ = sending.send_with_array_buffer(&buffer);
+        }
+    });
+    port.set_onmessage(Some(outbound.as_ref().unchecked_ref()));
+    outbound.forget();
+    port.start();
+
+    // Tell the worker when the carrier goes away, since the port will
+    // not.
+    let closing = port.clone();
+    let on_close = Closure::<dyn FnMut()>::new(move || {
+        let _ = closing.post_message(&JsValue::NULL);
+    });
+    channel.set_onclose(Some(on_close.as_ref().unchecked_ref()));
+    on_close.forget();
 }
