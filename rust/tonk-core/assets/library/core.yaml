@@ -1513,6 +1513,18 @@ concept!: &element
         wrapper, ignoring every other key. Any other key becomes a
         method on the element, callable as `el.<name>()`; a key that
         would shadow a member of `HTMLElement.prototype` is refused.
+
+        That is also how one method calls another — `self.total()`
+        inside `connected`. The call resolves through the live table
+        rather than through the definition it was written in, so
+        re-authoring `total` alone changes what an untouched
+        `connected` computes.
+
+        There is no `observedAttributes` to declare.
+        `attribute-changed` is driven by a `MutationObserver` over
+        every attribute; `attributeChangedCallback`'s list is read once
+        when the tag is registered and so could never grow with an
+        edited method.
       the: xyz.tonk.element.method
       as: {[symbol]: text}
       cardinality: one
