@@ -1,0 +1,28 @@
+[package]
+name = "tonk-document"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Automerge documents in tonk: the document engine, command handlers, mirror, history formulas and sync pass, shared by the worker and the CLI."
+
+[dependencies]
+automerge = { workspace = true }
+blake3 = { workspace = true }
+bs58 = { workspace = true }
+hex = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+dialog-common = { workspace = true, features = ["helpers"] }
+tokio = { workspace = true, features = ["macros", "rt"] }
+wasm-bindgen-test = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(dialog_test_native_integration)',
+    'cfg(dialog_test_wasm_integration)',
+    'cfg(feature, values("web-integration-tests"))',
+] }
