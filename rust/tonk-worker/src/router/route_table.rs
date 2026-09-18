@@ -23,10 +23,13 @@ const ROUTES: &[&str] = &[
     "/api/account/devices/revoke",
     "/api/account/display-name",
     "/api/account/spaces/delete",
-    // A probe, not a command: it answers before the page has a branch
-    // to subscribe to, and "a CLI is reachable" is not a fact to write
-    // down — it is true or not at the moment of asking. Sits beside
-    // `/api/identify` and `/api/site` for the same reason.
+    // Probes, not commands: they answer before the page has a branch to
+    // subscribe to, and neither "a CLI is reachable" nor "it holds
+    // these spaces" is a fact to write down — each is true or not at
+    // the moment of asking. They sit beside `/api/identify` and
+    // `/api/site` for the same reason. `spaces` lists a directory:
+    // nothing is opened or replicated by asking.
+    "/api/cli/spaces",
     "/api/cli/status",
     "/api/custody/provision",
     "/api/custody/queue",

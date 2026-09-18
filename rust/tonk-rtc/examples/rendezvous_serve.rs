@@ -3,7 +3,13 @@
 //! What `tonk rtc serve` does, without a site: the store is
 //! `dialog-iroh-remote`'s volatile helper rather than an operator, so a
 //! failure is the transport or the protocol and never a missing space.
-//! Prints its `did:key` so the harness can dial it.
+//! Prints its `did:key` so the harness can dial it, and a `SPACE` line
+//! per seeded offer so the harness asserts against what went in rather
+//! than against constants of its own.
+
+/// A space this listener offers, named so the harness can check the
+/// value it gets back is the one that was put in.
+const OFFERED_SPACE: &str = "did:key:zNotesSpace";
 
 use std::io::Write as _;
 use std::sync::Arc;
@@ -51,8 +57,31 @@ async fn main() -> anyhow::Result<()> {
         })
     };
 
+    // Two spaces to be asked about. Seeded rather than real because
+    // this listener has no site: what it proves is that the offers a
+    // peer holds reach a browser intact, and a store with none could
+    // not fail that.
+    let offers = vec![
+        dialog_effects::peer::Offer {
+            subject: OFFERED_SPACE.parse()?,
+            name: Some("notes".into()),
+        },
+        dialog_effects::peer::Offer {
+            subject: "did:key:zUnnamedSpace".parse()?,
+            name: None,
+        },
+    ];
+    for offer in &offers {
+        println!(
+            "SPACE {} {}",
+            offer.subject,
+            offer.name.as_deref().unwrap_or("-")
+        );
+    }
+    std::io::stdout().flush()?;
+
     let responder = Arc::new(dialog_iroh_remote::serve::Responder::new(
-        dialog_iroh_remote::helpers::Volatile::default(),
+        dialog_iroh_remote::helpers::Volatile::default().offering(offers),
         dialog_did_web::CachingResolver::new(dialog_did_web::WebResolver::new()),
     ));
     dialog_iroh_remote::transport::accept(endpoint, responder).await;

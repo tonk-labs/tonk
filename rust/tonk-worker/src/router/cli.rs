@@ -83,6 +83,65 @@ impl Status {
     }
 }
 
+/// What `/api/cli/spaces` answers with.
+///
+/// Flat and always-200 for the same reason [`Status`] is: a CLI that is
+/// not there is `reachable: false` with a reason, because nothing
+/// running is the ordinary case and not a fault. An empty `spaces` on a
+/// reachable CLI is its own answer — that peer holds none.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Inventory {
+    /// Whether the CLI answered.
+    pub reachable: bool,
+    /// What it holds, when it answered.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spaces: Vec<Space>,
+    /// Why not, when it did not.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// One space a CLI offers.
+///
+/// The page renders this before anything is replicated, so `subject` is
+/// the only field it can rely on: a peer that knows its spaces by DID
+/// alone has no name to give, and the display name on a space's own
+/// content branch is unreadable until the space is opened.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Space {
+    /// The space's subject DID.
+    pub subject: String,
+    /// What the CLI calls it locally, when it calls it anything.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+impl Inventory {
+    /// No CLI answered, and this is why.
+    pub fn unreachable(detail: impl Into<String>) -> Self {
+        Self {
+            reachable: false,
+            spaces: Vec::new(),
+            detail: Some(detail.into()),
+        }
+    }
+
+    /// A CLI answered with these.
+    pub fn from_offers(offers: Vec<dialog_effects::peer::Offer>) -> Self {
+        Self {
+            reachable: true,
+            spaces: offers
+                .into_iter()
+                .map(|offer| Space {
+                    subject: offer.subject.to_string(),
+                    name: offer.name,
+                })
+                .collect(),
+            detail: None,
+        }
+    }
+}
+
 /// The endpoint and transport this worker reaches local peers through.
 ///
 /// Built once and kept, because an endpoint's key is its name: rebuilt
@@ -193,6 +252,46 @@ pub async fn status(
     }
 }
 
+/// Ask the CLI what spaces it holds.
+///
+/// The same exchange as [`status`] with a different effect, and the same
+/// treatment of failure: a peer that cannot be reached is an answer, not
+/// an error status.
+pub async fn spaces(
+    reach: &Reach,
+    id: iroh::EndpointId,
+    phrase: &str,
+    subject: dialog_capability::Did,
+    operator: &crate::worker::DefaultOperator,
+) -> Inventory {
+    use dialog_capability::{Fork, ForkInvocation, Provider, SiteFork, Subject};
+    use dialog_effects::Use;
+    use dialog_effects::peer::{Peer, Spaces};
+    use dialog_iroh_remote::site::{Iroh, IrohFork};
+
+    let site = Iroh::new(dialog_iroh_remote::transport::IrohChannel::new(
+        reach.endpoint.clone(),
+    ));
+
+    let ask = Subject::from(subject)
+        .attenuate(Use)
+        .attenuate(Peer)
+        .attenuate(Spaces);
+    let fork: IrohFork<Spaces> = Fork::<Iroh, _>::new(ask, reach.peer(id, phrase)).into();
+
+    let invocation = match fork.authorize(operator).await {
+        Ok(invocation) => invocation,
+        Err(error) => {
+            return Inventory::unreachable(format!("could not sign the request: {error}"));
+        }
+    };
+
+    match Provider::<ForkInvocation<Iroh, Spaces>>::execute(&site, invocation).await {
+        Ok(offers) => Inventory::from_offers(offers),
+        Err(error) => Inventory::unreachable(error.to_string()),
+    }
+}
+
 /// Take a carrier a page has opened and make it a route.
 ///
 /// The page owns the `RTCPeerConnection` and relays its datagrams over
@@ -240,6 +339,49 @@ pub async fn handle_carrier(
     log!("cli: a carrier from {client:?} is now a route");
 }
 
+/// What both probe routes need before they can ask a peer anything, or
+/// the sentence to answer with instead.
+///
+/// Two ways to have nothing to ask, and they are different states a
+/// reader acts on differently: an address that does not parse is the
+/// caller's mistake, and an absent carrier is nobody having dialed yet,
+/// which is the ordinary condition before anyone tries.
+struct Probe {
+    reach: Arc<Reach>,
+    peer: dialog_iroh_remote::site::IrohAddress,
+    operator: crate::worker::DefaultOperator,
+    subject: dialog_capability::Did,
+}
+
+impl Probe {
+    async fn prepare(state: &crate::router::AppState, peer: &str) -> Result<Self, String> {
+        let peer = peer
+            .parse::<dialog_iroh_remote::site::IrohAddress>()
+            .map_err(|error| format!("that is not a peer address: {error}"))?;
+
+        let (reach, operator, subject) = {
+            let tonk = state.read().await;
+            (
+                tonk.reach.clone(),
+                tonk.operator.clone(),
+                tonk.profile.did(),
+            )
+        };
+
+        let reach = reach
+            .get()
+            .cloned()
+            .ok_or("no page has opened a carrier to a local tonk yet")?;
+
+        Ok(Self {
+            reach,
+            peer,
+            operator,
+            subject,
+        })
+    }
+}
+
 /// `GET /api/cli/status?peer=<did:key>` — ask a local `tonk` who it is.
 ///
 /// `peer` is the CLI's `did:key`, printed by `tonk rtc serve`. It is not
@@ -250,39 +392,47 @@ pub async fn status_route(
     axum::extract::State(state): axum::extract::State<crate::router::AppState>,
     axum::extract::Query(query): axum::extract::Query<StatusQuery>,
 ) -> Result<axum::Json<Status>, crate::TonkWorkerError> {
-    let peer = match query.peer.parse::<dialog_iroh_remote::site::IrohAddress>() {
-        Ok(peer) => peer,
-        Err(error) => {
-            return Ok(axum::Json(Status::unreachable(format!(
-                "that is not a peer address: {error}"
-            ))));
-        }
-    };
-
-    let (reach, operator, subject) = {
-        let tonk = state.read().await;
-        (
-            tonk.reach.clone(),
-            tonk.operator.clone(),
-            tonk.profile.did(),
-        )
-    };
-
-    // No carrier attached yet means no page has dialed, which is the
-    // ordinary state before anyone tries — not a fault.
-    let Some(reach) = reach.get().cloned() else {
-        return Ok(axum::Json(Status::unreachable(
-            "no page has opened a carrier to a local tonk yet",
-        )));
+    let probe = match Probe::prepare(&state, &query.peer).await {
+        Ok(probe) => probe,
+        Err(detail) => return Ok(axum::Json(Status::unreachable(detail))),
     };
 
     Ok(axum::Json(
         status(
-            &reach,
-            *peer.endpoint(),
+            &probe.reach,
+            *probe.peer.endpoint(),
             tonk_rtc::rendezvous::RENDEZVOUS,
-            subject,
-            &operator,
+            probe.subject,
+            &probe.operator,
+        )
+        .await,
+    ))
+}
+
+/// `GET /api/cli/spaces?peer=<did:key>` — ask a local `tonk` what it
+/// holds.
+///
+/// A directory listing and nothing more: every space comes back as a
+/// DID, and nothing is opened, replicated or delegated by asking. What
+/// it takes to *use* one of these is a delegation the CLI has not been
+/// asked for here.
+#[axum_wasm_macros::wasm_compat]
+pub async fn spaces_route(
+    axum::extract::State(state): axum::extract::State<crate::router::AppState>,
+    axum::extract::Query(query): axum::extract::Query<StatusQuery>,
+) -> Result<axum::Json<Inventory>, crate::TonkWorkerError> {
+    let probe = match Probe::prepare(&state, &query.peer).await {
+        Ok(probe) => probe,
+        Err(detail) => return Ok(axum::Json(Inventory::unreachable(detail))),
+    };
+
+    Ok(axum::Json(
+        spaces(
+            &probe.reach,
+            *probe.peer.endpoint(),
+            tonk_rtc::rendezvous::RENDEZVOUS,
+            probe.subject,
+            &probe.operator,
         )
         .await,
     ))

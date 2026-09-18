@@ -1,6 +1,6 @@
 // The same path as `cli-status.mjs`, but through the real app: the page
 // the user loads, the service worker it registers, and the
-// `/api/cli/status` route inside it. No harness stands in for either
+// `/api/cli/status` and `/api/cli/spaces` routes inside it. No harness stands in for either
 // half — `cli-status.mjs` covers the transport with a purpose-built
 // wasm shim, and this covers the wiring that shim replaced.
 //
@@ -70,6 +70,12 @@ function origin() {
 function listen() {
   const child = spawn(SERVE, [], { stdio: ["ignore", "pipe", "inherit"] });
   const lines = [];
+  const offered = () => lines
+    .filter((line) => line.startsWith("SPACE "))
+    .map((line) => {
+      const [, subject, name] = line.split(" ");
+      return { subject, name: name === "-" ? null : name };
+    });
   child.stdout.on("data", (chunk) => {
     const text = String(chunk);
     process.stdout.write(text.replace(/^/gm, "  tonk| "));
@@ -86,11 +92,11 @@ function listen() {
       }
     }, 100);
   });
-  return { child, until };
+  return { child, until, offered };
 }
 
 const server = await origin();
-const { child, until } = listen();
+const { child, until, offered } = listen();
 let failure;
 let browser;
 
@@ -155,7 +161,28 @@ try {
   }
   console.log(`\nthe tonk echoed this page's own subject: ${did}`);
 
-  console.log("\nPASS: the real page asked a tonk who it is, through the real service worker.");
+  // What it holds, over the same carrier. A directory listing: every
+  // space is a DID the page has no authority over and has not opened.
+  const inventory = await page.evaluate(
+    async (peer) => (await fetch(`/api/cli/spaces?peer=${encodeURIComponent(peer)}`)).json(),
+    peer,
+  );
+  console.log(`\nspaces: ${JSON.stringify(inventory, null, 2)}`);
+  if (!inventory.reachable) throw new Error(`not reachable: ${inventory.detail}`);
+
+  // Against what the listener said it seeded, so this fails if the
+  // values are lost or reordered on the way rather than merely if the
+  // call succeeds.
+  const expected = offered();
+  if (expected.length === 0) throw new Error("the listener seeded no spaces to check against");
+  const seen = (inventory.spaces ?? []).map((s) => `${s.subject} ${s.name ?? "-"}`).sort();
+  const want = expected.map((s) => `${s.subject} ${s.name ?? "-"}`).sort();
+  if (seen.join(" | ") !== want.join(" | ")) {
+    throw new Error(`offered [${want}] but the page saw [${seen}]`);
+  }
+  console.log(`the tonk's ${seen.length} spaces arrived intact, names and all`);
+
+  console.log("\nPASS: the real page asked a tonk who it is and what it holds, through the real service worker.");
 } catch (error) {
   failure = error;
   console.error(`\nFAIL: ${error.message}`);
