@@ -307,15 +307,13 @@ impl CustomElement for TonkDisplay {
 
     fn observed_attributes() -> &'static [&'static str] {
         // `entity`/`model`/`view` are the subject inputs: a change to any
-        // restarts the resolve/subscribe flow. `data-active` / `data-base`
-        // are host-context attributes a parent threads in (read by a
-        // template as `{dom.host/<attr>}`); a change to one does not alter
-        // what this display resolves, only the value projected into the
+        // restarts the resolve/subscribe flow. `data-active` is a
+        // host-context attribute a parent threads in (read by a template
+        // as `{dom.host/<attr>}`); a change to it does not alter what
+        // this display resolves, only the value projected into the
         // already-mounted view, so it is propagated in place rather than
-        // restarting. `data-base` lets a wrapping `<tonk-origin>` deliver
-        // the invite-URL base (`{origin}/join`) into the view after mount.
-        // See `attribute_changed_callback`.
-        &["entity", "model", "view", "data-active", "data-base"]
+        // restarting. See `attribute_changed_callback`.
+        &["entity", "model", "view", "data-active"]
     }
 
     fn inject_children(&mut self, _this: &HtmlElement) {}

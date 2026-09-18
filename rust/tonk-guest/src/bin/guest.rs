@@ -28,13 +28,6 @@ pub fn start() {
     // binding. `window.tonk` stays app sugar, not the elements' transport.
     tonk_guest::guest_host::install();
 
-    tonk_sigil::Sigil::install();
-    // The opaque guest can't mask sigils against a cross-origin `/sigils.svg`
-    // sprite (CSS `url()` is CORS-blocked at a null origin). Fetch the sprite
-    // bytes over the host bridge (the overridden `window.fetch` routes
-    // host-relative URLs there), mint a same-origin blob URL, and install it
-    // as the sigil default — re-rendering any sigils that already painted.
-    load_sigil_sprite();
     // Author elements: the runtime that ANNOUNCES an undefined custom
     // element, and the listener that ANSWERS by resolving the tag and
     // registering it. Installed here, at the one place every sealed
@@ -69,52 +62,6 @@ pub fn start() {
     // `<tonk-title>` names the browser tab. Headless: it renders nothing
     // and pushes its text to the host page, which owns `document.title`.
     tonk_portal::register_title();
-}
-
-/// Fetch the sigil sprite over the host bridge, mint a same-origin blob URL,
-/// and install it as the global sigil sprite default. Best-effort: any
-/// failure leaves the build-time `/sigils.svg` default in place (which a
-/// sealed guest can't load, so sigils render blank — acceptable degradation,
-/// not a crash).
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn load_sigil_sprite() {
-    use wasm_bindgen_futures::{JsFuture, spawn_local};
-    use web_sys::{Blob, Response};
-
-    // Log failures rather than swallowing them: if the bridge can't deliver
-    // the body, the sigil would otherwise silently fall back to the
-    // CORS-blocked `/sigils.svg` and render blank with no clue why.
-    fn warn(message: &str) {
-        web_sys::console::warn_1(&JsValue::from_str(message));
-    }
-
-    spawn_local(async move {
-        let Some(window) = web_sys::window() else {
-            return;
-        };
-        // Routes through the overridden `window.fetch` → host bridge.
-        let resp = match JsFuture::from(window.fetch_with_str("/sigils.svg")).await {
-            Ok(resp) => resp,
-            Err(e) => return warn(&format!("sigil sprite: fetch failed: {e:?}")),
-        };
-        let Ok(resp) = resp.dyn_into::<Response>() else {
-            return warn("sigil sprite: fetch did not yield a Response");
-        };
-        let blob = match resp.blob() {
-            Ok(promise) => match JsFuture::from(promise).await {
-                Ok(blob) => blob,
-                Err(e) => return warn(&format!("sigil sprite: reading body failed: {e:?}")),
-            },
-            Err(e) => return warn(&format!("sigil sprite: blob() failed: {e:?}")),
-        };
-        let Ok(blob) = blob.dyn_into::<Blob>() else {
-            return warn("sigil sprite: body was not a Blob");
-        };
-        match web_sys::Url::create_object_url_with_blob(&blob) {
-            Ok(url) => tonk_sigil::set_default_sprite_href(&url),
-            Err(e) => warn(&format!("sigil sprite: createObjectURL failed: {e:?}")),
-        }
-    });
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
