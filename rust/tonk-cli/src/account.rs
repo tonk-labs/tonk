@@ -1143,7 +1143,7 @@ async fn publish_revocation(
     store: &crate::space::SpaceStore,
     artifact: &[u8],
 ) -> Result<()> {
-    use dialog_remote_ucan_s3::UcanAddress;
+    use dialog_remote_ucan::UcanAddress;
 
     let mut endpoints = std::collections::BTreeSet::new();
     if let Some(provider) = stored_provider_in(profile, operator, store).await? {

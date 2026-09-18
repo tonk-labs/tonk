@@ -27,6 +27,11 @@ pub struct AccessServiceAddress {
     pub secret_access_key: String,
     /// The service's signing DID, issuer of activation delegations.
     pub service_did: String,
+    /// The hex seed behind `service_did`. Object permits are signed
+    /// under a key derived from it, so a test can mint its own permits
+    /// and exercise `/object/` directly, the way it can sign S3
+    /// requests with the credentials above.
+    pub service_seed: String,
 }
 
 /// Enrolling and activating a customer against a test service.

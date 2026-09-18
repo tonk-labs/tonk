@@ -5,6 +5,7 @@ pub mod deletion;
 pub mod health;
 pub mod info;
 pub mod lookup;
+pub mod object;
 pub mod registration;
 pub mod revoke;
 pub mod shortcut;
