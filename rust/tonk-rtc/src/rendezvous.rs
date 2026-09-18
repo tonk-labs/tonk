@@ -28,6 +28,38 @@
 //! settles the awkward part — WebCrypto's Ed25519 is not deterministic
 //! in Safari — because no browser is asked to sign anything.
 //!
+//! # Why not have the browser derive it with its own crypto
+//!
+//! Measured in Chromium rather than reasoned about — same key, same
+//! message, signed twice:
+//!
+//! | WebCrypto algorithm | Same signature twice? |
+//! | --- | --- |
+//! | `ECDSA` P-256 | **no** — random nonce |
+//! | `RSASSA-PKCS1-v1_5` | **yes** — deterministic padding |
+//! | `RSA-PSS` | no — random salt |
+//! | `Ed25519` | yes in Chromium, **no in Safari** |
+//!
+//! So native WebCrypto cannot reproduce what this module builds: its
+//! P-256 signs with a random nonce, and only RFC 6979 makes the
+//! certificate a function of the phrase. Ed25519 is worse than it
+//! looks — deterministic by specification, and engine-dependent in
+//! fact, which is a guarantee that cannot be relied on.
+//!
+//! RSA is the one that is genuinely deterministic in a browser, and
+//! `RTCPeerConnection.generateCertificate` accepts it, so it is a real
+//! DTLS option. It still does not help, because the obstacle is
+//! *deriving the key*, not signing with it. An RSA keypair from a
+//! phrase means a pinned prime search that two implementations
+//! reproduce exactly, it takes hundreds of milliseconds at 2048 bits,
+//! and WebCrypto cannot import a key from a seed at all — only generate
+//! a random one or import a whole key you already hold. A P-256 secret
+//! is a 32-byte scalar, so deriving it is one hash.
+//!
+//! None of which this design depends on, because the browser runs this
+//! code rather than its own. The table is here so the question does not
+//! get re-asked from memory.
+//!
 //! # What is public, and why that is safe
 //!
 //! The phrase is published, so the private key is derivable by anyone,
