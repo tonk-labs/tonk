@@ -54,12 +54,22 @@ type Shortcuts = Arc<RwLock<HashMap<String, (u64, String)>>>;
 /// Performance fixtures configure runtime repository subjects after setup, then
 /// read the events back without requiring any instrumentation in the release
 /// artifact under test. Configuration resets the event ledger so provisioning
-/// traffic cannot leak into a measured interval.
+/// traffic cannot leak into a measured interval. Recording starts only after an
+/// explicit configuration POST. The ledger retains the first 10,000 events and
+/// reports subsequent events as dropped; configured delays still apply.
 #[derive(Default)]
 struct SyncProbe {
     enabled: AtomicBool,
-    config: Mutex<SyncProbeConfig>,
-    events: Mutex<Vec<SyncProbeEvent>>,
+    state: Mutex<SyncProbeState>,
+}
+
+const MAX_SYNC_PROBE_EVENTS: usize = 10_000;
+
+#[derive(Default)]
+struct SyncProbeState {
+    config: Option<SyncProbeConfig>,
+    events: Vec<SyncProbeEvent>,
+    dropped_event_count: usize,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -88,14 +98,10 @@ impl SyncProbe {
         if config.delayed_subjects.len() > 100 {
             return Err("delayed_subjects must contain at most 100 subjects");
         }
-        *self
-            .config
-            .lock()
-            .map_err(|_| "sync probe config poisoned")? = config;
-        self.events
-            .lock()
-            .map_err(|_| "sync probe event ledger poisoned")?
-            .clear();
+        *self.state.lock().map_err(|_| "sync probe state poisoned")? = SyncProbeState {
+            config: Some(config),
+            ..Default::default()
+        };
         self.enabled.store(true, Ordering::Release);
         Ok(())
     }
@@ -104,19 +110,18 @@ impl SyncProbe {
         if !self.enabled.load(Ordering::Acquire) {
             return Ok(0);
         }
-        let config = self
-            .config
-            .lock()
-            .map_err(|_| "sync probe config poisoned")?
-            .clone();
+        let mut state = self.state.lock().map_err(|_| "sync probe state poisoned")?;
+        let Some(config) = &state.config else {
+            return Ok(0);
+        };
         let delayed = config.delayed_subjects.contains(&subject) && config.delay_ms > 0;
         let delay_ms = if delayed { config.delay_ms } else { 0 };
-        let mut events = self
-            .events
-            .lock()
-            .map_err(|_| "sync probe event ledger poisoned")?;
-        let sequence = events.len() + 1;
-        events.push(SyncProbeEvent {
+        if state.events.len() == MAX_SYNC_PROBE_EVENTS {
+            state.dropped_event_count = state.dropped_event_count.saturating_add(1);
+            return Ok(delay_ms);
+        }
+        let sequence = state.events.len() + 1;
+        state.events.push(SyncProbeEvent {
             sequence,
             command,
             subject,
@@ -128,21 +133,14 @@ impl SyncProbe {
     }
 
     fn snapshot(&self) -> Result<serde_json::Value, &'static str> {
-        let config = self
-            .config
-            .lock()
-            .map_err(|_| "sync probe config poisoned")?
-            .clone();
-        let events = self
-            .events
-            .lock()
-            .map_err(|_| "sync probe event ledger poisoned")?
-            .clone();
+        let state = self.state.lock().map_err(|_| "sync probe state poisoned")?;
         Ok(serde_json::json!({
-            "config": config,
-            "event_count": events.len(),
-            "delayed_event_count": events.iter().filter(|event| event.delayed).count(),
-            "events": events,
+            "enabled": state.config.is_some(),
+            "config": state.config.clone().unwrap_or_default(),
+            "event_count": state.events.len(),
+            "dropped_event_count": state.dropped_event_count,
+            "delayed_event_count": state.events.iter().filter(|event| event.delayed).count(),
+            "events": state.events,
         }))
     }
 }
@@ -163,14 +161,65 @@ mod sync_probe_tests {
     }
 
     #[test]
-    fn unconfigured_probe_does_not_record_requests() {
+    fn recording_requires_explicit_configuration_even_without_delay() {
         let probe = SyncProbe::default();
+        for _ in 0..MAX_SYNC_PROBE_EVENTS + 1 {
+            assert_eq!(
+                probe.record("/resolve".into(), "did:key:active".into()),
+                Ok(0)
+            );
+        }
+        let snapshot = probe.snapshot().unwrap();
+        assert_eq!(snapshot["enabled"], false);
+        assert_eq!(snapshot["event_count"], 0);
+        assert_eq!(snapshot["dropped_event_count"], 0);
+
+        probe.configure(SyncProbeConfig::default()).unwrap();
         assert_eq!(
-            probe.record("/resolve".into(), "subject".into()).unwrap(),
-            0
+            probe.record("/resolve".into(), "did:key:active".into()),
+            Ok(0)
         );
-        assert_eq!(probe.snapshot().unwrap()["event_count"], 0);
-        assert!(!probe.enabled.load(Ordering::Acquire));
+        let snapshot = probe.snapshot().unwrap();
+        assert_eq!(snapshot["enabled"], true);
+        assert_eq!(snapshot["event_count"], 1);
+    }
+
+    #[test]
+    fn ledger_is_bounded_without_disabling_delays_and_resets_on_configuration() {
+        let probe = SyncProbe::default();
+        probe
+            .configure(SyncProbeConfig {
+                delay_ms: 75,
+                delayed_subjects: subjects(&["did:key:idle"]),
+            })
+            .unwrap();
+        for _ in 0..MAX_SYNC_PROBE_EVENTS + 2 {
+            assert_eq!(
+                probe.record("/resolve".into(), "did:key:idle".into()),
+                Ok(75)
+            );
+        }
+        let snapshot = probe.snapshot().unwrap();
+        assert_eq!(snapshot["event_count"], MAX_SYNC_PROBE_EVENTS);
+        assert_eq!(
+            snapshot["events"].as_array().unwrap().len(),
+            MAX_SYNC_PROBE_EVENTS
+        );
+        assert_eq!(
+            snapshot["events"][MAX_SYNC_PROBE_EVENTS - 1]["sequence"],
+            MAX_SYNC_PROBE_EVENTS
+        );
+        assert_eq!(snapshot["dropped_event_count"], 2);
+
+        probe.configure(SyncProbeConfig::default()).unwrap();
+        assert_eq!(
+            probe.record("/resolve".into(), "did:key:idle".into()),
+            Ok(0)
+        );
+        let snapshot = probe.snapshot().unwrap();
+        assert_eq!(snapshot["event_count"], 1);
+        assert_eq!(snapshot["events"][0]["sequence"], 1);
+        assert_eq!(snapshot["dropped_event_count"], 0);
     }
 
     #[test]
