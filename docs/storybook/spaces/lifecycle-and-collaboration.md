@@ -59,6 +59,26 @@ This source-derived update covers `COLLAB-01`, `COLLAB-05`, `WEB-04`, and
 `WEB-05`. Browser component regressions exercise copy completion and popup
 geometry; existing screenshots retain their older visual provenance.
 
+### Share control space-binding decision
+
+The FABB's share control answers for the space the bar names, and it learns
+that space from the bar rather than from the page around it. A bar that is
+rendered before its route has resolved the space is stamped again once the
+space lands, and the share control is included in that second stamp along with
+the space name, the sync disc, the switcher and the member roster.
+
+This matters because a share control bound to no space is silent rather than
+broken: it opens no invite subscription and dispatches no mint, so **copy link**
+renders, hovers and takes the click while producing no **copying...**, no
+**copied** and no **couldn't copy**. The documented Share behaviour above is
+unchanged; what changed is that the control now reliably has the space it needs
+in order to honour it. The Hub's own copy-link already re-delivered the space to
+the same control, which is why the Hub copied links while the FABB did not.
+
+This source-and-browser-tested binding decision restores `COLLAB-01`,
+`COLLAB-05`, `WEB-04`, and `WEB-05` on 2026-09-17. No screenshot was recaptured
+because every rendered state of the stack is unchanged.
+
 ### FABB naming and blank-space prompt decision
 
 The in-place FABB rename remains an edit while ordinary whitespace is typed;
