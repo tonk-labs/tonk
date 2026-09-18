@@ -12,7 +12,7 @@ use dialog_ucan_core::{DelegationBuilder, DelegationChain, InvocationBuilder, In
 use dialog_varsig::{Did, Principal};
 use std::collections::{BTreeMap, HashMap};
 use tonk_access_service::helpers::{AccessServer, AccessServiceAddress};
-use tonk_access_service::permit::Claims;
+use tonk_access_service::permit::{Claims, PERMIT_TTL};
 
 const CONTENT: &[u8] = b"ordinary connection storage roundtrip";
 
@@ -72,7 +72,7 @@ impl Fixture {
             &base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(encoded.as_bytes())?,
         )?;
         let received_at = Timestamp::now().to_unix();
-        assert!((received_at + 1..=received_at + 60).contains(&claims.expires));
+        assert!((received_at + 1..=received_at + PERMIT_TTL).contains(&claims.expires));
         Ok(permit)
     }
     async fn transfer(&self, permit: &Permit) -> anyhow::Result<Vec<u8>> {

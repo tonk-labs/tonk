@@ -21,7 +21,7 @@ replicas already held elsewhere.
 Scoped invitations use ordinary space grants with explicit expiry
 (normally 90 days, bounded by the issuer's authority). Revocation blocks new
 remote authorizations as it propagates through the service; already-issued transport
-URLs can remain usable for up to 60 seconds. Downloaded data and unsynced edits
+URLs can remain usable for up to one hour. Downloaded data and unsynced edits
 stay local. Queries needing data that was never downloaded still require remote
 access. New authorization is needed after grant expiry or revocation; the CLI
 does not fall back to another account's authority.
