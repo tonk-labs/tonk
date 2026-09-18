@@ -903,7 +903,7 @@ mod tests {
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use dialog_remote_ucan_s3::UcanAddress;
+    use dialog_remote_ucan::UcanAddress;
     use dialog_repository::{RepositoryExt as _, SiteAddress};
     use tower::ServiceExt;
 

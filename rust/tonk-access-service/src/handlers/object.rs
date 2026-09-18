@@ -121,7 +121,7 @@ async fn serve(mut req: Request, ctx: RouteContext<()>, method: Method) -> Resul
 }
 
 /// Why an object request was not carried out.
-enum Failure {
+pub(crate) enum Failure {
     /// The permit is not good for this request.
     Refused(PermitRefusal),
     /// A write declared no length, and the store needs one up front.
@@ -144,7 +144,7 @@ impl Failure {
         }
     }
 
-    fn into_response(self) -> Result<Response> {
+    pub(crate) fn into_response(self) -> Result<Response> {
         let status = self.status();
         let response = match self {
             Self::Refused(refusal) => Response::from_json(&refusal)?,
@@ -172,7 +172,7 @@ impl Failure {
         Ok(response.with_status(status))
     }
 
-    fn emit(&self) {
+    pub(crate) fn emit(&self) {
         let status = self.status();
         let (outcome, kind) = match self {
             Self::Refused(_) => (AccessOutcome::Refused, AccessFailureKind::AccessDenied),
@@ -233,18 +233,7 @@ async fn perform(
             get(&bucket, &claims.key, range).await?
         }
         Method::Put => put(req, &bucket, &claims).await?,
-        Method::Delete => match store::delete(&bucket, &claims).await {
-            Ok(true) => Response::empty()
-                .map_err(|error| Failure::Unavailable(error.to_string()))?
-                .with_status(204),
-            Ok(false) => precondition_failed()?,
-            Err(error) => {
-                return Err(Failure::Unavailable(format!(
-                    "delete {}: {error}",
-                    claims.key
-                )));
-            }
-        },
+        Method::Delete => delete(&bucket, &claims).await?,
     };
     let stored = Date::now().as_millis();
     Ok((
@@ -267,6 +256,19 @@ async fn perform(
 /// decides whether the object lands; it decides what a refused write
 /// is answered with, since the store's error says nothing a caller
 /// can act on.
+async fn delete(bucket: &Bucket, claims: &Claims) -> std::result::Result<Response, Failure> {
+    match store::delete(bucket, claims).await {
+        Ok(true) => Ok(Response::empty()
+            .map_err(|error| Failure::Unavailable(error.to_string()))?
+            .with_status(204)),
+        Ok(false) => precondition_failed(),
+        Err(error) => Err(Failure::Unavailable(format!(
+            "delete {}: {error}",
+            claims.key
+        ))),
+    }
+}
+
 async fn put(
     req: &mut Request,
     bucket: &Bucket,

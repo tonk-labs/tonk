@@ -84,7 +84,9 @@ button{ font:inherit; letter-spacing:inherit; color:inherit; background:none; bo
 .cur{ display:inline-block; width:7px; height:13px; background:var(--_ink); flex:none;
   margin-left:-7px; mix-blend-mode:difference;
   animation:fabb-hardblink 1.05s steps(1,end) infinite; }
-.edit{ outline:none !important; caret-color:transparent; min-width:1ch; text-transform:none; user-select:text; }
+.edit{ outline:none !important; caret-color:transparent; min-width:0; width:100%;
+  font:inherit; letter-spacing:inherit; color:inherit; background:none; border:0; padding:0;
+  text-align:right; text-transform:none; user-select:text; }
 /* engines with a native block caret draw the terminal cursor themselves:
    the caret takes the block shape and the hard blink, follows mid-text
    edits, and the faked tail block stands down (each component hides its

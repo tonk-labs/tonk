@@ -90,8 +90,10 @@ fn a_space_typed_while_renaming_does_not_commit_the_name() {
     edit_space.call0(&bar).expect("start rename");
 
     let cell = shadow(&bar, "[data-cell=space]");
-    let edit = shadow(&bar, ".space .edit");
-    edit.set_text_content(Some("Project "));
+    let edit = shadow(&bar, ".space .edit")
+        .dyn_into::<HtmlInputElement>()
+        .expect("space rename text input");
+    edit.set_value("Project ");
 
     // Browsers synthesize a detail-zero click on a focused button for the
     // Space key. The editable lives inside that button, so this is the click
@@ -107,7 +109,26 @@ fn a_space_typed_while_renaming_does_not_commit_the_name() {
         cell.class_list().contains("editing"),
         "a Space-key click must leave the rename active",
     );
-    assert_eq!(edit.text_content().as_deref(), Some("Project "));
+    assert_eq!(edit.value(), "Project ");
+    bar.remove();
+}
+
+#[dialog_common::test]
+fn a_space_rename_focuses_a_text_caret_at_the_end() {
+    let bar = mount("tonk-fab");
+    bar.set_attribute("label", "Project").expect("label");
+    let edit_space = js_sys::Reflect::get(&bar, &"editSpace".into())
+        .expect("editSpace member")
+        .dyn_into::<js_sys::Function>()
+        .expect("editSpace function");
+    edit_space.call0(&bar).expect("start rename");
+
+    let edit = shadow(&bar, ".space .edit")
+        .dyn_into::<HtmlInputElement>()
+        .expect("space rename text input");
+    assert_eq!(edit.value(), "Project");
+    assert_eq!(edit.selection_start().expect("selection start"), Some(7));
+    assert_eq!(edit.selection_end().expect("selection end"), Some(7));
     bar.remove();
 }
 

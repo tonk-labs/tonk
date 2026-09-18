@@ -57,7 +57,6 @@ web-sys = { workspace = true, features = [
     "Performance",
     "NodeList",
     "PointerEvent",
-    "Range",
     "Request",
     "RequestInit",
     "Response",

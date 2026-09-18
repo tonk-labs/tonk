@@ -4,9 +4,9 @@
 //! self-issued — issuer, audience, and subject are all the custody DID,
 //! with no proofs: a chain rooting in the subject needs nothing else.
 //! The wrapped account secret lives at one well-known cell
-//! (`custody/secret`); publishing and resolving it go through the
-//! access service's `/ucan/` endpoint, which answers with a presigned
-//! permit the caller executes directly against storage.
+//! (`custody/secret`); publishing and resolving it are performed at the
+//! access service through [`dialog_remote_ucan`], one request each, the
+//! same exchange every other remote effect takes.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -65,15 +65,6 @@ pub fn into_container(invocation: Invocation<AnySignature>) -> Result<Vec<u8>> {
     InvocationChain::new(invocation, HashMap::new())
         .to_bytes()
         .context("failed to serialize the custody invocation")
-}
-
-async fn build_self_invocation(
-    custody: Signer,
-    command: Vec<String>,
-    arguments: BTreeMap<String, Promised>,
-    expiration: Timestamp,
-) -> Result<Vec<u8>> {
-    into_container(sign_self_invocation(custody, command, arguments, expiration).await?)
 }
 
 /// How long a deferred publish invocation stays redeemable: the
@@ -164,7 +155,13 @@ pub async fn sign_deferred_publish_invocation(
 
 /// Build a `/use/get/memory/cell` container for the wrapped-secret cell.
 pub async fn build_resolve_invocation(custody: Signer) -> Result<Vec<u8>> {
-    build_self_invocation(
+    into_container(sign_resolve_invocation(custody).await?)
+}
+
+/// [`build_resolve_invocation`] as a value, for a caller performing it
+/// rather than posting the container.
+pub async fn sign_resolve_invocation(custody: Signer) -> Result<Invocation<AnySignature>> {
+    sign_self_invocation(
         custody,
         vec![
             "use".to_string(),
@@ -204,153 +201,147 @@ pub async fn sign_custody_consent(
         .map_err(|e| anyhow::anyhow!("failed to mint the custody consent: {e}"))
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-mod web {
-    use anyhow::{Context, Result, anyhow};
-    use dialog_credentials::{Ed25519Signer, Signer};
-    use js_sys::Uint8Array;
-    use wasm_bindgen::JsCast;
-    use wasm_bindgen_futures::JsFuture;
-    use web_sys::{Request, RequestInit, Response};
+/// Performing custody invocations at the access service.
+///
+/// The invocation is the one signed above; performing it is
+/// [`dialog_remote_ucan`]'s job, so nothing here speaks HTTP, decodes a
+/// permit, or replays a presigned request. The site takes a capability,
+/// an address and the signed chain that authorizes it, carries out one
+/// request, and answers with the operation's outcome.
+mod exchange {
+    use anyhow::{Context, Result};
+    use dialog_capability::{ForkInvocation, Provider, Subject};
+    use dialog_credentials::Signer;
+    use dialog_effects::memory::prelude::{CellExt, MemoryExt, MemorySubjectExt, SpaceExt};
+    use dialog_effects::memory::{MemoryError, Version};
+    use dialog_remote_ucan::{UcanAddress, UcanAuthorization, UcanSite};
+    use dialog_ucan_core::{Invocation, InvocationChain};
+    use dialog_varsig::{AnySignature, Principal};
 
-    /// The presigned request the access service answers a `/ucan/`
-    /// invocation with. Mirrors `dialog_remote_s3::Permit` on the wire.
-    #[derive(serde::Deserialize)]
-    struct Permit {
-        url: String,
-        method: String,
-        headers: Vec<(String, String)>,
+    use crate::envelope::{CUSTODY_SECRET_CELL, CUSTODY_SPACE};
+
+    /// The authorization a self-issued invocation presents: the chain
+    /// as it was signed, with the subject and ability it names.
+    fn authorization(invocation: Invocation<AnySignature>) -> UcanAuthorization {
+        let chain = InvocationChain::new(invocation, std::collections::HashMap::new());
+        let subject = chain.subject().clone();
+        let ability = format!("/{}", chain.command().0.join("/"));
+        UcanAuthorization::from(dialog_ucan::UcanInvocation {
+            chain: Box::new(chain),
+            subject,
+            ability,
+        })
     }
 
-    fn web_error(context: &str, value: wasm_bindgen::JsValue) -> anyhow::Error {
-        anyhow!("{context}: {value:?}")
-    }
-
-    async fn fetch_bytes(request: Request) -> Result<(u16, Vec<u8>)> {
-        // `fetch` off the global, so the same exchange runs from a page
-        // (ceremonies) and from the service worker (the queued-publish
-        // drain after activation).
-        let fetch = js_sys::Reflect::get(&js_sys::global(), &"fetch".into())
-            .map_err(|e| web_error("no fetch in this scope", e))?
-            .dyn_into::<js_sys::Function>()
-            .map_err(|_| anyhow!("fetch is not callable in this scope"))?;
-        let promise: js_sys::Promise = fetch
-            .call1(&js_sys::global(), &request)
-            .map_err(|e| web_error("the custody request failed to start", e))?
-            .dyn_into()
-            .map_err(|_| anyhow!("fetch did not answer a promise"))?;
-        let response: Response = JsFuture::from(promise)
+    /// Perform `capability` at `endpoint`, authorized by `invocation`.
+    async fn perform<Fx>(
+        capability: dialog_capability::Capability<Fx>,
+        invocation: Invocation<AnySignature>,
+        endpoint: &str,
+    ) -> Fx::Output
+    where
+        Fx: dialog_capability::Effect + 'static,
+        Fx::Of: dialog_capability::Constraint,
+        UcanSite: Provider<ForkInvocation<UcanSite, Fx>>,
+    {
+        UcanSite::default()
+            .execute(ForkInvocation::new(
+                capability,
+                UcanAddress::new(endpoint),
+                authorization(invocation),
+            ))
             .await
-            .map_err(|e| web_error("the custody request failed", e))?
-            .dyn_into()
-            .map_err(|_| anyhow!("fetch answered a non-response"))?;
-        let status = response.status();
-        let buffer = JsFuture::from(
-            response
-                .array_buffer()
-                .map_err(|e| web_error("no response body", e))?,
-        )
-        .await
-        .map_err(|e| web_error("failed to read the response body", e))?;
-        Ok((status, Uint8Array::new(&buffer).to_vec()))
     }
 
-    async fn redeem(endpoint: &str, container: Vec<u8>) -> Result<Permit> {
-        let init = RequestInit::new();
-        init.set_method("POST");
-        init.set_body(&Uint8Array::from(container.as_slice()).into());
-        let request = Request::new_with_str_and_init(endpoint, &init)
-            .map_err(|e| web_error("failed to build the permit request", e))?;
-        request
-            .headers()
-            .set("Content-Type", "application/cbor")
-            .map_err(|e| web_error("failed to set the container type", e))?;
-        let (status, body) = fetch_bytes(request).await?;
-        if status != 200 {
-            let detail = String::from_utf8_lossy(&body);
-            // The gate already knows the whole situation, so the client
-            // does not re-derive it from a second request: the refusal is
-            // read into its reason here and travels as that, which is what
-            // lets a caller say "open the link in your email" instead of
-            // "we couldn't log you in".
-            return Err(anyhow::Error::new(super::CustodyDenial::parse(&detail)))
-                .with_context(|| format!("the custody request was refused ({status})"));
-        }
-        serde_ipld_dagcbor::from_slice(&body).context("the permit did not decode")
+    /// The custody space's secret cell, as the key's own subject.
+    fn cell(custody: &Signer) -> dialog_capability::Capability<dialog_effects::memory::Cell> {
+        Subject::from(custody.did())
+            .memory()
+            .space(CUSTODY_SPACE)
+            .cell(CUSTODY_SECRET_CELL)
     }
 
-    async fn execute(permit: Permit, body: Option<&[u8]>) -> Result<(u16, Vec<u8>)> {
-        let init = RequestInit::new();
-        init.set_method(&permit.method);
-        if let Some(content) = body {
-            init.set_body(&Uint8Array::from(content).into());
-        }
-        let request = Request::new_with_str_and_init(&permit.url, &init)
-            .map_err(|e| web_error("failed to build the storage request", e))?;
-        for (name, value) in &permit.headers {
-            request
-                .headers()
-                .set(name, value)
-                .map_err(|e| web_error("failed to set a permit header", e))?;
-        }
-        fetch_bytes(request).await
-    }
-
-    /// Publish the sealed envelope into the custody space's cell:
-    /// redeem a permit at the service's `/ucan/`, then execute the
-    /// presigned PUT it names.
+    /// Publish `sealed` to the custody cell, signing the invocation
+    /// with the custody key. `when` carries the cell's current version
+    /// for an overwrite and stays `None` for a first write, which the
+    /// protocol makes create-only.
     pub async fn publish_secret(
-        custody: Ed25519Signer,
+        custody: Signer,
         sealed: &[u8],
         endpoint: &str,
         when: Option<&[u8]>,
     ) -> Result<()> {
-        let container = super::build_publish_invocation(
-            Signer::from(custody),
+        let invocation = super::sign_publish_invocation(
+            custody.clone(),
             sealed,
             when,
             dialog_ucan_core::time::timestamp::Timestamp::five_minutes_from_now(),
         )
         .await?;
-        submit_publish(&container, sealed, endpoint).await
+        let capability = cell(&custody).publish(sealed.to_vec(), when.map(Version::from));
+        refused(perform(capability, invocation, endpoint).await)
+            .map(|_version| ())
+            .context("the custody cell was not published")
     }
 
-    /// Publish `sealed` with an already-signed invocation: redeem the
-    /// permit and execute the presigned PUT. No signer involved — this
-    /// is what drains a ceremony's pre-signed publish after activation,
-    /// from the worker, with no page and no assertion.
+    /// Publish `sealed` with an already-signed invocation: no signer
+    /// involved, which is what drains a ceremony's pre-signed publish
+    /// after activation, from the worker, with no page and no
+    /// assertion.
     pub async fn submit_publish(invocation: &[u8], sealed: &[u8], endpoint: &str) -> Result<()> {
-        let permit = redeem(endpoint, invocation.to_vec()).await?;
-        let (status, body) = execute(permit, Some(sealed)).await?;
-        if !(200..300).contains(&status) {
-            let detail = String::from_utf8_lossy(&body);
-            anyhow::bail!("storage refused the custody cell ({status}): {detail}");
-        }
-        Ok(())
+        let chain = InvocationChain::try_from(invocation)
+            .context("the queued custody invocation did not decode")?;
+        let when = chain
+            .invocation
+            .arguments()
+            .get("when")
+            .and_then(|value| match value {
+                dialog_ucan_core::promise::Promised::Bytes(bytes) => {
+                    Some(Version::from(bytes.as_slice()))
+                }
+                _ => None,
+            });
+        let capability = Subject::from(chain.subject().clone())
+            .memory()
+            .space(CUSTODY_SPACE)
+            .cell(CUSTODY_SECRET_CELL)
+            .publish(sealed.to_vec(), when);
+        refused(perform(capability, chain.invocation.clone(), endpoint).await)
+            .map(|_version| ())
+            .context("the custody cell was not published")
     }
 
     /// Resolve the custody space's cell: `Ok(None)` when no wrapping
     /// was ever published there.
     pub async fn resolve_secret(custody: Signer, endpoint: &str) -> Result<Option<Vec<u8>>> {
-        let container = super::build_resolve_invocation(custody).await?;
-        let permit = redeem(endpoint, container).await?;
-        let (status, body) = execute(permit, None).await?;
-        match status {
-            200..=299 => Ok(Some(body)),
-            404 => Ok(None),
-            status => {
-                let detail = String::from_utf8_lossy(&body);
-                anyhow::bail!("storage refused the custody read ({status}): {detail}");
+        let invocation = super::sign_resolve_invocation(custody.clone()).await?;
+        let capability = cell(&custody).resolve();
+        let resolved = refused(perform(capability, invocation, endpoint).await)
+            .context("the custody cell was not read")?;
+        Ok(resolved.map(|edition| edition.content))
+    }
+
+    /// The refusal a memory error carries, read into the reason it
+    /// names. The access gate answers a declined invocation as itself,
+    /// so what a caller branches on is the decision, not the prose the
+    /// service wrapped it in.
+    fn refused<T>(outcome: Result<T, MemoryError>) -> Result<T> {
+        outcome.map_err(|error| match error {
+            MemoryError::Authorization(reason) => {
+                anyhow::Error::new(super::CustodyDenial::of(&reason))
             }
-        }
+            other => anyhow::Error::new(other),
+        })
     }
 }
 
+pub use exchange::{publish_secret, resolve_secret, submit_publish};
+
 /// Why the access service refused a custody request.
 ///
-/// The gate's answer is structured -- `{"kind":"Declined","recourse":…,
-/// "reason":…}` -- and this is that answer as a type, so every caller
-/// above decides on a variant instead of matching the service's prose.
+/// The gate answers a declined invocation as a typed decision, and this
+/// is that decision as the recourse a caller acts on, so every caller
+/// above branches on a variant rather than on the service's prose.
 /// Matching sentences made the wording load-bearing: a reworded refusal
 /// silently downgraded "open the link in your email" to "check your
 /// connection", with nothing failing to say so.
@@ -376,38 +367,29 @@ pub enum CustodyDenial {
 }
 
 impl CustodyDenial {
-    /// Read a refusal body into the reason it carries.
+    /// The denial an access decision names.
     ///
-    /// Parsed, not matched: `recourse` says whether waiting helps and is
-    /// the only field a client may depend on, while `reason` is prose
-    /// this classifies once, here, rather than in every caller. A body
-    /// that does not parse is [`CustodyDenial::Other`] holding it whole,
-    /// so nothing is lost when the shape changes.
-    pub fn parse(body: &str) -> Self {
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
-            return Self::Other(body.to_owned());
-        };
-        let reason = value
-            .get("reason")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or(body);
-        let retryable = value
-            .get("recourse")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|recourse| recourse == "Retry");
-        // Both halves matter. `Retry` alone also covers a suspension that
-        // lifts at a deadline, which no email confirms; the reason alone
-        // would match a permanent refusal that merely mentions activation.
-        if retryable && reason.contains("awaits email activation") {
-            return Self::AwaitingActivation;
+    /// The gate answers a declined invocation as a typed
+    /// [`AuthorizeError`], so the classification reads the decision
+    /// rather than the sentence: `recourse` says whether waiting helps,
+    /// and the reason distinguishes the two refusals that do not clear
+    /// on their own. Everything else is kept whole.
+    pub fn of(reason: &dialog_capability::access::AuthorizeError) -> Self {
+        use dialog_capability::access::{AuthorizeError, Recourse};
+
+        match reason {
+            AuthorizeError::Declined {
+                recourse: Recourse::Retry,
+                reason,
+            } if reason.contains("awaits email activation") => Self::AwaitingActivation,
+            AuthorizeError::Declined { reason, .. } if reason.contains("is suspended") => {
+                Self::Suspended(reason.clone())
+            }
+            AuthorizeError::Declined { reason, .. } if reason.contains("is not provisioned") => {
+                Self::NotProvisioned(reason.clone())
+            }
+            other => Self::Other(other.to_string()),
         }
-        if reason.contains("is suspended") {
-            return Self::Suspended(reason.to_owned());
-        }
-        if reason.contains("is not provisioned") {
-            return Self::NotProvisioned(reason.to_owned());
-        }
-        Self::Other(reason.to_owned())
     }
 
     /// The stable tag this refusal crosses a JS boundary as.
@@ -448,71 +430,75 @@ pub fn denial_of(error: &anyhow::Error) -> Option<&CustodyDenial> {
     error.chain().find_map(|cause| cause.downcast_ref())
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub use web::{publish_secret, resolve_secret, submit_publish};
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dialog_capability::access::{AuthorizeError, Recourse};
 
     /// The refusal a second device meets while the email is unconfirmed
     /// reads as the step that clears it.
     #[dialog_common::test]
     fn it_reads_a_refusal_that_confirming_the_email_would_clear() {
         assert_eq!(
-            CustodyDenial::parse(
-                r#"{"kind":"Declined","recourse":"Retry","reason":"the provider of did:key:zCustody awaits email activation"}"#
-            ),
+            CustodyDenial::of(&AuthorizeError::Declined {
+                recourse: Recourse::Retry,
+                reason: "the provider of did:key:zCustody awaits email activation".to_owned(),
+            }),
             CustodyDenial::AwaitingActivation
         );
     }
 
-    /// Refusals that waiting does NOT clear read as themselves. Reporting
-    /// one as "check your email" would send someone to a link that fixes
-    /// nothing.
     #[dialog_common::test]
     fn it_tells_the_other_refusals_apart() {
         assert_eq!(
-            CustodyDenial::parse(
-                r#"{"kind":"Declined","recourse":"None","reason":"did:key:zCustody is not provisioned"}"#
-            ),
+            CustodyDenial::of(&AuthorizeError::Declined {
+                recourse: Recourse::None,
+                reason: "did:key:zCustody is not provisioned".to_owned(),
+            }),
             CustodyDenial::NotProvisioned("did:key:zCustody is not provisioned".to_owned())
         );
         assert_eq!(
-            CustodyDenial::parse(
-                r#"{"kind":"Declined","recourse":"Retry","reason":"the subscription for did:key:zCustody is suspended: unpaid"}"#
-            ),
+            CustodyDenial::of(&AuthorizeError::Declined {
+                recourse: Recourse::Retry,
+                reason: "the subscription for did:key:zCustody is suspended: unpaid".to_owned(),
+            }),
             CustodyDenial::Suspended(
                 "the subscription for did:key:zCustody is suspended: unpaid".to_owned()
             )
         );
     }
 
-    /// A body that is not the gate's answer at all is kept whole rather
-    /// than guessed at: an upstream failure is not an unconfirmed email.
+    /// A refusal that is not a decline is kept whole: an expired proof
+    /// and a forged one are neither waiting nor suspension, and saying
+    /// so is more use than calling them "denied".
     #[dialog_common::test]
-    fn it_keeps_an_unparseable_refusal_whole() {
+    fn it_keeps_a_refusal_that_is_not_a_decline_whole() {
+        let expired = AuthorizeError::Expired {
+            expiration: 42,
+            at: 43,
+        };
         assert_eq!(
-            CustodyDenial::parse("upstream is down"),
-            CustodyDenial::Other("upstream is down".to_owned())
+            CustodyDenial::of(&expired),
+            CustodyDenial::Other(expired.to_string())
         );
     }
 
-    /// A suspension is retryable when it lifts at a deadline, so
-    /// `recourse` alone cannot mean "confirm your email". Both halves are
-    /// required, which is what keeps a timed suspension from telling
-    /// someone to open a link that will not help.
+    /// Waiting is not the same as an unconfirmed email: a suspension
+    /// that lifts at a deadline is also retryable, and reading it as an
+    /// activation would send the customer to their inbox for nothing.
     #[dialog_common::test]
     fn it_does_not_read_every_retryable_refusal_as_an_unconfirmed_email() {
-        assert_ne!(
-            CustodyDenial::parse(
-                r#"{"kind":"Declined","recourse":"Retry","reason":"the subscription for did:key:zCustody is suspended: unpaid"}"#
-            ),
-            CustodyDenial::AwaitingActivation
+        assert_eq!(
+            CustodyDenial::of(&AuthorizeError::Declined {
+                recourse: Recourse::Retry,
+                reason: "the subscription for did:key:zCustody is suspended: unpaid".to_owned(),
+            }),
+            CustodyDenial::Suspended(
+                "the subscription for did:key:zCustody is suspended: unpaid".to_owned()
+            )
         );
     }
 
-    /// The variant survives the JS boundary, which carries no Rust types.
     #[dialog_common::test]
     fn it_carries_the_reason_across_a_string_boundary() {
         for denial in [
@@ -544,9 +530,10 @@ mod tests {
     #[dialog_common::test]
     fn it_survives_the_whole_trip_to_the_page() {
         // As raised, several frames down.
-        let raised = anyhow::Error::new(CustodyDenial::parse(
-            r#"{"kind":"Declined","recourse":"Retry","reason":"the provider of did:key:zC awaits email activation"}"#,
-        ))
+        let raised = anyhow::Error::new(CustodyDenial::of(&AuthorizeError::Declined {
+            recourse: Recourse::Retry,
+            reason: "the provider of did:key:zC awaits email activation".to_owned(),
+        }))
         .context("the custody request was refused (403)")
         .context("the custody cell did not open");
 
