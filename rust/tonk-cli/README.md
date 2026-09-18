@@ -22,8 +22,8 @@ tonk space use garden
 # Every local replica, with the owner each space names.
 tonk space
 
-# Connect a browser space, for a person or an agent.
-tonk connect 'INVITE_LINK'
+# Join a browser space, for a person or an agent.
+tonk join 'INVITE_LINK'
 
 # Sharing never changes ownership: the invitee joins as a member.
 tonk invite
@@ -76,7 +76,7 @@ tonk invite                    # audience-open: anyone holding it can claim
 tonk invite --remote prod      # mint against a named remote
 tonk invite --recipient-root did:key:z6Mk... # seed-free targeted invite
 tonk invite --no-remote        # embed none; the claimer wires an upstream by hand
-tonk connect 'AGENT_LINK'       # one-way agent invitation; no browser flow
+tonk join 'AGENT_LINK'          # one-way agent invitation; no browser flow
 ```
 
 `view add` authors `detail` by default; `--kind` also accepts `directory`,
@@ -185,7 +185,7 @@ carry a separate artifact relay, supplied by hand with `tonk remote add
 audience-open invite URL (anyone holding it can claim by redelegating from the
 embedded ephemeral key). These older sharing links are not CLI access
 credentials: obtain a fresh scoped space
-invitation for `tonk connect`.
+invitation for `tonk join`.
 
 A bare `tonk invite` resolves the repo's remote, builds the link on that
 remote's origin, and embeds it so the claimer auto-configures the same access
@@ -203,9 +203,9 @@ credentials, and the UCAN-S3 remote through the `dialog-*` crates.
 ### Import a scoped agent invitation
 
 This checkout accepts version-one scoped agent links with
-`tonk connect 'AGENT_LINK' [--name NAME]`. It imports the invitation's identity
+`tonk join 'AGENT_LINK' [--name NAME]`. It imports the invitation's identity
 and space grants without CLI login or browser approval. Resume with
-`tonk --space NAME connect`; `TONK_SPACE` does not select a resume target.
+`tonk --space NAME join`; `TONK_SPACE` does not select a resume target.
 The command reports `Agent connection confirmed` only after pulling the space,
 publishing its grant-set acknowledgement, and finishing the directory binding.
 The link is reusable: another holder can use the same grants. Confirmation is
@@ -214,7 +214,7 @@ completed setup, not exclusive agent presence or grant activation.
 Imported identities stay separate from existing CLI accounts and replicas.
 Credentials are retained locally; expiry or revocation blocks further authorized
 remote work and keeps downloaded data available offline. `--via`, `--no-open`
-and `--switch-account` are not accepted by `connect`. There is no `join`
+and `--switch-account` are not accepted by `join`. There is no `connect`
 command or legacy browser-approval fallback. Older prompts must be regenerated
 from an updated browser deployment with scoped agent issuance enabled. Browser
 issuance remains subject to the published CLI release gates.
@@ -230,12 +230,12 @@ secret-bearing fragment to discovery.
 
 ### Older invitation links and interrupted handoffs
 
-`join`, including `join --agent`, has been removed. `connect` rejects older
-sharing links and account-approval links before importing credentials or opening
-a browser. People and agents use the same scoped invitation copied from Tonk.
+The old `join --agent` flow has been removed. `join` rejects older sharing links
+and account-approval links before importing credentials or opening a browser.
+People and agents use the same scoped invitation copied from Tonk.
 The link carries its own identity and grants; the agent never signs into an account.
 
-`tonk --space NAME connect` resumes only scoped connection imports. It cannot
+`tonk --space NAME join` resumes only scoped connection imports. It cannot
 resume an old account-bound handoff. Existing credentials, replicas, aliases and
 unsynced edits are retained; rejection never converts, rebinds or deletes them.
 Import a new scoped invitation to access a browser space independently of any

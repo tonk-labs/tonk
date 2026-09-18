@@ -49,7 +49,7 @@ async fn connection_command_rejects_account_flags_and_implicit_resume_without_mu
         vec!["--switch-account", "did:key:unrelated"],
     ] {
         let mut command = cli(home.path(), home.path());
-        command.args(["connect", secret]).args(flags);
+        command.args(["join", secret]).args(flags);
         let output = run(command).await?;
         assert!(!output.status.success());
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -58,10 +58,10 @@ async fn connection_command_rejects_account_flags_and_implicit_resume_without_mu
         assert!(!home.path().join("state").exists());
     }
     let mut command = cli(home.path(), home.path());
-    command.arg("connect").env("TONK_SPACE", "ambient");
+    command.arg("join").env("TONK_SPACE", "ambient");
     let output = run(command).await?;
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("--space NAME connect"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--space NAME join"));
     assert!(!home.path().join("state").exists());
     Ok(())
 }
@@ -109,9 +109,10 @@ async fn removed_workflows_preserve_existing_local_state() -> Result<()> {
                 "--name",
                 "new",
             ],
-            "unrecognized subcommand",
+            "unsupported_agent_invitation",
         ),
-        (vec!["join", "--agent"], "unrecognized subcommand"),
+        (vec!["join", "--agent"], "unexpected argument"),
+        (vec!["connect"], "unrecognized subcommand"),
         (vec!["link"], "unrecognized subcommand"),
         (vec!["account", "login"], "unrecognized subcommand"),
         (vec!["account", "logout"], "unrecognized subcommand"),
@@ -121,18 +122,18 @@ async fn removed_workflows_preserve_existing_local_state() -> Result<()> {
         (vec!["space", "link", "retained"], "unrecognized subcommand"),
         (vec!["migrate", "account"], "unrecognized subcommand"),
         (
-            vec!["connect", "https://example.test/join#never-print-secret"],
+            vec!["join", "https://example.test/join#never-print-secret"],
             "unsupported_agent_invitation",
         ),
         (
             vec![
-                "connect",
+                "join",
                 "https://example.test/join?access=old-account-proof#never-print-secret",
             ],
             "unsupported_agent_invitation",
         ),
         (
-            vec!["--space", "retained", "connect"],
+            vec!["--space", "retained", "join"],
             "unsupported_connection_resume",
         ),
     ] {
@@ -313,7 +314,7 @@ async fn connection_command_imports_bearer_restarts_and_keeps_account_state() ->
     store.set_account(Some(unrelated.clone()))?;
     let mut command = cli(&home, &project);
     command
-        .args(["connect", &link, "--name", "agent"])
+        .args(["join", &link, "--name", "agent"])
         .env("TONK_CONNECTION_ORIGIN", &server.endpoint)
         .env("TONK_SPACE", "must-not-select-this");
     let output = run(command).await?;
@@ -348,7 +349,7 @@ async fn connection_command_imports_bearer_restarts_and_keeps_account_state() ->
     // A new process uses retained credentials without the URL or discovery.
     let mut command = cli(&home, &project);
     command
-        .args(["--space", "agent", "connect"])
+        .args(["--space", "agent", "join"])
         .env("TONK_CONNECTION_ORIGIN", "invalid-unused-on-resume");
     let output = run(command).await?;
     assert!(
@@ -387,7 +388,7 @@ async fn connection_command_imports_bearer_restarts_and_keeps_account_state() ->
     let guard = store.write_guard()?;
     let mut command = cli(&home, &interrupted_directory);
     command
-        .args(["connect", &link, "--name", "interrupted"])
+        .args(["join", &link, "--name", "interrupted"])
         .env("TONK_CONNECTION_ORIGIN", &server.endpoint)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -423,7 +424,7 @@ async fn connection_command_imports_bearer_restarts_and_keeps_account_state() ->
     );
     let mut command = cli(&home, &home);
     command
-        .args(["--space", "interrupted", "connect"])
+        .args(["--space", "interrupted", "join"])
         .env("TONK_SPACE", "agent");
     let output = run(command).await?;
     assert!(
@@ -447,7 +448,7 @@ async fn connection_command_imports_bearer_restarts_and_keeps_account_state() ->
         std::fs::create_dir(&directory)?;
         let mut command = cli(&home, &directory);
         command
-            .args(["connect", &link, "--name", phase])
+            .args(["join", &link, "--name", phase])
             .env("TONK_CONNECTION_ORIGIN", &server.endpoint)
             .env("TONK_TEST_CONNECTION_CHECKPOINT", phase);
         let output = run(command).await?;
@@ -460,7 +461,7 @@ async fn connection_command_imports_bearer_restarts_and_keeps_account_state() ->
         assert!(!store.load()?.spaces.contains_key(phase));
         assert!(!String::from_utf8_lossy(&output.stdout).contains("Agent connection confirmed"));
         let mut command = cli(&home, &home);
-        command.args(["--space", phase, "connect"]);
+        command.args(["--space", phase, "join"]);
         let output = run(command).await?;
         assert!(
             output.status.success(),
@@ -565,7 +566,7 @@ async fn connection_command_imports_bearer_restarts_and_keeps_account_state() ->
         .unwrap()
         .tree;
     assert_ne!(before, edited, "offline eval must persist a real edit");
-    for operation in ["pull", "push", "connect"] {
+    for operation in ["pull", "push", "join"] {
         let mut command = cli(&home, &project);
         command
             .args(["--space", "agent", operation])

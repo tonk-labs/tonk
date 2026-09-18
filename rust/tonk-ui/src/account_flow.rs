@@ -140,7 +140,7 @@ mod tests {
         click(&driver, ".playground-agent .agent-prompt__copy").await?;
         let prompt = copied_text(&driver).await?;
         anyhow::ensure!(
-            prompt.contains("npx --yes @tonk/cli connect 'https://example.test/playground-invite'"),
+            prompt.contains("npx --yes @tonk/cli join 'https://example.test/playground-invite'"),
             "rendered playground prompt: {prompt}"
         );
         anyhow::ensure!(prompt.contains("--switch-account"));
@@ -6424,7 +6424,7 @@ mod tests {
             .context("copy recovered invitation")?;
         let profile = tempfile::tempdir()?;
         let output = tonk_command_in(&env, &profile)
-            .args(["connect", &invite, "--name", "recovered-space"])
+            .args(["join", &invite, "--name", "recovered-space"])
             .env("TONK_CONNECTION_ORIGIN", env.tonk_web.as_str())
             .output()
             .await?;
@@ -6463,10 +6463,10 @@ mod tests {
         watch_clipboard(&browser).await?;
         click(&browser, copy).await?;
         let prompt = copied_text(&browser).await?;
-        assert!(prompt.contains("npx --yes @tonk/cli connect '"));
+        assert!(prompt.contains("npx --yes @tonk/cli join '"));
         assert!(!prompt.contains("--switch-account"));
         let invite = prompt
-            .split("connect '")
+            .split("join '")
             .nth(1)
             .and_then(|part| part.split('\'').next())
             .context("scoped prompt has no connection URL")?
@@ -6503,7 +6503,7 @@ mod tests {
         let profile = tempfile::tempdir()?;
         let mut command = tonk_command_in(&env, &profile);
         command
-            .args(["connect", &invite, "--name", "ordinary-agent"])
+            .args(["join", &invite, "--name", "ordinary-agent"])
             .env("TONK_CONNECTION_ORIGIN", env.tonk_web.as_str())
             .kill_on_drop(true);
         let output = tokio::time::timeout(Duration::from_secs(120), command.output())
@@ -6768,7 +6768,7 @@ mod tests {
             }
         };
         let link = prompt
-            .split("connect '")
+            .split("join '")
             .nth(1)
             .and_then(|part| part.split('\'').next())
             .context("scoped prompt has no connection URL")?;
@@ -6817,7 +6817,7 @@ mod tests {
         let mut command = tonk_command_in(env, profile);
         command
             .current_dir(&directory)
-            .args(["connect", link, "--name", alias])
+            .args(["join", link, "--name", alias])
             .env("TONK_CONNECTION_ORIGIN", env.tonk_web.as_str())
             .kill_on_drop(true);
         let output = tokio::time::timeout(Duration::from_secs(120), command.output())

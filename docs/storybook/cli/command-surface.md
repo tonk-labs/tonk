@@ -1,8 +1,8 @@
 # The CLI command surface
 
-Current scope (Plan 005): `connect INVITE_LINK` is the sole CLI access workflow
-for browser spaces. Account commands, `space link`, `migrate account`, `join`, and
-top-level `link` are absent. The account entries below preserve the earlier
+Current scope (Plan 005): `join INVITE_LINK` is the sole CLI access workflow
+for browser spaces. Account commands, `space link`, `migrate account`, `connect`,
+and top-level `link` are absent. The account entries below preserve the earlier
 source audit and are retired; account administration now belongs in the UI.
 CLI space creation and transplant are local-only. Existing replicas and keys
 are retained. See `ACCT-C14` / `HANDOFF-21` for the supported invitation journey.

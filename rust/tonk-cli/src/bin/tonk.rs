@@ -41,7 +41,7 @@ instances. Reads and writes are notation, evaluated against the space
 
 start a space (see also: tonk help spaces)
    space      List spaces, create one, or bind this directory to one
-   connect    Import a one-way agent invitation without browser approval
+   join       Import a one-way agent invitation without browser approval
 
 examine state
    status     Where you are: space, branch, sync, account
@@ -327,7 +327,7 @@ enum Command {
     },
 
     /// Import a one-way agent invitation without browser approval or account login.
-    Connect {
+    Join {
         /// Agent invitation copied from Tonk. Omit with --space to resume its import.
         url: Option<String>,
         /// Override the local name (defaults to the pulled space's synced name).
@@ -532,7 +532,7 @@ enum SpaceCommand {
     /// Create (or adopt) a space, register it, and use it here
     ///
     /// New spaces are local-only. To work on a hosted browser space,
-    /// copy its scoped invitation from Tonk and run `tonk connect`.
+    /// copy its scoped invitation from Tonk and run `tonk join`.
     ///
     /// The site lands in the canonical store
     /// (`~/Library/Application Support/tonk/spaces/<name>` on macOS)
@@ -629,7 +629,7 @@ enum SpaceCommand {
         /// The data then belongs to no space: `tonk space` reports
         /// it, `tonk space new <name> --site <path>` adopts it back,
         /// and it keeps its canonical name reserved against `tonk
-        /// connect`.
+        /// join`.
         #[arg(long)]
         keep_data: bool,
         /// Delete without asking for confirmation.
@@ -1023,7 +1023,7 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
         Command::Pull => ("pull", None),
         Command::Status { .. } => ("status", None),
         Command::Invite { .. } => ("invite", None),
-        Command::Connect { .. } => ("connect", None),
+        Command::Join { .. } => ("join", None),
         Command::Remote { command, .. } => (
             "remote",
             Some(match command {
@@ -1215,7 +1215,7 @@ async fn main() {
             )
             .await
         }
-        Command::Connect { url, name } => connect_command(url, name, space.as_deref()).await,
+        Command::Join { url, name } => join_command(url, name, space.as_deref()).await,
         Command::Remote { command, json } => remote_op(command, json, space.as_deref()).await,
         Command::Blob { command, json } => blob_op(command, json, space.as_deref()).await,
         Command::Concept { command, json } => concept_op(command, json, space.as_deref()).await,
@@ -1277,7 +1277,7 @@ async fn identity(reset: bool) -> ExitCode {
             match identity::local_root(&profile).await {
                 Ok(Some(root)) => println!("account: {}", root.root_did),
                 Ok(None) => {
-                    println!("account: none (connect a space with an invitation from Tonk)")
+                    println!("account: none (join a space with an invitation from Tonk)")
                 }
                 Err(error) => return print_failure(error),
             }
@@ -1630,7 +1630,7 @@ fn print_active_space_resolution(
 /// Silent when there is none, so the common listing stays clean. When
 /// there is some it belongs on screen: it is otherwise entirely
 /// invisible, and it is the thing that will refuse a later `tonk
-/// connect` or `tonk account space pull` on the same name.
+/// join` or `tonk account space pull` on the same name.
 fn print_orphaned_sites(orphans: &[PathBuf]) {
     if orphans.is_empty() {
         return;
@@ -1649,7 +1649,7 @@ fn print_orphaned_sites(orphans: &[PathBuf]) {
 /// Deleting is the default because the alternative is worse: an
 /// unregistered site directory is invisible to every command that
 /// reads the registry, yet still holds the canonical name against
-/// `tonk connect --name` and `tonk account space pull --name`. Making
+/// `tonk join --name` and `tonk account space pull --name`. Making
 /// that the accident-shaped path instead of the deliberate one is
 /// what this command is for.
 async fn space_rm(
@@ -2581,7 +2581,7 @@ fn is_scoped_agent_link(value: &str) -> bool {
         .is_some_and(|fragment| fragment.starts_with("tonk-agent-"))
 }
 
-async fn connect_command(
+async fn join_command(
     url: Option<String>,
     name: Option<String>,
     selected: Option<&str>,
@@ -2590,18 +2590,18 @@ async fn connect_command(
         Some(url) if is_scoped_agent_link(&url) => {
             if selected.is_some() {
                 return print_error(
-                    "connect an invitation with --name, or omit the link and use --space to resume",
+                    "join with an invitation and --name, or omit the link and use --space to resume",
                 );
             }
             connect_scoped_agent(&url, name.as_deref()).await
         }
         Some(_) => print_error(
-            "unsupported_agent_invitation: copy a new space invitation from an updated Tonk browser. Older sharing and account-approval links cannot be imported by `tonk connect`",
+            "unsupported_agent_invitation: copy a new space invitation from an updated Tonk browser. Older sharing and account-approval links cannot be imported by `tonk join`",
         ),
         None => {
             let Some(selected) = selected else {
                 return print_error(
-                    "provide an agent link, or use `tonk --space NAME connect` to resume",
+                    "provide an agent link, or use `tonk --space NAME join` to resume",
                 );
             };
             let store = match tonk_cli::space::SpaceStore::open() {
@@ -2673,7 +2673,7 @@ async fn connect_command(
                 .await
             } else {
                 print_error(
-                    "unsupported_connection_resume: this space has no scoped connection to resume. Import a new space invitation with `tonk connect`. Existing local data is unchanged",
+                    "unsupported_connection_resume: this space has no scoped connection to resume. Import a new space invitation with `tonk join`. Existing local data is unchanged",
                 )
             }
         }
@@ -2805,7 +2805,7 @@ async fn finish_scoped_connection(
             );
             return rejected.exit_code();
         }
-        eprintln!("Resume with `tonk --space {name} connect`.");
+        eprintln!("Resume with `tonk --space {name} join`.");
         return print_failure(error);
     }
     if let Err(error) =
@@ -3671,57 +3671,48 @@ mod account_spaces_parser_tests {
     }
 
     #[test]
-    fn space_access_has_only_one_way_connect() {
+    fn space_access_has_only_one_way_join() {
         let root = Cli::command();
-        assert!(root.find_subcommand("join").is_none());
-        assert!(!CLI_INDEX.contains("   join "));
+        assert!(root.find_subcommand("connect").is_none());
+        assert!(!CLI_INDEX.contains("   connect "));
         for args in [
-            vec![
-                "tonk",
-                "join",
-                "https://example.test/#secret",
-                "--name",
-                "garden",
-            ],
             vec!["tonk", "join", "--agent"],
-            vec!["tonk", "connect", "--no-open"],
-            vec!["tonk", "connect", "--via", "https://example.test"],
-            vec!["tonk", "connect", "--switch-account", "did:key:account"],
+            vec!["tonk", "join", "--no-open"],
+            vec!["tonk", "join", "--via", "https://example.test"],
+            vec!["tonk", "join", "--switch-account", "did:key:account"],
         ] {
             assert!(Cli::try_parse_from(args).is_err());
         }
+        assert!(Cli::try_parse_from(["tonk", "connect"]).is_err());
         assert!(Cli::try_parse_from(["tonk", "link", "--no-open"]).is_err());
     }
 
     #[test]
-    fn connect_carries_the_exact_invite_and_local_name() {
+    fn join_carries_the_exact_invite_and_local_name() {
         let invite = "https://example.test/join?access=proof#secret";
-        let cli = Cli::try_parse_from(["tonk", "connect", invite, "--name", "my-agent"])
+        let cli = Cli::try_parse_from(["tonk", "join", invite, "--name", "my-agent"])
             .expect("copied handoff parses");
         assert!(
-            matches!(cli.command, Some(Command::Connect { url: Some(url), name })
+            matches!(cli.command, Some(Command::Join { url: Some(url), name })
             if url == invite && name.as_deref() == Some("my-agent"))
         );
     }
 
     #[test]
-    fn connect_defaults_to_the_synced_space_name() {
+    fn join_defaults_to_the_synced_space_name() {
         let cli =
-            Cli::try_parse_from(["tonk", "connect", "https://example.test/join#secret"]).unwrap();
+            Cli::try_parse_from(["tonk", "join", "https://example.test/join#secret"]).unwrap();
         assert!(matches!(
             cli.command,
-            Some(Command::Connect { name: None, .. })
+            Some(Command::Join { name: None, .. })
         ));
     }
 
     #[test]
-    fn interrupted_connect_accepts_a_global_space() {
-        let cli = Cli::try_parse_from(["tonk", "--space", "agent-space-2", "connect"]).unwrap();
+    fn interrupted_join_accepts_a_global_space() {
+        let cli = Cli::try_parse_from(["tonk", "--space", "agent-space-2", "join"]).unwrap();
         assert_eq!(cli.space.as_deref(), Some("agent-space-2"));
-        assert!(matches!(
-            cli.command,
-            Some(Command::Connect { url: None, .. })
-        ));
+        assert!(matches!(cli.command, Some(Command::Join { url: None, .. })));
     }
 
     use super::*;
@@ -3909,7 +3900,7 @@ mod account_spaces_parser_tests {
     #[test]
     fn guides_do_not_teach_retired_cli_spellings() {
         for retired in [
-            "tonk join",
+            "tonk connect",
             "tonk context",
             "tonk guide",
             "tonk schema",
@@ -3976,7 +3967,7 @@ mod account_spaces_parser_tests {
             &["tonk", "remote", "set-upstream", "prod"],
             &[
                 "tonk",
-                "connect",
+                "join",
                 "https://example/#tonk-agent-v1=invite",
                 "--name",
                 "shared",
@@ -4092,7 +4083,7 @@ mod account_spaces_parser_tests {
         assert!(
             Cli::try_parse_from([
                 "tonk",
-                "connect",
+                "join",
                 "https://example/#tonk-agent-v1=invite",
                 "--name",
                 "shared"

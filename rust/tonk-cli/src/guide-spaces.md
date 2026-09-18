@@ -15,10 +15,10 @@ use <name>` binds the current directory and its descendants. `tonk space
 unbind` removes an exact binding; run it from the bound directory or pass its
 absolute path.
 
-To access an existing browser space, run `tonk connect <invite-link>`. The
+To access an existing browser space, run `tonk join <invite-link>`. The
 link carries a reusable invitation key and scoped grants, so keep it private.
 Import works after the browser closes, without CLI account login. Resume an
-interrupted import with `tonk --space <name> connect`.
+interrupted import with `tonk --space <name> join`.
 
 The ACCESS column distinguishes local-only, invite-backed, terminal-linked and
 legacy bindings. Cached access details do not prove that remote access is still

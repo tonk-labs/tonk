@@ -623,7 +623,7 @@ fn it_keeps_machine_instructions_in_the_production_copy_prompt() {
             .nth(1)
             .and_then(|tail| tail.split("</wa-copy-button>").next())
             .expect("the agent prompt copy button");
-        let command = "npx --yes @tonk/cli connect '{link}'";
+        let command = "npx --yes @tonk/cli join '{link}'";
         assert_eq!(
             copied.matches(command).count(),
             1,
@@ -644,7 +644,7 @@ fn it_keeps_machine_instructions_in_the_production_copy_prompt() {
             "the clipboard prompt must define the success boundary",
         );
         assert!(
-            copied.contains("npx --yes @tonk/cli --space NAME connect"),
+            copied.contains("npx --yes @tonk/cli --space NAME join"),
             "the resume command must work without a globally installed CLI",
         );
         assert!(
@@ -1233,7 +1233,7 @@ fn it_offers_only_scoped_agent_prompts_without_account_approval() {
             .next()
             .unwrap();
         assert!(!unsupported.contains("wa-copy-button"));
-        assert!(unsupported.contains("tonk connect"));
+        assert!(unsupported.contains("tonk join"));
         assert!(!unsupported.contains("tonk link"));
         assert!(library.contains("on:new-agent-invite=tonk:new-agent-invite"));
         assert!(library.contains("event!: &on/new-agent-invite"));
@@ -1245,12 +1245,10 @@ fn it_offers_only_scoped_agent_prompts_without_account_approval() {
             .and_then(|tail| tail.split("</wa-copy-button>").next())
             .expect("separate scoped prompt, hidden until its envelope is selected");
         assert_eq!(
-            scoped
-                .matches("npx --yes @tonk/cli connect '{link}'")
-                .count(),
+            scoped.matches("npx --yes @tonk/cli join '{link}'").count(),
             1
         );
-        assert!(scoped.contains("npx --yes @tonk/cli --space NAME connect"));
+        assert!(scoped.contains("npx --yes @tonk/cli --space NAME join"));
         assert!(scoped.contains(
             "Only report connected after it prints &quot;Agent connection confirmed&quot;"
         ));
