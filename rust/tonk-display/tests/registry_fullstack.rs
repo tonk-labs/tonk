@@ -132,7 +132,7 @@ async fn settle_until(done: impl Fn() -> bool) {
 }
 
 const TALLY: &str = r#"element!: &tally-widget
-  name: "tally-widget"
+  description: "A running tally"
   method:
     connected: |
       (self) => { self.textContent = `count ${self.getAttribute('count') ?? 0}`; }
@@ -200,7 +200,7 @@ async fn it_picks_up_a_real_definition_that_arrives_later() {
     evaluate(
         &container,
         r#"element!: &late-widget
-  name: "late-widget"
+  description: "Defined after it was rendered"
   method:
     connected: |
       (self) => { self.textContent = 'arrived'; }
@@ -225,7 +225,7 @@ async fn it_swaps_a_real_definition_for_live_instances() {
     evaluate(
         &container,
         r#"element!: &swap-widget
-  name: "swap-widget"
+  description: "Re-authored while live"
   method:
     connected: |
       (self) => { self.textContent = 'v1'; }
@@ -244,12 +244,13 @@ async fn it_swaps_a_real_definition_for_live_instances() {
         .custom_elements()
         .get("swap-widget");
 
-    // Author `connected` alone: the other methods, and the entity, stay
-    // put — which is the whole reason the method dictionary is keyed.
+    // Re-author it. `connected` changed, so this derives a DIFFERENT
+    // element and the anchor repoints — the name hop moves and the
+    // method hop follows it, which is why the registry watches both.
     evaluate(
         &container,
         r#"element!: &swap-widget
-  name: "swap-widget"
+  description: "Re-authored while live"
   method:
     connected: |
       (self) => { self.textContent = 'v2'; }

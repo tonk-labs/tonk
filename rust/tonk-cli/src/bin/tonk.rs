@@ -998,17 +998,23 @@ impl From<ViewKindArg> for tonk_cli::authoring::ViewKind {
 enum ElementCommand {
     /// Define a custom element's methods
     ///
-    /// The tag is the definition's identity, and methods are stored
-    /// one fact per key, so re-running this against the same tag
-    /// supersedes only the methods it names and leaves the rest
-    /// standing.
+    /// The tag names the definition and can be repointed; the
+    /// definition itself is a value derived from its description and
+    /// its methods. Re-running this against a tag that already exists
+    /// reads its current methods, lays the ones named here over them,
+    /// and points the tag at the result — so naming one method edits
+    /// it without dropping the others.
     #[command(
-        after_help = "Lifecycle keys: connected, disconnected, adopted, attribute-changed.\nAny other key becomes a method on the element, camelCased.\n\nExamples:\n  tonk element add tally-widget --method-file connected=tally.js\n  tonk element add tally-widget --method 'connected=(self) => { self.textContent = \"hi\"; }'\n  tonk element add tally-widget --method 'bump=(self) => 1' --notation"
+        after_help = "Lifecycle keys: connected, disconnected, adopted, attribute-changed.\nAny other key becomes a method on the element, camelCased.\n\nExamples:\n  tonk element add tally-widget --description 'A running tally' --method-file connected=tally.js\n  tonk element add tally-widget --description 'A running tally' --method 'connected=(self) => { self.textContent = \"hi\"; }'\n  tonk element add tally-widget --description 'A running tally' --method 'bump=(self) => 1' --notation"
     )]
     Add {
         /// The custom element name to define (must contain a hyphen).
         #[arg(value_name = "TAG")]
         tag: String,
+        /// What the element is for, in a sentence. Required, the way
+        /// a concept's description is.
+        #[arg(long, value_name = "TEXT")]
+        description: String,
         /// Inline method source: `<name>=<js>`. Repeatable.
         #[arg(long, value_name = "NAME=JS")]
         method: Vec<String>,
@@ -4537,6 +4543,7 @@ async fn element_op(command: Option<ElementCommand>, json: bool, space: Option<&
     match command {
         Some(ElementCommand::Add {
             tag,
+            description,
             method,
             method_file,
             notation,
@@ -4564,7 +4571,15 @@ async fn element_op(command: Option<ElementCommand>, json: bool, space: Option<&
                     }
                 }
             }
-            match data_ops::element_add(&site, &tag, &methods, write.options(notation)).await {
+            match data_ops::element_add(
+                &site,
+                &tag,
+                &description,
+                &methods,
+                write.options(notation),
+            )
+            .await
+            {
                 Ok(text) => {
                     let mut stdout = std::io::stdout().lock();
                     if let Err(e) = stdout.write_all(text.as_bytes()) {

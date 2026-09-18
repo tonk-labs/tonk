@@ -178,27 +178,18 @@ tag in a rendered view — nothing is registered ahead of time, and
 nothing has to be mounted.
 
 ```text
-tonk element add tally-widget --method-file connected=tally.js
+tonk element add tally-widget --description 'A running tally' \
+  --method-file connected=tally.js
 tonk element                       # every element defined on the branch
 ```
 
 `method` is the same construct as a view's `show`: one fact per entry,
 cardinality one. **A view is a dictionary of templates keyed by facet;
-an element is a dictionary of functions keyed by method.** Re-authoring
-`connected` alone leaves `disconnected` standing, exactly as
-re-authoring one view facet leaves the rest of `show` alone.
-
-Quote the `name` — a bare symbol is read as a reference to something
-else on the branch. The `name` field is load-bearing, not decoration. A derived entity is a
-digest of the assertion's *scalar* fields, and a nested map contributes
-nothing — so `name` is what gives this element an entity of its own
-(without it, every element on a branch would digest to the same empty
-body and collapse onto one), while the nested methods are what keep
-that entity still as they are edited.
+an element is a dictionary of functions keyed by method.**
 
 ```yaml tonk=eval
 element!: &tally-widget
-  name: "tally-widget"
+  description: "A running tally, incremented by its own bump event"
   method:
     connected: |
       (self) => {
@@ -208,6 +199,38 @@ element!: &tally-widget
       (self) => self.dispatchEvent(
         new CustomEvent('bump', { bubbles: true, detail: { amount: 1 } }))
 ```
+
+The `&tally-widget` anchor is where the tag lives. It publishes
+`id:tally-widget` over whatever entity the assertion derives, and that
+name is the only mutable part: re-author the tag and the name moves to
+the new definition, so every instance on every open page follows. The
+body carries no copy of the tag — a second, immutable answer to the
+same question would only be able to disagree with the first.
+
+`description` is required, the way a concept's is: an element is read
+by people and by agents with only the branch to go on, and `<tally-widget>`
+does not say what it is for. Quote it, like any text field — a bare
+symbol is read as a reference to something else on the branch.
+
+Both fields reach the entity digest, so the entity IS this definition:
+change a method and you have a different element, and the anchor
+repoints. Editing is a separate road from deriving, and it still works
+fact by fact — name the entity and assert only the key you are
+changing:
+
+```yaml
+element!:
+  this: did:key:z6Mk…            # what &tally-widget names today
+  method:
+    connected: |
+      (self) => { … }
+```
+
+which supersedes that one fact and leaves the rest standing, exactly as
+re-authoring one view facet leaves the rest of `show` alone. `tonk
+element add` works in tags rather than entities, so it takes the other
+road: it reads the tag's current methods, lays the ones you named over
+them, and re-derives — naming one method still edits just that one.
 
 Each value is a JS arrow function taking the element as its first
 argument. Four keys are dispatched by the DOM lifecycle:
@@ -249,6 +272,20 @@ Any other key becomes a method on the element, camelCased —
 key; `el['my-method']()` is not callable JS but `el.myMethod()` is. A
 key that would shadow a member every element already has (`remove`,
 `click`, `id`, `text-content`) is refused at authoring time.
+
+That is also how one method calls another: through the element, as
+`self.total()`. The call resolves through the table at call time, not
+at definition time, so re-authoring `total` alone changes what an
+untouched `connected` computes — the same liveness the lifecycle hooks
+get, extended to the methods you name yourself.
+
+There is no `observedAttributes` to declare. `attribute-changed` is
+driven by a `MutationObserver` watching every attribute, not by
+`attributeChangedCallback`, whose list is read once when the tag is
+registered and could therefore never grow with an edited method. Your
+hook sees every attribute, including the ones already present when an
+instance upgrades (those are replayed with `before` as `null`), and a
+hook that writes an attribute does not re-enter itself.
 
 Nothing registers your element ahead of time. The runtime watches the
 document for custom elements nobody has defined (`:not(:defined)`, the

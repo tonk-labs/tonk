@@ -22,12 +22,14 @@
 //!    This is what fires when a tag is rendered before anything defines
 //!    it: the element sits inert, and the definition arriving later
 //!    registers it with nothing re-rendered.
-//! 2. that entity's `method` dictionary. Re-authoring a tag supersedes
-//!    method facts on the SAME entity (the element's identity derives
-//!    from its `name`, which does not change), so the name binding
-//!    stays put and only this hop moves. It is what carries both a
-//!    redefinition and a single added method through to instances
-//!    already on the page.
+//! 2. that entity's `method` dictionary. An edit can move either hop
+//!    and the registry cannot tell which in advance: notation that
+//!    names the entity supersedes method facts in place, so only this
+//!    hop changes, while `tonk element add` derives a new element and
+//!    repoints the name, so hop one changes and this one follows.
+//!    Watching both is what carries a redefinition, a single added
+//!    method, and a wholesale swap alike through to instances already
+//!    on the page.
 //!
 //! Each frame re-reads rather than merging the delta it was handed: a
 //! subscription is used as a change notification, and the truth comes

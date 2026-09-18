@@ -80,6 +80,30 @@ check('custom method is callable and live', await page.evaluate(() => {
   return first === 'v1' && el.doBump() === 'v2';
 }));
 
+// 4b. one method calls another through the element, and the callee
+// resolves through the live table -- so editing `total` alone changes
+// what an untouched `connected` computes.
+check('a method calls a sibling method through self', await page.evaluate(async () => {
+  defineTonkElement('sum-el', {
+    total: (self) => Number(self.getAttribute('n')) * 1,
+    connected: (self) => { self.textContent = String(self.total()); },
+  });
+  const el = document.createElement('sum-el');
+  el.setAttribute('n', '3');
+  document.body.append(el);
+  const first = el.textContent === '3';
+
+  // Re-author ONLY `total`. `connected` is byte-identical, yet the
+  // instance re-runs it (the table changed) and the call inside it
+  // reaches the new `total`.
+  defineTonkElement('sum-el', {
+    total: (self) => Number(self.getAttribute('n')) * 10,
+    connected: (self) => { self.textContent = String(self.total()); },
+  });
+  await new Promise(r => setTimeout(r, 0));
+  return first && el.textContent === '30' && el.total() === 30;
+}));
+
 // 5. attribute-changed via MutationObserver, incl. replay at upgrade
 check('attribute-changed replays initial then observes', await page.evaluate(async () => {
   globalThis.seen = [];

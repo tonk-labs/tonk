@@ -663,20 +663,25 @@ pub async fn view_add(
     Ok(out)
 }
 
-/// Author a custom element: an `element!: &<tag>` carrying `methods`.
+/// Author a custom element: an `element!: &<tag>` describing itself as
+/// `description` and carrying `methods`.
 ///
-/// Three properties fall out of the shape, none of them from a pin:
+/// The body derives the entity, `description` and methods alike, so
+/// the value this mints IS this exact element. Two consequences:
 ///
-/// - The `name` field is a scalar, so it reaches the entity digest and
-///   gives this tag an entity of its own. Without it every element on
-///   a branch would derive the same empty body and collapse onto one
-///   entity.
-/// - The methods are a nested map, which carries no content identity
-///   (`assertion.rs:797`), so the entity stays PUT as they are edited.
-/// - Each dictionary entry is its own fact at cardinality one, so this
-///   supersedes only the methods it names: authoring `connected` alone
-///   leaves `disconnected` standing, the way re-authoring one view
-///   facet leaves the rest of `show` alone.
+/// - Two tags with different methods derive different entities, and a
+///   tag re-authored with different methods derives a new one. The
+///   anchor repoints, and every live instance follows.
+/// - A body is the whole element, never a patch. So `methods` is
+///   MERGED over whatever the tag currently resolves to before the
+///   notation is built: authoring `connected` alone on an existing tag
+///   still carries `disconnected` forward rather than dropping it.
+///
+/// Authors writing notation by hand keep the finer-grained road —
+/// `element!: this: <entity>` with one `method:` entry supersedes just
+/// that fact, since naming the entity means nothing has to be derived.
+/// The CLI cannot take it: it works in tags, and a tag is a name, not
+/// an entity.
 ///
 /// The anchor publishes `id:<tag>`, which is how the browser finds the
 /// definition — by name, on first sight of the tag, never ahead of
@@ -684,23 +689,31 @@ pub async fn view_add(
 pub async fn element_add(
     site: &TonkSite,
     tag: &str,
+    description: &str,
     methods: &[(String, String)],
     write: WriteOptions,
 ) -> Result<String, DataOpError> {
-    let doc = build_element_decl(tag, methods)?;
+    let merged = carry_methods_forward(site, tag, methods).await?;
+    let doc = build_element_decl(tag, description, &merged)?;
     if write.notation {
         return Ok(doc);
     }
     let outcome =
         auto_sync::run_eval(site, Source::Inline(doc), write.eval(), write.sync()).await?;
     let named: Vec<&str> = methods.iter().map(|(key, _)| key.as_str()).collect();
+    let carried = merged.len() - named.len();
     let mut out = format!(
         "{}\n",
         write.summarize(format_args!(
-            "authored {n} method{s} on <{tag}>: {list}",
+            "authored {n} method{s} on <{tag}>: {list}{also}",
             n = named.len(),
             s = if named.len() == 1 { "" } else { "s" },
             list = named.join(", "),
+            also = if carried == 0 {
+                String::new()
+            } else {
+                format!(" (carrying {carried} forward)")
+            },
         ))
     );
     out.push_str(&outcome.stdout);
@@ -708,6 +721,40 @@ pub async fn element_add(
         "\nuse it in any view as <{tag}>; the browser resolves it by name on first render\n"
     ));
     Ok(out)
+}
+
+/// `authored` followed by whichever of `tag`'s current methods it
+/// does not replace.
+///
+/// Needed because the entity is derived from the whole body: rebuilding
+/// an element from only the methods being edited would mint a value
+/// that HAS only those methods, and repointing the tag at it would
+/// silently drop the rest. Reading first makes the CLI's edit additive
+/// again.
+///
+/// Authored methods come first, in the order they were typed, so a
+/// `--notation` dry run still reads the way it was asked for and the
+/// carried ones trail behind it.
+///
+/// Resolution goes through the name, so an entity the tag used to point
+/// at contributes nothing — carrying forward means carrying forward
+/// what `<tag>` means now. A tag nobody has defined reads as no
+/// methods, which is how a first authoring works.
+async fn carry_methods_forward(
+    site: &TonkSite,
+    tag: &str,
+    authored: &[(String, String)],
+) -> Result<Vec<(String, String)>, DataOpError> {
+    let current = crate::elements::methods_of(site, tag)
+        .await
+        .map_err(|e| DataOpError::Read(format!("could not read <{tag}>'s methods: {e}")))?;
+    let mut merged: Vec<(String, String)> = authored.to_vec();
+    for (key, source) in current {
+        if !merged.iter().any(|(named, _)| *named == key) {
+            merged.push((key, source));
+        }
+    }
+    Ok(merged)
 }
 
 #[cfg(test)]

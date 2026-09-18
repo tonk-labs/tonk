@@ -371,12 +371,13 @@ mod when_adding_a_view {
     }
 }
 
-/// The reason `element` exists beside the deprecated `component`:
-/// identity that never moves. A `component!:` with no `this:` is keyed
-/// by its body digest, so editing it writes a SECOND row and the realm
-/// loads both. `element` pins `element:<tag>`, so facts accumulate on
-/// one entity and a later assertion supersedes only the methods it
-/// names.
+/// The reason `element` exists beside the deprecated `component`: a
+/// tag you can repoint. A `component!:` with no `this:` is keyed by
+/// its body digest and nothing names it, so editing it writes a SECOND
+/// row and the realm loads both. An `element!: &<tag>` is keyed by its
+/// body too, but the anchor publishes `id:<tag>` over the result — so
+/// an edit mints a new value AND moves the tag onto it, and everything
+/// resolving by name follows.
 mod when_defining_an_element {
     use super::*;
 
@@ -393,6 +394,7 @@ mod when_defining_an_element {
         tonk_cli::data_ops::element_add(
             &test.site,
             "tally-widget",
+            "A running tally",
             &methods(&[
                 ("connected", "(self) => { self.textContent = 'v1'; }"),
                 ("disconnected", "(self) => {}"),
@@ -408,17 +410,23 @@ mod when_defining_an_element {
         Ok(())
     }
 
-    /// The property the `method:` dictionary exists for: authoring one
-    /// method leaves the others standing. It works without a pin
-    /// because the tag reaches the digest as a scalar (so the entity
-    /// is this element's own) while the methods do not (so it stays
-    /// put as they change).
+    /// Authoring one method through the CLI leaves the others
+    /// standing — and, because the entity is derived from the whole
+    /// body, does so by minting a NEW element and repointing the tag,
+    /// not by patching the old one.
+    ///
+    /// Both halves are load-bearing and each fails differently. If the
+    /// entity did not move, methods would not be in the digest and two
+    /// elements could collide. If the methods were not carried
+    /// forward, the new value would have only `connected` and the tag
+    /// would resolve to a crippled element.
     #[dialog_common::test]
-    async fn it_supersedes_only_the_methods_a_later_assertion_names() -> Result<()> {
+    async fn it_carries_the_other_methods_onto_the_new_definition() -> Result<()> {
         let test = TestSite::new().await?;
         tonk_cli::data_ops::element_add(
             &test.site,
             "tally-widget",
+            "A running tally",
             &methods(&[
                 ("connected", "(self) => { self.textContent = 'v1'; }"),
                 ("disconnected", "(self) => { self.dataset.gone = '1'; }"),
@@ -431,12 +439,17 @@ mod when_defining_an_element {
         tonk_cli::data_ops::element_add(
             &test.site,
             "tally-widget",
+            "A running tally",
             &methods(&[("connected", "(self) => { self.textContent = 'v2'; }")]),
             Default::default(),
         )
         .await?;
         let after = tonk_cli::views::entity_for_name(&test.site, "tally-widget").await?;
-        assert_eq!(before, after, "editing a method should not move the entity");
+        assert_ne!(
+            before, after,
+            "a different set of methods is a different element, so the \
+             tag should have been repointed at a new entity",
+        );
 
         let now = tonk_cli::elements::methods_of(&test.site, "tally-widget").await?;
         let keys: Vec<&str> = now.iter().map(|(k, _)| k.as_str()).collect();
@@ -449,17 +462,98 @@ mod when_defining_an_element {
         Ok(())
     }
 
-    /// Every element needs its own entity. The methods are a nested
-    /// map and carry no content identity, so without the scalar `name`
-    /// every element on a branch digests to the same empty body and
-    /// the last one authored silently replaces all the others.
+    /// The finer-grained road the CLI cannot take: name the entity and
+    /// the body derives nothing, so a single `method:` entry supersedes
+    /// exactly that one fact and the entity stays put — the way
+    /// re-authoring one view facet leaves the rest of `show` alone.
+    ///
+    /// This is what an author editing notation by hand gets, and it is
+    /// why putting the methods in the digest costs nothing: derivation
+    /// and editing are separate roads, and only the first one hashes.
     #[dialog_common::test]
-    async fn it_gives_each_tag_an_entity_of_its_own() -> Result<()> {
+    async fn it_supersedes_one_method_in_place_when_the_entity_is_named() -> Result<()> {
+        let test = TestSite::new().await?;
+        tonk_cli::data_ops::element_add(
+            &test.site,
+            "tally-widget",
+            "A running tally",
+            &methods(&[
+                ("connected", "(self) => { self.textContent = 'v1'; }"),
+                ("bump", "(self) => 1"),
+            ]),
+            Default::default(),
+        )
+        .await?;
+        let entity = tonk_cli::views::entity_for_name(&test.site, "tally-widget")
+            .await?
+            .expect("the tag should resolve");
+
+        test.eval_inline(&format!(
+            "element!:\n  this: {entity}\n  method:\n    connected: |\n      (self) => {{ self.textContent = 'v2'; }}\n"
+        ))
+        .await?;
+
+        let after = tonk_cli::views::entity_for_name(&test.site, "tally-widget").await?;
+        assert_eq!(
+            after.as_ref(),
+            Some(&entity),
+            "naming the entity should edit it in place, not repoint the tag",
+        );
+        let now = tonk_cli::elements::methods_of(&test.site, "tally-widget").await?;
+        let keys: Vec<&str> = now.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, vec!["bump", "connected"], "{now:?}");
+        assert!(
+            now.iter()
+                .any(|(k, v)| k == "connected" && v.contains("v2")),
+            "{now:?}"
+        );
+        assert!(!now.iter().any(|(_, v)| v.contains("v1")), "{now:?}");
+        Ok(())
+    }
+
+    /// Two elements that say different things are different entities,
+    /// and the methods are what say it. This is the regression the
+    /// digest change exists for: while nested fields were dropped from
+    /// the body digest, every element whose body was only `method:`
+    /// derived the same empty body, and the last tag authored silently
+    /// took over the others.
+    #[dialog_common::test]
+    async fn it_gives_each_definition_an_entity_of_its_own() -> Result<()> {
         let test = TestSite::new().await?;
         for tag in ["a-one", "b-two"] {
             tonk_cli::data_ops::element_add(
                 &test.site,
                 tag,
+                "The same description on purpose",
+                &methods(&[("connected", &format!("(self) => '{tag}'"))]),
+                Default::default(),
+            )
+            .await?;
+        }
+        let a = tonk_cli::views::entity_for_name(&test.site, "a-one").await?;
+        let b = tonk_cli::views::entity_for_name(&test.site, "b-two").await?;
+        assert_ne!(
+            a, b,
+            "the descriptions match, so only the METHODS distinguish \
+             these two — if they collapsed, the digest is dropping them",
+        );
+        assert_eq!(tonk_cli::elements::list(&test.site).await?.len(), 2);
+        Ok(())
+    }
+
+    /// And the converse, which is the same rule read forwards: two
+    /// tags whose definitions are identical name one value. Nothing is
+    /// lost — each tag resolves to the same methods — and it is what
+    /// "the entity is derived from the body" means. Recorded here so
+    /// the aliasing is a decision rather than a surprise.
+    #[dialog_common::test]
+    async fn it_lets_two_tags_share_one_identical_definition() -> Result<()> {
+        let test = TestSite::new().await?;
+        for tag in ["a-one", "b-two"] {
+            tonk_cli::data_ops::element_add(
+                &test.site,
+                tag,
+                "Identical in every respect",
                 &methods(&[("connected", "(self) => {}")]),
                 Default::default(),
             )
@@ -467,8 +561,13 @@ mod when_defining_an_element {
         }
         let a = tonk_cli::views::entity_for_name(&test.site, "a-one").await?;
         let b = tonk_cli::views::entity_for_name(&test.site, "b-two").await?;
-        assert_ne!(a, b, "two tags collapsed onto one entity");
-        assert_eq!(tonk_cli::elements::list(&test.site).await?.len(), 2);
+        assert_eq!(a, b, "identical definitions are one value");
+        assert!(a.is_some());
+        for tag in ["a-one", "b-two"] {
+            let now = tonk_cli::elements::methods_of(&test.site, tag).await?;
+            let keys: Vec<&str> = now.iter().map(|(k, _)| k.as_str()).collect();
+            assert_eq!(keys, vec!["connected"], "<{tag}>: {now:?}");
+        }
         Ok(())
     }
 
@@ -485,6 +584,7 @@ mod when_defining_an_element {
         tonk_cli::data_ops::element_add(
             &test.site,
             "new-widget",
+            "The new shape",
             &methods(&[("connected", "(self) => { self.textContent = 'new'; }")]),
             Default::default(),
         )
@@ -505,13 +605,21 @@ mod when_defining_an_element {
 
         // Each concept's own query sees ONLY its own rows: the
         // component's module is not visible as an element, and the
-        // element's methods are not visible as a component.
+        // element's methods are not visible as a component. The
+        // element is recognised by its description and its method
+        // source, not by its tag — the tag lives in the anchor, so a
+        // concept query, which reads fields, never sees it.
         let elements = tonk_cli::data_ops::query(&test.site, "element", false).await?;
-        assert!(elements.contains("new-widget"), "{elements}");
+        assert!(elements.contains("The new shape"), "{elements}");
+        assert_eq!(
+            elements.matches("this:").count(),
+            1,
+            "only the element row should answer: {elements}"
+        );
         assert!(!elements.contains("old-widget"), "{elements}");
         let components = tonk_cli::data_ops::query(&test.site, "component", false).await?;
         assert!(components.contains("old-widget"), "{components}");
-        assert!(!components.contains("new-widget"), "{components}");
+        assert!(!components.contains("The new shape"), "{components}");
         Ok(())
     }
 
@@ -531,6 +639,7 @@ mod when_defining_an_element {
         tonk_cli::data_ops::element_add(
             &test.site,
             "tally-widget",
+            "A running tally",
             &methods(&[
                 ("connected", "(self) => { self.textContent = 'hi'; }"),
                 ("attribute-changed", "(self, name, before, after) => {}"),
@@ -593,6 +702,7 @@ mod when_defining_an_element {
             tonk_cli::data_ops::element_add(
                 &test.site,
                 tag,
+                &format!("The <{tag}> element"),
                 &methods(&[("connected", &format!("(self) => '{tag}'"))]),
                 Default::default(),
             )
@@ -665,6 +775,7 @@ mod when_defining_an_element {
         let err = tonk_cli::data_ops::element_add(
             &test.site,
             "widget",
+            "No hyphen, no element",
             &methods(&[("connected", "(self) => {}")]),
             Default::default(),
         )
@@ -680,6 +791,7 @@ mod when_defining_an_element {
         let err = tonk_cli::data_ops::element_add(
             &test.site,
             "tally-widget",
+            "A running tally",
             &methods(&[("remove", "(self) => {}")]),
             Default::default(),
         )

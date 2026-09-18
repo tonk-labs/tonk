@@ -124,6 +124,9 @@ pub enum AuthoringError {
         "an element needs at least one method; pass --method <name>=<js> or --method-file <name>=<path>"
     )]
     NoMethods,
+    /// An element was authored without a description.
+    #[error("an element needs a description; pass --description <text>")]
+    NoDescription,
 }
 
 /// Canonical `as:` type spellings the analyzer accepts, matching
@@ -538,36 +541,43 @@ pub fn validate_method_key(key: &str) -> Result<(), AuthoringError> {
 }
 
 /// Build the `element!:` declaration defining the custom element `tag`
-/// from `methods`, a list of `(key, source)` pairs.
+/// as `description`, from `methods`, a list of `(key, source)` pairs.
 ///
 /// The declaration is ANCHORED, not pinned: the assertion mints a
-/// content-addressed entity for this set of methods and publishes
-/// `id:<tag>` pointing at it. That indirection is the point. An
-/// element is an immutable value and the tag is a mutable pointer to
-/// one, so re-authoring the tag publishes a NEW value and repoints the
-/// name — and everything that resolves the tag by name follows on the
-/// spot, which is what makes a definition swappable at all. Pinning an
-/// entity to the tag would collapse the indirection and take that
-/// away.
+/// content-addressed entity for this element and publishes `id:<tag>`
+/// pointing at it. That indirection is the point. An element is a
+/// value and the tag is a mutable pointer to one, so re-authoring the
+/// tag publishes a NEW value and repoints the name — and everything
+/// that resolves the tag by name follows on the spot, which is what
+/// makes a definition swappable at all. Pinning an entity to the tag
+/// would collapse the indirection and take that away.
 ///
-/// A consequence worth stating: each assertion is the WHOLE element,
-/// not a patch. Callers wanting to change one method carry the others
-/// forward ([`crate::data_ops::element_add`] does).
+/// Because the entity is derived from the whole body, a body built
+/// here is the WHOLE element rather than a patch — re-deriving from
+/// one method would mint a one-method element, not amend the existing
+/// one. So [`crate::data_ops::element_add`] reads the tag's current
+/// methods and carries them forward. (Authors editing notation by
+/// hand keep the cheaper road: naming the entity with `this:` and
+/// asserting one key supersedes just that fact.)
 pub fn build_element_decl(
     tag: &str,
+    description: &str,
     methods: &[(String, String)],
 ) -> Result<String, AuthoringError> {
     validate_element_tag(tag)?;
+    if description.trim().is_empty() {
+        return Err(AuthoringError::NoDescription);
+    }
     if methods.is_empty() {
         return Err(AuthoringError::NoMethods);
     }
     let mut out = String::new();
     let _ = writeln!(out, "element!: &{tag}");
-    // The tag as a SCALAR field, not decoration: it is the only part
-    // of the body that reaches the entity digest (the methods are a
-    // nested map, which carries no content identity), so it is what
-    // distinguishes this element's entity from every other one's.
-    let _ = writeln!(out, "  name: {}", quote_string(tag));
+    // Required by the concept, and not decoration: it reaches the
+    // entity digest alongside the methods, so it is part of what this
+    // element IS. The tag is deliberately absent from the body — it
+    // lives in the anchor above, where it can be repointed.
+    let _ = writeln!(out, "  description: {}", quote_string(description));
     out.push_str("  method:\n");
     for (key, source) in methods {
         validate_method_key(key)?;
@@ -791,9 +801,10 @@ mod tests {
     }
 
     #[test]
-    fn it_builds_an_element_declaration_pinned_to_its_tag() {
+    fn it_builds_an_element_declaration_anchored_to_its_tag() {
         let doc = build_element_decl(
             "tally-widget",
+            "A running tally",
             &methods(&[("connected", "(self) => { self.textContent = 'hi'; }")]),
         )
         .expect("valid tag and method");
@@ -802,6 +813,12 @@ mod tests {
         // it; pinning an entity here would collapse the indirection
         // the loader resolves through.
         assert!(!doc.contains("this:"), "{doc}");
+        assert!(
+            doc.contains("  description: \"A running tally\"\n"),
+            "{doc}"
+        );
+        // The tag is the anchor's job, not a field's.
+        assert!(!doc.contains("  name:"), "{doc}");
         assert!(doc.contains("  method:\n    connected: |\n"), "{doc}");
         assert!(doc.contains("      (self) => { self.textContent"), "{doc}");
     }
@@ -810,6 +827,7 @@ mod tests {
     fn it_writes_every_method_as_its_own_dictionary_entry() {
         let doc = build_element_decl(
             "tally-widget",
+            "A running tally",
             &methods(&[
                 ("connected", "(self) => {}"),
                 ("attribute-changed", "(self, name, before, after) => {}"),
@@ -831,6 +849,7 @@ mod tests {
     fn it_indents_every_method_line_under_the_block_scalar() {
         let doc = build_element_decl(
             "x-y",
+            "Two letters",
             &methods(&[("connected", "(self) => {\n\n  const a = 1;\n}")]),
         )
         .expect("valid");
@@ -909,7 +928,7 @@ mod tests {
     #[test]
     fn it_refuses_an_element_with_no_methods() {
         assert!(matches!(
-            build_element_decl("tally-widget", &[]),
+            build_element_decl("tally-widget", "A running tally", &[]),
             Err(AuthoringError::NoMethods)
         ));
     }
@@ -917,8 +936,24 @@ mod tests {
     #[test]
     fn it_refuses_an_empty_method_body() {
         assert!(matches!(
-            build_element_decl("tally-widget", &methods(&[("connected", "  \n\n")])),
+            build_element_decl(
+                "tally-widget",
+                "A running tally",
+                &methods(&[("connected", "  \n\n")])
+            ),
             Err(AuthoringError::EmptyMethod { .. })
+        ));
+    }
+
+    #[test]
+    fn it_refuses_an_element_with_no_description() {
+        assert!(matches!(
+            build_element_decl(
+                "tally-widget",
+                "   ",
+                &methods(&[("connected", "(self) => {}")])
+            ),
+            Err(AuthoringError::NoDescription)
         ));
     }
 
