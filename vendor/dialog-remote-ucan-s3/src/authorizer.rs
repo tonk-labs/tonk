@@ -73,7 +73,7 @@ fn clamp_request(
     request: &mut dialog_remote_s3::request::S3Request,
     range: TimeRange,
     now: Timestamp,
-) -> Result<(), S3Error> {
+) -> Result<u64, S3Error> {
     range.check(&now).map_err(|error| {
         S3Error::Authorization(check_failed_to_authorize_error(CheckFailed::TimeBound(
             error,
@@ -98,7 +98,7 @@ fn clamp_request(
     )
     .ok_or_else(|| S3Error::Configuration("Signing time is out of range".into()))?;
     request.expires = request.expires.min(remaining);
-    Ok(())
+    Ok(end)
 }
 
 // Generic deserialization from UCAN args
@@ -274,12 +274,12 @@ macro_rules! dispatch {
                 [$($seg),+] => {
                     let capability = <$fx as FromUcanArgs>::capability_from_args($subject, $args)?;
                     let mut request = ::dialog_remote_s3::request::S3Request::from(&capability);
-                    clamp_request(&mut request, $range, $clock())?;
+                    let expires_at = clamp_request(&mut request, $range, $clock())?;
                     let authorization = match $self.credential.clone() {
                         Some(credential) => request.attest(credential),
                         None => ::dialog_remote_s3::S3Authorization::public(request),
                     };
-                    authorization.redeem(&$self.address).await
+                    Ok((authorization.redeem(&$self.address).await?, expires_at))
                 }
             )+
             _ => Err(S3Error::Configuration(format!("Unknown command: {:?}", $segments)))
@@ -483,7 +483,19 @@ where
     /// 2. Checks command prefix authorization at each delegation
     /// 3. Validates policy predicates on each delegation
     pub async fn authorize(&self, container: &[u8]) -> Result<Permit, S3Error> {
-        self.authorize_with_clock(container, Timestamp::now).await
+        self.authorize_with_expiration(container)
+            .await
+            .map(|(permit, _)| permit)
+    }
+
+    /// Authorize and return the absolute expiry verified for the transport.
+    /// Embedders that translate the permit must preserve this deadline.
+    pub async fn authorize_with_expiration(
+        &self,
+        container: &[u8],
+    ) -> Result<(Permit, u64), S3Error> {
+        self.authorize_with_clock_and_expiration(container, Timestamp::now)
+            .await
     }
 
     /// Authorize using a trusted clock, sampled before verification and signing.
@@ -494,6 +506,19 @@ where
         container: &[u8],
         clock: C,
     ) -> Result<Permit, S3Error>
+    where
+        C: Fn() -> Timestamp,
+    {
+        self.authorize_with_clock_and_expiration(container, clock)
+            .await
+            .map(|(permit, _)| permit)
+    }
+
+    async fn authorize_with_clock_and_expiration<C>(
+        &self,
+        container: &[u8],
+        clock: C,
+    ) -> Result<(Permit, u64), S3Error>
     where
         C: Fn() -> Timestamp,
     {
@@ -654,15 +679,19 @@ mod tests {
 
     #[dialog_common::test]
     async fn transport_ceiling_and_ancestor_at_explicit_clock() {
-        for (expiration, ttl) in [(None, "60"), (Some(transport_time(1_000_020)), "20")] {
+        for (expiration, ttl, expires_at) in [
+            (None, "60", 1_000_060),
+            (Some(transport_time(1_000_020)), "20", 1_000_020),
+        ] {
             let (authorizer, bytes) = transport_fixture_with_expiration(expiration).await;
-            let permit = authorizer
-                .authorize_with_clock(&bytes, || transport_time(1_000_000))
+            let (permit, actual_expiration) = authorizer
+                .authorize_with_clock_and_expiration(&bytes, || transport_time(1_000_000))
                 .await
                 .unwrap();
             let query: BTreeMap<_, _> = permit.url.query_pairs().collect();
             assert_eq!(query["X-Amz-Expires"], ttl);
             assert_eq!(query["X-Amz-Date"], "19700112T134640Z");
+            assert_eq!(actual_expiration, expires_at);
         }
     }
 

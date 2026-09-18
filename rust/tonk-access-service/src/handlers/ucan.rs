@@ -19,7 +19,7 @@
 use crate::error::Refusal;
 #[cfg(target_arch = "wasm32")]
 use crate::handlers::registration::handle as handle_registration;
-use crate::permit::{Claims, PERMIT_TTL, PermitKey};
+use crate::permit::{Claims, PermitKey};
 #[cfg(target_arch = "wasm32")]
 use crate::registration::registration_command;
 use dialog_capability::access::AuthorizeError;
@@ -400,8 +400,8 @@ async fn authorize(
         authorizer.with_revocations(IndexedRevocations(KvRevocationIndex::new(store)))
     };
 
-    let authorized_request = authorizer
-        .authorize(body_bytes)
+    let (authorized_request, expires) = authorizer
+        .authorize_with_expiration(body_bytes)
         .await
         .map_err(map_access_error)
         .map_err(PresignFailure::authorization)?;
@@ -625,7 +625,6 @@ async fn presign(
     // The authorizer described the operation against its placeholder
     // address; what the client gets is that operation signed for this
     // service's own `/object/` path.
-    let expires = Date::now().as_millis() / 1_000 + PERMIT_TTL;
     let permit = Claims::lift(&authorized_request, authorizer_address(), expires)
         .and_then(|claims| permit_key.issue(origin, &claims))
         .map_err(Refusal::unclassified)

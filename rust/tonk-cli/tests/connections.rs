@@ -110,6 +110,7 @@ async fn connection_candidate_grants_cover_cli_authoring_and_remote_sync() -> Re
         access_key_id: "test".into(),
         secret_access_key: "test".into(),
         service_did: server.service_did.clone(),
+        service_seed: server.service_seed.clone(),
     };
     address.provision_subject(owner.did().as_ref()).await?;
     let writer = scoped_site(&temp.path().join("writer"), &owner, &server.endpoint).await?;

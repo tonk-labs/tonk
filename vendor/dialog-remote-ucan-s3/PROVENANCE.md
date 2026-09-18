@@ -1,9 +1,11 @@
 This directory vendors only `dialog-remote-ucan-s3` from Dialog revision
-`4c16de9e345d2b2d888d1008c5d3f0ca990c4807` (MPL-2.0; see LICENSE).
+`e26e0e61da76e460339c45bd45c4d7e9ce9a801b` (MPL-2.0; see LICENSE).
 The sole source change is `patches/dialog-transport-expiry.patch`: ordinary
-verified-chain S3 signing is limited to 60 seconds and remaining ancestor
-validity, with a signing-time clock recheck. No connection checkpoint is added.
-Unsigned/public endpoints cannot enforce URL expiration.
+verified-chain transports are limited to 60 seconds and remaining ancestor
+validity, with a signing-time clock recheck. The authorizer exposes the same
+absolute deadline so an embedding service can preserve it when translating an
+unsigned internal request into its own signed permit. No connection checkpoint
+is added.
 
 Reproduce with `scripts/test-transport-expiry.sh --prepare-only`, then run
 `python3 scripts/sync-dialog-transport-vendor.py DIALOG_CHECKOUT --check` against
