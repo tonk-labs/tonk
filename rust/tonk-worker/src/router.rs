@@ -650,7 +650,7 @@ pub mod tests {
             .await
             .expect("Failed to create test profile");
 
-        let session = crate::session::open(&profile, &storage)
+        let session = crate::session::open(&profile, &storage, &Default::default())
             .await
             .expect("Failed to open a test signing session");
 

@@ -1385,8 +1385,11 @@ pub async fn drain_sync(state: &AppState) {
 /// install only if the observed generation is still current. Losing
 /// candidates and construction failures have no durable session effects.
 pub(crate) async fn ensure_session_authority(state: &AppState) -> Result<(), TonkWorkerError> {
-    renew_session_with(state, |profile, storage| async move {
-        crate::session::rotate(&profile, &storage).await
+    // Read before the rebuild, so the renewed operator reaches through
+    // the same endpoint as the one it replaces rather than a fresh one.
+    let reach = state.read().await.reach.clone();
+    renew_session_with(state, move |profile, storage| async move {
+        crate::session::rotate(&profile, &storage, &reach).await
     })
     .await
 }

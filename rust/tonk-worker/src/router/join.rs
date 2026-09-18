@@ -3101,7 +3101,9 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(profile.did(), profile_did);
         // Isolate session construction from boot's legitimate meta work.
-        let session = crate::session::open(&profile, &storage).await.unwrap();
+        let session = crate::session::open(&profile, &storage, &Default::default())
+            .await
+            .unwrap();
         let branch = dialog_repository::Repository::from(profile.signer().clone())
             .branch(dialog_repository::ACCESS_BRANCH)
             .open()

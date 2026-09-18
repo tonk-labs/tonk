@@ -243,7 +243,7 @@ mod tests {
             .perform(&storage)
             .await
             .expect("profile opens");
-        let session = crate::session::open(&profile, &storage)
+        let session = crate::session::open(&profile, &storage, &Default::default())
             .await
             .expect("signing session opens");
         let reactor = crate::Reactor::new(profile.clone());

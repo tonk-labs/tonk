@@ -690,7 +690,9 @@ pub(crate) mod tests {
             let storage = Storage::<crate::worker::DefaultSpace>::default();
             let name = format!("command-dispatch-test-{}", rand::random::<u64>());
             let profile = Profile::open(&name).perform(&storage).await.unwrap();
-            let session = crate::session::open(&profile, &storage).await.unwrap();
+            let session = crate::session::open(&profile, &storage, &Default::default())
+                .await
+                .unwrap();
             let reactor = crate::Reactor::new(profile.clone());
             let state = TonkState {
                 reach: Default::default(),

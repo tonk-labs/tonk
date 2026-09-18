@@ -210,6 +210,56 @@ impl Reach {
     }
 }
 
+/// How the operator's iroh site gets a channel.
+///
+/// The site is built when the worker starts and the channel cannot
+/// exist then: it rides a carrier a page opens later, through
+/// [`handle_carrier`]. So the operator is handed this instead of a
+/// channel, and the endpoint is whatever [`Reach`] a page has since
+/// caused to be bound.
+///
+/// The same `Reach` the status probe uses, deliberately — one endpoint
+/// for this worker, not one per purpose. Its key is this peer's name,
+/// and a second endpoint would be a second peer that every delegation
+/// already minted names a stranger.
+///
+/// Before any page has dialed there is nothing to connect to, and
+/// saying so is the whole answer: `Iroh` does not remember a failed
+/// connect, so the next exchange after a carrier lands succeeds without
+/// anything being rebuilt.
+#[derive(Clone)]
+pub struct CarrierConnect {
+    reach: Arc<Lazy>,
+}
+
+impl CarrierConnect {
+    /// Connect through whatever endpoint `reach` holds.
+    pub fn new(reach: Arc<Lazy>) -> Self {
+        Self { reach }
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_iroh_remote::channel::Connect for CarrierConnect {
+    async fn connect(
+        &self,
+    ) -> Result<
+        Arc<dyn dialog_iroh_remote::channel::Channel>,
+        dialog_iroh_remote::channel::ChannelError,
+    > {
+        let Some(reach) = self.reach.get() else {
+            return Err(dialog_iroh_remote::channel::ChannelError::Unreachable {
+                peer: "a local tonk".into(),
+                detail: "no page has opened a carrier to a local tonk yet".into(),
+            });
+        };
+        Ok(Arc::new(dialog_iroh_remote::transport::IrohChannel::new(
+            reach.endpoint.clone(),
+        )))
+    }
+}
+
 /// Ask the CLI who it is.
 ///
 /// The whole exchange: a signed `peer::Hello`, carried over iroh, over

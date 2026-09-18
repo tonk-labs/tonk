@@ -507,7 +507,7 @@ mod tests {
     /// own, as a device that never rotated would use.
     async fn operator(registry: &Registry, storage: &Storage<DefaultSpace>) -> DefaultOperator {
         let profile = registry.open_self(storage).await.unwrap();
-        crate::session::open(&profile, storage)
+        crate::session::open(&profile, storage, &Default::default())
             .await
             .unwrap()
             .operator
@@ -616,7 +616,7 @@ mod tests {
         // A rotated device reads the roster through the profile it now
         // signs as, not the registry's key.
         let (_, created) = registry.create_profile(&storage).await.unwrap();
-        let other = crate::session::open(&created, &storage)
+        let other = crate::session::open(&created, &storage, &Default::default())
             .await
             .unwrap()
             .operator;

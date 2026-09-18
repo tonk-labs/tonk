@@ -1722,7 +1722,11 @@ pub(crate) async fn boot_state(
     // walks or retains delegation content. Hydrating after a construction
     // failure cannot repair entropy, signing, or local reference errors;
     // surface them without touching the profile's durable contents.
-    let session = crate::session::open(&profile, &storage).await?;
+    // Built before the session so the operator's iroh site and every
+    // later carrier share one endpoint: the site is handed this cell,
+    // and `handle_carrier` fills it.
+    let reach: Arc<crate::router::cli::Lazy> = Default::default();
+    let session = crate::session::open(&profile, &storage, &reach).await?;
 
     let state = TonkState {
         profile,
@@ -1737,7 +1741,7 @@ pub(crate) async fn boot_state(
         retiring: Arc::new(AtomicBool::new(false)),
         view_bindings: Default::default(),
         bridges: Default::default(),
-        reach: Default::default(),
+        reach,
         commands: crate::router::command_providers(),
         sync_queue: Default::default(),
         clients: Default::default(),
