@@ -65,6 +65,7 @@ use super::command::Command;
 use super::inspect::default_subject;
 use super::mode::{Input, Machine, TargetId};
 use super::panel::{self, Panel};
+use super::recorder::Timeline;
 use super::registry;
 use super::slot::{Origin, Slot, SlotKind};
 
@@ -167,6 +168,12 @@ struct Overlay {
     panel_at: Option<(f64, f64)>,
     /// A drag in progress: the pointer's offset inside the panel.
     dragging: Option<(f64, f64)>,
+    /// Where the pointer was last seen, so a marker can tell whether
+    /// it is the one being rested on.
+    pointer: (f64, f64),
+    /// The display currently recording, so recording starts and stops
+    /// exactly once per observation.
+    recording: Option<TargetId>,
 }
 
 /// The painted state for one observed display.
@@ -180,9 +187,10 @@ struct Painted {
     /// A fingerprint of what was described, so an unchanged snapshot
     /// reuses its markers and keeps their identity intact.
     signature: String,
-    /// Whether the marker cap truncated what is drawn. The panel says
-    /// so, since the page itself cannot show what is not painted.
+    /// Whether the marker cap truncated what is drawn.
     truncated: bool,
+    /// Where the display is in its recorded history.
+    timeline: Timeline,
 }
 
 /// One painted marker: the tick or box on the thing, the badge naming
@@ -201,6 +209,9 @@ struct Marker {
     /// What the panel would name to highlight this marker: the fields
     /// a slot reads, or the command an interaction posts.
     keys: Vec<String>,
+    /// The binding a command marker stands for, so the inspector can
+    /// list it without re-walking the DOM. `None` for a slot.
+    command: Option<Command>,
 }
 
 /// What kind of thing a marker is tracking.
@@ -231,6 +242,38 @@ enum Placement {
 }
 
 impl Placement {
+    /// Whether the pointer is inside this placement, with a little
+    /// slack so a two-pixel caret is still restable.
+    fn contains(&self, x: f64, y: f64) -> bool {
+        const SLACK: f64 = 3.0;
+        let (left, top, width, height) = match *self {
+            Placement::Extent {
+                left,
+                top,
+                width,
+                height,
+            } => (left, top, width, height),
+            Placement::Point { left, top, height } => (left, top, 2.0, height),
+            Placement::Edge { left, top, width } => (left, top, width, 2.0),
+            Placement::Offscreen => return false,
+        };
+        x >= left - SLACK
+            && x <= left + width + SLACK
+            && y >= top - SLACK
+            && y <= top + height + SLACK
+    }
+
+    /// How big it is, for picking the innermost of several under the
+    /// pointer.
+    fn area(&self) -> f64 {
+        match *self {
+            Placement::Extent { width, height, .. } => width * height,
+            Placement::Point { height, .. } => 2.0 * height,
+            Placement::Edge { width, .. } => width * 2.0,
+            Placement::Offscreen => f64::MAX,
+        }
+    }
+
     /// Where the badge wants to sit, and where its leader would start.
     fn anchor(&self) -> Option<(f64, f64)> {
         match *self {
@@ -358,6 +401,8 @@ impl Overlay {
             focus: None,
             panel_at: None,
             dragging: None,
+            pointer: (-1.0, -1.0),
+            recording: None,
         })
     }
 
@@ -460,6 +505,7 @@ fn install_listeners(document: &Document, overlay: &Rc<RefCell<Overlay>>) -> Vec
             // over a row, so walking off a card towards the panel
             // keeps the panel on the card you came from — which is
             // the reason you were walking towards it.
+            overlay.borrow_mut().pointer = (mouse.client_x(), mouse.client_y());
             if let Some(subject) = subject_under(overlay, mouse) {
                 overlay.borrow_mut().hovered_subject = Some(subject);
             }
@@ -614,8 +660,20 @@ fn install_listeners(document: &Document, overlay: &Rc<RefCell<Overlay>>) -> Vec
                 overlay.borrow_mut().machine.apply(Input::Clear);
                 return;
             }
-            if let Some(tab) = Panel::tab_of(&target) {
-                overlay.borrow_mut().panel.select(tab);
+            if let Some(section) = Panel::section_of(&target) {
+                overlay.borrow_mut().panel.toggle(section);
+                return;
+            }
+            if let Some(facet) = Panel::facet_of(&target) {
+                overlay.borrow_mut().panel.select_facet(&facet);
+                return;
+            }
+            if let Some(command) = Panel::command_of(&target) {
+                overlay.borrow_mut().panel.select_command(&command);
+                return;
+            }
+            if let Some(action) = Panel::action_of(&target) {
+                transport(overlay, &action);
             }
         },
     ));
@@ -711,6 +769,70 @@ fn under(overlay: &Rc<RefCell<Overlay>>, event: &MouseEvent) -> Option<Element> 
 /// inside another's template is its own thing to inspect.
 fn display_under(overlay: &Rc<RefCell<Overlay>>, event: &MouseEvent) -> Option<Element> {
     under(overlay, event).and_then(|element| element.closest("tonk-display").ok().flatten())
+}
+
+/// Keep exactly one display recording: the observed one.
+///
+/// Recording is not free — a frame is a whole folded state — so it
+/// runs only while a display is being looked at, and stops the moment
+/// attention moves. A display released while held is put back live
+/// first, so walking away never leaves a page frozen on an old frame
+/// with nothing on screen to say why.
+fn follow_recording(overlay: &Rc<RefCell<Overlay>>, observed: Option<TargetId>) {
+    let previous = overlay.borrow().recording;
+    if previous == observed {
+        return;
+    }
+    if let Some(previous) = previous
+        && let Some(host) = overlay.borrow().element(previous).cloned()
+        && let Some(control) = registry::control(&host)
+    {
+        control(registry::Control::Seek(None));
+        control(registry::Control::Record(false));
+    }
+    if let Some(observed) = observed
+        && let Some(host) = overlay.borrow().element(observed).cloned()
+        && let Some(control) = registry::control(&host)
+    {
+        control(registry::Control::Record(true));
+    }
+    overlay.borrow_mut().recording = observed;
+}
+
+/// Send a transport action to the display being observed.
+fn transport(overlay: &Rc<RefCell<Overlay>>, action: &str) {
+    let host = {
+        let state = overlay.borrow();
+        state
+            .machine
+            .observed()
+            .and_then(|target| state.element(target).cloned())
+    };
+    let Some(host) = host else {
+        return;
+    };
+    let Some(control) = registry::control(&host) else {
+        return;
+    };
+    let held = overlay
+        .borrow()
+        .painted
+        .as_ref()
+        .is_some_and(|painted| painted.timeline.is_held());
+    control(match action {
+        "hold" if held => registry::Control::Seek(None),
+        "hold" => registry::Control::Hold,
+        "live" => registry::Control::Seek(None),
+        "step-back" => registry::Control::Step(-1),
+        "step-forward" => registry::Control::Step(1),
+        _ => return,
+    });
+    // The frame just changed under us; rebuild rather than wait for
+    // the resnapshot cadence, so stepping feels like stepping.
+    if let Some(painted) = overlay.borrow_mut().painted.as_mut() {
+        painted.signature.clear();
+    }
+    overlay.borrow_mut().age = u32::MAX;
 }
 
 /// Move the panel under a dragging pointer, clamped to the viewport
@@ -828,6 +950,7 @@ fn paint(overlay: &Rc<RefCell<Overlay>>) {
     };
 
     registry::set_armed(observed.is_some());
+    follow_recording(overlay, observed);
 
     if highlighted.is_none() {
         overlay.borrow_mut().clear();
@@ -889,9 +1012,17 @@ fn paint_frame(overlay: &Rc<RefCell<Overlay>>, target: Option<TargetId>) {
     // unreachable. The leave grace covers the rest of the gap; this
     // removes most of it.
     let top = rect.top();
-    state
-        .pin
-        .set_text_content(Some(if latched { "pinned" } else { "pin" }));
+    // Name the thing, not the gesture. The box on its own does not
+    // say what it is, which was the first thing a reader asked.
+    let model = element
+        .get_attribute("model")
+        .filter(|model| !model.is_empty())
+        .unwrap_or_else(|| "tonk-display".to_owned());
+    state.pin.set_text_content(Some(&if latched {
+        format!("\u{1f4cc} {model}")
+    } else {
+        format!("tonk-display \u{00b7} {model}")
+    }));
     let _ = state
         .pin
         .set_attribute("class", if latched { "pin pinned" } else { "pin" });
@@ -944,11 +1075,18 @@ fn draw_panel(overlay: &Rc<RefCell<Overlay>>) {
     let subject = default_subject(&painted.snapshot, hovered.as_deref()).map(str::to_owned);
     let display = state.element(painted.target).cloned();
     let position = panel_position(&state, display.as_ref());
+    let commands: Vec<Command> = painted
+        .commands
+        .iter()
+        .filter_map(|marker| marker.command.clone())
+        .collect();
     state.panel.show(
         &document,
         &painted.snapshot,
         &painted.signature,
         subject.as_deref(),
+        &commands,
+        painted.timeline,
         painted.truncated,
         &position,
     );
@@ -966,6 +1104,7 @@ fn rebuild(overlay: &Rc<RefCell<Overlay>>, target: TargetId, host: &Element) {
     // here rather than either side reaching across.
     let mut snapshot = registry::display_facts(host).unwrap_or_default();
     snapshot.slots = slots.iter().map(|(slot, _)| slot.clone()).collect();
+    let snapshot_timeline = snapshot.timeline;
 
     {
         let mut state = overlay.borrow_mut();
@@ -1002,10 +1141,11 @@ fn rebuild(overlay: &Rc<RefCell<Overlay>>, target: TargetId, host: &Element) {
             &document,
             &layer,
             &classes,
-            slot.label(),
+            slot.badge(),
             node,
             style,
             slot.fields.clone(),
+            None,
         ) {
             slot_markers.push(marker);
             budget -= 1;
@@ -1027,9 +1167,10 @@ fn rebuild(overlay: &Rc<RefCell<Overlay>>, target: TargetId, host: &Element) {
             &layer,
             &classes,
             command.label(),
-            element.into(),
+            element.clone().into(),
             MarkerStyle::Interaction,
             vec![command.command.clone()],
+            Some(command.clone()),
         ) {
             command_markers.push(marker);
             budget -= 1;
@@ -1043,12 +1184,14 @@ fn rebuild(overlay: &Rc<RefCell<Overlay>>, target: TargetId, host: &Element) {
         target,
         snapshot,
         truncated,
+        timeline: snapshot_timeline,
         slots: slot_markers,
         commands: command_markers,
         signature,
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_marker(
     document: &Document,
     layer: &Element,
@@ -1057,6 +1200,7 @@ fn build_marker(
     anchor: Node,
     style: MarkerStyle,
     keys: Vec<String>,
+    command: Option<Command>,
 ) -> Option<Marker> {
     let mark = element(document, "div", classes)?;
     let badge = element(document, "div", &classes.replace("mark", "badge"))?;
@@ -1073,6 +1217,7 @@ fn build_marker(
         style,
         label,
         keys,
+        command,
     })
 }
 
@@ -1103,11 +1248,46 @@ fn reposition(overlay: &Rc<RefCell<Overlay>>) {
     // Badges already placed this frame, as (left, top, right). A new
     // badge that would overlap one is pushed below it and joined to
     // its anchor by a leader.
+    let markers: Vec<&Marker> = painted
+        .slots
+        .iter()
+        .chain(painted.commands.iter())
+        .collect();
+    let placements: Vec<Placement> = markers
+        .iter()
+        .map(|marker| place(&marker.anchor, &marker.style))
+        .collect();
+
+    // Exactly one marker gets a label from the pointer: the smallest
+    // one under it. Labelling everything at once was the reported
+    // symptom — a page of overlapping badges, unreadable and hiding
+    // the thing they name. Figma does not label the canvas either.
+    let (x, y) = state.pointer;
+    let rested = placements
+        .iter()
+        .enumerate()
+        .filter(|(_, placement)| placement.contains(x, y))
+        .min_by(|(_, a), (_, b)| {
+            a.area()
+                .partial_cmp(&b.area())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(index, _)| index);
+
     let mut placed: Vec<(f64, f64, f64)> = Vec::new();
-    for marker in painted.slots.iter().chain(painted.commands.iter()) {
-        let placement = place(&marker.anchor, &marker.style);
-        apply_mark(marker, &placement);
-        apply_badge(marker, &placement, &mut placed);
+    for (index, marker) in markers.iter().enumerate() {
+        let placement = &placements[index];
+        apply_mark(marker, placement);
+        let focused = state
+            .focus
+            .as_deref()
+            .is_some_and(|focus| marker.keys.iter().any(|key| key == focus));
+        if focused || rested == Some(index) {
+            apply_badge(marker, placement, &mut placed);
+        } else {
+            hide(&marker.badge);
+            hide(&marker.leader);
+        }
         apply_focus(marker, state.focus.as_deref());
     }
 }
@@ -1381,6 +1561,8 @@ const CSS: &str = "\
 .command      { --ink: #d6336c; --wash: color-mix(in srgb, #d6336c 8%, transparent); }
 .command.inert { --ink: #c92a2a; }
 .mark.command[data-shape=extent] { border-style: dashed; }
+.mark.command::after { content: ''; position: absolute; right: -3px; top: -3px;
+                       width: 7px; height: 7px; border-radius: 50%; background: var(--ink); }
 .mark.command.inert[data-shape=extent] { border-style: dotted; border-width: 2px; }
 .flash { position: fixed; box-sizing: border-box; border: 2px solid #e8590c; border-radius: 2px;
          background: color-mix(in srgb, #e8590c 30%, transparent);

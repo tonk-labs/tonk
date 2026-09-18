@@ -44,6 +44,8 @@ use web_sys::{
 };
 
 use crate::fold::show_template;
+use crate::introspect::recorder::{Arrival, Recorder};
+use crate::introspect::registry;
 use crate::resolve::{
     DETAIL_FACET, DIRECTORY_FACET, TYPE_FACET, entity_query, instances_query, looks_like_uri,
     view_query,
@@ -206,6 +208,23 @@ struct Inner {
     /// The resolved model entity, surfaced to the portal as its `model`
     /// attribute (the bridge's `context.model`).
     portal_model: Option<String>,
+    /// Introspection's hold on this display's entity frames. `None`
+    /// is the ordinary case: no recording, no cost, frames applied as
+    /// they arrive. `Some` only while the display is being observed.
+    recorder: Option<crate::introspect::recorder::Recorder<Vec<Conclusion>>>,
+    /// Every facet the model's `show` dictionary declares. The
+    /// display renders one; the introspection view panel offers the
+    /// rest, since "which views does this model have?" is not
+    /// answerable from the mounted one.
+    facets: BTreeMap<String, String>,
+    /// The bookmark name the `model` attribute resolved through, for
+    /// the declaration's `&anchor`.
+    model_name: Option<String>,
+    /// Command name -> its resolved descriptor, retained from the
+    /// delegate refresh. A name that resolved to nothing is recorded
+    /// as `None` rather than dropped: a template binding a command
+    /// that does not exist is the finding, not the absence of a row.
+    command_descriptors: BTreeMap<String, Option<String>>,
     /// The explicit `view=` facet, when the host names one. `None`
     /// means the mode default (`ui` with an entity, `directory`
     /// without) — see [`effective_facet`]. Explicitness matters when
@@ -265,6 +284,10 @@ impl Inner {
             host_watch: None,
             portal_descriptor: None,
             portal_model: None,
+            recorder: None,
+            facets: BTreeMap::new(),
+            model_name: None,
+            command_descriptors: BTreeMap::new(),
             view_facet: None,
             model_entity: None,
             default_slide: false,
@@ -322,24 +345,44 @@ impl crate::introspect::registry::DisplayFacts for Inner {
                             )
                         })
                         .collect(),
+                    values: conclusion.fields.clone(),
                 })
                 .collect(),
             // In single-view mode there is exactly one slide. In
             // carousel mode there are several and the one on screen
             // is the carousel's business, so report the first
             // rather than guess.
+            model_name: self.model_name.clone(),
+            descriptor: self.portal_descriptor.clone(),
+            facets: self.facets.clone(),
             template: self
                 .slides
                 .values()
                 .next()
                 .map(|slide| slide.display.clone()),
+            commands: self
+                .command_descriptors
+                .iter()
+                .map(|(name, descriptor)| crate::introspect::slot::Definition {
+                    name: name.clone(),
+                    descriptor: descriptor.clone(),
+                })
+                .collect(),
             fields: self
                 .portal_descriptor
                 .as_deref()
                 .map(declared_fields)
                 .unwrap_or_default(),
             slots: Vec::new(),
+            timeline: self.timeline(),
         }
+    }
+
+    fn timeline(&self) -> crate::introspect::recorder::Timeline {
+        self.recorder
+            .as_ref()
+            .map(Recorder::timeline)
+            .unwrap_or_default()
     }
 
     fn commands(&self, host: &Element) -> Vec<(crate::introspect::command::Command, Element)> {
@@ -400,6 +443,62 @@ fn rendered_value(this: &str, fields: &BTreeMap<String, Ipld>, name: &str) -> St
         fields,
         &BTreeMap::new(),
     )
+}
+
+/// Act on an introspection control.
+///
+/// Free function rather than a trait method: seeking re-enters the
+/// frame path, which borrows the state itself, so the caller must not
+/// still be holding a borrow when it runs. The registry hands out a
+/// closure that lands here with nothing borrowed.
+fn apply_control(host: &Element, state: &Rc<RefCell<Inner>>, control: registry::Control) {
+    use registry::Control;
+    let replay = {
+        let mut s = state.borrow_mut();
+        match control {
+            Control::Record(true) => {
+                let mut recorder = Recorder::default();
+                // Seed with what is already on screen, so the first
+                // frame of the history is what the observer was
+                // looking at when they opened the hood.
+                recorder.seed(s.last_frame.clone());
+                s.recorder = Some(recorder);
+                None
+            }
+            Control::Record(false) => {
+                let held = s
+                    .recorder
+                    .take()
+                    .filter(|recorder| recorder.timeline().is_held());
+                // A display released while held has been showing an
+                // old frame; put the current one back before walking
+                // away from it.
+                held.map(|_| s.last_frame.clone()).filter(|_| false)
+            }
+            Control::Seek(position) => s
+                .recorder
+                .as_mut()
+                .and_then(|recorder| recorder.seek(position)),
+            Control::Hold => s.recorder.as_mut().and_then(Recorder::hold),
+            Control::Step(delta) => s
+                .recorder
+                .as_mut()
+                .and_then(|recorder| recorder.step(delta)),
+        }
+    };
+    let Some(frame) = replay else {
+        return;
+    };
+    set_replaying(state, true);
+    apply_entity_frame(host, state, frame, false);
+    set_replaying(state, false);
+}
+
+/// Suppress recording while a recorded frame is being re-applied.
+fn set_replaying(state: &Rc<RefCell<Inner>>, on: bool) {
+    if let Some(recorder) = state.borrow_mut().recorder.as_mut() {
+        recorder.replaying(on);
+    }
 }
 
 /// Whether `host` is the nearest `<tonk-display>` above `element`.
@@ -464,7 +563,15 @@ impl CustomElement for TonkDisplay {
         // Let the introspection overlay ask this display what it
         // resolved. The registry holds a `Weak`, so it neither keeps a
         // detached display alive nor needs unregistering.
-        crate::introspect::registry::register_display(&host, &state);
+        registry::register_display(&host, &state, {
+            let host = host.clone();
+            let state = Rc::downgrade(&state);
+            Rc::new(move |control| {
+                if let Some(state) = state.upgrade() {
+                    apply_control(&host, &state, control);
+                }
+            })
+        });
         *self.inner.borrow_mut() = Some(state.clone());
         start_flows(&host, state);
     }
@@ -1359,6 +1466,10 @@ fn handle_name_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
 ///   downstream view + entity flow against the freshest descriptor, so
 ///   a model (re)definition or a late-landing view is picked up.
 fn handle_model_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Vec<Conclusion>) {
+    // Read the bookmark name before the frame is consumed. It is what
+    // the introspection panel writes as the declaration's `&anchor`,
+    // and nothing else on the display needs it.
+    let name = phase1_name(&conclusions);
     let resolved = extract_phase1_conclusion(conclusions);
     let Some((model_entity, descriptor_json)) = resolved else {
         // The concept is not on the branch yet. Stay subscribed; the
@@ -1381,6 +1492,7 @@ fn handle_model_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: V
         if s.disposed {
             return;
         }
+        s.model_name = name;
         // The model subscription re-pushes on every branch revision,
         // including plain entity-data writes. Restart the downstream
         // flow only when the *resolved concept* actually changed —
@@ -1444,6 +1556,28 @@ fn extract_phase1_conclusion(conclusions: Vec<Conclusion>) -> Option<(String, St
     Some((first.this, source))
 }
 
+/// The concept's bookmark name from a phase-1 frame, for the
+/// declaration's `&anchor`. Absent for a concept addressed by URI.
+fn phase1_name(conclusions: &[Conclusion]) -> Option<String> {
+    ipld_str(conclusions.first()?.fields.get("name")).map(str::to_owned)
+}
+
+/// Every `facet -> template` entry in a folded view conclusion's
+/// `show` dictionary. [`show_template`] reads one; this reads them
+/// all, for the view panel's switcher.
+fn all_facets(conclusion: &Conclusion) -> BTreeMap<String, String> {
+    let Some(Ipld::Map(entries)) = conclusion.fields.get("show") else {
+        return BTreeMap::new();
+    };
+    entries
+        .iter()
+        .filter_map(|(facet, template)| match template {
+            Ipld::String(template) => Some((facet.clone(), template.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
 /// The facet this display renders: the explicit `view=` facet, else
 /// the mode default (`ui` with an entity, `directory` without).
 fn effective_facet(s: &Inner) -> String {
@@ -1470,6 +1604,10 @@ fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
     // `show: {facet: template}` on the model entity's conclusion.
     let facet = effective_facet(&s);
     let folded = crate::fold::select_rows(conclusions);
+    // Retain the whole dictionary, not just the facet being rendered.
+    // "Which views does this model have?" is a question the mounted
+    // one cannot answer, and the frame already carries the answer.
+    s.facets = folded.first().map(all_facets).unwrap_or_default();
     let resolved = folded
         .first()
         .and_then(|c| show_template(c, &facet).map(str::to_owned));
@@ -2136,6 +2274,11 @@ async fn refresh_delegate(host: &Element, state: &Rc<RefCell<Inner>>, delegate_g
     // descriptor JSON is parsed once here so click-time event
     // handlers don't pay the parse cost.
     let mut descriptors: Descriptors = Descriptors::new();
+    // The same resolution, kept for the introspection command panel:
+    // a name that resolved to nothing is recorded as `None` rather
+    // than dropped, since a template binding a command that does not
+    // exist is precisely what a reader needs told.
+    let mut resolved: BTreeMap<String, Option<String>> = BTreeMap::new();
     for name in &concept_names {
         // Bail mid-loop if a newer refresh has started — no point
         // resolving descriptors for a snapshot we won't install.
@@ -2150,6 +2293,7 @@ async fn refresh_delegate(host: &Element, state: &Rc<RefCell<Inner>>, delegate_g
         // pinned-`this` concept resolves via the Name index too.
         match resolve_model(host, name).await {
             Ok((_entity, descriptor_json)) => {
+                resolved.insert(name.clone(), Some(descriptor_json.clone()));
                 match serde_json::from_str::<serde_json::Value>(&descriptor_json) {
                     Ok(value) => {
                         descriptors.insert(name.clone(), value);
@@ -2166,6 +2310,7 @@ async fn refresh_delegate(host: &Element, state: &Rc<RefCell<Inner>>, delegate_g
                 // it will silently no-op on click. Continue with
                 // the rest so partial failures don't break the
                 // whole delegate.
+                resolved.insert(name.clone(), None);
             }
         }
     }
@@ -2204,6 +2349,7 @@ async fn refresh_delegate(host: &Element, state: &Rc<RefCell<Inner>>, delegate_g
         return;
     }
     s.delegate = Some(delegate);
+    s.command_descriptors = resolved;
     drop(s);
 
     // Persist readiness as a queryable marker *before* announcing it, so a
@@ -2238,7 +2384,35 @@ fn handle_entity_frame(
     // Everything is a list of folds: group the flat rows by `this` into
     // one folded conclusion per subject. Cardinality-one is just a
     // one-element frame; the renderer iterates `{this}` over the frame.
-    let frame = crate::fold::select_rows(conclusions);
+    apply_entity_frame(
+        host,
+        state,
+        crate::fold::select_rows(conclusions),
+        reconnect,
+    );
+}
+
+/// Apply an already-folded frame.
+///
+/// Split from [`handle_entity_frame`] so introspection can replay a
+/// recorded frame without folding it a second time. A folded frame is
+/// the whole state, so replaying one is how rewinding works: hand the
+/// renderer frame *i* again and it reconciles back to what frame *i*
+/// looked like. Nothing is inverted and nothing is reconstructed.
+fn apply_entity_frame(
+    host: &Element,
+    state: &Rc<RefCell<Inner>>,
+    frame: Vec<Conclusion>,
+    reconnect: bool,
+) {
+    // Record the arrival, and stop here if the display is being held.
+    // A held frame is still recorded — that is the point of holding,
+    // to be able to step forward into what was missed.
+    if let Some(recorder) = state.borrow_mut().recorder.as_mut()
+        && recorder.arrived(frame.clone()) == Arrival::Hold
+    {
+        return;
+    }
 
     if frame.is_empty() {
         // HOLD a reconnect-empty over previously rendered content: the

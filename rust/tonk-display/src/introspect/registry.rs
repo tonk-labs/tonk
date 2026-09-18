@@ -24,7 +24,30 @@ use std::rc::{Rc, Weak};
 use web_sys::{Element, Node};
 
 use super::command::Command;
+use super::recorder::Timeline;
 use super::slot::{Slot, Snapshot};
+
+/// Something the overlay asks a display to do.
+///
+/// A command rather than a method call because acting on it re-enters
+/// the display's own frame path, which borrows its state — so the
+/// registry must hand the work back with nothing borrowed, not run it
+/// while holding a `Ref`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Control {
+    /// Start or stop recording entity frames. Recording runs only
+    /// while a display is observed.
+    Record(bool),
+    /// Show the frame at this position, or go live.
+    Seek(Option<usize>),
+    /// Hold at whatever is on screen.
+    Hold,
+    /// Step this many frames, holding if live.
+    Step(i32),
+}
+
+/// A display's control channel.
+pub type Controller = Rc<dyn Fn(Control)>;
 
 /// What a `<tonk-display>` can say about itself: everything in a
 /// [`Snapshot`] except the slots, which belong to its mounted view.
@@ -40,6 +63,10 @@ pub trait DisplayFacts {
     /// an `on:<name>` attribute names a declaration, and only the
     /// table says which platform event that declaration reads.
     fn commands(&self, host: &Element) -> Vec<(Command, Element)>;
+
+    /// Where the display is in its recorded history. All zeroes and
+    /// live when nothing is being recorded.
+    fn timeline(&self) -> Timeline;
 }
 
 /// What a `<tonk-view>` can say about itself: the slots its renderer
@@ -54,6 +81,8 @@ pub trait ViewFacts {
 struct Entry<T: ?Sized> {
     host: Element,
     state: Weak<RefCell<T>>,
+    /// Only a display has one.
+    control: Option<Controller>,
 }
 
 thread_local! {
@@ -128,15 +157,33 @@ pub fn drain_dispatches() -> Vec<(Element, String)> {
 }
 
 /// Register a `<tonk-display>`'s state against its host element.
-pub fn register_display(host: &Element, state: &Rc<RefCell<impl DisplayFacts + 'static>>) {
+pub fn register_display(
+    host: &Element,
+    state: &Rc<RefCell<impl DisplayFacts + 'static>>,
+    control: Controller,
+) {
     DISPLAYS.with(|displays| {
         let mut displays = displays.borrow_mut();
         prune(&mut displays);
         displays.push(Entry {
             host: host.clone(),
             state: Rc::downgrade(state) as Weak<RefCell<dyn DisplayFacts>>,
+            control: Some(control),
         });
     });
+}
+
+/// `host`'s control channel, cloned out so the registry's borrow is
+/// released before anything is asked of the display.
+pub fn control(host: &Element) -> Option<Controller> {
+    DISPLAYS.with(|displays| {
+        let mut displays = displays.borrow_mut();
+        prune(&mut displays);
+        displays
+            .iter()
+            .find(|entry| entry.host.is_same_node(Some(host.as_ref())))
+            .and_then(|entry| entry.control.clone())
+    })
 }
 
 /// Register a `<tonk-view>`'s state against its host element.
@@ -147,6 +194,7 @@ pub fn register_view(host: &Element, state: &Rc<RefCell<impl ViewFacts + 'static
         views.push(Entry {
             host: host.clone(),
             state: Rc::downgrade(state) as Weak<RefCell<dyn ViewFacts>>,
+            control: None,
         });
     });
 }
@@ -162,7 +210,9 @@ pub fn display_facts(host: &Element) -> Option<Snapshot> {
             .find(|entry| entry.host.is_same_node(Some(host.as_ref())))?;
         let state = entry.state.upgrade()?;
         let state = state.try_borrow().ok()?;
-        Some(state.facts(host))
+        let mut snapshot = state.facts(host);
+        snapshot.timeline = state.timeline();
+        Some(snapshot)
     })
 }
 

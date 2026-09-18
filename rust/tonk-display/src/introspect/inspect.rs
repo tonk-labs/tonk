@@ -219,6 +219,7 @@ mod tests {
         Entity {
             this: this.to_owned(),
             fields,
+            values: BTreeMap::new(),
         }
     }
 

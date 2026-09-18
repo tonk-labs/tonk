@@ -127,6 +127,23 @@ impl Slot {
         }
     }
 
+    /// The text the page marker shows when you rest on it.
+    ///
+    /// A text slot shows its field name, because its value is already
+    /// on screen — repeating it would be the one thing a reader does
+    /// not need. An attribute slot shows the value, because that is
+    /// what is invisible: `with="main@{repo}"` renders nothing you can
+    /// look at, and `data-subject=this` tells you the shape of the
+    /// binding while withholding the only part you came for.
+    pub fn badge(&self) -> String {
+        match &self.kind {
+            SlotKind::Text => self.label(),
+            SlotKind::Attribute { name, .. } => {
+                format!("{name}: {}", elide(&self.value))
+            }
+        }
+    }
+
     /// Whether this slot reads `field`. Used to cross-highlight from
     /// a concept panel row back onto the rendered page.
     pub fn reads(&self, field: &str) -> bool {
@@ -134,8 +151,26 @@ impl Slot {
     }
 }
 
+/// Shorten a value to badge length, from the middle — the ends of an
+/// entity URI say more than its waist.
+fn elide(value: &str) -> String {
+    const LIMIT: usize = 32;
+    let characters: Vec<char> = value.chars().collect();
+    if characters.is_empty() {
+        return "\u{2014}".to_owned();
+    }
+    if characters.len() <= LIMIT {
+        return value.to_owned();
+    }
+    let head: String = characters[..LIMIT / 2 - 1].iter().collect();
+    let tail: String = characters[characters.len() - LIMIT / 2 + 2..]
+        .iter()
+        .collect();
+    format!("{head}\u{2026}{tail}")
+}
+
 /// Everything the overlay knows about one observed `<tonk-display>`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
     /// The `model` attribute as the author wrote it.
     pub model: Option<String>,
@@ -147,13 +182,39 @@ pub struct Snapshot {
     pub directory: bool,
     /// Every subject in the last frame, with its projected values.
     pub entities: Vec<Entity>,
-    /// The template HTML the mounted view was built from.
+    /// The concept's bookmark name, for the declaration's `&anchor`.
+    pub model_name: Option<String>,
+    /// The lowered concept descriptor, as the display resolved it.
+    /// What the model panel renders.
+    pub descriptor: Option<String>,
+    /// Every facet the model's `show` dictionary declares, not just
+    /// the one rendered — the view panel switches between them.
+    pub facets: BTreeMap<String, String>,
+    /// The facet whose template is mounted, so the view panel opens
+    /// on what is actually on screen.
     pub template: Option<String>,
+    /// Every command the mounted templates bind, with the descriptor
+    /// each resolved to.
+    pub commands: Vec<Definition>,
     /// The fields the model concept declares, from its descriptor's
     /// `with:` and `maybe:` maps. The concept panel's rows.
     pub fields: Vec<Field>,
     /// Every slot the mounted view rendered.
     pub slots: Vec<Slot>,
+    /// Where the display is in its recorded history.
+    pub timeline: super::recorder::Timeline,
+}
+
+/// A resolved declaration a panel can render: a command, and later
+/// anything else with a descriptor behind a name.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Definition {
+    /// The name as a template writes it (`prose/edit`).
+    pub name: String,
+    /// The lowered descriptor, or `None` when the name resolved to
+    /// nothing — which is the interesting case, since a template can
+    /// bind a command that does not exist.
+    pub descriptor: Option<String>,
 }
 
 impl Snapshot {
@@ -240,12 +301,19 @@ impl Field {
 /// spells a value exactly one way when it writes it into a slot, and a
 /// panel that spelled it differently would be reporting a value the
 /// page never showed.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Entity {
     /// The subject URI.
     pub this: String,
-    /// Field name -> the value as rendered.
+    /// Field name -> the value as the renderer spelled it. What the
+    /// concept rows show, so the panel never reports a value in a
+    /// spelling the page did not use.
     pub fields: BTreeMap<String, String>,
+    /// Field name -> the value itself. What the data panel renders
+    /// from, because notation spells a string, an entity URI and a
+    /// list differently and a pre-flattened string cannot tell them
+    /// apart.
+    pub values: BTreeMap<String, ipld_core::ipld::Ipld>,
 }
 
 /// The fields a model concept's descriptor declares, in declaration

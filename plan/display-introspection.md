@@ -134,6 +134,13 @@ to stop when Alt goes up under a still pointer.
 
 ## Steps
 
+- [ ] **7. Navigate the relation.** A line carries its attribute already. Make
+      it a handle: click a relation to ask what else asserts it, click an
+      entity to ask what else is on it. That is a query beyond what the display
+      subscribed to, so it needs its own path through the host rather than a
+      read of state already in hand — the first part of this tool that asks the
+      branch a question of its own.
+
 - [x] **1. Observe values.** The state machine, the slot description, the
       registry, `Renderer::describe`, the overlay: outline, slot boxes labelled
       by field and coloured by origin, change flash, a corner readout naming
@@ -184,12 +191,73 @@ to stop when Alt goes up under a still pointer.
       is a handler to this renderer and the panel marks it as one. A panel that
       quietly disagreed would be nicer and would send an author looking for the
       wrong bug.
-- [ ] **5. Edit.** (the only step left) A concept field edited in the panel becomes a transaction;
+- [x] **5. Flow control.** A recorder per observed display: hold what
+      arrives, step back and forward through what already did. Rewinding is
+      cheap because a frame is the whole folded state, not a delta — replaying
+      frame *i* is handing the renderer frame *i* again, so going back costs
+      what going forward did. `handle_entity_frame` splits so replay bypasses
+      the fold. Recording runs only while a display is observed and is seeded
+      with the frame on screen, so position 1 is always "what I was looking at
+      when I opened the hood"; you cannot rewind past that, which is the price
+      of not having every display on every page retain history forever.
+
+- [ ] **6. Edit.** A concept field edited in the panel becomes a transaction;
       a template edited in the view panel supersedes the `show` facet. Both go
       through the ordinary transact path. This is where the real work is:
       superseding a cardinality-one field needs the prior value to retract,
       values need coercing back to their declared Ipld types, and a refused
       write needs somewhere to say so.
+
+## The inspector
+
+Figma's shape, because the problem is the same one: a thing is selected, and
+everything there is to know about it hangs off a bar rather than crowding the
+canvas.
+
+The bar names what is selected and carries one toggle per section — **data**,
+**model**, **view**, **commands** — plus the transport. Sections are
+independent rather than tabbed: the reason to open `view` is usually to read it
+*against* `data`, and a tab bar makes that the one thing you cannot do.
+
+Every section renders notation rather than a table, because notation is what an
+author already reads and writes:
+
+- **data** — the entity as a `head!:` assertion, values spelled as notation
+  spells them (an entity URI bare, prose quoted, a list indented), with the
+  dialog relation shown dim beside each field.
+- **model** — the `concept!:` declaration the display resolved. Rendered from
+  the lowered descriptor, since the YAML a library file was written in is not
+  stored; the two say the same thing.
+- **view** — the template, with a chip per facet the model declares. The
+  mounted facet is only one of them, and "what else could this show?" is not
+  answerable from it.
+- **commands** — a chip per binding, clicking one to see its `command!:`
+  declaration. A binding whose name resolved to nothing is struck through: it
+  installs no listener and will never fire.
+
+All four key on the same thing — a **field name** — so a data line, a
+declaration field, a `{field}` in the template, a command chip and a page
+marker all carry `data-field` and light each other. Lines also carry
+`data-attribute`, the relation under the name, which is the handle step 7 needs.
+
+`<tonk-notation>` is the other way to colour this, and it knows the real
+grammar. What it cannot do is say which line is which field, because it renders
+from a text blob. `introspect::notation` keeps the mapping and accepts a
+simpler tokenizer.
+
+## Marking without shouting
+
+The page shows position; the inspector shows names. Marking every slot *and*
+labelling it at once produced a wall of overlapping badges that hid the thing
+they named — the reported symptom, and the reason this split exists at all.
+
+So every slot is marked, and exactly one is labelled: the smallest marker under
+the pointer, plus anything the inspector is focusing. A text slot's label is
+its field name, because the value is already on screen. An attribute slot's
+label is the *value*, because that is what is invisible — `data-subject=this`
+names the shape of the binding while withholding the only part you came for.
+Commands keep a dashed outline and a corner dot so they read as affordances
+rather than values.
 
 ## Known limits
 
@@ -197,9 +265,9 @@ to stop when Alt goes up under a still pointer.
   covers `Hello {name}` and `{name} trailing`, but a slot alone in an empty
   block falls back to the parent's corner, which is the right area and not the
   right spot. A panel listing every slot (step 3) is the complete answer.
-- **Badge collision is resolved by pushing down only.** Dense layouts still
-  produce a stack of badges to one side of the thing they name, joined by
-  leaders. Legible, not pretty.
+- **Badge collision is resolved by pushing down only.** It matters much less
+  now that at most a couple of badges are up at once, but a focused field with
+  many slots can still stack.
 - **The panel sits bottom-right and takes pointer events.** A display under it
   cannot be hovered while it is open. Moving it, or letting it dock, is
   outstanding.
