@@ -112,6 +112,10 @@ pub async fn handle_message(
     let envelope_type = envelope.get("type").and_then(|v| v.as_str()).unwrap_or("");
     match envelope_type {
         "hello" => handle_hello(state, client, ports).await,
+        // A page that has dialed a local `tonk` hands the carrier in.
+        // The port arrives transferred beside the envelope, exactly as
+        // `hello`'s does.
+        "tonk-rtc-carrier" => super::cli::handle_carrier(state, client, ports).await,
         other => {
             log!(
                 "bridge: SW global received unexpected envelope type '{other}' from {client:?} \

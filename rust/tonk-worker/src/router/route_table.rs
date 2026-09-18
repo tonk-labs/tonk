@@ -23,6 +23,11 @@ const ROUTES: &[&str] = &[
     "/api/account/devices/revoke",
     "/api/account/display-name",
     "/api/account/spaces/delete",
+    // A probe, not a command: it answers before the page has a branch
+    // to subscribe to, and "a CLI is reachable" is not a fact to write
+    // down — it is true or not at the moment of asking. Sits beside
+    // `/api/identify` and `/api/site` for the same reason.
+    "/api/cli/status",
     "/api/custody/provision",
     "/api/custody/queue",
     "/api/customer",

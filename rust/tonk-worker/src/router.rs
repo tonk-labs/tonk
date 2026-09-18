@@ -138,6 +138,7 @@ mod transfer;
 pub use transfer::ImportResponse;
 
 pub mod bridge;
+pub mod cli;
 pub use bridge::BridgeRegistry;
 
 mod host;
@@ -221,6 +222,7 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
     let (lsp_routes, lsp_hub) = lsp::lsp_router(state.clone());
     let router = Router::new()
         .route("/api", get(root))
+        .route("/api/cli/status", get(cli::status_route))
         .route("/api/identify", get(identify::identify))
         .route(
             "/api/identity/root",

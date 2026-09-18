@@ -31,6 +31,7 @@ dialog-reactor = { workspace = true }
 dialog-credentials = { workspace = true }
 dialog-csv = { workspace = true }
 dialog-effects = { workspace = true }
+dialog-iroh-remote = { workspace = true, features = ["transport"] }
 dialog-operator = { workspace = true }
 dialog-query = { workspace = true }
 dialog-remote-ucan-s3 = { workspace = true }
@@ -56,6 +57,8 @@ tokio = { workspace = true }
 tokio-stream = { workspace = true, features = ["sync"] }
 tonk-account = { workspace = true }
 tonk-analytics = { workspace = true }
+tonk-rtc = { workspace = true, features = ["iroh"] }
+iroh = { version = "=1.2.0" }
 tonk-analyzer = { workspace = true }
 tonk-common = { workspace = true }
 tonk-evaluator = { workspace = true }

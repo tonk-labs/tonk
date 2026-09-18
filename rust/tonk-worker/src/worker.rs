@@ -400,6 +400,11 @@ pub struct TonkState {
     /// ID. Each session owns the transferred `MessagePort` and the
     /// abort handles for any open subscriptions on that client.
     pub bridges: BridgeRegistry,
+    /// The iroh endpoint this worker reaches a local `tonk` through,
+    /// bound on first use. Held rather than rebuilt because an
+    /// endpoint's key is its name: a fresh one per request would be a
+    /// stranger to anything that had already spoken to it.
+    pub reach: Arc<crate::router::cli::Lazy>,
     /// Registered command handlers — the typed-Rust effects fired by
     /// transient command concepts after a commit. Two vocabularies
     /// (profile / space), selected per dispatch by the triggering
@@ -1732,6 +1737,7 @@ pub(crate) async fn boot_state(
         retiring: Arc::new(AtomicBool::new(false)),
         view_bindings: Default::default(),
         bridges: Default::default(),
+        reach: Default::default(),
         commands: crate::router::command_providers(),
         sync_queue: Default::default(),
         clients: Default::default(),

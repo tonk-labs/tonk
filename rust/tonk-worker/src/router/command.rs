@@ -693,6 +693,7 @@ pub(crate) mod tests {
             let session = crate::session::open(&profile, &storage).await.unwrap();
             let reactor = crate::Reactor::new(profile.clone());
             let state = TonkState {
+                reach: Default::default(),
                 profile,
                 operator: session.operator,
                 storage,
