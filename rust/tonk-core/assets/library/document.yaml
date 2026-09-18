@@ -1,0 +1,178 @@
+# ===========================================================================
+# document — an entity whose body is an automerge document in a memory cell.
+# ===========================================================================
+# The bytes never enter the tree. They live in one compare-and-swap memory
+# cell per document (`document/<id>` / `automerge` under the space's DID),
+# which holds the changes of EVERY branch — an object store. What a branch
+# holds is the reference: `document/heads`, the automerge heads the branch
+# is at. Two branches with different heads show different content out of
+# the same cell, an old revision shows the content of its heads, and a
+# dialog merge of the many-valued heads claim is the union of both sides,
+# which is exactly what an automerge merge means.
+#
+# Writes from outside an element go through the commands below. Their
+# handlers are Rust (`tonk-document`), run by the service worker and by the
+# native CLI alike. Reads go through the mirror: `document/text` and the
+# `table/*` facts, written into the session overlay from the document at
+# the branch's heads — in memory only, never committed, never synced.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Attributes
+# ---------------------------------------------------------------------------
+
+attribute!: &document/format
+  description: |
+    The shape and codec of the entity's document cell:
+    "automerge/text@1" (markdown in one text object) or
+    "automerge/table@1" (a workbook). Written once. A newer app reads
+    every older format; an app that meets a format it does not know
+    opens the document read-only.
+  the: xyz.tonk.document/format
+  as: text
+  cardinality: one
+
+attribute!: &document/heads
+  description: |
+    The automerge heads this branch is at, one hex change hash per
+    value. Many-valued on purpose: two writers each retract the heads
+    they saw and assert their own, and the merged claim holds both,
+    which reads as the automerge merge. Writers never re-assert a head
+    they already hold, and retract only heads they can read locally.
+  the: xyz.tonk.document/heads
+  as: text
+  cardinality: many
+
+attribute!: &document/text
+  description: |
+    MIRROR, overlay-only. The document's markdown at this branch's
+    heads. Never committed and never synced; every replica derives it
+    from the cell. Read-only: asserting it does not edit the document,
+    `document/replace` and its siblings do.
+  the: xyz.tonk.document/text
+  as: text
+  cardinality: one
+
+# ---------------------------------------------------------------------------
+# Concepts
+# ---------------------------------------------------------------------------
+
+concept!: &document
+  description: An entity whose body is an automerge document in a memory cell.
+  with:
+    format: document/format
+
+concept!: &document/content
+  description: |
+    MIRROR, overlay-only. A text document's content at this branch's
+    heads, for queries, views and rules.
+  with:
+    text: document/text
+
+# ---------------------------------------------------------------------------
+# Commands — handled by `tonk-document`, in the worker and in the CLI.
+# Positions are UTF-16 code units, the unit of JavaScript strings. `heads`
+# fields hold hex change hashes separated by single spaces.
+# ---------------------------------------------------------------------------
+
+command!: &document/replace
+  description: Replace the one occurrence of a quoted passage.
+  with:
+    document:
+      description: The document entity
+      the: xyz.tonk.document.replace/document
+      as: entity
+    find:
+      description: The passage to replace; it must occur exactly once
+      the: xyz.tonk.document.replace/find
+      as: text
+    with:
+      description: The replacement text
+      the: xyz.tonk.document.replace/with
+      as: text
+
+command!: &document/insert
+  description: Insert text right after the one occurrence of a quoted passage.
+  with:
+    document:
+      description: The document entity
+      the: xyz.tonk.document.insert/document
+      as: entity
+    after:
+      description: The passage to insert after; it must occur exactly once
+      the: xyz.tonk.document.insert/after
+      as: text
+    text:
+      description: The text to insert
+      the: xyz.tonk.document.insert/text
+      as: text
+
+command!: &document/splice
+  description: |
+    Exact range edit. `at` and `delete` are read at `heads`, so edits
+    made since then cannot shift them.
+  with:
+    document:
+      description: The document entity
+      the: xyz.tonk.document.splice/document
+      as: entity
+    heads:
+      description: The heads the range was computed against
+      the: xyz.tonk.document.splice/heads
+      as: text
+    at:
+      description: Start of the range, UTF-16 units
+      the: xyz.tonk.document.splice/at
+      as: unsigned-integer
+    delete:
+      description: Units to delete
+      the: xyz.tonk.document.splice/delete
+      as: unsigned-integer
+    text:
+      description: The text to insert
+      the: xyz.tonk.document.splice/text
+      as: text
+
+command!: &document/put
+  description: Write one value of a table document, e.g. a cell.
+  with:
+    document:
+      description: The document entity
+      the: xyz.tonk.document.put/document
+      as: entity
+    path:
+      description: Slash-separated path, e.g. "sheets/<id>/cells/B2"
+      the: xyz.tonk.document.put/path
+      as: text
+    value:
+      description: |
+        The value as text. Cell content and styles are stored as given;
+        widths and heights are parsed as numbers.
+      the: xyz.tonk.document.put/value
+      as: text
+
+command!: &document/remove
+  description: Remove one value of a table document, or a whole sheet.
+  with:
+    document:
+      description: The document entity
+      the: xyz.tonk.document.remove/document
+      as: entity
+    path:
+      description: Slash-separated path, e.g. "sheets/<id>/cells/B2"
+      the: xyz.tonk.document.remove/path
+      as: text
+
+command!: &document/restore
+  description: |
+    Make the content equal to a past version. It is a new change on top
+    of the current heads, so no history is removed.
+  with:
+    document:
+      description: The document entity
+      the: xyz.tonk.document.restore/document
+      as: entity
+    heads:
+      description: The past version's heads
+      the: xyz.tonk.document.restore/heads
+      as: text

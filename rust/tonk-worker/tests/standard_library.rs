@@ -38,6 +38,7 @@ const TABLE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/table.y
 const NOTEBOOK_LIBRARY: &str = include_str!("../../tonk-core/assets/library/notebook.yaml");
 const PROSE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/prose.yaml");
 const ISSUE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/issue.yaml");
+const DOCUMENT_LIBRARY: &str = include_str!("../../tonk-core/assets/library/document.yaml");
 
 /// Light-DOM markup mounted by the Hub account custom element. The profile
 /// library supplies its geometry, so their visual contract is checked here
@@ -814,6 +815,11 @@ fn it_lowers_the_prose_library() {
 #[dialog_common::test]
 fn it_lowers_the_issue_library() {
     assert_component_library_lowers("issue library (issue.yaml)", ISSUE_LIBRARY);
+}
+
+#[dialog_common::test]
+fn it_lowers_the_document_library() {
+    assert_component_library_lowers("document library (document.yaml)", DOCUMENT_LIBRARY);
 }
 
 // The `on:` binding gates that used to live here — a dangling
