@@ -141,6 +141,38 @@ impl Identity {
 mod tests {
     use super::*;
 
+    /// Why the certificate is shipped rather than derived from a
+    /// well-known phrase, which is the obvious thing to want.
+    ///
+    /// Deriving the *key* from a string is trivial. The obstacle is
+    /// that a fingerprint is the hash of the whole certificate, not of
+    /// the key, and a certificate is not reproducible even here: rcgen
+    /// signs ECDSA with a random nonce, so the same key and the same
+    /// parameters give different bytes every time. Two ends could never
+    /// agree, and a browser has no certificate builder at all.
+    ///
+    /// Reproducing one would mean a hand-built DER and an RFC 6979
+    /// signer in both Rust and JavaScript, byte-identical, forever.
+    /// Shipping the bytes is smaller and cannot drift. If this test
+    /// ever fails, rcgen became deterministic and the cheaper option is
+    /// worth revisiting.
+    #[test]
+    fn a_certificate_is_not_reproducible_from_its_key() {
+        let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
+        let params = || {
+            let mut params = rcgen::CertificateParams::new(vec!["tonk".to_owned()]).unwrap();
+            params.serial_number = Some(rcgen::SerialNumber::from(1u64));
+            params
+        };
+
+        assert_ne!(
+            params().self_signed(&key).unwrap().der(),
+            params().self_signed(&key).unwrap().der(),
+            "rcgen now signs deterministically: deriving the certificate on both ends, \
+             rather than shipping it, is worth reconsidering"
+        );
+    }
+
     #[test]
     fn an_identity_survives_persistence() {
         let original = Identity::generate().unwrap();
