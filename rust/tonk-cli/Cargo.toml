@@ -132,7 +132,10 @@ integration-tests = []
 # Off by default: `webrtc` pulls an ICE/DTLS/SCTP stack that roughly
 # doubles this crate's dependency graph, and a shipped `tonk` has no use
 # for it until the channel carries sync.
-rtc = ["dep:tonk-rtc"]
+# The channel now carries sync, so `rtc` brings the iroh transport and
+# dialog's peer remote with it: `tonk rtc serve` answers invocations
+# over a data channel.
+rtc = ["dep:tonk-rtc", "dep:iroh", "dep:iroh-base", "tonk-rtc/iroh", "dialog-iroh-remote/transport"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
@@ -169,7 +172,10 @@ dialog-query = { workspace = true }
 dialog-reactor = { workspace = true }
 dialog-remote-s3 = { workspace = true }
 dialog-remote-ucan-s3 = { workspace = true }
+dialog-did-web = { workspace = true }
 dialog-iroh-remote = { workspace = true }
+iroh = { version = "=1.2.0", optional = true }
+iroh-base = { version = "=1.2.0", optional = true }
 dialog-repository = { workspace = true }
 dialog-storage = { workspace = true }
 dialog-ucan = { workspace = true }

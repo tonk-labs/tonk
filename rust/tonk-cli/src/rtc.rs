@@ -370,3 +370,129 @@ mod tests {
         }
     }
 }
+
+#[cfg(feature = "rtc")]
+mod serving {
+    use super::*;
+
+    /// Where this machine's iroh identity lives.
+    ///
+    /// Separate from the WebRTC certificate because they name different
+    /// things: that certificate authenticates a data channel and is shared
+    /// by every tonk, while this key is *this peer* and is what a remote
+    /// points at.
+    fn endpoint_key_path() -> Result<std::path::PathBuf> {
+        let data = dirs::data_dir().context("could not determine platform data directory")?;
+        Ok(data.join("tonk").join("rtc-endpoint.key"))
+    }
+
+    /// Load this machine's iroh secret key, minting one the first time.
+    ///
+    /// Persisted, and with more at stake than the certificate was: this key
+    /// *is* the peer's name. Mint a fresh one per run and every remote
+    /// anyone registered points at a peer that no longer exists — not a
+    /// stale route, which iroh would re-resolve, but a different identity.
+    fn endpoint_key() -> Result<iroh::SecretKey> {
+        use base64::Engine as _;
+        let path = endpoint_key_path()?;
+
+        if let Ok(stored) = std::fs::read_to_string(&path)
+            && let Ok(bytes) =
+                base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(stored.trim())
+            && let Ok(bytes) = <[u8; 32]>::try_from(bytes.as_slice())
+        {
+            return Ok(iroh::SecretKey::from_bytes(&bytes));
+        }
+
+        let key = iroh::SecretKey::generate();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("could not create {}", parent.display()))?;
+        }
+        if let Err(error) = write_private(
+            &path,
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.to_bytes()),
+        ) {
+            eprintln!(
+                "warning: could not save the iroh identity ({error}); this peer will have a different did:key after a restart"
+            );
+        }
+        Ok(key)
+    }
+
+    /// Serve this site's spaces to peers that dial in.
+    ///
+    /// The address printed is the whole point: a peer's `did:key`, stable
+    /// across restarts because the key is persisted, and a `?route=` hint
+    /// holding the local-dial record. A browser on this machine needs
+    /// neither — it derives the port and the fingerprint from the
+    /// rendezvous phrase — but a peer elsewhere does.
+    pub async fn serve(site: &crate::site::TonkSite, options: ListenOptions) -> Result<()> {
+        let port = options
+            .port
+            .unwrap_or_else(|| tonk_rtc::rendezvous::port(tonk_rtc::rendezvous::RENDEZVOUS));
+        let listener = tonk_rtc::dial::listen(rtc_identity()?, port)
+            .await
+            .context("could not start the WebRTC listener")?;
+
+        // The transport announces itself *as* the local-dial address, which
+        // is what lets one `?route=` hint carry everything a dialer needs:
+        // candidates and the DTLS fingerprint, inside iroh's opaque custom
+        // address.
+        let transport = tonk_rtc::transport::WebRtcTransport::new(listener.address().encode());
+        let route = transport.local_addr();
+
+        let key = endpoint_key()?;
+        let id = key.public();
+        let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Empty)
+            .crypto_provider(iroh::tls::default_provider())
+            .secret_key(key)
+            // dialog's ALPN, not this crate's: a peer must be speaking the
+            // remote protocol, not merely be reachable.
+            .alpns(vec![dialog_iroh_remote::transport::ALPN.to_vec()])
+            .add_custom_transport(transport.clone())
+            .bind()
+            .await
+            .context("could not bind the iroh endpoint")?;
+
+        let peer = dialog_iroh_remote::site::IrohAddress::from(iroh::EndpointAddr {
+            id,
+            addrs: [iroh::TransportAddr::Custom(route)].into_iter().collect(),
+        });
+
+        println!("serving {} to peers that dial in.\n", site.root.display());
+        println!("  tonk remote add <name> '{}'\n", peer.to_uri());
+        println!("listening on port {port}; ctrl-c to stop.\n");
+
+        // Every accepted datagram channel becomes a route iroh can answer
+        // on. The ufrag names the dialer: a browser has no address of its
+        // own, and this is the value the mux already routed on.
+        let pumping = {
+            let transport = transport.clone();
+            tokio::spawn(async move {
+                while let Some(dialer) = listener.accept_datagram().await {
+                    let peer = iroh_base::CustomAddr::from_parts(
+                        tonk_rtc::transport::TRANSPORT_ID,
+                        dialer.ufrag.as_bytes(),
+                    );
+                    tonk_rtc::transport::attach(&transport, peer, dialer.channel);
+                }
+            })
+        };
+
+        // The operator, not a fresh `Storage`: it is the handle with this
+        // site's spaces already loaded, and it routes each invocation to
+        // the right one by subject.
+        let responder = std::sync::Arc::new(dialog_iroh_remote::serve::Responder::new(
+            site.operator.inner().clone(),
+            dialog_did_web::CachingResolver::new(dialog_did_web::WebResolver::new()),
+        ));
+        dialog_iroh_remote::transport::accept(endpoint, responder).await;
+
+        pumping.abort();
+        Ok(())
+    }
+}
+
+#[cfg(feature = "rtc")]
+pub use serving::serve;

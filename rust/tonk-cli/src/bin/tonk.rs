@@ -675,6 +675,22 @@ enum RtcCommand {
         port: Option<u16>,
     },
 
+    /// Serve this space to peers that dial in.
+    ///
+    /// The channel carries dialog's remote effects, so a browser or
+    /// another tonk can push and pull against this one. Prints the
+    /// address to register with `tonk remote add`; a browser on this
+    /// machine needs nothing, deriving the port and the certificate
+    /// fingerprint from the rendezvous phrase.
+    #[command(after_help = "Examples:\n  tonk rtc serve\n  tonk rtc serve --port 55991")]
+    Serve {
+        /// Listen on this port instead of the one the phrase derives.
+        /// A dialer assumes the derived one, so a different port has to
+        /// be configured at the other end too.
+        #[arg(long, value_name = "PORT")]
+        port: Option<u16>,
+    },
+
     /// Negotiate a channel with a browser tab and relay text over it.
     Connect {
         /// The page that answers the offer. Defaults to Tonk's own
@@ -1194,6 +1210,7 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
             Some(match command {
                 RtcCommand::Connect { .. } => "connect",
                 RtcCommand::Listen { .. } => "listen",
+                RtcCommand::Serve { .. } => "serve",
             }),
         ),
         Command::Push => ("push", None),
@@ -1407,6 +1424,20 @@ async fn main() {
         Command::Rtc { command } => match command {
             RtcCommand::Connect { via, no_open, stun } => {
                 tonk_cli::rtc::connect(tonk_cli::rtc::ConnectOptions { via, no_open, stun }).await
+            }
+            RtcCommand::Serve { port } => {
+                let Ok((_resolved, site)) = open_selected(None).await else {
+                    return;
+                };
+                tonk_cli::rtc::serve(
+                    &site,
+                    tonk_cli::rtc::ListenOptions {
+                        via: None,
+                        no_open: true,
+                        port,
+                    },
+                )
+                .await
             }
             RtcCommand::Listen { via, no_open, port } => {
                 tonk_cli::rtc::listen(tonk_cli::rtc::ListenOptions { via, no_open, port }).await
