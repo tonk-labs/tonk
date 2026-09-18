@@ -1326,6 +1326,18 @@ fn account_state_label(status: tonk_account::AccountStateStatus) -> &'static str
     }
 }
 
+fn print_existing_space_new(name: &str) -> ExitCode {
+    print_error(format!(
+        "space '{name}' already exists; the existing space was not changed\n\
+         this name may belong to another operation; inspect it with \
+         `tonk --space {name} status` and only adopt it after its site and DID match \
+         the space you intended\n\
+         if this follows an interrupted signed-in create, continue it with:\n  \
+         tonk space link {name}\n\
+         otherwise choose another name or remove the existing registration explicitly"
+    ))
+}
+
 /// `tonk space use <name>` — bind this directory to a registered space.
 async fn use_op(name: String, flag: Option<&str>) -> ExitCode {
     let store = match tonk_cli::space::SpaceStore::open() {

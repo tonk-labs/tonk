@@ -108,6 +108,11 @@ fn run_tonk_account_status(
     cmd.output().expect("tonk account status runs")
 }
 
+fn request_body(request: &str) -> serde_json::Value {
+    let (_, body) = request.split_once("\r\n\r\n").expect("HTTP body");
+    serde_json::from_str(body).expect("JSON batch")
+}
+
 #[dialog_common::test]
 fn help_posts_one_command_run_event() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");

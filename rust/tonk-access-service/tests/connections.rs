@@ -2,6 +2,7 @@
 //! No connection marker, confirmation, or management row participates in access.
 #![cfg(all(feature = "helpers", not(target_arch = "wasm32")))]
 
+use base64::Engine as _;
 use dialog_credentials::{Ed25519Signer, Signer};
 use dialog_remote_s3::Permit;
 use dialog_ucan_core::promise::Promised;
@@ -11,6 +12,7 @@ use dialog_ucan_core::{DelegationBuilder, DelegationChain, InvocationBuilder, In
 use dialog_varsig::{Did, Principal};
 use std::collections::{BTreeMap, HashMap};
 use tonk_access_service::helpers::{AccessServer, AccessServiceAddress};
+use tonk_access_service::permit::Claims;
 
 const CONTENT: &[u8] = b"ordinary connection storage roundtrip";
 
@@ -33,6 +35,7 @@ impl Fixture {
             access_key_id: "test".into(),
             secret_access_key: "test".into(),
             service_did: server.service_did.clone(),
+            service_seed: server.service_seed.clone(),
         };
         Ok(Self {
             _server: server,
@@ -59,14 +62,17 @@ impl Fixture {
             String::from_utf8_lossy(&body)
         );
         let permit: Permit = serde_ipld_dagcbor::from_slice(&body)?;
-        let ttl: u64 = permit
+        let encoded = permit
             .url
             .query_pairs()
-            .find(|(key, _)| key == "X-Amz-Expires")
-            .expect("signed transport expiry")
-            .1
-            .parse()?;
-        assert!((1..=60).contains(&ttl));
+            .find(|(key, _)| key == "permit")
+            .expect("signed object permit")
+            .1;
+        let claims: Claims = serde_ipld_dagcbor::from_slice(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(encoded.as_bytes())?,
+        )?;
+        let received_at = Timestamp::now().to_unix();
+        assert!((received_at + 1..=received_at + 60).contains(&claims.expires));
         Ok(permit)
     }
     async fn transfer(&self, permit: &Permit) -> anyhow::Result<Vec<u8>> {

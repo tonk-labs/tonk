@@ -42,7 +42,7 @@
       "artifact": "app/screens/web-03-space-home.png",
       "capture": "running product",
       "status": "captured",
-      "journey_ids": ["ACCT-C13", "ACCT-C14", "ACCT-C15", "SPACE-09", "DATA-02", "DATA-09", "UI-04"],
+      "journey_ids": ["ACCT-C13", "ACCT-C14", "SPACE-09", "DATA-02", "DATA-09", "UI-04"],
       "source_paths": ["rust/tonk-ui/src/bin/ui.rs", "rust/tonk-ui/styles.css", "rust/tonk-portal/src/site.rs", "rust/tonk-fab/src/markup.rs"]
     },
     {

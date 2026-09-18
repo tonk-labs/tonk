@@ -13,11 +13,10 @@ are removed. Local creation/transplant remain local; existing replicas and
 credentials are preserved. `tonk --space NAME connect` resumes an interrupted
 scoped import. Older sharing/account-approval links are rejected before import.
 
-The current journey is `ACCT-C14` / `HANDOFF-21`. `ACCT-C15` / `HANDOFF-22` is
-deferred to a later PR. Account-command and terminal-approval descriptions below
-are historical evidence, not supported CLI entry points. The previous browser
-results do not verify the narrowed implementation. Fresh evidence and remaining
-gates are recorded in [Plan 005](../../../plans/005-invite-only-cli.md).
+The current journey is `ACCT-C14` / `HANDOFF-21`. Browser-initiated terminal
+linking is deferred. Account-command descriptions below are historical evidence,
+not supported CLI entry points. Earlier browser results do not verify the narrowed
+implementation; see the [verification record](../verification/accounts.md).
 
 ## Summary
 
@@ -377,71 +376,6 @@ Acknowledgement does not promise immediate global enforcement. Downloaded data
 and offline edits remain; revoked or expired remote access requires new
 authorization and never falls back to a CLI account.
 
-Local evidence at worktree base `8acaa1897d3ed09a7bbde972f55060761d89f7f9`
-on 2026-09-16 includes real CLI crash/restart recovery, service revocation and
-persisted KV/D1 restart, and one browser copy/close/import/confirm/revoke journey.
-The final artifact `b32834be7306c317` passes the complete two-holder journey,
-independent-invite isolation, retained offline work and responsive/keyboard
-checks. [Running-product captures](../capture/agent-connections-2026-09-16/README.md)
-record the desktop and 390px visual evidence. This is not published npm, staging, production, Safari or
-global revocation-propagation evidence. See `HANDOFF-21` and
-[the execution record](../../../plans/001-cli-space-connections.md).
-
-## Selected terminal spaces
-
-Deferred from the first PR. The following describes the preserved implementation
-at `b7b4ecca7`, not a current command.
-
-`ACCT-C15` / `HANDOFF-22` starts with `tonk link`: the CLI durably retains a fresh
-key before opening or printing its signed approval URL. The browser checks that
-request, asks the user to sign in if needed, and shows the current account and
-terminal key. Nothing is selected initially. One, several, or all-current
-spaces can be selected; unavailable spaces remain visible with their delegation
-limits. All-current never subscribes the terminal to future spaces.
-
-Approval issues space-specific read/build grants to the CLI's exact public key.
-The private key stays on the CLI. Browser success says the complete selection
-was sent; only the terminal can report completed import. The CLI stages and
-checks every selected grant and remote before publishing the complete registry
-change. Account catalogue operations remain unavailable on an accountless CLI.
-
-The approval window is ten minutes; issued grants last 90 days, bounded by
-upstream authority. A request that was interrupted can explicitly resume an
-already published decision after its approval window. Local cancellation and
-automatic timeout are durable terminal outcomes and never silently reopen.
-Decline, wrong-key delivery, changed account, malformed selection, conflicting
-replay, and local alias collisions cannot silently install a smaller selection.
-
-Settings groups terminal access separately from copied agent invites. Additions
-issue fresh grants to the retained terminal key and can wait for an offline CLI.
-Removing one space or all terminal access publishes ordinary UCAN revocations.
-Each leaf's acknowledgement remains visible; partial removal offers retry.
-Fresh access after removal gets new grant CIDs. Downloaded data and offline edits
-remain with the terminal. Delivery and saved status are historical observations,
-not proof of current remote permission or online presence.
-
-Local execution now covers browser/CLI one, several and all-current selections,
-explicit legacy-account conversion with retained aliases and unsynced edits,
-and offline additions, removal, rejected queued grants and fresh re-addition.
-The final CLI reports a revoked delivery without installing it, then imports a
-later fresh grant; an exact local query still reads retained edits. Signed codec,
-atomic import and crash recovery, SQLite/D1 restart, real HTTP authorization,
-worker selection and Wasm DOM checks provide the lower-layer evidence.
-
-[Running-product captures](../capture/terminal-connections-2026-09-16/README.md)
-record artifact `63775cbb5273ce15`, desktop and 390px layout, real Tab focus and
-44px controls. Top-document reduced-motion emulation does not verify the opaque
-guest's media query. The local journey is verified on the later snapshot-fix
-artifact `d7f3967a6db1fa1a`: exact selections, fresh signed decline, offline
-management with a rejected queued grant, and explicit conversion all pass.
-The captures retain their earlier artifact provenance.
-
-A worker regression reproduced a snapshot rejection and passed after the
-fingerprint stopped including mutable presentation and eligibility; the root
-proof and exact repository/subject set remain pinned, and approval rechecks
-current selected grants. This does not establish the cause of every earlier
-intermittent pre-staging refusal; retain that symptom for staging monitoring.
-CI, staging, published CLI/browser compatibility, Safari and global revocation
-propagation remain unrun gates. Evidence is from the dirty worktree based on
-`8acaa1897d3ed09a7bbde972f55060761d89f7f9`; [the execution record](../../../plans/001-cli-space-connections.md)
-tracks the final checkpoint and external limits.
+Source: PR #963 at `199e9a599`. Fresh native checks passed; browser, Safari,
+deployed compatibility and global revocation propagation remain unverified
+for the narrowed implementation. See `HANDOFF-21`.

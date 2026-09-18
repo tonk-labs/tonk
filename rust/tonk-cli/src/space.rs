@@ -55,6 +55,10 @@ const REGISTRY_FILE: &str = "spaces.json";
 /// Cross-process lock covering one complete registry mutation.
 const REGISTRY_LOCK_FILE: &str = "spaces.lock";
 
+/// Cross-process lock serializing site initialization without blocking
+/// account-state mutations that also need the registry.
+const CREATION_LOCK_FILE: &str = "spaces.create.lock";
+
 /// Pre-rename registry filename, read once and migrated away. See
 /// [`SpaceStore::load`].
 const LEGACY_REGISTRY_FILE: &str = "spots.json";
@@ -1064,10 +1068,7 @@ pub async fn create(
     let target = site_override
         .map(Path::to_path_buf)
         .unwrap_or_else(|| store.canonical_site(name));
-    // Initialization can recover account state and provision remotely. Keep it
-    // outside the registry lock, which those account transitions also need.
-    // A separate target lock prevents two creators from initializing one site.
-    let _creation = creation_guard(store, &target)?;
+    let _creation = creation_guard(store)?;
     {
         let guard = store.write_guard()?;
         if guard.load()?.spaces.contains_key(name) {
@@ -1113,8 +1114,8 @@ pub async fn create(
     let guard = store.write_guard()?;
     let mut registry = guard.load()?;
     if registry.spaces.contains_key(name) {
-        // Another operation claimed the alias while initialization ran. Retain
-        // the initialized data so the caller can explicitly adopt it elsewhere.
+        // Another registry writer claimed the alias while initialization ran.
+        // Retain the initialized data so the caller can adopt it explicitly.
         return Err(SpaceError::Exists(name.to_owned()));
     }
     registry
@@ -1129,43 +1130,34 @@ pub async fn create(
     Ok(outcome)
 }
 
-/// Serialize initialization of a target without blocking account transitions.
-fn creation_guard(store: &SpaceStore, target: &Path) -> Result<File, SpaceError> {
-    let target = if target.is_absolute() {
-        target.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .map_err(|error| SpaceError::Io(error.to_string()))?
-            .join(target)
-    };
-    // Canonicalize the nearest existing ancestor: the target itself does not
-    // exist on first use, and a symlinked parent must not change its lock key
-    // once initialization creates it.
-    let mut ancestor = target.as_path();
-    let base = loop {
-        if let Ok(base) = ancestor.canonicalize() {
-            break base;
-        }
-        ancestor = ancestor.parent().ok_or_else(|| {
-            SpaceError::Io(format!(
-                "could not resolve creation target {}",
-                target.display()
-            ))
-        })?;
-    };
-    let target = base.join(target.strip_prefix(ancestor).expect("ancestor prefix"));
-    let directory = store.root().join("creation-locks");
-    std::fs::create_dir_all(&directory).map_err(|error| SpaceError::Io(error.to_string()))?;
-    let key = blake3::hash(target.as_os_str().as_encoded_bytes()).to_hex();
+/// Serialize all site initialization for one store without retaining the
+/// registry lock across account setup or other nested registry mutations.
+fn creation_guard(store: &SpaceStore) -> Result<File, SpaceError> {
+    std::fs::create_dir_all(store.root()).map_err(|error| {
+        SpaceError::Io(format!(
+            "could not create space state directory {}: {error}",
+            store.root().display()
+        ))
+    })?;
+    let path = store.root().join(CREATION_LOCK_FILE);
     let lock = OpenOptions::new()
         .create(true)
         .truncate(false)
         .read(true)
         .write(true)
-        .open(directory.join(format!("{key}.lock")))
-        .map_err(|error| SpaceError::Io(error.to_string()))?;
-    lock.lock()
-        .map_err(|error| SpaceError::Io(format!("could not lock space creation: {error}")))?;
+        .open(&path)
+        .map_err(|error| {
+            SpaceError::Io(format!(
+                "could not open space creation lock {}: {error}",
+                path.display()
+            ))
+        })?;
+    lock.lock().map_err(|error| {
+        SpaceError::Io(format!(
+            "could not acquire space creation lock {}: {error}",
+            path.display()
+        ))
+    })?;
     Ok(lock)
 }
 

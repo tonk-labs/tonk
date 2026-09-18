@@ -1,8 +1,8 @@
 diff --git a/Cargo.lock b/Cargo.lock
-index 3e89517..cf2b30f 100644
+index 9998f78..8158302 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
-@@ -1499,6 +1499,7 @@ dependencies = [
+@@ -1490,6 +1490,7 @@ dependencies = [
   "base58",
   "blake3",
   "bytes",
@@ -23,7 +23,7 @@ index 81dfd12..f0a2aaa 100644
  dialog-ucan = { workspace = true }
  dialog-common = { workspace = true }
 diff --git a/rust/dialog-remote-ucan-s3/src/authorizer.rs b/rust/dialog-remote-ucan-s3/src/authorizer.rs
-index bf980ef..0c9f44f 100644
+index bf980ef..c4faae7 100644
 --- a/rust/dialog-remote-ucan-s3/src/authorizer.rs
 +++ b/rust/dialog-remote-ucan-s3/src/authorizer.rs
 @@ -63,9 +63,43 @@ use dialog_remote_s3::{Address, Permit, S3Credential, S3Error};
@@ -40,7 +40,7 @@ index bf980ef..0c9f44f 100644
 +    request: &mut dialog_remote_s3::request::S3Request,
 +    range: TimeRange,
 +    now: Timestamp,
-+) -> Result<(), S3Error> {
++) -> Result<u64, S3Error> {
 +    range.check(&now).map_err(|error| {
 +        S3Error::Authorization(check_failed_to_authorize_error(CheckFailed::TimeBound(
 +            error,
@@ -65,12 +65,12 @@ index bf980ef..0c9f44f 100644
 +    )
 +    .ok_or_else(|| S3Error::Configuration("Signing time is out of range".into()))?;
 +    request.expires = request.expires.min(remaining);
-+    Ok(())
++    Ok(end)
 +}
  
  // Generic deserialization from UCAN args
  
-@@ -232,14 +266,15 @@ impl FromUcanArgs for blob::Import {
+@@ -232,19 +266,20 @@ impl FromUcanArgs for blob::Import {
  /// Dispatch UCAN command to the appropriate `FromUcanArgs` handler and authorize
  /// the resulting capability directly against the S3 address.
  macro_rules! dispatch {
@@ -84,15 +84,33 @@ index bf980ef..0c9f44f 100644
                      let capability = <$fx as FromUcanArgs>::capability_from_args($subject, $args)?;
 -                    let request = ::dialog_remote_s3::request::S3Request::from(&capability);
 +                    let mut request = ::dialog_remote_s3::request::S3Request::from(&capability);
-+                    clamp_request(&mut request, $range, $clock())?;
++                    let expires_at = clamp_request(&mut request, $range, $clock())?;
                      let authorization = match $self.credential.clone() {
                          Some(credential) => request.attest(credential),
                          None => ::dialog_remote_s3::S3Authorization::public(request),
-@@ -448,6 +483,20 @@ where
+                     };
+-                    authorization.redeem(&$self.address).await
++                    Ok((authorization.redeem(&$self.address).await?, expires_at))
+                 }
+             )+
+             _ => Err(S3Error::Configuration(format!("Unknown command: {:?}", $segments)))
+@@ -448,6 +483,45 @@ where
      /// 2. Checks command prefix authorization at each delegation
      /// 3. Validates policy predicates on each delegation
      pub async fn authorize(&self, container: &[u8]) -> Result<Permit, S3Error> {
-+        self.authorize_with_clock(container, Timestamp::now).await
++        self.authorize_with_expiration(container)
++            .await
++            .map(|(permit, _)| permit)
++    }
++
++    /// Authorize and return the absolute expiry verified for the transport.
++    /// Embedders that translate the permit must preserve this deadline.
++    pub async fn authorize_with_expiration(
++        &self,
++        container: &[u8],
++    ) -> Result<(Permit, u64), S3Error> {
++        self.authorize_with_clock_and_expiration(container, Timestamp::now)
++            .await
 +    }
 +
 +    /// Authorize using a trusted clock, sampled before verification and signing.
@@ -106,10 +124,23 @@ index bf980ef..0c9f44f 100644
 +    where
 +        C: Fn() -> Timestamp,
 +    {
++        self.authorize_with_clock_and_expiration(container, clock)
++            .await
++            .map(|(permit, _)| permit)
++    }
++
++    async fn authorize_with_clock_and_expiration<C>(
++        &self,
++        container: &[u8],
++        clock: C,
++    ) -> Result<(Permit, u64), S3Error>
++    where
++        C: Fn() -> Timestamp,
++    {
          // Parse and verify the invocation chain
          let chain = InvocationChain::try_from(container).map_err(|e| {
              S3Error::Authorization(AuthorizeError::Malformed {
-@@ -464,8 +513,8 @@ where
+@@ -464,8 +538,8 @@ where
          // real index behind it. Either way the question is asked inside the
          // chain walk, per link and per entitled revoker.
          let environment = Environment::new(chain.proof_store(), resolver, &*self.revocations);
@@ -120,7 +151,7 @@ index bf980ef..0c9f44f 100644
              // Two different failures arrive here: their material not
              // verifying, and our own setup being unable to check it (for
              // example, an unreachable did:web host). Only the first is a
-@@ -506,7 +555,7 @@ where
+@@ -506,7 +580,7 @@ where
  
          let command_segments: Vec<&str> = command.0.iter().map(|s| s.as_str()).collect();
  
@@ -129,7 +160,7 @@ index bf980ef..0c9f44f 100644
              ["use", "get", "memory", "cell"]     => dialog_effects::memory::Resolve,
              ["use", "put", "memory", "cell"]     => dialog_effects::memory::Publish,
              ["use", "delete", "memory", "cell"]  => dialog_effects::memory::Retract,
-@@ -545,6 +594,123 @@ mod tests {
+@@ -545,6 +619,127 @@ mod tests {
      use dialog_ucan_core::subject::Subject as DelegatedSubject;
      use std::collections::BTreeMap;
  
@@ -193,15 +224,19 @@ index bf980ef..0c9f44f 100644
 +
 +    #[dialog_common::test]
 +    async fn transport_ceiling_and_ancestor_at_explicit_clock() {
-+        for (expiration, ttl) in [(None, "60"), (Some(transport_time(1_000_020)), "20")] {
++        for (expiration, ttl, expires_at) in [
++            (None, "60", 1_000_060),
++            (Some(transport_time(1_000_020)), "20", 1_000_020),
++        ] {
 +            let (authorizer, bytes) = transport_fixture_with_expiration(expiration).await;
-+            let permit = authorizer
-+                .authorize_with_clock(&bytes, || transport_time(1_000_000))
++            let (permit, actual_expiration) = authorizer
++                .authorize_with_clock_and_expiration(&bytes, || transport_time(1_000_000))
 +                .await
 +                .unwrap();
 +            let query: BTreeMap<_, _> = permit.url.query_pairs().collect();
 +            assert_eq!(query["X-Amz-Expires"], ttl);
 +            assert_eq!(query["X-Amz-Date"], "19700112T134640Z");
++            assert_eq!(actual_expiration, expires_at);
 +        }
 +    }
 +

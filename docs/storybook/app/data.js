@@ -333,27 +333,19 @@ window.STORYBOOK_DATA = {
     },
     {
       "evidence": "Historical lower-layer evidence retained; new CLI refuses these entry points without mutation.",
-      "gaps": "People and agents now use ACCT-C14; ACCT-C15 is deferred.",
+      "gaps": "People and agents now use ACCT-C14.",
       "group": "Accounts: CLI and browser handoff",
       "id": "ACCT-C13",
       "title": "Retired: account-bound agent setup through join or browser-mediated connect.",
       "variants": "Old sharing/account handoffs and legacy resume metadata."
     },
     {
-      "evidence": "Local CLI import/recovery, exact-authority service tests, persisted KV/D1 revocation restart, and real browser multiple-holder copy/close/import/build/confirm/revoke journeys, including responsive and keyboard checks.",
+      "evidence": "Local CLI import/recovery, exact-authority service tests, persisted KV/D1 revocation restart, checks. Earlier browser results precede this narrowed implementation; fresh browser execution is pending.",
       "gaps": "Published CLI/browser matrix; staging, Safari and global revocation propagation.",
       "group": "Accounts: CLI and browser handoff",
       "id": "ACCT-C14",
       "title": "Copy a scoped invitation for a person or agent, run one-way tonk connect without browser/account approval, and revoke its grant group from Settings.",
       "variants": "Empty or unrelated-account CLI; repeated bearer holders; independent invites; closed issuing browser; restart; offline or revoked authority."
-    },
-    {
-      "evidence": "Local journey verified on final snapshot artifact: signed codec, atomic import/recovery, HTTP/SQLite/D1 restart, worker and Wasm selection; actual browser/CLI one/many/all, decline, conversion, offline removal and queued revoked/fresh additions (evidence).",
-      "gaps": "Earlier intermittent refusal attribution remains uncertain; monitor in staging. External release, CI, Safari, guest reduced-motion media and global propagation remain unverified.",
-      "group": "Accounts: CLI and browser handoff",
-      "id": "ACCT-C15",
-      "title": "Deferred from Plan 005: link explicit browser-selected spaces to a CLI-owned terminal key and manage later grants.",
-      "variants": "One/many/all-current; accountless or legacy CLI; signed-in or fresh browser; offline additions, cancellation, expiry and partial revocation."
     },
     {
       "evidence": "Whole browser revoke-CLI flow; DOM list tests; presenter tests require response uncertainty to lead to refresh before retry.",
@@ -817,7 +809,6 @@ window.STORYBOOK_DATA = {
       "journey_ids": [
         "ACCT-C13",
         "ACCT-C14",
-        "ACCT-C15",
         "SPACE-09",
         "DATA-02",
         "DATA-09",
@@ -1733,15 +1724,7 @@ window.STORYBOOK_DATA = {
       "file": "verification/accounts.md",
       "id": "HANDOFF-21",
       "priority": "P1",
-      "result": "Current artifact 8f6fd822f2ec2f3a: anonymous-space signup/verification returns to the same space and CLI import passes (8.09s); issuer-closed import/edit/reconnect/revoke passes (12.19s); independent invitations and CLI accounts pass (19.00s). Execution and fixes. Synthetic-passkey Chrome/local services only; Safari, production, physical passkeys, and external email remain unverified."
-    },
-    {
-      "claim": "Deferred: exact selected-space terminal grants (Selected terminal spaces).",
-      "device": "historical / deferred",
-      "file": "verification/accounts.md",
-      "id": "HANDOFF-22",
-      "priority": "P1",
-      "result": "Current artifact 8f6fd822f2ec2f3a: exact one/two/all selection passes (18.68s); signup automatically returns to the pending request and cancel preserves CLI state (6.40s); offline additions/revocations/re-add pass (21.94s). Execution and fixes. Earlier lower-layer and conversion evidence remains; Safari, CI, production, and global propagation remain unverified."
+      "result": "Native protocol, CLI import/recovery and issuer/revocation checks passed at 199e9a599. Fresh browser execution remains unverified."
     },
     {
       "claim": "Device list identifies self separately from shared rows (Resolve).",
@@ -2307,7 +2290,7 @@ window.STORYBOOK_DATA = {
   "verificationResults": {
     "blocked": 0,
     "fail": 0,
-    "other": 9,
+    "other": 8,
     "pass": 2,
     "unrun": 110
   },

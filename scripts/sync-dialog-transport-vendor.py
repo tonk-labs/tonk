@@ -32,7 +32,7 @@ def dependency(match):
     inherited = {'version': inherited} if isinstance(inherited, str) else dict(inherited)
     if 'path' in inherited:
         inherited.pop('path')
-        inherited.update(git='https://github.com/dialog-db/dialog-db.git', tag='tonk-2026-09-14')
+        inherited.update(git='https://github.com/dialog-db/dialog-db.git', tag='tonk-2026-09-16.1')
     features = inherited.pop('features', []) + local.pop('features', [])
     inherited.update(local)
     if features:

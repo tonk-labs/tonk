@@ -250,6 +250,7 @@ async fn connection_command_imports_bearer_restarts_and_keeps_account_state() ->
         access_key_id: "test".into(),
         secret_access_key: "test".into(),
         service_did: server.service_did.clone(),
+        service_seed: server.service_seed.clone(),
     };
     address.provision_subject(owner.did().as_ref()).await?;
     let remote: url::Url = format!("{}/ucan/", server.endpoint).parse()?;

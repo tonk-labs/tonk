@@ -3,7 +3,7 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-dialog_revision=4c16de9e345d2b2d888d1008c5d3f0ca990c4807
+dialog_revision=e26e0e61da76e460339c45bd45c4d7e9ce9a801b
 patch_file="$repo_root/patches/dialog-transport-expiry.patch"
 prepare_only=false
 if [[ "${1:-}" == --prepare-only ]]; then
