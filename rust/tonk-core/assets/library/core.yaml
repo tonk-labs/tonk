@@ -199,20 +199,17 @@ view!:
         </style>
         <section class="blank-canvas__deeplink">
           <tonk-page on:invite=tonk:agent-handoff></tonk-page>
-          <tonk-origin>
+          <tonk-display
+            entity={subject}
+            model=tonk:agent-invite
+            data-page="this repo">
             <tonk-display
+              slot="no-entity"
               entity={subject}
-              bind:base="data-base"
-              model=tonk:agent-invite
-              data-page="this repo">
-              <tonk-display
-                slot="no-entity"
-                entity={subject}
-                model=tonk:agent-handoff-state>
-                <div slot="no-entity" class="blank-canvas__label">Generating link…</div>
-              </tonk-display>
+              model=tonk:agent-handoff-state>
+              <div slot="no-entity" class="blank-canvas__label">Generating link…</div>
             </tonk-display>
-          </tonk-origin>
+          </tonk-display>
         </section>
       </div>
 
@@ -769,15 +766,8 @@ concept!: &member
       as: text
 
 # A single roster row — the default view for `model: tonk:member`. Each
-# member is one entry in the "shared with" list: a sigil-glyph avatar, the
-# member's display name (with the DID tail beneath as a fallback id), and a
-# role badge.
-#
-# The `<tonk-sigil>` avatar masks against a sprite that the sealed guest
-# loads over the host bridge and installs as the global default (see
-# `load_sigil_sprite` in tonk-guest) — so the identity glyph renders inside
-# the opaque iframe with no cross-origin fetch. `did={member}` seeds it from
-# the member DID so the glyph matches everywhere that member is shown.
+# member is one entry in the "shared with" list: the member's display name
+# (with the DID tail beneath as a fallback id), and a role badge.
 #
 # The DID's last 8 chars sit under the name as a stable disambiguator (the
 # full value is in `title`); CSS `direction:rtl` truncation clips the HEAD
@@ -809,7 +799,6 @@ view!:
   show:
     ui: |
       <div class="roster__row" data-role={role}>
-        <tonk-sigil class="roster__avatar" did={member}></tonk-sigil>
         <span class="roster__identity">
           <span class="roster__name">{name}</span>
           <span class="roster__did" title={member}><bdi>{member}</bdi></span>
@@ -866,14 +855,6 @@ view!:
              clips it round (matching the wireframe avatars). The sprite is
              supplied by the sealed guest, so it paints inside the opaque
              iframe. */
-          .roster__avatar {
-            flex: none;
-            width: 28px;
-            height: 28px;
-            border-radius: 50%;
-            border: 1px solid var(--wa-color-surface-border);
-            overflow: hidden;
-          }
           /* The DID's LAST 8 chars: `direction:rtl` makes the overflow clip
              the head (with a leading ellipsis), so the tail stays visible.
              `<bdi>` keeps the DID itself rendering left-to-right inside the

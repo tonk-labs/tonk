@@ -4980,7 +4980,6 @@ dependencies = [
  "tonk-host",
  "tonk-inspector",
  "tonk-portal",
- "tonk-sigil",
  "tonk-tree",
  "tonk-workspace",
  "wasm-bindgen",
@@ -5254,18 +5253,6 @@ dependencies = [
  "tonk-notation",
  "tonk-worker-api",
  "wasm-bindgen-test",
-]
-
-[[package]]
-name = "tonk-sigil"
-version = "0.6.15"
-dependencies = [
- "blake3",
- "bs58",
- "custom-elements",
- "js-sys",
- "wasm-bindgen",
- "web-sys",
 ]
 
 [[package]]

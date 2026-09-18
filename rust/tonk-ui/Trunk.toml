@@ -28,7 +28,7 @@ no_autoreload = true
 #   - tonk-ui wasm (the page) — directly + via the in-SW tonk-worker.
 #   - tonk-worker (the SW) — incl. tonk-router (route matching).
 #   - the sealed-guest wasm (tonk-guest) — display/board/workspace/tree/
-#     inspector/portal/sigil register the elements rendered inside the iframe.
+#     inspector/portal register the elements rendered inside the iframe.
 # A crate missing here means its edits never reach the dev server (e.g. a
 # tonk-inspector change wouldn't rebuild the guest bundle).
 #
@@ -66,7 +66,6 @@ watch = [
     "../tonk-guest/src",
     "../tonk-fab/src",
     "../tonk-inspector/src",
-    "../tonk-sigil/src",
     "../tonk-code/assets",
     "../tonk-prose/assets",
     "../tonk-table/assets",
