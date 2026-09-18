@@ -40,6 +40,7 @@
 pub mod command;
 pub mod inspect;
 pub mod mode;
+pub mod recorder;
 pub mod slot;
 pub mod source;
 

@@ -93,10 +93,6 @@ const BADGE_PADDING: f64 = 6.0;
 /// The element name, in one place.
 const NAME: &str = "tonk-introspect";
 
-/// Set this attribute on the element to restore alt-click pinning. Off
-/// by default: see the note on pinning above.
-const ALT_CLICK: &str = "alt-click";
-
 /// The element.
 #[derive(Default)]
 pub struct TonkIntrospect {
@@ -345,11 +341,6 @@ impl Overlay {
         })
     }
 
-    /// Whether this page asked for alt-click pinning as well.
-    fn alt_click_pins(&self) -> bool {
-        self.host.has_attribute(ALT_CLICK)
-    }
-
     /// The id for `host`, assigning one if this is the first sighting.
     fn target_of(&mut self, host: &Element) -> TargetId {
         if let Some(index) = self
@@ -456,12 +447,15 @@ fn install_listeners(document: &Document, overlay: &Rc<RefCell<Overlay>>) -> Vec
         },
     ));
 
-    // Alt-click pinning, only for a page that asked for it. It has to
-    // be swallowed in the capture phase — inspecting a button must
-    // never dispatch the command that button carries — which is
-    // precisely why it is not the default.
+    // Alt-click pins — but only while the overlay is already tracking
+    // a display, which is a much narrower claim than taking the
+    // gesture outright. With the hood closed the click is the page's
+    // and this listener returns before touching it; with an outline on
+    // screen the user is plainly inspecting, and a click there must
+    // not also dispatch the command the element carries, so it is
+    // swallowed in the capture phase.
     bound.push(listen(&target, "click", true, overlay, |overlay, event| {
-        if !overlay.borrow().alt_click_pins() {
+        if !overlay.borrow().machine.is_tracking() {
             return;
         }
         let Some(mouse) = event.dyn_ref::<MouseEvent>() else {
@@ -470,12 +464,14 @@ fn install_listeners(document: &Document, overlay: &Rc<RefCell<Overlay>>) -> Vec
         if !mouse.alt_key() {
             return;
         }
-        let Some(host) = display_under(mouse) else {
-            return;
+        // Anywhere over the tracked display, not just its innermost
+        // element: the point is to pin what is outlined.
+        let over = match display_under(mouse) {
+            Some(host) => overlay.borrow_mut().target_of(&host),
+            None => return,
         };
         event.prevent_default();
         event.stop_propagation();
-        let over = overlay.borrow_mut().target_of(&host);
         overlay.borrow_mut().machine.apply(Input::Toggle { over });
     }));
 
@@ -724,13 +720,13 @@ fn paint_frame(overlay: &Rc<RefCell<Overlay>>, target: Option<TargetId>) {
         .outline
         .set_attribute("class", if latched { "outline pinned" } else { "outline" });
 
-    // The pin sits above the outline's top-left, or just inside when
-    // the display is against the top of the viewport.
-    let top = if rect.top() >= BADGE_HEIGHT + 2.0 {
-        rect.top() - BADGE_HEIGHT - 2.0
-    } else {
-        rect.top() + 2.0
-    };
+    // Inside the outline's top-left, overlapping the display rather
+    // than floating above it. Outside, the walk to reach it crosses
+    // page that is not a display, and every step of that walk used to
+    // read as giving up — which made the pin, and so pinning at all,
+    // unreachable. The leave grace covers the rest of the gap; this
+    // removes most of it.
+    let top = rect.top();
     state
         .pin
         .set_text_content(Some(if latched { "pinned" } else { "pin" }));

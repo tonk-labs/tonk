@@ -25,6 +25,14 @@
 /// does not strobe every card on the way past.
 pub const DWELL_MS: f64 = 300.0;
 
+/// How long tracking survives the pointer leaving every display.
+///
+/// Without this, anything worth walking over to — the pin, the panel —
+/// is unreachable, because the page between here and there is not a
+/// display and reaching it reads as giving up. The grace is the width
+/// of that gap in time rather than pixels.
+pub const LEAVE_MS: f64 = 400.0;
+
 /// Which display an observation is attached to — an index into the
 /// overlay's table of `<tonk-display>` hosts it has seen this frame.
 pub type TargetId = u32;
@@ -39,9 +47,14 @@ pub enum Phase {
     Arming(TargetId),
     /// Observing because Alt is still held over this display.
     Observing(TargetId),
-    /// Observing because the user alt-clicked this display. Survives
-    /// Alt going up and the pointer moving away.
+    /// Observing because the user pinned this display. Survives Alt
+    /// going up and the pointer moving away.
     Latched(TargetId),
+    /// The pointer left every display, but not long enough ago to
+    /// mean it. Still painted; still the same target if the pointer
+    /// comes back. The flag carries whether observation had started,
+    /// so coming back does not restart the dwell.
+    Leaving(TargetId, bool),
 }
 
 /// A fact the overlay hands the machine.
@@ -83,24 +96,35 @@ pub struct Machine {
     phase: Phase,
     /// When the current [`Phase::Arming`] began.
     armed_at: f64,
+    /// When the current [`Phase::Leaving`] began.
+    left_at: f64,
     /// Dwell threshold, injectable so tests need not sleep.
     dwell: f64,
+    /// Leave grace, injectable for the same reason.
+    leave: f64,
 }
 
 impl Default for Machine {
     fn default() -> Self {
-        Self::with_dwell(DWELL_MS)
+        Self::with_timing(DWELL_MS, LEAVE_MS)
     }
 }
 
 impl Machine {
-    /// A machine with a custom dwell threshold, in milliseconds.
-    pub fn with_dwell(dwell: f64) -> Self {
+    /// A machine with custom thresholds, in milliseconds.
+    pub fn with_timing(dwell: f64, leave: f64) -> Self {
         Self {
             phase: Phase::Idle,
             armed_at: 0.0,
+            left_at: 0.0,
             dwell,
+            leave,
         }
+    }
+
+    /// A machine with a custom dwell and the default leave grace.
+    pub fn with_dwell(dwell: f64) -> Self {
+        Self::with_timing(dwell, LEAVE_MS)
     }
 
     /// The current phase.
@@ -113,9 +137,10 @@ impl Machine {
     pub fn highlighted(&self) -> Option<TargetId> {
         match self.phase {
             Phase::Idle => None,
-            Phase::Arming(target) | Phase::Observing(target) | Phase::Latched(target) => {
-                Some(target)
-            }
+            Phase::Arming(target)
+            | Phase::Observing(target)
+            | Phase::Latched(target)
+            | Phase::Leaving(target, _) => Some(target),
         }
     }
 
@@ -123,9 +148,18 @@ impl Machine {
     /// `None` while merely dwelling.
     pub fn observed(&self) -> Option<TargetId> {
         match self.phase {
-            Phase::Observing(target) | Phase::Latched(target) => Some(target),
-            Phase::Idle | Phase::Arming(_) => None,
+            Phase::Observing(target) | Phase::Latched(target) | Phase::Leaving(target, true) => {
+                Some(target)
+            }
+            Phase::Idle | Phase::Arming(_) | Phase::Leaving(_, false) => None,
         }
+    }
+
+    /// Whether the machine is tracking a display right now — which is
+    /// the only window in which it claims a click. Outside it, an
+    /// alt-click is the page's.
+    pub fn is_tracking(&self) -> bool {
+        self.highlighted().is_some()
     }
 
     /// Whether the current observation is pinned by an alt-click.
@@ -159,13 +193,27 @@ impl Machine {
         if self.is_latched() {
             return;
         }
-        let Some(over) = over.filter(|_| alt) else {
+        // Alt up is unambiguous — nothing is being inspected.
+        if !alt {
             self.phase = Phase::Idle;
+            return;
+        }
+        let Some(over) = over else {
+            self.leave(at);
             return;
         };
         match self.phase {
             Phase::Arming(current) | Phase::Observing(current) if current == over => {
                 self.settle(at)
+            }
+            // Back on the display it was leaving, inside the grace:
+            // pick up exactly where it was rather than re-dwelling.
+            Phase::Leaving(current, observing) if current == over => {
+                self.phase = if observing {
+                    Phase::Observing(current)
+                } else {
+                    Phase::Arming(current)
+                };
             }
             _ => {
                 self.phase = Phase::Arming(over);
@@ -174,12 +222,33 @@ impl Machine {
         }
     }
 
-    /// Promote a dwell that has run long enough.
+    /// The pointer is on no display. Start the grace rather than
+    /// giving up, so there is time to reach the overlay's own chrome.
+    fn leave(&mut self, at: f64) {
+        match self.phase {
+            Phase::Arming(target) => {
+                self.phase = Phase::Leaving(target, false);
+                self.left_at = at;
+            }
+            Phase::Observing(target) => {
+                self.phase = Phase::Leaving(target, true);
+                self.left_at = at;
+            }
+            _ => {}
+        }
+    }
+
+    /// Promote a dwell that has run long enough, and give up on a
+    /// leave that has.
     fn settle(&mut self, at: f64) {
-        if let Phase::Arming(target) = self.phase
-            && at - self.armed_at >= self.dwell
-        {
-            self.phase = Phase::Observing(target);
+        match self.phase {
+            Phase::Arming(target) if at - self.armed_at >= self.dwell => {
+                self.phase = Phase::Observing(target);
+            }
+            Phase::Leaving(_, _) if at - self.left_at >= self.leave => {
+                self.phase = Phase::Idle;
+            }
+            _ => {}
         }
     }
 }
@@ -224,8 +293,8 @@ mod tests {
     }
 
     #[test]
-    fn it_stops_observing_when_the_pointer_leaves_every_display() {
-        let mut machine = Machine::with_dwell(100.0);
+    fn leaving_every_display_keeps_painting_for_the_grace() {
+        let mut machine = Machine::with_timing(100.0, 400.0);
         over(&mut machine, 7, 0.0);
         machine.apply(Input::Tick { at: 100.0 });
         machine.apply(Input::Pointer {
@@ -233,7 +302,83 @@ mod tests {
             over: None,
             at: 120.0,
         });
+        assert_eq!(
+            machine.observed(),
+            Some(7),
+            "the pin and the panel are off the display; reaching them cannot mean giving up"
+        );
+        machine.apply(Input::Tick { at: 400.0 });
+        assert_eq!(machine.observed(), Some(7), "still inside the grace");
+        machine.apply(Input::Tick { at: 600.0 });
+        assert_eq!(machine.phase(), Phase::Idle, "grace expired");
+    }
+
+    #[test]
+    fn coming_back_inside_the_grace_does_not_restart_the_dwell() {
+        let mut machine = Machine::with_timing(100.0, 400.0);
+        over(&mut machine, 7, 0.0);
+        machine.apply(Input::Tick { at: 100.0 });
+        machine.apply(Input::Pointer {
+            alt: true,
+            over: None,
+            at: 120.0,
+        });
+        over(&mut machine, 7, 200.0);
+        assert_eq!(
+            machine.phase(),
+            Phase::Observing(7),
+            "it was observing when it left, so it is observing when it returns"
+        );
+    }
+
+    #[test]
+    fn a_dwell_interrupted_by_a_gap_resumes_as_a_dwell() {
+        let mut machine = Machine::with_timing(100.0, 400.0);
+        over(&mut machine, 7, 0.0);
+        machine.apply(Input::Pointer {
+            alt: true,
+            over: None,
+            at: 20.0,
+        });
+        assert_eq!(machine.observed(), None, "it had not started observing");
+        over(&mut machine, 7, 40.0);
+        assert_eq!(machine.phase(), Phase::Arming(7));
+    }
+
+    #[test]
+    fn crossing_onto_another_display_inside_the_grace_starts_its_dwell() {
+        let mut machine = Machine::with_timing(100.0, 400.0);
+        over(&mut machine, 7, 0.0);
+        machine.apply(Input::Tick { at: 100.0 });
+        machine.apply(Input::Pointer {
+            alt: true,
+            over: None,
+            at: 120.0,
+        });
+        over(&mut machine, 8, 140.0);
+        assert_eq!(machine.phase(), Phase::Arming(8));
+    }
+
+    #[test]
+    fn releasing_alt_during_the_grace_gives_up_at_once() {
+        let mut machine = Machine::with_timing(100.0, 400.0);
+        over(&mut machine, 7, 0.0);
+        machine.apply(Input::Tick { at: 100.0 });
+        machine.apply(Input::Pointer {
+            alt: true,
+            over: None,
+            at: 120.0,
+        });
+        machine.apply(Input::AltReleased);
         assert_eq!(machine.phase(), Phase::Idle);
+    }
+
+    #[test]
+    fn the_machine_claims_a_click_only_while_it_is_tracking() {
+        let mut machine = Machine::with_dwell(100.0);
+        assert!(!machine.is_tracking(), "an idle overlay owns no gesture");
+        over(&mut machine, 7, 0.0);
+        assert!(machine.is_tracking());
     }
 
     #[test]

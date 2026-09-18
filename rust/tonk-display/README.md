@@ -73,10 +73,11 @@ In both modes the query engine emits one flat row per tuple, so cardinality-many
 
 `tonk_display::register()` also registers and mounts `<tonk-introspect>`, an
 overlay that makes this pipeline visible at the point of use. Hold Alt and the
-display under the pointer outlines, with a **pin** button above its corner;
-rest there for 300ms and observation switches on. Click the pin (Alt still
-held) to keep the observation while the pointer goes elsewhere; click it again,
-or press Escape, to release.
+display under the pointer outlines, with a **pin** button in its corner;
+rest there for 300ms and observation switches on. Alt-click it, or click the pin, to keep the
+observation while the pointer goes elsewhere; do it again, or press Escape, to
+release. Tracking survives the pointer leaving every display for a moment, so
+walking over to the panel does not drop it.
 
 Observation marks two things:
 
@@ -132,11 +133,15 @@ rendered DOM, because the DOM cannot answer the question: a rendered
 `with="main@repo"` does not say which half was a field, and a binding applied
 as a JS property left no attribute behind at all.
 
+Pin either by alt-clicking the outlined display or by clicking the pin button
+in the outline's corner. Alt-click is swallowed — a click on a button you are
+inspecting must not also dispatch the command it carries — but only while the
+overlay is *already tracking* a display. With the hood closed the gesture is
+the page's, untouched.
+
 It is inert until Alt goes down — one `mousemove` listener that reads `altKey`
-and returns, plus a bool read on the renderer's change path. It takes no
-gesture from the page: pinning is a click on its own chrome, not a
-modifier-click on your markup. `<tonk-introspect alt-click>` restores
-alt-click pinning if you want it. Remove the element to opt out entirely.
+and returns, plus a bool read on the renderer's change path. Remove the element
+to opt out entirely.
 
 See `/plan/display-introspection.md` for the design and the steps still open
 (the concept and view panels, editing).

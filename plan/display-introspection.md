@@ -44,20 +44,25 @@ one per document. Inert until Alt goes down.
 | rest there past 300ms | observation on: slots and commands marked |
 | move to another display | dwell restarts there |
 | move off / release Alt | observation off |
-| click the pin (Alt still held) | pin the observation; survives Alt release |
-| click it again | release it |
+| Alt + click the display, or click the pin | pin the observation; survives Alt release |
+| do it again | release it |
 | Escape | release everything |
 
-Pinning is a click on the overlay's own chrome, not a modifier-click on the
-page. A modifier-click would have to be swallowed — inspecting a button must
-never dispatch the command that button carries — and that takes the gesture
-away from every app for as long as the overlay is mounted. The pin costs the
-page nothing. `<tonk-introspect alt-click>` restores alt-click pinning for a
-page that wants it.
+Alt-click is swallowed in the capture phase, since a click on a button you are
+inspecting must not also dispatch the command it carries. The claim is narrow:
+the listener returns before touching the event unless the overlay is *already
+tracking* a display, so with the hood closed the gesture is the page's.
 
-Moving onto the overlay's own chrome does not count as moving off the display:
-pointer events that retarget to the overlay host are ignored by the machine,
-which is what makes reaching for the pin possible at all.
+Reaching the chrome takes two things working together, and the first shipped
+without the second, which made pinning unreachable in practice:
+
+- pointer events retargeting to the overlay host never reach the machine, so
+  resting on the pin or the panel is not "leaving";
+- the page *between* the display and the panel is not a display either, so the
+  machine holds its target for `LEAVE_MS` after the pointer leaves everything.
+
+The pin also sits *inside* the outline's top-left rather than above it, so the
+walk to reach it does not cross page at all.
 
 Alt state is read off the *pointer* event, not remembered from a `keydown`. A
 sealed guest iframe that has never had focus receives no key events, but every
