@@ -179,7 +179,16 @@ ulid = "1"
 unicode-width = "0.2"
 url = "2"
 urlencoding = "2"
-wasm-streams = "0.6"
+# Held at 0.5 because `iroh` enables `reqwest`'s `stream` feature, and
+# reqwest 0.13 depends on wasm-streams 0.5. Anything linked into the same
+# wasm module as iroh — the page, the service worker, the sealed guest —
+# must agree with it: two versions export the same wasm-bindgen describe
+# symbols (`IntoUnderlyingSink`/`Source`) under version-free names, so
+# `rust-lld` reports duplicate symbols in a build that type-checks
+# cleanly. The Cloudflare `worker` crate wants 0.6 and keeps its own copy;
+# that is fine because `tonk-access-service` is a separate cdylib that
+# does not link `tonk-host`.
+wasm-streams = "0.5"
 web-time = "1"
 webbrowser = "1.0"
 worker = "0.8.5"

@@ -8,10 +8,11 @@
 //   tonk            verifies the invocation, answers `peer::Hello`
 //
 // The "worker" is `tonk-rtc-probe`, a wasm harness exposing the three
-// calls `tonk-worker` makes. The service worker itself cannot be built
-// here — the app needs `trunk` — so what this does not cover is its
-// envelope dispatch and `AppState` lookup. What it does cover is
-// everything below that, which had never run.
+// calls `tonk-worker` makes. It covers the transport on its own, in
+// seconds and without a `trunk build`; `cli-status-app.mjs` beside it
+// runs the same path through the real page, service worker and route.
+// Keep both: when the app test fails, this one says whether the
+// transport or the wiring above it moved.
 //
 //   cargo build -p tonk-rtc-probe --target wasm32-unknown-unknown
 //   wasm-bindgen --target web --out-dir <pkg> target/.../tonk_rtc_probe.wasm
