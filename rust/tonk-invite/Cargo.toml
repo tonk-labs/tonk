@@ -16,9 +16,16 @@ dialog-ucan = { workspace = true }
 dialog-ucan-core = { workspace = true }
 dialog-varsig = { workspace = true }
 ipld-core = { workspace = true }
+serde = { workspace = true }
+serde_bytes = { workspace = true }
+serde_json = { workspace = true }
+serde_ipld_dagcbor = { workspace = true }
 url = { workspace = true }
 
 [dev-dependencies]
+dialog-effects = { workspace = true }
+dialog-operator = { workspace = true }
+dialog-storage = { workspace = true }
 dialog-common = { workspace = true, features = ["helpers"] }
 tokio = { workspace = true, features = ["macros", "rt"] }
 wasm-bindgen-test = { workspace = true }

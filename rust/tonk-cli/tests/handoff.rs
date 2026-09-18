@@ -68,7 +68,7 @@ async fn connection_receipt_is_visible_only_in_the_connected_space() -> anyhow::
     let route =
         tonk_cli::render::RenderRoute::parse("id:tonk:agent-connection@tonk:agent-connection")?;
     let html = tonk_cli::render::render(&connected.site, &route).await?;
-    assert!(html.contains("Your agent connected"));
+    assert!(html.contains("agent setup confirmed"));
     assert!(html.contains("Dismiss agent connection notification"));
     let untouched = other.eval_inline(query).await?;
     assert!(untouched.response.matches_after[0].results.is_empty());
@@ -82,19 +82,17 @@ async fn agent_prompt_is_copyable_without_showing_machine_instructions() -> anyh
         r#"tonk/agent-invite!:
   this: id:test:prompt
   name: "Test space"
-  link: "https://example.test/join?access=proof#secret"
+  link: "https://example.test/join#tonk-agent-v1=secret"
   account: did:key:expected-account
 "#,
     )
     .await?;
     let route = tonk_cli::render::RenderRoute::parse("id:test:prompt@tonk:agent-invite")?;
     let html = tonk_cli::render::render(&test.site, &route).await?;
-    assert!(html.contains("Copy the prompt and give it to an agent of your choice."));
-    assert!(html.contains("copy-label=\"Copy prompt\""));
+    assert!(html.contains("copy the prompt and give it to your agent."));
+    assert!(html.contains("copy-label=\"copy prompt\""));
     assert!(
-        html.contains(
-            "npx --yes @tonk/cli connect 'https://example.test/join?access=proof#secret'"
-        )
+        html.contains("npx --yes @tonk/cli join 'https://example.test/join#tonk-agent-v1=secret'")
     );
     assert!(
         !html.contains("<pre"),
@@ -335,28 +333,32 @@ async fn connect_rejects_open_invite_before_mutation() -> anyhow::Result<()> {
     let issuer = common::TestSite::new().await?;
     let invite =
         tonk_cli::invite::mint(&issuer.site, Some("https://example.test/join"), None).await?;
-    let home = tempfile::tempdir()?;
     let binary = std::env::var_os("NEXTEST_BIN_EXE_tonk")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| env!("CARGO_BIN_EXE_tonk").into());
-    let output = std::process::Command::new(binary)
-        .args(["connect", &invite.url, "--no-open"])
-        .current_dir(home.path())
-        .env("HOME", home.path())
-        .env("XDG_DATA_HOME", home.path().join("data"))
-        .env("TONK_SPACES_STATE", home.path().join("spaces"))
-        .env("TONK_TELEMETRY_STATE", home.path().join("telemetry"))
-        .env("TONK_UPDATE_STATE", home.path().join("update"))
-        .env("TONK_NO_UPDATE_CHECK", "1")
-        .env("DO_NOT_TRACK", "1")
-        .env_remove("TONK_SPACE")
-        .output()?;
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("account-scoped"));
-    assert!(
-        !home.path().join("spaces").exists(),
-        "legacy open invite must fail before local account/space writes"
-    );
+    {
+        let home = tempfile::tempdir()?;
+        let output = std::process::Command::new(&binary)
+            .arg("join")
+            .arg(&invite.url)
+            .current_dir(home.path())
+            .env("HOME", home.path())
+            .env("XDG_DATA_HOME", home.path().join("data"))
+            .env("TONK_SPACES_STATE", home.path().join("spaces"))
+            .env("TONK_TELEMETRY_STATE", home.path().join("telemetry"))
+            .env("TONK_UPDATE_STATE", home.path().join("update"))
+            .env("TONK_NO_UPDATE_CHECK", "1")
+            .env("DO_NOT_TRACK", "1")
+            .env_remove("TONK_SPACE")
+            .output()?;
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("unsupported_agent_invitation"));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("copy a new space invitation"));
+        assert!(
+            !home.path().join("spaces").exists(),
+            "legacy open invite must fail before local account/space writes"
+        );
+    }
     Ok(())
 }
 

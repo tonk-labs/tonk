@@ -143,7 +143,7 @@ mod when_one_account_is_signed_in {
     }
 
     #[dialog_common::test]
-    fn linking_without_an_account_says_to_sign_in_first() {
+    fn account_ownership_adoption_is_not_a_cli_command() {
         let state = tempfile::tempdir().expect("tempdir");
         space_and_account(state.path(), "garden", None);
 
@@ -151,16 +151,38 @@ mod when_one_account_is_signed_in {
 
         assert!(!output.status.success());
         assert!(
-            stderr_of(&output).contains("no account is signed in"),
+            stderr_of(&output).contains("unrecognized subcommand"),
             "{}",
             stderr_of(&output)
         );
     }
 
-    /// The listing names the space and its owner, and has no access column:
-    /// there is nothing for it to report, because nothing is refused.
     #[dialog_common::test]
-    fn the_space_listing_carries_an_owner_and_no_access_column() {
+    fn new_space_stays_local_with_a_retained_account_record() {
+        let state = tempfile::tempdir().expect("tempdir");
+        space_and_account(state.path(), "garden", Some(ACCOUNT_A));
+        let registry_file = state.path().join("spaces.json");
+        let before: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&registry_file).unwrap()).unwrap();
+        let output = run(state.path(), &["space", "new", "scratch"], &[]);
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        let after: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&registry_file).unwrap()).unwrap();
+        assert_eq!(before["account"], after["account"]);
+        assert_eq!(before["spaces"]["garden"], after["spaces"]["garden"]);
+        let remotes = run(
+            state.path(),
+            &["--space", "scratch", "remote", "--json"],
+            &[],
+        );
+        assert!(remotes.status.success(), "{}", stderr_of(&remotes));
+        let remotes: serde_json::Value = serde_json::from_slice(&remotes.stdout).unwrap();
+        assert_eq!(remotes["rows"].as_array().unwrap().len(), 0);
+    }
+
+    /// Authority provenance is separate from ownership and is not a remote verdict.
+    #[dialog_common::test]
+    fn the_space_listing_carries_an_owner_and_local_authority_provenance() {
         let state = tempfile::tempdir().expect("tempdir");
         space_and_account(state.path(), "garden", Some(ACCOUNT_A));
 
@@ -171,10 +193,10 @@ mod when_one_account_is_signed_in {
         assert!(stdout.contains("NAME"), "{stdout}");
         assert!(stdout.contains("OWNER"), "{stdout}");
         assert!(stdout.contains("ROLE"), "{stdout}");
-        assert!(!stdout.contains("ACCESS"), "{stdout}");
+        assert!(stdout.contains("ACCESS"), "{stdout}");
         assert!(!stdout.contains("another account"), "{stdout}");
         // Local-only until it is linked: no roster, so no owner.
-        assert!(stdout.contains("local"), "{stdout}");
+        assert!(stdout.contains("local-only"), "{stdout}");
     }
 }
 
@@ -685,6 +707,19 @@ mod when_nothing_is_registered {
         assert!(stdout.contains("examine state"), "{stdout}");
         assert!(stdout.contains("write facts"), "{stdout}");
         assert!(stdout.contains("collaborate"), "{stdout}");
+        assert!(!stdout.contains("--agent"), "{stdout}");
+        assert!(
+            !stdout
+                .lines()
+                .any(|line| line.trim_start().starts_with("connect ")),
+            "{stdout}"
+        );
+        assert!(
+            stdout
+                .lines()
+                .any(|line| line.trim_start().starts_with("join ")),
+            "{stdout}"
+        );
     }
 
     #[dialog_common::test]
@@ -771,11 +806,7 @@ mod when_resolving_with_precedence {
         let state = tempfile::tempdir().expect("tempdir");
         two_space_registry(state.path());
 
-        for args in [
-            &["--spot", "a", "status"][..],
-            &["spot", "link", "a"][..],
-            &["account", "spots"][..],
-        ] {
+        for args in [&["--spot", "a", "status"][..], &["spot", "link", "a"][..]] {
             let output = run(state.path(), args, &[]);
             assert!(!output.status.success());
             let stderr = stderr_of(&output);
@@ -877,6 +908,19 @@ mod when_resolving_with_precedence {
         assert!(output.status.success(), "{}", stderr_of(&output));
         let stdout = stdout_of(&output);
         assert!(!stdout.to_ascii_lowercase().contains("spot"), "{stdout}");
+        assert!(!stdout.contains("--agent"), "{stdout}");
+        assert!(
+            !stdout
+                .lines()
+                .any(|line| line.trim_start().starts_with("connect ")),
+            "{stdout}"
+        );
+        assert!(
+            stdout
+                .lines()
+                .any(|line| line.trim_start().starts_with("join ")),
+            "{stdout}"
+        );
     }
 
     #[dialog_common::test]
@@ -1110,11 +1154,11 @@ fn status_reports_when_a_configured_remote_cannot_be_fetched() {
     assert_eq!(value["sync"]["fetched"], false);
 }
 
-mod when_joining {
+mod when_using_the_removed_connect_command {
     use super::*;
 
     #[dialog_common::test]
-    fn it_rejects_a_duplicate_join_name_before_any_network_work() {
+    fn it_rejects_connect_before_any_network_work() {
         let state = tempfile::tempdir().expect("tempdir");
         let a = state.path().join("site-a");
         std::fs::create_dir_all(&a).expect("mkdir a");
@@ -1122,12 +1166,12 @@ mod when_joining {
 
         let output = run(
             state.path(),
-            &["join", "not-a-real-url", "--name", "a"],
+            &["connect", "not-a-real-url", "--name", "a"],
             &[],
         );
         assert!(!output.status.success());
         let stderr = stderr_of(&output);
-        assert!(stderr.contains("already exists"), "{stderr}");
+        assert!(stderr.contains("unrecognized subcommand"), "{stderr}");
     }
 }
 
@@ -1253,8 +1297,8 @@ mod when_no_remote_is_registered_at_all {
         let output = run(state.path(), &["invite", "--no-shorten"], &[]);
         let stderr = stderr_of(&output);
 
-        assert!(stderr.contains("tonk account login"), "{stderr}");
-        assert!(stderr.contains("tonk space link demo"), "{stderr}");
+        assert!(!stderr.contains("tonk account login"), "{stderr}");
+        assert!(!stderr.contains("tonk space link demo"), "{stderr}");
         assert!(stderr.contains("tonk remote add"), "{stderr}");
         assert!(stderr.contains("--base-url"), "{stderr}");
     }
@@ -2046,7 +2090,6 @@ mod when_reading {
 
         for args in [
             vec!["status", "--json"],
-            vec!["account", "status", "--json"],
             vec!["space", "agents", "get", "--json"],
             vec!["query", "task", "--json"],
             vec!["concept", "--json"],

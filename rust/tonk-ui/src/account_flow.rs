@@ -140,7 +140,7 @@ mod tests {
         click(&driver, ".playground-agent .agent-prompt__copy").await?;
         let prompt = copied_text(&driver).await?;
         anyhow::ensure!(
-            prompt.contains("npx --yes @tonk/cli connect 'https://example.test/playground-invite'"),
+            prompt.contains("npx --yes @tonk/cli join 'https://example.test/playground-invite'"),
             "rendered playground prompt: {prompt}"
         );
         anyhow::ensure!(prompt.contains("--switch-account"));
@@ -221,11 +221,26 @@ mod tests {
         for page in pages.json().as_array().context("page directory")? {
             let entity = page.as_str().context("page identity")?;
             driver.execute("const tree=document.querySelector('vault-tree'); globalThis.__vaultLib.emit(tree, 'navigate', {open:arguments[0], deviceOpen:arguments[0]});", vec![serde_json::json!(entity)]).await?;
-            wait_for_displayed(
+            if let Err(error) = wait_for_displayed(
                 &driver,
                 &format!("vault-active > tonk-display[entity=\"{entity}\"] > tonk-view"),
             )
-            .await?;
+            .await
+            {
+                // Diagnostic only: keep the original assertion failure while
+                // establishing whether focused navigation replaced its frame.
+                driver.enter_default_frame().await?;
+                let route = driver.current_url().await?.path().to_owned();
+                enter_space_view(&driver).await?;
+                let state = driver.execute(r#"const display=document.querySelector('vault-active > tonk-display');
+                    return { active:display?.getAttribute('entity'), model:display?.getAttribute('model'),
+                        views:display?.querySelectorAll(':scope > tonk-view').length,
+                        visible:!!display?.querySelector(':scope > tonk-view')?.getClientRects().length };"#, vec![]).await?;
+                return Err(error).context(format!(
+                    "offline navigation after reacquiring frame: route={route}, state={}",
+                    state.json()
+                ));
+            }
         }
         devtools.execute_cdp_with_params("Network.emulateNetworkConditions", serde_json::json!({
             "offline": false, "latency": 0, "downloadThroughput": -1, "uploadThroughput": -1,
@@ -347,11 +362,16 @@ mod tests {
                 const path = ["", "account", "activate", "settings"].includes(firstSegment)
                     ? `/${firstSegment}`
                     : "/<redacted>";
+                let controlled = false;
+                try { controlled = !!navigator.serviceWorker?.controller; } catch (_) {}
                 return {
                     path,
                     addingAccount: new URLSearchParams(location.search).has("add"),
                     ready: document.readyState,
-                    controlled: !!(navigator.serviceWorker && navigator.serviceWorker.controller),
+                    controlled,
+                    terminalStatus: document.querySelector('[data-terminal-status]')?.textContent || null,
+                    terminalPaneHidden: document.querySelector('[data-pane="terminal-link"]')?.hidden,
+                    settingsHidden: document.querySelector('[data-settings-view]')?.hidden,
                     accountMode: account?.getAttribute("data-mode") || null,
                     accountBusy: account?.getAttribute("aria-busy") || null,
                     accountError: (error?.textContent || "").slice(0, 500) || null,
@@ -5646,6 +5666,7 @@ mod tests {
     }
 
     #[dialog_common::test]
+    #[ignore = "historical CLI account catalogue workflow; CLI account commands are retired"]
     async fn it_backs_up_a_claimed_space_for_another_account_device(
         env: TestEnvironment,
     ) -> Result<()> {
@@ -6351,190 +6372,811 @@ mod tests {
         Ok(())
     }
 
+    /// ACCT-C14 / HANDOFF-21: an actual browser-issued bearer works after its issuing browser exits.
+    /// The test never imports browser/account signing material into the CLI.
+    #[cfg(feature = "connection-invites")]
     #[dialog_common::test]
-    async fn it_connects_as_the_scoped_browser_account_after_explicit_consent(
+    // Storybook HANDOFF-21: recover signup into the original scoped invitation.
+    async fn it_returns_from_agent_invite_signup_and_connects_the_original_space(
         env: TestEnvironment,
     ) -> Result<()> {
-        let first = driver_with_prf(&env).await?;
-        sign_up(&first, &env, "handoff-a@example.com").await?;
-        let linked = link_cli(&first, &env).await?;
-        first.quit().await?;
-        let registry_path = linked.profile.path().join("spaces/spaces.json");
-        let registry_before = std::fs::read(&registry_path)?;
-        let status_before =
-            run_cli(&env, &linked.profile, &["account".into(), "status".into()]).await?;
-
         let browser = driver_with_prf(&env).await?;
-        sign_up(&browser, &env, "handoff-b@example.com").await?;
-        let root = get_json(&browser, "/api/identity/root").await?;
-        let expected = successful_body("browser B root", &root)["rootDid"]
-            .as_str()
-            .context("missing B root")?
+        goto(&browser, env.tonk_web.as_str()).await?;
+        wait_for_service_worker(&browser).await?;
+        let key = create_space_awaiting_remote(&browser, "Before signup", false).await?;
+        await_url_containing(&browser, &format!("/space/{key}")).await?;
+        let original = browser.current_url().await?;
+        enter_space_view(&browser).await?;
+        wait_for_displayed(&browser, "[data-invite-account]").await?;
+        click(&browser, "[data-invite-account]")
+            .await
+            .context("open invite account setup")?;
+        browser.enter_default_frame().await?;
+        run_cluster_ceremony(&browser, "agent-recovery@example.com").await?;
+        activate_in_another_tab(&browser, &env, "agent-recovery@example.com").await?;
+        wait_for_absent(&browser, "#tonk-register").await?;
+        enter_space_view(&browser).await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
+        let copy = "[data-agent-mode=scoped] .agent-prompt__copy";
+        loop {
+            if let Ok(button) = browser.find(By::Css(copy)).await
+                && button.is_displayed().await.unwrap_or(false)
+            {
+                break;
+            }
+            if let Ok(button) = browser.find(By::Css("[data-invite-action=sync]")).await
+                && button.is_displayed().await.unwrap_or(false)
+            {
+                button.click().await.context("enable invitation sync")?;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                let state = browser.execute("return {mode:document.querySelector('tonk-agent-invite-controls')?.getAttribute('mode'),status:document.querySelector('[data-agent-handoff-status]')?.textContent,buttons:[...document.querySelectorAll('[data-invite-action]')].map(b=>({action:b.dataset.inviteAction,hidden:b.hidden}))}", vec![]).await?;
+                anyhow::bail!(
+                    "invitation did not become ready after signup: {}",
+                    state.json()
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!(browser.current_url().await?, original);
+        let invite = copied_agent_bearer(&browser)
+            .await
+            .context("copy recovered invitation")?;
+        let profile = tempfile::tempdir()?;
+        let output = tonk_command_in(&env, &profile)
+            .args(["join", &invite, "--name", "recovered-space"])
+            .env("TONK_CONNECTION_ORIGIN", env.tonk_web.as_str())
+            .output()
+            .await?;
+        anyhow::ensure!(
+            output.status.success(),
+            "agent import failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(profile.path().join("spaces/spaces.json"))?)?;
+        assert!(
+            registry["spaces"]
+                .as_object()
+                .unwrap()
+                .values()
+                .any(|entry| entry["connection"]["subject"]
+                    .as_str()
+                    .is_some_and(|subject| subject.ends_with(&key)))
+        );
+        browser.quit().await?;
+        Ok(())
+    }
+
+    #[cfg(feature = "connection-invites")]
+    #[dialog_common::test]
+    async fn it_connects_with_an_ordinary_bearer_after_the_issuer_closes(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let browser = driver_with_prf(&env).await?;
+        sign_up(&browser, &env, "ordinary-agent@example.com").await?;
+        let key = create_space_awaiting_remote(&browser, "Ordinary agent", true).await?;
+        await_url_containing(&browser, &format!("/space/{key}")).await?;
+        enter_space_view(&browser).await?;
+        let copy = "[data-agent-mode=scoped] .agent-prompt__copy";
+        wait_for_displayed(&browser, copy).await?;
+        watch_clipboard(&browser).await?;
+        click(&browser, copy).await?;
+        let prompt = copied_text(&browser).await?;
+        assert!(prompt.contains("npx --yes @tonk/cli join '"));
+        assert!(!prompt.contains("--switch-account"));
+        let invite = prompt
+            .split("join '")
+            .nth(1)
+            .and_then(|part| part.split('\'').next())
+            .context("scoped prompt has no connection URL")?
             .to_owned();
-        let key = create_space_awaiting_remote(&browser, "Agent handoff", true).await?;
+        assert!(invite.contains("#tonk-agent-v1="));
+        browser.enter_default_frame().await?;
+        let groups = get_json(&browser, "/api/account/connections").await?;
+        let groups = successful_body("list issued connection", &groups);
+        assert_eq!(
+            groups.as_array().context("expected connection list")?.len(),
+            1
+        );
+        assert_eq!(groups[0]["confirmed"], false);
+        assert_eq!(groups[0]["targets"].as_array().unwrap().len(), 6);
+        assert!(!serde_json::to_string(groups)?.contains("tonk-agent-v1"));
+        let group_id = groups[0]["id"]
+            .as_str()
+            .context("missing grant group id")?
+            .to_owned();
+        let browser_profile = std::fs::read_dir(&env.browser_profile_root)?
+            .next()
+            .context("browser profile directory missing")??
+            .path();
         let pushed = post_json(
             &browser,
             &format!("/api/repository/{key}/branch/main/sync/push"),
             serde_json::json!({}),
         )
         .await?;
-        successful_body("push B's space", &pushed);
-        await_url_containing(&browser, &format!("/space/{key}")).await?;
-        enter_space_view(&browser).await?;
-        wait_for_displayed(&browser, ".agent-prompt__copy").await?;
-        watch_clipboard(&browser).await?;
-        click(&browser, ".agent-prompt__copy").await?;
-        let prompt = copied_text(&browser).await?;
-        capture_handoff_page(&browser, "copied-prompt").await?;
-        assert!(prompt.contains(&format!("--switch-account {expected}")));
-        assert!(prompt.contains("ask me before switching"));
-        let invite = prompt
-            .split("connect '")
-            .nth(1)
-            .and_then(|rest| rest.split('\'').next())
-            .context("copied prompt has no connect URL")?
-            .to_owned();
-        browser.enter_default_frame().await?;
-        let via = env.tonk_web.join("settings/link")?.to_string();
-        let args = vec![
-            "connect".into(),
-            invite.clone(),
-            "--name".into(),
-            "agent-handoff".into(),
-            "--no-open".into(),
-            "--via".into(),
-            via.clone(),
-        ];
-        let refused = run_cli(&env, &linked.profile, &args).await?;
-        assert!(!refused.status.success());
-        assert!(
-            refused
-                .stderr
-                .contains(&format!("--switch-account {expected}"))
-        );
-        assert_eq!(std::fs::read(&registry_path)?, registry_before);
-        assert!(!refused.stdout.contains("Open this URL"));
+        successful_body("publish invitation source", &pushed);
+        assert_agent_browser_logs_redacted(&env, &browser).await?;
+        browser.quit().await?;
 
-        for approve in [false, true] {
-            let mut command = tonk_command_in(&env, &linked.profile);
-            command
-                .args(&args)
-                .args(["--switch-account", &expected])
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .kill_on_drop(true);
-            let mut child = command.spawn()?;
-            let mut stdout = BufReader::new(child.stdout.take().context("connect stdout missing")?);
-            let mut stderr = child.stderr.take().context("connect stderr missing")?;
-            let approval = tokio::time::timeout(Duration::from_secs(30), async {
-                loop {
-                    let mut line = String::new();
-                    if stdout.read_line(&mut line).await? == 0 {
-                        return Err(anyhow!("connect exited before approval"));
-                    }
-                    if line.starts_with("http") {
-                        return Ok::<_, anyhow::Error>(line.trim().to_owned());
-                    }
-                }
-            })
+        let profile = tempfile::tempdir()?;
+        let mut command = tonk_command_in(&env, &profile);
+        command
+            .args(["join", &invite, "--name", "ordinary-agent"])
+            .env("TONK_CONNECTION_ORIGIN", env.tonk_web.as_str())
+            .kill_on_drop(true);
+        let output = tokio::time::timeout(Duration::from_secs(120), command.output())
             .await
-            .context("connect never asked for approval")??;
-            let approval_url = url::Url::parse(&approval)?;
-            assert!(
-                approval_url
-                    .query_pairs()
-                    .any(|(key, value)| key == "expectedAccount" && value == expected)
-            );
-            goto(&browser, &approval).await?;
-            enter_hub(&browser).await?;
-            wait_for_displayed(&browser, "ui-account-settings [data-pane=\"link\"]").await?;
-            assert_eq!(
-                element(&browser, "[data-link-account]")
-                    .await?
-                    .text()
-                    .await?,
-                expected
-            );
-            capture_handoff_page(&browser, "expected-account-approval").await?;
-            let request = browser
-                .execute("return window.tonk.context.search", Vec::new())
-                .await?;
-            let request = url::form_urlencoded::parse(
-                request
-                    .json()
-                    .as_str()
-                    .unwrap()
-                    .trim_start_matches('?')
-                    .as_bytes(),
-            )
-            .into_owned()
-            .collect::<std::collections::HashMap<_, _>>();
-            let intended = approval_url
-                .query_pairs()
-                .into_owned()
-                .collect::<std::collections::HashMap<_, _>>();
-            assert_eq!(
-                request.get("callback"),
-                intended.get("callback"),
-                "approval must target the current CLI listener"
-            );
-            eprintln!("HANDOFF phase=approval-page approve={approve}");
-            if approve {
-                click(&browser, "[data-link-approve]").await?;
-                use_passkey_consent(&browser).await?;
-            } else {
-                click(&browser, "[data-link-decline]").await?;
-            }
-            if let Err(error) = await_url_path(&browser, "/settings").await {
-                enter_hub(&browser).await?;
-                let status = element(&browser, "[data-ceremony-status]")
-                    .await?
-                    .text()
-                    .await?;
-                return Err(error).context(format!(
-                    "handoff callback did not return; approve={approve}; status={status}"
-                ));
-            }
-            let landed = browser.current_url().await?;
-            assert_eq!(
-                landed
-                    .query_pairs()
-                    .find(|(key, _)| key == "link")
-                    .map(|(_, value)| value.into_owned())
-                    .as_deref(),
-                Some(if approve { "ok" } else { "denied" })
-            );
-            eprintln!("HANDOFF phase=callback-returned approve={approve}");
-            eprintln!("HANDOFF phase=await-cli approve={approve}");
-            let outcome = finish_link(&mut child, &mut stdout, &mut stderr, String::new()).await?;
-            eprintln!("HANDOFF phase=cli-finished approve={approve}");
-            if !approve {
-                assert!(!outcome.status.success());
-                assert_eq!(std::fs::read(&registry_path)?, registry_before);
-                let retained =
-                    run_cli(&env, &linked.profile, &["account".into(), "status".into()]).await?;
-                assert_eq!(retained.stdout, status_before.stdout);
-            } else {
-                assert!(outcome.status.success(), "{}", outcome.stderr);
-                assert!(outcome.stdout.contains("Agent connection confirmed"));
-            }
-        }
-        let status = run_cli(&env, &linked.profile, &["account".into(), "status".into()]).await?;
-        assert!(status.stdout.contains(&expected));
+            .context("scoped import timed out")??;
+        let stdout = String::from_utf8(output.stdout)?;
+        let stderr = String::from_utf8(output.stderr)?;
+        assert!(!stdout.contains(&invite) && !stderr.contains(&invite));
+        assert!(!stdout.contains("tonk-agent-v1=") && !stderr.contains("tonk-agent-v1="));
+        assert!(output.status.success(), "scoped import failed: {stderr}");
+        assert!(stdout.contains("Agent connection confirmed"));
+        assert!(!stdout.contains("Open this URL"));
+        let registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(profile.path().join("spaces/spaces.json"))?)?;
+        assert!(
+            registry
+                .get("account")
+                .is_none_or(serde_json::Value::is_null)
+        );
+        let document = "attribute!: &agent-built\n  description: Built after browser shutdown\n  the: test.agent/built\n  as: text\n  cardinality: one\n";
+        let built = run_cli(
+            &env,
+            &profile,
+            &[
+                "--space".into(),
+                "ordinary-agent".into(),
+                "eval".into(),
+                "-c".into(),
+                document.into(),
+                "--no-sync".into(),
+            ],
+        )
+        .await?;
+        assert!(built.status.success(), "{}", built.stderr);
         let resumed = run_cli(
             &env,
-            &linked.profile,
-            &["--space".into(), "agent-handoff".into(), "connect".into()],
+            &profile,
+            &["--space".into(), "ordinary-agent".into(), "connect".into()],
         )
         .await?;
         assert!(resumed.status.success(), "{}", resumed.stderr);
         assert!(resumed.stdout.contains("Agent connection confirmed"));
-        assert!(!resumed.stdout.contains("Open this URL"));
+
+        // Reopen the same browser's on-disk profile, with no live issuer process
+        // during either CLI connection. No exported passkey or root key is used.
+        let mut caps = DesiredCapabilities::chrome();
+        caps.set_headless()?;
+        caps.accept_insecure_certs(true)?;
+        caps.add_arg(&format!("--user-data-dir={}", browser_profile.display()))?;
+        if let Ok(binary) = std::env::var("CHROME") {
+            caps.set_binary(&binary)?;
+        }
+        let browser = WebDriver::new(env.chromedriver.as_str(), caps).await?;
+        goto(&browser, env.tonk_web.join("settings")?.as_str()).await?;
+        wait_for_service_worker(&browser).await?;
+        let pulled = post_json(
+            &browser,
+            &format!("/api/repository/{key}/branch/main/sync/pull"),
+            serde_json::json!({}),
+        )
+        .await?;
+        successful_body("read CLI setup acknowledgement", &pulled);
+        let groups = get_json(&browser, "/api/account/connections").await?;
+        let groups = successful_body("read retained grant group", &groups);
+        assert_eq!(groups[0]["id"], group_id);
+        assert_eq!(groups[0]["confirmed"], true);
+        enter_hub(&browser).await?;
+        wait_for_displayed(&browser, "[data-connections-refresh]").await?;
+        click(&browser, "[data-connections-refresh]").await?;
+        let row = format!("[data-connection-id='{group_id}']");
+        wait_for_text_containing(&browser, &row, "setup confirmation received").await?;
+        capture_connection_management(&browser, &group_id, "connection").await?;
+        click(&browser, &format!("[data-connection-revoke='{group_id}']")).await?;
+        wait_for_text_containing(
+            &browser,
+            &row,
+            "access removal confirmed for 6 of 6 permissions",
+        )
+        .await?;
+        assert_eq!(
+            browser
+                .execute(
+                    "return document.activeElement?.matches('[data-connections-status]') || false",
+                    vec![]
+                )
+                .await?
+                .json(),
+            &serde_json::json!(true),
+            "revocation result did not receive focus"
+        );
         browser.quit().await?;
+        let denied = run_cli(
+            &env,
+            &profile,
+            &["--space".into(), "ordinary-agent".into(), "connect".into()],
+        )
+        .await?;
+        assert!(!denied.status.success());
+        assert!(denied.stderr.contains("revoked"), "{}", denied.stderr);
+        assert!(!denied.stdout.contains("Agent connection confirmed"));
+        assert!(!denied.stderr.contains("account login"));
+        let retained = run_cli(&env, &profile, &[
+            "--space".into(), "ordinary-agent".into(), "eval".into(), "-c".into(),
+            "attribute!: &offline-after-revoke\n  description: Retained offline work\n  the: test.agent/retained\n  as: text\n  cardinality: one\n".into(),
+            "--no-sync".into(),
+        ]).await?;
+        assert!(retained.status.success(), "{}", retained.stderr);
+        Ok(())
+    }
+
+    #[cfg(feature = "connection-invites")]
+    async fn capture_connection_management(
+        browser: &WebDriver,
+        group_id: &str,
+        prefix: &str,
+    ) -> Result<()> {
+        if std::env::var_os("TONK_HANDOFF_TEST_ARTIFACTS").is_some() {
+            for (name, width, height, dark) in [
+                ("desktop", 1200, 900, false),
+                ("narrow", 390, 844, false),
+                ("short-dark", 390, 540, true),
+            ] {
+                browser.enter_default_frame().await?;
+                browser.set_window_rect(0, 0, width, height).await?;
+                ChromeDevTools::new(browser.handle.clone()).execute_cdp_with_params(
+                    "Emulation.setDeviceMetricsOverride", serde_json::json!({
+                        "width": width, "height": height, "deviceScaleFactor": 1, "mobile": false,
+                    })).await?;
+                ChromeDevTools::new(browser.handle.clone()).execute_cdp_with_params(
+                    "Emulation.setEmulatedMedia", serde_json::json!({ "features": [
+                        { "name": "prefers-reduced-motion", "value": "reduce" },
+                        { "name": "prefers-color-scheme", "value": if dark { "dark" } else { "light" } },
+                    ] })).await?;
+                let outer=browser.execute("return {clientWidth:document.documentElement.clientWidth, scrollWidth:document.documentElement.scrollWidth}", vec![]).await?;
+                assert_eq!(outer.json()["clientWidth"], serde_json::json!(width));
+                assert!(
+                    outer.json()["scrollWidth"].as_u64().unwrap() <= u64::from(width),
+                    "outer document overflows: {}",
+                    outer.json()
+                );
+                enter_hub(browser).await?;
+                let before = browser.execute(r#"const node=document.querySelector('[data-connections-refresh]');node.focus();
+                    window.__connectionKeys=[];
+                    document.addEventListener('keydown',event=>{const key={target:event.target.tagName,cls:event.target.className,key:event.key};window.__connectionKeys.push(key);setTimeout(()=>key.prevented=event.defaultPrevented,0);},{once:true});
+                    return {focused:document.activeElement === node, documentFocus:document.hasFocus(),
+                        rect:node.getBoundingClientRect().toJSON(), disabled:node.disabled,
+                        hiddenAncestor:!!node.closest('[hidden]'), activeTag:document.activeElement.tagName,
+                        activeClass:document.activeElement.className,
+                        revokes:[...document.querySelectorAll('[data-connection-revoke]')].map(item=>({disabled:item.disabled,tabIndex:item.tabIndex,rect:item.getBoundingClientRect().toJSON(),hiddenAncestor:!!item.closest('[hidden]')}))};"#, vec![]).await?;
+                browser
+                    .find(By::Css("[data-connections-refresh]"))
+                    .await?
+                    .send_keys(Key::Tab)
+                    .await?;
+                let focused = browser.execute(r#"const node=document.activeElement;const style=getComputedStyle(node);
+                    return {settingsHidden:document.querySelector('[data-settings-view]')?.hidden, accountExpanded:document.querySelector('.account-trigger')?.getAttribute('aria-expanded'), keys:window.__connectionKeys, tag:node.tagName, class:node.className, refresh:node.matches('[data-connections-refresh]'), revoke:node.matches('[data-connection-revoke]'), visible:node.matches(':focus-visible'),
+                        ring:style.outlineStyle !== 'none' || style.boxShadow !== 'none',
+                        height:node.getBoundingClientRect().height, animation:style.animationName,
+                        clientWidth:document.documentElement.clientWidth, scrollWidth:document.documentElement.scrollWidth };"#, vec![]).await?;
+                let state = focused.json();
+                assert_eq!(
+                    state["revoke"],
+                    true,
+                    "keyboard focus did not reach revoke: {state}; before={}",
+                    before.json()
+                );
+                assert_eq!(
+                    state["visible"], true,
+                    "keyboard focus was not visible: {state}"
+                );
+                assert_eq!(
+                    state["ring"], true,
+                    "keyboard focus ring was absent: {state}"
+                );
+                assert!(
+                    state["height"].as_f64().unwrap() >= 44.0,
+                    "small revoke target: {state}"
+                );
+                assert_eq!(
+                    state["animation"], "none",
+                    "reduced-motion control animates: {state}"
+                );
+                assert_eq!(state["clientWidth"], serde_json::json!(width));
+                assert!(
+                    state["scrollWidth"].as_u64().unwrap()
+                        <= state["clientWidth"].as_u64().unwrap(),
+                    "management content overflows horizontally: {state}"
+                );
+                element(browser, &format!("[data-connection-revoke='{group_id}']"))
+                    .await?
+                    .scroll_into_view()
+                    .await?;
+                capture_handoff_page(browser, &format!("{prefix}-{name}")).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "connection-invites")]
+    async fn assert_agent_browser_logs_redacted(
+        env: &TestEnvironment,
+        browser: &WebDriver,
+    ) -> Result<()> {
+        if std::env::var_os("TONK_E2E_CHROME_LOG").is_none() {
+            return Ok(());
+        }
+        let endpoint = env
+            .chromedriver
+            .join(&format!("session/{}/se/log", browser.session_id()))?;
+        let logs = reqwest::Client::new()
+            .post(endpoint)
+            .json(&serde_json::json!({"type":"browser"}))
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<serde_json::Value>()
+            .await?;
+        anyhow::ensure!(logs["value"].is_array(), "browser log capture unavailable");
+        anyhow::ensure!(
+            !serde_json::to_string(&logs)?.contains("tonk-agent-v1="),
+            "browser logs disclosed an agent invitation"
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "connection-invites")]
+    async fn copied_agent_bearer(browser: &WebDriver) -> Result<String> {
+        let copy = "[data-agent-mode=scoped] .agent-prompt__copy";
+        wait_for_displayed(browser, copy).await?;
+        // WebAwesome ignores clicks while its previous success feedback runs.
+        // Wait for the real control to become ready before exercising clipboard.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let ready = browser.execute(r#"const node=document.querySelector('[data-agent-mode=scoped] .agent-prompt__copy');
+                return !!customElements.get('wa-copy-button') && !!node?.shadowRoot?.querySelector('button')
+                    && !node.disabled && node.isCopying === false;"#, vec![]).await?;
+            if ready.json().as_bool() == Some(true) {
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "copy control never became ready"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        watch_clipboard(browser).await?;
+        click(browser, copy).await?;
+        let prompt = match copied_text(browser).await {
+            Ok(prompt) => prompt,
+            Err(error) => {
+                let state = browser.execute(r#"const node=document.querySelector('[data-agent-mode=scoped] .agent-prompt__copy');
+                    return { defined:!!customElements.get('wa-copy-button'), present:!!node,
+                        shadow:!!node?.shadowRoot, button:!!node?.shadowRoot?.querySelector('button'),
+                        disabled:node?.disabled, isCopying:node?.isCopying, status:node?.status, valueLength:node?.value?.length,
+                        innerDisabled:node?.shadowRoot?.querySelector('button')?.disabled,
+                        copiedLength:window.__tonkCopied?.length };"#, vec![]).await;
+                return Err(error.context(format!(
+                    "sanitized copy state: {:?}",
+                    state.map(|state| state.json().clone())
+                )));
+            }
+        };
+        let link = prompt
+            .split("join '")
+            .nth(1)
+            .and_then(|part| part.split('\'').next())
+            .context("scoped prompt has no connection URL")?;
+        anyhow::ensure!(
+            link.contains("#tonk-agent-v1="),
+            "copy did not contain a scoped bearer"
+        );
+        anyhow::ensure!(
+            !prompt.contains("--switch-account"),
+            "scoped prompt requested account switching"
+        );
+        Ok(link.to_owned())
+    }
+
+    #[cfg(feature = "connection-invites")]
+    async fn agent_new_control(browser: &WebDriver) -> Result<WebElement> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            for control in browser
+                .find_all(By::Css(
+                    "[data-agent-mode=scoped] .agent-prompt__new, .connection-invite-new",
+                ))
+                .await?
+            {
+                if control.is_displayed().await? {
+                    return Ok(control);
+                }
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "explicit new invitation control did not appear"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    #[cfg(feature = "connection-invites")]
+    async fn import_agent_bearer(
+        env: &TestEnvironment,
+        profile: &TempDir,
+        link: &str,
+        alias: &str,
+    ) -> Result<serde_json::Value> {
+        let directory = profile.path().join(format!("project-{alias}"));
+        std::fs::create_dir_all(&directory)?;
+        let mut command = tonk_command_in(env, profile);
+        command
+            .current_dir(&directory)
+            .args(["join", link, "--name", alias])
+            .env("TONK_CONNECTION_ORIGIN", env.tonk_web.as_str())
+            .kill_on_drop(true);
+        let output = tokio::time::timeout(Duration::from_secs(120), command.output())
+            .await
+            .context("bearer import timed out")??;
+        let stdout = String::from_utf8(output.stdout)?;
+        let stderr = String::from_utf8(output.stderr)?;
+        anyhow::ensure!(
+            !stdout.contains(link)
+                && !stderr.contains(link)
+                && !stdout.contains("tonk-agent-v1=")
+                && !stderr.contains("tonk-agent-v1="),
+            "CLI disclosed an invitation in its output"
+        );
+        anyhow::ensure!(output.status.success(), "scoped import failed: {stderr}");
+        anyhow::ensure!(
+            stdout.contains("Agent connection confirmed"),
+            "CLI omitted confirmation"
+        );
+        Ok(serde_json::from_slice(&std::fs::read(
+            profile.path().join("spaces/spaces.json"),
+        )?)?)
+    }
+
+    #[cfg(feature = "connection-invites")]
+    #[dialog_common::test]
+    // ACCT-C14 / HANDOFF-21: multiple holders, independent groups, retained accounts.
+    async fn it_keeps_copied_agent_grants_independent_of_cli_accounts(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        // Emulate a retained pre-upgrade registry without invoking the retired
+        // account-login command. Exact ambient-authority isolation is also
+        // covered by the native connection import tests.
+        let retained_profile = tempfile::tempdir()?;
+        let registry_file = retained_profile.path().join("spaces/spaces.json");
+        std::fs::create_dir_all(registry_file.parent().context("registry parent")?)?;
+        let retained = serde_json::json!({
+            "spaces": {},
+            "account": { "root": "did:key:z6MkgMn9hDxTd2saBSAouyTpPLWUmzrVTXfS1N5yB4TjJ3qL" }
+        });
+        std::fs::write(&registry_file, serde_json::to_vec(&retained)?)?;
+        let before: serde_json::Value = serde_json::from_slice(&std::fs::read(&registry_file)?)?;
+        anyhow::ensure!(
+            before["account"].is_object(),
+            "fixture has no existing CLI account"
+        );
+        let previous_profiles = std::fs::read_dir(&env.browser_profile_root)?
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        let browser = driver_with_prf(&env).await?;
+        let browser_profile = std::fs::read_dir(&env.browser_profile_root)?
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<std::io::Result<Vec<_>>>()?
+            .into_iter()
+            .find(|path| !previous_profiles.contains(path))
+            .context("issuer profile missing")?;
+        sign_up(&browser, &env, "agent-issuer@example.com").await?;
+        let key = create_space_awaiting_remote(&browser, "Independent agents", true).await?;
+        await_url_containing(&browser, &format!("/space/{key}")).await?;
+        enter_space_view(&browser).await?;
+        let first = copied_agent_bearer(&browser)
+            .await
+            .context("copy first invitation")?;
+        browser.enter_default_frame().await?;
+        let one = poll_json(
+            &browser,
+            "/api/account/connections",
+            "first issued group",
+            |body| body.as_array().is_some_and(|rows| rows.len() == 1),
+        )
+        .await?;
+        let first_id = one[0]["id"]
+            .as_str()
+            .context("first id missing")?
+            .to_owned();
+        // Revisiting the same page must reuse the ready transient invitation.
+        goto(&browser, env.tonk_web.join("settings")?.as_str()).await?;
+        goto(
+            &browser,
+            env.tonk_web.join(&format!("space/{key}"))?.as_str(),
+        )
+        .await?;
+        enter_space_view(&browser).await?;
+        let action = agent_new_control(&browser).await?;
+        // Retained transient state reuses its bearer. If the page-only state
+        // was cleared, the fallback may ask explicitly for another invitation.
+        if action
+            .attr("class")
+            .await?
+            .is_some_and(|class| class.contains("agent-prompt__new"))
+        {
+            let repeated = copied_agent_bearer(&browser)
+                .await
+                .context("copy retained invitation after revisit")?;
+            anyhow::ensure!(
+                first == repeated,
+                "view revisit silently replaced the bearer"
+            );
+        }
+        browser.enter_default_frame().await?;
+        let stable = get_json(&browser, "/api/account/connections").await?;
+        assert_eq!(
+            successful_body("stable issued groups", &stable)
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        enter_space_view(&browser).await?;
+        agent_new_control(&browser).await?.click().await?;
+        browser.enter_default_frame().await?;
+        let two = poll_json(
+            &browser,
+            "/api/account/connections",
+            "explicit second issued group",
+            |body| body.as_array().is_some_and(|rows| rows.len() == 2),
+        )
+        .await?;
+        let sibling = two
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] != first_id)
+            .context("second group missing")?;
+        anyhow::ensure!(
+            sibling["recipient"] != one[0]["recipient"],
+            "new invite reused recipient key"
+        );
+        let sibling_id = sibling["id"]
+            .as_str()
+            .context("second id missing")?
+            .to_owned();
+        enter_space_view(&browser).await?;
+        let second = copied_agent_bearer(&browser)
+            .await
+            .context("copy explicit second invitation")?;
+        anyhow::ensure!(
+            first != second,
+            "explicit new invite reused the first bearer"
+        );
+        browser.enter_default_frame().await?;
+        let pushed = post_json(
+            &browser,
+            &format!("/api/repository/{key}/branch/main/sync/push"),
+            serde_json::json!({}),
+        )
+        .await?;
+        successful_body("publish source", &pushed);
+        assert_agent_browser_logs_redacted(&env, &browser).await?;
+        browser.quit().await?;
+
+        let empty = tempfile::tempdir()?;
+        let first_registry = import_agent_bearer(&env, &empty, &first, "holder").await?;
+        assert!(
+            first_registry
+                .get("account")
+                .is_none_or(serde_json::Value::is_null)
+        );
+        let schema = "attribute!: &agent-title\n  description: Agent note title\n  the: test.agent/title\n  as: text\n  cardinality: one\nconcept!: &agent-note\n  description: Agent authored note\n  with:\n    title: agent-title\nattribute!: &agent-html\n  description: Agent page body\n  the: text/html\n  as: text\n  cardinality: many\nconcept!: &agent-page\n  description: Agent authored page\n  with:\n    body: agent-html\n";
+        for document in [
+            schema,
+            "agent-note!: &agent-note-one\n  title: Built with scoped authority\nagent-page!: &agent-page-one\n  body: '<h1>Scoped browser build</h1>'\n",
+        ] {
+            let built = run_cli(
+                &env,
+                &empty,
+                &[
+                    "--space".into(),
+                    "holder".into(),
+                    "eval".into(),
+                    "-c".into(),
+                    document.into(),
+                ],
+            )
+            .await?;
+            anyhow::ensure!(
+                built.status.success(),
+                "scoped build failed: {}",
+                built.stderr
+            );
+        }
+        let asset = empty.path().join("agent-asset.txt");
+        std::fs::write(&asset, "scoped browser blob readback")?;
+        let added = run_cli(
+            &env,
+            &empty,
+            &[
+                "--space".into(),
+                "holder".into(),
+                "blob".into(),
+                "add".into(),
+                asset.to_string_lossy().into_owned(),
+            ],
+        )
+        .await?;
+        anyhow::ensure!(
+            added.status.success(),
+            "scoped blob add failed: {}",
+            added.stderr
+        );
+        let blob = added.stdout.trim().to_owned();
+        anyhow::ensure!(
+            blob.starts_with("blob:"),
+            "blob add omitted its content reference"
+        );
+        let second_registry =
+            import_agent_bearer(&env, &retained_profile, &first, "holder").await?;
+        assert_eq!(
+            second_registry["spaces"]["holder"]["connection"],
+            first_registry["spaces"]["holder"]["connection"]
+        );
+        let sibling_registry =
+            import_agent_bearer(&env, &retained_profile, &second, "sibling").await?;
+        anyhow::ensure!(
+            sibling_registry["spaces"]["holder"]["site"]
+                != sibling_registry["spaces"]["sibling"]["site"],
+            "independent grants shared a local replica"
+        );
+        assert_eq!(sibling_registry["account"], before["account"]);
+        for (name, entry) in before["spaces"]
+            .as_object()
+            .context("prior spaces missing")?
+        {
+            assert_eq!(&sibling_registry["spaces"][name], entry);
+        }
+        let readback = run_cli(
+            &env,
+            &retained_profile,
+            &[
+                "--space".into(),
+                "holder".into(),
+                "blob".into(),
+                "cat".into(),
+                blob,
+            ],
+        )
+        .await?;
+        anyhow::ensure!(
+            readback.status.success(),
+            "blob readback failed: {}",
+            readback.stderr
+        );
+        assert_eq!(readback.stdout, "scoped browser blob readback");
+        let mut caps = DesiredCapabilities::chrome();
+        caps.set_headless()?;
+        caps.accept_insecure_certs(true)?;
+        caps.add_arg(&format!("--user-data-dir={}", browser_profile.display()))?;
+        if let Ok(binary) = std::env::var("CHROME") {
+            caps.set_binary(&binary)?;
+        }
+        let browser = WebDriver::new(env.chromedriver.as_str(), caps).await?;
+        goto(&browser, env.tonk_web.join("settings")?.as_str()).await?;
+        wait_for_service_worker(&browser).await?;
+        // The page-only bearer is deliberately gone after a browser restart.
+        // Existing public grant records must make a fresh invitation explicit.
+        goto(
+            &browser,
+            env.tonk_web.join(&format!("space/{key}"))?.as_str(),
+        )
+        .await?;
+        enter_space_view(&browser).await?;
+        wait_for_displayed(&browser, "[data-invite-action=new]").await?;
+        let copy_controls = browser.find_all(By::Css(".agent-prompt__copy")).await?;
+        for control in copy_controls {
+            assert!(
+                !control.is_displayed().await?,
+                "restart exposed a retained bearer"
+            );
+        }
+        browser.enter_default_frame().await?;
+        let after_restart = get_json(&browser, "/api/account/connections").await?;
+        assert_eq!(
+            successful_body("restart did not issue new grants", &after_restart)
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        goto(&browser, env.tonk_web.join("settings")?.as_str()).await?;
+        let pulled = post_json(
+            &browser,
+            &format!("/api/repository/{key}/branch/main/sync/pull"),
+            serde_json::json!({}),
+        )
+        .await?;
+        successful_body("read both acknowledgements", &pulled);
+        let confirmed = get_json(&browser, "/api/account/connections").await?;
+        let confirmed = successful_body("confirmed groups", &confirmed);
+        assert!(
+            confirmed
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|row| row["confirmed"] == true)
+        );
+        enter_hub(&browser).await?;
+        wait_for_displayed(&browser, "[data-connections-refresh]").await?;
+        click(&browser, "[data-connections-refresh]").await?;
+        let row = format!("[data-connection-id='{first_id}']");
+        wait_for_text_containing(&browser, &row, "setup confirmation received").await?;
+        capture_connection_management(&browser, &first_id, "connection-two").await?;
+        click(&browser, &format!("[data-connection-revoke='{first_id}']")).await?;
+        wait_for_text_containing(
+            &browser,
+            &row,
+            "access removal confirmed for 6 of 6 permissions",
+        )
+        .await?;
+        browser.enter_default_frame().await?;
+        let groups = get_json(&browser, "/api/account/connections").await?;
+        let sibling = successful_body("sibling remains active", &groups)
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == sibling_id)
+            .context("sibling disappeared")?;
+        assert!(
+            sibling["targets"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|target| target["acknowledged"] == false)
+        );
+        browser.quit().await?;
+        for holder in [&empty, &retained_profile] {
+            let denied = run_cli(
+                &env,
+                holder,
+                &["--space".into(), "holder".into(), "connect".into()],
+            )
+            .await?;
+            anyhow::ensure!(
+                !denied.status.success() && denied.stderr.contains("revoked"),
+                "revoked holder was not denied"
+            );
+            anyhow::ensure!(
+                !denied.stdout.contains("Agent connection confirmed")
+                    && !denied.stderr.contains("account login"),
+                "revoked holder confirmed or requested fallback"
+            );
+        }
+        let survives = run_cli(
+            &env,
+            &retained_profile,
+            &["--space".into(), "sibling".into(), "connect".into()],
+        )
+        .await?;
+        anyhow::ensure!(
+            survives.status.success(),
+            "independent invitation was revoked: {}",
+            survives.stderr
+        );
+        let after: serde_json::Value = serde_json::from_slice(&std::fs::read(&registry_file)?)?;
+        assert_eq!(after["account"], before["account"]);
         Ok(())
     }
 
     #[dialog_common::test]
+    #[ignore = "historical CLI account login workflow; use scoped invitations"]
     async fn it_links_the_cli_through_the_browser_callback(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
         sign_up(&driver, &env, EMAIL).await?;
@@ -6592,6 +7234,7 @@ mod tests {
     /// account is what makes there be something to delegate — then flows
     /// straight into the approval panel.
     #[dialog_common::test]
+    #[ignore = "historical CLI account login workflow; use scoped invitations"]
     async fn it_registers_before_linking_a_cli_from_a_fresh_browser(
         env: TestEnvironment,
     ) -> Result<()> {
@@ -6626,6 +7269,7 @@ mod tests {
     /// that. The endpoints it discovers must therefore match the
     /// deployment the ceremony ran on, not any harness-side address.
     #[dialog_common::test]
+    #[ignore = "historical CLI account login workflow; use scoped invitations"]
     async fn it_links_without_being_told_the_account_service(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
         sign_up(&driver, &env, EMAIL).await?;

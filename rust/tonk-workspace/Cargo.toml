@@ -26,6 +26,7 @@ tonk-common = { workspace = true }
 tonk-analytics = { workspace = true }
 tonk-host = { workspace = true }
 tonk-worker-api = { workspace = true }
+tonk-invite = { workspace = true }
 bs58 = { workspace = true }
 reqwest = { workspace = true }
 gloo-timers = { version = "0.3", features = ["futures"] }
@@ -36,6 +37,7 @@ web-sys = { workspace = true, features = [
   "CssStyleDeclaration",
   "CustomElementRegistry",
   "CustomEvent",
+  "Crypto",
   "CustomEventInit",
   "Document",
   "DomRect",

@@ -2108,6 +2108,7 @@ pub(crate) fn finish_ceremony() {
             return;
         }
         if (signing_in || named.is_some()) && pending_share().is_none() {
+            // Close the ceremony, then return to the original space or the Hub.
             finish_account_navigation(&host);
             return;
         }
@@ -2615,18 +2616,23 @@ pub fn adopt_stashed_share() {
 /// so "return to space" can actually return there.
 const SHARE_RETURN: &str = "tonk-share-return";
 
-/// Where the finished ceremony returns to — stamped on the dialog host by
-/// [`adopt_stashed_share`] for a blocked share, or [`describe`] for space login.
+/// Where the ceremony returns: the original space or the interrupted share
+/// adopted by [`adopt_stashed_share`].
 const RETURN_PATH: &str = "data-return-path";
 
-/// Ordinary login returns home; missing-space recovery keeps its destination.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn finish_account_navigation(host: &Element) {
-    let path = host
-        .get_attribute(RETURN_PATH)
-        .unwrap_or_else(|| "/".to_owned());
+    let saved = host.get_attribute(RETURN_PATH);
+    let destination = account_completion_destination(saved.as_deref());
     close();
-    tonk_host::navigate_to(&path);
+    tonk_host::navigate_to(destination);
+}
+
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+fn account_completion_destination(saved: Option<&str>) -> &str {
+    saved
+        .filter(|value| value.starts_with("/space/"))
+        .unwrap_or("/")
 }
 
 /// Return to the surface the ceremony replaced.
@@ -2671,7 +2677,33 @@ fn return_to_previous() {
 /// is unopened, so the dialog says so instead of offering to create a
 /// second one.
 pub fn describe(payload: &str) {
-    let request = parse_request(payload);
+    let mut request = parse_request(payload);
+    let agent_invite = matches!(
+        request.reason.as_str(),
+        "agent-invite-account" | "agent-invite-activation"
+    );
+    if agent_invite || request.reason == "space-login" {
+        if let Some(window) = web_sys::window()
+            && let Some(host) = window
+                .document()
+                .and_then(|document| document.get_element_by_id(DIALOG_ID))
+        {
+            let location = window.location();
+            let path = location.pathname().unwrap_or_default();
+            if path.starts_with("/space/") {
+                let destination = format!(
+                    "{}{}{}",
+                    path,
+                    location.search().unwrap_or_default(),
+                    location.hash().unwrap_or_default()
+                );
+                let _ = host.set_attribute(RETURN_PATH, &destination);
+            }
+        }
+        if request.reason == "agent-invite-activation" {
+            request.reason = tonk_worker_api::share::BLOCKED_NEEDS_ACTIVATION.into();
+        }
+    }
     remember_space(&request.space);
     let Some(document) = web_sys::window().and_then(|window| window.document()) else {
         return;
@@ -2728,13 +2760,21 @@ pub fn describe(payload: &str) {
     if request.reason != tonk_worker_api::share::BLOCKED_NEEDS_ACTIVATION {
         return;
     }
-    set_status("Your account is waiting on its email. Open the link we sent, then share again.");
+    set_status(if agent_invite {
+        "open the verification email, then return here to invite your agent."
+    } else {
+        "Your account is waiting on its email. Open the link we sent, then share again."
+    });
     if let Some(head) = document
         .query_selector("#tonk-register-head")
         .ok()
         .flatten()
     {
-        head.set_text_content(Some("confirm your email to share"));
+        head.set_text_content(Some(if agent_invite {
+            "verify your email"
+        } else {
+            "confirm your email to share"
+        }));
     }
 }
 
@@ -2791,6 +2831,65 @@ fn on_click(host: &Element, selector: &str, handler: impl Fn() + 'static) {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn it_returns_agent_invite_setup_to_the_original_space() {
+        let window = web_sys::window().unwrap();
+        let document = window.document().unwrap();
+        let history = window.history().unwrap();
+        let original = window.location().href().unwrap();
+        let target = "/space/did:key:example/open/playground?view=agent#section";
+        for reason in [
+            "agent-invite-account",
+            "agent-invite-activation",
+            "space-login",
+        ] {
+            history
+                .replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(target))
+                .unwrap();
+            let host = document.create_element("dialog").unwrap();
+            host.set_id(super::DIALOG_ID);
+            document.body().unwrap().append_child(&host).unwrap();
+            super::describe(&format!(r#"{{"reason":"{reason}"}}"#));
+            assert_eq!(
+                host.get_attribute(super::RETURN_PATH).as_deref(),
+                Some(target)
+            );
+            history
+                .replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some("/"))
+                .unwrap();
+            super::finish_account_navigation(&host);
+            assert_eq!(
+                format!(
+                    "{}{}{}",
+                    window.location().pathname().unwrap(),
+                    window.location().search().unwrap(),
+                    window.location().hash().unwrap()
+                ),
+                target
+            );
+            assert!(!host.is_connected());
+        }
+        history
+            .replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&original))
+            .unwrap();
+    }
+
+    #[dialog_common::test]
+    fn account_completion_only_accepts_local_space_routes() {
+        assert_eq!(
+            super::account_completion_destination(Some("/space/example")),
+            "/space/example"
+        );
+        for destination in [
+            None,
+            Some("https://elsewhere.test/space/example"),
+            Some("//elsewhere.test/space/example"),
+            Some("/settings/link#tonk-terminal-v1=x"),
+        ] {
+            assert_eq!(super::account_completion_destination(destination), "/");
+        }
+    }
 
     use tonk_identity::custody::CustodyDenial;
 

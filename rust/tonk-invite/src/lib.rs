@@ -41,6 +41,7 @@
 //! [`Subject::Specific`]: dialog_ucan_core::subject::Subject::Specific
 //! [`Subject::Any`]: dialog_ucan_core::subject::Subject::Any
 
+pub mod connection;
 pub mod shortcut;
 
 use anyhow::{Context, Result};

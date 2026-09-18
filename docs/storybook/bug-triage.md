@@ -56,7 +56,7 @@ behavior remain in the verification backlog rather than this file.
   registry only after the library link returns. The browser-side registration
   and callback form submission remain separate operations in
   [`ui_account_settings.rs`](../../rust/tonk-workspace/src/ui_account_settings.rs). Existing
-  [`account_interrupt.rs`](../../rust/tonk-cli/tests/account_interrupt.rs)
+  [historical `account_interrupt.rs`](https://github.com/tonk-labs/tonk/blob/b7b4ecca7d519eadd4342d164cc79a30f3e122b2/rust/tonk-cli/tests/account_interrupt.rs)
   correctly pins fresh restart before approval, when nothing is yet durable.
 - **Severity:** `high`. A common account authorization can commit remote or
   local authority and leave the user without a proved recovery or cleanup path.

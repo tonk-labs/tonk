@@ -33,6 +33,7 @@ dialog-varsig = { workspace = true }
 tonk-account = { workspace = true }
 tonk-email = { workspace = true }
 tonk-identity = { workspace = true }
+tonk-invite = { workspace = true }
 tonk-worker-api = { workspace = true }
 
 # Cryptography

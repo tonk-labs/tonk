@@ -101,7 +101,11 @@ impl CustomElement for UiAccountSettings {
                 return;
             };
             let hit = |selector: &str| target.closest(selector).ok().flatten().is_some();
-            if hit("[data-delete-account-open]") {
+            if hit("[data-connections-refresh]") {
+                crate::agent_connections::refresh(&host);
+            } else if let Ok(Some(button)) = target.closest("[data-connection-revoke]") {
+                crate::agent_connections::revoke(&host, &button);
+            } else if hit("[data-delete-account-open]") {
                 open_delete_dialog(&host);
             } else if hit("[data-delete-account-submit]") {
                 submit_delete(&host);
@@ -428,14 +432,14 @@ pub(crate) fn refresh(this: &HtmlElement) {
         None => {
             let location = page_location();
             set_pane(this, "account");
-            // `tonk account delete` and `tonk account spots delete` open
-            // this page with the review already asked for.
+            // Retain the existing deep link into account-deletion review.
             if location.hash == "#delete-account" {
                 open_delete_dialog(this);
             }
         }
     }
     prefill_name(this);
+    crate::agent_connections::refresh(this);
 }
 
 /// The one space `?delete-space=` names, when this page was opened to
@@ -1270,6 +1274,7 @@ fn on_account_delta(this: &HtmlElement, payload: JsValue) {
 /// empty frame means the fact has not arrived, not that the account has
 /// no address.
 fn render_account(this: &HtmlElement, row: &JsValue) {
+    crate::agent_connections::refresh(this);
     let email = Reflect::get(row, &"fields".into())
         .ok()
         .and_then(|fields| Reflect::get(&fields, &"email".into()).ok())

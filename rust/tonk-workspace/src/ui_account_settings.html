@@ -23,6 +23,13 @@
       <span>another passkey for this account</span>
       <button class="cta" type="button" data-add-passkey>add a passkey with the current one</button>
     </div>
+    <section data-agent-connections hidden aria-label="agent access">
+      <div class="srowd"><span>agent access</span><button class="cta" type="button" data-connections-refresh>refresh</button></div>
+      <p class="expl">each invite grants access to one space. anyone holding a copy can use it. a confirmation records completed setup, not a currently connected process.</p>
+      <p class="expl">revoking an invite affects all its holders and delegated access. enforcement can take time to reach the service; already downloaded data stays with its holders.</p>
+      <p class="expl" data-connections-status role="status" aria-live="polite"></p>
+      <div data-connections-list></div>
+    </section>
     <div class="sect">sign out</div>
     <div class="srowd">
       <span>disconnect this account; keep local spaces on this device</span>
@@ -41,8 +48,8 @@
     <div class="srowd"><span>device</span><b class="lft" data-link-did></b></div>
     <p class="expl">
       approving gives that terminal the same access to your account as this
-      browser: every space, on every device. decline if you did not just run
-      <code>tonk account login</code> or <code>tonk connect</code> yourself.
+      browser: every space, on every device. decline if you did not request
+      account access from this device yourself.
     </p>
     <div class="link-foot">
       <button class="m-cancel" type="button" data-link-decline>decline</button>

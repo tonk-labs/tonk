@@ -223,8 +223,7 @@ fn product_classification(
         ("space", Some("rm")) => Action::RemoveSpace,
         ("space", _) => Action::ConfigureSpace,
         ("invite", _) => Action::MintInvite,
-        ("join", _) => Action::JoinSpace,
-        ("connect", _) => Action::ConnectAgent,
+        ("join", _) => Action::ConnectAgent,
         ("eval", _) => Action::Evaluate,
         ("show" | "query" | "status", _) => Action::Query,
         ("assert" | "retract", _) => Action::Edit,
@@ -295,8 +294,8 @@ mod tests {
     fn every_current_non_account_command_family_has_a_product_classification() {
         for command in [
             "help", "space", "identity", "eval", "show", "query", "assert", "retract", "migrate",
-            "export", "render", "import", "push", "pull", "status", "invite", "join", "connect",
-            "remote", "concept", "view", "update", "blob",
+            "export", "render", "import", "push", "pull", "status", "invite", "join", "remote",
+            "concept", "view", "update", "blob",
         ] {
             assert!(
                 product_classification(command, None).is_some(),

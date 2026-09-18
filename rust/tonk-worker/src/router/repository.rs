@@ -889,17 +889,42 @@ impl crate::reactor::Decode for EnableSyncRequest {
     }
 }
 
+/// The existing handoff trigger plus an explicit request for a new bearer.
+/// Mount events omit `fresh`, so ordinary reconciliation reuses the session link.
+pub(crate) struct AgentHandoffRequest {
+    fresh: bool,
+}
+
+impl crate::reactor::Decode for AgentHandoffRequest {
+    fn trigger_attributes() -> Vec<String> {
+        <tonk_schema::command::AgentHandoff as crate::reactor::Decode>::trigger_attributes()
+    }
+
+    fn decode(this: dialog_artifacts::Entity, facts: &crate::reactor::EntityFacts) -> Option<Self> {
+        <tonk_schema::command::AgentHandoff as crate::reactor::Decode>::decode(this, facts)?;
+        Some(Self {
+            fresh: text_fact(facts, "xyz.tonk.agent-handoff/fresh").as_deref() == Some("new"),
+        })
+    }
+}
+
+impl dialog_capability::Command for AgentHandoffRequest {
+    type Input = Self;
+    type Output = ();
+}
+
 /// Mint an account-scoped handoff for the originating space.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-impl dialog_capability::Provider<tonk_schema::command::AgentHandoff> for crate::router::CommandEnv {
-    async fn execute(&self, _command: tonk_schema::command::AgentHandoff) {
-        if let Err(error) = run_agent_handoff(self).await {
+impl dialog_capability::Provider<AgentHandoffRequest> for crate::router::CommandEnv {
+    async fn execute(&self, request: AgentHandoffRequest) {
+        if let Err(error) = run_agent_handoff(self, request.fresh).await {
             log!("agent handoff failed: {error}");
         }
     }
 }
 
+#[cfg(not(feature = "connection-invites"))]
 async fn publish_agent_handoff(
     tonk: &TonkState,
     repo: &str,
@@ -928,9 +953,135 @@ async fn publish_agent_handoff(
     Ok(())
 }
 
-async fn run_agent_handoff(env: &crate::router::CommandEnv) -> Result<(), TonkWorkerError> {
+#[cfg(feature = "connection-invites")]
+async fn publish_connection_invite(
+    tonk: &TonkState,
+    repo: &str,
+    subject: &Did,
+    account: &Did,
+    mode: &str,
+    status: String,
+    link: String,
+) -> Result<(), TonkWorkerError> {
+    tonk.reactor
+        .repository(repo)
+        .branch(CONTENT_BRANCH)
+        .overlay()
+        .assert(tonk_schema::command::AgentHandoffState {
+            this: subject.this(),
+            status: status.into(),
+            link: link.into(),
+            account: account.this().into(),
+        })
+        .assert(
+            dialog_query::the!("xyz.tonk.agent-handoff/mode")
+                .of(subject.this())
+                .is(mode.to_owned())
+                .cardinality(dialog_query::Cardinality::One),
+        )
+        .write()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to publish agent invite state: {error}"))
+        })?;
+    Ok(())
+}
+
+async fn run_agent_handoff(
+    env: &crate::router::CommandEnv,
+    _fresh: bool,
+) -> Result<(), TonkWorkerError> {
+    #[cfg(feature = "connection-invites")]
+    {
+        return run_connection_invite(env, _fresh).await;
+    }
+    #[cfg(not(feature = "connection-invites"))]
+    agent_invitations_unavailable(env).await
+}
+
+// Only fingerprints live here: the bearer stays exclusively in the reactor
+// overlay. The marker also excludes matching facts supplied by space content.
+#[cfg(feature = "connection-invites")]
+struct ReadyConnectionInvite {
+    state: std::sync::Weak<tokio::sync::RwLock<TonkState>>,
+    subject: Did,
+    issuer: [u8; 32],
+    link: [u8; 32],
+}
+
+#[cfg(feature = "connection-invites")]
+static CONNECTION_ISSUANCE: tokio::sync::Mutex<Vec<ReadyConnectionInvite>> =
+    tokio::sync::Mutex::const_new(Vec::new());
+
+#[cfg(feature = "connection-invites")]
+fn connection_remote_recovery(
+    reason: super::create_invite::RemoteRefusal,
+) -> (&'static str, &'static str) {
+    use super::create_invite::RemoteRefusal;
+    match reason {
+        RemoteRefusal::NeedsAccount => {
+            ("account", "create an account or sign in to invite an agent")
+        }
+        RemoteRefusal::NeedsActivation => {
+            ("activation", "verify your email before inviting an agent")
+        }
+        RemoteRefusal::NotSynced => ("sync", "turn on sync so the agent can access this space"),
+        RemoteRefusal::Suspended => ("unavailable", "this account’s sync service is suspended"),
+        RemoteRefusal::UnshareableRemote => (
+            "unavailable",
+            "this space’s sync server does not support invitations",
+        ),
+    }
+}
+
+#[cfg(feature = "connection-invites")]
+fn connection_invite_recovery(error: &TonkWorkerError) -> (&'static str, &'static str) {
+    match error {
+        TonkWorkerError::RootRequired => {
+            ("account", "create an account or sign in to invite an agent")
+        }
+        TonkWorkerError::Forbidden(_) => (
+            "denied",
+            "ask the space owner for permission to invite an agent",
+        ),
+        TonkWorkerError::NotFound(_) => (
+            "unavailable",
+            "agent invitations are not available for this space",
+        ),
+        TonkWorkerError::Upstream { code, status, .. } => match code.as_deref() {
+            Some("CustomerInactive") => {
+                ("activation", "verify your email before inviting an agent")
+            }
+            Some("UnknownCustomer") => {
+                ("account", "create an account or sign in to invite an agent")
+            }
+            Some("CustomerSuspended") => {
+                ("unavailable", "this account’s sync service is suspended")
+            }
+            Some("Forbidden" | "Unauthorized" | "ConsumerProvided") => (
+                "denied",
+                "the sync service refused access; check permissions with the space owner",
+            ),
+            _ if *status == 401 || *status == 403 => (
+                "denied",
+                "the sync service refused access; check permissions with the space owner",
+            ),
+            _ => ("retry", "could not reach the sync service; try again"),
+        },
+        _ => ("retry", "could not create the invitation; try again"),
+    }
+}
+
+#[cfg(feature = "connection-invites")]
+async fn run_connection_invite(
+    env: &crate::router::CommandEnv,
+    fresh: bool,
+) -> Result<(), TonkWorkerError> {
+    let mut issued = CONNECTION_ISSUANCE.lock().await;
+    issued.retain(|entry| entry.state.strong_count() > 0);
     let repo = &env.origin().repo;
-    let subject = {
+    let (subject, expected, sync_remote) = {
         let tonk = env.state().read().await;
         let repository = tonk
             .profile
@@ -940,72 +1091,356 @@ async fn run_agent_handoff(env: &crate::router::CommandEnv) -> Result<(), TonkWo
             .await
             .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
         let subject = repository.did();
-        require_real_space(&tonk, &subject).await?;
-        if super::account::provider(&tonk).await.is_none() {
-            return publish_agent_handoff(
+        if let Err(error) = require_real_space(&tonk, &subject).await {
+            log!("agent invite target refused: {error}");
+            return publish_connection_invite(
                 &tonk,
                 repo,
                 &subject,
                 &tonk.profile.did(),
-                "Create an account or sign in to connect an agent. Open share and choose ‘log in to share’ to get started, then return here to copy your prompt.".into(),
+                "unavailable",
+                "agent invitations are not available for this space".into(),
                 String::new(),
             )
             .await;
         }
-        publish_agent_handoff(
-            &tonk,
-            repo,
-            &subject,
-            &tonk.profile.did(),
-            "Generating account-scoped handoff…".into(),
-            String::new(),
-        )
-        .await?;
-        subject
-    };
-    let origin = crate::axum::RequestOrigin::parse(
-        &worker_origin().unwrap_or_else(|| "https://tonk.network".into()),
-    )
-    .map_err(|error| TonkWorkerError::Internal(format!("invalid handoff origin: {error:?}")))?;
-    let minted =
-        super::create_invite::create_agent_handoff(env.state().clone(), repo.clone(), origin).await;
-    let tonk = env.state().read().await;
-    match minted {
-        Ok((response, expected)) => {
-            let current = super::identity::local_root(&tonk).await?;
-            if current.root_did != expected.root_did || current.bytes != expected.bytes {
-                return publish_agent_handoff(
+        let expected = match super::identity::local_root(&tonk).await {
+            Ok(root) => root,
+            Err(error) => {
+                log!("agent invite identity unavailable: {error}");
+                return publish_connection_invite(
                     &tonk,
                     repo,
                     &subject,
-                    &current.root_did,
-                    "Account changed; generate a new handoff.".into(),
+                    &tonk.profile.did(),
+                    connection_invite_recovery(&error).0,
+                    connection_invite_recovery(&error).1.into(),
                     String::new(),
                 )
                 .await;
             }
-            publish_agent_handoff(
+        };
+        if super::account::provider(&tonk).await.is_none() {
+            let (mode, status) = match super::customer::registration(&tonk).await {
+                super::customer::Registration::AwaitingActivation { .. } => {
+                    ("activation", "verify your email before inviting an agent")
+                }
+                super::customer::Registration::Suspended => {
+                    ("unavailable", "this account’s sync service is suspended")
+                }
+                _ => ("account", "create an account or sign in to invite an agent"),
+            };
+            return publish_connection_invite(
                 &tonk,
                 repo,
                 &subject,
                 &expected.root_did,
-                "ready".into(),
-                response.url().to_string(),
+                mode,
+                status.into(),
+                String::new(),
             )
-            .await
+            .await;
         }
-        Err(error) => {
-            publish_agent_handoff(
+        let sync_remote = match super::create_invite::resolve_remote_url(&tonk, &repository).await {
+            Ok(super::create_invite::RemoteRequirement::Ready(_)) => None,
+            Ok(super::create_invite::RemoteRequirement::Refused(reason)) => {
+                use super::create_invite::RemoteRefusal;
+                let reason = super::create_invite::explain_refusal(&tonk, reason).await;
+                if matches!(reason, RemoteRefusal::NotSynced) && fresh {
+                    match super::customer::provider_address(&tonk).await {
+                        Some(remote) => Some(remote),
+                        None => {
+                            return publish_connection_invite(
+                                &tonk,
+                                repo,
+                                &subject,
+                                &expected.root_did,
+                                "account",
+                                "sign in to connect this space".into(),
+                                String::new(),
+                            )
+                            .await;
+                        }
+                    }
+                } else {
+                    let (mode, status) = connection_remote_recovery(reason);
+                    return publish_connection_invite(
+                        &tonk,
+                        repo,
+                        &subject,
+                        &expected.root_did,
+                        mode,
+                        status.into(),
+                        String::new(),
+                    )
+                    .await;
+                }
+            }
+            Err(error) => {
+                log!("agent invite remote unavailable: {error}");
+                let (mode, status) = connection_invite_recovery(&error);
+                return publish_connection_invite(
+                    &tonk,
+                    repo,
+                    &subject,
+                    &expected.root_did,
+                    mode,
+                    status.into(),
+                    String::new(),
+                )
+                .await;
+            }
+        };
+        let issuer = *blake3::hash(&expected.bytes).as_bytes();
+        let saved = issued
+            .iter()
+            .find(|entry| {
+                entry.subject == subject
+                    && entry.issuer == issuer
+                    && entry
+                        .state
+                        .upgrade()
+                        .is_some_and(|state| std::sync::Arc::ptr_eq(&state, env.state()))
+            })
+            .map(|entry| entry.link);
+        if !fresh && let Some(saved) = saved {
+            let branch = tonk
+                .reactor
+                .repository(repo)
+                .branch(CONTENT_BRANCH)
+                .acquire(&tonk.operator)
+                .await
+                .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
+            use tonk_schema::domain::agent_handoff::{Account, Status};
+            let ready: Vec<tonk_schema::command::AgentHandoffState> = branch
+                .handle()
+                .query()
+                .select(Query::<tonk_schema::command::AgentHandoffState> {
+                    this: Term::from(subject.this()),
+                    status: Term::from(Status::from("ready".to_owned())),
+                    link: Term::var("link"),
+                    account: Term::from(Account::from(expected.root_did.this())),
+                })
+                .perform(&tonk.operator)
+                .try_vec()
+                .await
+                .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
+            if ready
+                .iter()
+                .any(|state| *blake3::hash(state.link.0.as_bytes()).as_bytes() == saved)
+            {
+                return Ok(());
+            }
+            // The URL was intentionally transient. Losing it must never mint
+            // another grant set as a side effect of rendering this panel.
+            return publish_connection_invite(
+                &tonk,
+                repo,
+                &subject,
+                &expected.root_did,
+                "new",
+                "invite link is no longer in this session; create a new invite to continue".into(),
+                String::new(),
+            )
+            .await;
+        }
+        if !fresh {
+            match super::agent_connections::has_issued_for_subject(&tonk, &subject).await {
+                Ok(false) => {}
+                Ok(true) => return publish_connection_invite(
+                    &tonk,
+                    repo,
+                    &subject,
+                    &expected.root_did,
+                    "new",
+                    "an invite was already issued for this space; create a new invite to continue"
+                        .into(),
+                    String::new(),
+                )
+                .await,
+                Err(error) => {
+                    log!("agent invite history unavailable: {error}");
+                    return publish_connection_invite(
+                        &tonk,
+                        repo,
+                        &subject,
+                        &expected.root_did,
+                        "retry",
+                        "could not check existing invitations; try again".into(),
+                        String::new(),
+                    )
+                    .await;
+                }
+            }
+        }
+        issued.retain(|entry| {
+            entry.subject != subject
+                || !entry
+                    .state
+                    .upgrade()
+                    .is_some_and(|state| std::sync::Arc::ptr_eq(&state, env.state()))
+        });
+        publish_connection_invite(
+            &tonk,
+            repo,
+            &subject,
+            &expected.root_did,
+            "busy",
+            "creating agent invitation…".into(),
+            String::new(),
+        )
+        .await?;
+        (subject, expected, sync_remote)
+    };
+    if let Some(remote) = sync_remote {
+        let tonk = env.state().write().await;
+        let current = match super::identity::local_root(&tonk).await {
+            Ok(current) => current,
+            Err(error) => {
+                log!("agent invite account changed: {error}");
+                let (mode, status) = connection_invite_recovery(&error);
+                return publish_connection_invite(
+                    &tonk,
+                    repo,
+                    &subject,
+                    &tonk.profile.did(),
+                    mode,
+                    status.into(),
+                    String::new(),
+                )
+                .await;
+            }
+        };
+        if current.bytes != expected.bytes {
+            return publish_connection_invite(
                 &tonk,
                 repo,
                 &subject,
                 &tonk.profile.did(),
-                format!("Could not create an agent handoff: {error}"),
+                "retry",
+                "account changed; check this space and try again".into(),
+                String::new(),
+            )
+            .await;
+        }
+        if let Err(error) = enable_sync_for_repository(&tonk, repo, &remote).await {
+            log!("agent invite sync setup failed: {error}");
+            return publish_connection_invite(
+                &tonk,
+                repo,
+                &subject,
+                &expected.root_did,
+                "retry",
+                "could not turn on sync; try again".into(),
+                String::new(),
+            )
+            .await;
+        }
+    }
+    let origin = crate::axum::RequestOrigin::parse(
+        &worker_origin().unwrap_or_else(|| "https://tonk.network".into()),
+    )
+    .map_err(|_| TonkWorkerError::Internal("invalid connection origin".into()))?;
+    let minted = super::agent_connections::mint(env.state().clone(), repo.clone(), origin).await;
+    let tonk = env.state().read().await;
+    match minted {
+        Ok(response) => {
+            let current = match super::identity::local_root(&tonk).await {
+                Ok(current) => current,
+                Err(error) => {
+                    log!("agent invite account changed: {error}");
+                    let (mode, status) = connection_invite_recovery(&error);
+                    return publish_connection_invite(
+                        &tonk,
+                        repo,
+                        &subject,
+                        &tonk.profile.did(),
+                        mode,
+                        status.into(),
+                        String::new(),
+                    )
+                    .await;
+                }
+            };
+            let current_repository = tonk
+                .profile
+                .repository(repo)
+                .load()
+                .perform(&tonk.operator)
+                .await
+                .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
+            if current.root_did != expected.root_did
+                || current.bytes != expected.bytes
+                || current_repository.did() != subject
+                || response.connection.subject != subject.to_string()
+            {
+                return publish_connection_invite(
+                    &tonk,
+                    repo,
+                    &subject,
+                    &tonk.profile.did(),
+                    "retry",
+                    "account or space changed; check this space and try again".into(),
+                    String::new(),
+                )
+                .await;
+            }
+            let digest = *blake3::hash(response.url.as_bytes()).as_bytes();
+            publish_connection_invite(
+                &tonk,
+                repo,
+                &subject,
+                &expected.root_did,
+                "scoped",
+                "ready".into(),
+                response.url,
+            )
+            .await?;
+            issued.push(ReadyConnectionInvite {
+                state: std::sync::Arc::downgrade(env.state()),
+                subject,
+                issuer: *blake3::hash(&expected.bytes).as_bytes(),
+                link: digest,
+            });
+            Ok(())
+        }
+        Err(error) => {
+            log!("agent invitation creation failed: {error}");
+            let (mode, status) = connection_invite_recovery(&error);
+            publish_connection_invite(
+                &tonk,
+                repo,
+                &subject,
+                &tonk.profile.did(),
+                mode,
+                status.into(),
                 String::new(),
             )
             .await
         }
     }
+}
+
+#[cfg(not(feature = "connection-invites"))]
+async fn agent_invitations_unavailable(
+    env: &crate::router::CommandEnv,
+) -> Result<(), TonkWorkerError> {
+    let repo = &env.origin().repo;
+    let tonk = env.state().read().await;
+    let repository = tonk
+        .profile
+        .repository(repo)
+        .load()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
+    let subject = repository.did();
+    require_real_space(&tonk, &subject).await?;
+    publish_agent_handoff(
+        &tonk, repo, &subject, &tonk.profile.did(),
+        "Agent invitations are not enabled on this deployment yet. To access your own spaces from the terminal, use tonk link on a deployment with terminal linking enabled.".into(),
+        String::new(),
+    ).await
 }
 
 impl dialog_capability::Command for EnableSyncRequest {
@@ -11351,5 +11786,401 @@ route!: &probe/dropped
                 "every route the library installed is attributed to the seed: {route:?}"
             );
         }
+    }
+}
+
+#[cfg(all(test, feature = "connection-invites", not(target_arch = "wasm32")))]
+mod connection_invite_overlay_tests {
+    use super::*;
+
+    async fn response(state: &AppState, repo: &str) -> tonk_schema::command::AgentHandoffState {
+        let tonk = state.read().await;
+        let branch = tonk
+            .reactor
+            .repository(repo)
+            .branch(CONTENT_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let rows: Vec<tonk_schema::command::AgentHandoffState> = branch
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::command::AgentHandoffState> {
+                this: Term::var("this"),
+                status: Term::var("status"),
+                link: Term::var("link"),
+                account: Term::var("account"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        rows.into_iter().next().unwrap()
+    }
+
+    #[derive(dialog_query::Attribute, Clone)]
+    #[domain("xyz.tonk.agent-handoff")]
+    pub struct Mode(pub String);
+    #[derive(dialog_query::Concept, Clone, Debug)]
+    pub struct InviteMode {
+        this: dialog_artifacts::Entity,
+        mode: Mode,
+    }
+    async fn response_mode(state: &AppState, repo: &str) -> String {
+        let tonk = state.read().await;
+        let branch = tonk
+            .reactor
+            .repository(repo)
+            .branch(CONTENT_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let rows: Vec<InviteMode> = branch
+            .handle()
+            .query()
+            .select(Query::<InviteMode> {
+                this: Term::var("this"),
+                mode: Term::var("mode"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        rows[0].mode.0.clone()
+    }
+
+    #[test]
+    fn connection_invite_recovery_classifies_real_service_codes() {
+        for (code, status, mode) in [
+            ("CustomerInactive", 409, "activation"),
+            ("UnknownCustomer", 404, "account"),
+            ("CustomerSuspended", 409, "unavailable"),
+            ("Forbidden", 403, "denied"),
+            ("Internal", 503, "retry"),
+        ] {
+            let error = TonkWorkerError::Upstream {
+                status,
+                code: Some(code.into()),
+                message: "technical diagnostic".into(),
+            };
+            let recovery = connection_invite_recovery(&error);
+            assert_eq!(recovery.0, mode);
+            assert!(!recovery.1.contains("technical"));
+        }
+        assert_eq!(
+            connection_invite_recovery(&TonkWorkerError::RootRequired).0,
+            "account"
+        );
+        assert_eq!(
+            connection_remote_recovery(super::super::create_invite::RemoteRefusal::NotSynced).0,
+            "sync"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn connection_invite_recovery_requires_account_activation_and_explicit_sync() {
+        let state = crate::router::command::tests::native::test_state().await;
+        let repo = create_space_inner(&state, "Retained anonymous space")
+            .await
+            .unwrap();
+        let env = crate::router::CommandEnv::new(
+            state.clone(),
+            crate::router::CommandOrigin {
+                repo: repo.clone(),
+                branch: CONTENT_BRANCH.into(),
+                client: None,
+            },
+        );
+        run_connection_invite(&env, false).await.unwrap();
+        let anonymous = response(&state, &repo).await;
+        assert!(anonymous.status.0.contains("create an account"));
+        assert!(anonymous.link.0.is_empty());
+        assert_eq!(response_mode(&state, &repo).await, "account");
+        let subject = {
+            let tonk = state.read().await;
+            let repository = tonk
+                .profile
+                .repository(&repo)
+                .load()
+                .perform(&tonk.operator)
+                .await
+                .unwrap();
+            let subject = repository.did();
+            let root = Ed25519Signer::import(&[78; 32]).await.unwrap();
+            let grant = tonk_identity::delegation::mint_device_delegation(
+                root.clone(),
+                &tonk.profile.did(),
+            )
+            .await
+            .unwrap();
+            super::super::identity::persist_root(
+                &tonk,
+                tonk_worker_api::SaveRootRequest {
+                    credential_id: "recovery-test".into(),
+                    delegation_hex: hex::encode(grant.to_bytes().unwrap()),
+                    passkey: None,
+                    encryption_key: None,
+                },
+            )
+            .await
+            .unwrap();
+            tonk.reactor
+                .profile_repository()
+                .branch("main")
+                .transaction()
+                .assert(tonk_schema::AccountRegistered::new(
+                    root.did().this(),
+                    "recovery@example.test".into(),
+                    "https://example.test/ucan/".into(),
+                    1,
+                ))
+                .commit()
+                .perform(&tonk.operator)
+                .await
+                .unwrap();
+            subject
+        };
+        run_connection_invite(&env, false).await.unwrap();
+        assert!(
+            response(&state, &repo)
+                .await
+                .status
+                .0
+                .contains("verify your email")
+        );
+        assert_eq!(response_mode(&state, &repo).await, "activation");
+        {
+            let tonk = state.read().await;
+            let root = super::super::identity::local_root(&tonk).await.unwrap();
+            let provider =
+                tonk_account::AccountProviderRecord::attach("https://example.test/ucan/", 1)
+                    .unwrap();
+            tonk.profile
+                .credential()
+                .site(tonk_account::ACCOUNT_PROVIDER_CREDENTIAL_SITE)
+                .save(provider.encode().unwrap())
+                .perform(&tonk.operator)
+                .await
+                .unwrap();
+
+            tonk.reactor
+                .profile_repository()
+                .branch("main")
+                .transaction()
+                .assert(tonk_schema::AccountActive::new(root.root_did.this(), 2))
+                .commit()
+                .perform(&tonk.operator)
+                .await
+                .unwrap();
+        }
+        run_connection_invite(&env, false).await.unwrap();
+        assert!(
+            response(&state, &repo)
+                .await
+                .status
+                .0
+                .contains("turn on sync")
+        );
+        assert_eq!(response_mode(&state, &repo).await, "sync");
+        {
+            let tonk = state.read().await;
+            let repository = tonk
+                .profile
+                .repository(&repo)
+                .load()
+                .perform(&tonk.operator)
+                .await
+                .unwrap();
+            assert_eq!(repository.did(), subject);
+            assert!(matches!(
+                super::super::create_invite::resolve_remote_url(&tonk, &repository)
+                    .await
+                    .unwrap(),
+                super::super::create_invite::RemoteRequirement::Refused(_)
+            ));
+        }
+        run_connection_invite(&env, true).await.unwrap();
+        let ready = response(&state, &repo).await;
+        assert_eq!(ready.status.0, "ready");
+        assert_eq!(response_mode(&state, &repo).await, "scoped");
+        assert!(ready.link.0.contains("#tonk-agent-v1="));
+        let tonk = state.read().await;
+        assert_eq!(
+            tonk.profile
+                .repository(&repo)
+                .load()
+                .perform(&tonk.operator)
+                .await
+                .unwrap()
+                .did(),
+            subject
+        );
+    }
+
+    #[dialog_common::test]
+    async fn connection_invite_overlay_reuses_ready_and_requires_explicit_new_after_loss() {
+        let state = crate::router::command::tests::native::test_state().await;
+        let repo = create_space_inner(&state, "Invitation cache")
+            .await
+            .unwrap();
+        {
+            let tonk = state.read().await;
+            let root = Ed25519Signer::import(&[77; 32]).await.unwrap();
+            let grant =
+                tonk_identity::delegation::mint_device_delegation(root, &tonk.profile.did())
+                    .await
+                    .unwrap();
+            super::super::identity::persist_root(
+                &tonk,
+                tonk_worker_api::SaveRootRequest {
+                    credential_id: "cache-test".into(),
+                    delegation_hex: hex::encode(grant.to_bytes().unwrap()),
+                    passkey: None,
+                    encryption_key: None,
+                },
+            )
+            .await
+            .unwrap();
+        }
+        {
+            let tonk = state.read().await;
+            let provider =
+                tonk_account::AccountProviderRecord::attach("https://example.test/ucan/", 1)
+                    .unwrap();
+            tonk.profile
+                .credential()
+                .site(tonk_account::ACCOUNT_PROVIDER_CREDENTIAL_SITE)
+                .save(provider.encode().unwrap())
+                .perform(&tonk.operator)
+                .await
+                .unwrap();
+        }
+        enable_sync_inner(&state, &repo, "https://example.test/ucan/")
+            .await
+            .unwrap();
+        // Prime the same public digest the successful issuer records. This
+        // fixture exercises retention, not the separately tested grant mint.
+        let link = "https://example.test/join#tonk-agent-v1=transient-test-bearer";
+        let (subject, account, before) = {
+            let tonk = state.read().await;
+            let repository = tonk
+                .profile
+                .repository(&repo)
+                .load()
+                .perform(&tonk.operator)
+                .await
+                .unwrap();
+            let subject = repository.did();
+            let root = super::super::identity::local_root(&tonk).await.unwrap();
+            publish_connection_invite(
+                &tonk,
+                &repo,
+                &subject,
+                &root.root_did,
+                "scoped",
+                "ready".into(),
+                link.into(),
+            )
+            .await
+            .unwrap();
+            CONNECTION_ISSUANCE
+                .lock()
+                .await
+                .push(ReadyConnectionInvite {
+                    state: std::sync::Arc::downgrade(&state),
+                    subject: subject.clone(),
+                    issuer: *blake3::hash(&root.bytes).as_bytes(),
+                    link: *blake3::hash(link.as_bytes()).as_bytes(),
+                });
+            let branch = tonk
+                .reactor
+                .repository(&repo)
+                .branch(CONTENT_BRANCH)
+                .acquire(&tonk.operator)
+                .await
+                .unwrap();
+            (
+                subject,
+                root.root_did,
+                branch.handle().revision().unwrap().tree,
+            )
+        };
+        let env = crate::router::CommandEnv::new(
+            state.clone(),
+            crate::router::CommandOrigin {
+                repo: repo.clone(),
+                branch: CONTENT_BRANCH.into(),
+                client: None,
+            },
+        );
+        let (one, two) = tokio::join!(
+            run_connection_invite(&env, false),
+            run_connection_invite(&env, false)
+        );
+        one.unwrap();
+        two.unwrap();
+        assert_eq!(response(&state, &repo).await.link.0, link);
+        {
+            let tonk = state.read().await;
+            tonk.reactor
+                .repository(&repo)
+                .branch(CONTENT_BRANCH)
+                .acquire(&tonk.operator)
+                .await
+                .unwrap()
+                .state
+                .clear_overlay();
+        }
+        for _ in 0..2 {
+            run_connection_invite(&env, false).await.unwrap();
+            let unavailable = response(&state, &repo).await;
+            assert!(unavailable.link.0.is_empty());
+            assert_eq!(response_mode(&state, &repo).await, "new");
+            assert!(unavailable.status.0.contains("no longer in this session"));
+        }
+        // Even a matching ready response cannot supply an unissued bearer.
+        {
+            let tonk = state.read().await;
+            publish_connection_invite(
+                &tonk,
+                &repo,
+                &subject,
+                &account,
+                "scoped",
+                "ready".into(),
+                "https://example.test/join#tonk-agent-v1=unissued".into(),
+            )
+            .await
+            .unwrap();
+        }
+        run_connection_invite(&env, false).await.unwrap();
+        assert!(response(&state, &repo).await.link.0.is_empty());
+        let tonk = state.read().await;
+        let branch = tonk
+            .reactor
+            .repository(&repo)
+            .branch(CONTENT_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        assert_eq!(
+            branch.handle().revision().unwrap().tree,
+            before,
+            "retaining or losing a transient invitation never writes durable space data"
+        );
+        assert_eq!(
+            CONNECTION_ISSUANCE
+                .lock()
+                .await
+                .iter()
+                .filter(|entry| entry
+                    .state
+                    .upgrade()
+                    .is_some_and(|candidate| std::sync::Arc::ptr_eq(&candidate, &state)))
+                .count(),
+            1
+        );
     }
 }
