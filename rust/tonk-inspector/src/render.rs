@@ -10,9 +10,16 @@
 //! The markup (classes, `<wa-*>` web components, notation rows) matches the
 //! original so the app stylesheet styles it unchanged.
 
+use std::collections::BTreeMap;
+
 use serde_json::Value;
 
 use crate::response::{EvaluateResponse, QueryMatchBlock, QueryResult, Revision};
+
+/// Entity URI → the published name that currently points at it, as the
+/// worker resolved it for this response. Empty when nothing on the
+/// branch names any entity in the result.
+pub type Names = BTreeMap<String, String>;
 
 /// Block label of a `concept:` query — its results render as `concept!:`.
 const CONCEPT_LABEL: &str = "concept";
@@ -68,6 +75,7 @@ pub fn render_result(failure: Option<&str>, response: Option<&EvaluateResponse>)
             &r.matches_after,
             r.revision_before.as_ref(),
             r.revision_after.as_ref(),
+            &r.names,
         ),
         None => String::new(),
     };
@@ -86,6 +94,7 @@ fn render_evaluate_matches(
     after: &[QueryMatchBlock],
     revision_before: Option<&Revision>,
     revision_after: Option<&Revision>,
+    names: &Names,
 ) -> String {
     if after.is_empty() && before.is_empty() {
         let badge = revision_badge(revision_after.or(revision_before));
@@ -97,7 +106,7 @@ fn render_evaluate_matches(
             "<div class=\"evaluate-results wa-stack wa-gap-2xs\">\
                <div class=\"evaluate-revision\">{badge}</div>{}\
              </div>",
-            render_result_tabs(after)
+            render_result_tabs(after, names)
         );
     }
     format!(
@@ -110,16 +119,16 @@ fn render_evaluate_matches(
            </div>\
          </wa-comparison>",
         revision_badge(revision_before),
-        render_match_block_notation(before),
+        render_match_block_notation(before, names),
         revision_badge(revision_after),
-        render_match_block_notation(after),
+        render_match_block_notation(after, names),
     )
 }
 
 /// The three swappable result views as a `<wa-tab-group>` — listed notation,
 /// grouped tree, and per-block tables. The element wires the `wa-tab-show`
 /// preference persistence after injecting this markup.
-fn render_result_tabs(blocks: &[QueryMatchBlock]) -> String {
+fn render_result_tabs(blocks: &[QueryMatchBlock], names: &Names) -> String {
     format!(
         "<wa-tab-group id=\"evaluate-tabs\" class=\"evaluate-tabs\" placement=\"end\">\
            <wa-tab panel=\"listed\"><wa-icon name=\"list\" variant=\"solid\"></wa-icon></wa-tab>\
@@ -129,20 +138,23 @@ fn render_result_tabs(blocks: &[QueryMatchBlock]) -> String {
            <wa-tab-panel name=\"tree\">{}</wa-tab-panel>\
            <wa-tab-panel name=\"table\">{}</wa-tab-panel>\
          </wa-tab-group>",
-        render_match_block_notation(blocks),
-        render_match_block_list(blocks),
-        render_match_block_tables(blocks),
+        render_match_block_notation(blocks, names),
+        render_match_block_list(blocks, names),
+        render_match_block_tables(blocks, names),
     )
 }
 
 // ---- Table view -------------------------------------------------------------
 
-fn render_match_block_tables(blocks: &[QueryMatchBlock]) -> String {
-    let inner: String = blocks.iter().map(render_match_block_table).collect();
+fn render_match_block_tables(blocks: &[QueryMatchBlock], names: &Names) -> String {
+    let inner: String = blocks
+        .iter()
+        .map(|block| render_match_block_table(block, names))
+        .collect();
     format!("<div class=\"query-tables wa-stack wa-gap-l\">{inner}</div>")
 }
 
-fn render_match_block_table(block: &QueryMatchBlock) -> String {
+fn render_match_block_table(block: &QueryMatchBlock, names: &Names) -> String {
     // Column order: every field name in first-seen order across the block's
     // results, `this` excluded (it leads as its own column).
     let mut columns: Vec<&str> = Vec::new();
@@ -167,19 +179,24 @@ fn render_match_block_table(block: &QueryMatchBlock) -> String {
                     let cell = result
                         .fields
                         .get(*name)
-                        .map(|v| format!("<span>{}</span>", render_field_value(v)))
+                        .map(|v| format!("<span>{}</span>", render_field_value(v, names)))
                         .unwrap_or_default();
                     format!("<td>{cell}</td>")
                 })
                 .collect();
+            // The copy button still yields the URI — copying a name would
+            // hand back something that is not the identifier. Only the
+            // label it wraps reads as the name, and it is inert: the
+            // click belongs to the copy button, so the URI lives on the
+            // hover rather than behind a reveal.
             format!(
                 "<tr>\
                    <td class=\"query-table-this\">\
-                     <wa-copy-button value=\"{}\"><span>{}</span></wa-copy-button>\
+                     <wa-copy-button value=\"{}\">{}</wa-copy-button>\
                    </td>{cells}\
                  </tr>",
                 esc(&result.this),
-                esc(&result.this),
+                render_table_entity(&result.this, names),
             )
         })
         .collect();
@@ -194,29 +211,29 @@ fn render_match_block_table(block: &QueryMatchBlock) -> String {
 
 // ---- Listed (notation) view -------------------------------------------------
 
-fn render_match_block_notation(blocks: &[QueryMatchBlock]) -> String {
+fn render_match_block_notation(blocks: &[QueryMatchBlock], names: &Names) -> String {
     let inner: String = blocks
         .iter()
         .flat_map(|block| {
             let label = block.label.as_str();
             block.results.iter().map(move |result| match label {
-                CONCEPT_LABEL => render_concept_record(result, CONCEPT_LABEL),
-                COMMAND_LABEL => render_concept_record(result, COMMAND_LABEL),
-                RULE_LABEL => render_rule_record(result),
-                other => render_notation_record(other, result),
+                CONCEPT_LABEL => render_concept_record(result, CONCEPT_LABEL, names),
+                COMMAND_LABEL => render_concept_record(result, COMMAND_LABEL, names),
+                RULE_LABEL => render_rule_record(result, names),
+                other => render_notation_record(other, result, names),
             })
         })
         .collect();
     format!("<div class=\"query-notation wa-stack wa-gap-s\">{inner}</div>")
 }
 
-fn render_concept_record(result: &QueryResult, head: &str) -> String {
+fn render_concept_record(result: &QueryResult, head: &str, names: &Names) -> String {
     let show_transient = head == CONCEPT_LABEL;
     let descriptor = concept_descriptor(result, show_transient);
-    let mut body = render_notation_field_at(1, "this", &Value::String(result.this.clone()));
+    let mut body = render_notation_field_at(1, "this", &Value::String(result.this.clone()), names);
     if let Some(map) = descriptor {
         for (k, v) in map {
-            body.push_str(&render_notation_field_at(1, &k, &v));
+            body.push_str(&render_notation_field_at(1, &k, &v, names));
         }
     }
     format!(
@@ -227,12 +244,12 @@ fn render_concept_record(result: &QueryResult, head: &str) -> String {
     )
 }
 
-fn render_rule_record(result: &QueryResult) -> String {
+fn render_rule_record(result: &QueryResult, names: &Names) -> String {
     let definition = rule_definition(result);
-    let mut body = render_notation_field_at(1, "this", &Value::String(result.this.clone()));
+    let mut body = render_notation_field_at(1, "this", &Value::String(result.this.clone()), names);
     if let Some(map) = definition {
         for (k, v) in map {
-            body.push_str(&render_notation_field_at(1, &k, &v));
+            body.push_str(&render_notation_field_at(1, &k, &v, names));
         }
     }
     format!(
@@ -242,13 +259,13 @@ fn render_rule_record(result: &QueryResult) -> String {
     )
 }
 
-fn render_notation_record(label: &str, result: &QueryResult) -> String {
-    let mut body = render_notation_field_at(1, "this", &Value::String(result.this.clone()));
+fn render_notation_record(label: &str, result: &QueryResult, names: &Names) -> String {
+    let mut body = render_notation_field_at(1, "this", &Value::String(result.this.clone()), names);
     // Collection entries arrive folded (`show: {ui: <template>}`), so
     // the Object arm below nests them as the entry form naturally.
     for (name, value) in &result.fields {
         if name != "this" {
-            body.push_str(&render_notation_field_at(1, name, value));
+            body.push_str(&render_notation_field_at(1, name, value, names));
         }
     }
     format!(
@@ -265,7 +282,7 @@ fn notation_indent(depth: usize) -> String {
 }
 
 /// Render one field at nesting `depth` (1 = directly under the head).
-fn render_notation_field_at(depth: usize, name: &str, value: &Value) -> String {
+fn render_notation_field_at(depth: usize, name: &str, value: &Value, names: &Names) -> String {
     let indent = notation_indent(depth);
     match value {
         Value::Object(map) => {
@@ -279,7 +296,7 @@ fn render_notation_field_at(depth: usize, name: &str, value: &Value) -> String {
                 esc(name),
             );
             for (k, v) in map {
-                out.push_str(&render_notation_field_at(depth + 1, k, v));
+                out.push_str(&render_notation_field_at(depth + 1, k, v, names));
             }
             out
         }
@@ -299,10 +316,10 @@ fn render_notation_field_at(depth: usize, name: &str, value: &Value) -> String {
                     Value::Object(map) => {
                         let mut fields = map.iter();
                         if let Some((k, v)) = fields.next() {
-                            out.push_str(&render_dash_field(&dash_indent, depth + 2, k, v));
+                            out.push_str(&render_dash_field(&dash_indent, depth + 2, k, v, names));
                         }
                         for (k, v) in fields {
-                            out.push_str(&render_notation_field_at(depth + 2, k, v));
+                            out.push_str(&render_notation_field_at(depth + 2, k, v, names));
                         }
                     }
                     other => out.push_str(&format!(
@@ -311,7 +328,7 @@ fn render_notation_field_at(depth: usize, name: &str, value: &Value) -> String {
                            <span class=\"tonk-cm-plain\">- </span>{}\
                          </div>",
                         esc(&dash_indent),
-                        render_field_value(other),
+                        render_field_value(other, names),
                     )),
                 }
             }
@@ -348,13 +365,19 @@ fn render_notation_field_at(depth: usize, name: &str, value: &Value) -> String {
              </div>",
             esc(&indent),
             esc(name),
-            render_field_value(value),
+            render_field_value(value, names),
         ),
     }
 }
 
 /// The first field of a block-sequence object item — shares the `- ` row.
-fn render_dash_field(dash_indent: &str, child_depth: usize, name: &str, value: &Value) -> String {
+fn render_dash_field(
+    dash_indent: &str,
+    child_depth: usize,
+    name: &str,
+    value: &Value,
+    names: &Names,
+) -> String {
     match value {
         Value::Object(map) => {
             let mut out = format!(
@@ -368,7 +391,7 @@ fn render_dash_field(dash_indent: &str, child_depth: usize, name: &str, value: &
                 esc(name),
             );
             for (k, v) in map {
-                out.push_str(&render_notation_field_at(child_depth + 1, k, v));
+                out.push_str(&render_notation_field_at(child_depth + 1, k, v, names));
             }
             out
         }
@@ -382,7 +405,7 @@ fn render_dash_field(dash_indent: &str, child_depth: usize, name: &str, value: &
                  </div>{}",
                 esc(dash_indent),
                 esc(name),
-                render_notation_field_at(child_depth, "", &Value::Array(items.clone())),
+                render_notation_field_at(child_depth, "", &Value::Array(items.clone()), names),
             )
         }
         _ => format!(
@@ -394,14 +417,14 @@ fn render_dash_field(dash_indent: &str, child_depth: usize, name: &str, value: &
              </div>",
             esc(dash_indent),
             esc(name),
-            render_field_value(value),
+            render_field_value(value, names),
         ),
     }
 }
 
 // ---- Grouped tree view ------------------------------------------------------
 
-fn render_match_block_list(blocks: &[QueryMatchBlock]) -> String {
+fn render_match_block_list(blocks: &[QueryMatchBlock], names: &Names) -> String {
     let inner: String = blocks
         .iter()
         .map(|block| {
@@ -410,10 +433,10 @@ fn render_match_block_list(blocks: &[QueryMatchBlock]) -> String {
                 .results
                 .iter()
                 .map(|result| match label {
-                    CONCEPT_LABEL => render_concept_tree_item(result, CONCEPT_LABEL),
-                    COMMAND_LABEL => render_concept_tree_item(result, COMMAND_LABEL),
-                    RULE_LABEL => render_rule_tree_item(result),
-                    _ => render_result_tree_item(result),
+                    CONCEPT_LABEL => render_concept_tree_item(result, CONCEPT_LABEL, names),
+                    COMMAND_LABEL => render_concept_tree_item(result, COMMAND_LABEL, names),
+                    RULE_LABEL => render_rule_tree_item(result, names),
+                    _ => render_result_tree_item(result, names),
                 })
                 .collect();
             format!(
@@ -427,7 +450,7 @@ fn render_match_block_list(blocks: &[QueryMatchBlock]) -> String {
     format!("<wa-tree class=\"query-tree\">{inner}</wa-tree>")
 }
 
-fn render_result_tree_item(result: &QueryResult) -> String {
+fn render_result_tree_item(result: &QueryResult, names: &Names) -> String {
     let fields: String = result
         .fields
         .iter()
@@ -438,25 +461,25 @@ fn render_result_tree_item(result: &QueryResult) -> String {
                    <wa-tree-item>{}</wa-tree-item>\
                  </wa-tree-item>",
                 esc(name),
-                render_field_value(value),
+                render_field_value(value, names),
             )
         })
         .collect();
     format!(
         "<wa-tree-item expanded>\
-           <span class=\"tonk-cm-entity\">{}</span><span class=\"tonk-cm-plain\">:</span>{fields}\
+           {}<span class=\"tonk-cm-plain\">:</span>{fields}\
          </wa-tree-item>",
-        esc(&result.this),
+        render_entity(&result.this, names),
     )
 }
 
-fn render_concept_tree_item(result: &QueryResult, head: &str) -> String {
+fn render_concept_tree_item(result: &QueryResult, head: &str, names: &Names) -> String {
     let show_transient = head == CONCEPT_LABEL;
     let descriptor = concept_descriptor(result, show_transient);
-    let mut body = render_notation_tree_item("this", &Value::String(result.this.clone()));
+    let mut body = render_notation_tree_item("this", &Value::String(result.this.clone()), names);
     if let Some(map) = descriptor {
         for (k, v) in map {
-            body.push_str(&render_notation_tree_item(&k, &v));
+            body.push_str(&render_notation_tree_item(&k, &v, names));
         }
     }
     format!(
@@ -467,12 +490,12 @@ fn render_concept_tree_item(result: &QueryResult, head: &str) -> String {
     )
 }
 
-fn render_rule_tree_item(result: &QueryResult) -> String {
+fn render_rule_tree_item(result: &QueryResult, names: &Names) -> String {
     let definition = rule_definition(result);
-    let mut body = render_notation_tree_item("this", &Value::String(result.this.clone()));
+    let mut body = render_notation_tree_item("this", &Value::String(result.this.clone()), names);
     if let Some(map) = definition {
         for (k, v) in map {
-            body.push_str(&render_notation_tree_item(&k, &v));
+            body.push_str(&render_notation_tree_item(&k, &v, names));
         }
     }
     format!(
@@ -482,12 +505,12 @@ fn render_rule_tree_item(result: &QueryResult) -> String {
     )
 }
 
-fn render_notation_tree_item(name: &str, value: &Value) -> String {
+fn render_notation_tree_item(name: &str, value: &Value, names: &Names) -> String {
     match value {
         Value::Object(map) => {
             let children: String = map
                 .iter()
-                .map(|(k, v)| render_notation_tree_item(k, v))
+                .map(|(k, v)| render_notation_tree_item(k, v, names))
                 .collect();
             format!(
                 "<wa-tree-item expanded>\
@@ -503,7 +526,7 @@ fn render_notation_tree_item(name: &str, value: &Value) -> String {
                     Value::Object(map) => {
                         let fields: String = map
                             .iter()
-                            .map(|(k, v)| render_notation_tree_item(k, v))
+                            .map(|(k, v)| render_notation_tree_item(k, v, names))
                             .collect();
                         format!(
                             "<wa-tree-item expanded>\
@@ -515,7 +538,7 @@ fn render_notation_tree_item(name: &str, value: &Value) -> String {
                         "<wa-tree-item>\
                            <span class=\"tonk-cm-plain\">- </span>{}\
                          </wa-tree-item>",
-                        render_field_value(other),
+                        render_field_value(other, names),
                     ),
                 })
                 .collect();
@@ -532,7 +555,7 @@ fn render_notation_tree_item(name: &str, value: &Value) -> String {
                <wa-tree-item>{}</wa-tree-item>\
              </wa-tree-item>",
             esc(name),
-            render_field_value(value),
+            render_field_value(value, names),
         ),
     }
 }
@@ -547,9 +570,54 @@ fn is_signed_literal(s: &str) -> bool {
     }
 }
 
+/// Render an entity URI, preferring the name the branch publishes for it.
+///
+/// `did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv` identifies
+/// a row and tells the reader nothing; `alice` tells them what they are
+/// looking at. So a named entity renders as its bare name in the
+/// editor's anchor tint, and the URI rides along on `data-entity` — the
+/// hover (`title`) answers "which one?" without a click, and the click
+/// swaps the text for the URI itself (see
+/// [`crate::element`]'s reveal handler), so nothing is hidden, only
+/// deferred.
+///
+/// An entity nothing names renders exactly as before: the URI, tinted.
+fn render_entity(uri: &str, names: &Names) -> String {
+    let Some(name) = names.get(uri) else {
+        return format!("<span class=\"tonk-cm-entity\">{}</span>", esc(uri));
+    };
+    format!(
+        "<span class=\"tonk-cm-name notation-named\" role=\"button\" tabindex=\"0\" \
+           data-entity=\"{uri}\" data-name=\"{name}\" title=\"{uri}\">{name}</span>",
+        uri = esc(uri),
+        name = esc(name),
+    )
+}
+
+/// The table's `this` cell — the same name-for-URI substitution, minus
+/// the reveal.
+///
+/// The cell is a `<wa-copy-button>`, so its click is already spoken for;
+/// a second meaning on the same click would make copying unpredictable.
+/// The unnamed form keeps the cell's 8-character right-clipped URI (the
+/// `did:key:z6Mk…` prefix is boilerplate); the named form opts out of
+/// that clip, because a name is short and its *start* is the part that
+/// identifies it.
+fn render_table_entity(uri: &str, names: &Names) -> String {
+    match names.get(uri) {
+        Some(name) => format!(
+            "<span class=\"tonk-cm-name query-table-named\" title=\"{}\">{}</span>",
+            esc(uri),
+            esc(name),
+        ),
+        None => format!("<span>{}</span>", esc(uri)),
+    }
+}
+
 /// Render a single field value as a highlighted `<span>`, applying the
-/// `tonk-cm-*` class matching its shape.
-fn render_field_value(value: &Value) -> String {
+/// `tonk-cm-*` class matching its shape. Entity-shaped strings go
+/// through [`render_entity`], which substitutes a published name.
+fn render_field_value(value: &Value, names: &Names) -> String {
     let (class, text) = match value {
         Value::Null => ("tonk-cm-variable", "_".to_owned()),
         Value::Bool(b) => ("tonk-cm-number", b.to_string()),
@@ -559,7 +627,7 @@ fn render_field_value(value: &Value) -> String {
                 // The wire spelling of a SignedInteger (`+41`, `-7`).
                 ("tonk-cm-number", s.clone())
             } else if looks_like_uri(s) {
-                ("tonk-cm-entity", s.clone())
+                return render_entity(s, names);
             } else {
                 ("tonk-cm-string", s.clone())
             }

@@ -565,6 +565,9 @@ async fn run_query(site: &TonkSite, doc: &str) -> Result<EvaluateResponse> {
         matches_before: evaluated.matches.clone(),
         matches_after: evaluated.matches,
         commits: evaluated.commits,
+        // Schema-internal reads are consumed structurally, never
+        // rendered, so there is no name to substitute anywhere.
+        names: Default::default(),
     })
 }
 

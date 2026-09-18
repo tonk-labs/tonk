@@ -9,9 +9,13 @@
 //!
 //! - [`evaluate`] — the evaluate chain (`syntax.evaluate`, `Evaluate`,
 //!   `Evaluated`, `EvaluatedCommit`).
+//! - [`names`] — the published name (`&anchor`) each entity in a result
+//!   set carries, so a renderer can show the name instead of the URI.
 //!
 //! Rule induction is dialog's: installed `dialog.rule/*` rules fire
 //! at commit time inside `TransactionCommit::perform`, so this crate
 //! carries no fixpoint of its own.
 
 pub mod evaluate;
+
+pub mod names;

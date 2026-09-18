@@ -85,12 +85,12 @@ pub fn render(failure: Option<&str>, response: Option<&EvaluateResponse>, with: 
     }
     blocks
         .iter()
-        .map(|block| render_block(block, with))
+        .map(|block| render_block(block, with, &response.names))
         .collect()
 }
 
 /// One query's results: a summary line plus a capped gallery.
-fn render_block(block: &QueryMatchBlock, with: &str) -> String {
+fn render_block(block: &QueryMatchBlock, with: &str, names: &BTreeMap<String, String>) -> String {
     let count = block.results.len();
     let summary = format!(
         "<div class=\"nb-out__summary\">\
@@ -112,7 +112,7 @@ fn render_block(block: &QueryMatchBlock, with: &str) -> String {
         .results
         .iter()
         .take(CARD_CAP)
-        .map(|result| render_card(result, &block.label, with))
+        .map(|result| render_card(result, &block.label, with, names))
         .collect();
     // State what was dropped. A silently truncated gallery reads as the whole
     // answer, which is worse than a long one.
@@ -141,16 +141,26 @@ fn render_block(block: &QueryMatchBlock, with: &str) -> String {
 /// The model comes from the query's own label (`person ?alice:` → `person`)
 /// when the result does not name one itself, so an ordinary query gets its
 /// concept's view rather than the generic listing.
-fn render_card(result: &QueryResult, label: &str, with: &str) -> String {
+fn render_card(
+    result: &QueryResult,
+    label: &str,
+    with: &str,
+    names: &BTreeMap<String, String>,
+) -> String {
     // Prefer a `name` over the entity URI: `db:attribute` and `attribute`
     // are the same row, and the readable one belongs in the title. The URI
     // stays as the tooltip, so nothing is lost.
+    //
+    // Failing that, the name the branch publishes for the entity (an
+    // `&anchor`) — still a name someone chose, where `short_entity`
+    // below is only the URI with its boilerplate cut off.
     let named = result
         .fields
         .get("name")
         .and_then(|value| value.as_str())
         .map(str::trim)
-        .filter(|name| !name.is_empty());
+        .filter(|name| !name.is_empty())
+        .or_else(|| names.get(&result.this).map(String::as_str));
     let title = esc(named.unwrap_or_else(|| short_entity(&result.this)));
     if let Some(model) = model_of(&result.fields).or_else(|| model_from_label(label)) {
         return format!(
@@ -295,6 +305,9 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// A response with no published names — the pre-name-map default.
+    const NO_NAMES: BTreeMap<String, String> = BTreeMap::new();
+
     fn result(this: &str, fields: &[(&str, serde_json::Value)]) -> QueryResult {
         QueryResult {
             this: this.to_owned(),
@@ -316,7 +329,7 @@ mod tests {
             label: "person".to_owned(),
             results: Vec::new(),
         };
-        let html = render_block(&block, "main@id:repo");
+        let html = render_block(&block, "main@id:repo", &NO_NAMES);
         assert!(html.contains("no results"));
         assert!(!html.contains("nb-out__gallery"), "no gallery for nothing");
     }
@@ -332,7 +345,7 @@ mod tests {
             label: "thing".to_owned(),
             results,
         };
-        let html = render_block(&block, "main@id:repo");
+        let html = render_block(&block, "main@id:repo", &NO_NAMES);
         assert_eq!(html.matches("nb-card__title").count(), CARD_CAP);
         assert!(html.contains("and 28 more"));
         assert!(html.contains("40 results"));
@@ -345,6 +358,7 @@ mod tests {
             &result("id:notebook/scratch", &[("model", json!("tonk:notebook"))]),
             "concept",
             "main@id:repo",
+            &NO_NAMES,
         );
         assert!(html.contains("<tonk-display"));
         assert!(html.contains("entity=\"id:notebook/scratch\""));
@@ -360,6 +374,7 @@ mod tests {
             &result("id:x", &[("name", json!("Alice"))]),
             "concept",
             "main@id:repo",
+            &NO_NAMES,
         );
         assert!(!html.contains("<tonk-display"));
         assert!(html.contains("Alice"));
@@ -376,6 +391,7 @@ mod tests {
             &result("id:alice", &[("name", json!("Alice"))]),
             "person",
             "main@id:repo",
+            &NO_NAMES,
         );
         assert!(html.contains("<tonk-display"));
         assert!(html.contains("entity=\"id:alice\""));
@@ -394,8 +410,30 @@ mod tests {
             &result("id:alice", &[("name", json!("Alice"))]),
             "person",
             "main@id:repo",
+            &NO_NAMES,
         );
         assert!(html.contains("with=\"main@id:repo\""));
+    }
+
+    /// A card with no `name` field falls back to the name the branch
+    /// publishes for the entity — still something a person chose, where
+    /// the URI tail is only the identifier with its prefix cut off.
+    #[dialog_common::test]
+    fn it_titles_a_card_with_the_published_name() {
+        let names: BTreeMap<String, String> =
+            [("did:key:z6MkfpAValice".to_owned(), "alice".to_owned())]
+                .into_iter()
+                .collect();
+        let html = render_card(
+            &result("did:key:z6MkfpAValice", &[("age", json!(41))]),
+            "concept",
+            "main@id:repo",
+            &names,
+        );
+        assert!(
+            html.contains(">alice<"),
+            "the published name titles the card: {html}"
+        );
     }
 
     /// A result naming its own model keeps it: the field is more specific
@@ -406,6 +444,7 @@ mod tests {
             &result("id:x", &[("model", json!("tonk:notebook"))]),
             "person",
             "main@id:repo",
+            &NO_NAMES,
         );
         assert!(html.contains("model=\"tonk:notebook\""));
     }
@@ -438,6 +477,7 @@ mod tests {
             ),
             "concept",
             "main@id:repo",
+            &NO_NAMES,
         );
         assert!(html.contains(">attribute</div>"));
         assert!(

@@ -179,6 +179,19 @@ pub async fn run_against_site(
         .await
         .map_err(map_evaluate_error)?;
 
+    // Published names for every entity either match view mentions,
+    // read through the txn overlay so an `&anchor` this document just
+    // wrote names its own result. Carried on the response for
+    // `--json` consumers; a lookup failure is not an eval failure —
+    // the entity URIs are in the response either way.
+    let names = evaluated
+        .names(
+            &[evaluated.matches.as_slice(), matches_after.as_slice()],
+            &site.operator,
+        )
+        .await
+        .unwrap_or_default();
+
     // Commit only a mutating document that wasn't run as a dry
     // run. Pure-query docs and `--dry-run` short-circuit so we
     // don't pay for (or apply) a commit.
@@ -202,6 +215,7 @@ pub async fn run_against_site(
                 matches_before: evaluated.matches,
                 matches_after,
                 commits: evaluated.commits,
+                names,
             },
             true,
         )
@@ -220,6 +234,7 @@ pub async fn run_against_site(
                 matches_before: evaluated.matches.clone(),
                 matches_after: evaluated.matches,
                 commits,
+                names,
             },
             false,
         )

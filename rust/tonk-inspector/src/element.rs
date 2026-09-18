@@ -540,6 +540,9 @@ impl NotebookCell {
             ev.prevent_default()
         });
 
+        // Result slot → click/Enter on a named entity reveals its URI.
+        wire_entity_reveal(&self.result_slot, store);
+
         // editor `change` → mirror buffer, clear stale pushed diagnostics.
         add(&self.editor, "change", store, {
             let cell = self.clone();
@@ -776,6 +779,70 @@ fn notify_committed() {
             let _ = win.dispatch_event(&event);
         }
     }
+}
+
+/// The renderer's marker class for an entity shown under its published
+/// name (`render::render_entity`). The URI rides on `data-entity`.
+const NAMED_ENTITY: &str = ".notation-named";
+
+/// Swap a named entity between its name and its URI, in place.
+///
+/// A name is the readable answer and the URI is the exact one, and which
+/// of the two you want depends on the question — so the result shows the
+/// name and hands over the URI on demand rather than picking for the
+/// reader. The swap is symmetric: whichever reading is hidden is the one
+/// on the tooltip, so both are always one hover or one click away.
+///
+/// Handled on the result slot by delegation, so it survives every
+/// re-render, and inert anywhere the click did not land on a name.
+/// Returns whether it handled the event — the caller stops propagation
+/// only then, since a `<wa-tree-item>` label would otherwise also
+/// collapse the row.
+fn reveal_named_entity(event: &Event) -> bool {
+    let Some(target) = event.target().and_then(|t| t.dyn_into::<Element>().ok()) else {
+        return false;
+    };
+    let Some(label) = target.closest(NAMED_ENTITY).ok().flatten() else {
+        return false;
+    };
+    let (Some(entity), Some(name)) = (
+        label.get_attribute("data-entity"),
+        label.get_attribute("data-name"),
+    ) else {
+        return false;
+    };
+    if label.has_attribute("data-revealed") {
+        let _ = label.remove_attribute("data-revealed");
+        label.set_text_content(Some(&name));
+        let _ = label.set_attribute("title", &entity);
+    } else {
+        let _ = label.set_attribute("data-revealed", "");
+        label.set_text_content(Some(&entity));
+        let _ = label.set_attribute("title", &name);
+    }
+    true
+}
+
+/// Wire the name/URI reveal onto a result slot. The slot outlives every
+/// render, so one delegated pair of listeners covers all of them.
+fn wire_entity_reveal(slot: &Element, store: &Closures) {
+    add(slot, "click", store, |event: Event| {
+        if reveal_named_entity(&event) {
+            event.prevent_default();
+            event.stop_propagation();
+        }
+    });
+    // Keyboard parity: the labels are focusable (`tabindex="0"`), so the
+    // reveal has to answer the keys a button answers.
+    add(slot, "keydown", store, |event: Event| {
+        let Some(key) = event.dyn_ref::<web_sys::KeyboardEvent>().map(|e| e.key()) else {
+            return;
+        };
+        if (key == "Enter" || key == " ") && reveal_named_entity(&event) {
+            event.prevent_default();
+            event.stop_propagation();
+        }
+    });
 }
 
 /// Add a listener to `target`, keeping the closure alive in `store`.

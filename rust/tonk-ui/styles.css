@@ -1529,6 +1529,30 @@ tonk-notation .tonk-notation-error {
     color: var(--tonk-code-variable);
     font-style: italic;
 }
+
+/* A named entity — the branch publishes an `&anchor` pointing at it, so
+   the result reads `alice` where it used to read
+   `did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv`. Yellow is
+   the editor's tint for a bookmark name, so the two surfaces agree on
+   what a name looks like; the dotted underline is what sets it apart
+   from a key in the same yellow, and marks it as the one token here
+   that answers a click.
+
+   `[data-revealed]` is that click: the label swaps to the entity URI and
+   takes the entity tint with it, so a revealed identifier can never be
+   misread as a name. */
+.evaluate-result .notation-named {
+    color: var(--tonk-code-name);
+    cursor: pointer;
+    text-decoration: underline;
+    text-decoration-style: dotted;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 2px;
+}
+.evaluate-result .notation-named[data-revealed] {
+    color: var(--tonk-code-entity);
+    text-decoration-style: solid;
+}
 .query-tree .tonk-cm-string,
 .query-notation .tonk-cm-string {
     color: var(--tonk-code-string);
@@ -2869,6 +2893,18 @@ tonk-code:focus-within {
 }
 .query-table td.query-table-this span::before {
     content: "\200E"; /* LRM — preserves left-to-right glyph order */
+}
+
+/* A named `this` opts out of the 8-character clip above: a name is short,
+   and unlike a `did:key:` URI it is its START that identifies it. The
+   URI stays on the hover and on the copy button's value. */
+.query-table td.query-table-this span.query-table-named {
+    width: auto;
+    direction: ltr;
+    color: var(--tonk-code-name);
+}
+.query-table td.query-table-this span.query-table-named::before {
+    content: none;
 }
 
 /* The evaluate-result comparison panel.

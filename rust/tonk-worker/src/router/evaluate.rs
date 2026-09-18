@@ -16,6 +16,8 @@
 //! providers after the commit, and a commit that moved the tree
 //! marks the repo dirty so the next sync drain pushes it.
 
+use std::collections::BTreeMap;
+
 use ::axum::{
     Extension, Json,
     body::Bytes,
@@ -63,6 +65,12 @@ pub struct EvaluateResponse {
     /// Commit summary — number of EAV claims plus entities the
     /// document touched.
     pub commits: CommitSummary,
+    /// Published name (`&anchor`) for each entity the match blocks
+    /// mention — entity URI → bare name. Entities nothing names are
+    /// absent; a renderer falls back to the URI. `#[serde(default)]`
+    /// so a response from a worker that predates the field decodes.
+    #[serde(default)]
+    pub names: BTreeMap<String, String>,
 }
 
 /// Path parameters for the evaluate route.
@@ -370,6 +378,25 @@ async fn stage_and_publish(
         .await
 }
 
+/// Published names for the entities a response is about to carry.
+///
+/// A name is an affordance over the entity URI, not data — the URI is in
+/// the response either way — so a lookup failure logs and yields an empty
+/// map rather than failing an evaluate that otherwise succeeded.
+async fn resolve_names(
+    evaluated: &tonk_evaluator::evaluate::Evaluated<'_>,
+    blocks: &[&[QueryMatchBlock]],
+    tonk_state: &crate::worker::TonkState,
+) -> BTreeMap<String, String> {
+    match evaluated.names(blocks, &tonk_state.operator).await {
+        Ok(names) => names,
+        Err(error) => {
+            log!("evaluate: name lookup failed ({error}); falling back to entity URIs");
+            BTreeMap::new()
+        }
+    }
+}
+
 /// Shared body for [`evaluate`] and [`evaluate_profile`]. Takes a
 /// [`crate::reactor::BranchReference`] so the URL extraction is
 /// the only difference between the two routes.
@@ -569,6 +596,8 @@ async fn evaluate_on_branch_with<'a>(
             // response reflects what *did* commit (nothing) — the editor's
             // auto-evaluate relies on this to know the branch is untouched.
             let _ = matches_after;
+            let names =
+                resolve_names(&evaluated, &[evaluated.matches.as_slice()], tonk_state).await;
             let mut commits = evaluated.commits;
             commits.claims = 0;
             return Ok((
@@ -578,6 +607,7 @@ async fn evaluate_on_branch_with<'a>(
                     matches_before: evaluated.matches.clone(),
                     matches_after: evaluated.matches,
                     commits,
+                    names,
                 }),
                 None,
             ));
@@ -610,6 +640,7 @@ async fn evaluate_on_branch_with<'a>(
         matches_after,
         matches_before,
         commits,
+        names,
         transients,
         eval_ms,
         matches_ms,
@@ -675,6 +706,15 @@ async fn evaluate_on_branch_with<'a>(
             // transaction (`Transaction` isn't `Clone`, and `commit()` takes it
             // by value). The transients mirror is what post-commit command
             // dispatch runs on — the commit sweeps them from the transaction.
+            // Names read through the transaction overlay, so an `&anchor`
+            // this document publishes names its own result — which is the
+            // whole point on a document that just asserted one.
+            let names = resolve_names(
+                &evaluated,
+                &[evaluated.matches.as_slice(), matches_after.as_slice()],
+                tonk_state,
+            )
+            .await;
             let matches_before = evaluated.matches;
             let commits = evaluated.commits;
             let transients = evaluated.transients;
@@ -687,6 +727,7 @@ async fn evaluate_on_branch_with<'a>(
                         matches_after,
                         matches_before,
                         commits,
+                        names,
                         transients,
                         eval_ms,
                         matches_ms,
@@ -745,6 +786,7 @@ async fn evaluate_on_branch_with<'a>(
             matches_before,
             matches_after,
             commits,
+            names,
         }),
         (!transients.is_empty()).then_some(transients),
     ))
@@ -1396,6 +1438,68 @@ concept!: &person
         assert_ne!(
             rule.revision_after, rule.revision_before,
             "rule-only document must advance the branch revision",
+        );
+    }
+
+    /// The response carries the published name of every entity its
+    /// matches mention, so a renderer can show `person` where the row
+    /// says `did:key:z6Mk…`.
+    #[dialog_common::test]
+    async fn it_names_the_entities_its_matches_mention() {
+        let (state, repo) = state_with_repo("test-evaluate-names").await;
+        let repo = repo.as_str();
+
+        // `CONCEPTS` anchors `&person`, `&person-name`, `&person-age`.
+        let concepts = evaluate(&state, repo, CONCEPTS, true).await;
+        let person = concepts
+            .commits
+            .entities
+            .get("person")
+            .expect("the `&person` anchor binds an entity")
+            .clone();
+
+        // A later query over the concepts names the rows it returns.
+        let read = evaluate(&state, repo, "concept:\n", false).await;
+        assert_eq!(
+            read.names.get(person.as_str()).map(String::as_str),
+            Some("person"),
+            "a query names the concepts it returns: {:?}",
+            read.names,
+        );
+        assert!(
+            read.names.values().any(|name| name == "person-entered"),
+            "every named row in the block, not just the first: {:?}",
+            read.names,
+        );
+        assert!(
+            read.names.keys().all(|entity| entity.contains(':')),
+            "the map is keyed by entity URI, not by name: {:?}",
+            read.names,
+        );
+    }
+
+    /// The lookup reads through the transaction overlay, so a document
+    /// that publishes an anchor and queries it in the same breath sees
+    /// its own name — the uncommitted overlay is what `matches_after`
+    /// reads too.
+    #[dialog_common::test]
+    async fn it_names_an_anchor_the_same_document_published() {
+        let (state, repo) = state_with_repo("test-evaluate-names-overlay").await;
+        let repo = repo.as_str();
+
+        let document = format!("{CONCEPTS}\n---\nconcept:\n");
+        let response = evaluate(&state, repo, &document, true).await;
+        let person = response
+            .commits
+            .entities
+            .get("person")
+            .expect("the `&person` anchor binds an entity")
+            .clone();
+        assert_eq!(
+            response.names.get(person.as_str()).map(String::as_str),
+            Some("person"),
+            "the document's own anchor names its own match: {:?}",
+            response.names,
         );
     }
 

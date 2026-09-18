@@ -27,6 +27,12 @@ pub struct EvaluateResponse {
     /// Per-source-expression query matches after the commit.
     #[serde(default)]
     pub matches_after: Vec<QueryMatchBlock>,
+    /// Published name (`&anchor`) for each entity the blocks mention —
+    /// entity URI → bare name. The worker resolves these because the
+    /// inspector links no query engine and so cannot look them up
+    /// itself. Entities nothing names are absent.
+    #[serde(default)]
+    pub names: BTreeMap<String, String>,
 }
 
 /// A branch revision. Only the `tree` reference is rendered (a short badge).

@@ -136,3 +136,139 @@ async fn it_expands_a_concept_descriptor_from_stringified_source() {
         "as discriminant normalized: {html}"
     );
 }
+
+#[dialog_common::test]
+async fn it_shows_a_published_name_in_place_of_the_entity() {
+    // The whole point: an entity the branch names reads as the name, and
+    // the URI is still right there — on `data-entity` for the click and
+    // on `title` for the hover.
+    let resp = response(serde_json::json!({
+        "matches_before": [{
+            "label": "person",
+            "results": [{
+                "this": "did:key:z6MkfpAValice",
+                "fields": { "employer": "did:key:z6MkfpAVacme" },
+            }],
+        }],
+        "matches_after": [{
+            "label": "person",
+            "results": [{
+                "this": "did:key:z6MkfpAValice",
+                "fields": { "employer": "did:key:z6MkfpAVacme" },
+            }],
+        }],
+        "names": {
+            "did:key:z6MkfpAValice": "alice",
+            "did:key:z6MkfpAVacme": "acme",
+        },
+    }));
+    let html = render_result(None, Some(&resp));
+    assert!(html.contains(">alice<"), "`this` reads as its name: {html}");
+    assert!(
+        html.contains(">acme<"),
+        "an entity-valued field reads as its name too: {html}"
+    );
+    assert!(
+        html.contains("data-entity=\"did:key:z6MkfpAValice\""),
+        "the URI is carried for the reveal: {html}"
+    );
+    assert!(
+        html.contains("title=\"did:key:z6MkfpAValice\""),
+        "and on the hover: {html}"
+    );
+    assert!(
+        html.contains("notation-named"),
+        "marked for the click handler"
+    );
+}
+
+#[dialog_common::test]
+async fn it_falls_back_to_the_entity_uri_when_nothing_names_it() {
+    let resp = response(serde_json::json!({
+        "matches_before": [{
+            "label": "person",
+            "results": [{ "this": "did:key:z6MkfpAVbob", "fields": {} }],
+        }],
+        "matches_after": [{
+            "label": "person",
+            "results": [{ "this": "did:key:z6MkfpAVbob", "fields": {} }],
+        }],
+        "names": { "did:key:z6MkfpAValice": "alice" },
+    }));
+    let html = render_result(None, Some(&resp));
+    assert!(
+        html.contains("did:key:z6MkfpAVbob"),
+        "an unnamed entity still shows its URI: {html}"
+    );
+    assert!(
+        !html.contains("notation-named"),
+        "and carries no reveal affordance: {html}"
+    );
+}
+
+#[dialog_common::test]
+async fn it_names_the_table_this_column_without_a_reveal() {
+    // The table's `this` cell is a copy button; a second meaning on the
+    // same click would make copying unpredictable, so the name is inert
+    // there and the URI stays the copied value.
+    let resp = response(serde_json::json!({
+        "matches_before": [{
+            "label": "person",
+            "results": [{ "this": "did:key:z6MkfpAValice", "fields": { "age": 41 } }],
+        }],
+        "matches_after": [{
+            "label": "person",
+            "results": [{ "this": "did:key:z6MkfpAValice", "fields": { "age": 41 } }],
+        }],
+        "names": { "did:key:z6MkfpAValice": "alice" },
+    }));
+    let html = render_result(None, Some(&resp));
+    assert!(
+        html.contains("query-table-named"),
+        "the table cell names the row: {html}"
+    );
+    assert!(
+        html.contains("<wa-copy-button value=\"did:key:z6MkfpAValice\">"),
+        "copying still yields the URI: {html}"
+    );
+}
+
+#[dialog_common::test]
+async fn it_names_entities_inside_an_expanded_concept_descriptor() {
+    // A `concept:` body is where URIs are least readable — the
+    // descriptor is expanded from a stringified `source`, and the
+    // substitution has to reach into it.
+    let resp = response(serde_json::json!({
+        "matches_before": [{
+            "label": "concept",
+            "results": [{
+                "this": "did:key:z6MkfpAVperson",
+                "fields": {
+                    "source": "{\"with\":{\"name\":{\"the\":\"did:key:z6MkfpAVattr\"}}}",
+                },
+            }],
+        }],
+        "matches_after": [{
+            "label": "concept",
+            "results": [{
+                "this": "did:key:z6MkfpAVperson",
+                "fields": {
+                    "source": "{\"with\":{\"name\":{\"the\":\"did:key:z6MkfpAVattr\"}}}",
+                },
+            }],
+        }],
+        "names": {
+            "did:key:z6MkfpAVperson": "person",
+            "did:key:z6MkfpAVattr": "person-name",
+        },
+    }));
+    let html = render_result(None, Some(&resp));
+    assert!(
+        html.contains(">person<"),
+        "the concept reads as its name: {html}"
+    );
+    assert!(
+        html.contains(">person-name<"),
+        "so does the attribute it declares: {html}"
+    );
+}

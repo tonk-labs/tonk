@@ -552,6 +552,23 @@ impl<'a> Evaluated<'a> {
         Ok(render_match_blocks(document, post_results.as_ref()))
     }
 
+    /// Published names for every entity the given match blocks
+    /// mention, read through the transaction overlay.
+    ///
+    /// The overlay rather than the branch, so an `&anchor` the
+    /// document just published names its own result — the same
+    /// reason `matches_after` queries the overlay.
+    ///
+    /// Pass every block set the caller is about to render (before
+    /// *and* after) so one lookup covers the whole response.
+    pub async fn names<Env: EvaluateEnv>(
+        &self,
+        blocks: &[&[QueryMatchBlock]],
+        env: &Env,
+    ) -> Result<crate::names::Names, EvaluateError> {
+        crate::names::resolve(&self.txn, blocks, env).await
+    }
+
     /// Convenience: hand the underlying transaction to dialog's
     /// commit chain. Same as `self.txn.commit()` — exposed on
     /// `Evaluated` so the common `.evaluate(...).perform(...)?

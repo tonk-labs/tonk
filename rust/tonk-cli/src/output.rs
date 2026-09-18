@@ -15,6 +15,7 @@
 //! rather than imported so tonk doesn't depend on the worker
 //! crate.
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use anyhow::{Context, Result};
@@ -41,6 +42,12 @@ pub struct EvaluateResponse {
     /// Commit summary — number of EAV claims plus entities the
     /// document touched.
     pub commits: CommitSummary,
+    /// Published name (`&anchor`) for each entity the match blocks
+    /// mention — entity URI → bare name. Entities nothing names are
+    /// absent; a renderer falls back to the URI. `#[serde(default)]`
+    /// so a response from a worker that predates the field decodes.
+    #[serde(default)]
+    pub names: BTreeMap<String, String>,
 }
 
 /// Output format selector.
@@ -354,6 +361,7 @@ mod tests {
                 claims: 2,
                 entities,
             },
+            names: BTreeMap::new(),
         }
     }
 
