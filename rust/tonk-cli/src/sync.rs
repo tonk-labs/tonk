@@ -367,8 +367,8 @@ pub async fn rejection_report(site: &TonkSite, name: &str, reason: &str) -> Stri
         return format!(
             "could not sync '{name}': the access service rejected this device's \
              authority\n{said}\nthis device may have been revoked; check \
-             `tonk account devices`, or ask a member for a new invite and claim \
-             it with `tonk join <URL>`"
+             account settings in Tonk, or ask a member for a new scoped invite \
+             and import it with `tonk connect <URL>`"
         );
     };
     // Both roots appear in one sentence, so they are abbreviated against
@@ -386,9 +386,8 @@ pub async fn rejection_report(site: &TonkSite, name: &str, reason: &str) -> Stri
     };
     format!(
         "could not sync '{name}': this device holds no authority its access \
-         service accepts\n{said}\n'{name}' is owned by {owner}; {you}. sign \
-         into the owning account with `tonk account login`, or ask a member \
-         for an invite and claim it with `tonk join <URL>`",
+         service accepts\n{said}\n'{name}' is owned by {owner}; {you}. ask a member \
+         for a scoped invite in Tonk and import it with `tonk connect <URL>`",
         owner = crate::inventory::describe(&owner.did, owner.name.as_deref(), length),
     )
 }

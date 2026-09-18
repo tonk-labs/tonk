@@ -571,11 +571,6 @@ DELETE FROM customer
    AND NOT EXISTS (SELECT 1 FROM subscription WHERE provider = ?1)
 "#;
 
-/// Delete mailbox copies only after the account lifecycle has removed its customer.
-/// This leaves standard revocations and all client-retained authority untouched.
-pub const DELETE_ACCOUNT_ADDITIONS: &str = "DELETE FROM connection_addition WHERE account=?1 AND NOT EXISTS(SELECT 1 FROM customer WHERE account=?1)";
-pub const DELETE_ACCOUNT_DELIVERIES: &str = "DELETE FROM connection_delivery WHERE account=?1 AND NOT EXISTS(SELECT 1 FROM customer WHERE account=?1)";
-
 pub mod ingest;
 
 pub mod replica;

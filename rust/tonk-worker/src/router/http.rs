@@ -85,27 +85,10 @@ pub(crate) async fn post_cbor(endpoint: &Url, body: &[u8]) -> Result<HttpRespons
     post(endpoint, body, "application/cbor").await
 }
 
-/// Terminal delivery follows only independently configured service routing.
-/// Redirects cannot substitute another service identity or delivery endpoint.
-pub(crate) async fn terminal_request(
-    endpoint: &Url,
-    body: Option<&[u8]>,
-) -> Result<HttpResponse, HttpError> {
-    request_with_timeout(
-        if body.is_some() { "POST" } else { "GET" },
-        endpoint,
-        body,
-        body.map(|_| "application/cbor"),
-        TIMEOUT,
-        true,
-    )
-    .await
-}
-
 /// GET a JSON (or other) resource from an upstream service, with the
 /// same timeout and error-envelope handling as the POST path.
 pub(crate) async fn get(endpoint: &Url) -> Result<HttpResponse, HttpError> {
-    request_with_timeout("GET", endpoint, None, None, TIMEOUT, false).await
+    request_with_timeout("GET", endpoint, None, None, TIMEOUT).await
 }
 
 #[allow(dead_code)] // reserved for JSON-only service operations
@@ -125,15 +108,7 @@ async fn post_with_timeout(
     media_type: &str,
     timeout: Duration,
 ) -> Result<HttpResponse, HttpError> {
-    request_with_timeout(
-        "POST",
-        endpoint,
-        Some(body),
-        Some(media_type),
-        timeout,
-        false,
-    )
-    .await
+    request_with_timeout("POST", endpoint, Some(body), Some(media_type), timeout).await
 }
 
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
@@ -143,15 +118,8 @@ async fn request_with_timeout(
     body: Option<&[u8]>,
     media_type: Option<&str>,
     timeout: Duration,
-    no_redirect: bool,
 ) -> Result<HttpResponse, HttpError> {
-    let mut builder = reqwest::Client::builder();
-    if no_redirect {
-        builder = builder.redirect(reqwest::redirect::Policy::none());
-    }
-    let client = builder
-        .build()
-        .map_err(|_| HttpError::Transport("could not build upstream client".into()))?;
+    let client = reqwest::Client::new();
     let mut request = match method {
         "POST" => client.post(endpoint.clone()),
         _ => client.get(endpoint.clone()),
@@ -196,15 +164,7 @@ async fn post_with_timeout(
     media_type: &str,
     timeout: Duration,
 ) -> Result<HttpResponse, HttpError> {
-    request_with_timeout(
-        "POST",
-        endpoint,
-        Some(body),
-        Some(media_type),
-        timeout,
-        false,
-    )
-    .await
+    request_with_timeout("POST", endpoint, Some(body), Some(media_type), timeout).await
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -214,7 +174,6 @@ async fn request_with_timeout(
     body: Option<&[u8]>,
     media_type: Option<&str>,
     timeout: Duration,
-    no_redirect: bool,
 ) -> Result<HttpResponse, HttpError> {
     use std::cell::Cell;
     use std::rc::Rc;
@@ -227,10 +186,6 @@ async fn request_with_timeout(
         .map_err(|_| HttpError::Transport("could not create abort controller".to_string()))?;
     let init = RequestInit::new();
     init.set_method(method);
-    if no_redirect {
-        js_sys::Reflect::set(init.as_ref(), &"redirect".into(), &"error".into())
-            .map_err(|_| HttpError::Transport("could not disable upstream redirects".into()))?;
-    }
     if let Some(body) = body {
         init.set_body(&js_sys::Uint8Array::from(body).into());
     }
@@ -413,21 +368,6 @@ mod tests {
             Url::parse(&format!("http://{address}/operation")).unwrap(),
             received,
         )
-    }
-
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-    #[dialog_common::test]
-    async fn terminal_discovery_and_delivery_refuse_redirects() {
-        for body in [None, Some(b"public signed decision".as_slice())] {
-            let (endpoint, received) = server(b"HTTP/1.1 307 Temporary Redirect\r\nlocation: http://127.0.0.1:1/redirected\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
-            let error = terminal_request(&endpoint, body).await.unwrap_err();
-            assert!(matches!(
-                error,
-                HttpError::Upstream(UpstreamFailure { status: 307, .. })
-            ));
-            let request = received.recv().unwrap();
-            assert!(request.starts_with(if body.is_some() { b"POST " } else { b"GET " }));
-        }
     }
 
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]

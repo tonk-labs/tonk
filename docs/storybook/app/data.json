@@ -333,7 +333,7 @@
     },
     {
       "evidence": "Historical lower-layer evidence retained; new CLI refuses these entry points without mutation.",
-      "gaps": "Current personal access uses ACCT-C15; agents use ACCT-C14.",
+      "gaps": "People and agents now use ACCT-C14; ACCT-C15 is deferred.",
       "group": "Accounts: CLI and browser handoff",
       "id": "ACCT-C13",
       "title": "Retired: account-bound agent setup through join or browser-mediated connect.",
@@ -344,7 +344,7 @@
       "gaps": "Published CLI/browser matrix; staging, Safari and global revocation propagation.",
       "group": "Accounts: CLI and browser handoff",
       "id": "ACCT-C14",
-      "title": "Copy a scoped agent invitation, run one-way tonk connect without browser/account approval, and revoke its grant group from Settings.",
+      "title": "Copy a scoped invitation for a person or agent, run one-way tonk connect without browser/account approval, and revoke its grant group from Settings.",
       "variants": "Empty or unrelated-account CLI; repeated bearer holders; independent invites; closed issuing browser; restart; offline or revoked authority."
     },
     {
@@ -352,7 +352,7 @@
       "gaps": "Earlier intermittent refusal attribution remains uncertain; monitor in staging. External release, CI, Safari, guest reduced-motion media and global propagation remain unverified.",
       "group": "Accounts: CLI and browser handoff",
       "id": "ACCT-C15",
-      "title": "Link explicit browser-selected spaces to a CLI-owned terminal key and manage later grants.",
+      "title": "Deferred from Plan 005: link explicit browser-selected spaces to a CLI-owned terminal key and manage later grants.",
       "variants": "One/many/all-current; accountless or legacy CLI; signed-in or fresh browser; offline additions, cancellation, expiry and partial revocation."
     },
     {
@@ -1747,8 +1747,8 @@
       "result": "Current artifact 8f6fd822f2ec2f3a: anonymous-space signup/verification returns to the same space and CLI import passes (8.09s); issuer-closed import/edit/reconnect/revoke passes (12.19s); independent invitations and CLI accounts pass (19.00s). Execution and fixes. Synthetic-passkey Chrome/local services only; Safari, production, physical passkeys, and external email remain unverified."
     },
     {
-      "claim": "Exact selected-space terminal grants (Selected terminal spaces).",
-      "device": "hybrid + restart + offline",
+      "claim": "Deferred: exact selected-space terminal grants (Selected terminal spaces).",
+      "device": "historical / deferred",
       "file": "verification/accounts.md",
       "id": "HANDOFF-22",
       "priority": "P1",

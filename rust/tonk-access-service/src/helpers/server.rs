@@ -629,51 +629,6 @@ async fn handle_request(
     }
 
     // Only accept POST requests to /ucan/
-    if req.method() == Method::POST
-        && matches!(
-            req.uri().path(),
-            crate::delivery::PUBLISH_PATH
-                | crate::delivery::READ_PATH
-                | crate::delivery::additions::PUBLISH_ADDITION_PATH
-                | crate::delivery::additions::READ_ADDITIONS_PATH
-        )
-    {
-        use http_body_util::BodyExt;
-        let path = req.uri().path().to_string();
-        let limit = if path == crate::delivery::READ_PATH
-            || path == crate::delivery::additions::READ_ADDITIONS_PATH
-        {
-            crate::delivery::MAX_READ_BYTES
-        } else {
-            crate::delivery::MAX_APPROVAL_BYTES
-        };
-        let result = match http_body_util::Limited::new(req.into_body(), limit)
-            .collect()
-            .await
-        {
-            Ok(body) => {
-                crate::delivery::execute(
-                    &registration.store,
-                    registration.revocations.as_ref(),
-                    &registration.service.did(),
-                    &path,
-                    &body.to_bytes(),
-                    unix_now(),
-                )
-                .await
-            }
-            Err(_) => crate::delivery::DeliveryResponse::error(413, "delivery body too large"),
-        };
-        return Ok(cors_response(
-            Response::builder()
-                .status(result.status)
-                .header(CONTENT_TYPE, result.content_type)
-                .header(CACHE_CONTROL, "no-store")
-                .body(Full::new(Bytes::from(result.body)))
-                .unwrap(),
-        ));
-    }
-
     if req.method() != Method::POST {
         return Ok(cors_response(
             Response::builder()

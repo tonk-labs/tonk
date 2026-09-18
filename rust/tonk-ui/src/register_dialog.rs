@@ -182,15 +182,6 @@ fn open_with_return(guest_restore: Option<Box<dyn FnOnce()>>) {
     let _ = host.set_attribute("aria-labelledby", "tonk-register-head");
     let _ = host.set_attribute("aria-describedby", "tonk-register-status");
     host.set_inner_html(DIALOG_HTML);
-    if let Some(location) = web_sys::window().map(|window| window.location())
-        && let Some(path) = terminal_approval_return(
-            &location.pathname().unwrap_or_default(),
-            &location.search().unwrap_or_default(),
-            &location.hash().unwrap_or_default(),
-        )
-    {
-        let _ = host.set_attribute(RETURN_PATH, &path);
-    }
     let _ = body.append_child(&host);
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -2117,7 +2108,7 @@ pub(crate) fn finish_ceremony() {
             return;
         }
         if (signing_in || named.is_some()) && pending_share().is_none() {
-            // Close the ceremony, then resume terminal approval or return to the Hub.
+            // Close the ceremony, then return to the original space or the Hub.
             finish_account_navigation(&host);
             return;
         }
@@ -2625,56 +2616,22 @@ pub fn adopt_stashed_share() {
 /// so "return to space" can actually return there.
 const SHARE_RETURN: &str = "tonk-share-return";
 
-/// Where the ceremony returns: a trusted missing-space or terminal-approval
-/// route, or the interrupted share adopted by [`adopt_stashed_share`].
+/// Where the ceremony returns: the original space or the interrupted share
+/// adopted by [`adopt_stashed_share`].
 const RETURN_PATH: &str = "data-return-path";
 
-/// Preserve only the local terminal approval route, including its signed
-/// fragment. Never take a redirect destination from a query parameter.
-fn terminal_approval_return(path: &str, search: &str, hash: &str) -> Option<String> {
-    (path == "/settings/link" && hash.starts_with("#tonk-terminal-v1="))
-        .then(|| format!("{path}{search}{hash}"))
-}
-
-/// Ordinary login returns home; trusted space and terminal routes resume in place.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn finish_account_navigation(host: &Element) {
     let saved = host.get_attribute(RETURN_PATH);
     let destination = account_completion_destination(saved.as_deref());
     close();
-    // The login overlay can leave the URL unchanged. In that case the router
-    // still needs to render the now-signed-in space picker or approval page.
-    let same_destination = web_sys::window().is_some_and(|window| {
-        let location = window.location();
-        destination != "/"
-            && format!(
-                "{}{}{}",
-                location.pathname().unwrap_or_default(),
-                location.search().unwrap_or_default(),
-                location.hash().unwrap_or_default()
-            ) == destination
-    });
     tonk_host::navigate_to(destination);
-    if same_destination
-        && let Some(window) = web_sys::window()
-        && let Ok(event) = web_sys::Event::new("popstate")
-    {
-        let _ = window.dispatch_event(&event);
-    }
 }
 
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 fn account_completion_destination(saved: Option<&str>) -> &str {
     saved
-        .filter(|value| {
-            if value.starts_with("/space/") {
-                return true;
-            }
-            value.split_once('#').is_some_and(|(path, fragment)| {
-                path.split('?').next() == Some("/settings/link")
-                    && fragment.starts_with("tonk-terminal-v1=")
-            })
-        })
+        .filter(|value| value.starts_with("/space/"))
         .unwrap_or("/")
 }
 
@@ -2918,55 +2875,20 @@ mod tests {
             .unwrap();
     }
 
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    #[wasm_bindgen_test::wasm_bindgen_test]
-    fn it_restores_terminal_approval_when_the_login_dialog_closes() {
-        let window = web_sys::window().unwrap();
-        let document = window.document().unwrap();
-        let history = window.history().unwrap();
-        let original = window.location().href().unwrap();
-        let target = "/settings/link#tonk-terminal-v1=signed-request";
-        for current in ["/", target] {
-            history
-                .replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(current))
-                .unwrap();
-            let host = document.create_element("dialog").unwrap();
-            host.set_id(super::DIALOG_ID);
-            host.set_attribute(super::RETURN_PATH, target).unwrap();
-            document.body().unwrap().append_child(&host).unwrap();
-            super::finish_account_navigation(&host);
-            assert_eq!(window.location().pathname().unwrap(), "/settings/link");
-            assert_eq!(
-                window.location().hash().unwrap(),
-                "#tonk-terminal-v1=signed-request"
-            );
-            assert!(!host.is_connected());
-        }
-        history
-            .replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&original))
-            .unwrap();
-    }
-
     #[dialog_common::test]
-    fn it_returns_to_terminal_approval_after_account_completion() {
-        let path = super::terminal_approval_return(
-            "/settings/link",
-            "?source=cli",
-            "#tonk-terminal-v1=signed-request",
-        )
-        .unwrap();
-        assert_eq!(super::account_completion_destination(Some(&path)), path);
-        for other in [
+    fn account_completion_only_accepts_local_space_routes() {
+        assert_eq!(
+            super::account_completion_destination(Some("/space/example")),
+            "/space/example"
+        );
+        for destination in [
             None,
-            Some("/"),
-            Some("https://elsewhere.test/settings/link#tonk-terminal-v1=x"),
-            Some("//elsewhere.test/settings/link#tonk-terminal-v1=x"),
-            Some("/settings/link#other"),
-            Some("/settings/link?next=https://elsewhere.test"),
+            Some("https://elsewhere.test/space/example"),
+            Some("//elsewhere.test/space/example"),
+            Some("/settings/link#tonk-terminal-v1=x"),
         ] {
-            assert_eq!(super::account_completion_destination(other), "/");
+            assert_eq!(super::account_completion_destination(destination), "/");
         }
-        assert!(super::terminal_approval_return("/settings", "", "#tonk-terminal-v1=x").is_none());
     }
 
     use tonk_identity::custody::CustodyDenial;

@@ -22,21 +22,8 @@ tonk space use garden
 # Every local replica, with the owner each space names.
 tonk space
 
-# Connect ordinary space access without an account attachment.
-tonk connect 'AGENT_LINK'
-tonk link
-
-# Administrative compatibility: Tonk holds one account at a time.
-tonk account login
-tonk account logout
-
-# A local space can move into your account. Once it belongs to one, it stays.
-tonk space link garden
-
-# What your account's directory lists, and pulling one of those spaces here.
-tonk account space
-tonk account space pull garden      # a unique directory name
-tonk account space pull did:key:... # exact when names collide
+# Connect a browser space, for a person or an agent.
+tonk connect 'INVITE_LINK'
 
 # Sharing never changes ownership: the invitee joins as a member.
 tonk invite
@@ -84,17 +71,11 @@ tonk push
 tonk pull
 tonk status       # synced | ahead | behind | diverged | no-upstream
 
-# Administrative account recovery; use tonk link for ordinary space access.
-tonk account status
-tonk account login --name workstation
-tonk account logout
-
 # Delegate access to the space.
 tonk invite                    # audience-open: anyone holding it can claim
 tonk invite --remote prod      # mint against a named remote
 tonk invite --recipient-root did:key:z6Mk... # seed-free targeted invite
 tonk invite --no-remote        # embed none; the claimer wires an upstream by hand
-tonk link                       # select your spaces in the browser
 tonk connect 'AGENT_LINK'       # one-way agent invitation; no browser flow
 ```
 
@@ -183,87 +164,11 @@ pull-before / push-after. `--no-sync` (or `TONK_NO_SYNC`) skips it; manual
 
 ### Accounts
 
-The CLI holds at most one account at a time. `tonk account login` (also spelled
-`login`) runs a browser/passkey handoff and records that account; signing in as
-someone else is `tonk account logout` followed by `tonk account login`. Linking
-an account never enrolls the spaces already on this device.
-
-Creating a space while signed out stays offline. Creating while signed in
-provisions and publishes only that new space. `tonk space link <space>` moves
-one local-only space into your account: it keeps its name, site, and binding,
-and gains hosting, retained authority, and a row in the account directory your
-other devices pull from. Nothing is deleted along the way, so an interrupted
-link leaves a working local space and can simply be re-run.
-
-The signed-in account parameterizes account-service operations and nothing
-else: creating a hosted space, linking, pulling the directory, listing and
-revoking devices, deletion. Editing is unrestricted — every replica this
-device holds opens, reads, and writes whether you are signed out, signed in,
-or signed into an account other than the space's owner. Spaces that belong to
-another account stay on disk and stay listed across a switch; the `OWNER`
-column, not a refusal, is what says whose they are.
-
-Enforcement happens where it is real: at the service boundary. Push and pull
-present the space's own delegation chain and the access service accepts or
-rejects it, so a sync you cannot do fails there rather than being pre-judged
-here. The CLI relays that refusal verbatim — the service's own reason on its
-own line — wrapped in the likeliest fix: signing into the owning account when
-the space is somebody else's, `tonk account devices` when it is yours and this
-device may have been revoked. The reason is the part that came from the
-boundary that actually said no; the fix is this CLI's inference from local
-state, and it can be wrong.
-
-`tonk account space` reads the signed remote directory of the account you are
-signed in to. `tonk account space pull <name-or-subject>` mounts one of those
-spaces here as an owner or member replica; a name works when it identifies one
-directory row, while the subject DID disambiguates duplicate names.
-
-A space's directory name is a display label, authored wherever the space was
-named — free text in the web UI, an invite link, or the worker's own `Untitled`
-default — so it need not be a local space name (`[a-z0-9][a-z0-9-_]*`). The pull
-derives one from it (`Untitled 2` becomes `untitled-2`, stepping to `-3` and on
-when a name is taken) and registers the replica under that; `--name <slug>` picks
-it yourself. Either way the local name is an alias: the space keeps its label,
-and nothing is renamed for anyone else.
-
-`tonk space rm` removes only the local replica (and, unless `--keep-data` is
-used, its local bytes). It does not remove signed account directory facts,
-revoke memberships or invitations, deprovision hosting, delete remote objects,
-or erase a peer's replica.
-
-Interrupting `tonk account login` leaves the handoff recorded so the next run
-resumes it. A link token is one-time, so a service that refuses to reissue it
-has ended that handoff and not this profile's ability to link: the next run
-takes the completed grant if the browser approved in the meantime, and
-otherwise prints a fresh URL rather than re-offering a spent token.
-
-`tonk account logout` commits locally first, so it works offline. Existing
-spaces remain readable and editable, while fetch, pull, push, account sync, and
-other access-service requests are denied before HTTP. Logout queues a
-signed, generation-specific detach intent; the device list may remain stale
-until a later account operation reaches the provider and flushes that outbox.
-
-A detach intent is signed once and never edited, so a client-error response
-is a permanent verdict on it: an unknown attachment, a payload the service
-disagrees with, or a service with no detach route can never accept that
-intent, and the CLI drops it rather than retrying forever. Timeouts, rate
-limits, and server errors are retried instead, and while one is still
-queued for a provider, linking to that same provider is refused because its
-one-active-generation rule would reject the activation. `tonk account login
---abandon-detach` drops those undelivered intents and links anyway; the
-earlier device can stay listed until `tonk account revoke` removes it.
-
-Detach is not revocation. It hides the exact attachment and permits a later
-fresh handoff without publishing an immutable revocation. `tonk account revoke
-<DEVICE_DID>` permanently revokes the selected grant, which can never be
-reactivated. Use `tonk identity --reset` only for destructive local identity
-rotation.
-
-| State | Local query/edit/commit | Remote sync |
-| --- | --- | --- |
-| Logged out | allowed | denied before HTTP |
-| Signed in, space owned by or shared with that account | allowed | allowed with only that account's grant |
-| Signed in, space belonging to another account | allowed | rejected at the service boundary, with the sign-in fix named |
+Manage accounts in the Tonk UI. The CLI imports a space-scoped invitation key
+and delegation chain; it does not sign into an account or change membership.
+The recipient has a separate DID, even though its authority comes from the
+browser account. Existing local replicas and legacy credentials are retained.
+CLI space creation and transplant stay local and do not provision account hosting.
 
 ### Sync and sharing
 
@@ -279,7 +184,7 @@ carry a separate artifact relay, supplied by hand with `tonk remote add
 `tonk invite` mints a UCAN delegation chain over the repo and prints an
 audience-open invite URL (anyone holding it can claim by redelegating from the
 embedded ephemeral key). These older sharing links are not CLI access
-credentials: use `tonk link` for your own spaces or obtain a fresh scoped agent
+credentials: obtain a fresh scoped space
 invitation for `tonk connect`.
 
 A bare `tonk invite` resolves the repo's remote, builds the link on that
@@ -323,65 +228,15 @@ requires the signed grant endpoint to match that origin's `/ucan/` and verifies
 page from the invite, loads an unrelated account's endpoint, or sends the
 secret-bearing fragment to discovery.
 
-### Link selected spaces to a terminal
-
-Run `tonk link --no-open` to print the signed approval URL, or `tonk link` to
-open it. The CLI first retains a fresh private key locally. The browser receives
-only its public request; select one, several, or all currently available spaces.
-“All” is a snapshot. Each grant lasts 90 days, provided the issuing account's
-existing authority supports that lifetime. Undelegable spaces remain visible
-with a reason. No account catalogue or account-wide grant is installed.
-
-`--label NAME` names this terminal. `--expected-account DID` constrains which
-browser account may approve. `--via ORIGIN` selects an explicitly trusted
-HTTPS deployment (HTTP is allowed for loopback development). Local and headless
-terminals both use authenticated polling bound to the retained request key.
-`--resume REQUEST_ID` resumes an interrupted request; `--cancel REQUEST_ID`
-records local cancellation without revoking any previously issued grants.
-A failed initial selection leaves the previous space registry unchanged.
-
-The browser Settings panel retains public grant groups for later additions and
-standard revocation. A delivery acknowledgement says that grants were sent, not
-that a terminal is online or that remote access is currently valid. Downloaded
-replicas and offline edits remain after revocation or expiry.
-
-### Administrative compatibility
-
-Scoped connections cover ordinary space work. Existing account commands remain
-available for these administrative workflows:
-
-| Task | Explicit compatibility path |
-| --- | --- |
-| Account attachment and recovery | `tonk account login`, `status`, `sync`, `logout`; retained credentials are not silently revoked. |
-| Adopt a local space into account ownership and back it up | `tonk space link NAME`; requires an explicit legacy account attachment. Adopt an existing directory first with `tonk space new NAME --site PATH`. |
-| Inspect or pull account catalogue spaces | `tonk account space`, `tonk account space pull NAME_OR_SUBJECT`. |
-| Review account deletion | `tonk account delete` opens the browser's review and passkey ceremony. |
-| Delete one hosted owned space | `tonk account space delete SUBJECT` preserves the separate scoped review. |
-| Device inventory and explicit withdrawal | `tonk account devices`, `tonk account revoke DID`; an exact retained grant can be republished after its list row was removed. |
-| Hosting/provisioning and remote configuration | Keep the existing account-bound registration and `tonk remote` workflows; scoped grants do not imply ownership or billing authority. |
-
-These are compatibility entry points, not authority implicitly granted by
-`connect` or `link`. Conversion of an existing account attachment requires an
-explicit browser selection; ordinary linking never silently signs out or
-revokes the existing account. `tonk link --convert-account` captures the current
-attachment, installs separate selected-space aliases, then deactivates only that
-same attachment. Existing aliases, paths, heads and unsynced edits stay in their
-original replicas; edits are not transferred into freshly pulled scoped copies.
-The default legacy remote guard then refuses the inactive account. The existing
-`TONK_UNSAFE_ALLOW_DEVICE_ROOT` recovery opt-out can deliberately use retained
-legacy credentials; conversion is application-level isolation, not an OS sandbox. Release and rollback gates are recorded in
-[the implementation plan](../../plans/001-cli-space-connections.md).
-
 ### Older invitation links and interrupted handoffs
 
 `join`, including `join --agent`, has been removed. `connect` rejects older
 sharing links and account-approval links before importing credentials or opening
-a browser. Humans should run `tonk link` and select the spaces they need.
-Agents need a new one-way scoped invitation copied from an updated Tonk browser.
+a browser. People and agents use the same scoped invitation copied from Tonk.
 The link carries its own identity and grants; the agent never signs into an account.
 
 `tonk --space NAME connect` resumes only scoped connection imports. It cannot
 resume an old account-bound handoff. Existing credentials, replicas, aliases and
 unsynced edits are retained; rejection never converts, rebinds or deletes them.
-Use explicit `tonk link --convert-account` when replacing an existing legacy
-account attachment with browser-selected scoped access.
+Import a new scoped invitation to access a browser space independently of any
+legacy account attachment. Account management is available in the Tonk UI.
