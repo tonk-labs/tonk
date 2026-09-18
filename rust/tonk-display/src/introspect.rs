@@ -38,11 +38,14 @@
 //! already use.
 
 pub mod command;
+pub mod inspect;
 pub mod mode;
 pub mod slot;
 
 #[cfg(target_arch = "wasm32")]
 mod overlay;
+#[cfg(target_arch = "wasm32")]
+mod panel;
 #[cfg(target_arch = "wasm32")]
 pub mod registry;
 

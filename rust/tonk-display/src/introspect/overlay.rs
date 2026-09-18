@@ -62,7 +62,9 @@ use web_sys::{
 };
 
 use super::command::Command;
+use super::inspect::default_subject;
 use super::mode::{Input, Machine, TargetId};
+use super::panel::{self, Panel};
 use super::registry;
 use super::slot::{Origin, Slot, SlotKind};
 
@@ -133,8 +135,8 @@ struct Overlay {
     /// The pin affordance. The one thing on the layer that takes
     /// pointer events.
     pin: Element,
-    /// The corner readout.
-    hud: Element,
+    /// The concept panel.
+    panel: Panel,
     machine: Machine,
     /// Displays seen so far, indexed by [`TargetId`].
     targets: Vec<Element>,
@@ -151,16 +153,29 @@ struct Overlay {
     /// `mousemove` with Alt up over a page that has nothing painted
     /// asks for no frame at all.
     painting: bool,
+    /// The repeat row the pointer is over, by its stamped subject. In
+    /// a directory this is what the panel follows: point at a card,
+    /// read that card's values.
+    hovered_subject: Option<String>,
+    /// Slot ids a panel row is asking to highlight, while the pointer
+    /// rests on it.
+    focus: Vec<u32>,
 }
 
 /// The painted state for one observed display.
 struct Painted {
     target: TargetId,
+    /// Everything the display and its renderer reported, kept so the
+    /// panel can redraw for another subject without a full rebuild.
+    snapshot: super::slot::Snapshot,
     slots: Vec<Marker>,
     commands: Vec<Marker>,
     /// A fingerprint of what was described, so an unchanged snapshot
     /// reuses its markers and keeps their identity intact.
     signature: String,
+    /// Whether the marker cap truncated what is drawn. The panel says
+    /// so, since the page itself cannot show what is not painted.
+    truncated: bool,
 }
 
 /// One painted marker: the tick or box on the thing, the badge naming
@@ -176,6 +191,9 @@ struct Marker {
     style: MarkerStyle,
     /// The badge text, fixed at build time.
     label: String,
+    /// The slot's id, for a panel row to highlight by. `None` for a
+    /// command marker, which no row names.
+    slot: Option<u32>,
 }
 
 /// What kind of thing a marker is tracking.
@@ -295,25 +313,24 @@ impl Overlay {
                 .ok()
         })?;
         let style = document.create_element("style").ok()?;
-        style.set_text_content(Some(CSS));
+        style.set_text_content(Some(&format!("{CSS}{}", super::panel::CSS)));
         let _ = root.append_child(&style);
 
         let layer = element(document, "div", "layer")?;
         let outline = element(document, "div", "outline")?;
         let pin = element(document, "button", "pin")?;
         pin.set_text_content(Some("pin"));
-        let hud = element(document, "div", "hud")?;
         let _ = layer.append_child(&outline);
         let _ = layer.append_child(&pin);
-        let _ = layer.append_child(&hud);
         let _ = root.append_child(&layer);
+        let panel = Panel::build(document, &layer)?;
 
         Some(Self {
             host: host.clone(),
             layer,
             outline,
             pin,
-            hud,
+            panel,
             machine: Machine::default(),
             targets: Vec::new(),
             painted: None,
@@ -321,6 +338,8 @@ impl Overlay {
             tick: None,
             age: 0,
             painting: false,
+            hovered_subject: None,
+            focus: Vec::new(),
         })
     }
 
@@ -355,7 +374,9 @@ impl Overlay {
         self.drop_painted();
         hide(&self.outline);
         hide(&self.pin);
-        hide(&self.hud);
+        self.panel.hide();
+        self.focus.clear();
+        self.hovered_subject = None;
         registry::set_armed(false);
         // Nothing holds a `TargetId` now, so the table can be
         // renumbered: drop the displays that have since detached
@@ -402,11 +423,26 @@ fn install_listeners(document: &Document, overlay: &Rc<RefCell<Overlay>>) -> Vec
             let Some(mouse) = event.dyn_ref::<MouseEvent>() else {
                 return;
             };
+            // The whole cost of a closed hood. Everything below this
+            // walks the DOM — `closest` twice — so nothing below it
+            // may run on the mousemoves of a page nobody is
+            // inspecting. Alt up with nothing painted means there is
+            // neither anything to start nor anything to stop.
+            if !mouse.alt_key() && !overlay.borrow().painting {
+                return;
+            }
             // Reaching for the overlay's own chrome is not leaving the
             // display. Without this the outline vanishes the moment the
             // pointer crosses onto the pin.
             if on_overlay(overlay, event) {
                 return;
+            }
+            // Sticky: the subject only changes when the pointer is
+            // over a row, so walking off a card towards the panel
+            // keeps the panel on the card you came from — which is
+            // the reason you were walking towards it.
+            if let Some(subject) = subject_under(mouse) {
+                overlay.borrow_mut().hovered_subject = Some(subject);
             }
             let over = display_under(mouse).map(|host| overlay.borrow_mut().target_of(&host));
             let input = Input::Pointer {
@@ -482,7 +518,63 @@ fn install_listeners(document: &Document, overlay: &Rc<RefCell<Overlay>>) -> Vec
         },
     ));
 
+    // The panel. Its rows highlight the slots they name while the
+    // pointer rests on them, and its close button stops observing.
+    let root = overlay.borrow().panel.root().clone();
+    bound.push(listen(
+        root.as_ref(),
+        "mouseover",
+        false,
+        overlay,
+        |overlay, event| {
+            let focus = event
+                .target()
+                .and_then(|target| target.dyn_into::<Element>().ok())
+                .and_then(|element| element.closest(".row").ok().flatten())
+                .map(|row| panel::slots_of(&row))
+                .unwrap_or_default();
+            overlay.borrow_mut().focus = focus;
+        },
+    ));
+    bound.push(listen(
+        root.as_ref(),
+        "mouseleave",
+        false,
+        overlay,
+        |overlay, _event| {
+            overlay.borrow_mut().focus.clear();
+        },
+    ));
+    bound.push(listen(
+        root.as_ref(),
+        "click",
+        false,
+        overlay,
+        |overlay, event| {
+            event.stop_propagation();
+            let closing = event
+                .target()
+                .and_then(|target| target.dyn_into::<Element>().ok())
+                .is_some_and(|element| element.matches(".close").unwrap_or(false));
+            if closing {
+                overlay.borrow_mut().machine.apply(Input::Clear);
+            }
+        },
+    ));
+
     bound
+}
+
+/// The repeat row's subject under a pointer event. The renderer stamps
+/// `data-this` on every row root, so this is a read of what the render
+/// pass already wrote.
+fn subject_under(event: &MouseEvent) -> Option<String> {
+    event
+        .target()
+        .and_then(|target| target.dyn_into::<Element>().ok())
+        .and_then(|element| element.closest("[data-this]").ok().flatten())
+        .and_then(|row| row.get_attribute("data-this"))
+        .filter(|subject| !subject.is_empty())
 }
 
 /// Whether an event landed on the overlay's own chrome. Shadow content
@@ -590,8 +682,9 @@ fn paint(overlay: &Rc<RefCell<Overlay>>) {
     match observed {
         Some(target) => paint_observation(overlay, target),
         None => {
-            overlay.borrow_mut().drop_painted();
-            hide(&overlay.borrow().hud);
+            let mut state = overlay.borrow_mut();
+            state.drop_painted();
+            state.panel.hide();
         }
     }
 
@@ -669,8 +762,30 @@ fn paint_observation(overlay: &Rc<RefCell<Overlay>>, target: TargetId) {
     }
 
     reposition(overlay);
+    draw_panel(overlay);
     flash_changes(overlay);
     bounce_dispatches(overlay);
+}
+
+/// Show the panel for whichever subject the pointer is nearest.
+fn draw_panel(overlay: &Rc<RefCell<Overlay>>) {
+    let Some(document) = window().and_then(|w| w.document()) else {
+        return;
+    };
+    let mut state = overlay.borrow_mut();
+    let hovered = state.hovered_subject.clone();
+    let Some(painted) = state.painted.take() else {
+        return;
+    };
+    let subject = default_subject(&painted.snapshot, hovered.as_deref()).map(str::to_owned);
+    state.panel.show(
+        &document,
+        &painted.snapshot,
+        &painted.signature,
+        subject.as_deref(),
+        painted.truncated,
+    );
+    state.painted = Some(painted);
 }
 
 /// Re-ask the display and its renderer what is there, and rebuild the
@@ -678,8 +793,12 @@ fn paint_observation(overlay: &Rc<RefCell<Overlay>>, target: TargetId) {
 fn rebuild(overlay: &Rc<RefCell<Overlay>>, target: TargetId, host: &Element) {
     let slots = registry::slots_under(host);
     let commands = registry::commands_under(host);
-    let facts = registry::display_facts(host);
     let signature = signature(&slots, &commands);
+    // The display reports the concept half and the renderer the slot
+    // half; the panel needs them as one value, so they are joined
+    // here rather than either side reaching across.
+    let mut snapshot = registry::display_facts(host).unwrap_or_default();
+    snapshot.slots = slots.iter().map(|(slot, _)| slot.clone()).collect();
 
     {
         let mut state = overlay.borrow_mut();
@@ -712,7 +831,15 @@ fn rebuild(overlay: &Rc<RefCell<Overlay>>, target: TargetId, host: &Element) {
             SlotKind::Attribute { .. } => MarkerStyle::Property,
         };
         let classes = format!("mark slot {}", origin_class(slot.origin));
-        if let Some(marker) = build_marker(&document, &layer, &classes, slot.label(), node, style) {
+        if let Some(marker) = build_marker(
+            &document,
+            &layer,
+            &classes,
+            slot.label(),
+            node,
+            style,
+            Some(slot.id),
+        ) {
             slot_markers.push(marker);
             budget -= 1;
         }
@@ -735,6 +862,7 @@ fn rebuild(overlay: &Rc<RefCell<Overlay>>, target: TargetId, host: &Element) {
             command.label(),
             element.into(),
             MarkerStyle::Interaction,
+            None,
         ) {
             command_markers.push(marker);
             budget -= 1;
@@ -744,14 +872,14 @@ fn rebuild(overlay: &Rc<RefCell<Overlay>>, target: TargetId, host: &Element) {
     let truncated = budget == 0;
     let mut state = overlay.borrow_mut();
     state.drop_painted();
-    let counts = (slot_markers.len(), command_markers.len());
     state.painted = Some(Painted {
         target,
+        snapshot,
+        truncated,
         slots: slot_markers,
         commands: command_markers,
         signature,
     });
-    write_hud(&state.hud, facts.as_ref(), counts, truncated);
 }
 
 fn build_marker(
@@ -761,6 +889,7 @@ fn build_marker(
     label: String,
     anchor: Node,
     style: MarkerStyle,
+    slot: Option<u32>,
 ) -> Option<Marker> {
     let mark = element(document, "div", classes)?;
     let badge = element(document, "div", &classes.replace("mark", "badge"))?;
@@ -776,6 +905,7 @@ fn build_marker(
         anchor,
         style,
         label,
+        slot,
     })
 }
 
@@ -796,47 +926,6 @@ fn signature(slots: &[(Slot, Option<Node>)], commands: &[(Command, Element)]) ->
     out
 }
 
-fn write_hud(
-    hud: &Element,
-    facts: Option<&super::slot::Snapshot>,
-    counts: (usize, usize),
-    truncated: bool,
-) {
-    let Some(facts) = facts else {
-        hide(hud);
-        return;
-    };
-    let (slots, commands) = counts;
-    let model = facts
-        .model
-        .clone()
-        .or_else(|| facts.model_entity.clone())
-        .unwrap_or_else(|| "?".to_owned());
-    let facet = facts.facet.clone().unwrap_or_else(|| "?".to_owned());
-    let mode = if facts.directory {
-        "directory"
-    } else {
-        "detail"
-    };
-    let mut text = format!(
-        "{model} · {facet} · {mode} · {} subject(s) · {slots} slot(s) · {commands} command(s)",
-        facts.subjects.len()
-    );
-    let unbound = facts.unbound_fields();
-    if !unbound.is_empty() {
-        text.push_str(&format!("\nunrendered: {}", unbound.join(", ")));
-    }
-    let undeclared = facts.undeclared_fields();
-    if !undeclared.is_empty() {
-        text.push_str(&format!("\nnot on the concept: {}", undeclared.join(", ")));
-    }
-    if truncated {
-        text.push_str(&format!("\nshowing the first {MARKER_CAP} markers"));
-    }
-    hud.set_text_content(Some(&text));
-    let _ = hud.set_attribute("style", "display:block");
-}
-
 /// Place every marker on its anchor's current geometry, then lay the
 /// badges out so they do not sit on top of each other.
 fn reposition(overlay: &Rc<RefCell<Overlay>>) {
@@ -852,7 +941,25 @@ fn reposition(overlay: &Rc<RefCell<Overlay>>) {
         let placement = place(&marker.anchor, &marker.style);
         apply_mark(marker, &placement);
         apply_badge(marker, &placement, &mut placed);
+        apply_focus(marker, &state.focus);
     }
+}
+
+/// While a panel row is under the pointer, the slots it names come
+/// forward and everything else recedes. This is the other half of the
+/// panel: a row says which fields exist, and the page says where they
+/// went.
+fn apply_focus(marker: &Marker, focus: &[u32]) {
+    let state = if focus.is_empty() {
+        ""
+    } else if marker.slot.is_some_and(|id| focus.contains(&id)) {
+        "on"
+    } else {
+        "off"
+    };
+    let _ = marker.mark.set_attribute("data-focus", state);
+    let _ = marker.badge.set_attribute("data-focus", state);
+    let _ = marker.leader.set_attribute("data-focus", state);
 }
 
 fn apply_mark(marker: &Marker, placement: &Placement) {
@@ -1120,7 +1227,7 @@ const CSS: &str = "\
   35%  { opacity: 1; transform: scale(1.09); }
   to   { opacity: 0; transform: scale(1); }
 }
-.hud { position: fixed; display: none; right: 8px; bottom: 8px; max-width: 52ch;
-       padding: 6px 8px; white-space: pre-wrap; line-height: 1.4; color: #fff;
-       background: rgba(20,20,24,.92); border-radius: 3px; }
+[data-focus=off] { opacity: .18; }
+.mark[data-focus=on] { outline: 1px solid #fff; outline-offset: 1px; }
+.badge[data-focus=on] { box-shadow: 0 0 0 1px #fff; }
 ";

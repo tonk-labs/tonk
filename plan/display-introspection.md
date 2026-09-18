@@ -110,6 +110,14 @@ One document `mousemove` listener per frame whose first act is to read `altKey`
 and return, plus a `Cell<bool>` read on the renderer's change path. Nothing
 else runs, no rAF loop is scheduled, and no snapshot is built.
 
+This was not true as first written: the handler read `altKey` into the machine
+but ran `closest("tonk-display")` before it, so every mousemove on every page
+walked the DOM whether or not anyone was inspecting. The guard is now the
+handler's first statement, and everything that touches the DOM sits below it.
+The condition is `!alt && !painting` rather than `!alt`, because a pinned
+observation has to keep tracking with Alt up, and a tracked one has to be able
+to stop when Alt goes up under a still pointer.
+
 ## Steps
 
 - [x] **1. Observe values.** The state machine, the slot description, the
@@ -130,13 +138,17 @@ else runs, no rAF loop is scheduled, and no snapshot is built.
       (`delegate::try_binding`, `binding::resolve_binding`), because dispatch
       walks up until a binding resolves and the element that posted is not
       always the one clicked.
-- [ ] **3. Concept panel.** The matched concept's fields and the observed
-      subject's values, read-only; hovering a row highlights the slots that
-      read it (`Slot::reads` is already there for this), and hovering a slot
-      badge highlights the row. Lists every slot including the empty ones,
-      which is the complete answer the Point marker only gestures at. In
-      directory mode the panel is per-row — the repeat already stamps
-      `with=<this>` on each row, so the row under the pointer is identifiable.
+- [x] **3. Concept panel.** One row per field either side knows about, whether
+      or not it rendered, each classified by `inspect::Status` — the four
+      answers to "why isn't my value showing up?" that all look like the same
+      blank space on the page. Rows carry the declared type and cardinality and
+      the value as the renderer spelled it (routed through
+      `render_segments_with_shadow`, so the panel cannot report a spelling the
+      page did not use). Resting on a row brings the slots it feeds forward and
+      dims the rest. In directory mode the panel follows the `data-this` the
+      repeat stamps on each row, stickily, so walking off a card towards the
+      panel keeps the panel on the card you came from. The corner readout is
+      gone: everything it said is a row now.
 - [ ] **4. View panel.** The template source the slide mounted
       (`Slide::display`), read-only, with the slot under the pointer located
       in it.
@@ -156,6 +168,9 @@ else runs, no rAF loop is scheduled, and no snapshot is built.
 - **Badge collision is resolved by pushing down only.** Dense layouts still
   produce a stack of badges to one side of the thing they name, joined by
   leaders. Legible, not pretty.
+- **The panel sits bottom-right and takes pointer events.** A display under it
+  cannot be hovered while it is open. Moving it, or letting it dock, is
+  outstanding.
 - **The snapshot is rebuilt every 30 frames** while observing, so a row
   appearing shows up within half a second rather than immediately. Positions
   are recomputed every frame. Slot *values* also only refresh on that cadence,

@@ -307,10 +307,22 @@ impl crate::introspect::registry::DisplayFacts for Inner {
             // is trying to see.
             facet: Some(effective_facet(self)),
             directory: self.directory,
-            subjects: self
+            entities: self
                 .last_frame
                 .iter()
-                .map(|conclusion| conclusion.this.clone())
+                .map(|conclusion| crate::introspect::slot::Entity {
+                    this: conclusion.this.clone(),
+                    fields: conclusion
+                        .fields
+                        .keys()
+                        .map(|name| {
+                            (
+                                name.clone(),
+                                rendered_value(&conclusion.this, &conclusion.fields, name),
+                            )
+                        })
+                        .collect(),
+                })
                 .collect(),
             // In single-view mode there is exactly one slide. In
             // carousel mode there are several and the one on screen
@@ -373,6 +385,21 @@ impl crate::introspect::registry::DisplayFacts for Inner {
         }
         out
     }
+}
+
+/// Spell one field's value the way the renderer spelled it into a slot.
+///
+/// Routed through the renderer's own segment substitution rather than
+/// formatted here, so the panel can never report a value in a spelling
+/// the page did not use — which would turn the panel from an answer
+/// into a second question.
+fn rendered_value(this: &str, fields: &BTreeMap<String, Ipld>, name: &str) -> String {
+    tonk_template::render_segments_with_shadow(
+        &[tonk_template::Segment::Field(name.to_owned())],
+        this,
+        fields,
+        &BTreeMap::new(),
+    )
 }
 
 /// Whether `host` is the nearest `<tonk-display>` above `element`.

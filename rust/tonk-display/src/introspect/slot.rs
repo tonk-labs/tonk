@@ -10,6 +10,8 @@
 //! paints it. They are pure `std` + `serde` so they can be tested
 //! natively and, later, serialized to a panel running in another frame.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 /// Where a slot's value came from.
@@ -143,25 +145,35 @@ pub struct Snapshot {
     pub facet: Option<String>,
     /// Directory mode — every instance of the model, not one entity.
     pub directory: bool,
-    /// The subject URI of every conclusion in the last frame.
-    pub subjects: Vec<String>,
+    /// Every subject in the last frame, with its projected values.
+    pub entities: Vec<Entity>,
     /// The template HTML the mounted view was built from.
     pub template: Option<String>,
     /// The fields the model concept declares, from its descriptor's
-    /// `with:` map. The concept panel's rows.
-    pub fields: Vec<String>,
+    /// `with:` and `maybe:` maps. The concept panel's rows.
+    pub fields: Vec<Field>,
     /// Every slot the mounted view rendered.
     pub slots: Vec<Slot>,
 }
 
 impl Snapshot {
+    /// How many subjects the frame carries.
+    pub fn subject_count(&self) -> usize {
+        self.entities.len()
+    }
+
+    /// The declaration for `name`, if the concept has one.
+    pub fn declared(&self, name: &str) -> Option<&Field> {
+        self.fields.iter().find(|field| field.name == name)
+    }
+
     /// The fields the concept declares that no slot reads — declared
     /// but unrendered. Worth surfacing: it is the usual reason a value
     /// "isn't showing up".
     pub fn unbound_fields(&self) -> Vec<&str> {
         self.fields
             .iter()
-            .map(String::as_str)
+            .map(|field| field.name.as_str())
             .filter(|field| !self.slots.iter().any(|slot| slot.reads(field)))
             .collect()
     }
@@ -173,7 +185,7 @@ impl Snapshot {
         for slot in &self.slots {
             for field in &slot.fields {
                 if Origin::of(field) == Origin::Concept
-                    && !self.fields.iter().any(|declared| declared == field)
+                    && self.declared(field).is_none()
                     && !out.contains(&field.as_str())
                 {
                     out.push(field);
@@ -184,6 +196,58 @@ impl Snapshot {
     }
 }
 
+/// One field a model concept declares.
+///
+/// The panel needs more than the name: the declared type decides how a
+/// value is spelled back, and `cardinality: one` versus many decides
+/// whether an absent value is a hole or an empty list. Editing (a later
+/// step) needs both, plus the attribute, to build the retraction that
+/// supersedes a value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Field {
+    /// The field name as a template writes it between braces.
+    pub name: String,
+    /// The attribute it projects (`the:`), e.g. `xyz.tonk.task/title`.
+    pub attribute: Option<String>,
+    /// The declared value type (`as:`), e.g. `Text`, `Boolean`.
+    pub value_type: Option<String>,
+    /// `one` or `many`. Absent when the descriptor does not say.
+    pub cardinality: Option<String>,
+    /// Declared under `maybe:` rather than `with:` — an entity
+    /// without it still matches the concept.
+    pub optional: bool,
+}
+
+impl Field {
+    /// How the panel spells the declaration: `Text one` / `Text many?`.
+    pub fn signature(&self) -> String {
+        let mut out = self.value_type.clone().unwrap_or_else(|| "?".to_owned());
+        if let Some(cardinality) = &self.cardinality {
+            out.push(' ');
+            out.push_str(cardinality);
+        }
+        if self.optional {
+            out.push('?');
+        }
+        out
+    }
+}
+
+/// One subject in the rendered frame, with its projected values
+/// already spelled as strings.
+///
+/// Stringified here rather than in the panel because the renderer
+/// spells a value exactly one way when it writes it into a slot, and a
+/// panel that spelled it differently would be reporting a value the
+/// page never showed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Entity {
+    /// The subject URI.
+    pub this: String,
+    /// Field name -> the value as rendered.
+    pub fields: BTreeMap<String, String>,
+}
+
 /// The fields a model concept's descriptor declares, in declaration
 /// order across its `with:` (required) and `maybe:` (optional) maps.
 ///
@@ -191,19 +255,27 @@ impl Snapshot {
 /// `{field}` references are checked against. A descriptor that will not
 /// parse yields nothing rather than an error — an introspection overlay
 /// showing no fields is a better failure than one that will not open.
-pub fn declared_fields(descriptor_json: &str) -> Vec<String> {
+pub fn declared_fields(descriptor_json: &str) -> Vec<Field> {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(descriptor_json) else {
         return Vec::new();
     };
-    let mut out: Vec<String> = Vec::new();
-    for block in ["with", "maybe"] {
+    let mut out: Vec<Field> = Vec::new();
+    for (block, optional) in [("with", false), ("maybe", true)] {
         let Some(map) = value.get(block).and_then(|v| v.as_object()) else {
             continue;
         };
-        for field in map.keys() {
-            if !out.contains(field) {
-                out.push(field.clone());
+        for (name, spec) in map {
+            if out.iter().any(|field| &field.name == name) {
+                continue;
             }
+            let text = |key: &str| spec.get(key).and_then(|v| v.as_str()).map(str::to_owned);
+            out.push(Field {
+                name: name.clone(),
+                attribute: text("the"),
+                value_type: text("as"),
+                cardinality: text("cardinality"),
+                optional,
+            });
         }
     }
     out
@@ -212,6 +284,19 @@ pub fn declared_fields(descriptor_json: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn declared(names: &[&str]) -> Vec<Field> {
+        names
+            .iter()
+            .map(|name| Field {
+                name: (*name).to_owned(),
+                attribute: None,
+                value_type: None,
+                cardinality: None,
+                optional: false,
+            })
+            .collect()
+    }
 
     fn slot(id: u32, fields: &[&str], kind: SlotKind) -> Slot {
         Slot {
@@ -261,7 +346,7 @@ mod tests {
     #[test]
     fn it_reports_a_declared_field_that_no_slot_renders() {
         let snapshot = Snapshot {
-            fields: vec!["title".to_owned(), "body".to_owned()],
+            fields: declared(&["title", "body"]),
             slots: vec![slot(0, &["title"], SlotKind::Text)],
             ..Snapshot::default()
         };
@@ -271,7 +356,7 @@ mod tests {
     #[test]
     fn it_reports_a_rendered_field_the_concept_does_not_declare() {
         let snapshot = Snapshot {
-            fields: vec!["title".to_owned()],
+            fields: declared(&["title"]),
             slots: vec![
                 slot(0, &["title"], SlotKind::Text),
                 slot(1, &["titel"], SlotKind::Text),
@@ -284,7 +369,7 @@ mod tests {
     #[test]
     fn synthesized_references_are_never_undeclared() {
         let snapshot = Snapshot {
-            fields: vec!["title".to_owned()],
+            fields: declared(&["title"]),
             slots: vec![
                 slot(0, &["this"], SlotKind::Text),
                 slot(1, &["dom.host/data-active"], SlotKind::Text),
@@ -301,7 +386,9 @@ mod tests {
             "with": { "title": { "the": "x/title" }, "body": { "the": "x/body" } },
             "maybe": { "cover": { "the": "x/cover" } }
         }"#;
-        assert_eq!(declared_fields(descriptor), ["title", "body", "cover"]);
+        let fields = declared_fields(descriptor);
+        let found: Vec<&str> = fields.iter().map(|field| field.name.as_str()).collect();
+        assert_eq!(found, ["title", "body", "cover"]);
     }
 
     #[test]

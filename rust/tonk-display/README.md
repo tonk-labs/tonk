@@ -96,10 +96,24 @@ filling it — the element is where the value went, but the element is not the
 value. Every marker carries its label whatever its placement, and badges that
 would collide are pushed down and joined to their anchor by a leader.
 
-The corner readout names the concept, the facet, the mode, the subject, slot
-and command counts, and the two mismatches worth seeing — fields the concept
-declares that no slot renders, and fields a slot reads that the concept does
-not declare.
+Observation also opens a **concept panel**, which answers the question markers
+cannot: *why isn't my value showing up?* On a rendered page all four answers
+look like the same blank space, so the panel names them — one row per field
+either side knows about, whether or not it rendered:
+
+| row | meaning |
+| --- | --- |
+| *(plain)* | declared, read by a slot, and this subject has a value |
+| `no value` | declared and read, but this subject has nothing for it |
+| `not in the view` | the concept declares it; no slot reads it |
+| `not on the concept` | a slot reads it; the concept does not declare it |
+
+Each row carries the field's declared type and cardinality and the value as the
+renderer spelled it — routed through the renderer's own segment substitution,
+so the panel can never report a value in a spelling the page did not use.
+Resting on a row brings the slots it feeds forward and dims everything else.
+In directory mode the panel follows the repeat row under the pointer, and
+sticks there while you walk over to read it.
 
 The overlay reads the renderer's binding plan and value cache rather than the
 rendered DOM, because the DOM cannot answer the question: a rendered

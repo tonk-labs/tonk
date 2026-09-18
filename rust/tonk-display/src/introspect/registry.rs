@@ -189,6 +189,13 @@ pub fn slots_under(host: &Element) -> Vec<(Slot, Option<Node>)> {
             out.extend(state.slots());
         }
     });
+    // Each renderer numbers its slots from zero, and a display can
+    // have more than one view mounted. Renumber across the whole set
+    // so an id identifies exactly one slot — which is what lets a
+    // panel row name the slots it should highlight.
+    for (index, (slot, _)) in out.iter_mut().enumerate() {
+        slot.id = index as u32;
+    }
     out
 }
 
