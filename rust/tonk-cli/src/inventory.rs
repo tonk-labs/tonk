@@ -384,7 +384,7 @@ pub async fn role_for_site(site: &crate::site::TonkSite) -> Result<SpaceRole> {
 /// member's bad row must not cost this device the owner of its own space.
 pub async fn read_roster(site: &crate::site::TonkSite) -> Result<Roster> {
     let session = site
-        .branch()
+        .content_branch()
         .await
         .context("could not open the roster branch")?;
     let branch = session.handle();

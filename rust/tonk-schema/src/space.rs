@@ -179,6 +179,35 @@ mod tests {
     }
 
     #[dialog_common::test]
+    async fn it_parses_a_branch_in_front_of_a_full_did() {
+        // The spelling people actually type when they copy a space URL
+        // and put a branch on it: `/space/test@did:key:zSpace`.
+        assert_eq!(
+            parse_space("test@did:key:zSpace"),
+            Some(SpaceRef {
+                name: "did:key:zSpace".into(),
+                branch: "test".into(),
+            }),
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_resolves_a_branch_url_with_a_trailing_slash_to_that_branch() {
+        // A trailing slash is what a browser leaves on a directory-style
+        // link, and it must not read as a route segment that misses.
+        assert_eq!(
+            resolve_path("/space/test@did:key:zSpace/"),
+            Some(RouteTarget::Space {
+                space: SpaceRef {
+                    name: "did:key:zSpace".into(),
+                    branch: "test".into(),
+                },
+                rest: "/".into(),
+            }),
+        );
+    }
+
+    #[dialog_common::test]
     async fn it_rejects_an_empty_id() {
         assert_eq!(parse_space(""), None);
         assert_eq!(parse_space("feat@"), None);

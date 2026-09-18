@@ -44,6 +44,15 @@ tonk eval interactive.notation --home todo # install the document and replace th
 cat doc.notation | tonk eval -
 tonk eval -c 'person:' --json --quiet
 
+# Work on a branch. `*` marks the checkout — the branch every other
+# command reads and writes.
+tonk branch
+tonk branch create draft --switch
+tonk assert habit --name "Run" --target "5k"   # lands on draft, not main
+tonk branch switch main
+tonk branch merge draft
+tonk --branch draft query habit                # read one branch without switching
+
 # Inspect the branch.
 tonk show         # every named field + concept as re-submittable notation
 tonk concept      # concepts this space defines
@@ -113,9 +122,8 @@ nothing. Full inventory: [`docs/telemetry.md`](../../docs/telemetry.md).
 A **space** is a named entry in `spaces.json`, a registry kept under the
 platform data dir (`~/Library/Application Support/tonk/` on macOS). Each entry
 points at a **site**: the working directory holding the actual dialog
-repository (`main`, opened on the `main` branch — multi-branch and multi-repo
-workflows are intentionally not exposed). Sites live canonically under
-`spaces/<name>/`, or anywhere you like via `tonk space new --site <path>`.
+repository (`main`). Sites live canonically under `spaces/<name>/`, or anywhere
+you like via `tonk space new --site <path>`.
 
 A space either belongs to no account, or to exactly one. Which one is read
 from the space itself — the founder row of the roster it carries on `main` —
@@ -260,11 +268,45 @@ rotation.
 | Signed in, space owned by or shared with that account | allowed | allowed with only that account's grant |
 | Signed in, space belonging to another account | allowed | rejected at the service boundary, with the sign-in fix named |
 
+### Branches and the checkout
+
+One repository holds many branches, and `tonk branch` manages them: `create`
+(at another branch, local or `<remote>/<branch>`), `switch`, `merge`, `delete`,
+and `set-upstream`. Two branches share no facts until one is merged into the
+other, so a branch is a place to work without disturbing what everyone reads.
+
+Which branch a command reads and writes is the site's **checkout**, recorded in
+`head.json` beside its data and never synced — device-local, like git's `HEAD`.
+`--branch` and `TONK_BRANCH` override it for one invocation; resolution is
+`--branch` > `TONK_BRANCH` > `head.json` > `main`. It is resolved once when a
+site opens, so no single invocation can write to two branches.
+
+`main` is the **content branch**: the roster, the repository's own name, and its
+invitations live there, so the paths that read and write them
+(`TonkSite::content_branch`) name it rather than following the checkout. `meta`
+carries this replica's remotes and tracking links; it is listed but never
+checked out, merged, or deleted.
+
+Creating a branch publishes its head and mirrors a `Branch` fact onto `meta`,
+the same way [`remote`] mirrors remotes — which is what lets the browser see it
+and decide to sync it. Deleting one retracts those facts, retracts the branch's
+cells, and sweeps any other branch's tracking entry that named it.
+
+In the web UI a space URL carries the branch in front of the space:
+`/space/{branch}@{space}` opens that branch, `/space/{space}` opens `main`.
+Navigating to a branch the space's remote carries wires it up on that device and
+keeps it synced from then on.
+
+[`remote`]: src/remote.rs
+
 ### Sync and sharing
 
 `push` / `pull` are fast-forward sync over `Branch::push()` / `Branch::pull()`,
-with errors that name the upstream-not-configured and non-fast-forward cases.
-`status` classifies the local branch against its upstream without merging.
+moving the checked-out branch, with errors that name the
+upstream-not-configured and non-fast-forward cases. `status` classifies that
+branch against its upstream without merging. The space-level paths (invite,
+join, account publication) sync the content branch explicitly, because an
+invite is a promise about the space rather than about one branch.
 
 Remotes are UCAN-S3 access services registered on the repository's meta branch.
 A revocation is an ordinary `ucan/revoke` invocation, so it goes to the access

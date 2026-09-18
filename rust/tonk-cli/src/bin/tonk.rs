@@ -16,6 +16,7 @@ use tonk_cli::Coded;
 use tonk_cli::Rows;
 use tonk_cli::auto_sync;
 use tonk_cli::blob::{self, AddOutcome as BlobAddOutcome};
+use tonk_cli::branch;
 use tonk_cli::context::SpaceContext;
 use tonk_cli::data_ops;
 use tonk_cli::eval::{self, Source};
@@ -31,7 +32,7 @@ use tonk_cli::views;
 use tonk_cli::{ExitCode, account, account_spaces, agents, context, guide, identity, schema, site};
 
 const CLI_INDEX: &str = "\
-usage: tonk [--space <name>] [-v] <command> [<args>]
+usage: tonk [--space <name>] [--branch <name>] [-v] <command> [<args>]
 
 A space is a synced store of facts about entities. A concept is a schema:
 an entity that matches one is an instance with typed fields. Views render
@@ -58,15 +59,18 @@ define
    concept    List concepts, or define one with typed fields
    view       List views, or author one for a concept
 
+work on a branch
+   branch     List branches, or create, switch, merge, and delete them
+
 collaborate (see also: tonk help sync)
    invite     Create an invite URL granting access to this space
-   pull       Pull main from its upstream
-   push       Push main to its upstream
+   pull       Pull the checked-out branch from its upstream
+   push       Push the checked-out branch to its upstream
    remote     List or manage remotes
    account    Sign in to a Tonk account; manage devices and spaces
 
 'tonk help -a' lists every command; 'tonk help -g' lists the guides
-(glossary, notation, spaces, tutorial, sync, views, events,
+(glossary, notation, spaces, branches, tutorial, sync, views, events,
 and built-in elements). See 'tonk help <command>'
 or 'tonk help <guide>' for details.
 ";
@@ -86,6 +90,11 @@ struct Cli {
     #[arg(long, global = true, value_name = "NAME")]
     space: Option<String>,
 
+    /// Operate on this branch instead of the space's checkout.
+    /// Precedence: --branch > TONK_BRANCH > `tonk branch switch` > main.
+    #[arg(long, global = true, value_name = "NAME")]
+    branch: Option<String>,
+
     /// Print full error chains: every layer of context down to the
     /// root cause, not just the outermost message.
     #[arg(long, short = 'v', global = true)]
@@ -99,6 +108,13 @@ struct Cli {
 /// global rather than a threaded parameter because errors are printed from
 /// dozens of leaf match arms that otherwise never see the parsed `Cli`.
 static VERBOSE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The branch `--branch` named, if any. A process global for the same
+/// reason [`VERBOSE`] is: every command that opens a site goes through
+/// [`open_selected`], and threading one more optional argument through
+/// twenty call sites buys nothing the flag's own precedence rule does not
+/// already say.
+static BRANCH_FLAG: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 #[derive(Subcommand, Debug)]
 enum Command {
@@ -353,6 +369,30 @@ enum Command {
     /// Pull local main from its upstream
     #[command(after_help = "Examples:\n  tonk pull")]
     Pull,
+
+    /// List or manage the branches of this space
+    ///
+    /// A space is one repository and a repository holds many branches.
+    /// Branches share nothing until they are merged, so one is a place to
+    /// work without disturbing what everyone else reads.
+    ///
+    /// Bare `tonk branch` lists them, marking the checkout — the branch
+    /// every other command reads and writes. `--branch` and TONK_BRANCH
+    /// override the checkout for one invocation without changing it.
+    ///
+    /// In the web UI a branch is addressed by the space URL:
+    /// `/space/{branch}@{space}` opens that branch, and a bare
+    /// `/space/{space}` opens `main`.
+    #[command(
+        after_help = "Examples:\n  tonk branch\n  tonk branch create draft\n  tonk branch switch draft\n  tonk branch merge draft\n  tonk branch delete draft"
+    )]
+    Branch {
+        /// Emit the listing as JSON. Ignored by the subcommands.
+        #[arg(long)]
+        json: bool,
+        #[command(subcommand)]
+        command: Option<BranchCommand>,
+    },
 
     /// List or manage remotes
     Remote {
@@ -633,6 +673,92 @@ enum AccountSpaceCommand {
         /// Delete without the typed confirmation.
         #[arg(long)]
         yes: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum BranchCommand {
+    /// Create a branch at a start point
+    ///
+    /// The start point is another branch — this space's, or
+    /// `<remote>/<branch>` for one on a registered remote — and defaults
+    /// to the checkout. There is no creating a branch at a bare tree
+    /// hash: a head is signed by the session that minted it, so tonk
+    /// cannot mint one pointing wherever you like.
+    #[command(
+        after_help = "Examples:\n  tonk branch create draft\n  tonk branch create draft --revision main\n  tonk branch create draft --revision origin/main\n  tonk branch create draft --switch"
+    )]
+    Create {
+        /// Name for the new branch.
+        #[arg(value_name = "NAME")]
+        name: String,
+        /// Branch to start from. Defaults to the checkout.
+        #[arg(long, value_name = "REV")]
+        revision: Option<String>,
+        /// Check the space out onto the new branch as well.
+        #[arg(long)]
+        switch: bool,
+    },
+
+    /// Delete a branch and its head
+    ///
+    /// A branch's commits are reachable only through its head, so
+    /// anything committed here and never merged or pushed is gone. The
+    /// content branch, tonk's own `meta`, and the checkout are refused.
+    #[command(
+        after_help = "Examples:\n  tonk branch delete draft\n  tonk branch delete draft --yes"
+    )]
+    Delete {
+        /// Branch to delete.
+        #[arg(value_name = "NAME")]
+        name: String,
+        /// Delete without asking for confirmation.
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+
+    /// Check this space out onto a branch
+    ///
+    /// Recorded beside the space's data and never synced: which branch
+    /// you are looking at is this device's business, like git's HEAD.
+    #[command(after_help = "Examples:\n  tonk branch switch main\n  tonk branch switch -c draft")]
+    Switch {
+        /// Branch to check out.
+        #[arg(value_name = "NAME")]
+        name: String,
+        /// Create the branch from the current checkout first.
+        #[arg(long, short = 'c')]
+        create: bool,
+    },
+
+    /// Merge a branch into the checkout
+    ///
+    /// The same three-way merge a pull runs: both sides' claims are
+    /// integrated by causality, so there is no conflicted state to
+    /// resolve by hand and nothing to abort.
+    #[command(after_help = "Examples:\n  tonk branch merge draft")]
+    Merge {
+        /// Branch to merge from.
+        #[arg(value_name = "NAME")]
+        name: String,
+    },
+
+    /// Wire a branch's upstream
+    ///
+    /// The target is `<remote>/<branch>`, a bare `<remote>` for the same
+    /// branch name on it, or another branch in this space. Writing it
+    /// also records the tracking link the browser reads, so a branch
+    /// wired here is one the web UI keeps in sync.
+    #[command(
+        after_help = "Examples:\n  tonk branch set-upstream origin\n  tonk branch set-upstream origin/draft\n  tonk branch set-upstream main --for draft"
+    )]
+    SetUpstream {
+        /// What the branch should track.
+        #[arg(value_name = "TARGET")]
+        target: String,
+        /// Branch to wire. Defaults to the checkout.
+        #[arg(long = "for", value_name = "BRANCH")]
+        branch: Option<String>,
     },
 }
 
@@ -1142,6 +1268,17 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
                 Some(RemoteCommand::SetUpstream { .. }) => "set-upstream",
             }),
         ),
+        Command::Branch { command, .. } => (
+            "branch",
+            Some(match command {
+                None => "list",
+                Some(BranchCommand::Create { .. }) => "create",
+                Some(BranchCommand::Delete { .. }) => "delete",
+                Some(BranchCommand::Switch { .. }) => "switch",
+                Some(BranchCommand::Merge { .. }) => "merge",
+                Some(BranchCommand::SetUpstream { .. }) => "set-upstream",
+            }),
+        ),
         Command::Concept { command, .. } => (
             "concept",
             Some(match command {
@@ -1214,6 +1351,7 @@ fn uses_active_space(command: &Command) -> bool {
             | Command::Status { .. }
             | Command::Invite { .. }
             | Command::Remote { .. }
+            | Command::Branch { .. }
             | Command::Blob { .. }
             | Command::Concept { .. }
             | Command::View { .. }
@@ -1248,6 +1386,9 @@ async fn main() {
         }
     }
     VERBOSE.store(cli.verbose, std::sync::atomic::Ordering::Relaxed);
+    if let Some(branch) = cli.branch.clone() {
+        let _ = BRANCH_FLAG.set(branch);
+    }
     // `TONK_TRACE=1` turns on the tracing subscriber on stderr. This is
     // the diagnostic for "the remote did not answer": hyper and reqwest
     // emit request-level events, so a stalled command explains itself in
@@ -1370,6 +1511,7 @@ async fn main() {
             None => resume_agent(space.as_deref().unwrap(), switch_account, via, no_open).await,
         },
         Command::Remote { command, json } => remote_op(command, json, space.as_deref()).await,
+        Command::Branch { command, json } => branch_op(command, json, space.as_deref()).await,
         Command::Blob { command, json } => blob_op(command, json, space.as_deref()).await,
         Command::Concept { command, json } => concept_op(command, json, space.as_deref()).await,
         Command::View { command, json } => view_op(command, json, space.as_deref()).await,
@@ -3126,7 +3268,7 @@ async fn status_op(json: bool, space: Option<&str>) -> ExitCode {
             }
         }
     };
-    let space = SpaceContext::new(&resolved);
+    let space = SpaceContext::new(&resolved, site.head());
     let account = match identity::open().await {
         Ok(profile) => match tonk_cli::space::SpaceStore::open() {
             Ok(store) => match account::status_in(&profile, &store).await {
@@ -3206,6 +3348,174 @@ fn render_revision(revision: Option<&dialog_repository::Revision>) -> String {
     match revision {
         Some(rev) => rev.tree.to_string(),
         None => "~".to_string(),
+    }
+}
+
+async fn branch_op(command: Option<BranchCommand>, json: bool, space: Option<&str>) -> ExitCode {
+    let (resolved, site) = match open_selected(space).await {
+        Ok(opened) => opened,
+        Err(code) => return code,
+    };
+
+    match command {
+        None => match branch::list(&site).await {
+            Ok(rows) if json => print_json(&Rows::new("tonk.branch-list.v1", rows)),
+            Ok(rows) => {
+                print_branch_list(&rows);
+                ExitCode::Success
+            }
+            Err(err) => print_coded(err),
+        },
+
+        Some(BranchCommand::Create {
+            name,
+            revision,
+            switch,
+        }) => match branch::create(&site, &name, revision.as_deref(), switch).await {
+            Ok(outcome) => {
+                print_branch_created(&outcome);
+                ExitCode::Success
+            }
+            Err(err) => print_coded(err),
+        },
+
+        Some(BranchCommand::Delete { name, yes }) => {
+            // A branch's commits hang off its head and nothing else, so
+            // deleting one can lose work that was never merged or pushed.
+            // Typing the name back is the same bar `tonk space rm` sets
+            // for the same reason.
+            if !yes {
+                let head = match branch::list(&site).await {
+                    Ok(rows) => rows
+                        .into_iter()
+                        .find(|row| row.name == name)
+                        .and_then(|row| row.head),
+                    Err(err) => return print_coded(err),
+                };
+                match head {
+                    Some(head) => eprintln!(
+                        "'{name}' is at {head}; anything committed there and not merged \
+                         or pushed will be unreachable"
+                    ),
+                    None => eprintln!("'{name}' has no commits"),
+                }
+                if !std::io::stdin().is_terminal() {
+                    return print_error(format!(
+                        "refusing to delete '{name}' without confirmation; \
+                         pass --yes to delete it non-interactively"
+                    ));
+                }
+                if !confirm_by_name(&name) {
+                    eprintln!("not deleted");
+                    return ExitCode::Success;
+                }
+            }
+            match branch::delete(&site, &name).await {
+                Ok(outcome) => {
+                    print_branch_deleted(&outcome);
+                    ExitCode::Success
+                }
+                Err(err) => print_coded(err),
+            }
+        }
+
+        Some(BranchCommand::Switch { name, create }) => {
+            match branch::switch(&site, &name, create).await {
+                Ok(outcome) => {
+                    print_branch_switched(&resolved.name, &outcome);
+                    ExitCode::Success
+                }
+                Err(err) => print_coded(err),
+            }
+        }
+
+        Some(BranchCommand::Merge { name }) => match branch::merge(&site, &name).await {
+            Ok(outcome) => {
+                print_branch_merged(&outcome);
+                ExitCode::Success
+            }
+            Err(err) => print_coded(err),
+        },
+
+        Some(BranchCommand::SetUpstream { target, branch }) => {
+            match branch::set_upstream(&site, branch.as_deref(), &target).await {
+                Ok(outcome) => {
+                    print_set_upstream_outcome(&outcome);
+                    record_space_best_effort(&resolved.name, &site).await;
+                    ExitCode::Success
+                }
+                Err(err) => print_coded(err),
+            }
+        }
+    }
+}
+
+fn print_branch_list(rows: &[branch::BranchRecord]) {
+    let mut listing = Listing::new(
+        &["", "NAME", "HEAD", "UPSTREAM"],
+        "no branches yet; create one with `tonk branch create <name>`",
+    );
+    for row in rows {
+        listing.push([
+            if row.current { "*" } else { "" }.to_owned(),
+            row.name.clone(),
+            listing::cell(row.head.as_deref()),
+            listing::cell(row.upstream.as_deref()),
+        ]);
+    }
+    listing.note("* marks the checkout: the branch every other command reads and writes.");
+    println!("{}", listing.render());
+}
+
+fn print_branch_created(outcome: &branch::CreateOutcome) {
+    println!(
+        "Created branch '{name}' from '{start}'",
+        name = outcome.name,
+        start = outcome.start,
+    );
+    match &outcome.head {
+        Some(head) => println!("  head: {head}"),
+        None => println!("  head: none yet ('{}' has no commits)", outcome.start),
+    }
+    if outcome.switched {
+        println!("  checkout: {}", outcome.name);
+    }
+}
+
+fn print_branch_deleted(outcome: &branch::DeleteOutcome) {
+    println!("Deleted branch '{name}'", name = outcome.name);
+    if let Some(head) = &outcome.head {
+        println!("  was at: {head}");
+    }
+}
+
+fn print_branch_switched(space: &str, outcome: &branch::SwitchOutcome) {
+    if outcome.created {
+        println!("Created branch '{name}'", name = outcome.name);
+    }
+    println!(
+        "Switched '{space}' to branch '{name}' (was '{previous}')",
+        name = outcome.name,
+        previous = outcome.previous,
+    );
+}
+
+fn print_branch_merged(outcome: &branch::MergeOutcome) {
+    if !outcome.advanced {
+        println!(
+            "Already up to date: '{into}' has everything on '{from}'",
+            into = outcome.into,
+            from = outcome.from,
+        );
+        return;
+    }
+    println!(
+        "Merged '{from}' into '{into}'",
+        from = outcome.from,
+        into = outcome.into,
+    );
+    if let Some(head) = &outcome.head {
+        println!("  head: {head}");
     }
 }
 
@@ -3412,11 +3722,16 @@ fn print_blob_add_plan(plan: &blob::AddPlan, quiet: bool) {
 }
 
 fn print_set_upstream_outcome(outcome: &UpstreamOutcome) {
+    // A local upstream names no remote, so it prints as the bare branch
+    // it is rather than as an empty remote with a slash in front of it.
+    let target = if outcome.remote.is_empty() {
+        outcome.remote_branch.clone()
+    } else {
+        format!("{}/{}", outcome.remote, outcome.remote_branch)
+    };
     println!(
-        "Set upstream: {local} -> {remote}/{remote_branch}",
+        "Set upstream: {local} -> {target}",
         local = outcome.local_branch,
-        remote = outcome.remote,
-        remote_branch = outcome.remote_branch,
     );
 }
 
@@ -4693,10 +5008,11 @@ async fn open_selected(
         Ok(resolved) => resolved,
         Err(err) => return Err(print_failure(err)),
     };
-    let config = match site::default_config() {
+    let mut config = match site::default_config() {
         Ok(config) => config,
         Err(err) => return Err(print_failure(err)),
     };
+    config.branch = BRANCH_FLAG.get().cloned();
     match site::TonkSite::open_with(&resolved.site, config).await {
         Ok(site) => Ok((resolved, site)),
         Err(err) => Err(print_error(format!(

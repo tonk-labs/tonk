@@ -51,6 +51,22 @@ impl TestSite {
         Ok(revision.tree.to_string().trim_start_matches('#').to_owned())
     }
 
+    /// Reopen this site from disk.
+    ///
+    /// The checkout is resolved once when a site opens, so a test that
+    /// switches branches and then expects the data verbs to follow has
+    /// to reopen — exactly as a second `tonk` invocation would.
+    pub async fn reopen(&self) -> Result<TonkSite> {
+        TonkSite::open_with(&self.site.root, self.config.clone()).await
+    }
+
+    /// Reopen this site pinned to `branch`, the way `--branch` does.
+    pub async fn reopen_on(&self, branch: &str) -> Result<TonkSite> {
+        let mut config = self.config.clone();
+        config.branch = Some(branch.to_owned());
+        TonkSite::open_with(&self.site.root, config).await
+    }
+
     pub async fn eval_inline(&self, doc: &str) -> Result<eval::Outcome, eval::EvalError> {
         eval::run_against_site(
             &self.site,
@@ -81,6 +97,7 @@ pub fn isolated_config(parent: &std::path::Path) -> Result<SiteConfig> {
         require_account: false,
         provision_account_spaces: false,
         account_store: tonk_cli::space::SpaceStore::at(parent.join("_state")),
+        branch: None,
     })
 }
 

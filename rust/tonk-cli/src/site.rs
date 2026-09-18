@@ -1,16 +1,16 @@
 //! Site open and init.
 //!
 //! A *site* is a directory that contains a single dialog
-//! repository named `main`. Tonk only reads and writes that one
-//! repository on the `main` branch — multi-branch / multi-repo
-//! UX is intentionally not exposed. A site's directory is never
-//! located by walking the current directory: the caller resolves
-//! it through the space registry (see [`crate::space`]) and passes
-//! the path in directly.
+//! repository named `main`. That repository holds any number of
+//! branches; which one a command reads and writes is the site's
+//! *checkout*, resolved once at open time (see [`crate::branch`]).
+//! A site's directory is never located by walking the current
+//! directory: the caller resolves it through the space registry
+//! (see [`crate::space`]) and passes the path in directly.
 //!
 //! [`TonkSite`] is the assembled context every command works
 //! against: profile, operator (rooted at the site directory), the
-//! repository, and the opened `main` branch.
+//! repository, and the branch it is checked out on.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -114,7 +114,10 @@ fn pinned_entity(line: &str) -> Option<&str> {
 /// Name of the dialog repository tonk uses inside `.tonk/`.
 pub const REPO_NAME: &str = "main";
 
-/// The single branch tonk reads and writes against.
+/// The content branch: the one a space's roster, name, and shared
+/// data live on, and the checkout a site has until someone switches
+/// it. Paths that must address the space itself rather than whatever
+/// branch is checked out go through [`TonkSite::content_branch`].
 pub const BRANCH_NAME: &str = "main";
 
 /// Profile name used for the local identity.
@@ -172,6 +175,11 @@ pub struct TonkSite {
     pub reactor: Reactor,
     /// Exact profile-local account and space registry used to open this site.
     pub account_store: crate::space::SpaceStore,
+    /// Branch this site is checked out on — what [`Self::branch`]
+    /// acquires. Resolved once at open time from `--branch`, the
+    /// environment, and the site's own checkout record, so every
+    /// command in one invocation addresses the same branch.
+    checkout: String,
 }
 
 impl TonkSite {
@@ -241,6 +249,7 @@ impl TonkSite {
         .await?;
 
         Ok(Self {
+            checkout: checkout(&root, &config)?,
             root,
             profile,
             operator,
@@ -317,6 +326,7 @@ impl TonkSite {
         .await?;
 
         let site = Self {
+            checkout: checkout(&root, &config)?,
             root,
             profile,
             operator,
@@ -351,20 +361,13 @@ impl TonkSite {
         .map_err(|e| anyhow::anyhow!("failed to seed standard library: {e}"))
     }
 
-    /// Acquire the `main` branch through the reactor, returning a
+    /// Acquire a branch through the reactor, returning a
     /// [`BranchSession`] whose `handle()` is the cached dialog
     /// `Branch`. The first call opens the branch; later calls reuse
     /// the cached handle and its warm node cache.
     ///
     /// Hold the returned session for as long as you use its
     /// `handle()`: the handle borrows from the session.
-    /// Acquire the site's branch, naming the remedy when the data predates
-    /// this build's format.
-    ///
-    /// Every command reaches its data through here, so this is where an
-    /// unreadable old space becomes a sentence someone can act on rather than
-    /// `missing field \`branch\`` from inside block decoding.
-    /// Acquire a named branch on this site's repository.
     ///
     /// Branches hold separate data and are migrated separately, so anything
     /// walking a whole space names each in turn rather than assuming `main`.
@@ -376,12 +379,38 @@ impl TonkSite {
             .await
     }
 
-    /// Acquire the site's `main` branch, naming the remedy when the data
-    /// predates this build's format.
+    /// The branch this site is checked out on — what [`Self::branch`]
+    /// acquires and what `tonk branch` reports as current.
+    pub fn head(&self) -> &str {
+        &self.checkout
+    }
+
+    /// Acquire the branch this site is checked out on, naming the remedy
+    /// when the data predates this build's format.
+    ///
+    /// Every data verb reaches its data through here, so this is where an
+    /// unreadable old space becomes a sentence someone can act on rather
+    /// than `missing field \`branch\`` from inside block decoding.
     pub async fn branch(&self) -> Result<BranchSession, ReactorError> {
+        self.branch_named(&self.checkout).await
+    }
+
+    /// Acquire the space's content branch, whatever the checkout is.
+    ///
+    /// The roster, the repository's own name, its invitations, and the
+    /// authority records that make a space a space all live on
+    /// [`BRANCH_NAME`]. Those are properties of the space, not of the
+    /// branch someone happens to be working on, so the paths that read
+    /// and write them name this branch rather than following the
+    /// checkout.
+    pub async fn content_branch(&self) -> Result<BranchSession, ReactorError> {
+        self.branch_named(BRANCH_NAME).await
+    }
+
+    async fn branch_named(&self, branch: &str) -> Result<BranchSession, ReactorError> {
         self.reactor
             .repository(REPO_NAME)
-            .branch(BRANCH_NAME)
+            .branch(branch)
             .acquire(&self.operator)
             .await
             .map_err(|error| {
@@ -391,13 +420,30 @@ impl TonkSite {
                     // existing variant rather than needing a new one here.
                     return ReactorError::BranchNotFound {
                         repo: REPO_NAME.to_owned(),
-                        branch: BRANCH_NAME.to_owned(),
+                        branch: branch.to_owned(),
                         reason: tonk_account::LEGACY_FORMAT_REMEDY.to_owned(),
                     };
                 }
                 error
             })
     }
+}
+
+/// Resolve the branch a site opens on: `--branch` (carried on the
+/// config), then [`crate::branch::BRANCH_ENV`], then the site's own
+/// checkout record, then [`BRANCH_NAME`].
+///
+/// Resolved once per open rather than per acquire, so a checkout that
+/// changes mid-invocation cannot leave one command writing to two
+/// branches.
+fn checkout(root: &Path, config: &SiteConfig) -> Result<String> {
+    let recorded = crate::branch::read_head(root)?;
+    Ok(crate::branch::resolve(
+        config.branch.as_deref(),
+        crate::branch::branch_from_environment().as_deref(),
+        recorded,
+    )?
+    .name)
 }
 
 /// Every DID a roster row for this installation could be keyed on, most
@@ -539,7 +585,7 @@ pub async fn record_founder_membership_for(site: &TonkSite, member: Did) -> Resu
 
     let membership = Membership::new(member, site.repository.did());
     let session = site
-        .branch()
+        .content_branch()
         .await
         .context("failed to open the membership branch")?;
     session
@@ -912,6 +958,7 @@ async fn mount_delegated_inner(
     )
     .await?;
     Ok(TonkSite {
+        checkout: checkout(root, &config)?,
         root: root.to_path_buf(),
         profile,
         operator,
@@ -1206,6 +1253,9 @@ pub struct SiteConfig {
     pub provision_account_spaces: bool,
     /// Profile-scoped account repository and session state.
     pub account_store: crate::space::SpaceStore,
+    /// Branch named by `--branch`, overriding both the environment and
+    /// the site's own checkout. `None` leaves the checkout in charge.
+    pub branch: Option<String>,
 }
 
 impl SiteConfig {
@@ -1220,6 +1270,7 @@ impl SiteConfig {
             provision_account_spaces: false,
             account_store: crate::space::SpaceStore::open()
                 .context("failed to locate account state")?,
+            branch: None,
         })
     }
 }
@@ -1237,6 +1288,7 @@ pub fn default_config() -> Result<SiteConfig> {
         provision_account_spaces: true,
         account_store: crate::space::SpaceStore::open()
             .context("failed to locate account state")?,
+        branch: None,
     })
 }
 
@@ -1326,7 +1378,7 @@ pub async fn transplant_at_with(
     let (origin, tree) = {
         let site = TonkSite::open_with(&root, config.clone()).await?;
         let session = site
-            .branch()
+            .content_branch()
             .await
             .context("failed to open the main branch")?;
         let revision = session
@@ -1360,7 +1412,7 @@ pub async fn transplant_at_with(
 
     let site = TonkSite::open_with(&root, config).await?;
     let session = site
-        .branch()
+        .content_branch()
         .await
         .context("failed to reopen the main branch")?;
     session

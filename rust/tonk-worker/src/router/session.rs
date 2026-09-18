@@ -278,6 +278,7 @@ async fn stamp_site(
     let Some(RouteTarget::Space { space, rest }) = resolve_path(path) else {
         return;
     };
+    ensure_branch_mounted(tonk, &space.name, &space.branch).await;
     stamp_site_on(
         tonk,
         site,
@@ -290,6 +291,143 @@ async fn stamp_site(
         anchor,
     )
     .await;
+}
+
+/// Give a navigated-to branch somewhere to sync from, so
+/// `/space/{branch}@{key}` shows that branch's data rather than an empty
+/// one.
+///
+/// A space arrives on this device with its content branch wired and
+/// nothing else: the branch names live in the repository, but the
+/// upstream that makes one of them syncable is per-replica, so a branch
+/// somebody created on another device has no tracking entry here. Opening
+/// it would succeed — dialog creates a branch on first open — and show
+/// nothing, forever, because the sweep only visits branches that have an
+/// upstream.
+///
+/// So the first navigation to such a branch wires it to the same remote
+/// the content branch uses, under the same name. That is the only
+/// correspondence there is to guess, and it is the one `tonk branch
+/// set-upstream <remote>` writes by default. From then on the ordinary
+/// sweep keeps it current.
+///
+/// Best-effort throughout: a space with no remote is local-only and has
+/// nothing to wire, and a failure here leaves the branch exactly as
+/// empty as it already was.
+async fn ensure_branch_mounted(tonk: &crate::worker::TonkState, repo: &str, branch: &str) {
+    use super::repository::{
+        BranchConfiguration, RepositoryConfiguration, build_repository_info, ensure_remote_config,
+    };
+    use dialog_repository::RepositoryExt as _;
+
+    if branch == tonk_schema::DEFAULT_BRANCH {
+        return;
+    }
+
+    let repository = match tonk
+        .profile
+        .repository(repo)
+        .load()
+        .perform(&tonk.operator)
+        .await
+    {
+        Ok(repository) => repository,
+        // Not replicated here yet. The route's own mount path handles
+        // that; there is no branch to wire until it has.
+        Err(_) => return,
+    };
+
+    // The cheap check first: this runs on every navigation, and a branch
+    // that already tracks something needs nothing. Reading one cell beats
+    // assembling the whole repository view.
+    match repository
+        .branch(branch)
+        .open()
+        .perform(&tonk.operator)
+        .await
+    {
+        Ok(opened) if opened.upstream().is_some() => return,
+        Ok(_) => {}
+        Err(error) => {
+            tonk_common::log!("ensure_branch_mounted: cannot open {repo}/{branch}: {error}");
+            return;
+        }
+    }
+
+    // Only wire a branch somebody actually created. A space URL is
+    // hand-editable, so without this every mistyped branch would leave a
+    // permanent tracking entry the sweep visits forever to fetch nothing.
+    // The meta branch carries a record per replica that created a branch,
+    // and meta syncs, so "somebody created it" is a question the local
+    // data can answer.
+    if !branch_is_known(tonk, &repository, branch).await {
+        return;
+    }
+
+    let info = build_repository_info(tonk, repo, &repository).await;
+    let Some(upstream) = info
+        .branch
+        .get(tonk_schema::DEFAULT_BRANCH)
+        .and_then(|content| content.upstream.as_ref())
+    else {
+        return;
+    };
+    let Some(remote) = info.remote.get(&upstream.remote) else {
+        return;
+    };
+
+    let configuration = RepositoryConfiguration::default()
+        .remote(upstream.remote.clone(), remote.clone())
+        .branch(
+            branch.to_owned(),
+            BranchConfiguration::default().upstream(upstream.remote.clone(), branch.to_owned()),
+        );
+    if let Err(error) = ensure_remote_config(tonk, &repository, repo, &configuration).await {
+        tonk_common::log!("ensure_branch_mounted: cannot wire {repo}/{branch}: {error}");
+    }
+}
+
+/// Whether any replica of this repository has recorded a branch called
+/// `name` on the meta branch.
+///
+/// Unscoped by origin on purpose: the point is that *somebody* created
+/// the branch, on this device or another, and their record reached here.
+/// A `Remote` shares the `(origin, name)` attribute pair a `Branch` is
+/// matched on, so a remote's own name can turn up as a spurious hit —
+/// harmless here, where the answer only gates wiring a branch the URL
+/// already named.
+async fn branch_is_known<C>(
+    tonk: &crate::worker::TonkState,
+    repository: &dialog_repository::Repository<C>,
+    name: &str,
+) -> bool
+where
+    C: dialog_varsig::Principal + Clone,
+{
+    use dialog_query::{Output as _, Query, Term};
+    use tonk_schema::Branch as MetaBranch;
+
+    let meta = match repository
+        .branch(super::repository::META_BRANCH)
+        .open()
+        .perform(&tonk.operator)
+        .await
+    {
+        Ok(meta) => meta,
+        Err(_) => return false,
+    };
+    let rows: Vec<MetaBranch> = meta
+        .query()
+        .select(Query::<MetaBranch> {
+            this: Term::var("this"),
+            name: Term::from(tonk_schema::domain::branch::Name(name.to_owned())),
+            origin: Term::var("origin"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .unwrap_or_default();
+    !rows.is_empty()
 }
 
 /// Stamp a site on an explicit `(repo, branch)` — the branch-generic core,

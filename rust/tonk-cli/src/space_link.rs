@@ -235,7 +235,7 @@ async fn publish(
     .await?;
     publication_stage(PublicationStage::Upstream, ensure_upstream(&site, &remote)).await?;
     publication_stage(PublicationStage::Push, async {
-        crate::sync::push(&site).await?;
+        crate::sync::push_content(&site).await?;
         Ok(())
     })
     .await?;
@@ -328,7 +328,7 @@ async fn ensure_upstream(site: &crate::site::TonkSite, expected_remote: &str) ->
 
 async fn configured_upstream(site: &crate::site::TonkSite) -> Result<Option<Upstream>> {
     let session = site
-        .branch()
+        .content_branch()
         .await
         .context("failed to inspect the space's upstream")?;
     Ok(session.handle().upstream())
@@ -458,7 +458,7 @@ async fn preflight(
 /// meta branch, where CLI releases through this one wrote them.
 async fn has_invitations(site: &crate::site::TonkSite) -> Result<bool> {
     let content = site
-        .branch()
+        .content_branch()
         .await
         .context("failed to inspect the space's shares")?;
     if !invitations_on(site, content.handle()).await?.is_empty() {

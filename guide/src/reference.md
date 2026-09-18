@@ -111,3 +111,11 @@ recorded content type.
 | `tonk guide`  | Print the full notation reference.              |
 | `tonk schema` | List the concepts on the current branch.        |
 | `tonk join …` | Join a space from an invite link.               |
+| `tonk branch` | List the space's branches; create, switch, merge, and delete them. |
+
+A space is one repository and holds many branches. `tonk branch` marks the
+*checkout* — the branch every other command reads and writes — and
+`tonk branch switch <name>` moves it; `--branch` and `TONK_BRANCH` override it
+for one invocation. In the browser a space URL carries the branch in front of
+the space, so `/space/{branch}@{space}` opens that branch and a bare
+`/space/{space}` opens `main`. Run `tonk help branches` for the whole story.

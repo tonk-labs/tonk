@@ -1039,7 +1039,7 @@ pub async fn create(
     // Adoption preserves the existing repository's name instead of treating
     // the local registry alias as a rename request.
     if !adopted {
-        site.branch()
+        site.content_branch()
             .await
             .map_err(|e| SpaceError::Init(format!("failed to open main branch: {e}")))?
             .handle()

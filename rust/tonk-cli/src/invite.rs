@@ -224,16 +224,16 @@ async fn mint_for(
     // best-effort; the push error is authoritative.
     let has_upstream = {
         let session = site
-            .branch()
+            .content_branch()
             .await
             .map_err(|e| InviteError::Io(format!("acquire branch: {e}")))?;
         session.handle().upstream().is_some()
     };
     if has_upstream {
-        if let Err(e) = sync::pull(site).await {
+        if let Err(e) = sync::pull_content(site).await {
             eprintln!("warning: pull before invite failed: {e}");
         }
-        sync::push(site)
+        sync::push_content(site)
             .await
             .map_err(|e| InviteError::Io(format!("push before invite failed: {e}")))?;
     }
@@ -513,7 +513,7 @@ pub async fn claim(
         // (or their agent) start asserting. Best-effort: an unreachable remote
         // shouldn't fail an otherwise-complete join — the user can retry with
         // `tonk pull` — but a real sync error is worth surfacing.
-        match sync::pull(&joined).await {
+        match sync::pull_content(&joined).await {
             Ok(_) => synced = true,
             Err(e) => eprintln!(
                 "warning: joined, but the initial pull from '{DEFAULT_REMOTE}' failed: {e}\n\
@@ -530,7 +530,7 @@ pub async fn claim(
     // that otherwise completed, and the next `tonk push` carries the row.
     // Only when the pull succeeded — pushing onto an upstream this replica
     // never reconciled with is how a joiner diverges.
-    if synced && let Err(e) = sync::push(&joined).await {
+    if synced && let Err(e) = sync::push_content(&joined).await {
         eprintln!(
             "warning: joined, but publishing this device's roster row failed: {e}\n\
              run `tonk push` so the space's other members can see you"
@@ -578,7 +578,7 @@ pub async fn claim(
 /// can revoke it without touching the invite everyone else used. Best
 /// effort: the join is complete once the authority is saved locally.
 async fn retain_claim_authority(joined: &TonkSite, chain: dialog_ucan_core::DelegationChain) {
-    let session = match joined.branch().await {
+    let session = match joined.content_branch().await {
         Ok(session) => session,
         Err(error) => {
             eprintln!("warning: claimed chain not retained on the space: {error}");
@@ -610,7 +610,7 @@ async fn record_claim_roster(
 
     let membership = Membership::new(member.clone(), subject.clone());
     let session = joined
-        .branch()
+        .content_branch()
         .await
         .map_err(|e| InviteError::Io(format!("failed to open the roster branch: {e}")))?;
     let branch = session.handle();

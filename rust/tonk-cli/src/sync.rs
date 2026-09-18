@@ -1,5 +1,5 @@
-//! `tonk push` / `tonk pull` — fast-forward sync between
-//! `main` and its configured upstream.
+//! `tonk push` / `tonk pull` — fast-forward sync between the
+//! checked-out branch and its configured upstream.
 //!
 //! Wraps dialog's `Branch::push()` / `Branch::pull()` with a
 //! tonk-flavored error type that surfaces the
@@ -183,20 +183,36 @@ fn authorization<'a>(error: &'a (dyn std::error::Error + 'static)) -> Option<&'a
     None
 }
 
-/// Push the site's main branch to its upstream.
+/// Push the checked-out branch to its upstream.
 ///
 /// `OK(outcome)` always means the operation completed; consult
 /// `outcome.advanced` to learn whether anything actually went
 /// over the wire.
 pub async fn push(site: &TonkSite) -> Result<SyncOutcome, SyncError> {
+    push_branch(site, site.head()).await
+}
+
+/// Push the space's content branch, whatever is checked out.
+///
+/// The share paths use this: an invite is a promise that the remote
+/// holds the space's data, and the space's data is on its content
+/// branch regardless of which branch the person minting the link
+/// happens to be working on.
+pub async fn push_content(site: &TonkSite) -> Result<SyncOutcome, SyncError> {
+    push_branch(site, crate::site::BRANCH_NAME).await
+}
+
+/// Push one named branch, plus the meta branch when it tracks
+/// something.
+async fn push_branch(site: &TonkSite, name: &str) -> Result<SyncOutcome, SyncError> {
     let session = site
-        .branch()
+        .named_branch(name)
         .await
-        .map_err(|e| SyncError::Io(format!("acquire branch: {e}")))?;
+        .map_err(|e| SyncError::Io(format!("acquire branch '{name}': {e}")))?;
     let branch = session.handle();
     let before = branch.revision();
     let upstream_after = run_remote(
-        "push main",
+        &format!("push {name}"),
         upstream_target(branch),
         branch.push().perform(&site.operator),
         map_push_error,
@@ -225,16 +241,28 @@ pub async fn push(site: &TonkSite) -> Result<SyncOutcome, SyncError> {
     })
 }
 
-/// Pull from the site's upstream into the main branch.
+/// Pull the checked-out branch's upstream into it.
 pub async fn pull(site: &TonkSite) -> Result<SyncOutcome, SyncError> {
+    pull_branch(site, site.head()).await
+}
+
+/// Pull the space's content branch, whatever is checked out — the read
+/// half of [`push_content`].
+pub async fn pull_content(site: &TonkSite) -> Result<SyncOutcome, SyncError> {
+    pull_branch(site, crate::site::BRANCH_NAME).await
+}
+
+/// Pull one named branch, plus the meta branch when it tracks
+/// something.
+async fn pull_branch(site: &TonkSite, name: &str) -> Result<SyncOutcome, SyncError> {
     let session = site
-        .branch()
+        .named_branch(name)
         .await
-        .map_err(|e| SyncError::Io(format!("acquire branch: {e}")))?;
+        .map_err(|e| SyncError::Io(format!("acquire branch '{name}': {e}")))?;
     let branch = session.handle();
     let before = branch.revision();
     let merged = run_remote(
-        "pull main",
+        &format!("pull {name}"),
         upstream_target(branch),
         branch.pull().perform(&site.operator),
         map_pull_error,
@@ -398,7 +426,7 @@ fn map_fetch_error(error: FetchError) -> SyncError {
 }
 
 async fn run_remote<T, E>(
-    operation: &'static str,
+    operation: impl Into<String>,
     target: String,
     future: impl std::future::Future<Output = Result<T, E>>,
     map_operation: impl FnOnce(E) -> SyncError,

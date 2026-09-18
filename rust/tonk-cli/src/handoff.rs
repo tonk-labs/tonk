@@ -162,11 +162,11 @@ pub async fn record_connection(site: &TonkSite) -> Result<eval::Outcome, eval::E
 /// Safe to repeat after a caller timeout: the receipt has a stable entity and value.
 pub async fn confirm_connection(site: &TonkSite) -> anyhow::Result<()> {
     use anyhow::Context as _;
-    crate::sync::pull(site)
+    crate::sync::pull_content(site)
         .await
         .context("space joined, but connection not confirmed: pull failed")?;
     record_connection(site).await?;
-    crate::sync::push(site)
+    crate::sync::push_content(site)
         .await
         .context("connection receipt is local; retry connect on this space to publish it")?;
     Ok(())
@@ -180,7 +180,7 @@ pub async fn synced_name(
     use anyhow::Context as _;
     use dialog_query::{Output as _, Query, Term};
     use tonk_schema::{RepositoryName, prelude::DidExt as _};
-    let branch = site.branch().await?;
+    let branch = site.content_branch().await?;
     let rows = branch
         .handle()
         .query()

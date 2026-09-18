@@ -59,8 +59,9 @@ pub struct SpaceContext {
     pub site: String,
     /// `flag`, `env`, or `directory <path>`.
     pub selected_via: String,
-    /// Tonk's writable branch.
-    pub branch: &'static str,
+    /// The branch this invocation reads and writes — the site's
+    /// checkout, which `--branch` and `TONK_BRANCH` can override.
+    pub branch: String,
     /// Explicit reminder that changing directory cannot change Tonk data.
     pub cwd_selects_space: bool,
 }
@@ -285,7 +286,7 @@ pub async fn inspect(
         schema_version: SCHEMA_VERSION,
         sync,
         account,
-        space: SpaceContext::new(resolved),
+        space: SpaceContext::new(resolved, site.head()),
         agents: space_agents,
         concepts,
         empty_space_workflow: vec![
@@ -348,13 +349,14 @@ pub fn sync_state_gloss(state: ContextSyncState) -> &'static str {
 }
 
 impl SpaceContext {
-    /// Build the selected-space section from one resolution.
-    pub fn new(resolved: &Resolved) -> Self {
+    /// Build the selected-space section from one resolution and the
+    /// branch the opened site is checked out on.
+    pub fn new(resolved: &Resolved, branch: &str) -> Self {
         Self {
             name: resolved.name.clone(),
             site: resolved.site.display().to_string(),
             selected_via: resolved.source.to_string(),
-            branch: crate::site::BRANCH_NAME,
+            branch: branch.to_owned(),
             cwd_selects_space: false,
         }
     }

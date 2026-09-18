@@ -8,6 +8,8 @@
 //! paths the CLI does.
 //!
 //! - [`site`] — repo+branch open/init; resolved via the space registry.
+//! - [`branch`] — the repository's branches: create, list, delete,
+//!   switch, merge, and which one a site is checked out on.
 //! - [`space`] — space registry: named spaces, canonical storage, selection.
 //! - [`account_spaces`] — account inventory, pull, and backup reconciliation.
 //! - [`recovery`] — whether a space's data exists anywhere but this
@@ -42,6 +44,7 @@ pub mod agents;
 pub mod authoring;
 pub mod auto_sync;
 pub mod blob;
+pub mod branch;
 /// A loopback callback server for browser authorization ceremonies.
 pub mod callback;
 pub mod context;

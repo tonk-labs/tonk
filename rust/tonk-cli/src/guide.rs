@@ -6,6 +6,8 @@ pub const GLOSSARY: &str = include_str!("guide-glossary.md");
 pub const NOTATION: &str = include_str!("../../tonk-notation/guide.md");
 /// Space selection and binding guide.
 pub const SPACES: &str = include_str!("guide-spaces.md");
+/// Branch management guide.
+pub const BRANCHES: &str = include_str!("guide-branches.md");
 /// Empty-space workflow tutorial.
 pub const TUTORIAL: &str = include_str!("guide-tutorial.md");
 /// Remotes and synchronization guide.
@@ -28,6 +30,7 @@ pub const TOPICS: &[&str] = &[
     "glossary",
     "notation",
     "spaces",
+    "branches",
     "tutorial",
     "sync",
     "views",
@@ -44,6 +47,7 @@ pub fn description(name: &str) -> Option<&'static str> {
         "glossary" => Some("The words Tonk uses for facts, concepts, and writes"),
         "notation" => Some("Notation syntax, queries, assertions, names, and joins"),
         "spaces" => Some("Space selection, directory bindings, and resolution order"),
+        "branches" => Some("Branches, the checkout, merging, and branch URLs"),
         "tutorial" => Some("The discover, define, write, view, and share loop"),
         "sync" => Some("Upstreams, remotes, automatic sync, invites, and joins"),
         "views" => Some("Templates, view resolution, and web components"),
@@ -62,6 +66,7 @@ pub fn topic(name: &str) -> Option<&'static str> {
         "glossary" => Some(GLOSSARY),
         "notation" => Some(NOTATION),
         "spaces" => Some(SPACES),
+        "branches" => Some(BRANCHES),
         "tutorial" => Some(TUTORIAL),
         "sync" => Some(SYNC),
         "views" => Some(VIEWS),
@@ -81,6 +86,8 @@ pub const GUIDE: &str = concat!(
     include_str!("../../tonk-notation/guide.md"),
     "\n",
     include_str!("guide-spaces.md"),
+    "\n",
+    include_str!("guide-branches.md"),
     "\n",
     include_str!("guide-tutorial.md"),
     "\n",

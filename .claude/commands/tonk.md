@@ -77,10 +77,33 @@ tonk eval -c '…' --dry-run    # preview without committing
 `tonk guide notation` documents the grammar; `tonk guide views` covers
 `view!:` authoring. A bare positional is a FILE PATH, never inline text.
 
-## Sync and sharing
+## Branches
+
+A space is one repository holding many branches. The *checkout* is the branch
+every other command reads and writes; `tonk branch` marks it with `*`. Two
+branches share no facts until one is merged into the other.
 
 ```bash
-tonk push | tonk pull                       # sync main with its upstream
+tonk branch                                 # list; * marks the checkout
+tonk branch create <name> [--revision <REV>]# REV is another branch, or <remote>/<branch>
+tonk branch switch <name>                   # move the checkout (-c creates it first)
+tonk branch merge <name>                    # merge <name> into the checkout
+tonk branch set-upstream <remote>[/<branch>]# give this branch somewhere to push
+tonk branch delete <name> --yes             # drop the branch and its head
+tonk --branch <name> query <concept>        # address one branch without switching
+```
+
+Automation should pass `--branch` or set `TONK_BRANCH` rather than relying on a
+checkout it did not write. `main` is the content branch (roster, space name,
+invites); `meta` is tonk's own and is listed but never checked out, merged, or
+deleted. In the web UI, `/space/{branch}@{space}` opens that branch.
+
+## Sync and sharing
+
+`push` / `pull` move the CHECKED-OUT branch, not necessarily `main`.
+
+```bash
+tonk push | tonk pull                       # sync the checkout with its upstream
 tonk remote add <name> <url>                # register a remote; the first one becomes main's upstream
 tonk remote set-upstream <name>             # re-point which remote main tracks
 tonk invite                                 # invite URL on the resolved remote's own origin (pushes first)

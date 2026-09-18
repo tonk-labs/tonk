@@ -69,12 +69,13 @@ pub struct AddOutcome {
 /// Outcome of [`set_upstream`].
 #[derive(Debug)]
 pub struct UpstreamOutcome {
-    /// Local branch whose upstream got rewritten (always
-    /// [`crate::site::BRANCH_NAME`] for tonk today).
+    /// Local branch whose upstream got rewritten.
     pub local_branch: String,
-    /// Remote name the upstream points at.
+    /// Remote name the upstream points at. Empty when the new upstream
+    /// is another branch in this same repository, which names no remote.
     pub remote: String,
-    /// Branch on the remote the local branch now tracks.
+    /// Branch the local branch now tracks — on `remote` when one is
+    /// named, in this repository otherwise.
     pub remote_branch: String,
 }
 
@@ -253,7 +254,7 @@ async fn record_metadata(
 /// auto-sync only once an upstream exists).
 pub async fn upstream_configured(site: &TonkSite) -> Result<bool, RemoteError> {
     let session = site
-        .branch()
+        .content_branch()
         .await
         .map_err(|e| RemoteError::Io(format!("failed to acquire branch: {e}")))?;
     Ok(session.handle().upstream().is_some())
@@ -271,7 +272,7 @@ pub async fn upstream_configured(site: &TonkSite) -> Result<bool, RemoteError> {
 /// wires one, and there is no remote to compare against if it did.
 pub async fn upstream_remote(site: &TonkSite) -> Result<Option<String>, RemoteError> {
     let session = site
-        .branch()
+        .content_branch()
         .await
         .map_err(|e| RemoteError::Io(format!("failed to acquire branch: {e}")))?;
     Ok(match session.handle().upstream() {
@@ -280,12 +281,34 @@ pub async fn upstream_remote(site: &TonkSite) -> Result<Option<String>, RemoteEr
     })
 }
 
-/// Set the local `main` branch's upstream to `<remote>/main`,
-/// writing the corresponding `TrackingBranch` and remote-side
-/// `Branch` concepts on the meta branch.
+/// Set the content branch's upstream to `<remote>/main`, writing the
+/// corresponding `TrackingBranch` and remote-side `Branch` concepts on
+/// the meta branch.
+///
+/// This is what `tonk remote set-upstream` does, and it deliberately
+/// names the content branch rather than the checkout: a remote is the
+/// space's home, and wiring it is a property of the space. Point some
+/// other branch at a remote with `tonk branch set-upstream`, which calls
+/// [`set_upstream_for`].
 pub async fn set_upstream(
     site: &TonkSite,
     remote_name: &str,
+) -> Result<UpstreamOutcome, RemoteError> {
+    set_upstream_for(site, site::BRANCH_NAME, remote_name, site::BRANCH_NAME).await
+}
+
+/// Point `local_branch` at `<remote_name>/<remote_branch>`.
+///
+/// The dialog-side upstream cell and the meta-branch records are written
+/// together: the cell is what push and pull read, and the records are
+/// what the browser-side worker reads to decide which branches to sync.
+/// A branch wired here is therefore one the web UI will keep up to date
+/// when it is navigated to.
+pub async fn set_upstream_for(
+    site: &TonkSite,
+    local_branch: &str,
+    remote_name: &str,
+    remote_branch: &str,
 ) -> Result<UpstreamOutcome, RemoteError> {
     // Find the remote's meta record so we have the address +
     // subject for the meta-side TrackingBranch write.
@@ -293,8 +316,8 @@ pub async fn set_upstream(
         .await?
         .ok_or_else(|| RemoteError::UnknownRemote(remote_name.to_owned()))?;
 
-    // Dialog side: load the remote, open its `main` branch,
-    // wire the local `main` to track it.
+    // Dialog side: load the remote, open the branch being tracked, and
+    // wire the local branch to it.
     let remote_handle = site
         .repository
         .remote(remote_name)
@@ -304,21 +327,20 @@ pub async fn set_upstream(
         .map_err(|e| RemoteError::Io(format!("failed to load remote '{remote_name}': {e}")))?;
 
     let upstream_branch = remote_handle
-        .branch(site::BRANCH_NAME)
+        .branch(remote_branch)
         .open()
         .perform(&site.operator)
         .await
         .map_err(|e| {
             RemoteError::Io(format!(
-                "failed to open remote branch '{remote_name}/{branch}': {e}",
-                branch = site::BRANCH_NAME,
+                "failed to open remote branch '{remote_name}/{remote_branch}': {e}",
             ))
         })?;
 
     let session = site
-        .branch()
+        .named_branch(local_branch)
         .await
-        .map_err(|e| RemoteError::Io(format!("failed to acquire branch: {e}")))?;
+        .map_err(|e| RemoteError::Io(format!("failed to acquire branch '{local_branch}': {e}")))?;
     session
         .handle()
         .set_upstream(&upstream_branch)
@@ -327,20 +349,24 @@ pub async fn set_upstream(
         .map_err(|e| RemoteError::Io(format!("failed to set upstream: {e}")))?;
 
     // Membership, roles, invitations, and replica metadata live on `meta`.
-    // Track that branch beside `main` so a verified pull cannot observe
-    // content without the signed relationship that authorizes this profile.
-    let remote_meta = remote_handle
-        .branch(META_BRANCH)
-        .open()
-        .perform(&site.operator)
-        .await
-        .map_err(|e| RemoteError::Io(format!("failed to open remote meta branch: {e}")))?;
-    let local_meta = open_meta(site).await?;
-    local_meta
-        .set_upstream(&remote_meta)
-        .perform(&site.operator)
-        .await
-        .map_err(|e| RemoteError::Io(format!("failed to set meta upstream: {e}")))?;
+    // Track that branch beside the content branch so a verified pull cannot
+    // observe content without the signed relationship that authorizes this
+    // profile. Only the content branch carries that relationship, so only
+    // wiring it drags `meta` along.
+    if local_branch == site::BRANCH_NAME {
+        let remote_meta = remote_handle
+            .branch(META_BRANCH)
+            .open()
+            .perform(&site.operator)
+            .await
+            .map_err(|e| RemoteError::Io(format!("failed to open remote meta branch: {e}")))?;
+        let local_meta = open_meta(site).await?;
+        local_meta
+            .set_upstream(&remote_meta)
+            .perform(&site.operator)
+            .await
+            .map_err(|e| RemoteError::Io(format!("failed to set meta upstream: {e}")))?;
+    }
 
     // Meta side: rebuild the Remote concept (deterministic from
     // replica + name + subject + address) so we can hang a
@@ -350,10 +376,11 @@ pub async fn set_upstream(
     let replica = local_replica(site);
     let address = SiteAddress::from(UcanAddress::new(&remote_record.endpoint));
     let remote_concept = replica.remote(remote_name, remote_record.subject.clone(), &address);
-    let tracked = remote_concept.branch(site::BRANCH_NAME);
-    let tracking = replica.branch(site::BRANCH_NAME).set_upstream(&tracked);
+    let tracked = remote_concept.branch(remote_branch);
+    let tracking = replica.branch(local_branch).set_upstream(&tracked);
 
     meta.transaction()
+        .assert(replica.branch(local_branch))
         .assert(tracked)
         .assert(tracking)
         .commit()
@@ -363,9 +390,9 @@ pub async fn set_upstream(
         .map_err(|e| RemoteError::Io(format!("failed to write tracking-branch records: {e}")))?;
 
     Ok(UpstreamOutcome {
-        local_branch: site::BRANCH_NAME.to_owned(),
+        local_branch: local_branch.to_owned(),
         remote: remote_name.to_owned(),
-        remote_branch: site::BRANCH_NAME.to_owned(),
+        remote_branch: remote_branch.to_owned(),
     })
 }
 

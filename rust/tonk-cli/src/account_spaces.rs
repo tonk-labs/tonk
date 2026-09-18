@@ -379,7 +379,7 @@ pub async fn pull(
     remote::set_upstream(&site, DEFAULT_REMOTE)
         .await
         .context("failed to set the account space upstream")?;
-    crate::sync::pull(&site)
+    crate::sync::pull_content(&site)
         .await
         .with_context(|| format!("initial pull from '{DEFAULT_REMOTE}' failed"))?;
     // The pulled replica must carry a roster row this account can claim —
@@ -430,7 +430,7 @@ fn register_published(store: &SpaceStore, name: &str, canonical_target: &Path) -
 /// one has landed. Shared with the invite mint, which carries it on the
 /// link so the claimer can label the space before content syncs.
 pub(crate) async fn repository_name(site: &TonkSite) -> Option<String> {
-    let branch = site.branch().await.ok()?;
+    let branch = site.content_branch().await.ok()?;
     branch
         .handle()
         .query()
