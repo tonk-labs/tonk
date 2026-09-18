@@ -194,3 +194,91 @@ async fn a_put_signed_in_one_peer_is_performed_in_another() -> Result<()> {
     let _ = tokio::time::timeout(Duration::from_secs(5), serving).await;
     Ok(())
 }
+
+/// A peer describing itself over a data channel.
+///
+/// The smallest whole exchange the protocol supports — nothing out, a
+/// typed answer back — and the one a client makes first, so it is worth
+/// proving over the real transport rather than only over a loopback.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_peer_says_who_it_is_over_a_data_channel() -> Result<()> {
+    let (left, right) = pair().await?;
+
+    let dialer_rtc = WebRtcTransport::new(b"dialer");
+    let listener_rtc = WebRtcTransport::new(b"listener");
+
+    let dialing = datagram_channel(&left, "dialog").await?;
+    let (accepted, inbound) = tokio::sync::oneshot::channel();
+    let accepted = Arc::new(Mutex::new(Some(accepted)));
+    right.on_data_channel(Box::new(move |channel: Arc<RTCDataChannel>| {
+        let accepted = accepted.clone();
+        Box::pin(async move {
+            if channel.label() == "dialog"
+                && let Some(tx) = accepted.lock().ok().and_then(|mut slot| slot.take())
+            {
+                let _ = tx.send(channel);
+            }
+        })
+    }));
+
+    let accepting: Arc<RTCDataChannel> = tokio::time::timeout(PATIENCE, inbound).await??;
+    opened(&dialing).await?;
+
+    attach(&dialer_rtc, listener_rtc.local_addr(), dialing);
+    attach(&listener_rtc, dialer_rtc.local_addr(), accepting);
+
+    let listener_key = SecretKey::generate();
+    let listener_id = listener_key.public();
+    let listening = Endpoint::builder(presets::Empty)
+        .crypto_provider(iroh::tls::default_provider())
+        .secret_key(listener_key)
+        .alpns(vec![ALPN.to_vec()])
+        .add_custom_transport(listener_rtc.clone())
+        .bind()
+        .await?;
+    let dialing = Endpoint::builder(presets::Empty)
+        .crypto_provider(iroh::tls::default_provider())
+        .secret_key(SecretKey::generate())
+        .add_custom_transport(dialer_rtc.clone())
+        .bind()
+        .await?;
+
+    let responder = Arc::new(Responder::new(
+        Volatile::default(),
+        CachingResolver::new(WebResolver::new()),
+    ));
+    let serving = tokio::spawn(accept(listening.clone(), responder.clone()));
+
+    let site = Iroh::new(IrohChannel::new(dialing.clone()));
+    let peer = IrohAddress::from(EndpointAddr {
+        id: listener_id,
+        addrs: [TransportAddr::Custom(listener_rtc.local_addr())]
+            .into_iter()
+            .collect(),
+    });
+
+    let (operator, profile) = test_operator_with_profile().await;
+    let subject = profile.did();
+    let hello = Subject::from(subject.clone())
+        .attenuate(Use)
+        .attenuate(dialog_effects::peer::Peer)
+        .attenuate(dialog_effects::peer::Hello);
+
+    let fork: IrohFork<dialog_effects::peer::Hello> = Fork::<Iroh, _>::new(hello, peer).into();
+    let invocation = fork.authorize(&operator).await.expect("authorized");
+    let greeting = tokio::time::timeout(
+        PATIENCE,
+        Provider::<ForkInvocation<Iroh, dialog_effects::peer::Hello>>::execute(&site, invocation),
+    )
+    .await?
+    .expect("the peer describes itself");
+
+    assert_eq!(greeting.subject, subject);
+    assert!(greeting.profile.to_string().starts_with("did:"));
+    assert!(greeting.operator.to_string().starts_with("did:"));
+
+    dialing.close().await;
+    listening.close().await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), serving).await;
+    Ok(())
+}
