@@ -507,10 +507,14 @@ mod tests {
     /// own, as a device that never rotated would use.
     async fn operator(registry: &Registry, storage: &Storage<DefaultSpace>) -> DefaultOperator {
         let profile = registry.open_self(storage).await.unwrap();
-        crate::session::open(&profile, storage, &Default::default())
-            .await
-            .unwrap()
-            .operator
+        crate::session::open(
+            &profile,
+            storage,
+            &dialog_iroh_remote::site::Iroh::default(),
+        )
+        .await
+        .unwrap()
+        .operator
     }
 
     #[dialog_common::test]
@@ -616,10 +620,14 @@ mod tests {
         // A rotated device reads the roster through the profile it now
         // signs as, not the registry's key.
         let (_, created) = registry.create_profile(&storage).await.unwrap();
-        let other = crate::session::open(&created, &storage, &Default::default())
-            .await
-            .unwrap()
-            .operator;
+        let other = crate::session::open(
+            &created,
+            &storage,
+            &dialog_iroh_remote::site::Iroh::default(),
+        )
+        .await
+        .unwrap()
+        .operator;
         assert_eq!(
             registry.read_roster(&storage, &other).await.unwrap(),
             vec![entry(&profile_did(1).await, "one")]

@@ -24,8 +24,6 @@
 //! drain's rotation heals. Service-worker lifetimes make that window
 //! rare; revisit only if it is ever observed.
 
-use std::sync::Arc;
-
 use dialog_capability::{Provider, Subject};
 use dialog_operator::{DeriveOperator, Operator, Profile};
 use dialog_storage::provider::space::SpaceProvider;
@@ -69,7 +67,7 @@ pub struct Session<S: Clone = DefaultSpace> {
 pub async fn open<S>(
     profile: &Profile,
     storage: &Storage<S>,
-    reach: &Arc<crate::router::cli::Lazy>,
+    iroh: &dialog_iroh_remote::site::Iroh,
 ) -> Result<Session<S>, TonkWorkerError>
 where
     S: SpaceProvider + Clone + 'static,
@@ -77,7 +75,7 @@ where
         + Provider<dialog_effects::blob::Write>
         + Provider<dialog_effects::blob::Import>,
 {
-    rotate(profile, storage, reach).await
+    rotate(profile, storage, iroh).await
 }
 
 /// Create a fresh operator and bounded in-memory profile grant.
@@ -85,7 +83,7 @@ where
 pub async fn rotate<S>(
     profile: &Profile,
     storage: &Storage<S>,
-    reach: &Arc<crate::router::cli::Lazy>,
+    iroh: &dialog_iroh_remote::site::Iroh,
 ) -> Result<Session<S>, TonkWorkerError>
 where
     S: SpaceProvider + Clone + 'static,
@@ -104,13 +102,15 @@ where
     // The network goes on every operator this worker builds, renewals
     // included: a session that rotated without it would keep its
     // upstreams and silently lose the one reached through a page.
+    //
+    // The *same* site each time, not a fresh one. Cloning shares the
+    // link, so a rotation keeps whatever connection is up rather than
+    // making the next exchange rebuild one — the session key changes,
+    // the carrier under it does not.
     let operator = profile
         .derive(context)
         .allow_until(Subject::any(), expiration)
-        .network(
-            dialog_repository::RemoteSite::default()
-                .connecting_iroh(crate::router::cli::CarrierConnect::new(reach.clone())),
-        )
+        .network(dialog_repository::RemoteSite::default().sharing_iroh(iroh.clone()))
         .build(storage.clone())
         .await
         .map_err(|error| {
@@ -175,7 +175,13 @@ mod tests {
         let (storage, profile) = scratch().await;
         let before = now();
 
-        let session = open(&profile, &storage, &Default::default()).await.unwrap();
+        let session = open(
+            &profile,
+            &storage,
+            &dialog_iroh_remote::site::Iroh::default(),
+        )
+        .await
+        .unwrap();
 
         assert!(session.expires_at >= before + SESSION_TTL_SECONDS);
         assert!(session.expires_at <= now() + SESSION_TTL_SECONDS);
@@ -185,8 +191,20 @@ mod tests {
     async fn it_creates_distinct_sessions_across_opens() {
         let (storage, profile) = scratch().await;
 
-        let first = open(&profile, &storage, &Default::default()).await.unwrap();
-        let second = open(&profile, &storage, &Default::default()).await.unwrap();
+        let first = open(
+            &profile,
+            &storage,
+            &dialog_iroh_remote::site::Iroh::default(),
+        )
+        .await
+        .unwrap();
+        let second = open(
+            &profile,
+            &storage,
+            &dialog_iroh_remote::site::Iroh::default(),
+        )
+        .await
+        .unwrap();
 
         assert_ne!(first.operator.did(), second.operator.did());
         assert_eq!(first.operator.profile_did(), profile.did());
@@ -245,12 +263,30 @@ mod tests {
     #[dialog_common::test]
     async fn it_authorizes_replacement_sessions_without_committing() {
         let (storage, profile) = scratch().await;
-        let setup = open(&profile, &storage, &Default::default()).await.unwrap();
+        let setup = open(
+            &profile,
+            &storage,
+            &dialog_iroh_remote::site::Iroh::default(),
+        )
+        .await
+        .unwrap();
         let space = retain_space(&profile, &setup.operator).await;
         let revision = access_revision(&profile, &setup.operator).await;
-        let first = open(&profile, &storage, &Default::default()).await.unwrap();
+        let first = open(
+            &profile,
+            &storage,
+            &dialog_iroh_remote::site::Iroh::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(access_revision(&profile, &first.operator).await, revision);
-        let second = open(&profile, &storage, &Default::default()).await.unwrap();
+        let second = open(
+            &profile,
+            &storage,
+            &dialog_iroh_remote::site::Iroh::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(access_revision(&profile, &second.operator).await, revision);
         assert_ne!(first.operator.did(), second.operator.did());
         assert_eq!(second.operator.profile_did(), profile.did());
@@ -317,7 +353,13 @@ mod tests {
             .perform(&storage)
             .await
             .unwrap();
-        let session = open(&profile, &storage, &Default::default()).await.unwrap();
+        let session = open(
+            &profile,
+            &storage,
+            &dialog_iroh_remote::site::Iroh::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(profile.did(), profile_did);
         assert_ne!(session.operator.did(), old_operator);
         assert_eq!(access_revision(&profile, &session.operator).await, revision);

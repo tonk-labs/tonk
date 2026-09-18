@@ -386,6 +386,16 @@ pub async fn handle_carrier(
         tonk_rtc::rendezvous::Side::Listener,
     );
     tonk_rtc::transport::relay::attach(&reach.transport, peer, port);
+
+    // The event the site cannot see. A remote that failed to connect
+    // before this — because there was no carrier, which is the ordinary
+    // state until now — is sitting in a backoff whose reason has just
+    // stopped being true. Waiting it out would mean a page that dialed
+    // and then watched nothing happen.
+    {
+        let iroh = state.read().await.iroh.clone();
+        iroh.revive().await;
+    }
     log!("cli: a carrier from {client:?} is now a route");
 }
 

@@ -650,9 +650,13 @@ pub mod tests {
             .await
             .expect("Failed to create test profile");
 
-        let session = crate::session::open(&profile, &storage, &Default::default())
-            .await
-            .expect("Failed to open a test signing session");
+        let session = crate::session::open(
+            &profile,
+            &storage,
+            &dialog_iroh_remote::site::Iroh::default(),
+        )
+        .await
+        .expect("Failed to open a test signing session");
 
         let reactor = crate::Reactor::new(profile.clone());
         // The registry mirrors production shape — the state's own profile

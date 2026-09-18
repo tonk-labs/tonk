@@ -405,6 +405,14 @@ pub struct TonkState {
     /// endpoint's key is its name: a fresh one per request would be a
     /// stranger to anything that had already spoken to it.
     pub reach: Arc<crate::router::cli::Lazy>,
+
+    /// The site every session operator dispatches iroh forks through.
+    ///
+    /// Kept here as well as inside the operator because the two need
+    /// different things from it: the operator sends over it, and this
+    /// worker tells it when a carrier arrived. Clones share the link, so
+    /// both are the same connection.
+    pub iroh: dialog_iroh_remote::site::Iroh,
     /// Registered command handlers — the typed-Rust effects fired by
     /// transient command concepts after a commit. Two vocabularies
     /// (profile / space), selected per dispatch by the triggering
@@ -1726,7 +1734,14 @@ pub(crate) async fn boot_state(
     // later carrier share one endpoint: the site is handed this cell,
     // and `handle_carrier` fills it.
     let reach: Arc<crate::router::cli::Lazy> = Default::default();
-    let session = crate::session::open(&profile, &storage, &reach).await?;
+    // Held as well as given away. `handle_carrier` revives it — the
+    // carrier arriving is an event this worker sees and the site does
+    // not — and a rotating session is handed this one rather than a
+    // fresh one, so a live link outlives the session key.
+    let iroh = dialog_iroh_remote::site::Iroh::connecting(crate::router::cli::CarrierConnect::new(
+        reach.clone(),
+    ));
+    let session = crate::session::open(&profile, &storage, &iroh).await?;
 
     let state = TonkState {
         profile,
@@ -1742,6 +1757,7 @@ pub(crate) async fn boot_state(
         view_bindings: Default::default(),
         bridges: Default::default(),
         reach,
+        iroh,
         commands: crate::router::command_providers(),
         sync_queue: Default::default(),
         clients: Default::default(),

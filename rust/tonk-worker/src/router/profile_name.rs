@@ -243,9 +243,13 @@ mod tests {
             .perform(&storage)
             .await
             .expect("profile opens");
-        let session = crate::session::open(&profile, &storage, &Default::default())
-            .await
-            .expect("signing session opens");
+        let session = crate::session::open(
+            &profile,
+            &storage,
+            &dialog_iroh_remote::site::Iroh::default(),
+        )
+        .await
+        .expect("signing session opens");
         let reactor = crate::Reactor::new(profile.clone());
         TonkState {
             seed_upgrades: Default::default(),
