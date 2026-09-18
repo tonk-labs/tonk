@@ -121,8 +121,10 @@ pub struct Stamp {
     pub time: i64,
 }
 
-/// One edit, applied on top of given heads.
+/// One edit, applied on top of given heads. On the wire:
+/// `{ "edit": "replace", "find": "...", "with": "..." }`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "edit", rename_all = "kebab-case")]
 pub enum Edit {
     /// Replace the one occurrence of `find`.
     Replace {
@@ -542,19 +544,46 @@ impl Document {
     }
 
     /// Apply `edit` on top of `heads` and return the new heads for that
-    /// line. Other branches' changes in the store are untouched and
-    /// unseen. An edit that changes nothing returns `heads` normalized.
-    pub fn edit(&mut self, heads: &[String], stamp: &Stamp, edit: &Edit) -> Result<Vec<String>, DocumentError> {
+    /// line. See [`Document::edit_all`].
+    pub fn edit(
+        &mut self,
+        heads: &[String],
+        stamp: &Stamp,
+        edit: &Edit,
+    ) -> Result<Vec<String>, DocumentError> {
+        self.edit_all(heads, stamp, std::slice::from_ref(edit))
+    }
+
+    /// Apply `edits` on top of `heads` as ONE automerge change — one
+    /// gesture reaches other replicas completely or not at all — and
+    /// return the new heads for that line. Other branches' changes in
+    /// the store are untouched and unseen. Edits that change nothing
+    /// return `heads` normalized. If any edit is refused, none applies.
+    pub fn edit_all(
+        &mut self,
+        heads: &[String],
+        stamp: &Stamp,
+        edits: &[Edit],
+    ) -> Result<Vec<String>, DocumentError> {
         let base = self.normalize(heads)?;
         let at = parse_heads(&base)?;
         self.doc.isolate(&at);
-        let applied = self.apply(&at, edit);
+        let mut applied = Ok(());
+        for edit in edits {
+            applied = self.apply(&at, edit);
+            if applied.is_err() {
+                break;
+            }
+        }
         let outcome = match applied {
             Ok(()) => {
                 let message = serde_json::to_string(stamp).unwrap_or_default();
                 if self.doc.pending_ops() > 0 {
-                    self.doc
-                        .commit_with(CommitOptions::default().with_message(message).with_time(stamp.time));
+                    self.doc.commit_with(
+                        CommitOptions::default()
+                            .with_message(message)
+                            .with_time(stamp.time),
+                    );
                 }
                 Ok(format_heads(&self.doc.get_heads()))
             }
@@ -1173,5 +1202,33 @@ mod tests {
         let heads = doc.store_heads();
         let result = doc.edit(&heads, &stamp(), &Edit::Put { path: "sheets/s/cells/A1".into(), value: "x".into() });
         assert!(matches!(result, Err(DocumentError::WrongEdit { .. })));
+    }
+    #[dialog_common::test]
+    fn it_applies_a_gesture_as_one_change_or_not_at_all() {
+        let mut doc = Document::genesis(Format::Table).unwrap();
+        let g = doc.store_heads();
+        let paste = vec![
+            Edit::Put { path: "sheets/s1/cells/A1".into(), value: "1".into() },
+            Edit::Put { path: "sheets/s1/cells/A2".into(), value: "2".into() },
+        ];
+        let after = doc.edit_all(&g, &stamp(), &paste).unwrap();
+        assert_eq!(doc.changes(&g).unwrap().len(), 1, "one gesture is one change");
+        assert_eq!(doc.table(&after).unwrap().sheets[0].cells.len(), 2);
+
+        let broken = vec![
+            Edit::Put { path: "sheets/s1/cells/A3".into(), value: "3".into() },
+            Edit::Put { path: "not/a/path".into(), value: "x".into() },
+        ];
+        assert!(doc.edit_all(&after, &stamp(), &broken).is_err());
+        assert_eq!(doc.table(&after).unwrap().sheets[0].cells.len(), 2, "a refused gesture applies nothing");
+        assert_eq!(doc.changes(&g).unwrap().len(), 1);
+    }
+
+    #[dialog_common::test]
+    fn it_reads_an_edit_off_the_wire() {
+        let edit: Edit = serde_json::from_str(r#"{"edit":"replace","find":"a","with":"b"}"#).unwrap();
+        assert_eq!(edit, Edit::Replace { find: "a".into(), with: "b".into() });
+        let edit: Edit = serde_json::from_str(r#"{"edit":"set-text","text":"hi"}"#).unwrap();
+        assert_eq!(edit, Edit::SetText { text: "hi".into() });
     }
 }
