@@ -344,7 +344,7 @@
       "gaps": "Published CLI/browser matrix; staging, Safari and global revocation propagation.",
       "group": "Accounts: CLI and browser handoff",
       "id": "ACCT-C14",
-      "title": "Copy a scoped invitation for a person or agent, run one-way tonk connect without browser/account approval, and revoke its grant group from Settings.",
+      "title": "Copy a scoped invitation for a person or agent, run one-way tonk join without browser/account approval, and revoke its grant group from Settings.",
       "variants": "Empty or unrelated-account CLI; repeated bearer holders; independent invites; closed issuing browser; restart; offline or revoked authority."
     },
     {

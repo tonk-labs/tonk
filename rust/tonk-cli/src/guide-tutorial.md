@@ -13,7 +13,7 @@
    convenient verbs cannot express. On a raw first build,
    `tonk eval interactive.notation --home todo` installs the document and
    replaces the home in one transaction.
-6. Copy a space invitation from Tonk and run `tonk connect <invite-link>`.
+6. Copy a space invitation from Tonk and run `tonk join <invite-link>`.
    The same command works for people and agents, without browser approval.
 
 Every notation-building write accepts `--notation` to print the document it

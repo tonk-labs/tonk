@@ -92,9 +92,7 @@ async fn agent_prompt_is_copyable_without_showing_machine_instructions() -> anyh
     assert!(html.contains("copy the prompt and give it to your agent."));
     assert!(html.contains("copy-label=\"copy prompt\""));
     assert!(
-        html.contains(
-            "npx --yes @tonk/cli connect 'https://example.test/join#tonk-agent-v1=secret'"
-        )
+        html.contains("npx --yes @tonk/cli join 'https://example.test/join#tonk-agent-v1=secret'")
     );
     assert!(
         !html.contains("<pre"),
@@ -341,7 +339,7 @@ async fn connect_rejects_open_invite_before_mutation() -> anyhow::Result<()> {
     {
         let home = tempfile::tempdir()?;
         let output = std::process::Command::new(&binary)
-            .arg("connect")
+            .arg("join")
             .arg(&invite.url)
             .current_dir(home.path())
             .env("HOME", home.path())

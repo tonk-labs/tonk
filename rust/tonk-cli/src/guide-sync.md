@@ -14,7 +14,7 @@ diverged, or has no upstream. Its JSON form keeps `sync.fetched`, so callers can
 distinguish an unreachable upstream from a current comparison.
 
 To access a browser space, copy its scoped invitation from Tonk and run
-`tonk connect <invite-link>`. This works for people and agents.
+`tonk join <invite-link>`. This works for people and agents.
 Importing and syncing copy facts; removing a local replica does not erase
 replicas already held elsewhere.
 

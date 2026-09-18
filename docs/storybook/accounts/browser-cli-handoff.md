@@ -2,7 +2,7 @@
 
 ## Current CLI access workflows
 
-People and agents use `tonk connect INVITE_LINK` with the same scoped invitation
+People and agents use `tonk join INVITE_LINK` with the same scoped invitation
 copied from the Tonk UI. The CLI imports the invitation key and delegation
 chain, pulls one space and confirms setup without browser approval or account
 login. A separate scoped DID is used; matching the UI account's roster/activity
@@ -10,7 +10,7 @@ identity is deferred. Import does not create ordinary membership.
 
 CLI account management, ownership adoption, account migration and `tonk link`
 are removed. Local creation/transplant remain local; existing replicas and
-credentials are preserved. `tonk --space NAME connect` resumes an interrupted
+credentials are preserved. `tonk --space NAME join` resumes an interrupted
 scoped import. Older sharing/account-approval links are rejected before import.
 
 The current journey is `ACCT-C14` / `HANDOFF-21`. Browser-initiated terminal
@@ -350,7 +350,7 @@ above remains the legacy flow. New browser issuance is not enabled by default
 until a compatible CLI is published and verified.
 
 A browser account with authority to a hosted space can copy a prompt containing
-`tonk connect AGENT_LINK`. The reusable link carries a fresh invitation identity
+`tonk join AGENT_LINK`. The reusable link carries a fresh invitation identity
 and grants to build that space's data and views. The CLI imports that identity
 without account login or browser approval; the issuing browser can already be
 closed. An unrelated CLI account remains attached to its own authority.
@@ -363,7 +363,7 @@ grant records, not a recoverable invitation secret.
 
 The CLI retains the invitation credentials and a separate local replica. Only
 after pulling and pushing its grant-specific setup receipt does it report
-“Agent connection confirmed”. Later `tonk --space NAME connect` resumes from
+“Agent connection confirmed”. Later `tonk --space NAME join` resumes from
 those retained credentials. A receipt records completed setup, not exclusive
 ownership of the invite or live agent presence; several holders may use it.
 

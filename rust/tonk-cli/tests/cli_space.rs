@@ -711,13 +711,13 @@ mod when_nothing_is_registered {
         assert!(
             !stdout
                 .lines()
-                .any(|line| line.trim_start().starts_with("join ")),
+                .any(|line| line.trim_start().starts_with("connect ")),
             "{stdout}"
         );
         assert!(
             stdout
                 .lines()
-                .any(|line| line.trim_start().starts_with("connect ")),
+                .any(|line| line.trim_start().starts_with("join ")),
             "{stdout}"
         );
     }
@@ -912,13 +912,13 @@ mod when_resolving_with_precedence {
         assert!(
             !stdout
                 .lines()
-                .any(|line| line.trim_start().starts_with("join ")),
+                .any(|line| line.trim_start().starts_with("connect ")),
             "{stdout}"
         );
         assert!(
             stdout
                 .lines()
-                .any(|line| line.trim_start().starts_with("connect ")),
+                .any(|line| line.trim_start().starts_with("join ")),
             "{stdout}"
         );
     }
@@ -1154,11 +1154,11 @@ fn status_reports_when_a_configured_remote_cannot_be_fetched() {
     assert_eq!(value["sync"]["fetched"], false);
 }
 
-mod when_joining {
+mod when_using_the_removed_connect_command {
     use super::*;
 
     #[dialog_common::test]
-    fn it_rejects_the_removed_join_command_before_any_network_work() {
+    fn it_rejects_connect_before_any_network_work() {
         let state = tempfile::tempdir().expect("tempdir");
         let a = state.path().join("site-a");
         std::fs::create_dir_all(&a).expect("mkdir a");
@@ -1166,7 +1166,7 @@ mod when_joining {
 
         let output = run(
             state.path(),
-            &["join", "not-a-real-url", "--name", "a"],
+            &["connect", "not-a-real-url", "--name", "a"],
             &[],
         );
         assert!(!output.status.success());

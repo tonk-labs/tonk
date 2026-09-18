@@ -242,7 +242,7 @@ view!:
           .agent-prompt__note { color: var(--wa-color-text-quiet); font-size: var(--wa-font-size-s); }
         </style>
         <div data-agent-mode="unsupported" hidden>
-          <p class="agent-prompt__note">this invitation is no longer supported. reload tonk to get the latest version, then create a new invite and use <code>tonk connect</code>.</p>
+          <p class="agent-prompt__note">this invitation is no longer supported. reload tonk to get the latest version, then create a new invite and use <code>tonk join</code>.</p>
           <button class="agent-prompt__new" on:new-agent-invite=tonk:new-agent-invite>new invite</button>
         </div>
         <div data-agent-mode="scoped" hidden>
@@ -253,9 +253,9 @@ view!:
 
       Connect to the exact space this prompt came from:
 
-        npx --yes @tonk/cli connect '{link}'
+        npx --yes @tonk/cli join '{link}'
 
-      This reusable bearer link contains the invitation key and grants for this space. Keep it private. Run the command without CLI account login, browser approval, or account-switch flags. The command prints the chosen local name; use --name if you need a different local alias. Only report connected after it prints &quot;Agent connection confirmed&quot;, which follows a successful pull and acknowledged receipt push. If interrupted, resume without the link using `npx --yes @tonk/cli --space NAME connect`. If access expires or is revoked, ask me for a fresh invite. Local data and offline edits remain available. Multiple holders of this link share the same invitation authority and receipt; the receipt does not establish exclusive use or online presence.
+      This reusable bearer link contains the invitation key and grants for this space. Keep it private. Run the command without CLI account login, browser approval, or account-switch flags. The command prints the chosen local name; use --name if you need a different local alias. Only report connected after it prints &quot;Agent connection confirmed&quot;, which follows a successful pull and acknowledged receipt push. If interrupted, resume without the link using `npx --yes @tonk/cli --space NAME join`. If access expires or is revoked, ask me for a fresh invite. Local data and offline edits remain available. Multiple holders of this link share the same invitation authority and receipt; the receipt does not establish exclusive use or online presence.
 
       Then run `npx --yes @tonk/cli --space NAME status` and `npx --yes @tonk/cli help tutorial`. The command binds your original working directory to the connected space; elsewhere, pass --space with the printed local name. Ask me what I want to build on the Agent playground page. Use `npx --yes @tonk/cli` for each CLI command that changes data, schemas, or views; changes sync directly into this space. Scope all work to the existing Agent playground page (entity did:key:z6MkF65VFoAVjUMUBsQ7uMzEe5cfxPeJ2M6WZi2ENNqXi4fo, concept playground-page / concept:CzJUmTs4SBYNXhePYAZGdumwKeg5rnnK4oVv74utdNHd). Inspect that page and its playground/* concepts first. Change only its page-specific view, components, and data; use new playground-specific concepts when needed. Preserve the page entity and its place in the navigation. Do not change the space home, other pages, shared components, shared schemas, or space-wide settings. Render the result inside the Agent playground page, not on the space home. If the requested work needs changes outside this page, explain why and ask me first.
 
