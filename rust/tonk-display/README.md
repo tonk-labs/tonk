@@ -146,6 +146,10 @@ It is inert until Alt goes down — one `mousemove` listener that reads `altKey`
 and returns, plus a bool read on the renderer's change path. Remove the element
 to opt out entirely.
 
+The inspector also opens on anything marked `data-fabb-selected` — the
+attribute the FAB's selector stamps on what it is dropped on. The chrome marks,
+the page draws; neither crate needs to know about the other.
+
 See `/plan/display-introspection.md` for the design and the steps still open
 (the concept and view panels, editing).
 

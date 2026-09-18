@@ -14,6 +14,21 @@
 //! `keyup` is still listened for, as the one way to notice Alt going
 //! up while the pointer sits perfectly still.
 //!
+//! ## The selector
+//!
+//! There is a second way in, and it is the deliberate one. The FAB's
+//! bar tears off a teardrop whose square corner is its hotspot; drop
+//! it on something and the chrome marks what it hit
+//! ([`SELECTED`]) while the page draws — the FAB study's law 6, in
+//! both directions. This overlay is the page in that sentence: it
+//! watches for the mark and pins itself on whatever carries it.
+//!
+//! Keeping the seam at an attribute is what lets the two crates stay
+//! apart. `tonk-fab` does not know the inspector exists, the
+//! inspector does not know how the teardrop got there, and anything
+//! else that wants to point at a display can do so by setting one
+//! attribute.
+//!
 //! ## Pinning without taking a gesture
 //!
 //! Observation is pinned by clicking the overlay's own pin affordance,
@@ -94,11 +109,18 @@ const BADGE_PADDING: f64 = 6.0;
 /// The element name, in one place.
 const NAME: &str = "tonk-introspect";
 
+/// The attribute the FAB's selector stamps on what it was dropped on.
+/// Watched rather than driven: the chrome marks, the page draws.
+const SELECTED: &str = "data-fabb-selected";
+
 /// The element.
 #[derive(Default)]
 pub struct TonkIntrospect {
     inner: RefCell<Option<Rc<RefCell<Overlay>>>>,
     listeners: RefCell<Vec<Bound>>,
+    /// Watches the document for the selector's mark. Dropping it
+    /// disconnects the observer.
+    watcher: RefCell<Option<Watch>>,
 }
 
 /// A listener plus the closure owning its JS memory.
@@ -309,10 +331,14 @@ impl CustomElement for TonkIntrospect {
         *self.inner.borrow_mut() = Some(overlay.clone());
         install_tick(&overlay);
         *self.listeners.borrow_mut() = install_listeners(&document, &overlay);
+        watch_selection(&document, &overlay, &mut self.watcher.borrow_mut());
+        // Something may already be selected when the overlay mounts.
+        follow_selection(&document, &overlay);
     }
 
     fn disconnected_callback(&mut self, _this: &HtmlElement) {
         self.listeners.borrow_mut().clear();
+        self.watcher.borrow_mut().take();
         if let Some(overlay) = self.inner.borrow_mut().take() {
             overlay.borrow_mut().clear();
         }
@@ -689,6 +715,86 @@ fn subject_under(overlay: &Rc<RefCell<Overlay>>, event: &MouseEvent) -> Option<S
         .and_then(|element| element.closest("[data-this]").ok().flatten())
         .and_then(|row| row.get_attribute("data-this"))
         .filter(|subject| !subject.is_empty())
+}
+
+/// An installed `MutationObserver`, disconnected on drop.
+struct Watch {
+    observer: web_sys::MutationObserver,
+    _closure: Closure<dyn FnMut(js_sys::Array, web_sys::MutationObserver)>,
+}
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        self.observer.disconnect();
+    }
+}
+
+/// Watch the document for the selector's mark landing on anything.
+///
+/// An attribute observer rather than an event listener, because the
+/// mark is state rather than a moment: it may already be set when the
+/// overlay mounts, it survives a re-render, and whatever sets it does
+/// not have to know to announce it.
+fn watch_selection(document: &Document, overlay: &Rc<RefCell<Overlay>>, slot: &mut Option<Watch>) {
+    let overlay_for_closure = overlay.clone();
+    let document_for_closure = document.clone();
+    let closure = Closure::wrap(Box::new(
+        move |_records: js_sys::Array, _observer: web_sys::MutationObserver| {
+            follow_selection(&document_for_closure, &overlay_for_closure);
+        },
+    )
+        as Box<dyn FnMut(js_sys::Array, web_sys::MutationObserver)>);
+    let Ok(observer) = web_sys::MutationObserver::new(closure.as_ref().unchecked_ref()) else {
+        return;
+    };
+    let options = web_sys::MutationObserverInit::new();
+    options.set_subtree(true);
+    options.set_attributes(true);
+    let filter = js_sys::Array::new();
+    filter.push(&SELECTED.into());
+    options.set_attribute_filter(&filter);
+    if observer
+        .observe_with_options(document.as_ref(), &options)
+        .is_ok()
+    {
+        *slot = Some(Watch {
+            observer,
+            _closure: closure,
+        });
+    }
+}
+
+/// Pin the inspector on whatever the selector marked, or release it
+/// when the mark goes away.
+fn follow_selection(document: &Document, overlay: &Rc<RefCell<Overlay>>) {
+    let selected = document
+        .query_selector(&format!("[{SELECTED}]"))
+        .ok()
+        .flatten()
+        .and_then(|element| {
+            if element.matches("tonk-display").unwrap_or(false) {
+                Some(element)
+            } else {
+                // Dropped on something inside a display: the display
+                // is what there is to inspect.
+                element.closest("tonk-display").ok().flatten()
+            }
+        });
+    match selected {
+        Some(host) => {
+            let over = overlay.borrow_mut().target_of(&host);
+            let already = overlay.borrow().machine.observed() == Some(over);
+            if !already {
+                overlay.borrow_mut().machine.apply(Input::Toggle { over });
+            }
+        }
+        None => {
+            if overlay.borrow().machine.is_latched() {
+                overlay.borrow_mut().machine.apply(Input::Clear);
+            }
+        }
+    }
+    schedule(overlay);
 }
 
 /// Whether the pointer is over the panel or the pin — the chrome that

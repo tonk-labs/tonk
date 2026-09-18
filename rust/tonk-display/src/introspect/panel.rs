@@ -29,7 +29,7 @@ use super::command::Command;
 use super::notation::{self, Line, Token};
 use super::recorder::Timeline;
 use super::slot::Snapshot;
-use super::source::{Piece, pieces};
+use super::source::{Markup, pieces};
 
 /// One thing the bar can unfold.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -404,17 +404,15 @@ impl Panel {
             return;
         };
         for piece in pieces(&template) {
-            let (class, field) = match &piece {
-                Piece::Literal { .. } => ("lit", None),
-                Piece::Field { name, .. } => ("ref", Some(name.clone())),
-                Piece::Command { name, .. } => ("cmd", Some(name.clone())),
-            };
             let Ok(span) = document.create_element("span") else {
                 continue;
             };
-            let _ = span.set_attribute("class", class);
-            if let Some(field) = field {
-                let _ = span.set_attribute("data-field", &field);
+            let _ = span.set_attribute("class", markup_class(piece.markup));
+            // A field or command span carries the same key a concept
+            // row and a page marker do, so the three highlight each
+            // other; plain markup carries none and stays inert.
+            if let Some(name) = &piece.name {
+                let _ = span.set_attribute("data-field", name);
             }
             span.set_text_content(Some(piece.text()));
             let _ = source.append_child(&span);
@@ -564,6 +562,19 @@ fn is_leading(line: &Line) -> bool {
         .any(|span| span.token == Token::Key && span.text.starts_with(char::is_alphabetic))
 }
 
+fn markup_class(markup: Markup) -> &'static str {
+    match markup {
+        Markup::Text => "m-text",
+        Markup::Tag => "m-tag",
+        Markup::Attribute => "m-attr",
+        Markup::Value => "m-value",
+        Markup::Punct => "m-punct",
+        Markup::Comment => "m-comment",
+        Markup::Field => "m-field",
+        Markup::Command => "m-command",
+    }
+}
+
 fn token_class(token: Token) -> &'static str {
     match token {
         Token::Head => "t-head",
@@ -672,8 +683,14 @@ pub const CSS: &str = "\
 .t-plain { color: #8d877f; }
 .source { padding: 6px 12px; line-height: 1.55; white-space: pre-wrap;
           overflow-wrap: anywhere; color: #8d877f; }
-.source .ref { color: var(--tonk-circle, #3d6da8); }
-.source .cmd { color: var(--tonk-alarm, #a8302a); }
-.source [data-field]:hover { background: #2c2a27; }
+.source .m-text { color: #8d877f; }
+.source .m-tag { color: var(--tonk-triangle, #c89a2b); }
+.source .m-attr { color: var(--tonk-circle, #3d6da8); }
+.source .m-value { color: var(--tonk-square, #b94a3d); }
+.source .m-punct { color: #55504a; }
+.source .m-comment { color: var(--tonk-closure, #7a7268); font-style: italic; }
+.source .m-field { color: #17171a; background: var(--tonk-circle, #3d6da8); }
+.source .m-command { color: #17171a; background: var(--tonk-alarm, #a8302a); }
+.source [data-field]:hover { outline: 1px solid #e6e3de; }
 .note { padding: 6px 12px; color: #7a7268; font-style: italic; }
 ";

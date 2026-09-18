@@ -134,7 +134,11 @@ to stop when Alt goes up under a still pointer.
 
 ## Steps
 
-- [ ] **7. Navigate the relation.** A line carries its attribute already. Make
+- [ ] **7. Parts.** Draw a concept the way nodes.io draws a patch: a block per
+      attribute and per command, opening to its detail and value. See
+      *Directions not yet taken*.
+
+- [ ] **8. Navigate the relation.** A line carries its attribute already. Make
       it a handle: click a relation to ask what else asserts it, click an
       entity to ask what else is on it. That is a query beyond what the display
       subscribed to, so it needs its own path through the host rather than a
@@ -258,6 +262,35 @@ label is the *value*, because that is what is invisible — `data-subject=this`
 names the shape of the binding while withholding the only part you came for.
 Commands keep a dashed outline and a corner dot so they read as affordances
 rather than values.
+
+## Directions not yet taken
+
+Three from use, recorded because each changes the shape rather than adding to
+it.
+
+**The selector.** The FAB study (`Gooey_Agent.html`) tears a teardrop off the
+bar whose square corner is the hotspot; drop it on a thing and the chrome marks
+what it hit while the page draws. That is a better way into this tool than
+Alt-hover, because it is deliberate and it survives letting go. The seam is
+already built on this side: the overlay watches `data-fabb-selected` and pins
+itself on whatever carries it, so `tonk-fab` never needs to know the inspector
+exists and anything else that wants to point at a display can do it by setting
+one attribute. What is missing is the teardrop, which is the FAB's to grow.
+
+**Parts, not prose.** nodes.io draws a patch as a block whose ports are small
+blocks, one per thing it takes and gives. A concept is the same shape: a block
+per attribute, a block per command, each opening to its detail and its current
+value. That reads at a glance in a way a notation dump never will — you see
+*how many* and *what kind* before you read a word. The data is all in hand
+(`Snapshot::fields`, `Snapshot::commands`), so this is a drawing problem, not a
+plumbing one, and it probably wants to be what the inspector opens on with the
+notation sections behind it rather than the other way round.
+
+**Detachable sections.** Asked for directly. Today the sections stack in one
+floating window; each wants to be its own, so `data` and `view` can sit side by
+side. Mechanically it is the drag code generalized from one panel to several,
+plus somewhere to keep each one's position. Worth doing after parts, since
+parts may change what there is to detach.
 
 ## Known limits
 
