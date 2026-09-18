@@ -74,9 +74,8 @@ In both modes the query engine emits one flat row per tuple, so cardinality-many
 `tonk_display::register()` also registers and mounts `<tonk-introspect>`, an
 overlay that makes this pipeline visible at the point of use. Hold Alt and the
 display under the pointer outlines, with a **pin** button in its corner;
-rest there for 300ms and observation switches on. Alt-click it, or click the pin, to keep the
-observation while the pointer goes elsewhere; do it again, or press Escape, to
-release. Tracking survives the pointer leaving every display for a moment, so
+rest there for 300ms and observation switches on. Click it — anywhere on it — to keep the observation while
+the pointer goes elsewhere; click again, or press Escape, to release. Tracking survives the pointer leaving every display for a moment, so
 walking over to the panel does not drop it.
 
 Observation marks two things:
@@ -133,11 +132,15 @@ rendered DOM, because the DOM cannot answer the question: a rendered
 `with="main@repo"` does not say which half was a field, and a binding applied
 as a JS property left no attribute behind at all.
 
-Pin either by alt-clicking the outlined display or by clicking the pin button
-in the outline's corner. Alt-click is swallowed — a click on a button you are
-inspecting must not also dispatch the command it carries — but only while the
-overlay is *already tracking* a display. With the hood closed the gesture is
-the page's, untouched.
+While a display is tracked, the whole of it becomes the pin target: a
+transparent surface covers it and a click anywhere pins. Because that surface
+is the overlay's own, the click never reaches the page — so no gesture has to
+be taken from your app or swallowed, and there is nothing small to aim at. The
+`pin` button in the corner is only its label. Hit-testing sees through the
+surface, so a display nested inside a tracked one is still reachable.
+
+The panel places itself in the corner furthest from what you are observing, and
+can be dragged by its header.
 
 It is inert until Alt goes down — one `mousemove` listener that reads `altKey`
 and returns, plus a bool read on the renderer's change path. Remove the element

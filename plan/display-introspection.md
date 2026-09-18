@@ -44,25 +44,34 @@ one per document. Inert until Alt goes down.
 | rest there past 300ms | observation on: slots and commands marked |
 | move to another display | dwell restarts there |
 | move off / release Alt | observation off |
-| Alt + click the display, or click the pin | pin the observation; survives Alt release |
-| do it again | release it |
+| click the tracked display | pin the observation; survives Alt release |
+| click it again | release it |
 | Escape | release everything |
 
-Alt-click is swallowed in the capture phase, since a click on a button you are
-inspecting must not also dispatch the command it carries. The claim is narrow:
-the listener returns before touching the event unless the overlay is *already
-tracking* a display, so with the hood closed the gesture is the page's.
+Pinning went through three designs before one worked, and the failures are
+worth keeping because each was invisible to the tests:
 
-Reaching the chrome takes two things working together, and the first shipped
-without the second, which made pinning unreachable in practice:
+1. **Alt-click, swallowed in the capture phase.** Correct, but it takes the
+   gesture from every app for as long as the overlay is mounted, so it was made
+   opt-in behind an attribute — which nothing set, so nothing could pin.
+2. **A pin button above the outline's corner.** Unreachable: the walk to it
+   crossed page that is not a display, and every mousemove on the way read as
+   giving up. The state machine was right and the geometry was wrong.
+3. **A shield over the whole tracked display.** The display itself is the
+   target, so there is nothing to aim at, and the shield is overlay chrome, so
+   the click never reaches the page — no gesture taken, nothing swallowed.
 
-- pointer events retargeting to the overlay host never reach the machine, so
-  resting on the pin or the panel is not "leaving";
-- the page *between* the display and the panel is not a display either, so the
-  machine holds its target for `LEAVE_MS` after the pointer leaves everything.
+Two supports make it reachable. Hit-testing is by point
+(`elementsFromPoint`, skipping the overlay host) rather than by event target,
+because everything in the shadow root retargets to one host and a target test
+cannot tell the shield from the panel — which would blind the machine to a
+display nested inside a shielded one. And the machine holds its target for
+`LEAVE_MS` after the pointer leaves every display, because the page between a
+display and the panel is not a display either.
 
-The pin also sits *inside* the outline's top-left rather than above it, so the
-walk to reach it does not cross page at all.
+The panel picks the corner furthest from the observed display, and can be
+dragged by its header. Markers paint on their own sub-layer beneath it, so a
+badge is never drawn across the thing you are reading.
 
 Alt state is read off the *pointer* event, not remembered from a `keydown`. A
 sealed guest iframe that has never had focus receives no key events, but every

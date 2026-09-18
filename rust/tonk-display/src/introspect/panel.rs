@@ -127,6 +127,11 @@ impl Panel {
         &self.root
     }
 
+    /// The header, which is also the drag handle.
+    pub fn head(&self) -> &Element {
+        &self.head
+    }
+
     /// Stop showing anything.
     pub fn hide(&mut self) {
         let _ = self.root.set_attribute("style", "display:none");
@@ -142,8 +147,11 @@ impl Panel {
         signature: &str,
         subject: Option<&str>,
         truncated: bool,
+        position: &str,
     ) {
-        let _ = self.root.set_attribute("style", "display:flex");
+        let _ = self
+            .root
+            .set_attribute("style", &format!("display:flex;{position}"));
         let key = (
             signature.to_owned(),
             subject.unwrap_or_default().to_owned(),
@@ -362,20 +370,20 @@ pub fn field_of(target: &Element) -> Option<String> {
 
 /// Everything the panel draws. Concatenated into the overlay's sheet.
 pub const CSS: &str = "\
-.panel { position: fixed; display: none; flex-direction: column; right: 8px; bottom: 8px;
+.panel { position: fixed; display: none; z-index: 5; flex-direction: column;
          width: min(46ch, calc(100vw - 16px)); max-height: min(52vh, 520px);
-         pointer-events: auto; color: #e9e9ee; background: rgba(20,20,24,.95);
-         border-radius: 4px; overflow: hidden; box-shadow: 0 6px 24px rgba(0,0,0,.35); }
-.head { position: relative; padding: 6px 24px 6px 8px; font-weight: 600;
-        border-bottom: 1px solid rgba(255,255,255,.12); }
+         pointer-events: auto; color: #e9e9ee; background: rgba(20,20,24,.97);
+         border-radius: 4px; overflow: hidden; box-shadow: 0 6px 24px rgba(0,0,0,.45); }
+.head { position: relative; padding: 7px 30px 7px 8px; font-weight: 600; cursor: move;
+        user-select: none; border-bottom: 1px solid rgba(255,255,255,.12); }
 .head::before { content: attr(data-title); }
-.close { position: absolute; top: 3px; right: 4px; width: 18px; height: 18px; padding: 0;
-         font: inherit; line-height: 16px; color: inherit; cursor: pointer;
-         background: transparent; border: 0; border-radius: 2px; }
+.close { position: absolute; top: 3px; right: 3px; width: 24px; height: 24px; padding: 0;
+         font: 15px/24px inherit; color: inherit; cursor: pointer;
+         background: transparent; border: 0; border-radius: 3px; }
 .close:hover { background: rgba(255,255,255,.14); }
-.tabs { display: flex; gap: 2px; padding: 4px 8px 0; }
-.tab { padding: 2px 8px; font: inherit; color: #9aa0ad; cursor: pointer;
-       background: transparent; border: 0; border-radius: 2px 2px 0 0; }
+.tabs { display: flex; gap: 3px; padding: 5px 8px 0; }
+.tab { min-height: 24px; padding: 4px 14px; font: inherit; color: #9aa0ad; cursor: pointer;
+       background: rgba(255,255,255,.05); border: 0; border-radius: 3px 3px 0 0; }
 .tab:hover { color: #e9e9ee; background: rgba(255,255,255,.08); }
 .tab.on { color: #e9e9ee; background: rgba(255,255,255,.14); }
 .source { padding: 6px 8px; white-space: pre-wrap; word-break: break-word; }

@@ -123,9 +123,13 @@ struct Overlay {
     /// The overlay's own host element, so a pointer event that
     /// retargets to it can be told apart from one on the page.
     host: Element,
-    /// The fixed-position layer every marker lives in, inside the
-    /// element's shadow root so page CSS cannot reach it.
-    layer: Element,
+    /// Everything painted over the page, below the chrome. Markers
+    /// live here so the panel is never buried under a badge.
+    marks: Element,
+    /// A transparent, clickable surface over the tracked display.
+    /// Clicking it pins — which is why the overlay needs to take no
+    /// gesture from the page at all: a click here never reaches it.
+    shield: Element,
     /// The outline around the tracked display.
     outline: Element,
     /// The pin affordance. The one thing on the layer that takes
@@ -158,6 +162,11 @@ struct Overlay {
     /// panel key on the same name, so one value serves a concept row
     /// and a marked span in the template alike.
     focus: Option<String>,
+    /// Where the user dragged the panel to, if they did. Otherwise it
+    /// places itself away from whatever is being observed.
+    panel_at: Option<(f64, f64)>,
+    /// A drag in progress: the pointer's offset inside the panel.
+    dragging: Option<(f64, f64)>,
 }
 
 /// The painted state for one observed display.
@@ -318,6 +327,14 @@ impl Overlay {
         let outline = element(document, "div", "outline")?;
         let pin = element(document, "button", "pin")?;
         pin.set_text_content(Some("pin"));
+        let marks = element(document, "div", "marks")?;
+        let shield = element(document, "div", "shield")?;
+        let _ = shield.set_attribute("title", "click to pin this display");
+        // Order is z-order: marks under the chrome, the panel over
+        // everything. A badge drawn across the panel was the reported
+        // symptom of getting this wrong.
+        let _ = layer.append_child(&marks);
+        let _ = layer.append_child(&shield);
         let _ = layer.append_child(&outline);
         let _ = layer.append_child(&pin);
         let _ = root.append_child(&layer);
@@ -325,7 +342,8 @@ impl Overlay {
 
         Some(Self {
             host: host.clone(),
-            layer,
+            marks,
+            shield,
             outline,
             pin,
             panel,
@@ -338,6 +356,8 @@ impl Overlay {
             painting: false,
             hovered_subject: None,
             focus: None,
+            panel_at: None,
+            dragging: None,
         })
     }
 
@@ -367,6 +387,7 @@ impl Overlay {
         self.drop_painted();
         hide(&self.outline);
         hide(&self.pin);
+        hide(&self.shield);
         self.panel.hide();
         self.focus = None;
         self.hovered_subject = None;
@@ -416,28 +437,36 @@ fn install_listeners(document: &Document, overlay: &Rc<RefCell<Overlay>>) -> Vec
             let Some(mouse) = event.dyn_ref::<MouseEvent>() else {
                 return;
             };
+            // A drag owns the pointer outright.
+            if overlay.borrow().dragging.is_some() {
+                drag_panel(overlay, mouse);
+                return;
+            }
             // The whole cost of a closed hood. Everything below this
-            // walks the DOM — `closest` twice — so nothing below it
-            // may run on the mousemoves of a page nobody is
-            // inspecting. Alt up with nothing painted means there is
-            // neither anything to start nor anything to stop.
+            // hit-tests the document, so nothing below it may run on
+            // the mousemoves of a page nobody is inspecting. Alt up
+            // with nothing painted means there is neither anything to
+            // start nor anything to stop.
             if !mouse.alt_key() && !overlay.borrow().painting {
                 return;
             }
-            // Reaching for the overlay's own chrome is not leaving the
-            // display. Without this the outline vanishes the moment the
-            // pointer crosses onto the pin.
-            if on_overlay(overlay, event) {
+            // Resting on the panel or the pin is not leaving the
+            // display; without this the outline vanishes the moment
+            // the pointer crosses onto either.
+            if on_chrome(overlay, mouse) {
                 return;
             }
             // Sticky: the subject only changes when the pointer is
             // over a row, so walking off a card towards the panel
             // keeps the panel on the card you came from — which is
             // the reason you were walking towards it.
-            if let Some(subject) = subject_under(mouse) {
+            if let Some(subject) = subject_under(overlay, mouse) {
                 overlay.borrow_mut().hovered_subject = Some(subject);
             }
-            let over = display_under(mouse).map(|host| overlay.borrow_mut().target_of(&host));
+            let over = display_under(overlay, mouse).map(|host| {
+                let mut state = overlay.borrow_mut();
+                state.target_of(&host)
+            });
             let input = Input::Pointer {
                 alt: mouse.alt_key(),
                 over,
@@ -446,34 +475,6 @@ fn install_listeners(document: &Document, overlay: &Rc<RefCell<Overlay>>) -> Vec
             overlay.borrow_mut().machine.apply(input);
         },
     ));
-
-    // Alt-click pins — but only while the overlay is already tracking
-    // a display, which is a much narrower claim than taking the
-    // gesture outright. With the hood closed the click is the page's
-    // and this listener returns before touching it; with an outline on
-    // screen the user is plainly inspecting, and a click there must
-    // not also dispatch the command the element carries, so it is
-    // swallowed in the capture phase.
-    bound.push(listen(&target, "click", true, overlay, |overlay, event| {
-        if !overlay.borrow().machine.is_tracking() {
-            return;
-        }
-        let Some(mouse) = event.dyn_ref::<MouseEvent>() else {
-            return;
-        };
-        if !mouse.alt_key() {
-            return;
-        }
-        // Anywhere over the tracked display, not just its innermost
-        // element: the point is to pin what is outlined.
-        let over = match display_under(mouse) {
-            Some(host) => overlay.borrow_mut().target_of(&host),
-            None => return,
-        };
-        event.prevent_default();
-        event.stop_propagation();
-        overlay.borrow_mut().machine.apply(Input::Toggle { over });
-    }));
 
     bound.push(listen(&target, "keyup", true, overlay, |overlay, event| {
         let Some(key) = event.dyn_ref::<KeyboardEvent>() else {
@@ -496,6 +497,61 @@ fn install_listeners(document: &Document, overlay: &Rc<RefCell<Overlay>>) -> Vec
             if key.key() == "Escape" {
                 overlay.borrow_mut().machine.apply(Input::Clear);
             }
+        },
+    ));
+
+    // The shield: the whole tracked display, clickable. This is the
+    // big hit target — the pin is only its label — and because it is
+    // overlay chrome the click never reaches the page, so no gesture
+    // has to be taken from it or swallowed.
+    let shield = overlay.borrow().shield.clone();
+    bound.push(listen(
+        shield.as_ref(),
+        "click",
+        false,
+        overlay,
+        |overlay, event| {
+            event.stop_propagation();
+            let over = overlay.borrow().machine.highlighted();
+            if let Some(over) = over {
+                overlay.borrow_mut().machine.apply(Input::Toggle { over });
+            }
+        },
+    ));
+
+    // Dragging the panel by its header.
+    let head = overlay.borrow().panel.head().clone();
+    bound.push(listen(
+        head.as_ref(),
+        "mousedown",
+        false,
+        overlay,
+        |overlay, event| {
+            let Some(mouse) = event.dyn_ref::<MouseEvent>() else {
+                return;
+            };
+            if mouse
+                .target()
+                .and_then(|target| target.dyn_into::<Element>().ok())
+                .is_some_and(|element| element.matches(".close").unwrap_or(false))
+            {
+                return;
+            }
+            event.prevent_default();
+            let rect = overlay.borrow().panel.root().get_bounding_client_rect();
+            overlay.borrow_mut().dragging = Some((
+                mouse.client_x() - rect.left(),
+                mouse.client_y() - rect.top(),
+            ));
+        },
+    ));
+    bound.push(listen(
+        &target,
+        "mouseup",
+        true,
+        overlay,
+        |overlay, _event| {
+            overlay.borrow_mut().dragging = None;
         },
     ));
 
@@ -570,23 +626,35 @@ fn install_listeners(document: &Document, overlay: &Rc<RefCell<Overlay>>) -> Vec
 /// The repeat row's subject under a pointer event. The renderer stamps
 /// `data-this` on every row root, so this is a read of what the render
 /// pass already wrote.
-fn subject_under(event: &MouseEvent) -> Option<String> {
-    event
-        .target()
-        .and_then(|target| target.dyn_into::<Element>().ok())
+fn subject_under(overlay: &Rc<RefCell<Overlay>>, event: &MouseEvent) -> Option<String> {
+    under(overlay, event)
         .and_then(|element| element.closest("[data-this]").ok().flatten())
         .and_then(|row| row.get_attribute("data-this"))
         .filter(|subject| !subject.is_empty())
 }
 
-/// Whether an event landed on the overlay's own chrome. Shadow content
-/// retargets to the host, so comparing against the host covers the pin
-/// and everything else on the layer.
-fn on_overlay(overlay: &Rc<RefCell<Overlay>>, event: &Event) -> bool {
-    let Some(target) = event.target().and_then(|t| t.dyn_into::<Node>().ok()) else {
-        return false;
-    };
-    target.is_same_node(Some(overlay.borrow().host.as_ref()))
+/// Whether the pointer is over the panel or the pin — the chrome that
+/// must be reachable without the observation evaporating.
+///
+/// Tested by coordinate rather than by event target. Everything in the
+/// overlay's shadow root retargets to one host, so a target test
+/// cannot tell the panel from the shield — and the shield covers the
+/// display, so treating it as chrome would blind the machine to the
+/// pointer crossing onto a display nested inside.
+fn on_chrome(overlay: &Rc<RefCell<Overlay>>, mouse: &MouseEvent) -> bool {
+    let state = overlay.borrow();
+    let x = mouse.client_x();
+    let y = mouse.client_y();
+    [&state.panel.root().clone(), &state.pin]
+        .into_iter()
+        .any(|element| {
+            let rect = element.get_bounding_client_rect();
+            rect.width() > 0.0
+                && x >= rect.left()
+                && x <= rect.right()
+                && y >= rect.top()
+                && y <= rect.bottom()
+        })
 }
 
 fn listen(
@@ -614,14 +682,101 @@ fn listen(
     }
 }
 
+/// The topmost page element under a pointer event, ignoring the
+/// overlay's own chrome.
+///
+/// Hit-testing by point rather than by `event.target`, because the
+/// shield sits over the tracked display and every event target inside
+/// it retargets to the overlay host. Point-testing sees past it, which
+/// is what lets a shielded display still tell you when the pointer has
+/// crossed onto the display nested inside it.
+fn under(overlay: &Rc<RefCell<Overlay>>, event: &MouseEvent) -> Option<Element> {
+    let document = window()?.document()?;
+    let host = overlay.borrow().host.clone();
+    let stack = document.elements_from_point(event.client_x() as f32, event.client_y() as f32);
+    for index in 0..stack.length() {
+        let Ok(element) = stack.get(index).dyn_into::<Element>() else {
+            continue;
+        };
+        if element.is_same_node(Some(host.as_ref())) {
+            continue;
+        }
+        return Some(element);
+    }
+    None
+}
+
 /// The `<tonk-display>` under a pointer event, if any. `closest` gives
 /// the innermost one, which is the right answer: a display nested
 /// inside another's template is its own thing to inspect.
-fn display_under(event: &MouseEvent) -> Option<Element> {
-    event
-        .target()
-        .and_then(|target| target.dyn_into::<Element>().ok())
-        .and_then(|element| element.closest("tonk-display").ok().flatten())
+fn display_under(overlay: &Rc<RefCell<Overlay>>, event: &MouseEvent) -> Option<Element> {
+    under(overlay, event).and_then(|element| element.closest("tonk-display").ok().flatten())
+}
+
+/// Move the panel under a dragging pointer, clamped to the viewport
+/// so it cannot be dropped somewhere unreachable.
+fn drag_panel(overlay: &Rc<RefCell<Overlay>>, mouse: &MouseEvent) {
+    let Some(win) = window() else {
+        return;
+    };
+    let (offset_x, offset_y) = match overlay.borrow().dragging {
+        Some(offset) => offset,
+        None => return,
+    };
+    let rect = overlay.borrow().panel.root().get_bounding_client_rect();
+    let width = win
+        .inner_width()
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let height = win
+        .inner_height()
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let left = (mouse.client_x() - offset_x).clamp(0.0, (width - rect.width()).max(0.0));
+    let top = (mouse.client_y() - offset_y).clamp(0.0, (height - rect.height()).max(0.0));
+    overlay.borrow_mut().panel_at = Some((left, top));
+}
+
+/// Where the panel sits: where it was dragged, else the corner
+/// furthest from what is being observed.
+///
+/// A fixed corner is wrong as often as it is right — half the time it
+/// covers the very thing you asked it about. Choosing the diagonally
+/// opposite corner is not a layout engine, but it is right far more
+/// often, and dragging covers the rest.
+fn panel_position(overlay: &Overlay, display: Option<&Element>) -> String {
+    if let Some((left, top)) = overlay.panel_at {
+        return format!("left:{left}px;top:{top}px;right:auto;bottom:auto");
+    }
+    let Some(win) = window() else {
+        return "right:8px;bottom:8px".to_owned();
+    };
+    let width = win
+        .inner_width()
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let height = win
+        .inner_height()
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let Some(rect) = display.map(|display| display.get_bounding_client_rect()) else {
+        return "right:8px;bottom:8px".to_owned();
+    };
+    let horizontal = if rect.left() + rect.width() / 2.0 < width / 2.0 {
+        "right:8px;left:auto"
+    } else {
+        "left:8px;right:auto"
+    };
+    let vertical = if rect.top() + rect.height() / 2.0 < height / 2.0 {
+        "bottom:8px;top:auto"
+    } else {
+        "top:8px;bottom:auto"
+    };
+    format!("{horizontal};{vertical}")
 }
 
 /// Build the rAF callback once and stash it on the overlay.
@@ -705,20 +860,27 @@ fn paint_frame(overlay: &Rc<RefCell<Overlay>>, target: Option<TargetId>) {
         return;
     };
     let rect = element.get_bounding_client_rect();
-    let _ = state.outline.set_attribute(
-        "style",
-        &format!(
-            "display:block;left:{}px;top:{}px;width:{}px;height:{}px",
-            rect.left(),
-            rect.top(),
-            rect.width(),
-            rect.height()
-        ),
+    let box_style = format!(
+        "display:block;left:{}px;top:{}px;width:{}px;height:{}px",
+        rect.left(),
+        rect.top(),
+        rect.width(),
+        rect.height()
     );
+    let _ = state.outline.set_attribute("style", &box_style);
+    let _ = state.shield.set_attribute("style", &box_style);
     let latched = state.machine.is_latched();
     let _ = state
         .outline
         .set_attribute("class", if latched { "outline pinned" } else { "outline" });
+    let _ = state.shield.set_attribute(
+        "title",
+        if latched {
+            "click to stop pinning this display"
+        } else {
+            "click to pin this display"
+        },
+    );
 
     // Inside the outline's top-left, overlapping the display rather
     // than floating above it. Outside, the walk to reach it crosses
@@ -780,12 +942,15 @@ fn draw_panel(overlay: &Rc<RefCell<Overlay>>) {
         return;
     };
     let subject = default_subject(&painted.snapshot, hovered.as_deref()).map(str::to_owned);
+    let display = state.element(painted.target).cloned();
+    let position = panel_position(&state, display.as_ref());
     state.panel.show(
         &document,
         &painted.snapshot,
         &painted.signature,
         subject.as_deref(),
         painted.truncated,
+        &position,
     );
     state.painted = Some(painted);
 }
@@ -817,7 +982,7 @@ fn rebuild(overlay: &Rc<RefCell<Overlay>>, target: TargetId, host: &Element) {
     let Some(document) = window().and_then(|w| w.document()) else {
         return;
     };
-    let layer = overlay.borrow().layer.clone();
+    let layer = overlay.borrow().marks.clone();
 
     let mut budget = MARKER_CAP;
     let mut slot_markers = Vec::new();
@@ -1165,7 +1330,7 @@ fn transient(overlay: &Rc<RefCell<Overlay>>, class: &str, left: f64, top: f64, w
         "style",
         &format!("left:{left}px;top:{top}px;width:{w}px;height:{h}px"),
     );
-    let _ = overlay.borrow().layer.append_child(&marker);
+    let _ = overlay.borrow().marks.append_child(&marker);
     let doomed = marker.clone();
     let retire = Closure::once_into_js(move || {
         doomed.remove();
@@ -1189,13 +1354,18 @@ const CSS: &str = "\
 :host { position: fixed; inset: 0; pointer-events: none; z-index: 2147483000; }
 .layer { position: fixed; inset: 0; pointer-events: none;
          font: 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; }
-.outline { position: fixed; display: none; box-sizing: border-box;
+.marks { position: fixed; inset: 0; pointer-events: none; z-index: 1; }
+.shield { position: fixed; display: none; z-index: 2; pointer-events: auto; cursor: pointer;
+          background: transparent; }
+.shield:hover { background: color-mix(in srgb, #4f8cff 7%, transparent); }
+.outline { position: fixed; display: none; z-index: 3; pointer-events: none; box-sizing: border-box;
            border: 1px solid #4f8cff; background: color-mix(in srgb, #4f8cff 5%, transparent);
            border-radius: 2px; }
 .outline.pinned { border-style: dashed; border-width: 2px; }
-.pin { position: fixed; display: none; pointer-events: auto; cursor: pointer;
-       height: 13px; padding: 0 5px; font: inherit; line-height: 13px; color: #fff;
-       background: #4f8cff; border: 0; border-radius: 2px 2px 0 0; }
+.pin { position: fixed; display: none; z-index: 4; pointer-events: auto; cursor: pointer;
+       height: 20px; padding: 0 10px; font: inherit; line-height: 20px; color: #fff;
+       background: #4f8cff; border: 0; border-radius: 0 0 3px 0; }
+.pin:hover { background: #1f6feb; }
 .pin.pinned { background: #1f6feb; }
 .mark { position: fixed; display: none; box-sizing: border-box; border-radius: 1px; }
 .mark[data-shape=extent] { border: 1px solid var(--ink); background: var(--wash); }
