@@ -1,11 +1,16 @@
 //! UCAN authorization handler.
 //!
-//! Handles POST /ucan/ requests by:
-//! 1. Reading the CBOR-encoded UCAN container from the request body
-//! 2. Passing it to UcanAuthorizer for verification and authorization
-//! 3. Reissuing the authorized operation as a service-signed permit
-//!    against this worker's `/object/` path (see [`crate::permit`])
-//! 4. Returning the serialized permit as CBOR
+//! Handles POST /ucan/ requests. An invocation arrives one of two ways:
+//!
+//! - Under the UCAN scheme in `Authorization`, the body being the bytes
+//!   the operation stores. The invocation is verified and performed in
+//!   this request over the bucket ([`crate::objects`]). Off the worker
+//!   runtime, where there is no bucket, it is answered with a
+//!   service-signed permit against this worker's `/object/` path (see
+//!   [`crate::permit`]), as CBOR.
+//! - As a CBOR container in the body, the permit flow of clients that
+//!   ask for it and of the registration, revocation and deletion
+//!   commands, always answered with a permit.
 //!
 //! Served outside the Router, straight from the fetch event: recording
 //! an invocation must outlive the response, and only the event's
@@ -86,10 +91,13 @@ fn with_cors_headers(response: Response) -> Response {
     let headers = response.headers().clone();
     let _ = headers.set("Access-Control-Allow-Origin", "*");
     let _ = headers.set("Access-Control-Allow-Methods", "POST, OPTIONS");
-    let _ = headers.set("Access-Control-Allow-Headers", "Content-Type");
+    let _ = headers.set(
+        "Access-Control-Allow-Headers",
+        "Authorization, Content-Type, Accept, Range",
+    );
     let _ = headers.set(
         "Access-Control-Expose-Headers",
-        "Content-Type, Server-Timing",
+        "Content-Type, Content-Length, Content-Range, ETag, Server-Timing, UCAN-Command, UCAN-Subject, UCAN-Arguments",
     );
     response.with_headers(headers)
 }
@@ -124,6 +132,20 @@ fn max_body_bytes(env: &Env) -> u64 {
         .unwrap_or(DEFAULT_MAX_BODY_BYTES)
 }
 
+/// The limit for a request that carries its invocation in
+/// `Authorization`: its body is the bytes a write stores, so it is
+/// bounded by the object size the service accepts rather than by a
+/// chain's size.
+const DEFAULT_MAX_PAYLOAD_BYTES: u64 = 32 * 1024 * 1024;
+
+fn max_payload_bytes(env: &Env) -> u64 {
+    env.var("UCAN_MAX_PAYLOAD_BYTES")
+        .ok()
+        .and_then(|value| value.to_string().parse().ok())
+        .unwrap_or(DEFAULT_MAX_PAYLOAD_BYTES)
+        .max(max_body_bytes(env))
+}
+
 /// What the caller said it was sending, when it said.
 fn declared_length(req: &Request) -> Option<u64> {
     req.headers()
@@ -144,16 +166,33 @@ fn too_large(limit: u64) -> Result<Response> {
     .with_status(413))
 }
 
+/// The invocation the request carries in `Authorization`, when it
+/// carries one under the UCAN scheme.
+fn credential(req: &Request) -> Option<String> {
+    req.headers()
+        .get("authorization")
+        .ok()
+        .flatten()
+        .filter(|value| dialog_remote_ucan::is_credential(value))
+}
+
 /// POST /ucan/ → Authorize UCAN invocation and return presigned S3
 /// request, recording the invocation in ingest under `ctx.wait_until`.
 pub async fn serve(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
+    if let Some(credential) = credential(&req) {
+        return serve_invocation(req, &credential, env, ctx)
+            .await
+            .map(with_cors_headers);
+    }
+
+    let limit = max_body_bytes(&env);
     // Refused on size alone, before anything is decoded: a body this
     // large is not a UCAN we failed to parse, and running the parser
     // over it is the work the limit exists to avoid.
     if let Some(declared) = declared_length(&req)
-        && declared > max_body_bytes(&env)
+        && declared > limit
     {
-        return Ok(with_cors_headers(too_large(max_body_bytes(&env))?));
+        return Ok(with_cors_headers(too_large(limit)?));
     }
     let body_bytes = match req.bytes().await {
         Ok(bytes) => bytes,
@@ -166,8 +205,8 @@ pub async fn serve(mut req: Request, env: Env, ctx: Context) -> Result<Response>
         }
     };
     // A request that declared nothing, or lied about it.
-    if body_bytes.len() as u64 > max_body_bytes(&env) {
-        return Ok(with_cors_headers(too_large(max_body_bytes(&env))?));
+    if body_bytes.len() as u64 > limit {
+        return Ok(with_cors_headers(too_large(limit)?));
     }
 
     // Registration commands ride the same endpoint; anything else falls
@@ -201,19 +240,79 @@ pub async fn serve(mut req: Request, env: Env, ctx: Context) -> Result<Response>
             .map(with_cors_headers);
     }
 
-    // Permits are redeemed where they were issued: the origin the
-    // client reached this service at is the one its `/object/` URLs
-    // name, so a preview alias and a custom domain each answer for
-    // themselves.
-    let origin = match req.url() {
-        Ok(url) => url.origin().ascii_serialization(),
+    let origin = match origin(&req) {
+        Ok(origin) => origin,
+        Err(refusal) => return Ok(with_cors_headers(refusal.to_response()?)),
+    };
+    let served = presign(&body_bytes, &origin, &env).await;
+    answer(served, &body_bytes, &env, &ctx).map(with_cors_headers)
+}
+
+/// Serve an invocation that arrived in `Authorization`: verify it and
+/// perform it in this request when this runtime has the bucket, else
+/// answer with a permit for it.
+async fn serve_invocation(
+    mut req: Request,
+    credential: &str,
+    env: Env,
+    ctx: Context,
+) -> Result<Response> {
+    let limit = max_payload_bytes(&env);
+    if let Some(declared) = declared_length(&req)
+        && declared > limit
+    {
+        return too_large(limit);
+    }
+    let container = match dialog_remote_ucan::credential_container(credential) {
+        Ok(container) => container,
         Err(error) => {
-            let refusal = Refusal::unclassified(format!("request url: {error}"));
-            return Ok(with_cors_headers(refusal.to_response()?));
+            let refusal: Refusal = AuthorizeError::Malformed {
+                detail: format!("the credential does not carry a container: {error}"),
+            }
+            .into();
+            return refusal.to_response();
         }
     };
+    // The container's own bytes, for the screens and the ledger that
+    // read a container as the body used to carry it.
+    let container_bytes = match container.to_bytes() {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            let refusal = Refusal::unclassified(format!("container: {error}"));
+            return refusal.to_response();
+        }
+    };
+    let origin = match origin(&req) {
+        Ok(origin) => origin,
+        Err(refusal) => return refusal.to_response(),
+    };
 
-    let (response, metered) = match presign(&body_bytes, &origin, &env).await {
+    let served = match perform(container, &container_bytes, &mut req, &env).await {
+        Ok(Some(answer)) => Ok(answer),
+        Ok(None) => presign(&container_bytes, &origin, &env).await,
+        Err(failure) => Err(failure),
+    };
+    answer(served, &container_bytes, &env, &ctx)
+}
+
+/// Permits are redeemed where they were issued: the origin the client
+/// reached this service at is the one its `/object/` URLs name, so a
+/// preview alias and a custom domain each answer for themselves.
+fn origin(req: &Request) -> std::result::Result<String, Refusal> {
+    req.url()
+        .map(|url| url.origin().ascii_serialization())
+        .map_err(|error| Refusal::unclassified(format!("request url: {error}")))
+}
+
+/// The response for how an invocation was served, its record queued
+/// behind it.
+fn answer(
+    served: std::result::Result<(Response, u64), PresignFailure>,
+    container_bytes: &[u8],
+    env: &Env,
+    ctx: &Context,
+) -> Result<Response> {
+    let (response, metered) = match served {
         Ok((response, bytes)) => (response, Some(("ok", None, bytes))),
         Err(failure) => {
             failure.emit();
@@ -230,12 +329,12 @@ pub async fn serve(mut req: Request, env: Env, ctx: Context) -> Result<Response>
 
     #[cfg(target_arch = "wasm32")]
     if let Some((outcome, reason, bytes)) = metered {
-        record_invocation(&body_bytes, outcome, reason, bytes, &env, &ctx);
+        record_invocation(container_bytes, outcome, reason, bytes, env, ctx);
     }
     #[cfg(not(target_arch = "wasm32"))]
-    let _ = (metered, ctx);
+    let _ = (metered, container_bytes, env, ctx);
 
-    Ok(with_cors_headers(response))
+    Ok(response)
 }
 
 /// Queue the invocation record behind the response. Failures are logged,
@@ -268,14 +367,23 @@ fn record_invocation(
 
 /// Authorize the container and answer the signed permit, together
 /// with the declared write bytes when the permit carries them.
-async fn presign(
+/// When the stages of verifying an invocation finished, in
+/// milliseconds since the epoch, for `Server-Timing`.
+struct Stages {
+    started: u64,
+    authorized: u64,
+    screened: u64,
+}
+
+/// Verify the invocation's chain, its revocations and the subject's
+/// provisioning, and read the operation it authorizes: the same three
+/// steps whether the answer is a permit or the operation's outcome.
+async fn authorize(
     body_bytes: &[u8],
-    origin: &str,
     env: &Env,
-) -> std::result::Result<(Response, u64), PresignFailure> {
+) -> std::result::Result<(dialog_remote_s3::Permit, Stages), PresignFailure> {
     let started = Date::now().as_millis();
     let authorizer = create_authorizer(env).map_err(PresignFailure::authorization)?;
-    let permit_key = permit_key(env).map_err(PresignFailure::authorization)?;
 
     // Revocation is checked inside the chain walk rather than after it,
     // so every proof is measured against the principals entitled to
@@ -302,6 +410,169 @@ async fn presign(
     #[cfg(target_arch = "wasm32")]
     screen_provisioning(body_bytes, env).await?;
     let screened = Date::now().as_millis();
+
+    Ok((
+        authorized_request,
+        Stages {
+            started,
+            authorized,
+            screened,
+        },
+    ))
+}
+
+/// Carry the operation out in the request that proved it, through the
+/// access layer over this service's bucket: the layer verifies the invocation and checks a
+/// write's body against what the invocation bound, feeding a blob's
+/// bytes to the bucket as they arrive; this service screens the
+/// subject's provisioning between the two, as it does before issuing a
+/// permit. `None` when the layer does not perform the operation, which
+/// the caller answers with a permit instead. Never answers with a
+/// permit's media type, which is how the client tells the two answers
+/// apart.
+#[cfg(target_arch = "wasm32")]
+async fn perform(
+    container: dialog_ucan_core::Container,
+    container_bytes: &[u8],
+    req: &mut Request,
+    env: &Env,
+) -> std::result::Result<Option<(Response, u64)>, PresignFailure> {
+    use crate::revocation::{checker::IndexedRevocations, index::kv::KvRevocationIndex};
+    use dialog_remote_ucan::{Access, Answer, Content, Payload};
+
+    let started = Date::now().as_millis();
+    let bucket = env.bucket("BUCKET").map_err(|e| {
+        PresignFailure::authorization(Refusal::unclassified(format!("Missing BUCKET: {e}")))
+    })?;
+    let revocations = env
+        .kv("REVOCATIONS_KV")
+        .map_err(|_| PresignFailure::authorization(unavailable()))?;
+    let access =
+        Access::with_shared_resolver(crate::objects::Objects::new(bucket), shared_resolver())
+            .with_revocations(IndexedRevocations(KvRevocationIndex::new(revocations)));
+
+    let verified = access.verify(container).await.map_err(|refusal| {
+        PresignFailure::authorization(Refusal::Authorization(refusal.reason().clone()))
+    })?;
+    let authorized = Date::now().as_millis();
+    screen_provisioning(container_bytes, env).await?;
+    let screened = Date::now().as_millis();
+    let described = crate::describe::describe(verified.chain());
+
+    // A write's bytes are the body, metered as declared; the layer
+    // reads them as they arrive.
+    let declared = declared_length(req).unwrap_or(0);
+    let payload: dialog_effects::blob::BlobReader = Box::new(Incoming {
+        stream: req
+            .stream()
+            .map_err(|e| Refusal::unclassified(format!("request body: {e}")))
+            .map_err(PresignFailure::authorization)?,
+    });
+    let answer = match access.perform(verified, Payload::Stream(payload)).await {
+        Answer::Unsupported => return Ok(None),
+        Answer::Refused(refusal) => {
+            return Err(PresignFailure::authorization(Refusal::Authorization(
+                refusal.reason().clone(),
+            )));
+        }
+        Answer::Performed(answer) => answer,
+    };
+    let stored = Date::now().as_millis();
+
+    let bytes = match answer.length {
+        Some(length) if length > 0 => length,
+        _ => declared,
+    };
+    let headers = Headers::new();
+    let _ = headers.set("Content-Type", answer.content_type);
+    if let Some(version) = &answer.version {
+        let _ = headers.set("ETag", &format!("\"{version}\""));
+    }
+    for (name, value) in &described {
+        let _ = headers.set(name, value);
+    }
+    let _ = headers.set(
+        "Server-Timing",
+        &format!(
+            "authorize;dur={}, screen;dur={}, store;dur={}, total;dur={}",
+            authorized.saturating_sub(started),
+            screened.saturating_sub(authorized),
+            stored.saturating_sub(screened),
+            Date::now().as_millis().saturating_sub(started)
+        ),
+    );
+    let response = match answer.body {
+        Content::Bytes(body) => Response::from_bytes(body),
+        Content::Stream(source) => {
+            if let Some(length) = answer.length {
+                let _ = headers.set("Content-Length", &length.to_string());
+            }
+            Response::from_stream(futures_util::stream::unfold(
+                source,
+                |mut source| async move {
+                    match source.next().await {
+                        Ok(Some(chunk)) => Some((Ok(chunk), source)),
+                        Ok(None) => None,
+                        Err(error) => {
+                            Some((Err(worker::Error::RustError(error.to_string())), source))
+                        }
+                    }
+                },
+            ))
+        }
+    };
+    let response = response
+        .map_err(|e| Refusal::unclassified(format!("response error: {e}")))
+        .map_err(PresignFailure::authorization)?
+        .with_status(answer.status)
+        .with_headers(headers);
+    Ok(Some((response, bytes)))
+}
+
+/// The request body as the layer reads it: chunk by chunk, as it
+/// arrives.
+#[cfg(target_arch = "wasm32")]
+struct Incoming {
+    stream: ByteStream,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[async_trait::async_trait(?Send)]
+impl dialog_effects::blob::BlobSource for Incoming {
+    async fn next(
+        &mut self,
+    ) -> std::result::Result<Option<Vec<u8>>, dialog_effects::blob::BlobError> {
+        use futures_util::StreamExt as _;
+        self.stream
+            .next()
+            .await
+            .transpose()
+            .map_err(|error| dialog_effects::blob::BlobError::Storage(error.to_string()))
+    }
+}
+
+/// Off the worker runtime there is no bucket to perform against; every
+/// request is answered with a permit.
+#[cfg(not(target_arch = "wasm32"))]
+async fn perform(
+    _container: dialog_ucan_core::Container,
+    _container_bytes: &[u8],
+    _req: &mut Request,
+    _env: &Env,
+) -> std::result::Result<Option<(Response, u64)>, PresignFailure> {
+    Ok(None)
+}
+
+async fn presign(
+    body_bytes: &[u8],
+    origin: &str,
+    env: &Env,
+) -> std::result::Result<(Response, u64), PresignFailure> {
+    let (authorized_request, stages) = authorize(body_bytes, env).await?;
+    let started = stages.started;
+    let authorized = stages.authorized;
+    let screened = stages.screened;
+    let permit_key = permit_key(env).map_err(PresignFailure::authorization)?;
 
     // Write permits carry the declared size as a signed Content-Length,
     // which is the exact byte figure metering records.
@@ -521,6 +792,24 @@ thread_local! {
         const { std::cell::OnceCell::new() };
     /// The permit key derived by this isolate, if it has derived one.
     static PERMIT_KEY: std::cell::OnceCell<PermitKey> = const { std::cell::OnceCell::new() };
+    /// The issuer resolver the access layer verifies with, one per
+    /// isolate so its cache of resolved `did:web` documents outlives a
+    /// request.
+    static RESOLVER: std::cell::OnceCell<std::sync::Arc<dialog_remote_ucan_s3::DefaultResolver>> =
+        const { std::cell::OnceCell::new() };
+}
+
+#[cfg(target_arch = "wasm32")]
+fn shared_resolver() -> std::sync::Arc<dialog_remote_ucan_s3::DefaultResolver> {
+    RESOLVER.with(|cached| {
+        cached
+            .get_or_init(|| {
+                std::sync::Arc::new(dialog_did_web::CachingResolver::new(
+                    dialog_did_web::WebResolver::new(),
+                ))
+            })
+            .clone()
+    })
 }
 
 /// The address every authorizer describes requests against. See

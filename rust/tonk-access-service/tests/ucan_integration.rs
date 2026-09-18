@@ -16,7 +16,7 @@ use dialog_artifacts::{ArtifactSelector, Entity};
 use dialog_capability::access::AuthorizeError;
 use dialog_operator::helpers::{test_operator_with_profile, unique_name};
 use dialog_query::Attribute;
-use dialog_remote_ucan_s3::UcanAddress;
+use dialog_remote_ucan::UcanAddress;
 use dialog_repository::Blob;
 use dialog_repository::RepositoryExt as _;
 use futures_util::{StreamExt, stream};

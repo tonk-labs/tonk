@@ -2513,7 +2513,7 @@ async fn run_pause_sync(
 /// Shared by [`enable_sync_inner`] (called for both the create and
 /// enable-sync forms) so they produce an identical remote shape.
 fn space_config(remote: &str) -> Result<RepositoryConfiguration, RepositoryError> {
-    use dialog_remote_ucan_s3::UcanAddress;
+    use dialog_remote_ucan::UcanAddress;
 
     let remote = remote.trim();
     if remote.is_empty() {
@@ -8073,7 +8073,7 @@ mod tests {
     use tower::ServiceExt;
 
     use axum::Router;
-    use dialog_remote_ucan_s3::UcanAddress;
+    use dialog_remote_ucan::UcanAddress;
     use dialog_repository::SiteAddress;
 
     use super::{
@@ -9985,7 +9985,7 @@ block/insert!:
         endpoint: &str,
         relay: Option<&str>,
     ) -> RepositoryInfo {
-        use dialog_remote_ucan_s3::UcanAddress;
+        use dialog_remote_ucan::UcanAddress;
 
         let mut remote = RemoteConfiguration::new(SiteAddress::from(UcanAddress::new(endpoint)));
         if let Some(relay) = relay {
