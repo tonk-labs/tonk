@@ -158,6 +158,25 @@ export function decodeAddress(encoded) {
     return address;
 }
 
+/**
+ * The label of a channel carrying iroh datagrams rather than text.
+ * Mirrors `tonk_rtc::peer::DATAGRAM_LABEL`.
+ */
+export const DATAGRAM_LABEL = "tonk-iroh";
+
+/**
+ * Channel options for that label.
+ *
+ * Unreliable and unordered, and this is not an optimization: QUIC
+ * supplies its own reliability and ordering, and a channel that also
+ * retransmits fights it — head-of-line blocking appears in a protocol
+ * designed to avoid it. Quiet networks hide it entirely; it shows up
+ * under loss as latency that grows instead of recovering.
+ */
+export function datagramChannel() {
+    return { label: DATAGRAM_LABEL, ordered: false, maxRetransmits: 0 };
+}
+
 /** The phrase both ends derive the rendezvous from. Mirrors `tonk_rtc::rendezvous::RENDEZVOUS`. */
 export const RENDEZVOUS = "tonk/rtc/rendezvous/v1";
 
@@ -262,9 +281,10 @@ export function mungeOffer(sdp, credential) {
  * No signalling channel is involved, so there is nothing to wait for
  * and nothing to time out except ICE itself.
  */
-export async function dial(address, credential = freshCredential()) {
+export async function dial(address, credential = freshCredential(), channelInit = {}) {
     const connection = new RTCPeerConnection({ iceServers: [] });
-    const channel = connection.createDataChannel(CHANNEL_LABEL);
+    const { label = CHANNEL_LABEL, ...init } = channelInit;
+    const channel = connection.createDataChannel(label, init);
 
     const offer = await connection.createOffer();
     await connection.setLocalDescription({

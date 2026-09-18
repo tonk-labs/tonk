@@ -111,3 +111,9 @@ web-sys = { workspace = true, optional = true, features = [
   "RtcDataChannelType",
   "RtcPeerConnection",
 ] }
+
+# The listener the browser end-to-end test dials. Needs a runtime, so it
+# is native-only like everything else that binds a socket.
+[[example]]
+name = "rendezvous_listener"
+required-features = []

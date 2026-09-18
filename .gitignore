@@ -79,3 +79,8 @@ temp/**
 rust/**/did:key:*
 # Local dev service state (dev:web ACCESS_STATE_DIR)
 .tonk-dev/
+
+# Playwright, for the browser end-to-end scripts under
+# `rust/tonk-ui/tests/e2e`. Installed on demand rather than vendored.
+rust/tonk-ui/tests/e2e/node_modules/
+rust/tonk-ui/tests/e2e/package*.json
