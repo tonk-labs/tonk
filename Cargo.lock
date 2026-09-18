@@ -7088,6 +7088,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonk-rtc-probe"
+version = "0.6.15"
+dependencies = [
+ "dialog-capability",
+ "dialog-did-web",
+ "dialog-effects",
+ "dialog-iroh-remote",
+ "dialog-operator",
+ "dialog-storage",
+ "iroh",
+ "serde",
+ "serde-wasm-bindgen",
+ "tonk-rtc",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "tonk-schema"
 version = "0.6.15"
 dependencies = [

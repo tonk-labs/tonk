@@ -591,3 +591,66 @@ async function negotiate(offer, ui) {
         close: () => connection.close(),
     };
 }
+
+/**
+ * The envelope a page posts to the service worker when it has a carrier
+ * open. Mirrors `tonk_worker::router::bridge`'s dispatch.
+ */
+export const CARRIER_ENVELOPE = "tonk-rtc-carrier";
+
+/**
+ * Relay a data channel to a `MessagePort`, and back.
+ *
+ * The page half of the worker boundary. `RTCPeerConnection` is
+ * `[Exposed=Window]`, so the connection lives here while the iroh
+ * endpoint lives in the worker; this is the pipe, and it interprets
+ * nothing.
+ *
+ * Every datagram crosses as a transferred `ArrayBuffer` — neutered
+ * rather than cloned, because this carries far more traffic than an
+ * application-level bridge and a structured clone per packet would put
+ * a memcpy in the data path.
+ *
+ * Closing is explicit: a closed channel posts `null`, because a closed
+ * port fires no event and the worker would otherwise hold a route to
+ * nowhere.
+ */
+export function relay(channel, port) {
+    channel.binaryType = "arraybuffer";
+
+    channel.addEventListener("message", (event) => {
+        if (event.data instanceof ArrayBuffer) port.postMessage(event.data, [event.data]);
+    });
+    port.addEventListener("message", (event) => {
+        // A send can fail while the channel is closing, which is
+        // ordinary: QUIC treats a lost datagram as loss and retransmits.
+        if (event.data instanceof ArrayBuffer) {
+            try { channel.send(event.data); } catch { /* closing */ }
+        }
+    });
+    port.start();
+
+    channel.addEventListener("close", () => port.postMessage(null));
+}
+
+/**
+ * Dial a local `tonk` and hand the carrier to `worker`.
+ *
+ * Nothing is exchanged with the CLI to get here: the port and the
+ * certificate fingerprint both come from the rendezvous phrase, and the
+ * candidate is loopback. Resolves once the channel is open and the
+ * worker has been given its end.
+ */
+export async function attachCarrier(worker, address) {
+    const { connection, channel } = await dial(
+        address ?? (await localAddress()),
+        freshCredential(),
+        datagramChannel(),
+    );
+
+    const { port1, port2 } = new MessageChannel();
+    relay(channel, port1);
+    worker.postMessage({ v: 1, type: CARRIER_ENVELOPE }, [port2]);
+
+    return { connection, channel };
+}

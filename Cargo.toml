@@ -29,6 +29,7 @@ members = [
   "rust/tonk-render",
   "rust/tonk-router",
   "rust/tonk-rtc",
+    "rust/tonk-rtc-probe",
   "rust/tonk-schema",
   "rust/tonk-sigil",
   "rust/tonk-table",

@@ -1,0 +1,26 @@
+[package]
+name = "tonk-rtc-probe"
+description = "A wasm harness that runs the worker side of the CLI relay, for the browser end-to-end test."
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+dialog-capability = { workspace = true }
+dialog-did-web = { workspace = true }
+dialog-effects = { workspace = true }
+dialog-iroh-remote = { workspace = true, features = ["transport"] }
+dialog-operator = { workspace = true, features = ["helpers"] }
+dialog-storage = { workspace = true }
+iroh = { version = "=1.2.0" }
+serde = { workspace = true, features = ["derive"] }
+serde-wasm-bindgen = "0.6"
+tonk-rtc = { workspace = true, features = ["iroh"] }
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+web-sys = { workspace = true, features = ["MessagePort"] }
