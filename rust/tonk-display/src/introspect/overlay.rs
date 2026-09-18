@@ -1530,6 +1530,25 @@ fn origin_class(origin: Origin) -> &'static str {
 
 /// Everything the overlay draws. Scoped by the shadow root, so page
 /// styles cannot reach it and it cannot reach the page.
+///
+/// Colour is the app's Bauhaus palette, carrying its role logic onto
+/// what a marker means rather than inventing a second scheme:
+///
+/// - a concept field is an **attribute**, so it takes the triangle,
+///   the same yellow the tree gives attributes and the editor gives
+///   keys;
+/// - `{this}` is an **entity**, so it takes the circle;
+/// - a `{dom.host/*}` value comes from the page rather than the
+///   branch, so it takes the neutral closure — it is ground, not
+///   figure;
+/// - an iteration key is a **value**, so it takes the square;
+/// - a command **changes state**, which is exactly what the palette
+///   reserves the alarm for.
+///
+/// Read through `--tonk-*` with literal fallbacks, as `tonk-tree`
+/// does: the overlay lives in a shadow root inside a guest and cannot
+/// assume the sheet defining them was injected there. Corners are
+/// square, per `--tonk-code-radius: 0`.
 const CSS: &str = "\
 :host { position: fixed; inset: 0; pointer-events: none; z-index: 2147483000; }
 .layer { position: fixed; inset: 0; pointer-events: none;
@@ -1537,38 +1556,45 @@ const CSS: &str = "\
 .marks { position: fixed; inset: 0; pointer-events: none; z-index: 1; }
 .shield { position: fixed; display: none; z-index: 2; pointer-events: auto; cursor: pointer;
           background: transparent; }
-.shield:hover { background: color-mix(in srgb, #4f8cff 7%, transparent); }
-.outline { position: fixed; display: none; z-index: 3; pointer-events: none; box-sizing: border-box;
-           border: 1px solid #4f8cff; background: color-mix(in srgb, #4f8cff 5%, transparent);
-           border-radius: 2px; }
-.outline.pinned { border-style: dashed; border-width: 2px; }
+.shield:hover { background: color-mix(in srgb, var(--tonk-circle, #3d6da8) 8%, transparent); }
+.outline { position: fixed; display: none; z-index: 3; pointer-events: none;
+           box-sizing: border-box; border: 1px solid var(--tonk-circle, #3d6da8);
+           background: color-mix(in srgb, var(--tonk-circle, #3d6da8) 5%, transparent);
+           border-radius: 0; }
+.outline.pinned { border-color: var(--tonk-triangle, #c89a2b); border-width: 2px; }
 .pin { position: fixed; display: none; z-index: 4; pointer-events: auto; cursor: pointer;
-       height: 20px; padding: 0 10px; font: inherit; line-height: 20px; color: #fff;
-       background: #4f8cff; border: 0; border-radius: 0 0 3px 0; }
-.pin:hover { background: #1f6feb; }
-.pin.pinned { background: #1f6feb; }
-.mark { position: fixed; display: none; box-sizing: border-box; border-radius: 1px; }
+       height: 20px; padding: 0 10px; font: inherit; line-height: 20px; color: #17171a;
+       background: var(--tonk-circle, #3d6da8); border: 0; border-radius: 0; }
+.pin:hover { filter: brightness(1.15); }
+.pin.pinned { background: var(--tonk-triangle, #c89a2b); }
+.mark { position: fixed; display: none; box-sizing: border-box; border-radius: 0; }
 .mark[data-shape=extent] { border: 1px solid var(--ink); background: var(--wash); }
 .mark[data-shape=point] { background: var(--ink); }
 .mark[data-shape=edge] { background: var(--ink); }
-.badge { position: fixed; display: none; height: 13px; line-height: 13px; padding: 0 3px;
-         white-space: nowrap; color: #fff; background: var(--ink); border-radius: 2px; }
+.badge { position: fixed; display: none; height: 14px; line-height: 14px; padding: 0 4px;
+         white-space: nowrap; color: #17171a; background: var(--ink); border-radius: 0; }
 .leader { position: fixed; display: none; width: 0; border-left: 1px dashed var(--ink); }
-.from-concept { --ink: #22a06b; --wash: color-mix(in srgb, #22a06b 10%, transparent); }
-.from-subject { --ink: #8250df; --wash: color-mix(in srgb, #8250df 10%, transparent); }
-.from-host    { --ink: #bf8700; --wash: color-mix(in srgb, #bf8700 10%, transparent); }
-.from-key     { --ink: #0969da; --wash: color-mix(in srgb, #0969da 10%, transparent); }
-.command      { --ink: #d6336c; --wash: color-mix(in srgb, #d6336c 8%, transparent); }
-.command.inert { --ink: #c92a2a; }
+.from-concept { --ink: var(--tonk-triangle, #c89a2b);
+                --wash: color-mix(in srgb, #c89a2b 12%, transparent); }
+.from-subject { --ink: var(--tonk-circle, #3d6da8);
+                --wash: color-mix(in srgb, #3d6da8 12%, transparent); }
+.from-host    { --ink: var(--tonk-closure, #7a7268);
+                --wash: color-mix(in srgb, #7a7268 12%, transparent); }
+.from-key     { --ink: var(--tonk-square, #b94a3d);
+                --wash: color-mix(in srgb, #b94a3d 12%, transparent); }
+.command      { --ink: var(--tonk-alarm, #a8302a);
+                --wash: color-mix(in srgb, #a8302a 8%, transparent); }
 .mark.command[data-shape=extent] { border-style: dashed; }
 .mark.command::after { content: ''; position: absolute; right: -3px; top: -3px;
-                       width: 7px; height: 7px; border-radius: 50%; background: var(--ink); }
+                       width: 7px; height: 7px; background: var(--ink); }
 .mark.command.inert[data-shape=extent] { border-style: dotted; border-width: 2px; }
-.flash { position: fixed; box-sizing: border-box; border: 2px solid #e8590c; border-radius: 2px;
-         background: color-mix(in srgb, #e8590c 30%, transparent);
+.flash { position: fixed; box-sizing: border-box;
+         border: 2px solid var(--tonk-triangle, #c89a2b);
+         background: color-mix(in srgb, #c89a2b 28%, transparent);
          animation: tonk-introspect-flash 700ms ease-out forwards; }
-.bounce { position: fixed; box-sizing: border-box; border: 2px solid #d6336c; border-radius: 3px;
-          background: color-mix(in srgb, #d6336c 22%, transparent);
+.bounce { position: fixed; box-sizing: border-box;
+          border: 2px solid var(--tonk-alarm, #a8302a);
+          background: color-mix(in srgb, #a8302a 22%, transparent);
           animation: tonk-introspect-bounce 700ms cubic-bezier(.2,.9,.3,1) forwards; }
 @keyframes tonk-introspect-flash {
   from { opacity: 1; transform: scale(1.06); }
@@ -1580,6 +1606,6 @@ const CSS: &str = "\
   to   { opacity: 0; transform: scale(1); }
 }
 [data-focus=off] { opacity: .18; }
-.mark[data-focus=on] { outline: 1px solid #fff; outline-offset: 1px; }
-.badge[data-focus=on] { box-shadow: 0 0 0 1px #fff; }
+.mark[data-focus=on] { outline: 1px solid #e6e3de; outline-offset: 1px; }
+.badge[data-focus=on] { box-shadow: 0 0 0 1px #e6e3de; }
 ";

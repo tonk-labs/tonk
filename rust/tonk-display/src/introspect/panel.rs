@@ -518,6 +518,13 @@ fn draw_notation(document: &Document, parent: &Element, lines: &notation::Docume
         let Some(row) = div(document, "nline") else {
             continue;
         };
+        // The spans go in one box, not straight into the row. A row is
+        // a flex container so the relation can sit at its end, and a
+        // span placed directly in it becomes a flex item — which is
+        // what broke `account:` into `ac/co/un/t:` down the side.
+        let Some(code) = div(document, "ncode") else {
+            continue;
+        };
         if let Some(field) = &line.field {
             let _ = row.set_attribute("data-field", field);
         }
@@ -531,8 +538,9 @@ fn draw_notation(document: &Document, parent: &Element, lines: &notation::Docume
             };
             let _ = element.set_attribute("class", token_class(span.token));
             element.set_text_content(Some(&span.text));
-            let _ = row.append_child(&element);
+            let _ = code.append_child(&element);
         }
+        let _ = row.append_child(&code);
         // The relation, dim and to the right: the field name is local
         // to the concept, the attribute is the fact that was stored.
         if let Some(attribute) = &line.attribute
@@ -559,9 +567,12 @@ fn is_leading(line: &Line) -> bool {
 fn token_class(token: Token) -> &'static str {
     match token {
         Token::Head => "t-head",
+        Token::Effect => "t-effect",
         Token::Anchor => "t-anchor",
+        Token::Sigil => "t-sigil",
         Token::Key => "t-key",
         Token::Value => "t-value",
+        Token::Number => "t-number",
         Token::Entity => "t-entity",
         Token::Comment => "t-comment",
         Token::Plain => "t-plain",
@@ -589,63 +600,80 @@ fn button(document: &Document, class: &str, text: &str) -> Option<Element> {
     Some(element)
 }
 
-/// Everything the inspector draws. Concatenated into the overlay's sheet.
+/// Everything the inspector draws.
+///
+/// Colour follows the app's Bauhaus palette (`tonk-ui/styles.css`),
+/// with its role assignments rather than a second set: keys take the
+/// triangle (yellow — structural, eye-catching), strings the square
+/// (red — grounded, literal), numbers and types the circle (blue —
+/// abstract, receding), comments the closure grey, and the `!` effect
+/// marker the alarm. Each is read through its `--tonk-*` variable with
+/// the literal as a fallback, the way `tonk-tree` does, because the
+/// overlay lives in a shadow root inside a guest and cannot count on
+/// the sheet that defines them having been injected there.
+///
+/// Corners are square throughout, which is the palette's own rule
+/// (`--tonk-code-radius: 0`).
 pub const CSS: &str = "\
 .panel { position: fixed; display: none; z-index: 5; flex-direction: column;
-         width: min(58ch, calc(100vw - 16px)); max-height: min(70vh, 640px);
-         pointer-events: auto; color: #e9e9ee; background: rgba(18,18,22,.97);
-         border: 1px solid rgba(255,255,255,.10); border-radius: 6px; overflow: hidden;
+         width: min(72ch, calc(100vw - 16px)); max-height: min(72vh, 680px);
+         pointer-events: auto; color: #e6e3de; background: #17171a;
+         border: 1px solid #2c2a27; border-radius: 0;
          box-shadow: 0 10px 34px rgba(0,0,0,.5); }
 .head { position: relative; display: flex; align-items: center; gap: 8px; cursor: move;
-        padding: 7px 32px 7px 10px; user-select: none;
-        border-bottom: 1px solid rgba(255,255,255,.10); }
-.title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.close { position: absolute; top: 4px; right: 4px; width: 24px; height: 24px; padding: 0;
-         font: 15px/24px inherit; color: inherit; cursor: pointer; background: transparent;
-         border: 0; border-radius: 3px; }
-.close:hover { background: rgba(255,255,255,.14); }
-.toggles { display: flex; gap: 4px; padding: 6px 10px; flex-wrap: wrap; }
-.toggle { min-height: 24px; padding: 4px 12px; font: inherit; color: #9aa0ad; cursor: pointer;
-          background: rgba(255,255,255,.06); border: 0; border-radius: 4px; }
-.toggle:hover { color: #e9e9ee; background: rgba(255,255,255,.12); }
-.toggle.on { color: #0b0b0e; background: #7aa2ff; }
-.transport { display: flex; align-items: center; gap: 4px; padding: 0 10px 6px; }
-.control { min-width: 26px; min-height: 22px; padding: 2px 6px; font: inherit; color: #9aa0ad;
-           cursor: pointer; background: rgba(255,255,255,.06); border: 0; border-radius: 4px; }
-.control:hover { color: #e9e9ee; background: rgba(255,255,255,.12); }
-.control.on { color: #0b0b0e; background: #e8b339; }
-.position { margin-left: 6px; color: #6f7684; }
-.body { overflow: auto; border-top: 1px solid rgba(255,255,255,.08); }
-.section + .section { border-top: 1px solid rgba(255,255,255,.08); }
-.section-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-                padding: 5px 10px; background: rgba(255,255,255,.03); }
-.section-name { color: #6f7684; text-transform: uppercase; letter-spacing: .08em; }
-.chips { display: flex; gap: 4px; flex-wrap: wrap; }
-.facet, .command-chip { min-height: 20px; padding: 2px 8px; font: inherit; color: #9aa0ad;
-                        cursor: pointer; background: rgba(255,255,255,.06); border: 0;
-                        border-radius: 3px; }
-.facet:hover, .command-chip:hover { color: #e9e9ee; background: rgba(255,255,255,.14); }
-.facet.on { color: #0b0b0e; background: #7aa2ff; }
-.command-chip.on { color: #0b0b0e; background: #f06595; }
-.command-chip.inert { color: #c92a2a; text-decoration: line-through; }
-.section-body { padding: 4px 0; }
-.notation { padding: 2px 0; }
-.nline { display: flex; gap: 8px; padding: 1px 10px; white-space: pre-wrap;
-         word-break: break-word; }
-.nline:hover { background: rgba(255,255,255,.08); }
-.nline .relation { margin-left: auto; color: #4d535e; white-space: nowrap; }
-.t-head { color: #7aa2ff; font-weight: 600; }
-.t-anchor { color: #e8b339; }
-.t-key { color: #22a06b; }
-.t-value { color: #e9e9ee; }
-.t-entity { color: #b197fc; }
-.t-comment { color: #6f7684; font-style: italic; }
-.t-plain { color: #9aa0ad; }
-.source { padding: 4px 10px; white-space: pre-wrap; word-break: break-word; color: #9aa0ad; }
-.source .ref { color: #22a06b; background: color-mix(in srgb, #22a06b 18%, transparent);
-               border-radius: 2px; }
-.source .cmd { color: #f06595; background: color-mix(in srgb, #d6336c 20%, transparent);
-               border-radius: 2px; }
-.source [data-field]:hover { outline: 1px solid currentColor; }
-.note { padding: 5px 10px; color: #6f7684; }
+        padding: 9px 34px 9px 12px; user-select: none; border-bottom: 1px solid #2c2a27; }
+.title { font-weight: 600; letter-spacing: .01em; white-space: nowrap; overflow: hidden;
+         text-overflow: ellipsis; }
+.close { position: absolute; top: 6px; right: 6px; width: 24px; height: 24px; padding: 0;
+         font: 15px/24px inherit; color: #7a7268; cursor: pointer; background: transparent;
+         border: 0; border-radius: 0; }
+.close:hover { color: #e6e3de; background: #24231f; }
+.toggles { display: flex; gap: 1px; padding: 8px 12px 0; flex-wrap: wrap; }
+.toggle { min-height: 26px; padding: 5px 14px; font: inherit; color: #7a7268; cursor: pointer;
+          background: #1e1d1b; border: 0; border-radius: 0; }
+.toggle:hover { color: #e6e3de; background: #24231f; }
+.toggle.on { color: #17171a; background: var(--tonk-triangle, #c89a2b); }
+.transport { display: flex; align-items: center; gap: 1px; padding: 8px 12px; }
+.control { min-width: 30px; min-height: 24px; padding: 3px 8px; font: inherit; color: #7a7268;
+           cursor: pointer; background: #1e1d1b; border: 0; border-radius: 0; }
+.control:hover { color: #e6e3de; background: #24231f; }
+.control.on { color: #17171a; background: var(--tonk-square, #b94a3d); }
+.position { margin-left: 10px; color: #7a7268; }
+.body { overflow: auto; border-top: 1px solid #2c2a27; }
+.section + .section { border-top: 1px solid #2c2a27; }
+.section-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+                padding: 6px 12px; background: #1b1a18; }
+.section-name { color: #7a7268; text-transform: uppercase; letter-spacing: .12em; }
+.chips { display: flex; gap: 1px; flex-wrap: wrap; }
+.facet, .command-chip { min-height: 22px; padding: 3px 10px; font: inherit; color: #7a7268;
+                        cursor: pointer; background: #24231f; border: 0; border-radius: 0; }
+.facet:hover, .command-chip:hover { color: #e6e3de; background: #302e29; }
+.facet.on { color: #17171a; background: var(--tonk-circle, #3d6da8); }
+.command-chip.on { color: #17171a; background: var(--tonk-alarm, #a8302a); }
+.command-chip.inert { color: var(--tonk-alarm, #a8302a); text-decoration: line-through; }
+.section-body { padding: 6px 0; }
+.nline { display: flex; align-items: flex-start; gap: 14px; padding: 2px 12px;
+         line-height: 1.55; }
+.nline:hover { background: #1f1e1b; }
+/* The code owns the line; `min-width: 0` is what stops the relation
+   tag from squeezing it. */
+.ncode { flex: 1 1 auto; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.relation { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis;
+            white-space: nowrap; color: #55504a; }
+.t-head { color: var(--tonk-triangle, #c89a2b); font-weight: 600; }
+.t-effect { color: var(--tonk-alarm, #a8302a); font-weight: 600; }
+.t-anchor { color: var(--tonk-triangle, #c89a2b); }
+.t-sigil { color: #7a7268; }
+.t-key { color: var(--tonk-triangle, #c89a2b); }
+.t-value { color: var(--tonk-square, #b94a3d); }
+.t-number { color: var(--tonk-circle, #3d6da8); }
+.t-entity { color: var(--tonk-circle, #3d6da8); text-decoration: underline; }
+.t-comment { color: var(--tonk-closure, #7a7268); font-style: italic; }
+.t-plain { color: #8d877f; }
+.source { padding: 6px 12px; line-height: 1.55; white-space: pre-wrap;
+          overflow-wrap: anywhere; color: #8d877f; }
+.source .ref { color: var(--tonk-circle, #3d6da8); }
+.source .cmd { color: var(--tonk-alarm, #a8302a); }
+.source [data-field]:hover { background: #2c2a27; }
+.note { padding: 6px 12px; color: #7a7268; font-style: italic; }
 ";

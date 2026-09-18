@@ -29,14 +29,21 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Token {
-    /// The assertion head — `concept!:`, `prose!:`.
+    /// The name in an assertion head — `concept`, `prose`.
     Head,
-    /// An `&anchor` naming the declaration.
+    /// The `!` effect marker. Its own token because the palette gives
+    /// "this will change state" a colour of its own.
+    Effect,
+    /// A bookmark name after `&`.
     Anchor,
+    /// The `&` itself, which reads as reference rather than name.
+    Sigil,
     /// A field or property name, including its colon.
     Key,
-    /// A quoted or bare scalar.
+    /// A quoted string.
     Value,
+    /// A number or boolean — abstract, not material.
+    Number,
     /// An entity URI.
     Entity,
     /// A comment.
@@ -154,6 +161,16 @@ pub fn relations(descriptor_json: &str) -> BTreeMap<String, String> {
     out
 }
 
+/// `name` `!` `:` as three spans — the effect marker is not part of
+/// the name, and the palette colours it as consequence.
+fn head_spans(head: &str) -> Vec<Span> {
+    vec![
+        Span::new(Token::Head, head),
+        Span::new(Token::Effect, "!"),
+        Span::new(Token::Plain, ":"),
+    ]
+}
+
 /// Two spaces per level, as the library files are written.
 const INDENT: &str = "  ";
 
@@ -174,7 +191,7 @@ pub fn entity(
     relations: &BTreeMap<String, String>,
 ) -> Document {
     let mut document = Document::default();
-    document.push(None, vec![Span::new(Token::Head, format!("{head}!:"))]);
+    document.push(None, head_spans(head));
     document.push(
         Some("this"),
         vec![
@@ -206,12 +223,13 @@ pub fn entity(
 /// rather than as it was typed. The two say the same thing.
 pub fn declaration(head: &str, name: Option<&str>, descriptor_json: &str) -> Document {
     let mut document = Document::default();
-    let mut head_spans = vec![Span::new(Token::Head, format!("{head}!:"))];
+    let mut spans = head_spans(head);
     if let Some(name) = name {
-        head_spans.push(Span::new(Token::Plain, " "));
-        head_spans.push(Span::new(Token::Anchor, format!("&{name}")));
+        spans.push(Span::new(Token::Plain, " "));
+        spans.push(Span::new(Token::Sigil, "&"));
+        spans.push(Span::new(Token::Anchor, name));
     }
-    document.push(None, head_spans);
+    document.push(None, spans);
 
     let Ok(value) = serde_json::from_str::<serde_json::Value>(descriptor_json) else {
         document.push(
@@ -284,6 +302,8 @@ fn write_property(document: &mut Document, field: &str, key: &str, value: &serde
         serde_json::Value::String(text) => {
             if key == "the" {
                 Span::new(Token::Entity, text.clone())
+            } else if key == "cardinality" || key == "as" {
+                Span::new(Token::Number, text.clone())
             } else {
                 Span::new(Token::Value, text.clone())
             }
@@ -347,12 +367,12 @@ fn scalar(value: &Ipld) -> Span {
     match value {
         Ipld::String(text) if is_entity(text) => Span::new(Token::Entity, text.clone()),
         Ipld::String(text) => Span::new(Token::Value, quoted(text)),
-        Ipld::Integer(number) => Span::new(Token::Value, number.to_string()),
-        Ipld::Float(number) => Span::new(Token::Value, number.to_string()),
-        Ipld::Bool(flag) => Span::new(Token::Value, if *flag { "true" } else { "false" }),
-        Ipld::Null => Span::new(Token::Value, "null"),
+        Ipld::Integer(number) => Span::new(Token::Number, number.to_string()),
+        Ipld::Float(number) => Span::new(Token::Number, number.to_string()),
+        Ipld::Bool(flag) => Span::new(Token::Number, if *flag { "true" } else { "false" }),
+        Ipld::Null => Span::new(Token::Number, "null"),
         other => Span::new(
-            Token::Value,
+            Token::Number,
             serde_ipld_dagjson::to_vec(other)
                 .ok()
                 .and_then(|bytes| String::from_utf8(bytes).ok())
