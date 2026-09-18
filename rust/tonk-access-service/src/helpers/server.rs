@@ -6,7 +6,7 @@
 
 use super::AccessServiceAddress;
 use crate::email::{CapturedEmail, EmailError, EmailSender};
-use crate::permit::{Claims, Method as ObjectMethod, PermitKey, Precondition};
+use crate::permit::{Claims, Method as ObjectMethod, PERMIT_TTL, PermitKey, Precondition};
 use crate::registration::{Registration, registration_command};
 use crate::service::did_document;
 use crate::shortcut::{
@@ -782,7 +782,7 @@ async fn handle_request(
 
     // Authorize the UCAN container using UcanAuthorizer
     let authorizer = authorizer.read().await;
-    let outcome = authorizer.authorize_with_expiration(&body_bytes).await;
+    let outcome = authorizer.authorize(&body_bytes).await;
     // Test visibility: one line per permit request, so a CI job log
     // shows whether a publish or resolve ever arrived and how it fared
     // — the service worker's own console never reaches those logs.
@@ -797,7 +797,7 @@ async fn handle_request(
         // needs: without it every block fetch logs as the same command
         // and over-fetching is invisible.
         let object = match &outcome {
-            Ok((permit, _)) => format!("{} {}", permit.method, permit.url.path()),
+            Ok(permit) => format!("{} {}", permit.method, permit.url.path()),
             Err(_) => "-".into(),
         };
         let now = std::time::SystemTime::now()
@@ -875,7 +875,7 @@ async fn handle_request(
     // Metering mirrors the worker: permits and attributable denials are
     // recorded, infra failures and unparseable containers are not.
     let metered = match &outcome {
-        Ok((descriptor, _)) => {
+        Ok(descriptor) => {
             let bytes = descriptor
                 .headers
                 .iter()
@@ -897,16 +897,20 @@ async fn handle_request(
         eprintln!("metering write failed: {error}");
     }
     match outcome {
-        Ok((descriptor, expires)) => {
+        Ok(descriptor) => {
             // What the client gets is the authorized operation signed
             // for this server's `/object/` path, as the worker answers
             // it: the S3 permit itself never leaves the service.
-            let permit = Claims::lift(&descriptor, &registration.objects.address, expires)
-                .and_then(|claims| {
-                    registration
-                        .permit_key
-                        .issue(&registration.endpoint, &claims)
-                });
+            let permit = Claims::lift(
+                &descriptor,
+                &registration.objects.address,
+                unix_now() + PERMIT_TTL,
+            )
+            .and_then(|claims| {
+                registration
+                    .permit_key
+                    .issue(&registration.endpoint, &claims)
+            });
             let permit = match permit {
                 Ok(permit) => permit,
                 Err(message) => {
