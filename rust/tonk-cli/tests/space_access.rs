@@ -159,9 +159,8 @@ mod when_the_service_refuses_a_sync {
             "could not sync 'roadmap': this device holds no authority its access \
              service accepts\nthe access service said: subject is not \
              provisioned\n'roadmap' is owned by Ada Lovelace (z6MkAccountA); \
-             you are signed in as z6MkAccountB. sign into the owning account with \
-             `tonk account login`, or ask a member for an invite and claim it \
-             with `tonk join <URL>`"
+             you are signed in as z6MkAccountB. ask a member for a scoped invite \
+             in Tonk and import it with `tonk connect <URL>`"
         );
         Ok(())
     }
@@ -183,8 +182,8 @@ mod when_the_service_refuses_a_sync {
             report,
             "could not sync 'garden': the access service rejected this device's \
              authority\nthe access service said: principal is revoked\nthis \
-             device may have been revoked; check `tonk account devices`, or ask \
-             a member for a new invite and claim it with `tonk join <URL>`"
+             device may have been revoked; check account settings in Tonk, or ask \
+             a member for a new scoped invite and import it with `tonk connect <URL>`"
         );
         Ok(())
     }

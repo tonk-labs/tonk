@@ -37,10 +37,6 @@ mod sheet;
 mod agent_connections;
 mod sync;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-mod terminal_connections;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-mod terminal_link;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod ui_account_settings;
 /// `<ui-copy-link>` — the Hub verb that mints and copies a space invite.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]

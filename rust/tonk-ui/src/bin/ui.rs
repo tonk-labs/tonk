@@ -287,22 +287,6 @@ fn attach_navigation(shell: &web_sys::Element) {
     let Some(win) = web_sys::window() else {
         return;
     };
-    let terminal_shell = shell.clone();
-    let on_terminal_hash = Closure::<dyn FnMut(web_sys::Event)>::new(move |_e| {
-        if web_sys::window()
-            .is_some_and(|window| window.location().pathname().as_deref() == Ok("/settings/link"))
-        {
-            // A new signed request can keep the same pathname. Its sealed
-            // guest otherwise retains the previous URL context and decision.
-            // Remount only this approval view; durable profile/data state stays
-            // in the worker, and the new request starts with no selection.
-            terminal_shell.set_inner_html("");
-            render_root(&terminal_shell);
-        }
-    });
-    let _ = win
-        .add_event_listener_with_callback("hashchange", on_terminal_hash.as_ref().unchecked_ref());
-    on_terminal_hash.forget();
     let shell = shell.clone();
     let on_popstate = Closure::<dyn FnMut(web_sys::Event)>::new(move |_e: web_sys::Event| {
         render_root(&shell);

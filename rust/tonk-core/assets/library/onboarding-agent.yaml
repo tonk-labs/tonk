@@ -242,7 +242,7 @@ view!:
           .agent-prompt__note { color: var(--wa-color-text-quiet); font-size: var(--wa-font-size-s); }
         </style>
         <div data-agent-mode="unsupported" hidden>
-          <p class="agent-prompt__note">this invitation is no longer supported. reload tonk to get the latest version, then create a new invite. to connect your own terminal, run <code>tonk link</code>.</p>
+          <p class="agent-prompt__note">this invitation is no longer supported. reload tonk to get the latest version, then create a new invite and use <code>tonk connect</code>.</p>
           <button class="agent-prompt__new" on:new-agent-invite=tonk:new-agent-invite>new invite</button>
         </div>
         <div data-agent-mode="scoped" hidden>

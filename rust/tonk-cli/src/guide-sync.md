@@ -13,13 +13,12 @@ upstream is configured. `--no-sync` disables that wrapper for one command.
 diverged, or has no upstream. Its JSON form keeps `sync.fetched`, so callers can
 distinguish an unreachable upstream from a current comparison.
 
-To access spaces as a person, run `tonk link` and select them in the browser.
-For an agent, copy an agent invitation from Tonk and run `tonk connect`.
+To access a browser space, copy its scoped invitation from Tonk and run
+`tonk connect <invite-link>`. This works for people and agents.
 Importing and syncing copy facts; removing a local replica does not erase
 replicas already held elsewhere.
 
-Scoped agent invitations use `tonk connect <agent-link>`; selected browser
-approval uses `tonk link`. Both use ordinary space grants with explicit expiry
+Scoped invitations use ordinary space grants with explicit expiry
 (normally 90 days, bounded by the issuer's authority). Revocation blocks new
 remote authorizations as it propagates through the service; already-issued transport
 URLs can remain usable for up to 60 seconds. Downloaded data and unsynced edits

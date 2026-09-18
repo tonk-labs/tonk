@@ -143,6 +143,3 @@ pub trait Coded: std::error::Error + Send + Sync + 'static {
     /// The exit code this failure should produce.
     fn exit_code(&self) -> ExitCode;
 }
-
-/// CLI-owned selected-space linking and durable approval recovery.
-pub mod terminal_link;

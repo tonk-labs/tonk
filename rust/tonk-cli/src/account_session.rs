@@ -561,47 +561,6 @@ pub async fn active_guarded(
     Ok(load_guarded(profile, operator, guard).await?.active)
 }
 
-/// Deactivate only the captured attachment after scoped conversion succeeds.
-/// Retains credentials, the legacy repository owner, and every local replica.
-/// Default account-bound remote dispatch then refuses these legacy replicas.
-/// The explicit unsafe-device-root recovery opt-out remains unchanged; this is
-/// an application authority transition, not erasure of retained credentials.
-pub(crate) async fn deactivate_converted_attachment(
-    profile: &Profile,
-    operator: &Operator<NativeSpace>,
-    store: &SpaceStore,
-    captured: &ActiveAccount,
-) -> Result<()> {
-    let guard = exclusive_transition_guard(store)?;
-    ensure_initialized(profile, operator, &guard).await?;
-    let mut state = load_raw(profile, operator, store)
-        .await?
-        .unwrap_or_default();
-    anyhow::ensure!(
-        state.pending_login.is_none(),
-        "account transition changed during terminal conversion"
-    );
-    if state.active.is_none() {
-        return Ok(());
-    }
-    anyhow::ensure!(
-        state.active.as_ref() == Some(captured),
-        "active account changed during terminal conversion; the new attachment was retained"
-    );
-    state
-        .legacy_repository_root
-        .get_or_insert_with(|| captured.root_did.clone());
-    state.active = None;
-    save_raw(profile, operator, store, &state).await?;
-    let _ = profile
-        .credential()
-        .site(crate::account::ACCOUNT_LINK_SITE)
-        .save(Vec::<u8>::new())
-        .perform(operator)
-        .await;
-    Ok(())
-}
-
 /// Commit local logout in one explicit profile store.
 ///
 /// Logout is local-first: the durable transition never depends on a provider
@@ -695,44 +654,6 @@ mod tests {
             attachment_id: attachment_id.to_string(),
             attached_at: 42,
         }
-    }
-
-    #[dialog_common::test]
-    async fn conversion_deactivates_only_exact_attachment_and_retains_local_owner() {
-        let (_temp, store, profile, operator) = isolated_session().await;
-        let captured = active_account("captured");
-        let replacement = active_account("replacement");
-        let state = AccountSessionState {
-            active: Some(replacement.clone()),
-            ..Default::default()
-        };
-        save_raw(&profile, &operator, &store, &state).await.unwrap();
-        assert!(
-            deactivate_converted_attachment(&profile, &operator, &store, &captured)
-                .await
-                .is_err()
-        );
-        assert_eq!(
-            snapshot(&profile, &operator, &store).await.unwrap().active,
-            Some(replacement)
-        );
-        let state = AccountSessionState {
-            active: Some(captured.clone()),
-            ..Default::default()
-        };
-        save_raw(&profile, &operator, &store, &state).await.unwrap();
-        deactivate_converted_attachment(&profile, &operator, &store, &captured)
-            .await
-            .unwrap();
-        let state = snapshot(&profile, &operator, &store).await.unwrap();
-        assert!(state.active.is_none());
-        assert_eq!(
-            state.legacy_repository_root.as_deref(),
-            Some(captured.root_did.as_str())
-        );
-        deactivate_converted_attachment(&profile, &operator, &store, &captured)
-            .await
-            .unwrap();
     }
 
     #[dialog_common::test]

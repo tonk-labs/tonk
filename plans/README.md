@@ -7,6 +7,7 @@ fresh evidence when updating status. Do not infer implementation from a plan.
 
 | Plan | Title | Priority | Effort | Depends on | Status |
 | --- | --- | --- | --- | --- | --- |
+| [005](005-invite-only-cli.md) | Invite-only CLI access for the first PR | P1 | M | Supersedes 001/002 first-PR scope | IN PROGRESS; terminal flow deferred and CLI account commands removed |
 | [002](002-cli-access-workflows.md) | Keep only link and one-way connect for CLI access | P1 | M | 001 | LOCAL IMPLEMENTATION VERIFIED; removes join and browser-mediated connect |
 | [001](001-cli-space-connections.md) | Give the CLI explicit access to spaces | P1 | L | Revised milestones 0–7, in order | LOCAL IMPLEMENTATION VERIFIED (2026-09-16), milestones 0–6; milestone 7 release preparation complete, external release gates unrun |
 

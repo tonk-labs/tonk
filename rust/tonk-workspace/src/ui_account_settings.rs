@@ -96,39 +96,10 @@ impl CustomElement for UiAccountSettings {
                 return;
             };
             let hit = |selector: &str| target.closest(selector).ok().flatten().is_some();
-            if hit("[data-terminal-management-refresh]") {
-                crate::terminal_connections::refresh(&host);
-            } else if hit("[data-terminal-retry-initial]") {
-                crate::terminal_connections::retry_initial(&host, &target);
-            } else if hit("[data-terminal-retry-addition]") {
-                crate::terminal_connections::retry_addition(&host, &target);
-            } else if hit("[data-terminal-add-open]") {
-                crate::terminal_connections::open_add(&target);
-            } else if hit("[data-terminal-add-submit]") {
-                crate::terminal_connections::submit_add(&host, &target);
-            } else if hit("[data-terminal-add-cancel]") {
-                crate::terminal_connections::cancel_add(&target);
-            } else if hit("[data-terminal-revoke-all]") {
-                crate::terminal_connections::revoke_all(&host, &target);
-            } else if hit("[data-terminal-refresh]") {
-                crate::terminal_link::reload(&host);
-            } else if hit("[data-terminal-approve]") {
-                crate::terminal_link::submit(&host, false);
-            } else if hit("[data-terminal-decline]") {
-                crate::terminal_link::submit(&host, true);
-            } else if hit("[data-connections-refresh]") {
+            if hit("[data-connections-refresh]") {
                 crate::agent_connections::refresh(&host);
             } else if let Ok(Some(button)) = target.closest("[data-connection-revoke]") {
-                if button
-                    .closest("[data-terminal-record]")
-                    .ok()
-                    .flatten()
-                    .is_some()
-                {
-                    crate::terminal_connections::revoke_one(&host, &button);
-                } else {
-                    crate::agent_connections::revoke(&host, &button);
-                }
+                crate::agent_connections::revoke(&host, &button);
             } else if hit("[data-delete-account-open]") {
                 open_delete_dialog(&host);
             } else if hit("[data-delete-account-submit]") {
@@ -153,18 +124,6 @@ impl CustomElement for UiAccountSettings {
         // write lands, which is the visible receipt.
         let host = this.clone();
         let change: EventClosure = Closure::wrap(Box::new(move |event: Event| {
-            if let Some(input) = event
-                .target()
-                .and_then(|target| target.dyn_into::<HtmlInputElement>().ok())
-                && (input.has_attribute("data-terminal-all")
-                    || input.has_attribute("data-terminal-subject"))
-            {
-                crate::terminal_link::selection_changed(
-                    &host,
-                    input.has_attribute("data-terminal-all"),
-                );
-                return;
-            }
             let Some(input) = event
                 .target()
                 .and_then(|target| target.dyn_into::<HtmlInputElement>().ok())
@@ -350,7 +309,6 @@ impl CustomElement for UiAccountSettings {
     }
 
     fn disconnected_callback(&mut self, this: &HtmlElement) {
-        crate::terminal_link::leave(this);
         if let Some(opened) = self.custody_opened.take()
             && let Some(window) = window()
         {
@@ -439,19 +397,6 @@ fn set_pane(this: &HtmlElement, pane: &str) {
 /// The rows load AFTER the panel appears — a view that shows instantly and
 /// fills in beats one that waits on a fetch.
 pub(crate) fn refresh(this: &HtmlElement) {
-    let location = page_location();
-    if crate::terminal_link::is_request(&location.path, &location.hash) {
-        set_pane(this, "terminal-link");
-        crate::terminal_link::open(
-            this,
-            &format!(
-                "{}{}{}{}",
-                location.origin, location.path, location.search, location.hash
-            ),
-        );
-        return;
-    }
-    crate::terminal_link::leave(this);
     // `/settings/link?audience=&callback=&name=` is a terminal asking
     // for access. Every other settings URL lands on the account pane.
     match link_request() {
@@ -471,8 +416,7 @@ pub(crate) fn refresh(this: &HtmlElement) {
         None => {
             let location = page_location();
             set_pane(this, "account");
-            // `tonk account delete` and `tonk account spots delete` open
-            // this page with the review already asked for.
+            // Retain the existing deep link into account-deletion review.
             if location.hash == "#delete-account" {
                 open_delete_dialog(this);
             }
@@ -1247,7 +1191,6 @@ fn on_account_delta(this: &HtmlElement, payload: JsValue) {
 /// empty frame means the fact has not arrived, not that the account has
 /// no address.
 fn render_account(this: &HtmlElement, row: &JsValue) {
-    crate::terminal_link::refresh_if_unready(this);
     crate::agent_connections::refresh(this);
     let email = Reflect::get(row, &"fields".into())
         .ok()
