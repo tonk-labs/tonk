@@ -69,6 +69,90 @@ The presence of the `entity` attribute selects the mode:
 
 In both modes the query engine emits one flat row per tuple, so cardinality-many fields and multiple subjects arrive as separate rows. [`select_rows`] (in `fold`) groups rows by `this` and folds each group into one conclusion per subject, collapsing multi-valued fields to a list in first-seen order (identical values stay a scalar). Detail mode is then just a one-conclusion frame and directory mode a many-conclusion frame, rendered by the same repeat machinery.
 
+## Introspection
+
+`tonk_display::register()` also registers and mounts `<tonk-introspect>`, an
+overlay that makes this pipeline visible at the point of use. Hold Alt and the
+display under the pointer outlines, with a **pin** button in its corner;
+rest there for 300ms and observation switches on. Click it — anywhere on it — to keep the observation while
+the pointer goes elsewhere; click again, or press Escape, to release. Tracking survives the pointer leaving every display for a moment, so
+walking over to the panel does not drop it.
+
+Observation marks two things:
+
+- **Slots** — every interpolation the template filled, labelled with the field
+  that fed it and coloured by where that field came from: a concept field,
+  `{this}`, a `{dom.host/*}` host attribute, or an iteration key. A value that
+  changes flashes where it landed.
+- **Commands** — every element binding an `on<event>` or `on:<name>`
+  interaction, labelled `click -> space/create`, bouncing when it actually
+  posts. A binding whose event declaration did not resolve is drawn *inert*: it
+  installs no listener and will never fire, which is otherwise invisible.
+
+A marker is not always a box. A slot that rendered an empty string has nothing
+to box, so it ticks the caret position the value would have occupied. A slot
+that wrote an element property ticks that element's top edge rather than
+filling it — the element is where the value went, but the element is not the
+value. Every marker carries its label whatever its placement, and badges that
+would collide are pushed down and joined to their anchor by a leader.
+
+Observation also opens a **concept panel**, which answers the question markers
+cannot: *why isn't my value showing up?* On a rendered page all four answers
+look like the same blank space, so the panel names them — one row per field
+either side knows about, whether or not it rendered:
+
+| row | meaning |
+| --- | --- |
+| *(plain)* | declared, read by a slot, and this subject has a value |
+| `no value` | declared and read, but this subject has nothing for it |
+| `not in the view` | the concept declares it; no slot reads it |
+| `not on the concept` | a slot reads it; the concept does not declare it |
+
+Each row carries the field's declared type and cardinality and the value as the
+renderer spelled it — routed through the renderer's own segment substitution,
+so the panel can never report a value in a spelling the page did not use.
+Resting on a row brings the slots it feeds forward and dims everything else.
+In directory mode the panel follows the repeat row under the pointer, and
+sticks there while you walk over to read it.
+
+A second tab shows the **view template** the display mounted, with every
+`{field}` and every command-bound attribute value marked in the source. The
+highlight is two-way and keyed on the same name in both halves: rest on a
+concept row and its occurrences light up in the template, rest on an occurrence
+and the slots it feeds light up on the page.
+
+The template is sliced by `introspect::source`, which walks with the same lexer
+the analyzer's checks use — so what the panel marks and what the build reports
+cannot disagree about what is in a template. That matters for the two
+exclusions the walk encodes: a `{field}` inside an HTML comment is prose, and
+one inside `<style>` or `<script>` is a real CSS or JS brace.
+
+The overlay reads the renderer's binding plan and value cache rather than the
+rendered DOM, because the DOM cannot answer the question: a rendered
+`with="main@repo"` does not say which half was a field, and a binding applied
+as a JS property left no attribute behind at all.
+
+While a display is tracked, the whole of it becomes the pin target: a
+transparent surface covers it and a click anywhere pins. Because that surface
+is the overlay's own, the click never reaches the page — so no gesture has to
+be taken from your app or swallowed, and there is nothing small to aim at. The
+`pin` button in the corner is only its label. Hit-testing sees through the
+surface, so a display nested inside a tracked one is still reachable.
+
+The panel places itself in the corner furthest from what you are observing, and
+can be dragged by its header.
+
+It is inert until Alt goes down — one `mousemove` listener that reads `altKey`
+and returns, plus a bool read on the renderer's change path. Remove the element
+to opt out entirely.
+
+The inspector also opens on anything marked `data-fabb-selected` — the
+attribute the FAB's selector stamps on what it is dropped on. The chrome marks,
+the page draws; neither crate needs to know about the other.
+
+See `/plan/display-introspection.md` for the design and the steps still open
+(the concept and view panels, editing).
+
 ## Modules
 
 - [`element`](src/element.rs): the `<tonk-display>` orchestrator: lifecycle, the three subscriptions, mode selection, slide mounting (wasm only).
@@ -78,3 +162,6 @@ In both modes the query engine emits one flat row per tuple, so cardinality-many
 - [`render`](src/render.rs): the mounted-state DOM renderer for a `<tonk-view>` frame (wasm only).
 - [`fold`](src/fold.rs): `select_rows`, the multi-row to conclusion-per-subject collapser. Target-independent.
 - [`notation_format`](src/notation_format.rs): conclusion-to-`head!:` notation formatter, also used by `tonk-ui`.
+- [`introspect`](src/introspect.rs): the `<tonk-introspect>` overlay. The
+  state machine and slot description are target-independent; the element is
+  wasm only.
