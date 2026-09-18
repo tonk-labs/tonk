@@ -1065,9 +1065,26 @@ fn the_view_queries_match_the_builtin() {
         .and_then(serde_json::Value::as_object)
         .expect("the predicate has a `with` map");
     assert!(
-        query_with.contains_key("show") && !query_with.contains_key("bindings"),
-        "the view query pins `show` only; `bindings` is optional and read separately",
+        query_with.contains_key("show")
+            && !query_with.contains_key("bindings")
+            && !query_with.contains_key("embeds"),
+        "the view query pins `show` only; `bindings` and `embeds` are optional \
+         and read separately",
     );
+
+    // The embeds query carries its own copy of the field too, and it
+    // is the one that decides which entity a `with:src` reads from —
+    // so a drift here is a query asking the wrong subject, which is
+    // exactly the failure the compiled `embeds` field exists to make
+    // impossible.
+    let embeds_query =
+        tonk_template::resolve::view_embeds_query("tonk:demo").expect("the embeds query builds");
+    let embeds_query = serde_json::to_value(&embeds_query).expect("the embeds query serializes");
+    let embeds_with = embeds_query
+        .get("predicate")
+        .and_then(|predicate| predicate.get("with"))
+        .and_then(serde_json::Value::as_object)
+        .expect("the embeds query has a `with` map");
 
     // The bindings query carries its own copy of the field, so check
     // it against the built-in too.
@@ -1081,7 +1098,11 @@ fn the_view_queries_match_the_builtin() {
         .and_then(serde_json::Value::as_object)
         .expect("the bindings query has a `with` map");
 
-    for (field, ours) in query_with.iter().chain(bindings_with.iter()) {
+    for (field, ours) in query_with
+        .iter()
+        .chain(bindings_with.iter())
+        .chain(embeds_with.iter())
+    {
         let theirs = builtin_with
             .get(field)
             .unwrap_or_else(|| panic!("the built-in has no `{field}` field"));
@@ -1099,6 +1120,10 @@ fn the_view_queries_match_the_builtin() {
     assert!(
         bindings_with.contains_key("bindings"),
         "the bindings query must pin the field it exists to read",
+    );
+    assert!(
+        embeds_with.contains_key("embeds"),
+        "the embeds query must pin the field it exists to read",
     );
 }
 

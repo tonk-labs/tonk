@@ -398,6 +398,34 @@ pub fn view_bindings_query(model_entity: &str) -> Result<Query, serde_json::Erro
     serde_json::from_value(json!({ "terms": terms, "predicate": predicate }))
 }
 
+/// Build the query that reads a view's compiled embeds — the
+/// `with:src` references its templates make, each paired with the
+/// entity it reads from, resolved at lowering.
+///
+/// Separate from [`view_query`] for the same reason
+/// [`view_bindings_query`] is: `embeds` is optional, so pinning it in
+/// the view query would make a view that embeds nothing — or one
+/// lowered before the field existed — match nothing, and the display
+/// would render no template at all.
+///
+/// An empty result is the fallback signal: read the reference out of
+/// the template text the way it was read before lowering captured it.
+pub fn view_embeds_query(model_entity: &str) -> Result<Query, serde_json::Error> {
+    let predicate = json!({
+        "with": {
+            "embeds": {
+                "the": "xyz.tonk.view/embeds",
+                "as": "Record",
+                "cardinality": "one"
+            }
+        }
+    });
+    let mut terms: IndexMap<String, Value> = IndexMap::new();
+    terms.insert("this".into(), json!(model_entity));
+    terms.insert("embeds".into(), json!({ "?": { "name": "embeds" } }));
+    serde_json::from_value(json!({ "terms": terms, "predicate": predicate }))
+}
+
 /// Build the live **directory** subscription query: like
 /// [`entity_query`] but with `this` left as a variable instead of
 /// pinned, so the query matches *every* instance of the model. The

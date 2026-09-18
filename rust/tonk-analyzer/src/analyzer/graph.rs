@@ -449,7 +449,7 @@ fn collect_view_needs(fields: &[Field], needs: &mut Vec<Need>) {
     collect_view_embed_needs(fields, needs);
 }
 
-/// The views a template's `with:href=<name>@<entity>` embeds read
+/// The views a template's `with:src=<name>@<entity>` embeds read
 /// from. Only the entity half needs resolving: the name half is a key
 /// in that view's own `style:` / `font:` map, which is data, not a
 /// reference.

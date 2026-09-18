@@ -42,16 +42,18 @@ use std::collections::{BTreeMap, BTreeSet};
 use tonk_notation::{Application as SyntaxApplication, Field, FieldValue, HeadName, Scalar};
 use tonk_schema::resolution::ConceptDefinition;
 use tonk_template::bindings::{Bindings, EventBinding, scan};
-use tonk_template::embed;
+use tonk_template::embed::{self, Embeds, ResolvedEmbed};
 use tonk_template::event::{EventDescriptor, Source, event_descriptor, parse_string_source};
 use tonk_template::fields::{self, FieldReference};
 
-use super::error::{AnalyzeError, AnalyzeErrorKind};
+use super::error::{AnalyzeDiagnostic, AnalyzeDiagnosticKind, AnalyzeError, AnalyzeErrorKind};
 use super::scope::Scope;
 
 /// The field a view's compiled bindings are stored under, and the
 /// keyed field its templates live under.
 pub(crate) const BINDINGS_FIELD: &str = "bindings";
+/// The field a view's compiled embeds are stored under.
+pub(crate) const EMBEDS_FIELD: &str = "embeds";
 const SHOW_FIELD: &str = "show";
 
 /// The built-in `view` concept's entity. A head resolving to it is a
@@ -183,6 +185,21 @@ fn field_flag(value: &FieldValue) -> bool {
     matches!(value, FieldValue::Literal(Scalar::Boolean(true)))
 }
 
+/// What one pass over a view's templates produces.
+///
+/// Three readings of the same text, so they travel together: the event
+/// bindings, the resolved embeds, and the non-fatal findings neither
+/// reading treats as a reason to stop.
+#[derive(Debug, Default)]
+pub(crate) struct Compiled {
+    /// The event bindings, or `None` when the templates bind nothing.
+    pub bindings: Option<Bindings>,
+    /// The resolved embeds, or `None` when the templates embed nothing.
+    pub embeds: Option<Embeds>,
+    /// Warnings to merge into the document's diagnostics.
+    pub warnings: Vec<AnalyzeDiagnostic>,
+}
+
 /// Check a view's `show:` templates and resolve the bindings they
 /// make into the artifact the view stores.
 ///
@@ -204,7 +221,7 @@ fn field_flag(value: &FieldValue) -> bool {
 pub(crate) fn compile_bindings(
     assertion: &SyntaxApplication,
     scope: &Scope,
-) -> Result<Option<Bindings>, AnalyzeError> {
+) -> Result<Compiled, AnalyzeError> {
     // A portal view's templates are full HTML documents mounted into
     // a `<tonk-portal>` verbatim — the display checks the same `type`
     // entry and takes a different path entirely. Nothing interpolates
@@ -213,7 +230,7 @@ pub(crate) fn compile_bindings(
     // reference would fail the lowering over a document the renderer
     // never looks inside.
     if is_portal(assertion) {
-        return Ok(None);
+        return Ok(Compiled::default());
     }
 
     // The concept the view renders. Without it neither interpolation
@@ -223,6 +240,8 @@ pub(crate) fn compile_bindings(
     let model = model_concept(assertion, scope);
 
     let mut found: Vec<(EventBinding, lsp_types::Range)> = Vec::new();
+    let mut embeds: BTreeMap<String, ResolvedEmbed> = BTreeMap::new();
+    let mut warnings: Vec<AnalyzeDiagnostic> = Vec::new();
     for field in &assertion.fields {
         if field.name != SHOW_FIELD {
             continue;
@@ -237,10 +256,19 @@ pub(crate) fn compile_bindings(
             if let Some(model) = &model {
                 check_interpolations(&template, entry.value_range, model)?;
             }
-            // Independent of the model: an embed reads the view's own
-            // content maps, not the concept it renders, so this is
-            // checkable even for a view whose `this:` does not resolve.
-            check_embeds(assertion, &template, entry.value_range, scope)?;
+            // Resolved against the view's own subject — the entity
+            // this claim is asserted on — so the pair the renderer
+            // asks for is the pair checked here. Independent of the
+            // model concept: an embed reads the view's content maps,
+            // not the concept it renders.
+            resolve_embeds(
+                assertion,
+                &template,
+                entry.value_range,
+                scope,
+                &mut embeds,
+                &mut warnings,
+            )?;
             found.extend(scan(&template).into_iter().map(|binding| {
                 let range = offset_range(
                     entry.value_range,
@@ -253,7 +281,11 @@ pub(crate) fn compile_bindings(
         }
     }
     if found.is_empty() {
-        return Ok(None);
+        return Ok(Compiled {
+            bindings: None,
+            embeds: (!embeds.is_empty()).then(|| Embeds::new(embeds)),
+            warnings,
+        });
     }
 
     let mut events: BTreeMap<String, EventDescriptor> = BTreeMap::new();
@@ -289,9 +321,17 @@ pub(crate) fn compile_bindings(
     }
 
     if events.is_empty() {
-        return Ok(None);
+        return Ok(Compiled {
+            bindings: None,
+            embeds: (!embeds.is_empty()).then(|| Embeds::new(embeds)),
+            warnings,
+        });
     }
-    Ok(Some(Bindings::new(events)))
+    Ok(Compiled {
+        bindings: Some(Bindings::new(events)),
+        embeds: (!embeds.is_empty()).then(|| Embeds::new(embeds)),
+        warnings,
+    })
 }
 
 /// Where something inside a template is written, in the document's
@@ -447,13 +487,15 @@ fn declared_keys(assertion: &SyntaxApplication, dictionary: &str) -> BTreeSet<St
 /// A name is accepted when EITHER dictionary declares it. The scan
 /// reports the attribute, not the element carrying it, so which map a
 /// given embed reads is not knowable here — `<link>` reads `style:`
-/// and `<ui-font>` reads `font:`, and telling them apart would mean
+/// and `<font-family>` reads `font:`, and telling them apart would mean
 /// widening the shared template walk to carry tag names.
-fn check_embeds(
+fn resolve_embeds(
     assertion: &SyntaxApplication,
     template: &str,
     value_range: lsp_types::Range,
     scope: &Scope,
+    resolved: &mut BTreeMap<String, ResolvedEmbed>,
+    warnings: &mut Vec<AnalyzeDiagnostic>,
 ) -> Result<(), AnalyzeError> {
     let embeds = embed::scan(template);
     if embeds.is_empty() {
@@ -461,52 +503,86 @@ fn check_embeds(
     }
     let styles = declared_keys(assertion, "style");
     let fonts = declared_keys(assertion, "font");
+    // The view's own subject: what a bare reference reads from, and the
+    // entity the claim being lowered is asserted on. A view whose
+    // `this:` does not resolve has no subject to capture, so its bare
+    // references stay uncompiled and the renderer falls back.
+    let own = assertion
+        .fields
+        .iter()
+        .find(|field| field.name == "this")
+        .and_then(|field| field_text(&field.value))
+        .and_then(|name| view_subject(&name, scope));
+
     for reference in embeds {
-        // A cross-view reference: the KEY lives on the branch and is
-        // not checkable here, but the view holding it must at least
-        // resolve. The graph prefetched both spellings, so a miss here
-        // means the name refers to nothing rather than that the
-        // resolve phase was not asked.
+        let written = reference.reference();
+        let range = offset_range(
+            value_range,
+            template,
+            reference.offset,
+            embed::SRC_ATTRIBUTE.chars().count(),
+        );
+
+        // A cross-view reference: the entity must resolve — an embed
+        // reading a view that does not exist can never resolve, at
+        // lowering or after, so it is an error. The KEY lives on that
+        // view's branch and is not checkable from here.
         if let Some(view) = &reference.entity {
-            if resolve_concept(view, scope).is_none() {
+            let Some(target) = resolve_concept(view, scope) else {
                 return Err(AnalyzeError::at(
                     AnalyzeErrorKind::UnknownEmbedView {
-                        reference: format!("{}@{view}", reference.name),
+                        reference: written,
                         view: view.clone(),
                     },
-                    offset_range(
-                        value_range,
-                        template,
-                        reference.offset,
-                        embed::HREF_ATTRIBUTE.chars().count(),
-                    ),
+                    range,
                 ));
-            }
+            };
+            resolved.insert(
+                written,
+                ResolvedEmbed {
+                    entity: target.entity.to_string(),
+                    name: reference.name.clone(),
+                },
+            );
             continue;
         }
-        if styles.contains(&reference.name) || fonts.contains(&reference.name) {
-            continue;
+
+        // A bare reference reads this view's own map. A name it does
+        // not declare is a WARNING, not an error: the key is an
+        // ordinary keyed fact, so it can be asserted separately — by a
+        // later document, or by a space overriding one style — and a
+        // view that embeds a name it will be given later is legitimate.
+        // What is worth saying is that nothing in THIS document
+        // provides it.
+        if !styles.contains(&reference.name) && !fonts.contains(&reference.name) {
+            let mut known: Vec<String> = styles.union(&fonts).cloned().collect();
+            known.sort();
+            let known = if known.is_empty() {
+                "This view declares no `style:` or `font:`.".to_owned()
+            } else {
+                format!("Declared: {}.", known.join(", "))
+            };
+            warnings.push(AnalyzeDiagnostic::warning(
+                AnalyzeDiagnosticKind::UnknownEmbed {
+                    reference: written.clone(),
+                    dictionary: "style".to_owned(),
+                    known,
+                },
+                range,
+            ));
         }
-        let mut known: Vec<String> = styles.union(&fonts).cloned().collect();
-        known.sort();
-        let known = if known.is_empty() {
-            "This view declares no `style:` or `font:`.".to_owned()
-        } else {
-            format!("Declared: {}.", known.join(", "))
-        };
-        return Err(AnalyzeError::at(
-            AnalyzeErrorKind::UnknownEmbed {
-                reference: reference.name.clone(),
-                dictionary: "style".to_owned(),
-                known,
-            },
-            offset_range(
-                value_range,
-                template,
-                reference.offset,
-                embed::HREF_ATTRIBUTE.chars().count(),
-            ),
-        ));
+
+        // Captured either way: the subject is what the renderer needs,
+        // and it is correct whether or not the key is declared here.
+        if let Some(own) = &own {
+            resolved.insert(
+                written,
+                ResolvedEmbed {
+                    entity: own.clone(),
+                    name: reference.name.clone(),
+                },
+            );
+        }
     }
     Ok(())
 }
@@ -600,6 +676,25 @@ fn resolve_command(
 /// The two forms the notation writes for the same thing: a bare name
 /// goes through the name table, a URI names the concept's entity
 /// directly.
+/// The entity a view's `this:` names.
+///
+/// Not [`resolve_concept`]: that wants a concept *descriptor*, and a
+/// view's subject needs none. `this: tonk:demo` names an entity
+/// outright, whether or not a `concept!:` for it is in scope — and a
+/// view over a concept declared on the branch rather than in this
+/// document is ordinary. A bare name still goes through resolution,
+/// because the name is the only way to learn which entity it stands
+/// for.
+fn view_subject(name: &str, scope: &Scope) -> Option<String> {
+    if let Some(concept) = resolve_concept(name, scope) {
+        return Some(concept.entity.to_string());
+    }
+    // A URI spells its own entity.
+    name.parse::<dialog_artifacts::Entity>()
+        .ok()
+        .map(|entity| entity.to_string())
+}
+
 fn resolve_concept(name: &str, scope: &Scope) -> Option<ConceptDefinition> {
     if let Some(concept) = scope.concept(name) {
         return Some(concept);
@@ -665,6 +760,7 @@ mod tests {
     use dialog_query::Term;
     use tonk_schema::transact::{Application, Statement};
     use tonk_template::bindings::Bindings;
+    use tonk_template::embed::Embeds;
 
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test_configure;
@@ -730,6 +826,32 @@ view!:
         None
     }
 
+    /// The `embeds` artifact the lowered document carries, if any.
+    fn embeds(statements: &[Statement]) -> Option<Embeds> {
+        for statement in statements {
+            let Statement::Assert(Application::Concept { query, .. }) = statement else {
+                continue;
+            };
+            if let Some(Term::Constant(Value::Record(bytes))) = query.terms.get("embeds") {
+                return Some(Embeds::decode(bytes).expect("the artifact decodes"));
+            }
+        }
+        None
+    }
+
+    /// The non-fatal findings a document lowers with.
+    fn warnings(source: &str) -> Vec<crate::analyzer::AnalyzeDiagnostic> {
+        let parsed = tonk_notation::parse(source);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "the fixture must parse: {:#?}",
+            parsed.diagnostics
+        );
+        let syntax = parsed.syntax.expect("a syntax tree");
+        let tree = crate::analyzer::analyze_local(&syntax).expect("the document lowers");
+        tree.analysis.diagnostics
+    }
+
     /// A view embedding a style it declares lowers.
     #[dialog_common::test]
     fn it_accepts_an_embed_the_view_declares() {
@@ -738,7 +860,7 @@ view!:
   this: tonk:demo
   show:
     ui: |
-      <link rel=stylesheet with:href=base>
+      <link rel=stylesheet with:src=base>
   style:
     base: |
       body { color: red; }
@@ -746,30 +868,211 @@ view!:
         lower(source).expect("an embed the view declares lowers");
     }
 
-    /// A reference naming no declared content embeds nothing, and
-    /// nothing reports it — the page is simply unstyled. So it fails
-    /// the lowering instead.
+    /// A reference naming no content THIS document declares is a
+    /// warning, not a failure.
+    ///
+    /// The key is an ordinary keyed fact, so a later document — or a
+    /// space overriding one style — can supply it. Failing the lowering
+    /// would make a legitimate arrangement unwritable. What the
+    /// diagnostic says is that nothing here provides it.
     #[dialog_common::test]
-    fn it_rejects_an_embed_the_view_does_not_declare() {
+    fn it_warns_about_an_embed_the_view_does_not_declare() {
         let source = r#"
 view!:
   this: tonk:demo
   show:
     ui: |
-      <link rel=stylesheet with:href=missing>
+      <link rel=stylesheet with:src=missing>
   style:
     base: |
       body { color: red; }
 "#;
-        let error = lower(source).expect_err("a dangling embed fails the lowering");
-        assert_eq!(error.kind.code(), "E_UNKNOWN_EMBED", "{error}");
+        let statements = lower(source).expect("a dangling key still lowers");
+        let found = warnings(source);
+        let diagnostic = found
+            .iter()
+            .find(|d| d.code() == "W_UNKNOWN_EMBED")
+            .unwrap_or_else(|| panic!("expected the embed warning, got {found:?}"));
+        assert_eq!(
+            diagnostic.severity,
+            crate::analyzer::DiagnosticSeverity::Warning,
+            "a key that may arrive later is a warning, never an error",
+        );
+        let message = diagnostic.kind.to_string();
         assert!(
-            error.to_string().contains("missing"),
-            "the diagnostic quotes the reference: {error}",
+            message.contains("missing"),
+            "the diagnostic quotes the reference: {message}",
         );
         assert!(
-            error.to_string().contains("base"),
-            "and lists what the view does declare: {error}",
+            message.contains("base"),
+            "and lists what the view does declare: {message}",
+        );
+        // The subject is captured either way: it is correct whether or
+        // not this document declares the key.
+        let compiled = embeds(&statements).expect("the view still carries its embeds");
+        assert_eq!(
+            compiled.embeds.get("missing").map(|e| e.entity.as_str()),
+            Some("tonk:demo"),
+        );
+    }
+
+    /// A view that embeds nothing grows no `embeds` field.
+    ///
+    /// An empty artifact is not the same as no artifact: the renderer
+    /// reads an absent field as "this view predates the field, read the
+    /// template instead", so an empty one would assert that a view
+    /// embeds nothing when the truth is that nobody asked.
+    #[dialog_common::test]
+    fn a_view_that_embeds_nothing_carries_no_artifact() {
+        let source = r#"
+view!:
+  this: tonk:demo
+  show:
+    ui: |
+      <p>no embeds here</p>
+"#;
+        let statements = lower(source).expect("the view lowers");
+        assert!(
+            embeds(&statements).is_none(),
+            "no embed, no artifact — an empty one would be a claim nobody made",
+        );
+    }
+
+    /// Every embed in a template is compiled, not just the first.
+    #[dialog_common::test]
+    fn every_embed_in_a_template_is_compiled() {
+        let source = r#"
+view!:
+  this: tonk:demo
+  show:
+    ui: |
+      <link rel=stylesheet with:src=base>
+      <link rel=stylesheet with:src=extra>
+  style:
+    base: |
+      body { color: red; }
+    extra: |
+      p { margin: 0; }
+"#;
+        let statements = lower(source).expect("the view lowers");
+        let compiled = embeds(&statements).expect("the view carries its embeds");
+        assert_eq!(
+            compiled.embeds.len(),
+            2,
+            "both references are compiled: {:?}",
+            compiled.embeds,
+        );
+        for key in ["base", "extra"] {
+            assert_eq!(
+                compiled.embeds.get(key).map(|e| e.entity.as_str()),
+                Some("tonk:demo"),
+                "`{key}` resolves to the embedding view",
+            );
+        }
+    }
+
+    /// Embeds made by DIFFERENT facets all land in the one artifact,
+    /// keyed by what each template wrote.
+    #[dialog_common::test]
+    fn embeds_from_every_facet_share_one_artifact() {
+        let source = r#"
+view!:
+  this: tonk:demo
+  show:
+    ui: |
+      <link rel=stylesheet with:src=base>
+    directory: |
+      <link rel=stylesheet with:src=extra>
+  style:
+    base: |
+      body { color: red; }
+    extra: |
+      p { margin: 0; }
+"#;
+        let statements = lower(source).expect("the view lowers");
+        let compiled = embeds(&statements).expect("the view carries its embeds");
+        assert_eq!(compiled.embeds.len(), 2, "{:?}", compiled.embeds);
+        assert!(compiled.embeds.contains_key("base"));
+        assert!(compiled.embeds.contains_key("extra"));
+    }
+
+    /// A `font:` name is accepted by the same check a `style:` name is,
+    /// and compiled the same way.
+    ///
+    /// The scan reports the ATTRIBUTE, not the element carrying it, so
+    /// which dictionary a reference reads is not knowable at lowering —
+    /// a name declared in either one resolves.
+    #[dialog_common::test]
+    fn a_font_name_compiles_like_a_style_name() {
+        let source = r#"
+view!:
+  this: tonk:demo
+  show:
+    ui: |
+      <font-family name="Body" with:src=body></font-family>
+  font:
+    body: !!binary |
+      AAEC
+"#;
+        let statements = lower(source).expect("the view lowers");
+        let compiled = embeds(&statements).expect("the view carries its embeds");
+        assert_eq!(
+            compiled.embeds.get("body").map(|e| e.entity.as_str()),
+            Some("tonk:demo"),
+        );
+        let found = warnings(source);
+        assert!(
+            !found.iter().any(|d| d.code() == "W_UNKNOWN_EMBED"),
+            "a declared font name is not an unknown embed: {found:?}",
+        );
+    }
+
+    /// The compiled field is a build product, so a hand-written one is
+    /// refused rather than silently replaced.
+    ///
+    /// Refusing is the better of the two: an author who writes `embeds:`
+    /// has a belief about what the view embeds, and quietly overwriting
+    /// it would leave that belief intact and wrong. The type is what
+    /// catches it — `embeds` is a `Record`, and nothing an author can
+    /// spell in notation is one.
+    #[dialog_common::test]
+    fn an_author_written_embeds_field_is_refused() {
+        let source = r#"
+view!:
+  this: tonk:demo
+  embeds: "not mine to write"
+  show:
+    ui: |
+      <link rel=stylesheet with:src=base>
+  style:
+    base: |
+      body { color: red; }
+"#;
+        let error = lower(source).expect_err("a hand-written artifact fails the lowering");
+        assert_eq!(error.kind.code(), "E_TYPE_MISMATCH", "{error}");
+        assert!(
+            error.to_string().contains("embeds"),
+            "and names the field it refused: {error}",
+        );
+    }
+
+    /// A portal view's templates are whole HTML documents mounted
+    /// verbatim, so nothing in them is a reference — a `with:src` there
+    /// is an attribute, not an embed.
+    #[dialog_common::test]
+    fn a_portal_view_compiles_no_embeds() {
+        let source = r#"
+view!:
+  this: tonk:demo
+  show:
+    type: "text/html"
+    ui: |
+      <html><head><link rel=stylesheet with:src=base></head></html>
+"#;
+        let statements = lower(source).expect("the portal view lowers");
+        assert!(
+            embeds(&statements).is_none(),
+            "a portal document is mounted verbatim; nothing in it is resolved",
         );
     }
 
@@ -784,7 +1087,7 @@ view!:
   this: tonk:demo
   show:
     ui: |
-      <link rel=stylesheet with:href=base@other/concept>
+      <link rel=stylesheet with:src=base@other/concept>
 "#;
         let error = lower(source).expect_err("a dangling view fails the lowering");
         assert_eq!(error.kind.code(), "E_UNKNOWN_EMBED_VIEW", "{error}");
@@ -803,7 +1106,7 @@ view!:
   this: tonk:demo
   show:
     ui: |
-      <link rel=stylesheet with:href="">
+      <link rel=stylesheet with:src="">
   style:
     ui: |
       body { color: red; }
@@ -817,16 +1120,28 @@ view!:
   this: tonk:demo
   show:
     ui: |
-      <link rel=stylesheet with:href="">
+      <link rel=stylesheet with:src="">
   style:
     base: |
       body { color: red; }
 "#;
-        let error = lower(rejected).expect_err("`ui` is not declared here");
-        assert_eq!(error.kind.code(), "E_UNKNOWN_EMBED", "{error}");
+        // The same template against a view declaring every OTHER key
+        // warns, and the compiled pair names `ui` — which is what says
+        // the default actually resolved to `ui` rather than to whatever
+        // key happened to exist.
+        let statements = lower(rejected).expect("a dangling key still lowers");
+        let compiled = embeds(&statements).expect("the view carries its embeds");
+        assert_eq!(
+            compiled.embeds.get("ui").map(|e| e.name.as_str()),
+            Some("ui"),
+            "the empty reference resolved to the `ui` key",
+        );
+        let found = warnings(rejected);
         assert!(
-            error.to_string().contains("ui"),
-            "the diagnostic quotes the defaulted name: {error}",
+            found
+                .iter()
+                .any(|d| d.code() == "W_UNKNOWN_EMBED" && d.kind.to_string().contains("ui")),
+            "and warns that this view does not declare it: {found:?}",
         );
     }
 
@@ -840,13 +1155,25 @@ view!:
   this: tonk:demo
   show:
     ui: |
-      <link rel=stylesheet with:href=base>
+      <link rel=stylesheet with:src=base>
 "#;
-        let error = lower(source).expect_err("a view declaring no style cannot embed one");
-        assert_eq!(error.kind.code(), "E_UNKNOWN_EMBED", "{error}");
+        let statements = lower(source).expect("a view embedding a key it lacks still lowers");
+        let compiled = embeds(&statements).expect("the view carries its embeds");
+        let resolved = compiled
+            .embeds
+            .get("base")
+            .expect("the bare reference is compiled");
+        assert_eq!(
+            resolved.entity, "tonk:demo",
+            "an omitted entity resolves to the view doing the embedding",
+        );
+        assert_eq!(resolved.name, "base");
+        let found = warnings(source);
         assert!(
-            error.to_string().contains("declares no"),
-            "and says the view declares nothing: {error}",
+            found.iter().any(
+                |d| d.code() == "W_UNKNOWN_EMBED" && d.kind.to_string().contains("declares no")
+            ),
+            "and says this view declares nothing: {found:?}",
         );
     }
 
@@ -858,7 +1185,7 @@ view!:
   this: tonk:demo
   show:
     ui: |
-      <link rel=stylesheet with:href="">
+      <link rel=stylesheet with:src="">
   style:
     ui: |
       body { color: red; }
@@ -878,7 +1205,7 @@ view!:
   this: tonk:demo
   show:
     ui: |
-      <ui-font with:href=gestalte family=Gestalte></ui-font>
+      <font-family name="Gestalte" with:src=gestalte></font-family>
   font:
     gestalte: !!binary aGk=
 "#;
@@ -904,7 +1231,7 @@ view!:
   this: tonk:demo
   show:
     ui: |
-      <link rel=stylesheet with:href=anything@tonk:other>
+      <link rel=stylesheet with:src=anything@tonk:other>
 "#;
         lower(source).expect("a resolvable view's key is not checked here");
     }

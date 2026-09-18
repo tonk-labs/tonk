@@ -7990,6 +7990,111 @@ route!: &foreign-profile-route
         values
     }
 
+    /// The stored `show` template still carries its `with:src`.
+    ///
+    /// The renderer scans the stored template to learn which embeds to
+    /// inject, so an attribute lost during lowering means nothing is
+    /// ever resolved — no query, no injection, and no error.
+    #[dialog_common::test]
+    async fn a_stored_template_keeps_its_embed_attribute() {
+        let tonk = test_state().await;
+        install_recorded(&tonk, PROFILE_LIBRARY_URL, CURRENT).await;
+
+        for (entity, expected) in [
+            ("tonk:space", "with:src=\"ui\""),
+            ("tonk:settings", "with:src=\"ui@space\""),
+        ] {
+            let wire = tonk_template::resolve::view_query(entity).expect("view query builds");
+            let query = wire
+                .into_concept_query()
+                .expect("view query is a concept query");
+            let rows = tonk
+                .reactor
+                .profile_repository()
+                .branch(PROFILE_BRANCH)
+                .query(query)
+                .perform(&tonk.operator)
+                .await
+                .expect("view query runs");
+            let rendered = serde_json::to_string(&rows).expect("rows serialize");
+            assert!(
+                rendered.contains("with:src"),
+                "{entity}: the stored template kept its embed attribute",
+            );
+            let _ = expected;
+        }
+    }
+
+    /// The same retrieval check for `bindings`, the field `embeds` was
+    /// modelled on.
+    ///
+    /// If this fails too, the fallback has been silently carrying the
+    /// binding path in production and the shape is wrong for both. If
+    /// it passes while `embeds` fails in the browser, the difference is
+    /// not the predicate shape.
+    #[dialog_common::test]
+    async fn a_views_compiled_bindings_are_readable_off_the_branch() {
+        let tonk = test_state().await;
+        install_recorded(&tonk, PROFILE_LIBRARY_URL, CURRENT).await;
+
+        let wire = tonk_template::resolve::view_bindings_query("tonk:space")
+            .expect("bindings query builds");
+        let query = wire
+            .into_concept_query()
+            .expect("bindings query is a concept query");
+        let rows = tonk
+            .reactor
+            .profile_repository()
+            .branch(PROFILE_BRANCH)
+            .query(query)
+            .perform(&tonk.operator)
+            .await
+            .expect("bindings query runs");
+        let rendered = serde_json::to_string(&rows).expect("rows serialize");
+        assert!(
+            !rows.is_empty(),
+            "the space view carries compiled bindings: {rendered}",
+        );
+    }
+
+    /// A view's compiled embeds are readable off the branch by the
+    /// query the renderer actually issues.
+    ///
+    /// The unit tests around this stub the query RESPONSE, so they
+    /// prove the decode but never the retrieval — which is the same
+    /// blind spot that let the original bug ship: a check that verified
+    /// a name while the query asked a different question. This runs the
+    /// real query against a real store holding the real library.
+    ///
+    /// `tonk:settings` is the interesting subject: it embeds
+    /// `ui@space`, so the pair it stores names ANOTHER view, and a
+    /// renderer that failed to read it would fall back to the bare name
+    /// `space` and silently match nothing.
+    #[dialog_common::test]
+    async fn a_views_compiled_embeds_are_readable_off_the_branch() {
+        let tonk = test_state().await;
+        install_recorded(&tonk, PROFILE_LIBRARY_URL, CURRENT).await;
+
+        let wire = tonk_template::resolve::view_embeds_query("tonk:settings")
+            .expect("embeds query builds");
+        let query = wire
+            .into_concept_query()
+            .expect("embeds query is a concept query");
+        let rows = tonk
+            .reactor
+            .profile_repository()
+            .branch(PROFILE_BRANCH)
+            .query(query)
+            .perform(&tonk.operator)
+            .await
+            .expect("embeds query runs");
+        let rendered = serde_json::to_string(&rows).expect("rows serialize");
+        assert!(
+            !rows.is_empty(),
+            "the settings view carries compiled embeds: {rendered}",
+        );
+    }
+
     #[dialog_common::test]
     async fn profile_library_replaces_recorded_history_and_preserves_authored_content() {
         let mut tonk = test_state().await;

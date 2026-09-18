@@ -222,6 +222,31 @@ pub enum AnalyzeDiagnosticKind {
     /// than a branch-declared attribute advertises. The write still
     /// commits — raw domains are open-ended — but typed readers (a
     /// concept declaring this attribute) will not see the fact, so
+    /// A `with:src` embed names content this document does not
+    /// declare.
+    ///
+    /// A warning rather than an error: the key is an ordinary keyed
+    /// fact, so it can be asserted separately — by a later document, or
+    /// by a space overriding one style — and a view embedding a name it
+    /// will be given later is legitimate. What is worth saying is that
+    /// nothing *here* provides it.
+    ///
+    /// Only an embed reading the view's OWN content is checked: a
+    /// reference carrying an entity reads another view's map, which is
+    /// on the branch rather than in this document. That entity failing
+    /// to resolve is `E_UNKNOWN_EMBED_VIEW`, and it IS an error — a
+    /// view that does not exist can never supply anything.
+    #[error("`with:src={reference}` names no `{dictionary}:` this view declares. {known}")]
+    UnknownEmbed {
+        /// The reference as written, for a diagnostic to quote.
+        reference: String,
+        /// Which map it would have read (`style` or `font`).
+        dictionary: String,
+        /// The keys the view does declare, rendered. One string rather
+        /// than a list so the type stays small enough to return by
+        /// value.
+        known: String,
+    },
     /// the author gets a heads-up with the spelling that would.
     #[error("{attribute} is declared {declared}, this literal stores {found} — {hint}")]
     DeclaredTypeDivergence {
@@ -253,6 +278,7 @@ impl AnalyzeDiagnosticKind {
                 "E_SINGLE_OCCURRENCE_VARIABLE_ASSERTION_FIELD"
             }
             Self::DeclaredTypeDivergence { .. } => "W_DECLARED_TYPE_DIVERGENCE",
+            Self::UnknownEmbed { .. } => "W_UNKNOWN_EMBED",
         }
     }
 }
@@ -405,30 +431,11 @@ pub enum AnalyzeErrorKind {
         /// by value.
         known: String,
     },
-    /// A `with:href` embed names content the view does not declare.
-    /// The reference resolves to nothing and the element embeds
-    /// nothing — an unstyled page, with no error anywhere — so a typo
-    /// fails the lowering instead.
-    ///
-    /// Only an embed reading the view's OWN content is checked here: a
-    /// reference carrying an entity reads another view's map, which is
-    /// on the branch rather than in this document.
-    #[error("`with:href={reference}` names no `{dictionary}:` this view declares. {known}")]
-    UnknownEmbed {
-        /// The reference as written, for a diagnostic to quote.
-        reference: String,
-        /// Which map it would have read (`style` or `font`).
-        dictionary: String,
-        /// The keys the view does declare, rendered. One string rather
-        /// than a list so the error type stays small enough to return
-        /// by value.
-        known: String,
-    },
-    /// A `with:href` embed names a view that resolves to nothing. The
+    /// A `with:src` embed names a view that resolves to nothing. The
     /// content it would read does not exist to be read, so the element
     /// embeds nothing — the same silent miss an undeclared name makes,
     /// one level out.
-    #[error("`with:href={reference}` names no view — `{view}` resolves to nothing")]
+    #[error("`with:src={reference}` names no view — `{view}` resolves to nothing")]
     UnknownEmbedView {
         /// The reference as written, for a diagnostic to quote.
         reference: String,
@@ -675,7 +682,6 @@ impl AnalyzeErrorKind {
             Self::UnknownBoundCommand { .. } => "E_UNKNOWN_BOUND_COMMAND",
             Self::EventCommandMismatch { .. } => "E_EVENT_COMMAND_MISMATCH",
             Self::UnknownTemplateField { .. } => "E_UNKNOWN_TEMPLATE_FIELD",
-            Self::UnknownEmbed { .. } => "E_UNKNOWN_EMBED",
             Self::UnknownEmbedView { .. } => "E_UNKNOWN_EMBED_VIEW",
             Self::UnknownEventSourceField { .. } => "E_UNKNOWN_EVENT_SOURCE_FIELD",
             Self::InvalidViewBindings { .. } => "E_INVALID_VIEW_BINDINGS",
