@@ -115,10 +115,10 @@ fn identity_path() -> Result<std::path::PathBuf> {
 
 /// The certificate this listener presents.
 ///
-/// The shared one, so a browser needs nothing published: it already
-/// knows the fingerprint, the port is fixed, and the candidate is
-/// loopback — which is the whole "nothing is exchanged" property. See
-/// `tonk_rtc::identity` for why a public certificate is sound here.
+/// Derived from the rendezvous phrase, so a browser needs nothing
+/// published: it derives the same fingerprint, the port comes from the
+/// same phrase, and the candidate is loopback — which is the whole
+/// "nothing is exchanged" property.
 ///
 /// A per-machine identity is still minted and persisted when
 /// `TONK_RTC_PRIVATE_IDENTITY` is set, for anyone who would rather hand
@@ -126,8 +126,8 @@ fn identity_path() -> Result<std::path::PathBuf> {
 /// address it would otherwise not have needed.
 fn rtc_identity() -> Result<tonk_rtc::Identity> {
     if std::env::var_os("TONK_RTC_PRIVATE_IDENTITY").is_none() {
-        return tonk_rtc::Identity::shared()
-            .context("the shared WebRTC certificate would not load");
+        return tonk_rtc::Identity::rendezvous()
+            .context("the rendezvous certificate would not derive");
     }
     let path = identity_path()?;
     if let Ok(pem) = std::fs::read_to_string(&path)

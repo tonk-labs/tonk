@@ -16,40 +16,17 @@
 //! that wants a per-machine one can put the PEM wherever it keeps local
 //! state.
 //!
-//! # The shared identity, and why a private key is in this repository
+//! # The rendezvous identity
 //!
-//! [`Identity::shared`] is a certificate checked into the source tree,
-//! private key and all. That is deliberate and it is not a leak: it
-//! exists precisely so that **nothing has to be exchanged** before a
-//! browser can dial.
+//! [`Identity::rendezvous`] is derived from a published phrase rather
+//! than generated or stored, so **nothing has to be exchanged** before
+//! a browser can dial. [`crate::rendezvous`] is where that lives and
+//! why it is sound.
 //!
-//! A dialer has to write a fingerprint into the description it
-//! fabricates, and a browser cannot skip that check the way
-//! `webrtc-rs` can. Two of the three things it needs are derivable —
-//! the port is fixed, the candidate is loopback — and the fingerprint
-//! is not, because it is a hash of a certificate signed by a key only
-//! the listener holds. Deriving one per peer was the obvious
-//! alternative and does not survive contact: both sides would have to
-//! produce byte-identical DER, which needs a deterministic signature,
-//! and Safari's Ed25519 does not produce one.
-//!
-//! So the fingerprint is made *known* instead of derived, by being the
-//! same everywhere. What that costs is exactly this: anyone can stand
-//! up a listener presenting this certificate, and any process on the
-//! machine can open a channel to one. Neither is new — `dial` already
-//! records that reachability is not permission, because the ufrag is
-//! chosen by the dialer and there is no secret to withhold. What
-//! guards the connection is what has always guarded it: every
-//! invocation carries a signed UCAN and is verified before any work is
-//! done, and where iroh rides on top, its TLS authenticates the peer by
-//! endpoint key under RFC 7250. An impostor on the port completes DTLS
-//! and then fails closed.
-//!
-//! Treat this file as a published constant, never as a secret. Rotating
-//! it means changing what every browser expects, so
-//! [`shared_fingerprint_is_pinned`] fails loudly if it moves.
-//!
-//! [`shared_fingerprint_is_pinned`]: #
+//! A per-machine identity is still available and still persisted, for
+//! a listener that would rather hand out an address than be reachable
+//! by anyone who knows the phrase. It costs a dialer the address it
+//! would otherwise not have needed.
 
 use webrtc::peer_connection::certificate::RTCCertificate;
 
@@ -71,26 +48,57 @@ impl std::fmt::Debug for Identity {
     }
 }
 
-/// The certificate every tonk listener presents, and every dialer
-/// expects. Public by design — see the module note.
-const SHARED_PEM: &str = include_str!("../assets/shared-identity.pem");
-
-/// The fingerprint of [`SHARED_PEM`], in SDP form.
-///
-/// Duplicated in `tonk-ui`'s `rtc.mjs`, because the page has to write
-/// it into a description it fabricates and cannot compute it. The test
-/// below pins this against the certificate itself; keeping the page in
-/// step is the job of the test that asserts they match.
-pub const SHARED_FINGERPRINT: &str = "sha-256 08:EC:77:D3:24:82:FE:18:D7:9D:A2:E3:BC:A1:12:00:07:80:33:9D:E0:00:DE:77:FE:D0:51:73:3A:86:39:95";
+/// Wrap base64 the way PEM does, so `pem::parse_many` accepts it.
+fn pem_block(tag: &str, bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    let body = base64::engine::general_purpose::STANDARD.encode(bytes);
+    let lines: Vec<&str> = body
+        .as_bytes()
+        .chunks(64)
+        .map(|chunk| std::str::from_utf8(chunk).expect("base64 is ascii"))
+        .collect();
+    format!(
+        "-----BEGIN {tag}-----\n{}\n-----END {tag}-----\n",
+        lines.join("\n")
+    )
+}
 
 impl Identity {
-    /// The identity every listener shares, so a dialer needs no address.
+    /// The identity derived from [`rendezvous::RENDEZVOUS`].
     ///
-    /// This is what makes "nothing is exchanged" true: a browser that
-    /// knows the port knows everything, because the fingerprint is a
-    /// constant it already has.
-    pub fn shared() -> Result<Self, PeerError> {
-        Self::from_pem(SHARED_PEM)
+    /// Every listener presents this and every dialer expects it, having
+    /// derived the same fingerprint from the same phrase — which is
+    /// what makes dialling need nothing published. See
+    /// [`crate::rendezvous`] for why a public certificate is sound.
+    pub fn rendezvous() -> Result<Self, PeerError> {
+        Self::derived(crate::rendezvous::RENDEZVOUS)
+    }
+
+    /// The identity `phrase` derives.
+    pub fn derived(phrase: &str) -> Result<Self, PeerError> {
+        use p256::pkcs8::EncodePrivateKey as _;
+
+        let key = crate::rendezvous::signing_key(phrase)
+            .map_err(|error| PeerError::Identity(error.to_string()))?;
+        let pkcs8 = p256::SecretKey::from(&key)
+            .to_pkcs8_der()
+            .map_err(|error| PeerError::Identity(error.to_string()))?;
+        let der = crate::rendezvous::certificate_der(phrase)
+            .map_err(|error| PeerError::Identity(error.to_string()))?;
+
+        // rcgen dates the certificate to 4096; webrtc-rs keeps its own
+        // copy of that in an `EXPIRES` block, so the two must agree or
+        // it would expire in this type while staying valid on the wire.
+        const YEAR_4096: u64 = 67_090_118_400;
+
+        let pem = format!(
+            "{}\n{}\n{}",
+            pem_block("EXPIRES", &YEAR_4096.to_le_bytes()),
+            pem_block("PRIVATE_KEY", pkcs8.as_bytes()),
+            pem_block("CERTIFICATE", &der),
+        );
+
+        Self::from_pem(&pem)
     }
 
     /// Mint a fresh identity.
@@ -141,35 +149,27 @@ impl Identity {
 mod tests {
     use super::*;
 
-    /// Why the certificate is shipped rather than derived from a
-    /// well-known phrase, which is the obvious thing to want.
-    ///
-    /// Deriving the *key* from a string is trivial. The obstacle is
-    /// that a fingerprint is the hash of the whole certificate, not of
-    /// the key, and a certificate is not reproducible even here: rcgen
-    /// signs ECDSA with a random nonce, so the same key and the same
-    /// parameters give different bytes every time. Two ends could never
-    /// agree, and a browser has no certificate builder at all.
-    ///
-    /// Reproducing one would mean a hand-built DER and an RFC 6979
-    /// signer in both Rust and JavaScript, byte-identical, forever.
-    /// Shipping the bytes is smaller and cannot drift. If this test
-    /// ever fails, rcgen became deterministic and the cheaper option is
-    /// worth revisiting.
+    /// The decisive cross-check: webrtc-rs, given the derived
+    /// certificate, computes the same fingerprint the derivation
+    /// predicts. A browser derives that value and writes it into the
+    /// description it fabricates, so if these disagreed every dial
+    /// would fail the DTLS check with nothing to read.
     #[test]
-    fn a_certificate_is_not_reproducible_from_its_key() {
-        let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
-        let params = || {
-            let mut params = rcgen::CertificateParams::new(vec!["tonk".to_owned()]).unwrap();
-            params.serial_number = Some(rcgen::SerialNumber::from(1u64));
-            params
-        };
+    fn the_derived_certificate_has_the_derived_fingerprint() {
+        assert_eq!(
+            Identity::rendezvous().unwrap().fingerprint().to_uppercase(),
+            crate::rendezvous::fingerprint(crate::rendezvous::RENDEZVOUS)
+                .unwrap()
+                .to_uppercase()
+        );
+    }
 
-        assert_ne!(
-            params().self_signed(&key).unwrap().der(),
-            params().self_signed(&key).unwrap().der(),
-            "rcgen now signs deterministically: deriving the certificate on both ends, \
-             rather than shipping it, is worth reconsidering"
+    /// Nothing is stored, so every process derives the same one.
+    #[test]
+    fn the_rendezvous_identity_is_the_same_everywhere() {
+        assert_eq!(
+            Identity::rendezvous().unwrap().fingerprint(),
+            Identity::rendezvous().unwrap().fingerprint()
         );
     }
 
@@ -189,59 +189,6 @@ mod tests {
         let (algorithm, value) = fingerprint.split_once(' ').expect("algorithm and value");
         assert_eq!(algorithm, "sha-256");
         assert_eq!(value.split(':').count(), 32, "sha-256 is 32 octets");
-    }
-
-    /// The page writes this exact string into the description it
-    /// fabricates, so if the certificate moves and this does not, every
-    /// dial fails with a DTLS mismatch and nothing says why.
-    #[test]
-    fn the_shared_fingerprint_is_pinned() {
-        assert_eq!(
-            Identity::shared().unwrap().fingerprint().to_uppercase(),
-            SHARED_FINGERPRINT.to_uppercase(),
-            "the shared certificate changed; rtc.mjs must be updated in the same commit"
-        );
-    }
-
-    /// The browser derives this fingerprint rather than transcribing it,
-    /// so what has to stay in step is narrower than it was: the page
-    /// must reach the same certificate, and must agree on the port.
-    ///
-    /// Agreement on the *value* is pinned from the other side, in
-    /// `rtc.mjs`'s own tests, because that is where the derivation
-    /// lives. This checks the two things a Rust change could break.
-    #[test]
-    fn the_browser_half_reaches_the_same_certificate() {
-        let ui = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tonk-ui");
-
-        let index = std::fs::read_to_string(ui.join("index.html")).expect("tonk-ui/index.html");
-        assert!(
-            index.contains("../tonk-rtc/assets/shared-identity.pem"),
-            "index.html no longer copies the shared certificate into the dist, so the page \
-             would fetch a 404 and every dial would fail with no explanation"
-        );
-
-        let source = std::fs::read_to_string(ui.join("assets/rtc.mjs")).expect("rtc.mjs");
-        let port = format!("DEFAULT_PORT = {}", crate::dial::DEFAULT_PORT);
-        assert!(
-            source.contains(&port),
-            "rtc.mjs disagrees about the default port; expected `{port}`"
-        );
-        assert!(
-            !source.contains(SHARED_FINGERPRINT),
-            "rtc.mjs transcribes the fingerprint again; it should derive it from the \
-             certificate so there is only one copy to get wrong"
-        );
-    }
-
-    /// Every listener presents the same one: that is the whole point,
-    /// and it is what a per-machine identity would quietly undo.
-    #[test]
-    fn the_shared_identity_is_the_same_everywhere() {
-        assert_eq!(
-            Identity::shared().unwrap().fingerprint(),
-            Identity::shared().unwrap().fingerprint()
-        );
     }
 
     #[test]

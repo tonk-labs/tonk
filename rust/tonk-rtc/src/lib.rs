@@ -38,6 +38,10 @@
 /// Target-agnostic: this is the policy `tonk-worker` needs, with no
 /// worker, no `postMessage` and no WebRTC in it.
 pub mod dispatch;
+
+/// The certificate both ends derive, so nothing has to be exchanged.
+pub mod rendezvous;
+
 pub mod signal;
 
 #[cfg(not(target_arch = "wasm32"))]

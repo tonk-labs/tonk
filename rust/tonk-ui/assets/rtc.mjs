@@ -159,73 +159,22 @@ export function decodeAddress(encoded) {
 }
 
 /**
- * The port a listening `tonk` binds by default.
- *
- * Mirrors `tonk_rtc::dial::DEFAULT_PORT`. A dialer assumes it, which is
- * half of what makes dialling need no address.
- */
-export const DEFAULT_PORT = 51247;
-
-/**
- * Where the shared certificate is served from.
- *
- * Copied into the dist from `tonk-rtc/assets` by a `data-trunk`
- * directive, so there is exactly one copy of it in the repository. This
- * is the page's own origin, not the CLI's — an https page cannot reach
- * `http://127.0.0.1`, which is why the fingerprint has to be known in
- * advance rather than asked for.
- */
-export const SHARED_IDENTITY_URL = "/shared-identity.pem";
-
-/**
- * The DTLS fingerprint of a certificate, in the form an SDP
- * `a=fingerprint` line takes.
- *
- * Derived, not transcribed. The certificate's private key is public by
- * design, so both ends can compute this from the same bytes, and a
- * constant copied into this file by hand would be one more thing to
- * keep in step and one more way to be silently wrong.
- */
-export async function fingerprintOf(pem) {
-    const block = /-----BEGIN CERTIFICATE-----([\s\S]*?)-----END CERTIFICATE-----/.exec(pem);
-    if (!block) throw new Error("no CERTIFICATE block in the shared identity");
-    const der = Uint8Array.from(atob(block[1].replace(/\s+/g, "")), (c) => c.charCodeAt(0));
-    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", der));
-    const octets = [...digest].map((b) => b.toString(16).padStart(2, "0").toUpperCase());
-    return `sha-256 ${octets.join(":")}`;
-}
-
-let pending;
-
-/**
- * The fingerprint every `tonk` listener presents.
- *
- * Fetched once and memoized: it is a static asset on this origin, so
- * this is a cache hit after the first dial.
- */
-export function sharedFingerprint(url = SHARED_IDENTITY_URL) {
-    pending ??= fetch(url)
-        .then((response) => {
-            if (!response.ok) throw new Error(`could not read ${url}: ${response.status}`);
-            return response.text();
-        })
-        .then(fingerprintOf);
-    return pending;
-}
-
-/**
  * The address of a `tonk` listening on this machine.
  *
- * Nothing is exchanged to get here: the candidate is loopback, the port
- * is fixed, and the fingerprint comes from a certificate this origin
- * already serves. It is the only case where an address can be conjured
- * rather than read.
+ * Both values come from the rendezvous phrase and are derived in Rust —
+ * `tonk_rtc::rendezvous`, which compiles to wasm precisely so this page
+ * does not reimplement it. A fingerprint is the hash of a whole
+ * certificate, so reproducing one here would mean an ASN.1 builder and
+ * an RFC 6979 signer in JavaScript, kept byte-identical with the Rust
+ * forever — and WebCrypto's Ed25519 is not even deterministic in
+ * Safari. One implementation, compiled twice, has neither problem.
+ *
+ * So this takes what the caller derived. Nothing is fetched and nothing
+ * is exchanged: the candidate is loopback and the rest is a function of
+ * a published phrase.
  */
-export async function localAddress(port = DEFAULT_PORT) {
-    return {
-        candidates: [{ host: "127.0.0.1", port }],
-        fingerprint: await sharedFingerprint(),
-    };
+export function localAddress(port, fingerprint) {
+    return { candidates: [{ host: "127.0.0.1", port }], fingerprint };
 }
 
 /**

@@ -8,6 +8,12 @@ edition.workspace = true
 
 [dependencies]
 base64 = { workspace = true }
+# The rendezvous certificate, derived identically on both targets.
+# `rcgen` without its crypto feature is a DER builder and an external
+# signer hook, which is all this needs and is what lets it reach wasm.
+rcgen = { version = "0.13", default-features = false }
+p256 = { version = "0.13", default-features = false, features = ["ecdsa", "pkcs8", "alloc", "pem"] }
+sha2 = { version = "0.10", default-features = false }
 # The iroh transport builds for BOTH targets: that is the point of it —
 # the browser gets QUIC streams over a data channel with no relay.
 bytes = { workspace = true, optional = true }
@@ -73,6 +79,8 @@ rcgen = "0.13"
 # above are: tokio's `net` pulls `mio`, which does not build for wasm.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 anyhow = { workspace = true }
+sha2 = "0.10"
+p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
 # Proving the two halves compose: dialog's peer remote over this
 # crate's transport. `transport` brings `IrohChannel` and the accept
 # loop; `helpers` brings a store to answer from.
