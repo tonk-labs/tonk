@@ -4803,21 +4803,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tonk-board"
-version = "0.6.16-rc.1"
-dependencies = [
- "custom-elements",
- "js-sys",
- "serde-wasm-bindgen",
- "serde_json",
- "tonk-host",
- "tonk-schema",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
-]
-
-[[package]]
 name = "tonk-cli"
 version = "0.6.16-rc.1"
 dependencies = [
@@ -5017,7 +5002,6 @@ dependencies = [
  "custom-elements",
  "dialog-common",
  "js-sys",
- "tonk-board",
  "tonk-display",
  "tonk-fab",
  "tonk-host",

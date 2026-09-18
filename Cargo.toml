@@ -6,7 +6,6 @@ members = [
   "rust/tonk-account",
   "rust/tonk-analytics",
   "rust/tonk-analyzer",
-  "rust/tonk-board",
   "rust/tonk-cli",
   "rust/tonk-code",
   "rust/tonk-common",
@@ -52,7 +51,6 @@ tonk-access-service = { path = "./rust/tonk-access-service" }
 tonk-account = { path = "./rust/tonk-account" }
 tonk-analytics = { path = "./rust/tonk-analytics" }
 tonk-analyzer = { path = "./rust/tonk-analyzer" }
-tonk-board = { path = "./rust/tonk-board" }
 tonk-code = { path = "./rust/tonk-code" }
 tonk-common = { path = "./rust/tonk-common" }
 tonk-core = { path = "./rust/tonk-core" }

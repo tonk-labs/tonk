@@ -39,7 +39,6 @@ pub fn start() {
     // naming it here is the guarantee that it happens.
     tonk_display::registry::install();
     tonk_display::register();
-    tonk_board::register();
     tonk_workspace::register();
     tonk_tree::register();
     tonk_fab::register();
