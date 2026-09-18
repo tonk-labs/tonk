@@ -48,17 +48,37 @@
 //!
 //! RSA is the one that is genuinely deterministic in a browser, and
 //! `RTCPeerConnection.generateCertificate` accepts it, so it is a real
-//! DTLS option. It still does not help, because the obstacle is
-//! *deriving the key*, not signing with it. An RSA keypair from a
-//! phrase means a pinned prime search that two implementations
-//! reproduce exactly, it takes hundreds of milliseconds at 2048 bits,
-//! and WebCrypto cannot import a key from a seed at all — only generate
-//! a random one or import a whole key you already hold. A P-256 secret
-//! is a 32-byte scalar, so deriving it is one hash.
+//! DTLS option.
 //!
-//! None of which this design depends on, because the browser runs this
-//! code rather than its own. The table is here so the question does not
-//! get re-asked from memory.
+//! What stops any of these being derived in the browser is narrower
+//! than "WebCrypto cannot", which is what an earlier version of this
+//! note said and is wrong. Measured:
+//!
+//! - **A KDF does derive.** HKDF over a phrase gives the same 32 bytes
+//!   every time.
+//! - **Keys import and export fine.** An RSA private key round-trips
+//!   through PKCS#8 or through a JWK carrying the full CRT parameters,
+//!   and the reimported key signs identically.
+//!
+//! The gap is turning derived *bytes* into a *keypair*, and it differs
+//! by algorithm:
+//!
+//! - **P-256**: importing a JWK with only `d` is refused
+//!   (`DataError`); supplying `x` and `y` too is accepted. So the gap
+//!   is exactly one scalar-to-point multiplication, which WebCrypto
+//!   exposes no primitive for. Small, and a few kilobytes of EC library
+//!   closes it.
+//! - **RSA**: the gap is a prime search that two implementations must
+//!   reproduce exactly, at hundreds of milliseconds for 2048 bits.
+//!   Possible — assemble the JWK and import it — but far more code and
+//!   far more to get subtly wrong.
+//!
+//! So a pure-JavaScript browser half is achievable, and P-256 would
+//! still be the algorithm to do it with. This design does not need one,
+//! because the browser runs this code rather than its own, and one
+//! implementation cannot disagree with itself. The measurements are
+//! recorded so the choice is revisited from facts rather than from
+//! memory.
 //!
 //! # What is public, and why that is safe
 //!
