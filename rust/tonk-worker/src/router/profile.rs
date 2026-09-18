@@ -14,11 +14,58 @@ use tonk_schema::{Replica, domain::replica::Profile as ProfileEntity, prelude::D
 use super::{AppState, RepositoryInfo, repository::build_repository_info};
 use crate::TonkWorkerError;
 
-/// Name of the meta branch on the profile repository — mirrors
-/// the constant in `super::repository`. Keeping a private copy
-/// rather than exporting the one from `super::repository` avoids
-/// a cross-module coupling for a short string.
+/// The profile repository's content branch — where hub bookkeeping
+/// (the space directory, account facts) lives.
+///
+/// Despite the name this is NOT the meta branch; see
+/// [`ensure_profile_meta_branch`] for that. A space repository splits
+/// content from `meta`, and the profile is gaining the same split so
+/// its branches can be enumerated like any other repository's.
 const PROFILE_BRANCH: &str = "main";
+
+/// Give the profile repository the `meta` branch every space
+/// repository has, recording `main` in the branch enumeration.
+///
+/// A space's meta branch carries the bookkeeping that must never
+/// replicate — the local [`Replica`] record and which branches exist.
+/// The profile repository was created before that split and has only
+/// `main`, so nothing can enumerate its branches; a profile-per-branch
+/// switcher needs exactly that enumeration.
+///
+/// On demand and idempotent: `branch(META_BRANCH).open()` creates the
+/// branch if it is absent, and re-asserting a [`Replica`] or
+/// [`MetaBranch`] is a no-op because both hash from their own fields —
+/// the same record converges rather than duplicating. So an existing
+/// profile gains its meta branch the next time it boots, and a profile
+/// that already has one pays a no-op transaction.
+///
+/// Best-effort by design: a profile whose meta branch cannot be written
+/// still works exactly as it does today, because nothing reads this
+/// enumeration yet. Failing the boot over bookkeeping nobody consults
+/// would trade a working hub for a tidy one.
+pub(crate) async fn ensure_profile_meta_branch(tonk: &crate::worker::TonkState) {
+    use tonk_schema::Branch as MetaBranch;
+
+    // The profile repository IS the subject here: a replica of itself,
+    // held by itself, which is what makes its branch entities derive
+    // the same way a space's do.
+    let profile_did = tonk.profile.did();
+    let replica = Replica::new(profile_did.clone(), profile_did);
+    // `.transaction()` on the branch reference opens it if absent —
+    // the same on-demand creation a space's meta branch gets.
+    let transaction = tonk
+        .reactor
+        .profile_repository()
+        .branch(super::repository::META_BRANCH)
+        .transaction()
+        .assert(replica.clone())
+        .assert(replica.branch(super::repository::META_BRANCH))
+        .assert(MetaBranch::new(&replica, PROFILE_BRANCH));
+
+    if let Err(error) = transaction.commit().perform(&tonk.operator).await {
+        log!("profile meta branch not recorded: {error}");
+    }
+}
 
 /// One space the profile owns, as listed by `GET /api/profile`.
 ///
@@ -78,6 +125,12 @@ pub async fn get_profile(
 
     let tonk = state.read().await;
     let profile_did = tonk.profile.did();
+
+    // A profile created before the content/meta split has no meta
+    // branch. Give it one here — this route is the hub's first touch of
+    // the profile repository — so the branch enumeration exists for
+    // whatever reads it later.
+    ensure_profile_meta_branch(&tonk).await;
 
     // Read through the reactor's cached profile-repository handle so
     // reads see exactly what writes (which also go through the reactor)
@@ -183,6 +236,121 @@ mod tests {
 
     use crate::api_router;
     use crate::router::tests::test_state;
+
+    /// The profile gains the branch enumeration a space has.
+    ///
+    /// Reading the enumeration back through a QUERY, not by checking
+    /// the transaction succeeded: the point of the record is that
+    /// something can later ask "which branches does this profile
+    /// have?" and get `main`, which is what a per-profile-branch
+    /// switcher will do.
+    #[dialog_common::test]
+    async fn it_gives_the_profile_a_meta_branch_naming_its_main() {
+        use dialog_query::{Query, Term};
+        use tonk_schema::Branch as MetaBranch;
+
+        let state = test_state().await;
+        let (app, state, _lsp) = crate::router::api_router_with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/profile")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+        let tonk = state.read().await;
+        let session = tonk
+            .reactor
+            .profile_repository()
+            .branch(super::super::repository::META_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .expect("meta branch opens");
+        let branches: Vec<MetaBranch> = session
+            .handle()
+            .query()
+            .select(Query::<MetaBranch> {
+                this: Term::var("this"),
+                name: Term::var("name"),
+                origin: Term::var("origin"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("branch enumeration reads");
+
+        let names: Vec<String> = branches.iter().map(|b| b.name.0.clone()).collect();
+        assert!(
+            names.iter().any(|n| n == PROFILE_BRANCH),
+            "the content branch must appear in the enumeration; got {names:?}",
+        );
+        assert!(
+            names
+                .iter()
+                .any(|n| n == super::super::repository::META_BRANCH),
+            "and the meta branch enumerates itself, as a space's does; got {names:?}",
+        );
+    }
+
+    /// Booting twice converges rather than accumulating.
+    ///
+    /// The records hash from their own fields, so re-asserting is a
+    /// no-op — but that is a property of the concepts, not of this
+    /// call, so it is worth pinning: an existing profile boots through
+    /// this path on every load.
+    #[dialog_common::test]
+    async fn it_records_the_same_branches_however_often_the_profile_boots() {
+        use dialog_query::{Query, Term};
+        use tonk_schema::Branch as MetaBranch;
+
+        let state = test_state().await;
+        let (_app, state, _lsp) = crate::router::api_router_with_state(state);
+
+        let count = || async {
+            let tonk = state.read().await;
+            let session = tonk
+                .reactor
+                .profile_repository()
+                .branch(super::super::repository::META_BRANCH)
+                .acquire(&tonk.operator)
+                .await
+                .expect("meta branch opens");
+            let branches: Vec<MetaBranch> = session
+                .handle()
+                .query()
+                .select(Query::<MetaBranch> {
+                    this: Term::var("this"),
+                    name: Term::var("name"),
+                    origin: Term::var("origin"),
+                })
+                .perform(&tonk.operator)
+                .try_vec()
+                .await
+                .expect("branch enumeration reads");
+            branches.len()
+        };
+
+        {
+            let tonk = state.read().await;
+            ensure_profile_meta_branch(&tonk).await;
+        }
+        let first = count().await;
+        {
+            let tonk = state.read().await;
+            ensure_profile_meta_branch(&tonk).await;
+        }
+        let second = count().await;
+
+        assert_eq!(
+            first, second,
+            "a second boot must converge on the same records, not add more",
+        );
+    }
 
     #[dialog_common::test]
     async fn it_reports_a_display_name_on_the_profile() {
