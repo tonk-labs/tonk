@@ -1,0 +1,26 @@
+{
+  "attempted_runs": 1,
+  "complete": false,
+  "consistent_browser": false,
+  "expected_difference_ms": 500,
+  "expected_pairs": 6,
+  "failures": [
+    {
+      "error": "unknown runner failure",
+      "sequence": 0,
+      "status": "harness_error"
+    }
+  ],
+  "kind": "headline-delay-control",
+  "median_difference_interval": null,
+  "median_difference_ms": null,
+  "order_medians_ms": {
+    "AB": null,
+    "BA": null
+  },
+  "paired_differences_ms": [],
+  "precision_budget_ms": 100,
+  "precision_pass": false,
+  "scope": "Local observed readiness only; A/A requires independent repeat and sensitivity validation",
+  "successful_runs": 0
+}

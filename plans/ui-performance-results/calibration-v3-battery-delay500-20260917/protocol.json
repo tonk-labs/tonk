@@ -1,0 +1,251 @@
+{
+  "cooldown_seconds": 2,
+  "fixture": {
+    "cache_state": "fresh-profile-empty-http-and-service-worker",
+    "dataset_sha256": "ef4c970fce9dc639ad8770e8ee025de886e753fdd942f451400ec85bf6e5e55a",
+    "input_sequence": "open-share-menu-v1",
+    "recipe": "fresh-anonymous-nested-welcome-v1",
+    "selector": ".wp-h1"
+  },
+  "headline_delay_B_ms": 500,
+  "headline_delay_method": "webdriver-inner-frame-visibility-v1",
+  "kind": "s1-aa-calibration-v3",
+  "limitations": [
+    "includes WebDriver polling and transport overhead",
+    "is not LCP, exact presentation time, or field INP",
+    "does not provide complete request or byte accounting"
+  ],
+  "measurement": "navigation-to-usable-observed-v3",
+  "observer_diagnostics_version": 1,
+  "page_load_strategy": "none",
+  "pairs": 20,
+  "poll_interval_ms": 50,
+  "post_timing_checks": [
+    "trusted WebDriver share click",
+    "visible log in to share action",
+    "visible 1 member roster row",
+    "served artifact identity",
+    "screenshot"
+  ],
+  "precision_budget_ms": 100,
+  "profile": "desktop",
+  "profile_settings": {
+    "cpu_slowdown": 1,
+    "download_bytes_per_second": -1,
+    "latency_ms": 0,
+    "upload_bytes_per_second": -1,
+    "viewport_height": 800,
+    "viewport_width": 1280
+  },
+  "runs": 10,
+  "scenario": "S1",
+  "schedule": [
+    [
+      0,
+      "A",
+      "AB"
+    ],
+    [
+      0,
+      "B",
+      "AB"
+    ],
+    [
+      1,
+      "B",
+      "BA"
+    ],
+    [
+      1,
+      "A",
+      "BA"
+    ],
+    [
+      2,
+      "A",
+      "AB"
+    ],
+    [
+      2,
+      "B",
+      "AB"
+    ],
+    [
+      3,
+      "B",
+      "BA"
+    ],
+    [
+      3,
+      "A",
+      "BA"
+    ],
+    [
+      4,
+      "B",
+      "BA"
+    ],
+    [
+      4,
+      "A",
+      "BA"
+    ],
+    [
+      5,
+      "A",
+      "AB"
+    ],
+    [
+      5,
+      "B",
+      "AB"
+    ],
+    [
+      6,
+      "A",
+      "AB"
+    ],
+    [
+      6,
+      "B",
+      "AB"
+    ],
+    [
+      7,
+      "A",
+      "AB"
+    ],
+    [
+      7,
+      "B",
+      "AB"
+    ],
+    [
+      8,
+      "B",
+      "BA"
+    ],
+    [
+      8,
+      "A",
+      "BA"
+    ],
+    [
+      9,
+      "B",
+      "BA"
+    ],
+    [
+      9,
+      "A",
+      "BA"
+    ],
+    [
+      10,
+      "B",
+      "BA"
+    ],
+    [
+      10,
+      "A",
+      "BA"
+    ],
+    [
+      11,
+      "A",
+      "AB"
+    ],
+    [
+      11,
+      "B",
+      "AB"
+    ],
+    [
+      12,
+      "B",
+      "BA"
+    ],
+    [
+      12,
+      "A",
+      "BA"
+    ],
+    [
+      13,
+      "B",
+      "BA"
+    ],
+    [
+      13,
+      "A",
+      "BA"
+    ],
+    [
+      14,
+      "B",
+      "BA"
+    ],
+    [
+      14,
+      "A",
+      "BA"
+    ],
+    [
+      15,
+      "A",
+      "AB"
+    ],
+    [
+      15,
+      "B",
+      "AB"
+    ],
+    [
+      16,
+      "A",
+      "AB"
+    ],
+    [
+      16,
+      "B",
+      "AB"
+    ],
+    [
+      17,
+      "B",
+      "BA"
+    ],
+    [
+      17,
+      "A",
+      "BA"
+    ],
+    [
+      18,
+      "A",
+      "AB"
+    ],
+    [
+      18,
+      "B",
+      "AB"
+    ],
+    [
+      19,
+      "A",
+      "AB"
+    ],
+    [
+      19,
+      "B",
+      "AB"
+    ]
+  ],
+  "schema_version": 1,
+  "seed": 2026091730,
+  "timeout_ms": 120000,
+  "viewport": [
+    1280,
+    800
+  ]
+}

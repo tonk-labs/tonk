@@ -64,6 +64,7 @@ dialog-common = { workspace = true, features = [
     "helpers",
     "integration-tests",
 ] }
+sha2_0_10 = { workspace = true }
 wasm-bindgen-test = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]

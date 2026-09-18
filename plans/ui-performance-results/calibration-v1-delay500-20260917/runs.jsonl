@@ -1,0 +1,1 @@
+{"arm": "B", "artifact_sha256": "7ba1cac21c201e91cdb46646848ae87d772f61b42ec39a08229f4f52763e1489", "error": "unknown runner failure", "order": "BA", "pair": 0, "protocol_sha256": "98d30287818511b9b74b7c5eb64548ef47b9f463f0eb08b644cf6d8c9f94c70b", "runner_exit": 101, "sequence": 0, "started_at": "2026-09-17T13:42:17.081236+00:00", "status": "harness_error"}

@@ -1,0 +1,34 @@
+{
+  "collections": [
+    [
+      "delay500",
+      2026091760,
+      500
+    ],
+    [
+      "aa1",
+      2026091761,
+      0
+    ],
+    [
+      "aa2",
+      2026091762,
+      0
+    ]
+  ],
+  "environment": {
+    "build_processes": [],
+    "captured_at": "2026-09-17T18:29:02.246762+00:00",
+    "power": {
+      "low_power_mode": 0,
+      "source": "AC Power"
+    },
+    "process_check_available": true
+  },
+  "pairs_each": 60,
+  "source_sha256": {
+    "scripts/perf/calibrate_observed.py": "bd750812f4e8786ae7550cc95bd278589493d0e3e5fb9f6bbdbf492afabe9402",
+    "scripts/perf/perf_environment.py": "9c9116d42c5a4050ef7a811853a992df936a147f81565fef1c373d422b4a7049",
+    "scripts/perf/ui_perf.py": "a64d48bee34491188b643feb160fe95733959b9487ec04ea7db511858e3aa993"
+  }
+}

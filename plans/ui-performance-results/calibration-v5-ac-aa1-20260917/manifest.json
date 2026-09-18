@@ -1,0 +1,21 @@
+{
+  "artifact": "/nix/store/h53ljms4m2gxxqf5zn5fqysxvsqd61c9-tonk-ui-trunk-0.6.15",
+  "artifact_sha256": "7ba1cac21c201e91cdb46646848ae87d772f61b42ec39a08229f4f52763e1489",
+  "protocol_sha256": "8cc8fd3a0b19793c3d849886707dc0f9378d93ba75d71351e744237f0a48c49f",
+  "runner": [
+    "/Users/jackdouglas/tonk/tonk/.wt/fix/load-perf/target/debug/deps/tonk_ui-3dbc110f5db378ea",
+    "performance::tests::it_profiles_supplied_artifact",
+    "--exact",
+    "--ignored",
+    "--nocapture"
+  ],
+  "runner_sha256": "78be8cf5e9f0817377532187bbb1d1db1b1515db1132d16c9fe7072f7cab3e16",
+  "server": "/nix/store/276bvwgzlnx88aq8jhn8b0497qx27zf6-tonk-ui-test-server/bin/tonk-ui-test-server",
+  "server_sha256": "96ff197c37818a89a4d517a94e1e7ae3db004f19b4d78b82e503a07ad5d81f61",
+  "version": {
+    "assetManifest": "749f80859caa789ec059cead8926ca9ce55cef8f4d51bcee480ecfb77b46176c",
+    "build": "7c0b391f8bd92952",
+    "serviceWorker": "33d56d058a77b3be",
+    "workerWasm": "b49e0d95315c8797"
+  }
+}

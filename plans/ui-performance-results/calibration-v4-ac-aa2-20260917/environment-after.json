@@ -1,0 +1,29 @@
+{
+  "captured_at": "2026-09-17T18:22:12.921304+00:00",
+  "environment_verified": false,
+  "hardware": {
+    "cpu": "Apple M3 Pro",
+    "logical_cpus": 12,
+    "memory_bytes": 38654705664,
+    "model": "Mac15,6"
+  },
+  "host_metadata_complete": true,
+  "os": {
+    "architecture": "arm64",
+    "release": "27.0.0",
+    "system": "Darwin"
+  },
+  "power": {
+    "low_power_mode": 0,
+    "source": "AC Power"
+  },
+  "schema_version": 1,
+  "unverified": [
+    "browser and driver versions",
+    "applied CPU/network throttling across frames and workers",
+    "viewport",
+    "server compression",
+    "background workload",
+    "stable power state during samples"
+  ]
+}

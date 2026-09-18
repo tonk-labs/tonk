@@ -1,0 +1,46 @@
+{
+  "attempted_runs": 40,
+  "complete": true,
+  "consistent_browser": true,
+  "expected_difference_ms": 500,
+  "expected_pairs": 20,
+  "failures": [],
+  "kind": "headline-delay-control",
+  "median_difference_interval": {
+    "coverage": 0.9586105346679688,
+    "lower_ms": 390.4978329999997,
+    "order_statistic": 6,
+    "upper_ms": 674.2077499999998
+  },
+  "median_difference_ms": 529.8894999999999,
+  "order_medians_ms": {
+    "AB": 577.9976875000001,
+    "BA": 529.8894999999999
+  },
+  "paired_differences_ms": [
+    424.3910820000001,
+    539.7656669999999,
+    350.296292,
+    831.063625,
+    520.0133329999999,
+    728.0798340000003,
+    790.1889590000005,
+    682.0712080000003,
+    -23.741876000000047,
+    661.197958,
+    620.440208,
+    512.8241250000001,
+    409.1966660000003,
+    674.2077499999998,
+    390.4978329999997,
+    692.3785010000001,
+    643.1712500000001,
+    384.03754200000003,
+    -90.78029200000037,
+    127.96062499999994
+  ],
+  "precision_budget_ms": 100,
+  "precision_pass": false,
+  "scope": "Local observed readiness only; A/A requires independent repeat and sensitivity validation",
+  "successful_runs": 40
+}
