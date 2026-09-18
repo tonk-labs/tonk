@@ -595,6 +595,54 @@ mod tests {
         Ok(())
     }
 
+    /// Wait for the view's `with:src` embed to finish resolving.
+    ///
+    /// `enter_hub` only waits for `.hub-page` to EXIST. Resolving an
+    /// embed is two query round-trips that run after the view mounts,
+    /// so a read taken the moment the element appears samples an
+    /// arbitrary point in that work — usually resolved on a warm
+    /// machine, usually not on a cold one. Waiting for the stylesheet
+    /// to be loaded rather than for the attribute to be set: the
+    /// attribute is set before the browser has fetched the blob, and
+    /// what the assertions below read is computed style.
+    async fn hub_style_applied(driver: &WebDriver) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let ready = driver
+                .execute(
+                    r#"const link = document.querySelector('link[data-tonk-embed]');
+                       return !!(link && link.sheet && link.sheet.cssRules.length);"#,
+                    Vec::new(),
+                )
+                .await
+                .ok()
+                .and_then(|ret| ret.json().as_bool());
+            if ready == Some(true) {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                let state = driver
+                    .execute(
+                        r#"const link = document.querySelector('link[data-tonk-embed]');
+                           return {
+                             carriers: document.querySelectorAll('link[data-tonk-embed]').length,
+                             minted: document.querySelectorAll('link[data-tonk-embed-src]').length,
+                             href: link ? link.getAttribute('href') : null,
+                             sheet: !!(link && link.sheet),
+                           };"#,
+                        Vec::new(),
+                    )
+                    .await
+                    .map(|ret| ret.json().clone())
+                    .unwrap_or(serde_json::Value::Null);
+                return Err(anyhow!(
+                    "the view's embedded stylesheet never applied; state={state}"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     /// Enter the sealed guest frame, whatever page it is showing.
     ///
     /// The guest renders at an opaque origin, so `contentDocument` is
@@ -2106,10 +2154,12 @@ mod tests {
     ///
     /// `tonk-ui/styles.css` used to carry these rules and was handed to
     /// every sealed guest; they are now the `space` view's own
-    /// `style: ui`, embedded by `with:href`. So the values asserted here
-    /// can ONLY have arrived by the embed resolving and injecting — if
-    /// it silently does nothing, `.hub-page` falls back to a transparent
-    /// background and default text color, and this fails.
+    /// `style: ui`, embedded by `with:src`. So the values asserted here
+    /// can ONLY have arrived by the embed resolving and pointing the
+    /// view's own `<link rel=stylesheet>` at the minted content — if it
+    /// silently does nothing, the link keeps an empty `href`,
+    /// `.hub-page` falls back to a transparent background and default
+    /// text color, and this fails.
     ///
     /// `/settings` renders the same chrome and embeds the same style
     /// cross-view (`ui@space`), which is the arrangement that keeps one
@@ -2123,50 +2173,95 @@ mod tests {
 
         goto(&driver, env.tonk_web.as_str()).await?;
         enter_hub(&driver).await?;
+        hub_style_applied(&driver).await?;
         let hub = driver
             .execute(
                 r#"const page = document.querySelector('.hub-page');
                    const style = getComputedStyle(page);
+                   const carriers = document.querySelectorAll('link[data-tonk-embed]');
                    return {
                      background: style.backgroundColor,
                      color: style.color,
-                     embedded: document.querySelectorAll('style[data-tonk-embed]').length,
+                     dark: window.matchMedia('(prefers-color-scheme: dark)').matches,
+                     carriers: carriers.length,
+                     href: carriers.length ? carriers[0].getAttribute('href') : null,
+                     minted: document.querySelectorAll('link[data-tonk-embed-src]').length,
                    };"#,
                 Vec::new(),
             )
             .await?;
         let hub = hub.json();
-        // `--page: #e8e6e4` and `--ink: #38182a` from the view's own
-        // token block. A transparent background here means the style
-        // never arrived.
+        // The view declares both twins — `--page: #e8e6e4` / `--ink:
+        // #38182a`, and a `@media (prefers-color-scheme: dark)` pair —
+        // so the values to expect depend on the scheme the browser is
+        // actually in. Pinning the light literals would fail on a dark
+        // runner for a style that arrived perfectly well. Either way a
+        // transparent background means the style never arrived at all.
+        let (page, ink) = if hub["dark"] == true {
+            ("rgb(22, 19, 19)", "rgb(226, 223, 221)")
+        } else {
+            ("rgb(232, 230, 228)", "rgb(56, 24, 42)")
+        };
         assert_eq!(
-            hub["background"], "rgb(232, 230, 228)",
+            hub["background"], page,
             "the hub must wear the page token its view declares; got {hub}",
         );
         assert_eq!(
-            hub["color"], "rgb(56, 24, 42)",
+            hub["color"], ink,
             "the hub must wear the ink token its view declares; got {hub}",
         );
+        // The author's own `<link rel=stylesheet>` is what carries the
+        // style; the embed pass only fills in its `href`. So a carrier
+        // whose href is not a blob URL means the pass ran and gave it
+        // nothing, which is the failure the computed values above
+        // would also catch but not name.
         assert_eq!(
-            hub["embedded"], 1,
-            "exactly one embed node, however often the view re-renders; got {hub}",
+            hub["carriers"], 1,
+            "the view declares one `<link with:src>`; got {hub}",
+        );
+        assert!(
+            hub["href"]
+                .as_str()
+                .is_some_and(|href| href.starts_with("blob:")),
+            "the embed pass must point the link at minted content; got {hub}",
+        );
+        assert_eq!(
+            hub["minted"], 1,
+            "one blob per content, however often the view re-renders; got {hub}",
         );
 
         // The settings route reads the same declaration cross-view.
         driver.enter_default_frame().await?;
         goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
         enter_hub(&driver).await?;
+        hub_style_applied(&driver).await?;
         let settings = driver
             .execute(
                 r#"const style = getComputedStyle(document.querySelector('.hub-page'));
-                   return { background: style.backgroundColor };"#,
+                   const carriers = document.querySelectorAll('link[data-tonk-embed]');
+                   return {
+                     background: style.backgroundColor,
+                     carriers: carriers.length,
+                     href: carriers.length ? carriers[0].getAttribute('href') : null,
+                     minted: document.querySelectorAll('link[data-tonk-embed-src]').length,
+                   };"#,
                 Vec::new(),
             )
             .await?;
+        let settings = settings.json();
         assert_eq!(
-            settings.json()["background"],
-            "rgb(232, 230, 228)",
-            "/settings embeds the same style as the hub (`ui@space`)",
+            settings["background"], page,
+            "/settings embeds the same style as the hub (`ui@space`); got {settings}",
+        );
+        assert!(
+            settings["href"]
+                .as_str()
+                .is_some_and(|href| href.starts_with("blob:")),
+            "the cross-view embed must resolve to minted content; got {settings}",
+        );
+        assert_eq!(
+            settings["minted"], 1,
+            "the cross-view embed mints one blob, not a second copy; got {settings}",
         );
 
         driver.quit().await?;

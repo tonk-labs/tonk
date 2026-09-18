@@ -590,7 +590,20 @@ mod native {
                 let test_server =
                     format!("git+file:{}#tonk-ui-test-server", repository_root.display());
                 let mut command = std::process::Command::new("nix");
-                command.args(["run", &test_server, "--"]);
+                // Spell the features out rather than relying on the
+                // ambient config: the child runs with `XDG_CONFIG_HOME`
+                // pinned below (for Caddy), which also hides a per-user
+                // `~/.config/nix/nix.conf`. CI gets these from the
+                // system-wide `/etc/nix/nix.conf` and so never noticed;
+                // a developer who enabled them per-user saw `nix run`
+                // fail before the web server ever bound.
+                command.args([
+                    "--extra-experimental-features",
+                    "nix-command flakes",
+                    "run",
+                    &test_server,
+                    "--",
+                ]);
                 command
             };
             test_server.args([
