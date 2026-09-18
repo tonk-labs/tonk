@@ -52,12 +52,18 @@ impl Reach {
     }
 
     /// Take a carrier the page opened and make it a route.
+    ///
+    /// Registered under the *listener's* name, not this side's: a route
+    /// is a way to reach a peer, and the peer at the far end of this
+    /// carrier is the `tonk`. Naming it after this end registers a route
+    /// to ourselves, which iroh never sends on — the channel opens, and
+    /// not one datagram moves.
     pub fn attach(&self, port: web_sys::MessagePort) {
         tonk_rtc::transport::relay::attach(
             &self.transport,
             tonk_rtc::transport::rendezvous_addr(
                 tonk_rtc::rendezvous::RENDEZVOUS,
-                tonk_rtc::rendezvous::Side::Dialer,
+                tonk_rtc::rendezvous::Side::Listener,
             ),
             port,
         );

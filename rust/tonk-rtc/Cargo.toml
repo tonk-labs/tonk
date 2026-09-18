@@ -117,3 +117,10 @@ web-sys = { workspace = true, optional = true, features = [
 [[example]]
 name = "rendezvous_listener"
 required-features = []
+
+# The listener the end-to-end status test dials. Needs the iroh
+# transport and dialog's responder, so it is gated on the feature that
+# brings them.
+[[example]]
+name = "rendezvous_serve"
+required-features = ["iroh"]

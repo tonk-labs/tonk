@@ -228,11 +228,13 @@ pub async fn handle_carrier(
         }
     };
 
-    // The page is the dialer, so that is the name its datagrams arrive
-    // under — and the name replies must be addressed to.
+    // The *listener's* name, not this side's. A route is a way to reach
+    // a peer, and the peer at the far end of this carrier is the `tonk`.
+    // Registering it under this end's name is a route to ourselves,
+    // which iroh never sends on: the carrier opens and nothing moves.
     let peer = tonk_rtc::transport::rendezvous_addr(
         tonk_rtc::rendezvous::RENDEZVOUS,
-        tonk_rtc::rendezvous::Side::Dialer,
+        tonk_rtc::rendezvous::Side::Listener,
     );
     tonk_rtc::transport::relay::attach(&reach.transport, peer, port);
     log!("cli: a carrier from {client:?} is now a route");
