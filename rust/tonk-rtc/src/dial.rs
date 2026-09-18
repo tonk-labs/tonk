@@ -39,6 +39,7 @@
 //!   side perform DTLS handshakes and hold connections, so a cap on
 //!   concurrent dials belongs here before it faces a hostile network.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use base64::Engine as _;
@@ -166,24 +167,49 @@ pub struct Listener {
 /// is what makes the `USERNAME` this side expects match what the dialer
 /// sends. Its fingerprint is a placeholder this side never checks — see
 /// the module note on one-way authentication.
-fn fabricated_offer(ufrag: &str) -> String {
+///
+/// It carries a candidate, and must. An offer with none leaves this
+/// side's ICE agent with an empty remote candidate list, and an agent
+/// with no remote discards everything that arrives:
+///
+/// ```text
+/// [controlled]: Discarded message, not a valid remote candidate
+/// [controlled]: discard success message from (127.0.0.1:59646), no such remote
+/// ```
+///
+/// A browser that publishes a real host candidate survives that anyway,
+/// because the address it sends from gets promoted to peer-reflexive.
+/// One that anonymises its candidates as `<uuid>.local` — which Chrome
+/// does by default, and which nothing here can resolve because the
+/// dialer's SDP never crosses — does not, so ICE reports `connected`
+/// while DTLS never starts and the channel hangs on `connecting`
+/// forever. Naming the loopback address the dialer will arrive from
+/// gives the agent something to match against, and costs nothing when
+/// the dialer turns out to be elsewhere: an unmatched candidate is
+/// simply never used.
+fn fabricated_offer(ufrag: &str, from: SocketAddr) -> String {
     let placeholder = ["00"; 32].join(":");
+    let host = from.ip();
+    let port = from.port();
+    let family = if from.is_ipv4() { "IP4" } else { "IP6" };
     format!(
         "v=0\r\n\
-         o=- 0 0 IN IP4 0.0.0.0\r\n\
+         o=- 0 0 IN {family} {host}\r\n\
          s=-\r\n\
          t=0 0\r\n\
          a=fingerprint:sha-256 {placeholder}\r\n\
          a=group:BUNDLE 0\r\n\
-         m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n\
-         c=IN IP4 0.0.0.0\r\n\
+         m=application {port} UDP/DTLS/SCTP webrtc-datachannel\r\n\
+         c=IN {family} {host}\r\n\
          a=setup:actpass\r\n\
          a=mid:0\r\n\
          a=sendrecv\r\n\
          a=sctp-port:5000\r\n\
          a=max-message-size:65536\r\n\
          a=ice-ufrag:{ufrag}\r\n\
-         a=ice-pwd:{ufrag}\r\n"
+         a=ice-pwd:{ufrag}\r\n\
+         a=candidate:1 1 udp 2130706431 {host} {port} typ host\r\n\
+         a=end-of-candidates\r\n"
     )
 }
 
@@ -214,6 +240,7 @@ fn reachable_on(port: u16) -> Vec<Candidate> {
 /// Build the peer connection that answers one dial.
 async fn answer_dial(
     ufrag: &str,
+    from: SocketAddr,
     identity: &Identity,
     mux: Arc<UDPMuxDefault>,
     sessions: mpsc::UnboundedSender<Session>,
@@ -234,6 +261,36 @@ async fn answer_dial(
     // this side's description can hard-code the role.
     settings.set_answering_dtls_role(DTLSRole::Client)?;
     settings.set_ice_multicast_dns_mode(webrtc::ice::mdns::MulticastDnsMode::QueryOnly);
+    // Answer from the address the dial arrived on, and only that one.
+    //
+    // The socket is bound to `0.0.0.0`, so without a filter the agent
+    // enumerates every local interface and pairs each against the
+    // dialer: it pings a loopback dialer from the LAN address and from
+    // an IPv6 link-local one. A browser offered neither of those, so it
+    // ignores the replies, and the pair that would have worked never
+    // wins. Restricting the agent to the address the packets actually
+    // came in on leaves exactly one pairing, which is the one that can
+    // succeed.
+    // The family is narrowed rather than the address: a dial that came in
+    // over IPv4 has nothing to say to an IPv6 link-local candidate, and
+    // pairing against one is what produced the replies the browser
+    // ignored. Narrowing to a single IP instead leaves the agent with no
+    // local candidate at all — the mux is bound to `0.0.0.0`, so the
+    // address it reports is not the one the packet arrived on, and
+    // gathering fails with `Candidate IP could not be found`.
+    settings.set_network_types(vec![if from.is_ipv4() {
+        webrtc::ice::network_type::NetworkType::Udp4
+    } else {
+        webrtc::ice::network_type::NetworkType::Udp6
+    }]);
+    // Loopback is not gathered by default, and a dial from 127.0.0.1 has
+    // no other pairing available.
+    if from.ip().is_loopback() {
+        settings.set_include_loopback_candidate(true);
+        settings.set_ip_filter(Box::new(|candidate: std::net::IpAddr| {
+            candidate.is_loopback()
+        }));
+    }
 
     let api = APIBuilder::new()
         .with_media_engine(MediaEngine::default())
@@ -280,7 +337,7 @@ async fn answer_dial(
     }));
 
     connection
-        .set_remote_description(RTCSessionDescription::offer(fabricated_offer(ufrag))?)
+        .set_remote_description(RTCSessionDescription::offer(fabricated_offer(ufrag, from))?)
         .await?;
     let answer = connection.create_answer(None).await?;
     connection.set_local_description(answer).await?;
@@ -324,7 +381,7 @@ pub async fn listen(identity: Identity, port: u16) -> Result<Listener, PeerError
             // Every connection built for a dial is kept here; dropping
             // one would tear down a live channel.
             let mut connections: Vec<Arc<RTCPeerConnection>> = Vec::new();
-            while let Some(ufrag) = dials.recv().await {
+            while let Some(crate::mux::Dial { ufrag, from }) = dials.recv().await {
                 // Nothing authenticates a dial at this layer, so a
                 // stranger can announce an arbitrary ufrag and each one
                 // would otherwise cost a peer connection and a DTLS
@@ -340,6 +397,7 @@ pub async fn listen(identity: Identity, port: u16) -> Result<Listener, PeerError
 
                 match answer_dial(
                     &ufrag,
+                    from,
                     &identity,
                     mux.clone(),
                     sessions.clone(),
@@ -396,6 +454,47 @@ impl Listener {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The offer has to name where the dial came from.
+    ///
+    /// An offer with no candidate leaves this side's ICE agent with an
+    /// empty remote list, and it discards everything that arrives as
+    /// `no such remote`. A browser that publishes a real host candidate
+    /// survives that by peer-reflexive promotion; one that anonymises
+    /// its candidates as `<uuid>.local` — Chrome's default — does not,
+    /// so the channel hangs on `connecting` forever while ICE claims to
+    /// be connected.
+    #[test]
+    fn it_offers_the_address_the_dial_arrived_from() {
+        let from: SocketAddr = "127.0.0.1:50502".parse().unwrap();
+        let offer = fabricated_offer("Ufrag123", from);
+
+        assert!(
+            offer.contains("a=candidate:1 1 udp 2130706431 127.0.0.1 50502 typ host"),
+            "the dialer's own address must be the remote candidate:\n{offer}"
+        );
+        assert!(
+            offer.contains("a=end-of-candidates"),
+            "an unterminated candidate list leaves the agent waiting:\n{offer}"
+        );
+        assert!(
+            offer.contains("c=IN IP4 127.0.0.1"),
+            "the connection line must agree with the candidate:\n{offer}"
+        );
+    }
+
+    /// IPv6 dials describe themselves as IPv6.
+    #[test]
+    fn it_describes_an_ipv6_dial_as_ipv6() {
+        let from: SocketAddr = "[::1]:50502".parse().unwrap();
+        let offer = fabricated_offer("Ufrag123", from);
+
+        assert!(offer.contains("c=IN IP6 ::1"), "wrong family:\n{offer}");
+        assert!(
+            offer.contains("a=candidate:1 1 udp 2130706431 ::1 50502 typ host"),
+            "wrong candidate:\n{offer}"
+        );
+    }
 
     #[tokio::test]
     async fn the_published_address_carries_everything_a_dialer_needs() {
@@ -488,7 +587,7 @@ mod tests {
     /// makes the USERNAME check pass with nothing exchanged.
     #[test]
     fn the_fabricated_offer_answers_as_the_dialer_addressed_us() {
-        let offer = fabricated_offer("their-random-ufrag");
+        let offer = fabricated_offer("their-random-ufrag", "127.0.0.1:1234".parse().unwrap());
         assert!(offer.contains("a=ice-ufrag:their-random-ufrag\r\n"));
         assert!(offer.contains("a=ice-pwd:their-random-ufrag\r\n"));
         assert!(offer.contains("m=application"));

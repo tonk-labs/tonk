@@ -31,10 +31,26 @@ use webrtc::stun::attributes::ATTR_USERNAME;
 use webrtc::stun::message::Message;
 use webrtc::util::Conn;
 
+/// Where a dial came from, and what it called itself.
+///
+/// The address matters as much as the ufrag. This side fabricates the
+/// dialer's offer — nothing of the dialer's SDP ever crosses — so the
+/// remote candidate in that offer can only be the address its packets
+/// actually arrive from. Inventing one leaves the ICE agent with a
+/// remote list that matches nothing, and it discards every packet that
+/// arrives as `no such remote`.
+#[derive(Debug, Clone)]
+pub(crate) struct Dial {
+    /// The ufrag the dial is addressed to.
+    pub ufrag: String,
+    /// The socket address the dial arrived from.
+    pub from: SocketAddr,
+}
+
 /// A socket that reports the ufrags of dials it has not seen before.
 pub(crate) struct Watching {
     socket: Arc<dyn Conn + Send + Sync>,
-    announce: mpsc::UnboundedSender<String>,
+    announce: mpsc::UnboundedSender<Dial>,
     /// Ufrags already announced. Without this every retransmission
     /// during a dial would announce again, and the listener would build
     /// a peer connection per packet.
@@ -45,7 +61,7 @@ impl Watching {
     /// Wrap a socket, announcing new dials on the returned channel.
     pub(crate) fn wrap(
         socket: Arc<dyn Conn + Send + Sync>,
-    ) -> (Self, mpsc::UnboundedReceiver<String>) {
+    ) -> (Self, mpsc::UnboundedReceiver<Dial>) {
         let (announce, dials) = mpsc::unbounded_channel();
         (
             Self {
@@ -57,15 +73,16 @@ impl Watching {
         )
     }
 
-    /// Announce a ufrag the first time it is seen.
-    fn notice(&self, ufrag: String) {
+    /// Announce a ufrag the first time it is seen, with where it came
+    /// from.
+    fn notice(&self, ufrag: String, from: SocketAddr) {
         let fresh = self
             .announced
             .lock()
             .map(|mut seen| seen.insert(ufrag.clone()))
             .unwrap_or(false);
         if fresh {
-            let _ = self.announce.send(ufrag);
+            let _ = self.announce.send(Dial { ufrag, from });
         }
     }
 }
@@ -93,12 +110,12 @@ impl Conn for Watching {
         self.socket.connect(addr).await
     }
 
+    /// Deliberately announces nothing: a connected `recv` yields no peer
+    /// address, and a dial announced without one would put this side
+    /// back to fabricating a remote candidate it cannot know. The mux
+    /// reads through `recv_from`, so this is not the path a dial takes.
     async fn recv(&self, buf: &mut [u8]) -> webrtc::util::Result<usize> {
-        let read = self.socket.recv(buf).await?;
-        if let Some(ufrag) = destination_ufrag(&buf[..read]) {
-            self.notice(ufrag);
-        }
-        Ok(read)
+        self.socket.recv(buf).await
     }
 
     async fn recv_from(&self, buf: &mut [u8]) -> webrtc::util::Result<(usize, SocketAddr)> {
@@ -107,7 +124,7 @@ impl Conn for Watching {
         // this only watches, it never filters. Anything it fails to
         // understand is upstream's business.
         if let Some(ufrag) = destination_ufrag(&buf[..read]) {
-            self.notice(ufrag);
+            self.notice(ufrag, from);
         }
         Ok((read, from))
     }

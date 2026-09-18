@@ -17,7 +17,16 @@ sha2 = { version = "0.10", default-features = false }
 # The iroh transport builds for BOTH targets: that is the point of it —
 # the browser gets QUIC streams over a data channel with no relay.
 bytes = { workspace = true, optional = true }
-iroh = { version = "=1.2.0", features = ["unstable-custom-transports"], optional = true }
+# `unstable-custom-transports` is the whole point: the WebRTC transport
+# below implements `CustomTransport`, which is how a data channel becomes
+# a route iroh dials. Everything iroh enables by default is dropped —
+# a browser tab has no router to map ports on (`portmapper`), no BSD
+# socket path to accelerate (`fast-apple-datapath`), and no use for a
+# metrics registry. `tls-ring` stays because QUIC needs TLS 1.3.
+iroh = { version = "=1.2.0", optional = true, default-features = false, features = [
+    "unstable-custom-transports",
+    "tls-ring",
+] }
 iroh-base = { version = "1.2", optional = true }
 n0-watcher = { version = "1.0", optional = true }
 noq-udp = { version = "1.3", optional = true }

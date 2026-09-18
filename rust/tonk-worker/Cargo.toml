@@ -58,7 +58,10 @@ tokio-stream = { workspace = true, features = ["sync"] }
 tonk-account = { workspace = true }
 tonk-analytics = { workspace = true }
 tonk-rtc = { workspace = true, features = ["iroh"] }
-iroh = { version = "=1.2.0" }
+# A service worker is a browser tab's background thread, not a node on a
+# machine: no port mapping, no Apple socket path, no metrics registry.
+# See `dialog-iroh-remote`'s iroh entry for the same reasoning.
+iroh = { version = "=1.2.0", default-features = false, features = ["tls-ring"] }
 tonk-analyzer = { workspace = true }
 tonk-common = { workspace = true }
 tonk-evaluator = { workspace = true }
