@@ -1166,7 +1166,8 @@ fn it_offers_only_scoped_agent_prompts_without_account_approval() {
             .next()
             .unwrap();
         assert!(!unsupported.contains("wa-copy-button"));
-        assert!(unsupported.contains("tonk link"));
+        assert!(unsupported.contains("tonk connect"));
+        assert!(!unsupported.contains("tonk link"));
         assert!(library.contains("on:new-agent-invite=tonk:new-agent-invite"));
         assert!(library.contains("event!: &on/new-agent-invite"));
         assert!(library.contains("the: xyz.tonk.agent-handoff/fresh"));

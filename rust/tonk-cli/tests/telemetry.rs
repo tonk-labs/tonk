@@ -108,11 +108,6 @@ fn run_tonk_account_status(
     cmd.output().expect("tonk account status runs")
 }
 
-fn request_body(request: &str) -> serde_json::Value {
-    let (_, body) = request.split_once("\r\n\r\n").expect("HTTP body");
-    serde_json::from_str(body).expect("JSON batch")
-}
-
 #[dialog_common::test]
 fn help_posts_one_command_run_event() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -193,54 +188,16 @@ fn notice_prints_only_once() {
 }
 
 #[dialog_common::test]
-fn account_command_batches_shared_events_and_generic_summary() {
+fn removed_account_command_sends_no_telemetry() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let endpoint = format!("http://{}", listener.local_addr().expect("addr"));
     let (tx, rx) = mpsc::channel();
     serve_once(listener, tx);
-
     let home = tempfile::tempdir().expect("tempdir");
     let output = run_tonk_account_status(home.path(), &endpoint, &[]);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let request = rx
-        .recv_timeout(Duration::from_secs(5))
-        .expect("request arrives");
-    let payload = request_body(&request);
-    let batch = payload["batch"].as_array().expect("batch array");
-    let account = batch
-        .iter()
-        .filter(|event| event["event"] == "account_event")
-        .collect::<Vec<_>>();
-    let generic = batch
-        .iter()
-        .filter(|event| event["event"] == "cli_command_run")
-        .collect::<Vec<_>>();
-    assert_eq!(generic.len(), 1);
-    assert_eq!(account.len(), 2);
-    assert_eq!(account[0]["properties"]["action"], "load_account");
-    assert_eq!(account[0]["properties"]["phase"], "started");
-    assert_eq!(account[1]["properties"]["phase"], "finished");
-    assert!(generic[0]["properties"].get("stage").is_none());
-    assert!(generic[0]["properties"].get("failure_kind").is_none());
-
-    let wire = serde_json::to_string(&payload).unwrap();
-    let home_text = home.path().to_string_lossy();
-    for sentinel in [
-        "person@example.com",
-        "did:key:",
-        "callback=http",
-        "delegation",
-        home_text.as_ref(),
-    ] {
-        assert!(
-            !wire.contains(sentinel),
-            "batch exposed {sentinel:?}: {wire}"
-        );
-    }
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unrecognized subcommand"));
+    assert!(rx.recv_timeout(Duration::from_secs(1)).is_err());
 }
 
 #[dialog_common::test]
@@ -251,6 +208,6 @@ fn opted_out_account_command_sends_no_batch() {
     serve_once(listener, tx);
     let home = tempfile::tempdir().expect("tempdir");
     let output = run_tonk_account_status(home.path(), &endpoint, &[("DO_NOT_TRACK", "1")]);
-    assert!(output.status.success());
+    assert!(!output.status.success());
     assert!(rx.recv_timeout(Duration::from_secs(1)).is_err());
 }

@@ -331,34 +331,6 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .route("/api/repository/{repo}/invites", get(revoke_invite::list))
         .route("/api/account/connections", get(agent_connections::list))
         .route(
-            "/api/account/terminal-links",
-            get(agent_connections::terminal_management::list),
-        )
-        .route(
-            "/api/account/terminal-links/{request_id}/retry",
-            post(agent_connections::terminal_management::retry),
-        )
-        .route(
-            "/api/account/terminal-links/{request_id}/add",
-            post(agent_connections::terminal_management::add),
-        )
-        .route(
-            "/api/account/terminal-links/{request_id}/revoke",
-            post(agent_connections::terminal_management::revoke),
-        )
-        .route(
-            "/api/account/terminal-links/decline",
-            post(agent_connections::terminal_decline),
-        )
-        .route(
-            "/api/account/terminal-links/approve",
-            post(agent_connections::terminal_approve),
-        )
-        .route(
-            "/api/account/terminal-links/spaces",
-            get(agent_connections::terminal_spaces),
-        )
-        .route(
             "/api/account/connections/{id}/revoke",
             post(agent_connections::revoke),
         )

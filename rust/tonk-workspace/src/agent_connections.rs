@@ -41,7 +41,6 @@ pub(crate) fn show_load_result(host: &HtmlElement, selector: &str, status: Optio
 
 /// Load current-account records. A feature-disabled worker has no endpoint.
 pub(crate) fn refresh(host: &HtmlElement) {
-    crate::terminal_connections::refresh(host);
     let expected = generation(host);
     if let Ok(Some(list)) = host.query_selector("[data-connections-list]") {
         list.set_text_content(None);
@@ -297,7 +296,7 @@ mod recovery_tests {
         let document = web_sys::window().unwrap().document().unwrap();
         let host: HtmlElement = document.create_element("div").unwrap().dyn_into().unwrap();
         host.set_inner_html(include_str!("ui_account_settings.html"));
-        for selector in ["[data-agent-connections]", "[data-terminal-connections]"] {
+        for selector in ["[data-agent-connections]"] {
             let section = host.query_selector(selector).unwrap().unwrap();
             assert!(section.has_attribute("hidden"));
             for status in [Some(500), None] {

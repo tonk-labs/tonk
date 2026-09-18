@@ -98,8 +98,9 @@ async fn removed_workflows_preserve_existing_local_state() -> Result<()> {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let before = snapshot(&home.path().join("state"))?;
-    let credentials_before = snapshot(&home.path().join("data"))?;
+    // Include credentials at the platform's actual data path, as well as the
+    // registry and replicas. macOS does not use the XDG data directory.
+    let before = snapshot(home.path())?;
     for (args, expected) in [
         (
             vec![
@@ -111,6 +112,14 @@ async fn removed_workflows_preserve_existing_local_state() -> Result<()> {
             "unrecognized subcommand",
         ),
         (vec!["join", "--agent"], "unrecognized subcommand"),
+        (vec!["link"], "unrecognized subcommand"),
+        (vec!["account", "login"], "unrecognized subcommand"),
+        (vec!["account", "logout"], "unrecognized subcommand"),
+        (vec!["account", "delete"], "unrecognized subcommand"),
+        (vec!["account", "devices"], "unrecognized subcommand"),
+        (vec!["account", "space"], "unrecognized subcommand"),
+        (vec!["space", "link", "retained"], "unrecognized subcommand"),
+        (vec!["migrate", "account"], "unrecognized subcommand"),
         (
             vec!["connect", "https://example.test/join#never-print-secret"],
             "unsupported_agent_invitation",
@@ -141,12 +150,8 @@ async fn removed_workflows_preserve_existing_local_state() -> Result<()> {
                 .any(|part| part == b"Open this URL")
         );
         assert!(
-            before == snapshot(&home.path().join("state"))?,
-            "refusal changed local state"
-        );
-        assert!(
-            credentials_before == snapshot(&home.path().join("data"))?,
-            "refusal changed local credentials"
+            before == snapshot(home.path())?,
+            "refusal changed local state or credentials"
         );
     }
     Ok(())
@@ -201,7 +206,7 @@ async fn connection_receipts_are_grant_set_specific_and_failed_pull_writes_none(
             "{html}"
         );
     }
-    assert_eq!(html.matches("agent connection acknowledged").count(), 2);
+    assert_eq!(html.matches("agent setup confirmed").count(), 2);
     assert!(tonk_cli::handoff::scoped_connection_entity("invalid\nnotation").is_err());
     Ok(())
 }
