@@ -1,5 +1,38 @@
 use super::*;
 
+/// Where the certificate is served from, for a browser that would
+/// rather hash 340 bytes than carry an elliptic-curve library.
+const ASSET: &str = "assets/rendezvous.der";
+
+/// The served certificate is the derived one.
+///
+/// The browser takes SHA-256 of this file to get the fingerprint, which
+/// is one WebCrypto call and no crypto library. That only works while
+/// the file *is* what the phrase derives, so this is what keeps it
+/// honest. Run with `TONK_REWRITE_RENDEZVOUS=1` to regenerate after
+/// changing the phrase.
+#[test]
+fn the_served_certificate_is_the_derived_one() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(ASSET);
+    let derived = certificate_der(RENDEZVOUS).unwrap();
+
+    if std::env::var_os("TONK_REWRITE_RENDEZVOUS").is_some() {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, &derived).unwrap();
+    }
+
+    let served = std::fs::read(&path).unwrap_or_else(|error| {
+        panic!("could not read {ASSET}: {error}. Regenerate with TONK_REWRITE_RENDEZVOUS=1")
+    });
+
+    assert_eq!(
+        served, derived,
+        "{ASSET} is not what {RENDEZVOUS} derives, so the browser would hash the wrong \
+         certificate and every dial would fail the DTLS check. Regenerate with \
+         TONK_REWRITE_RENDEZVOUS=1"
+    );
+}
+
 /// The property everything rests on: same phrase, same bytes, every
 /// time and on every target.
 #[test]

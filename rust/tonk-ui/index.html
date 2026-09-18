@@ -922,6 +922,12 @@
         <link data-trunk rel="copy-file" href="./assets/service_worker.js" />
         <link data-trunk rel="copy-file" href="./assets/doctor.mjs" />
         <link data-trunk rel="copy-file" href="./assets/rtc.mjs" />
+        <!-- The rendezvous certificate, derived from the phrase in
+             `tonk_rtc::rendezvous` and checked against it by a test. The
+             page takes SHA-256 of it to get the fingerprint, which is one
+             WebCrypto call rather than an elliptic-curve library. Public:
+             it is a certificate, not a key. -->
+        <link data-trunk rel="copy-file" href="../tonk-rtc/assets/rendezvous.der" />
         <link
             data-trunk
             rel="copy-file"

@@ -72,6 +72,12 @@ pub const DEFAULT_PORT: u16 = 51247;
 /// A default outside the dynamic range risks colliding with a
 /// registered service, and a dialer assumes this value — so moving it
 /// wrongly would silently break every cached address.
+///
+/// Superseded for the rendezvous path by
+/// [`rendezvous::port`](crate::rendezvous::port), which derives the
+/// same kind of value from the published phrase so neither end has to
+/// carry a constant. This one remains for a listener given an explicit
+/// port.
 const _: () = assert!(DEFAULT_PORT >= 49152);
 
 /// How many dials may be in flight or open at once.

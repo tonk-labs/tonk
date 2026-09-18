@@ -158,22 +158,57 @@ export function decodeAddress(encoded) {
     return address;
 }
 
+/** The phrase both ends derive the rendezvous from. Mirrors `tonk_rtc::rendezvous::RENDEZVOUS`. */
+export const RENDEZVOUS = "tonk/rtc/rendezvous/v1";
+
+/** Where the derived certificate is served. */
+export const RENDEZVOUS_CERT_URL = "/rendezvous.der";
+
+/**
+ * The port the phrase derives.
+ *
+ * SHA-256 is a WebCrypto primitive, so this needs nothing imported and
+ * nothing shipped — it is the same arithmetic `tonk_rtc::rendezvous`
+ * does, and a test pins the two against each other. The dynamic range
+ * is 49152..=65535, so nothing here collides with a registered service.
+ */
+export async function rendezvousPort(phrase = RENDEZVOUS) {
+    const digest = new Uint8Array(
+        await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${phrase}#port`)),
+    );
+    return 49152 + (((digest[0] << 8) | digest[1]) % 16384);
+}
+
+/**
+ * The fingerprint of a DER-encoded certificate, in SDP form.
+ *
+ * A fingerprint is the hash of a whole certificate, and a certificate
+ * carries a signature — so deriving one here would mean an ASN.1
+ * builder and an RFC 6979 signer, because WebCrypto's own ECDSA signs
+ * with a random nonce and could never reproduce the bytes. Hashing a
+ * certificate the origin already serves is one call and no library.
+ */
+export async function rendezvousFingerprint(der) {
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", der));
+    const octets = [...digest].map((b) => b.toString(16).padStart(2, "0").toUpperCase());
+    return `sha-256 ${octets.join(":")}`;
+}
+
 /**
  * The address of a `tonk` listening on this machine.
  *
- * Both values come from the rendezvous phrase and are derived in Rust —
- * `tonk_rtc::rendezvous`, which compiles to wasm precisely so this page
- * does not reimplement it. A fingerprint is the hash of a whole
- * certificate, so reproducing one here would mean an ASN.1 builder and
- * an RFC 6979 signer in JavaScript, kept byte-identical with the Rust
- * forever — and WebCrypto's Ed25519 is not even deterministic in
- * Safari. One implementation, compiled twice, has neither problem.
- *
- * So this takes what the caller derived. Nothing is fetched and nothing
- * is exchanged: the candidate is loopback and the rest is a function of
- * a published phrase.
+ * Nothing is exchanged with the listener to get here: the candidate is
+ * loopback, the port is a hash of a published phrase, and the
+ * fingerprint is a hash of a certificate this origin serves.
  */
-export function localAddress(port, fingerprint) {
+export async function localAddress(url = RENDEZVOUS_CERT_URL) {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`could not read ${url}: ${response.status}`);
+
+    const [port, fingerprint] = await Promise.all([
+        rendezvousPort(),
+        rendezvousFingerprint(new Uint8Array(await response.arrayBuffer())),
+    ]);
     return { candidates: [{ host: "127.0.0.1", port }], fingerprint };
 }
 

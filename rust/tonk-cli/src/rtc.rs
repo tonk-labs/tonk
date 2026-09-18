@@ -186,7 +186,9 @@ fn write_private(path: &std::path::Path, contents: &str) -> std::io::Result<()> 
 pub async fn listen(options: ListenOptions) -> Result<()> {
     let page = answering_page(options.via.as_deref())?;
 
-    let port = options.port.unwrap_or(tonk_rtc::dial::DEFAULT_PORT);
+    let port = options
+        .port
+        .unwrap_or_else(|| tonk_rtc::rendezvous::port(tonk_rtc::rendezvous::RENDEZVOUS));
     let listener = tonk_rtc::dial::listen(rtc_identity()?, port)
         .await
         .context("could not start the WebRTC listener")?;

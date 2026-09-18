@@ -8,7 +8,10 @@ import {
     encodeDescription,
     freshCredential,
     isLoopback,
+    RENDEZVOUS,
     localAddress,
+    rendezvousFingerprint,
+    rendezvousPort,
     mungeOffer,
     synthesizeAnswer,
 } from "../assets/rtc.mjs";
@@ -142,18 +145,50 @@ test("munging replaces our own ICE credentials, not just the first", () => {
     assert.equal(munged.match(new RegExp(CREDENTIAL, "g")).length, 4);
 });
 
-test("a local address is what the caller derived, and nothing more", () => {
-    // The fingerprint and the port come from `tonk_rtc::rendezvous`,
-    // compiled to wasm. This page composes them; it does not compute
-    // them, and it does not fetch them.
-    const fingerprint = "sha-256 AA:BB";
-    const address = localAddress(51247, fingerprint);
+test("the port is derived from the phrase, matching Rust", async () => {
+    // Pinned against `tonk_rtc::rendezvous`, read out of the Rust rather
+    // than copied here, so the two derivations cannot drift apart.
+    const rust = readFileSync(
+        new URL("../../tonk-rtc/src/rendezvous.rs", import.meta.url),
+        "utf8",
+    );
+    const [, phrase] = /RENDEZVOUS: &str = "([^"]+)"/.exec(rust);
 
-    assert.deepEqual(address.candidates, [{ host: "127.0.0.1", port: 51247 }]);
-    assert.equal(address.fingerprint, fingerprint);
+    assert.equal(RENDEZVOUS, phrase, "the two halves disagree about the phrase");
+    assert.equal(await rendezvousPort(phrase), 55991);
+
+    const port = await rendezvousPort(phrase);
+    assert.ok(port >= 49152 && port <= 65535, `${port} is outside the dynamic range`);
+});
+
+test("the fingerprint is the hash of the served certificate", async () => {
+    const der = readFileSync(
+        new URL("../../tonk-rtc/assets/rendezvous.der", import.meta.url),
+    );
+    const fingerprint = await rendezvousFingerprint(new Uint8Array(der));
+
+    // One WebCrypto call and no crypto library: the whole reason the
+    // certificate is served rather than rebuilt here.
+    assert.match(fingerprint, /^sha-256 ([0-9A-F]{2}:){31}[0-9A-F]{2}$/);
+});
+
+test("a local address is loopback plus two derived values", async () => {
+    const der = readFileSync(
+        new URL("../../tonk-rtc/assets/rendezvous.der", import.meta.url),
+    );
+    // `der.buffer` is Node's pooled allocation and is bigger than the
+    // file, which would hash to something else entirely. A real `fetch`
+    // hands back an exactly-sized buffer; this makes the fake do the
+    // same rather than silently disagreeing with the browser.
+    const exact = der.buffer.slice(der.byteOffset, der.byteOffset + der.byteLength);
+    globalThis.fetch = async () => ({ ok: true, arrayBuffer: async () => exact });
+
+    const address = await localAddress();
+    assert.equal(address.candidates[0].host, "127.0.0.1");
+    assert.equal(address.candidates[0].port, await rendezvousPort());
+    assert.equal(address.fingerprint, await rendezvousFingerprint(new Uint8Array(der)));
 
     const sdp = synthesizeAnswer(address, "credential");
-    assert.match(sdp, /a=fingerprint:sha-256 AA:BB/);
-    assert.match(sdp, /127\.0\.0\.1 51247 typ host/);
     assert.match(sdp, /a=setup:active/);
+    assert.match(sdp, /127\.0\.0\.1 55991 typ host/);
 });
