@@ -157,9 +157,11 @@ struct Overlay {
     /// a directory this is what the panel follows: point at a card,
     /// read that card's values.
     hovered_subject: Option<String>,
-    /// Slot ids a panel row is asking to highlight, while the pointer
-    /// rests on it.
-    focus: Vec<u32>,
+    /// The field (or command) a part of the panel is asking to
+    /// highlight, while the pointer rests on it. Both halves of the
+    /// panel key on the same name, so one value serves a concept row
+    /// and a marked span in the template alike.
+    focus: Option<String>,
 }
 
 /// The painted state for one observed display.
@@ -191,9 +193,9 @@ struct Marker {
     style: MarkerStyle,
     /// The badge text, fixed at build time.
     label: String,
-    /// The slot's id, for a panel row to highlight by. `None` for a
-    /// command marker, which no row names.
-    slot: Option<u32>,
+    /// What the panel would name to highlight this marker: the fields
+    /// a slot reads, or the command an interaction posts.
+    keys: Vec<String>,
 }
 
 /// What kind of thing a marker is tracking.
@@ -339,7 +341,7 @@ impl Overlay {
             age: 0,
             painting: false,
             hovered_subject: None,
-            focus: Vec::new(),
+            focus: None,
         })
     }
 
@@ -375,7 +377,7 @@ impl Overlay {
         hide(&self.outline);
         hide(&self.pin);
         self.panel.hide();
-        self.focus.clear();
+        self.focus = None;
         self.hovered_subject = None;
         registry::set_armed(false);
         // Nothing holds a `TargetId` now, so the table can be
@@ -530,9 +532,7 @@ fn install_listeners(document: &Document, overlay: &Rc<RefCell<Overlay>>) -> Vec
             let focus = event
                 .target()
                 .and_then(|target| target.dyn_into::<Element>().ok())
-                .and_then(|element| element.closest(".row").ok().flatten())
-                .map(|row| panel::slots_of(&row))
-                .unwrap_or_default();
+                .and_then(|element| panel::field_of(&element));
             overlay.borrow_mut().focus = focus;
         },
     ));
@@ -542,7 +542,7 @@ fn install_listeners(document: &Document, overlay: &Rc<RefCell<Overlay>>) -> Vec
         false,
         overlay,
         |overlay, _event| {
-            overlay.borrow_mut().focus.clear();
+            overlay.borrow_mut().focus = None;
         },
     ));
     bound.push(listen(
@@ -552,12 +552,18 @@ fn install_listeners(document: &Document, overlay: &Rc<RefCell<Overlay>>) -> Vec
         overlay,
         |overlay, event| {
             event.stop_propagation();
-            let closing = event
+            let Some(target) = event
                 .target()
                 .and_then(|target| target.dyn_into::<Element>().ok())
-                .is_some_and(|element| element.matches(".close").unwrap_or(false));
-            if closing {
+            else {
+                return;
+            };
+            if target.matches(".close").unwrap_or(false) {
                 overlay.borrow_mut().machine.apply(Input::Clear);
+                return;
+            }
+            if let Some(tab) = Panel::tab_of(&target) {
+                overlay.borrow_mut().panel.select(tab);
             }
         },
     ));
@@ -838,7 +844,7 @@ fn rebuild(overlay: &Rc<RefCell<Overlay>>, target: TargetId, host: &Element) {
             slot.label(),
             node,
             style,
-            Some(slot.id),
+            slot.fields.clone(),
         ) {
             slot_markers.push(marker);
             budget -= 1;
@@ -862,7 +868,7 @@ fn rebuild(overlay: &Rc<RefCell<Overlay>>, target: TargetId, host: &Element) {
             command.label(),
             element.into(),
             MarkerStyle::Interaction,
-            None,
+            vec![command.command.clone()],
         ) {
             command_markers.push(marker);
             budget -= 1;
@@ -889,7 +895,7 @@ fn build_marker(
     label: String,
     anchor: Node,
     style: MarkerStyle,
-    slot: Option<u32>,
+    keys: Vec<String>,
 ) -> Option<Marker> {
     let mark = element(document, "div", classes)?;
     let badge = element(document, "div", &classes.replace("mark", "badge"))?;
@@ -905,7 +911,7 @@ fn build_marker(
         anchor,
         style,
         label,
-        slot,
+        keys,
     })
 }
 
@@ -941,7 +947,7 @@ fn reposition(overlay: &Rc<RefCell<Overlay>>) {
         let placement = place(&marker.anchor, &marker.style);
         apply_mark(marker, &placement);
         apply_badge(marker, &placement, &mut placed);
-        apply_focus(marker, &state.focus);
+        apply_focus(marker, state.focus.as_deref());
     }
 }
 
@@ -949,13 +955,11 @@ fn reposition(overlay: &Rc<RefCell<Overlay>>) {
 /// forward and everything else recedes. This is the other half of the
 /// panel: a row says which fields exist, and the page says where they
 /// went.
-fn apply_focus(marker: &Marker, focus: &[u32]) {
-    let state = if focus.is_empty() {
-        ""
-    } else if marker.slot.is_some_and(|id| focus.contains(&id)) {
-        "on"
-    } else {
-        "off"
+fn apply_focus(marker: &Marker, focus: Option<&str>) {
+    let state = match focus {
+        None => "",
+        Some(focus) if marker.keys.iter().any(|key| key == focus) => "on",
+        Some(_) => "off",
     };
     let _ = marker.mark.set_attribute("data-focus", state);
     let _ = marker.badge.set_attribute("data-focus", state);

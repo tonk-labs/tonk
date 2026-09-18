@@ -149,10 +149,28 @@ to stop when Alt goes up under a still pointer.
       repeat stamps on each row, stickily, so walking off a card towards the
       panel keeps the panel on the card you came from. The corner readout is
       gone: everything it said is a row now.
-- [ ] **4. View panel.** The template source the slide mounted
-      (`Slide::display`), read-only, with the slot under the pointer located
-      in it.
-- [ ] **5. Edit.** A concept field edited in the panel becomes a transaction;
+- [x] **4. View panel.** A second tab showing the mounted template
+      (`Slide::display`), with every `{field}` and command-bound attribute
+      value marked. `introspect::source::pieces` cuts the text using
+      `tonk_template::scan::walk`, the analyzer's own lexer, so the panel and
+      the build cannot disagree about what is in a template — a `{field}` in a
+      comment is prose and one in a `<style>` body is a CSS brace, in both.
+      Unlike `fields::scan`, which keeps one earliest offset per name for
+      diagnostics, this keeps every occurrence, because the panel highlights
+      all of them.
+
+      Highlighting is keyed on the field name in both halves rather than on
+      slot ids, which is what makes it two-way: a concept row, a marked span
+      and a page marker all name the same thing. Command spans key on the
+      command, so they light their interaction markers the same way.
+
+      The command test deliberately mirrors `preprocess::strip_on_prefix`,
+      ambiguity included: that treats any `on<ascii-alpha>…` attribute as a
+      candidate binding and says so in its own comment, so `once="yes"` really
+      is a handler to this renderer and the panel marks it as one. A panel that
+      quietly disagreed would be nicer and would send an author looking for the
+      wrong bug.
+- [ ] **5. Edit.** (the only step left) A concept field edited in the panel becomes a transaction;
       a template edited in the view panel supersedes the `show` facet. Both go
       through the ordinary transact path. This is where the real work is:
       superseding a cardinality-one field needs the prior value to retract,

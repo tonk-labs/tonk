@@ -19,21 +19,54 @@
 //! the machine, so hovering a row neither disarms the observation nor
 //! reaches the page underneath.
 
+use wasm_bindgen::JsCast;
 use web_sys::{Document, Element};
 
 use super::inspect::{Row, Status, rows};
 use super::slot::Snapshot;
+use super::source::{Piece, pieces};
+
+/// Which half of the panel is showing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tab {
+    /// The concept: one row per field, and why it is or is not on
+    /// screen.
+    Concept,
+    /// The view: the template text the display mounted, with every
+    /// `{field}` and command marked.
+    View,
+}
+
+impl Tab {
+    fn key(self) -> &'static str {
+        match self {
+            Tab::Concept => "concept",
+            Tab::View => "view",
+        }
+    }
+
+    fn of(key: &str) -> Option<Self> {
+        match key {
+            "concept" => Some(Tab::Concept),
+            "view" => Some(Tab::View),
+            _ => None,
+        }
+    }
+}
 
 /// The panel's DOM and what it currently shows.
 pub struct Panel {
     root: Element,
     head: Element,
     subject: Element,
+    tabs: Element,
     body: Element,
     tail: Element,
-    /// The `(signature, subject)` the rows were built for, so an
-    /// unchanged frame does not rebuild them under the pointer.
-    shown: Option<(String, String)>,
+    /// Which half is showing.
+    tab: Tab,
+    /// The `(signature, subject, tab)` the body was built for, so an
+    /// unchanged frame does not rebuild it under the pointer.
+    shown: Option<(String, String, &'static str)>,
 }
 
 impl Panel {
@@ -49,7 +82,17 @@ impl Panel {
         let _ = close.set_attribute("title", "stop observing");
         close.set_text_content(Some("\u{00d7}"));
         let _ = head.append_child(&close);
-        for part in [&head, &subject, &body, &tail] {
+
+        let tabs = div(document, "tabs")?;
+        for tab in [Tab::Concept, Tab::View] {
+            let button = document.create_element("button").ok()?;
+            let _ = button.set_attribute("class", "tab");
+            let _ = button.set_attribute("data-tab", tab.key());
+            button.set_text_content(Some(tab.key()));
+            let _ = tabs.append_child(&button);
+        }
+
+        for part in [&head, &tabs, &subject, &body, &tail] {
             let _ = root.append_child(part);
         }
         let _ = layer.append_child(&root);
@@ -57,10 +100,26 @@ impl Panel {
             root,
             head,
             subject,
+            tabs,
             body,
             tail,
+            tab: Tab::Concept,
             shown: None,
         })
+    }
+
+    /// Switch halves. A no-op if already there.
+    pub fn select(&mut self, tab: Tab) {
+        if self.tab != tab {
+            self.tab = tab;
+            self.shown = None;
+        }
+    }
+
+    /// The tab a click landed on, if it landed on one.
+    pub fn tab_of(target: &Element) -> Option<Tab> {
+        let button = target.closest(".tab").ok().flatten()?;
+        Tab::of(&button.get_attribute("data-tab")?)
     }
 
     /// The panel root, for installing listeners on.
@@ -85,16 +144,77 @@ impl Panel {
         truncated: bool,
     ) {
         let _ = self.root.set_attribute("style", "display:flex");
-        let key = (signature.to_owned(), subject.unwrap_or_default().to_owned());
+        let key = (
+            signature.to_owned(),
+            subject.unwrap_or_default().to_owned(),
+            self.tab.key(),
+        );
         if self.shown.as_ref() == Some(&key) {
             return;
         }
         self.shown = Some(key);
 
         self.draw_head(snapshot);
+        self.draw_tabs();
         self.draw_subject(snapshot, subject);
-        self.draw_rows(document, &rows(snapshot, subject));
+        match self.tab {
+            Tab::Concept => self.draw_rows(document, &rows(snapshot, subject)),
+            Tab::View => self.draw_source(document, snapshot),
+        }
         self.draw_tail(snapshot, truncated);
+    }
+
+    fn draw_tabs(&self) {
+        let Ok(buttons) = self.tabs.query_selector_all(".tab") else {
+            return;
+        };
+        for index in 0..buttons.length() {
+            let Some(button) = buttons
+                .item(index)
+                .and_then(|node| node.dyn_into::<Element>().ok())
+            else {
+                continue;
+            };
+            let selected = button.get_attribute("data-tab").as_deref() == Some(self.tab.key());
+            let _ = button.set_attribute("class", if selected { "tab on" } else { "tab" });
+        }
+    }
+
+    /// The template text, with every `{field}` and command marked.
+    ///
+    /// Marked spans carry `data-field`, the same key a concept row
+    /// carries, so the highlight is two-way: rest on a row and its
+    /// occurrences light up here, rest on an occurrence and its slots
+    /// light up on the page.
+    fn draw_source(&self, document: &Document, snapshot: &Snapshot) {
+        self.body.set_inner_html("");
+        let Some(template) = snapshot.template.as_deref() else {
+            if let Some(empty) = div(document, "empty") {
+                empty.set_text_content(Some("no view template mounted"));
+                let _ = self.body.append_child(&empty);
+            }
+            return;
+        };
+        let Some(source) = div(document, "source") else {
+            return;
+        };
+        for piece in pieces(template) {
+            let (class, field) = match &piece {
+                Piece::Literal { .. } => ("lit", None),
+                Piece::Field { name, .. } => ("ref", Some(name.clone())),
+                Piece::Command { name, .. } => ("cmd", Some(name.clone())),
+            };
+            let Ok(span) = document.create_element("span") else {
+                continue;
+            };
+            let _ = span.set_attribute("class", class);
+            if let Some(field) = field {
+                let _ = span.set_attribute("data-field", &field);
+            }
+            span.set_text_content(Some(piece.text()));
+            let _ = source.append_child(&span);
+        }
+        let _ = self.body.append_child(&source);
     }
 
     fn draw_head(&self, snapshot: &Snapshot) {
@@ -150,14 +270,6 @@ impl Panel {
             let Some(element) = div(document, &row_class(row)) else {
                 continue;
             };
-            // What a hover on this row highlights on the page.
-            let ids = row
-                .slots
-                .iter()
-                .map(u32::to_string)
-                .collect::<Vec<_>>()
-                .join(",");
-            let _ = element.set_attribute("data-slots", &ids);
             let _ = element.set_attribute("data-field", &row.name);
 
             cell(document, &element, "name", &row.name);
@@ -240,13 +352,12 @@ fn div(document: &Document, class: &str) -> Option<Element> {
     Some(element)
 }
 
-/// The slot ids a panel row names, read back off the row element.
-pub fn slots_of(row: &Element) -> Vec<u32> {
-    row.get_attribute("data-slots")
-        .unwrap_or_default()
-        .split(',')
-        .filter_map(|id| id.parse().ok())
-        .collect()
+/// The field a hovered part of the panel refers to — a concept row, or
+/// a marked span in the template. Both carry `data-field`, so one
+/// lookup serves either half.
+pub fn field_of(target: &Element) -> Option<String> {
+    let holder = target.closest("[data-field]").ok().flatten()?;
+    holder.get_attribute("data-field")
 }
 
 /// Everything the panel draws. Concatenated into the overlay's sheet.
@@ -262,6 +373,18 @@ pub const CSS: &str = "\
          font: inherit; line-height: 16px; color: inherit; cursor: pointer;
          background: transparent; border: 0; border-radius: 2px; }
 .close:hover { background: rgba(255,255,255,.14); }
+.tabs { display: flex; gap: 2px; padding: 4px 8px 0; }
+.tab { padding: 2px 8px; font: inherit; color: #9aa0ad; cursor: pointer;
+       background: transparent; border: 0; border-radius: 2px 2px 0 0; }
+.tab:hover { color: #e9e9ee; background: rgba(255,255,255,.08); }
+.tab.on { color: #e9e9ee; background: rgba(255,255,255,.14); }
+.source { padding: 6px 8px; white-space: pre-wrap; word-break: break-word; }
+.source .lit { color: #9aa0ad; }
+.source .ref { color: #22a06b; background: color-mix(in srgb, #22a06b 16%, transparent);
+               border-radius: 2px; }
+.source .cmd { color: #f06595; background: color-mix(in srgb, #d6336c 18%, transparent);
+               border-radius: 2px; }
+.source [data-field]:hover { outline: 1px solid currentColor; }
 .subject { padding: 4px 8px; color: #9aa0ad; word-break: break-all;
            border-bottom: 1px solid rgba(255,255,255,.08); }
 .body { overflow: auto; }

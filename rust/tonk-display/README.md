@@ -115,6 +115,18 @@ Resting on a row brings the slots it feeds forward and dims everything else.
 In directory mode the panel follows the repeat row under the pointer, and
 sticks there while you walk over to read it.
 
+A second tab shows the **view template** the display mounted, with every
+`{field}` and every command-bound attribute value marked in the source. The
+highlight is two-way and keyed on the same name in both halves: rest on a
+concept row and its occurrences light up in the template, rest on an occurrence
+and the slots it feeds light up on the page.
+
+The template is sliced by `introspect::source`, which walks with the same lexer
+the analyzer's checks use — so what the panel marks and what the build reports
+cannot disagree about what is in a template. That matters for the two
+exclusions the walk encodes: a `{field}` inside an HTML comment is prose, and
+one inside `<style>` or `<script>` is a real CSS or JS brace.
+
 The overlay reads the renderer's binding plan and value cache rather than the
 rendered DOM, because the DOM cannot answer the question: a rendered
 `with="main@repo"` does not say which half was a field, and a binding applied

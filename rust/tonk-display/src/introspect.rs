@@ -41,6 +41,7 @@ pub mod command;
 pub mod inspect;
 pub mod mode;
 pub mod slot;
+pub mod source;
 
 #[cfg(target_arch = "wasm32")]
 mod overlay;
