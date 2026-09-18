@@ -2,12 +2,19 @@
 //! sections it unfolds.
 //!
 //! The bar names what is selected and offers one toggle per thing
-//! there is to know about it — **data**, **model**, **view**,
-//! **commands** — plus the transport. Sections are independent, not
+//! there is to know about it — **parts**, **data**, **model**,
+//! **view**, **commands** — plus the transport. Sections are independent, not
 //! tabs: the point of opening `view` is usually to read it against
 //! `data`, and a tab bar makes that the one thing you cannot do.
 //!
-//! Every section renders notation rather than a table, because that is
+//! Parts is what it opens on: the concept drawn as a block per
+//! attribute and per command, the way a patch editor draws a node.
+//! That answers "what is here at all" — how many, what kind, which
+//! ones are not working — before a word is read, which is the question
+//! you arrive with. The rest answer "what exactly", and they are
+//! notation.
+//!
+//! Every other section renders notation rather than a table, because that is
 //! what an author already reads and writes. The data section is the
 //! entity as a `head!:` assertion, the model section is its
 //! `concept!:` declaration, the view section is the template, and the
@@ -20,12 +27,13 @@
 //! dialog relation under the field name — which is the handle for
 //! asking about the same relation elsewhere.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use wasm_bindgen::JsCast;
 use web_sys::{Document, Element};
 
 use super::command::Command;
+use super::inspect::{Row, Status, rows};
 use super::notation::{self, Line, Token};
 use super::recorder::Timeline;
 use super::slot::Snapshot;
@@ -34,6 +42,8 @@ use super::source::{Markup, pieces};
 /// One thing the bar can unfold.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Section {
+    /// The concept's parts: a block per attribute and per command.
+    Parts,
     /// The entity, as the assertion that would make it.
     Data,
     /// The concept declaration the display resolved.
@@ -46,7 +56,8 @@ pub enum Section {
 
 impl Section {
     /// Every section, in bar order.
-    pub const ALL: [Section; 4] = [
+    pub const ALL: [Section; 5] = [
+        Section::Parts,
         Section::Data,
         Section::Model,
         Section::View,
@@ -55,6 +66,7 @@ impl Section {
 
     fn key(self) -> &'static str {
         match self {
+            Section::Parts => "parts",
             Section::Data => "data",
             Section::Model => "model",
             Section::View => "view",
@@ -83,6 +95,16 @@ pub struct Panel {
     facet: Option<String>,
     /// The command whose declaration the commands section is showing.
     command: Option<String>,
+    /// The part whose detail is unfolded under the grid.
+    part: Option<String>,
+    /// Sections torn out into their own windows, and where each sits.
+    /// A detached section keeps its toggle lit — it is still open,
+    /// just not here.
+    detached: BTreeMap<Section, (f64, f64)>,
+    /// The windows themselves, one per detached section.
+    windows: BTreeMap<Section, Element>,
+    /// The layer detached windows are appended to.
+    layer: Element,
     /// What the body was built for, so an unchanged frame does not
     /// rebuild it under the pointer.
     shown: Option<String>,
@@ -134,9 +156,16 @@ impl Panel {
             toggles,
             transport,
             body,
-            open: BTreeSet::new(),
             facet: None,
             command: None,
+            part: None,
+            detached: BTreeMap::new(),
+            windows: BTreeMap::new(),
+            layer: layer.clone(),
+            // Parts is what the inspector opens on: it says how many
+            // and what kind before you read a word, which is the
+            // question you arrive with.
+            open: BTreeSet::from([Section::Parts]),
             shown: None,
         })
     }
@@ -163,6 +192,69 @@ impl Panel {
     pub fn select_facet(&mut self, facet: &str) {
         self.facet = Some(facet.to_owned());
         self.shown = None;
+    }
+
+    /// Tear a section out into its own window, or put it back.
+    ///
+    /// Reading `view` against `data` is the usual reason to open
+    /// either, and stacking them in one column only half-solves it:
+    /// the second is below the fold exactly when you want both in the
+    /// eye at once. A torn section is the same section, drawn
+    /// somewhere else.
+    pub fn detach(&mut self, section: Section) {
+        if self.detached.remove(&section).is_some() {
+            if let Some(window) = self.windows.remove(&section) {
+                window.remove();
+            }
+        } else {
+            // Stagger, so two torn one after another do not land on
+            // top of each other.
+            let offset = 24.0 * self.detached.len() as f64;
+            self.detached
+                .insert(section, (56.0 + offset, 56.0 + offset));
+            self.open.insert(section);
+        }
+        self.shown = None;
+    }
+
+    /// The section a tear-off handle click landed on, if any.
+    pub fn detach_of(target: &Element) -> Option<Section> {
+        let handle = target.closest(".tear").ok().flatten()?;
+        Section::of(&handle.get_attribute("data-section")?)
+    }
+
+    /// Where a detached window is, for dragging it.
+    pub fn window_at(&self, section: Section) -> Option<(f64, f64)> {
+        self.detached.get(&section).copied()
+    }
+
+    /// Move a detached window.
+    pub fn move_window(&mut self, section: Section, at: (f64, f64)) {
+        if let Some(slot) = self.detached.get_mut(&section) {
+            *slot = at;
+        }
+    }
+
+    /// The detached window a press landed in, if any.
+    pub fn window_of(target: &Element) -> Option<Section> {
+        let head = target.closest(".window-head").ok().flatten()?;
+        Section::of(&head.get_attribute("data-section")?)
+    }
+
+    /// Unfold a part's detail under the grid, or fold it away.
+    pub fn select_part(&mut self, name: &str) {
+        self.part = if self.part.as_deref() == Some(name) {
+            None
+        } else {
+            Some(name.to_owned())
+        };
+        self.shown = None;
+    }
+
+    /// The part a click landed on, if any.
+    pub fn part_of(target: &Element) -> Option<String> {
+        let block = target.closest(".part").ok().flatten()?;
+        block.get_attribute("data-field")
     }
 
     /// Show a particular command's declaration, or fold it away.
@@ -227,7 +319,7 @@ impl Panel {
         self.draw_transport(timeline);
 
         let key = format!(
-            "{signature}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
+            "{signature}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
             subject.unwrap_or_default(),
             self.open
                 .iter()
@@ -236,6 +328,7 @@ impl Panel {
                 .join(","),
             self.facet.clone().unwrap_or_default(),
             self.command.clone().unwrap_or_default(),
+            self.part.clone().unwrap_or_default(),
         );
         if self.shown.as_deref() == Some(key.as_str()) {
             return;
@@ -245,16 +338,29 @@ impl Panel {
         self.draw_title(snapshot, subject);
         self.draw_toggles();
         self.body.set_inner_html("");
+        for window in std::mem::take(&mut self.windows).into_values() {
+            window.remove();
+        }
         for section in Section::ALL {
             if !self.open.contains(&section) {
                 continue;
             }
+            let home = match self.detached.get(&section).copied() {
+                Some(at) => match self.open_window(document, section, at) {
+                    Some(window) => window,
+                    None => continue,
+                },
+                None => self.body.clone(),
+            };
+            let previous = std::mem::replace(&mut self.body, home);
             match section {
+                Section::Parts => self.draw_parts(document, snapshot, subject, commands),
                 Section::Data => self.draw_data(document, snapshot, subject),
                 Section::Model => self.draw_model(document, snapshot),
                 Section::View => self.draw_view(document, snapshot),
                 Section::Commands => self.draw_commands(document, commands, snapshot),
             }
+            self.body = previous;
         }
         if self.open.is_empty() {
             self.note(document, "pick one above to unfold it");
@@ -319,6 +425,182 @@ impl Panel {
                 },
             );
         }
+    }
+
+    /// The concept drawn as its parts: a block per attribute and per
+    /// command, each opening to its detail.
+    ///
+    /// The shape a patch editor uses for a node, and for the same
+    /// reason — you see how many and what kind before you read a
+    /// word. Notation answers "what exactly"; this answers "what is
+    /// here at all", which is the question you arrive with.
+    fn draw_parts(
+        &self,
+        document: &Document,
+        snapshot: &Snapshot,
+        subject: Option<&str>,
+        commands: &[Command],
+    ) {
+        let Some(section) = self.section(document, "parts", None) else {
+            return;
+        };
+        let rows = rows(snapshot, subject);
+        if rows.is_empty() && commands.is_empty() {
+            self.note_in(document, &section, "this concept declares nothing");
+            return;
+        }
+
+        if !rows.is_empty() {
+            self.grid(document, &section, "attributes", |grid| {
+                for row in &rows {
+                    let selected = self.part.as_deref() == Some(row.name.as_str());
+                    let class = format!(
+                        "part attribute {}{}",
+                        status_class(row.status),
+                        if selected { " on" } else { "" }
+                    );
+                    let Some(block) = div(document, &class) else {
+                        continue;
+                    };
+                    let _ = block.set_attribute("data-field", &row.name);
+                    let _ = block.set_attribute("title", row.status.label());
+                    cell(document, &block, "part-name", &row.name);
+                    cell(
+                        document,
+                        &block,
+                        "part-hint",
+                        &row.declared
+                            .as_ref()
+                            .map(super::slot::Field::signature)
+                            .unwrap_or_else(|| "?".to_owned()),
+                    );
+                    let _ = grid.append_child(&block);
+                }
+            });
+        }
+
+        if !commands.is_empty() {
+            self.grid(document, &section, "commands", |grid| {
+                for command in commands {
+                    let selected = self.part.as_deref() == Some(command.command.as_str());
+                    let class = format!(
+                        "part command{}{}",
+                        if command.is_live() { "" } else { " inert" },
+                        if selected { " on" } else { "" }
+                    );
+                    let Some(block) = div(document, &class) else {
+                        continue;
+                    };
+                    let _ = block.set_attribute("data-field", &command.command);
+                    cell(document, &block, "part-name", &command.command);
+                    cell(
+                        document,
+                        &block,
+                        "part-hint",
+                        command.event_type.as_deref().unwrap_or("no listener"),
+                    );
+                    let _ = grid.append_child(&block);
+                }
+            });
+        }
+
+        self.draw_part_detail(document, &section, snapshot, subject, commands, &rows);
+    }
+
+    /// A labelled row of blocks.
+    fn grid(
+        &self,
+        document: &Document,
+        section: &Element,
+        label: &str,
+        fill: impl FnOnce(&Element),
+    ) {
+        let Some(wrap) = div(document, "grid-wrap") else {
+            return;
+        };
+        if let Some(caption) = div(document, "grid-label") {
+            caption.set_text_content(Some(label));
+            let _ = wrap.append_child(&caption);
+        }
+        if let Some(grid) = div(document, "grid") {
+            fill(&grid);
+            let _ = wrap.append_child(&grid);
+        }
+        let _ = section.append_child(&wrap);
+    }
+
+    /// What the selected block unfolds to: an attribute's value and
+    /// relation, or a command's declaration.
+    fn draw_part_detail(
+        &self,
+        document: &Document,
+        section: &Element,
+        snapshot: &Snapshot,
+        subject: Option<&str>,
+        commands: &[Command],
+        rows: &[Row],
+    ) {
+        let Some(name) = self.part.as_deref() else {
+            return;
+        };
+        let Some(detail) = div(document, "detail") else {
+            return;
+        };
+
+        if let Some(row) = rows.iter().find(|row| row.name == name) {
+            let entity = subject.and_then(|subject| {
+                snapshot
+                    .entities
+                    .iter()
+                    .find(|entity| entity.this == subject)
+            });
+            let value = entity.and_then(|entity| entity.values.get(name));
+            let relations = snapshot
+                .descriptor
+                .as_deref()
+                .map(notation::relations)
+                .unwrap_or_default();
+            match value {
+                Some(value) => {
+                    let mut fields = std::collections::BTreeMap::new();
+                    fields.insert(name.to_owned(), value.clone());
+                    let lines = notation::entity(
+                        snapshot.model_name.as_deref().unwrap_or("concept"),
+                        subject.unwrap_or_default(),
+                        &fields,
+                        &relations,
+                    );
+                    draw_notation(document, &detail, &lines);
+                }
+                None => {
+                    if let Some(note) = div(document, "note") {
+                        note.set_text_content(Some(row.status.label()));
+                        let _ = detail.append_child(&note);
+                    }
+                }
+            }
+        } else if commands.iter().any(|command| command.command == name) {
+            let descriptor = snapshot
+                .commands
+                .iter()
+                .find(|definition| definition.name == name)
+                .and_then(|definition| definition.descriptor.as_deref());
+            match descriptor {
+                Some(descriptor) => {
+                    let lines = notation::declaration("command", Some(name), descriptor);
+                    draw_notation(document, &detail, &lines);
+                }
+                None => {
+                    if let Some(note) = div(document, "note") {
+                        note.set_text_content(Some(
+                            "this name resolved to nothing, so nothing listens for it",
+                        ));
+                        let _ = detail.append_child(&note);
+                    }
+                }
+            }
+        }
+        let _ = section.append_child(&detail);
     }
 
     fn draw_data(&self, document: &Document, snapshot: &Snapshot, subject: Option<&str>) {
@@ -473,6 +755,33 @@ impl Panel {
         }
     }
 
+    /// Build a window for a detached section and return the box its
+    /// content should be drawn into.
+    fn open_window(
+        &mut self,
+        document: &Document,
+        section: Section,
+        at: (f64, f64),
+    ) -> Option<Element> {
+        let window = div(document, "window")?;
+        let _ = window.set_attribute("style", &format!("left:{}px;top:{}px", at.0, at.1));
+        let head = div(document, "window-head")?;
+        let _ = head.set_attribute("data-section", section.key());
+        let label = div(document, "window-name")?;
+        label.set_text_content(Some(section.key()));
+        let back = button(document, "tear on", "\u{21a9}")?;
+        let _ = back.set_attribute("data-section", section.key());
+        let _ = back.set_attribute("title", "put it back");
+        let _ = head.append_child(&label);
+        let _ = head.append_child(&back);
+        let body = div(document, "window-body")?;
+        let _ = window.append_child(&head);
+        let _ = window.append_child(&body);
+        let _ = self.layer.append_child(&window);
+        self.windows.insert(section, window);
+        Some(body)
+    }
+
     /// Append a titled section to the body and return its content box.
     fn section(&self, document: &Document, name: &str, chips: Option<Element>) -> Option<Element> {
         let section = div(document, "section")?;
@@ -482,6 +791,13 @@ impl Panel {
         let _ = header.append_child(&label);
         if let Some(chips) = chips {
             let _ = header.append_child(&chips);
+        }
+        // A section drawn in its own window already has a header.
+        let tear = button(document, "tear", "\u{2197}");
+        if let Some(tear) = tear {
+            let _ = tear.set_attribute("data-section", name);
+            let _ = tear.set_attribute("title", "tear this out");
+            let _ = header.append_child(&tear);
         }
         let content = div(document, "section-body")?;
         let _ = section.append_child(&header);
@@ -598,6 +914,25 @@ pub fn field_of(target: &Element) -> Option<String> {
     holder.get_attribute("data-field")
 }
 
+/// The state a block wears on its edge.
+fn status_class(status: Status) -> &'static str {
+    match status {
+        Status::Rendered => "rendered",
+        Status::Absent => "absent",
+        Status::Unrendered => "unrendered",
+        Status::Undeclared => "undeclared",
+    }
+}
+
+/// A labelled child of a block.
+fn cell(document: &Document, parent: &Element, class: &str, text: &str) {
+    if let Some(element) = div(document, class) {
+        element.set_text_content(Some(text));
+        let _ = element.set_attribute("title", text);
+        let _ = parent.append_child(&element);
+    }
+}
+
 fn div(document: &Document, class: &str) -> Option<Element> {
     let element = document.create_element("div").ok()?;
     let _ = element.set_attribute("class", class);
@@ -693,4 +1028,41 @@ pub const CSS: &str = "\
 .source .m-command { color: #17171a; background: var(--tonk-alarm, #a8302a); }
 .source [data-field]:hover { outline: 1px solid #e6e3de; }
 .note { padding: 6px 12px; color: #7a7268; font-style: italic; }
+.grid-wrap { padding: 6px 12px 2px; }
+.grid-label { color: #55504a; text-transform: uppercase; letter-spacing: .12em;
+              margin-bottom: 4px; }
+.grid { display: flex; flex-wrap: wrap; gap: 3px; }
+/* A block says its name and its kind, and carries its state on its
+   left edge — how many and what kind, before a word is read. */
+.part { display: flex; flex-direction: column; gap: 1px; min-width: 9ch; max-width: 22ch;
+        padding: 4px 8px; cursor: pointer; background: #1e1d1b;
+        border-left: 3px solid var(--tonk-closure, #7a7268); }
+.part:hover { background: #2c2a27; }
+.part.on { background: #34322c; }
+.part-name { color: #e6e3de; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.part-hint { color: #55504a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.part.attribute { border-left-color: var(--tonk-triangle, #c89a2b); }
+.part.attribute.absent { border-left-color: var(--tonk-square, #b94a3d); }
+.part.attribute.unrendered { border-left-style: dashed; }
+.part.attribute.undeclared { border-left-color: var(--tonk-alarm, #a8302a); }
+.part.attribute.undeclared .part-name { text-decoration: line-through; }
+.part.command { border-left-color: var(--tonk-alarm, #a8302a); }
+.part.command.inert { border-left-style: dotted; }
+.part.command.inert .part-name { text-decoration: line-through; }
+.detail { border-top: 1px solid #2c2a27; margin-top: 6px; }
+.tear { margin-left: auto; min-width: 22px; min-height: 20px; padding: 2px 6px; font: inherit;
+        color: #55504a; cursor: pointer; background: transparent; border: 0; border-radius: 0; }
+.tear:hover { color: #e6e3de; background: #2c2a27; }
+.tear.on { color: #e6e3de; }
+/* A torn section is the same section somewhere else. Same chrome, so
+   it does not read as a different kind of thing. */
+.window { position: fixed; z-index: 5; display: flex; flex-direction: column;
+          width: min(62ch, calc(100vw - 16px)); max-height: min(60vh, 560px);
+          pointer-events: auto; color: #e6e3de; background: #17171a;
+          border: 1px solid #2c2a27; box-shadow: 0 10px 34px rgba(0,0,0,.5); }
+.window-head { display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 12px;
+               cursor: move; user-select: none; background: #1b1a18;
+               border-bottom: 1px solid #2c2a27; }
+.window-name { color: #55504a; text-transform: uppercase; letter-spacing: .12em; }
+.window-body { overflow: auto; }
 ";

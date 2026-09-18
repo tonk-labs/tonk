@@ -99,6 +99,10 @@ const RESNAPSHOT_FRAMES: u32 = 30;
 /// bit.
 const MARKER_CAP: usize = 160;
 
+/// The selector's size, and the FAB study's: a 36 circle with one
+/// square corner.
+const SELECTOR: f64 = 36.0;
+
 /// Badge geometry, in CSS pixels. The font is monospace at 11px, so a
 /// label's width is arithmetic rather than a layout read — which keeps
 /// the collision pass off the critical path.
@@ -110,8 +114,13 @@ const BADGE_PADDING: f64 = 6.0;
 const NAME: &str = "tonk-introspect";
 
 /// The attribute the FAB's selector stamps on what it was dropped on.
-/// Watched rather than driven: the chrome marks, the page draws.
+/// Watched as well as set: the chrome marks, the page draws, and this
+/// overlay is on both sides of that sentence.
 const SELECTED: &str = "data-fabb-selected";
+
+/// The attribute marking what a selector is currently over, while it
+/// is out. Transient, unlike [`SELECTED`].
+const AIM: &str = "data-fabb-aim";
 
 /// The element.
 #[derive(Default)]
@@ -158,6 +167,14 @@ struct Overlay {
     /// The pin affordance. The one thing on the layer that takes
     /// pointer events.
     pin: Element,
+    /// The selector: a teardrop that tears off, follows the pointer,
+    /// and sticks to whatever it is dropped on.
+    drop: Element,
+    /// Where the selector is being dragged, while it is.
+    tearing: Option<(f64, f64)>,
+    /// The element the selector is currently over, marked so the page
+    /// can draw it.
+    aimed: Option<Element>,
     /// The concept panel.
     panel: Panel,
     machine: Machine,
@@ -188,8 +205,11 @@ struct Overlay {
     /// Where the user dragged the panel to, if they did. Otherwise it
     /// places itself away from whatever is being observed.
     panel_at: Option<(f64, f64)>,
-    /// A drag in progress: the pointer's offset inside the panel.
+    /// A drag in progress: the pointer's offset inside the panel, and
+    /// which torn-out section is moving (`None` is the inspector).
     dragging: Option<(f64, f64)>,
+    /// The section being dragged, when it is not the inspector.
+    dragging_section: Option<super::panel::Section>,
     /// Where the pointer was last seen, so a marker can tell whether
     /// it is the one being rested on.
     pointer: (f64, f64),
@@ -396,6 +416,8 @@ impl Overlay {
         let outline = element(document, "div", "outline")?;
         let pin = element(document, "button", "pin")?;
         pin.set_text_content(Some("pin"));
+        let drop = element(document, "div", "drop")?;
+        let _ = drop.set_attribute("title", "drag onto a display to stick the inspector to it");
         let marks = element(document, "div", "marks")?;
         let shield = element(document, "div", "shield")?;
         let _ = shield.set_attribute("title", "click to pin this display");
@@ -406,6 +428,7 @@ impl Overlay {
         let _ = layer.append_child(&shield);
         let _ = layer.append_child(&outline);
         let _ = layer.append_child(&pin);
+        let _ = layer.append_child(&drop);
         let _ = root.append_child(&layer);
         let panel = Panel::build(document, &layer)?;
 
@@ -415,6 +438,9 @@ impl Overlay {
             shield,
             outline,
             pin,
+            drop,
+            tearing: None,
+            aimed: None,
             panel,
             machine: Machine::default(),
             targets: Vec::new(),
@@ -427,6 +453,7 @@ impl Overlay {
             focus: None,
             panel_at: None,
             dragging: None,
+            dragging_section: None,
             pointer: (-1.0, -1.0),
             recording: None,
         })
@@ -459,6 +486,11 @@ impl Overlay {
         hide(&self.outline);
         hide(&self.pin);
         hide(&self.shield);
+        hide(&self.drop);
+        if let Some(aimed) = self.aimed.take() {
+            let _ = aimed.remove_attribute(AIM);
+        }
+        self.tearing = None;
         self.panel.hide();
         self.focus = None;
         self.hovered_subject = None;
@@ -511,6 +543,11 @@ fn install_listeners(document: &Document, overlay: &Rc<RefCell<Overlay>>) -> Vec
             // A drag owns the pointer outright.
             if overlay.borrow().dragging.is_some() {
                 drag_panel(overlay, mouse);
+                return;
+            }
+            // So does a tear, and it aims as it goes.
+            if overlay.borrow().tearing.is_some() {
+                aim(overlay, mouse);
                 return;
             }
             // The whole cost of a closed hood. Everything below this
@@ -591,6 +628,53 @@ fn install_listeners(document: &Document, overlay: &Rc<RefCell<Overlay>>) -> Vec
         },
     ));
 
+    // A torn-out section drags by its own header, through the same
+    // path as the inspector — one drag, two kinds of thing to move.
+    bound.push(listen(
+        &target,
+        "mousedown",
+        true,
+        overlay,
+        |overlay, event| {
+            let Some(mouse) = event.dyn_ref::<MouseEvent>() else {
+                return;
+            };
+            let Some(section) = event
+                .target()
+                .and_then(|target| target.dyn_into::<Element>().ok())
+                .and_then(|element| Panel::window_of(&element))
+            else {
+                return;
+            };
+            let Some(at) = overlay.borrow().panel.window_at(section) else {
+                return;
+            };
+            event.prevent_default();
+            let mut state = overlay.borrow_mut();
+            state.dragging_section = Some(section);
+            state.dragging = Some((mouse.client_x() - at.0, mouse.client_y() - at.1));
+        },
+    ));
+
+    // The selector. Press it and it tears off the inspector and
+    // follows the pointer; let go and it sticks to whatever it is
+    // over, by setting the same attribute the FAB's teardrop would.
+    let drop = overlay.borrow().drop.clone();
+    bound.push(listen(
+        drop.as_ref(),
+        "mousedown",
+        false,
+        overlay,
+        |overlay, event| {
+            let Some(mouse) = event.dyn_ref::<MouseEvent>() else {
+                return;
+            };
+            event.prevent_default();
+            event.stop_propagation();
+            overlay.borrow_mut().tearing = Some((mouse.client_x(), mouse.client_y()));
+        },
+    ));
+
     // Dragging the panel by its header.
     let head = overlay.borrow().panel.head().clone();
     bound.push(listen(
@@ -611,7 +695,9 @@ fn install_listeners(document: &Document, overlay: &Rc<RefCell<Overlay>>) -> Vec
             }
             event.prevent_default();
             let rect = overlay.borrow().panel.root().get_bounding_client_rect();
-            overlay.borrow_mut().dragging = Some((
+            let mut state = overlay.borrow_mut();
+            state.dragging_section = None;
+            state.dragging = Some((
                 mouse.client_x() - rect.left(),
                 mouse.client_y() - rect.top(),
             ));
@@ -622,8 +708,18 @@ fn install_listeners(document: &Document, overlay: &Rc<RefCell<Overlay>>) -> Vec
         "mouseup",
         true,
         overlay,
-        |overlay, _event| {
-            overlay.borrow_mut().dragging = None;
+        |overlay, event| {
+            {
+                let mut state = overlay.borrow_mut();
+                state.dragging = None;
+                state.dragging_section = None;
+            }
+            if overlay.borrow().tearing.is_some() {
+                if let Some(mouse) = event.dyn_ref::<MouseEvent>() {
+                    stick(overlay, mouse);
+                }
+                overlay.borrow_mut().tearing = None;
+            }
         },
     ));
 
@@ -696,6 +792,14 @@ fn install_listeners(document: &Document, overlay: &Rc<RefCell<Overlay>>) -> Vec
             }
             if let Some(command) = Panel::command_of(&target) {
                 overlay.borrow_mut().panel.select_command(&command);
+                return;
+            }
+            if let Some(section) = Panel::detach_of(&target) {
+                overlay.borrow_mut().panel.detach(section);
+                return;
+            }
+            if let Some(part) = Panel::part_of(&target) {
+                overlay.borrow_mut().panel.select_part(&part);
                 return;
             }
             if let Some(action) = Panel::action_of(&target) {
@@ -941,6 +1045,62 @@ fn transport(overlay: &Rc<RefCell<Overlay>>, action: &str) {
     overlay.borrow_mut().age = u32::MAX;
 }
 
+/// Follow the pointer with the torn-off selector, marking what it is
+/// over so the page can draw it.
+///
+/// [`AIM`] and [`SELECTED`] are the FAB study's contract, and this
+/// honours both ends of it: while the selector is out the chrome marks
+/// what it points at, and the page — including this overlay — draws.
+/// Building the teardrop here rather than waiting on `tonk-fab` costs
+/// nothing later: when the bar grows its own, it sets the same
+/// attribute and everything downstream already works.
+fn aim(overlay: &Rc<RefCell<Overlay>>, mouse: &MouseEvent) {
+    let (x, y) = (mouse.client_x(), mouse.client_y());
+    overlay.borrow_mut().tearing = Some((x, y));
+    let target = display_under(overlay, mouse);
+    let previous = overlay.borrow().aimed.clone();
+    if previous
+        .as_ref()
+        .map(|element| element.is_same_node(target.as_ref().map(|t| t.as_ref())))
+        == Some(true)
+    {
+        return;
+    }
+    if let Some(previous) = previous {
+        let _ = previous.remove_attribute(AIM);
+    }
+    if let Some(target) = &target {
+        let _ = target.set_attribute(AIM, "");
+    }
+    overlay.borrow_mut().aimed = target;
+}
+
+/// Let go: stick the inspector to whatever the selector is over.
+fn stick(overlay: &Rc<RefCell<Overlay>>, mouse: &MouseEvent) {
+    if let Some(aimed) = overlay.borrow_mut().aimed.take() {
+        let _ = aimed.remove_attribute(AIM);
+    }
+    let Some(host) = display_under(overlay, mouse) else {
+        // Dropped on nothing: let go of whatever was stuck, which is
+        // how the selector is put away.
+        if let Some(document) = window().and_then(|w| w.document())
+            && let Ok(Some(previous)) = document.query_selector(&format!("[{SELECTED}]"))
+        {
+            let _ = previous.remove_attribute(SELECTED);
+        }
+        return;
+    };
+    if let Some(document) = window().and_then(|w| w.document())
+        && let Ok(Some(previous)) = document.query_selector(&format!("[{SELECTED}]"))
+    {
+        let _ = previous.remove_attribute(SELECTED);
+    }
+    // Setting the mark is all this does. The observer installed in
+    // `watch_selection` notices and pins the inspector, exactly as it
+    // would for a mark set by anything else.
+    let _ = host.set_attribute(SELECTED, "");
+}
+
 /// Move the panel under a dragging pointer, clamped to the viewport
 /// so it cannot be dropped somewhere unreachable.
 fn drag_panel(overlay: &Rc<RefCell<Overlay>>, mouse: &MouseEvent) {
@@ -964,7 +1124,11 @@ fn drag_panel(overlay: &Rc<RefCell<Overlay>>, mouse: &MouseEvent) {
         .unwrap_or(0.0);
     let left = (mouse.client_x() - offset_x).clamp(0.0, (width - rect.width()).max(0.0));
     let top = (mouse.client_y() - offset_y).clamp(0.0, (height - rect.height()).max(0.0));
-    overlay.borrow_mut().panel_at = Some((left, top));
+    let section = overlay.borrow().dragging_section;
+    match section {
+        Some(section) => overlay.borrow_mut().panel.move_window(section, (left, top)),
+        None => overlay.borrow_mut().panel_at = Some((left, top)),
+    }
 }
 
 /// Where the panel sits: where it was dragged, else the corner
@@ -1065,6 +1229,7 @@ fn paint(overlay: &Rc<RefCell<Overlay>>) {
     overlay.borrow_mut().painting = true;
 
     paint_frame(overlay, highlighted);
+    paint_selector(overlay);
     match observed {
         Some(target) => paint_observation(overlay, target),
         None => {
@@ -1136,6 +1301,44 @@ fn paint_frame(overlay: &Rc<RefCell<Overlay>>, target: Option<TargetId>) {
         "style",
         &format!("display:block;left:{}px;top:{top}px", rect.left()),
     );
+}
+
+/// Draw the selector: under the pointer while torn, parked on the
+/// outline's corner otherwise.
+///
+/// A 36 circle with one square corner, and the corner is the hotspot —
+/// the way a pointer's tip is. Parked it reads as something to take;
+/// torn it reads as something aimed.
+fn paint_selector(overlay: &Rc<RefCell<Overlay>>) {
+    let state = overlay.borrow();
+    let Some(highlighted) = state.machine.highlighted() else {
+        hide(&state.drop);
+        return;
+    };
+    let position = match state.tearing {
+        // The hotspot is the top-left corner, so the teardrop hangs
+        // down and right of the point it names.
+        Some((x, y)) => Some((x, y)),
+        None => state.element(highlighted).map(|element| {
+            let rect = element.get_bounding_client_rect();
+            (rect.right() - SELECTOR, rect.top())
+        }),
+    };
+    let Some((left, top)) = position else {
+        hide(&state.drop);
+        return;
+    };
+    let _ = state.drop.set_attribute(
+        "class",
+        if state.tearing.is_some() {
+            "drop out"
+        } else {
+            "drop"
+        },
+    );
+    let _ = state
+        .drop
+        .set_attribute("style", &format!("display:block;left:{left}px;top:{top}px"));
 }
 
 fn paint_observation(overlay: &Rc<RefCell<Overlay>>, target: TargetId) {
@@ -1673,6 +1876,18 @@ const CSS: &str = "\
        background: var(--tonk-circle, #3d6da8); border: 0; border-radius: 0; }
 .pin:hover { filter: brightness(1.15); }
 .pin.pinned { background: var(--tonk-triangle, #c89a2b); }
+/* The selector: a 36 circle with one square corner, and the corner is
+   the hotspot — the way a pointer's tip is. */
+.drop { position: fixed; display: none; z-index: 6; pointer-events: auto; cursor: grab;
+        width: 36px; height: 36px; background: var(--tonk-square, #b94a3d);
+        border-radius: 0 18px 18px 18px; }
+.drop::after { content: ''; position: absolute; left: 11px; top: 11px; width: 14px;
+               height: 14px; border-radius: 50%; background: #17171a; }
+.drop.out { cursor: grabbing; box-shadow: 0 6px 18px rgba(0,0,0,.45); }
+/* What a selector is aiming at, and what it stuck to. The chrome
+   marks; the page draws — this is the page drawing. */
+:host-context([data-fabb-aim]) { }
+
 .mark { position: fixed; display: none; box-sizing: border-box; border-radius: 0; }
 .mark[data-shape=extent] { border: 1px solid var(--ink); background: var(--wash); }
 .mark[data-shape=point] { background: var(--ink); }

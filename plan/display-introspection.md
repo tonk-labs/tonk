@@ -134,9 +134,7 @@ to stop when Alt goes up under a still pointer.
 
 ## Steps
 
-- [ ] **7. Parts.** Draw a concept the way nodes.io draws a patch: a block per
-      attribute and per command, opening to its detail and value. See
-      *Directions not yet taken*.
+- [x] **7. Parts, the selector, detachable sections.** See *Directions* above.
 
 - [ ] **8. Navigate the relation.** A line carries its attribute already. Make
       it a handle: click a relation to ask what else asserts it, click an
@@ -263,34 +261,36 @@ names the shape of the binding while withholding the only part you came for.
 Commands keep a dashed outline and a corner dot so they read as affordances
 rather than values.
 
-## Directions not yet taken
+## Directions taken since
 
 Three from use, recorded because each changes the shape rather than adding to
 it.
 
-**The selector.** The FAB study (`Gooey_Agent.html`) tears a teardrop off the
-bar whose square corner is the hotspot; drop it on a thing and the chrome marks
-what it hit while the page draws. That is a better way into this tool than
-Alt-hover, because it is deliberate and it survives letting go. The seam is
-already built on this side: the overlay watches `data-fabb-selected` and pins
-itself on whatever carries it, so `tonk-fab` never needs to know the inspector
-exists and anything else that wants to point at a display can do it by setting
-one attribute. What is missing is the teardrop, which is the FAB's to grow.
+**The selector.** Built, in the overlay rather than on the FAB's bar. A 36
+circle with one square corner, parked on the outlined display until you drag it
+off; it marks `data-fabb-aim` on what it passes and `data-fabb-selected` on
+what it is dropped on, and the watcher already installed picks that up and
+pins. Dropped on nothing, it releases.
 
-**Parts, not prose.** nodes.io draws a patch as a block whose ports are small
-blocks, one per thing it takes and gives. A concept is the same shape: a block
-per attribute, a block per command, each opening to its detail and its current
-value. That reads at a glance in a way a notation dump never will — you see
-*how many* and *what kind* before you read a word. The data is all in hand
-(`Snapshot::fields`, `Snapshot::commands`), so this is a drawing problem, not a
-plumbing one, and it probably wants to be what the inspector opens on with the
-notation sections behind it rather than the other way round.
+Living here rather than in `tonk-fab` costs nothing later, because the seam is
+the attribute rather than a call: when the bar grows its own teardrop it sets
+the same mark and everything downstream already works. The faithful version —
+tearing off the bar through goo, the ink draining into the bar's edge, the bar
+ending on a line — is the FAB's, and the study is its spec.
 
-**Detachable sections.** Asked for directly. Today the sections stack in one
-floating window; each wants to be its own, so `data` and `view` can sit side by
-side. Mechanically it is the drag code generalized from one panel to several,
-plus somewhere to keep each one's position. Worth doing after parts, since
-parts may change what there is to detach.
+**Parts, not prose.** Built, and it is what the inspector opens on. A block per
+attribute and per command, each carrying its kind and wearing its state on its
+left edge — a dashed edge for a field no slot renders, a struck-through name
+for one the concept does not declare or a command that resolved to nothing.
+Clicking one unfolds its value or its declaration underneath. That answers
+"what is here at all" before a word is read, which is the question you arrive
+with; the notation sections answer "what exactly".
+
+**Detachable sections.** Built. Each section header carries a tear-off handle;
+torn, it becomes its own window with the same chrome, draggable by its header,
+and its toggle stays lit because it is still open — just not there. Stacking
+only half-solved reading `view` against `data`: the second is below the fold
+exactly when you want both in the eye at once.
 
 ## Known limits
 
