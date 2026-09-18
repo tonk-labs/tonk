@@ -298,6 +298,27 @@ async fn publish_settled_status(
 /// of commits.
 const SYNC_RETRY_LIMIT: usize = 4;
 
+/// Whether `error` is a push refused because upstream moved under us.
+///
+/// Two shapes, one meaning. A push that confirms upstream first is
+/// refused by the fast-forward check; one that acts on what the pull
+/// already read is refused by the conditional head write, after the
+/// novelty shipped. Both say another writer got there first, and both
+/// converge the same way: the next sweep pulls, then pushes.
+fn is_upstream_moved(error: &crate::reactor::ReactorError) -> bool {
+    matches!(
+        error,
+        crate::reactor::ReactorError::Push(
+            dialog_repository::PushError::NonFastForward { .. }
+                | dialog_repository::PushError::PublishRemoteBranch(
+                    dialog_repository::PublishRemoteBranchError::Publish(
+                        PublishError::VersionMismatch { .. }
+                    )
+                )
+        )
+    )
+}
+
 /// Whether `error` is the typed "branch head moved under us" mismatch raised
 /// when a concurrent commit advances the local head during pull.
 fn is_head_moved(error: &crate::reactor::ReactorError) -> bool {
@@ -423,12 +444,7 @@ fn classified_service_failure(
 }
 
 fn sync_failure(error: &crate::reactor::ReactorError) -> TonkWorkerError {
-    if is_head_moved(error)
-        || matches!(
-            error,
-            crate::reactor::ReactorError::Push(dialog_repository::PushError::NonFastForward { .. })
-        )
-    {
+    if is_head_moved(error) || is_upstream_moved(error) {
         return TonkWorkerError::Upstream {
             status: 409,
             code: Some("SYNC_CONFLICT".to_string()),
@@ -1136,7 +1152,13 @@ pub async fn sync(
         .reactor
         .repository(&params.repo)
         .branch(&params.branch)
+        // The pull above just resolved this branch's upstream head, so
+        // the push does not resolve it again. What that gives up is
+        // early refusal when another writer moved upstream between the
+        // two: the novelty ships first and the conditional head write
+        // rejects it, which `sync_failure` reports as the same conflict.
         .push()
+        .assuming_upstream()
         .perform(&tonk_state.operator)
         .await
     {
