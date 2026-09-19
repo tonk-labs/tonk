@@ -25,12 +25,14 @@
 use std::collections::BTreeSet;
 
 use dialog_artifacts::{ArtifactSelector, Attribute, Entity, Statement, Update, Value};
-use dialog_reactor::{CommitProvider, SelectProvider};
-use dialog_repository::Branch;
+use dialog_capability::Subject;
+use dialog_reactor::{CommitProvider, PushProvider, SelectProvider};
+use dialog_repository::{Branch, RepositoryMemoryExt as _, Upstream};
 use futures_util::StreamExt as _;
 use thiserror::Error;
 
-use crate::cell::{self, CellError, LocalCell, RETRY_LIMIT};
+use crate::cell::{self, CellError, LocalCell, RETRY_LIMIT, RemoteCell, Transport as _};
+use crate::sync::{Marker, Outcome, sync_pass};
 use crate::engine::{Content, Document, DocumentError, Edit, Format, Sheet, Stamp, Table};
 
 /// `xyz.tonk.document/format`
@@ -564,6 +566,55 @@ pub async fn write<Env: DocumentEnv>(
         });
     }
     Err(SessionError::Contended)
+}
+
+/// Run the sync pass for `entity` against the remote `branch` tracks.
+/// A branch that tracks no remote has nothing to sync with.
+pub async fn sync<Env>(branch: &Branch, entity: &Entity, env: &Env) -> Result<Outcome, SessionError>
+where
+    Env: DocumentEnv + PushProvider,
+{
+    let Some(Upstream::Remote { remote: name, .. }) = branch.upstream() else {
+        return Ok(Outcome::default());
+    };
+    let subject = branch.subject();
+    let remote = subject
+        .remote(name.clone())
+        .load()
+        .perform(env)
+        .await
+        .map_err(branch_error)?;
+    let address = remote.address();
+    let local = LocalCell::new(&subject, entity, env);
+    let marker = LocalCell::marker(&subject, &name, entity, env);
+    let there = RemoteCell::new(
+        &Subject::from(address.subject().clone()),
+        entity,
+        address.site().clone(),
+        env,
+    );
+    Ok(sync_pass(&local, &there, &marker).await?)
+}
+
+/// Whether `entity` holds changes its remote has not seen, judged from
+/// local state alone: the store's heads against the sync marker's.
+pub async fn is_dirty<Env>(branch: &Branch, entity: &Entity, env: &Env) -> Result<bool, SessionError>
+where
+    Env: DocumentEnv,
+{
+    let Some(Upstream::Remote { remote: name, .. }) = branch.upstream() else {
+        return Ok(false);
+    };
+    let subject = branch.subject();
+    let Some((mut document, _)) = cell::load(&LocalCell::new(&subject, entity, env)).await? else {
+        return Ok(false);
+    };
+    let marker = LocalCell::marker(&subject, &name, entity, env);
+    let known: Marker = match marker.resolve().await? {
+        Some((bytes, _)) => serde_json::from_slice(&bytes).unwrap_or_default(),
+        None => Marker::default(),
+    };
+    Ok(document.store_heads() != known.heads)
 }
 
 /// The entity a mirrored sheet or cell sits on. Mirror facts own their

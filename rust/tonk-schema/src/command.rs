@@ -847,6 +847,122 @@ pub struct JoinFailure {
     pub kind: crate::domain::join::Kind,
 }
 
+// --- Document commands ------------------------------------------------
+//
+// Writes to an automerge document from outside an element. Declared in
+// `tonk-core/assets/library/document.yaml`. The behaviour lives in the
+// host-neutral `tonk-document` crate; the worker's and the CLI's
+// providers are thin wrappers over it, so an agent asserts the same
+// command in both and gets the same result.
+
+/// Replace the one occurrence of a quoted passage in a text document.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DocumentReplace {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The document entity.
+    pub document: crate::domain::command::document_replace::Document,
+    /// The passage to replace.
+    pub find: crate::domain::command::document_replace::Find,
+    /// The replacement text.
+    pub with: crate::domain::command::document_replace::With,
+}
+
+impl Command for DocumentReplace {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Insert text after the one occurrence of a quoted passage.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DocumentInsert {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The document entity.
+    pub document: crate::domain::command::document_insert::Document,
+    /// The passage to insert after.
+    pub after: crate::domain::command::document_insert::After,
+    /// The text to insert.
+    pub text: crate::domain::command::document_insert::Text,
+}
+
+impl Command for DocumentInsert {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Exact range edit of a text document, read at `heads`.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DocumentSplice {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The document entity.
+    pub document: crate::domain::command::document_splice::Document,
+    /// The heads the range was computed against.
+    pub heads: crate::domain::command::document_splice::Heads,
+    /// Start of the range, UTF-16 units.
+    pub at: crate::domain::command::document_splice::At,
+    /// Units to delete.
+    pub delete: crate::domain::command::document_splice::Delete,
+    /// The text to insert.
+    pub text: crate::domain::command::document_splice::Text,
+}
+
+impl Command for DocumentSplice {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Write one value of a table document.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DocumentPut {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The document entity.
+    pub document: crate::domain::command::document_put::Document,
+    /// Slash-separated path.
+    pub path: crate::domain::command::document_put::Path,
+    /// The value as text.
+    pub value: crate::domain::command::document_put::Value,
+}
+
+impl Command for DocumentPut {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Remove one value of a table document, or a whole sheet.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DocumentRemove {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The document entity.
+    pub document: crate::domain::command::document_remove::Document,
+    /// Slash-separated path.
+    pub path: crate::domain::command::document_remove::Path,
+}
+
+impl Command for DocumentRemove {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Make a document's content equal to a past version, as a new change.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DocumentRestore {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The document entity.
+    pub document: crate::domain::command::document_restore::Document,
+    /// The past version's heads.
+    pub heads: crate::domain::command::document_restore::Heads,
+}
+
+impl Command for DocumentRestore {
+    type Input = Self;
+    type Output = ();
+}
+
 #[cfg(test)]
 mod share_blocked {
     #[cfg(target_arch = "wasm32")]

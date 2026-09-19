@@ -93,6 +93,20 @@ impl<'a, Env> LocalCell<'a, Env> {
             env,
         }
     }
+
+    /// The sync marker of `entity` for the remote named `remote`:
+    /// `remote/<remote>/document/<id>` / `synced`, following the
+    /// `remote/<name>/branch/<branch>` convention.
+    pub fn marker(subject: &Subject, remote: &str, entity: &Entity, env: &'a Env) -> Self {
+        Self {
+            cell: subject
+                .clone()
+                .memory()
+                .space(format!("remote/{remote}/{}", space(entity)))
+                .cell("synced"),
+            env,
+        }
+    }
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
