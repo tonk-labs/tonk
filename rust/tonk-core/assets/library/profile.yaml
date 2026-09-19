@@ -720,6 +720,14 @@ concept!: &profile/name
 # `tonk/rename-repository` both read `currentTarget.value` and a shape
 # matched on that attribute alone made every space rename also rename the
 # profile. Each command's own attribute namespace keeps them disjoint now.
+# The editable commits on `change`, the event a text input fires when
+# the value settles — a blur or Enter, not a keystroke. Mirrors
+# `on/repository-rename`, which edits a space's name the same way.
+event!: &on/profile-rename
+  type: "change"
+  where:
+    name: ".currentTarget.value"
+
 command!: &profile/rename
   description: Rename the signed-in member (set their display name).
   with:
@@ -1448,6 +1456,74 @@ element!: &hub-menu
     # the page keeps whatever had focus, and the replacement starts shut.
     released: |
       (self) => self.close(false)
+
+# A passkey registered for this account.
+#
+# Directory-shaped: one row per passkey, so the settings page lists them
+# by iterating rather than by an element reading an array out of a fetch.
+concept!: &account/passkey
+  this: tonk:account/passkey
+  description: A passkey that can recover this account.
+  with:
+    created-on:
+      description: The device or browser the passkey was made on.
+      the: xyz.tonk.recovery/created-on
+      cardinality: one
+      as: text
+    created-at:
+      description: When it was made, unix seconds.
+      the: xyz.tonk.recovery/created-at
+      cardinality: one
+      as: unsigned-integer
+
+# The settings page's account pane.
+#
+# Every value here is a fact the worker already publishes: the name and
+# address off `tonk:account/registered`, the passkeys as their own rows.
+# The acts are commands. What is left for an element is the passkey
+# ceremony, which needs a live `navigator.credentials` call.
+view!:
+  this: tonk:account/registered
+  show:
+    settings: |
+      <div class="pane" data-pane="account">
+        <div class="srowd">
+          <span>display name</span>
+          <!-- The name is a different concept from the registration:
+               `tonk:account/name` is the account's own display name and
+               `tonk:account/registered` is where it enrolled. Nesting a
+               display rather than interpolating is what keeps each field
+               on the concept that declares it. -->
+          <span class="sname-seat">
+            <tonk-display model="tonk:account/name" view="editable"></tonk-display>
+          </span>
+        </div>
+        <div class="srowd"><span>account email</span><b>{email}</b></div>
+        <div class="sect">passkeys</div>
+        <tonk-display model="tonk:account/passkey"></tonk-display>
+        <p class="expl">
+          Your passkey replaces a password and may be saved to a device, browser
+          profile, or password manager.
+        </p>
+      </div>
+
+# The name, editable in place. Its own view because it is its own
+# concept, and because the FAB edits the same fact the same way.
+view!:
+  this: tonk:account/name
+  show:
+    editable: |
+      <tonk-editable class="sname" value={name} aria-label="display name"
+        on:profile-rename=profile/rename></tonk-editable>
+
+view!:
+  this: tonk:account/passkey
+  show:
+    directory: |
+      <div class="srowd" data-id={this}>
+        <b class="lft">{created-on}</b>
+        <b>{created-at}</b>
+      </div>
 
 # The hub bar's tab and ceremony behaviour, as branch data.
 #

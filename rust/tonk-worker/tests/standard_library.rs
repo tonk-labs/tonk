@@ -39,10 +39,9 @@ const NOTEBOOK_LIBRARY: &str = include_str!("../../tonk-core/assets/library/note
 const PROSE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/prose.yaml");
 const ISSUE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/issue.yaml");
 
-/// Light-DOM markup mounted by the Hub account custom element. The profile
+/// Light-DOM markup mounted by the account-settings element. The profile
 /// library supplies its geometry, so their visual contract is checked here
 /// together.
-
 const SETTINGS_PANEL_MARKUP: &str =
     include_str!("../../tonk-workspace/src/ui_account_settings.html");
 
