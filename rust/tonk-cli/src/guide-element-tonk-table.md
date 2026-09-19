@@ -30,7 +30,9 @@ document or a `board` card.
 With `subject` and `document`, the workbook is ONE **automerge document**
 named after the entity: no command bindings, no hidden data rows. Two people
 who fill the same empty cell write the same key, so there is one cell and the
-other value is kept as a conflict (`cellconflict` event, `detail.cells`). A
+other value is kept as a conflict: the cell carries the `conflict` part
+token (`tonk-table::part(cell conflict)`), and a `cellconflict` event lists
+the cells in `detail.cells`. Writing the cell again resolves it. A
 branch shows its own version, and editing writes no cells into branch
 history. This is what `rust/tonk-core/assets/library/table.yaml` uses. The
 entity needs `format: "automerge/table@1"`.
@@ -54,7 +56,9 @@ document/put!:
 `document/remove` (`document`, `path`) clears a cell or drops a sheet;
 paths also cover `name`, `order`, `styles/<A1>`, `widths/<col>`,
 `heights/<row>`. History works as for prose (`tonk query document/versions
---term document=id:table/book`). These need
+--term document=id:table/book`), and so does showing a past version:
+`<tonk-table subject={this} document at="<heads>">` is read-only and follows
+nothing. These need
 `rust/tonk-core/assets/library/document.yaml` evaluated into the space.
 
 ## Claims mode (individuated, store-backed)

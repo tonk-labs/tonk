@@ -138,3 +138,47 @@ async fn it_reads_document_text_and_history_with_queries() -> Result<()> {
     assert!(old.contains("\"one\""), "content at old heads: {old}");
     Ok(())
 }
+
+#[dialog_common::test]
+async fn it_keeps_a_document_across_an_export_and_an_import() -> Result<()> {
+    use tonk_cli::transfer::{self, Destination};
+
+    let source = common::TestSite::new().await?;
+    let doc: Entity = "id:prose/doc".parse().unwrap();
+    {
+        let session = source.site.branch().await?;
+        session::write(
+            session.handle(),
+            &doc,
+            Some(Format::Text),
+            None,
+            &[Edit::SetText {
+                text: "a prose body".into(),
+            }],
+            &Stamp::default(),
+            &source.site.operator,
+        )
+        .await?;
+    }
+    let path = source.parent.join("export.csv");
+    transfer::export(&source.site, Destination::File(path.clone())).await?;
+
+    let target = common::TestSite::new().await?;
+    transfer::import(&target.site, &path).await?;
+
+    let session = target.site.branch().await?;
+    let restored = session::read(session.handle(), &doc, None, &target.site.operator).await?;
+    assert_eq!(text(&restored), "a prose body");
+    // The bytes are restored to the cell and never become a claim.
+    transfer::export(&target.site, Destination::File(path.clone())).await?;
+    let again = tokio::fs::read_to_string(&path).await?;
+    assert_eq!(
+        again
+            .lines()
+            .filter(|row| row.starts_with("xyz.tonk.document/bytes"))
+            .count(),
+        1,
+        "one row from the cell, none from the tree"
+    );
+    Ok(())
+}

@@ -44,6 +44,18 @@ tonk query document/diff     --term document=id:prose/doc --term from=<heads> --
 change. These need `rust/tonk-core/assets/library/document.yaml` evaluated
 into the space.
 
+To SHOW a past version, give the element its heads. It is then read-only
+and follows nothing; remove `at` to go back to the live version:
+
+```html
+<tonk-prose subject={this} at="<heads from document/versions>"></tonk-prose>
+```
+
+A document takes no more edits once it is stored as 8 MiB (automerge keeps
+every edit, so a document only grows); the edit is refused and nothing
+changes. `tonk export` carries the document with the branch, and
+`tonk import` puts it back.
+
 ## Standalone — content as element text
 
 Without `subject` the element is a plain editor whose content you store
