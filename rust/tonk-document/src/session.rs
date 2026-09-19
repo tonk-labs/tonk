@@ -41,6 +41,8 @@ pub const FORMAT: &str = "xyz.tonk.document/format";
 pub const HEADS: &str = "xyz.tonk.document/heads";
 /// `xyz.tonk.document/text` — mirror, overlay-only.
 pub const TEXT: &str = "xyz.tonk.document/text";
+/// `xyz.tonk.document/failure` — overlay-only, on a refused command.
+pub const FAILURE: &str = "xyz.tonk.document/failure";
 
 const LEGACY_PROSE_CONTENT: &str = "io.gozala.prose/content";
 const SHEET_TABLE: &str = "xyz.tonk.table.sheet/table";
@@ -566,6 +568,18 @@ pub async fn write<Env: DocumentEnv>(
         });
     }
     Err(SessionError::Contended)
+}
+
+/// The overlay fact a host records when a document command is refused:
+/// why, on the COMMAND's own entity, so the page that asked can read it.
+/// Overlay-only — a refusal is not worth a commit.
+pub fn failure(command: &Entity, document: &Entity, reason: &str) -> impl Statement + Clone {
+    Fact {
+        the: FAILURE.parse().expect("a static attribute"),
+        of: command.clone(),
+        is: format!("{document}: {reason}").into(),
+        unique: true,
+    }
 }
 
 /// Run the sync pass for `entity` against the remote `branch` tracks.

@@ -53,6 +53,16 @@ attribute!: &document/text
   as: text
   cardinality: one
 
+attribute!: &document/failure
+  description: |
+    Overlay-only. Why a document command was refused — no match for
+    `find`, two matches, a bad path — recorded on the COMMAND's own
+    entity so the page that asked can read it. A refused command
+    changes nothing in the document.
+  the: xyz.tonk.document/failure
+  as: text
+  cardinality: one
+
 # ---------------------------------------------------------------------------
 # Concepts
 # ---------------------------------------------------------------------------
