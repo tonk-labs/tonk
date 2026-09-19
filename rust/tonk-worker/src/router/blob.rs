@@ -54,6 +54,8 @@ pub async fn serve(
         )));
     }
 
+    super::onboarding_space::hydrate_media(&state, &params.repo, &params.branch, &entity).await?;
+
     let tonk = state.read().await;
     let repo = tonk
         .profile

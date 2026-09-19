@@ -16,6 +16,7 @@
 //! that holds the account grant regains access to everything the account
 //! knows about.
 
+use dialog_artifacts::{Preload, Speculation};
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
 use dialog_credentials::Signer;
@@ -24,7 +25,7 @@ use dialog_effects::authority::{Attest, Identify};
 use dialog_effects::blob::{Import as BlobImport, Read as BlobRead, Write as BlobWrite};
 use dialog_effects::memory::{Publish, Resolve};
 use dialog_repository::{
-    Branch, CommitError, PullError, RemoteSite, Revision, SetUpstreamError, Upstream,
+    Branch, CommitError, Hydrate, PullError, RemoteSite, Revision, SetUpstreamError, Upstream,
     UpstreamBranch,
 };
 use dialog_ucan::{Parameters, Scope, UcanDelegation};
@@ -59,6 +60,7 @@ where
         + Provider<Identify>
         + Provider<Attest>
         + Provider<BlobWrite>
+        + Provider<Hydrate>
         + Provider<Fork<RemoteSite, Get>>
         + Provider<Fork<RemoteSite, Resolve>>
         + ConditionalSync
@@ -114,6 +116,9 @@ where
         + Provider<Attest>
         + Provider<BlobRead>
         + Provider<BlobImport>
+        + Provider<Hydrate>
+        + Provider<Preload>
+        + Provider<Speculation>
         + Provider<Fork<RemoteSite, Get>>
         + Provider<Fork<RemoteSite, Resolve>>
         + Provider<Fork<RemoteSite, BlobRead>>
@@ -131,8 +136,10 @@ where
     // by-reference node at session open cannot hydrate it (the session
     // being opened is what would authorize the fetch), which bricks the
     // worker at boot. Downloading while a live session holds authority
-    // keeps the store complete for the next boot.
-    Ok(access.pull().download().perform(env).await?)
+    // keeps the store complete for the next boot. Operational only:
+    // authorization reads the data orderings, while history grows with
+    // every edit the account ever made and can hydrate on demand.
+    Ok(access.pull().download().operational().perform(env).await?)
 }
 
 /// Why adopting the account as an access-branch upstream failed.

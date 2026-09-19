@@ -21,7 +21,7 @@
 
 use std::collections::{BTreeSet, HashSet};
 
-use dialog_artifacts::{Attribute as ArtifactsAttribute, Entity};
+use dialog_artifacts::{Attribute as ArtifactsAttribute, Entity, Preload, Speculation};
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
 use dialog_effects::archive::{Get, Put};
@@ -33,7 +33,7 @@ use dialog_query::{
     Application, Claim, EvaluationError, Match, Output as _, Parameters, Query, Scope, Selection,
     Term, the, try_stream,
 };
-use dialog_repository::RemoteSite;
+use dialog_repository::{Hydrate, RemoteSite};
 use thiserror::Error;
 
 pub use dialog_query::{AttributeDescriptor, ConceptDescriptor, ConceptFieldDescriptor, Type};
@@ -161,6 +161,9 @@ pub trait QueryEnv:
     + Provider<Put>
     + Provider<Resolve>
     + Provider<Identify>
+    + Provider<Hydrate>
+    + Provider<Preload>
+    + Provider<Speculation>
     + Provider<Fork<RemoteSite, Get>>
     + Provider<Fork<RemoteSite, Resolve>>
     + ConditionalSync
@@ -173,6 +176,9 @@ impl<T> QueryEnv for T where
         + Provider<Put>
         + Provider<Resolve>
         + Provider<Identify>
+        + Provider<Hydrate>
+        + Provider<Preload>
+        + Provider<Speculation>
         + Provider<Fork<RemoteSite, Get>>
         + Provider<Fork<RemoteSite, Resolve>>
         + ConditionalSync
@@ -1834,6 +1840,7 @@ mod tests {
             )
             .assert(concept)
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
@@ -1933,7 +1940,11 @@ mod tests {
         }
         let concept = AnonymousConcept::new(descriptor.clone());
         let concept_entity = concept.this.clone();
-        txn.assert(concept).commit().perform(&operator).await?;
+        txn.assert(concept)
+            .commit()
+            .publish()
+            .perform(&operator)
+            .await?;
 
         let resolved = Concept::by_entity(concept_entity)
             .resolve(&Source::from(&branch), &operator)
@@ -2050,6 +2061,7 @@ mod tests {
             .assert(transient_concept)
             .assert(durable_concept)
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
@@ -2184,6 +2196,7 @@ mod tests {
             .assert(command)
             .assert(durable_concept)
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
@@ -2238,6 +2251,7 @@ mod tests {
             .transaction()
             .assert(the!("db.name/referent").of(id_alice).is(target.clone()))
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
@@ -2323,6 +2337,7 @@ mod tests {
                 target: pointer::Target(page_v1.clone()),
             })
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
@@ -2336,6 +2351,7 @@ mod tests {
                 target: pointer::Target(page_v2.clone()),
             })
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
@@ -2406,6 +2422,7 @@ mod tests {
                 target: pointer::Target(page_v2.clone()),
             })
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
@@ -2469,6 +2486,7 @@ mod tests {
                 entity: name::Referent(page_v1.clone()),
             })
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
@@ -2480,6 +2498,7 @@ mod tests {
                 entity: name::Referent(page_v2.clone()),
             })
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 

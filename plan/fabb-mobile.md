@@ -561,7 +561,7 @@ oscillate at a threshold.
 - A bottom sheet, horizontal action paging, gesture-only shortcuts, or more
   than one submenu level. The approved interaction is one anchored vertical
   overflow stack with in-place replacement.
-- Changing share semantics, invite authority, membership promotion, docking
-  persistence, or the FABB's default bottom-right seat.
+- Changing share semantics, invite authority, membership promotion, or docking
+  persistence.
 - Reworking desktop dimensions or visual material beyond removing the fold
   cell. The 44px geometry is compact-mode-only.

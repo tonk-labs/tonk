@@ -507,13 +507,18 @@ fn close_internal(this: &HtmlElement, state: &Shared, restore_focus: bool) {
     // A row holding its flyout open closes with the stack it lives in.
     // Left set, it would still be open the next time the stack is
     // raised — and a press outside dismisses the stack, so the flyout
-    // has to go with it.
-    if let Ok(open_rows) = this.query_selector_all("tonk-mi[open]") {
-        for index in 0..open_rows.length() {
-            if let Some(node) = open_rows.item(index)
+    // has to go with it. `hot` is the same state won by hovering: a row
+    // still inside its grace period when the stack goes has to give it up
+    // here, or it comes back holding a flyout nobody asked for.
+    for attribute in ["open", "hot"] {
+        let Ok(rows) = this.query_selector_all(&format!("tonk-mi[{attribute}]")) else {
+            continue;
+        };
+        for index in 0..rows.length() {
+            if let Some(node) = rows.item(index)
                 && let Ok(row) = node.dyn_into::<Element>()
             {
-                let _ = row.remove_attribute("open");
+                let _ = row.remove_attribute(attribute);
             }
         }
     }

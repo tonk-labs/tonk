@@ -388,6 +388,7 @@ pub async fn link(
     State(state): State<AppState>,
     Json(request): Json<AccountLinkRequest>,
 ) -> Result<Json<AccountStatus>, TonkWorkerError> {
+    let app = state.clone();
     let state = state.read().await;
     persist_link(&state, &request).await?;
     if request.initialize_name
@@ -396,7 +397,12 @@ pub async fn link(
         log!("new-account display-name seed did not complete: {error}");
     }
 
-    Ok(Json(finish_link(&state).await?))
+    let status = finish_link(&state).await?;
+    // The answer is ready; the push goes behind it rather than ahead of
+    // it (see `Publish`), once this read guard is released.
+    drop(state);
+    super::account_state::push_after_answer(app).await;
+    Ok(Json(status))
 }
 
 /// Finish the bounded local setup for a provider attachment already persisted.

@@ -1,6 +1,7 @@
 //! Retry control for transient join failures.
 
 use custom_elements::CustomElement;
+use tonk_analytics::product::{Journey, ProductAction, ProductResult, Stage, Surface, Trigger};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use web_sys::{CustomEvent, CustomEventInit, Event, HtmlElement, window};
@@ -31,6 +32,15 @@ impl CustomElement for TonkJoinRetry {
         let listener = Closure::wrap(Box::new(move |event: Event| {
             event.prevent_default();
             if host.get_attribute("kind").as_deref() == Some(RETRYABLE_KIND) {
+                crate::analytics::instant(
+                    Journey::Collaboration,
+                    ProductAction::RetryJoin,
+                    Surface::Join,
+                    Trigger::Recovery,
+                    Stage::Complete,
+                    ProductResult::Success,
+                    None,
+                );
                 let init = CustomEventInit::new();
                 init.set_bubbles(true);
                 if let Ok(retry) = CustomEvent::new_with_event_init_dict("tonk:join-retry", &init) {

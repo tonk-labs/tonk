@@ -8,6 +8,8 @@ license = { workspace = true }
 
 [dependencies]
 hex = { workspace = true }
+chrono = { workspace = true }
+rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sha2_0_10 = { workspace = true }

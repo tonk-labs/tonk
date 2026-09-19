@@ -213,6 +213,14 @@ signed in to. `tonk account space pull <name-or-subject>` mounts one of those
 spaces here as an owner or member replica; a name works when it identifies one
 directory row, while the subject DID disambiguates duplicate names.
 
+A space's directory name is a display label, authored wherever the space was
+named — free text in the web UI, an invite link, or the worker's own `Untitled`
+default — so it need not be a local space name (`[a-z0-9][a-z0-9-_]*`). The pull
+derives one from it (`Untitled 2` becomes `untitled-2`, stepping to `-3` and on
+when a name is taken) and registers the replica under that; `--name <slug>` picks
+it yourself. Either way the local name is an alias: the space keeps its label,
+and nothing is renamed for anyone else.
+
 `tonk space rm` removes only the local replica (and, unless `--keep-data` is
 used, its local bytes). It does not remove signed account directory facts,
 revoke memberships or invitations, deprovision hosting, delete remote objects,

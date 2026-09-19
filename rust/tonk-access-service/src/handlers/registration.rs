@@ -225,9 +225,13 @@ async fn handle_inner(
     // The same authorizer the presign path runs. Enrollment redeems the
     // recovery invocation through it, so the custody cell is written to
     // exactly the object that invocation names.
-    let vault = crate::vault::AuthorizedVault(WorkerRedeemer(
-        super::ucan::create_authorizer(env).map_err(|refusal| internal(format!("{refusal:?}")))?,
-    ));
+    let vault = WorkerVault {
+        authorizer: super::ucan::create_authorizer(env)
+            .map_err(|refusal| internal(format!("{refusal:?}")))?,
+        bucket: env
+            .bucket("BUCKET")
+            .map_err(|err| internal(format!("BUCKET: {err}")))?,
+    };
 
     let registration = Registration {
         store: &store,
@@ -410,21 +414,43 @@ pub async fn handle_did_document(req: Request, ctx: RouteContext<()>) -> worker:
     })
 }
 
-/// The worker's [`Redeemer`]: its own authorizer, asked directly rather
-/// than over HTTP.
+/// The worker's [`Vault`](crate::vault::Vault): its own authorizer,
+/// asked directly rather than over HTTP, names the cell; the write goes
+/// over the R2 binding the way every `/object/` write does, under the
+/// same create-only condition the invocation carries.
 #[cfg(target_arch = "wasm32")]
-struct WorkerRedeemer(dialog_remote_ucan_s3::UcanAuthorizer);
+struct WorkerVault {
+    authorizer: dialog_remote_ucan_s3::UcanAuthorizer,
+    bucket: worker::Bucket,
+}
 
 #[cfg(target_arch = "wasm32")]
 #[async_trait::async_trait(?Send)]
-impl crate::vault::Redeemer for WorkerRedeemer {
-    async fn redeem(
+impl crate::vault::Vault for WorkerVault {
+    async fn publish(
         &self,
-        container: &[u8],
-    ) -> Result<dialog_remote_s3::Permit, crate::vault::VaultError> {
-        self.0
-            .authorize(container)
+        recovery: &[u8],
+        sealed: &[u8],
+    ) -> Result<(), crate::vault::VaultError> {
+        use crate::vault::VaultError;
+
+        let permit = self
+            .authorizer
+            .authorize(recovery)
             .await
-            .map_err(|error| crate::vault::VaultError::Unavailable(error.to_string()))
+            .map_err(|error| VaultError::Unavailable(error.to_string()))?;
+        // The permit is never presented anywhere, so it carries no
+        // expiry worth setting.
+        let claims = crate::permit::Claims::lift(&permit, super::ucan::authorizer_address(), 0)
+            .map_err(VaultError::Unavailable)?;
+        let sealed = worker::js_sys::Uint8Array::from(sealed).into();
+        match super::object::store::put(&self.bucket, &claims, sealed).await {
+            Ok(Some(_)) => Ok(()),
+            Ok(None) => Err(VaultError::Unavailable(format!(
+                "storage answered 412 Precondition Failed: {} already holds a cell",
+                claims.key
+            ))),
+            Err(error) => Err(VaultError::Unavailable(error.to_string())),
+        }
     }
 }

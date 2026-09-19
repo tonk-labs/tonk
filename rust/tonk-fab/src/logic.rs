@@ -150,6 +150,10 @@ pub enum Dock {
     BottomRight,
 }
 
+/// The seat used when the profile has no saved dock preference.
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) const DEFAULT_DOCK: Dock = Dock::TopRight;
+
 /// The viewport edge a released FAB settles against.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Edge {
@@ -763,6 +767,11 @@ mod corrected {
 #[cfg(test)]
 mod dock {
     use super::*;
+
+    #[test]
+    fn the_unsaved_fab_starts_at_the_top_right() {
+        assert_eq!(DEFAULT_DOCK, Dock::TopRight);
+    }
 
     // 1000x800 viewport: midlines at x=500, y=400.
     #[test]
@@ -1432,19 +1441,20 @@ mod member_roster {
 ///
 /// Reads the PROFILE branch's account-level space directory by raw attribute.
 /// Directory mode (`this` unbound), so every convergent space entry returns as
-/// a row. `name` is optional for vintage entries that predate the mirror.
+/// a row. `name` is optional for vintage entries that predate the mirror;
+/// `presence` is optional because its absence IS the remote case.
 pub fn space_list_query_body() -> String {
     json!({
         "predicate": { "with": {
             "subject": { "the": "xyz.tonk.space/subject", "as": "Entity", "cardinality": "one" },
             "name":    { "the": "xyz.tonk.space/name",    "as": "Text",   "cardinality": "one", "optional": true },
-            "status":  { "the": "xyz.tonk.space/status",  "as": "Entity", "cardinality": "one" }
+            "presence": { "the": "xyz.tonk.space/presence", "as": "Entity", "cardinality": "one", "optional": true }
         } },
         "terms": {
             "this":    { "?": { "name": "this" } },
             "subject": { "?": { "name": "subject" } },
             "name":    { "?": { "name": "name" } },
-            "status":  { "?": { "name": "status" } }
+            "presence": { "?": { "name": "presence" } }
         }
     })
     .to_string()
@@ -1474,7 +1484,7 @@ mod space_list {
         let body = space_list_query_body();
         assert!(body.contains("xyz.tonk.space/subject"));
         assert!(body.contains("xyz.tonk.space/name"));
-        assert!(body.contains("xyz.tonk.space/status"));
+        assert!(body.contains("xyz.tonk.space/presence"));
         assert!(
             !body.contains("xyz.tonk.replica/"),
             "the account directory replaced per-device replica rows: {body}"
@@ -1485,6 +1495,10 @@ mod space_list {
         assert_eq!(
             parsed["predicate"]["with"]["name"]["optional"], true,
             "a vintage directory entry without a name must remain listable"
+        );
+        assert_eq!(
+            parsed["predicate"]["with"]["presence"]["optional"], true,
+            "a space with no replica here has no presence, and must still list"
         );
     }
 
@@ -1750,6 +1764,36 @@ mod profile_rename {
 /// it from `(descriptor, parameters)`; `time` makes each click a distinct
 /// transient so repeated Share clicks reliably re-fire the handler and
 /// rotate the credential.
+/// The claim that drops a space's invite row once its url has reached
+/// the clipboard.
+///
+/// The url carries the membership seed in its fragment, so the row is
+/// deliberately short-lived: it exists to carry one link from the mint to
+/// the clipboard, and has no reason to remain subscribable afterwards.
+pub fn forget_invite_claim_json(space: &str, time: f64) -> Value {
+    json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "description": "Drop a space's invite row once its link has been copied.",
+                        "with": {
+                            "time":  { "the": "xyz.tonk.command.forget-invite/time", "as": "Float" },
+                            "space": { "the": "xyz.tonk.command.forget-invite/space", "as": "Entity" }
+                        }
+                    }
+                },
+                "parameters": {
+                    "time": time,
+                    "space": space
+                }
+            }
+        }]
+    })
+}
+
 pub fn invite_claim_json(space: &str, time: f64) -> Value {
     json!({
         "claims": [{

@@ -26,12 +26,15 @@ pub const BAR_CSS: &str = r#"
 :host([hidden]){ display:none; }
 @media (prefers-reduced-motion: reduce){ :host{ transition:none; } }
 .w{ position:relative; }
+@keyframes fabb-enter-shell{ from{ border-radius:100px; } }
+@keyframes fabb-enter-run{ from{ max-width:0; opacity:0; } }
 /* the bar ends on a straight line — the single round cap belongs to the
    circle and swaps ends with it on the flip; collapsed, the circle alone
    rounds fully (the radius rides the telescope easing) */
 .bar{ position:relative; display:flex; align-items:stretch; height:36px;
   border-radius:18px 0 0 18px; overflow:hidden; user-select:none;
   transition:border-radius .4s var(--_ease);
+  animation:fabb-enter-shell .4s var(--_ease);
   background:var(--_bg); -webkit-backdrop-filter:var(--_filter); backdrop-filter:var(--_filter);
   box-shadow:var(--_ring); }
 .w.flip .bar{ border-radius:0 18px 18px 0; }
@@ -39,7 +42,8 @@ pub const BAR_CSS: &str = r#"
 .run{ display:flex; align-items:stretch; max-width:378px; opacity:1; visibility:visible;
   overflow:hidden; transition-property:max-width,opacity,visibility;
   transition-duration:200ms,160ms,0s; transition-delay:0s,0s,0s;
-  transition-timing-function:var(--_ease); }
+  transition-timing-function:var(--_ease);
+  animation:fabb-enter-run .4s var(--_ease); }
 /* the hidden attribute must actually win: `.w.compact .more` sets a display
    of its own, which outranks the UA's `[hidden]` rule */
 .cell[hidden]{ display:none !important; }
@@ -78,7 +82,8 @@ pub const BAR_CSS: &str = r#"
    removes the share control because there is nothing local to share. */
 :host([data-unknown-space]) .share{ display:none; }
 .w.collapsed .run{ max-width:0; opacity:0; visibility:hidden;
-  pointer-events:none; transition-delay:0s,0s,200ms; }
+  pointer-events:none; transition-delay:0s,0s,200ms; animation:none; }
+.w.collapsed .bar{ animation:none; }
 /* stacks */
 .mw{ position:absolute; top:calc(100% + 7px); display:block; z-index:5;
   opacity:0; visibility:hidden; pointer-events:none;
@@ -91,7 +96,8 @@ pub const BAR_CSS: &str = r#"
 /* editable space — the terminal block cursor over the last character */
 .cell.editing{ gap:0; }
 @media (prefers-reduced-motion: reduce){
-  .run, .mw{ transition-duration:0s; transition-delay:0s; }
+  .bar, .run{ animation:none; }
+  .bar, .run, .mw{ transition-duration:0s; transition-delay:0s; }
 }
 "#;
 
@@ -248,6 +254,31 @@ pub fn stacks_html(space_did: &str) -> String {
     STACKS_HTML.replace("{space}", space_did)
 }
 
+/// Every `{space}` slot in [`STACKS_HTML`], as `(selector, attribute,
+/// prefix)` — the value written is `prefix` followed by the space DID.
+///
+/// One table, read twice. [`stacks_html`] stamps these slots when the
+/// subtree is authored, and `element::restamp_space` writes the same
+/// attributes again when a bar authored with a BLANK space finally
+/// learns its own — the unsubstituted first projection the space route
+/// hands it before `{id}` resolves.
+///
+/// The two lists used to be written out separately, and `<tonk-share>`
+/// was in the first but not the second. A bar that came up blank
+/// therefore kept `<tonk-share space="">` for the life of the page: its
+/// invite subscription never opened (an empty subject is a query error)
+/// and its click handler returned on the spot, so picking "copy link"
+/// dispatched nothing at all — no mint, no spinner, no refusal. Keep
+/// them one table, and `it_binds_every_space_slot` keeps it honest.
+pub const SPACE_BINDINGS: &[(&str, &str, &str)] = &[
+    // The sync disc's contract is `branch@repo`, not a bare DID.
+    ("ui-sync-status", "with", "main@"),
+    ("ui-space-name", "space", ""),
+    ("ui-space-switcher", "current", ""),
+    ("tonk-share", "space", ""),
+    ("ui-member-roster", "space", ""),
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -332,6 +363,21 @@ mod tests {
     }
 
     #[test]
+    fn it_enters_by_telescoping_from_the_closed_dot() {
+        assert!(BAR_CSS.contains("@keyframes fabb-enter-run"));
+        assert!(BAR_CSS.contains("from{ max-width:0; opacity:0; }"));
+        assert!(BAR_CSS.contains("animation:fabb-enter-run .4s var(--_ease)"));
+        assert!(BAR_CSS.contains("@keyframes fabb-enter-shell"));
+        assert!(BAR_CSS.contains("from{ border-radius:100px; }"));
+        assert!(BAR_CSS.contains("animation:fabb-enter-shell .4s var(--_ease)"));
+        assert!(
+            BAR_CSS.contains("pointer-events:none; transition-delay:0s,0s,200ms; animation:none;")
+        );
+        assert!(BAR_CSS.contains(".w.collapsed .bar{ animation:none;"));
+        assert!(BAR_CSS.contains(".bar, .run{ animation:none;"));
+    }
+
+    #[test]
     fn it_keeps_the_way_out_but_hides_share_for_an_unknown_space() {
         assert!(BAR_CSS.contains(":host([data-unknown-space]) .share{ display:none; }"));
         assert!(BAR_HTML.contains(r#"data-cell="space""#));
@@ -378,6 +424,35 @@ mod tests {
         // The sync disc's contract is branch@repo, not a bare DID.
         assert!(html.contains(r#"with="main@did:key:z6Mk""#));
         assert!(!html.contains("{space}"), "every slot must be substituted");
+    }
+
+    /// [`SPACE_BINDINGS`] must name every `{space}` slot, and no others.
+    ///
+    /// Both directions matter. A slot missing from the table is a child
+    /// the restamp leaves pointed at nothing when the space arrives late
+    /// — which is how `<tonk-share>` came to swallow every click. A
+    /// table entry with no slot is a selector that matches nothing, and
+    /// would fail silently in the other direction.
+    #[test]
+    fn it_binds_every_space_slot() {
+        let did = "did:key:z6Mk";
+        let html = stacks_html(did);
+        for &(selector, attribute, prefix) in SPACE_BINDINGS {
+            assert!(
+                html.contains(&format!(r#"<{selector} "#))
+                    || html.contains(&format!(r#"<{selector}>"#)),
+                "{selector} is bound but never authored",
+            );
+            assert!(
+                html.contains(&format!(r#"{attribute}="{prefix}{did}""#)),
+                "{selector} must carry {attribute}=\"{prefix}{did}\"",
+            );
+        }
+        assert_eq!(
+            html.matches(did).count(),
+            SPACE_BINDINGS.len(),
+            "every authored slot must be bound, so the restamp reaches it",
+        );
     }
 
     #[test]

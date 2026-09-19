@@ -25,6 +25,15 @@ fail-fast = false
 # the run — and the durable fix is to make the ceremonies faster or to
 # give the deadlines one scalable knob.
 retries = 2
+# Make a retry-pass VISIBLE. A test that failed twice and passed on the
+# third attempt is reported `FLAKY`, but with the default status level
+# the run's summary reads like any other green one — which is how a
+# deterministic regression landed on staging: it failed all three
+# attempts on the merge commit and had passed on its PR run, and nobody
+# had a reason to look at the difference. `flaky` here lists every test
+# that needed a retry in the final summary, so "green with three flakes"
+# stops looking like "green".
+final-status-level = "flaky"
 # The #852 quarantine is drained: every account flow it named is
 # repaired and back in the suite. To quarantine a newly broken test,
 # add a `default-filter` here excluding it, with a linked issue.

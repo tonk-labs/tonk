@@ -23,6 +23,7 @@ members = [
   "rust/tonk-language-server",
   "rust/tonk-macros",
   "rust/tonk-notation",
+  "rust/tonk-perf",
   "rust/tonk-portal",
   "rust/tonk-prose",
   "rust/tonk-render",
@@ -39,7 +40,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.6.14"
+version = "0.6.15"
 authors = ["Tonk Labs"]
 edition = "2024"
 license = "MIT"
@@ -113,6 +114,7 @@ getrandom_0_2 = { package = "getrandom", version = "0.2", features = ["js"] }
 getrandom_0_3 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
 hex = "0.4"
 hkdf = "0.12"
+hmac = "0.12"
 html5gum = "0.7"
 http-body-util = "0.1"
 hyper = "1"
@@ -145,6 +147,7 @@ reqwest = { version = "0.12", default-features = false, features = [
   "rustls-tls-native-roots",
 ] }
 rusqlite = { version = "0.32", features = ["bundled"] }
+rustix = { version = "1", features = ["fs"] }
 saphyr = "0.0.6"
 saphyr-parser = "0.0.6"
 semver = "1"
@@ -191,22 +194,24 @@ wasm-bindgen-test = "0.3"
 web-sys = { version = "0.3" }
 
 # Dialog DB
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-02" }
-dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-02" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-02" }
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-02" }
-dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-02" }
-dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-02" }
-dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-02" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-02" }
-dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-02" }
-dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-02" }
-dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-02" }
-dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-02" }
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-02" }
-dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-02" }
-dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-02" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-02" }
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-18" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-18" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-18" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-18" }
+dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-18" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-18" }
+dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-18" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-18" }
+dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-18" }
+dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-18" }
+dialog-remote-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-18" }
+dialog-did-web = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-18" }
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-18" }
+dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-18" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-18" }
+dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-18" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-18" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-18" }
 
 [profile.dev]
 opt-level = 1
@@ -231,3 +236,13 @@ opt-level = "s"
 debug = 0
 strip = "debuginfo"
 
+# Browser-specific release settings; native release and development stay unchanged.
+[profile.wasm-ui-release]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+
+[profile.wasm-worker-release]
+inherits = "release"
+opt-level = "s"
+lto = "fat"

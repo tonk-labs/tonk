@@ -11,7 +11,7 @@ use dialog_capability::Subject;
 use dialog_effects::credential::CredentialError;
 use dialog_effects::storage::Directory;
 use dialog_operator::{DeriveOperator, Operator, Profile};
-use dialog_remote_ucan_s3::UcanAddress;
+use dialog_remote_ucan::UcanAddress;
 use dialog_repository::{RemoteAddress, RemoteRepository, Repository, SiteAddress, Upstream};
 use dialog_storage::provider::storage::{NativeSpace, Storage};
 use dialog_ucan_core::DelegationChain;
@@ -719,6 +719,7 @@ async fn mount(
         .assert(replica.clone())
         .assert(replica.branch(tonk_account::MAIN_BRANCH))
         .commit()
+        .publish()
         .perform(operator)
         .await
         .context("failed to stamp account replica kind")?;
@@ -752,7 +753,12 @@ async fn hydrate(
             branch.pull().download().perform(operator).await?;
         }
         Ok(RemotePresence::Absent) => {
-            branch.transaction().commit().perform(operator).await?;
+            branch
+                .transaction()
+                .commit()
+                .publish()
+                .perform(operator)
+                .await?;
             if let CreateGenesis::Loser(_) =
                 publish_genesis_if_absent(branch, &remote, operator).await?
             {

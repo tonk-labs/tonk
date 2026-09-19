@@ -4,6 +4,16 @@ compatibility_date = "2026-01-01"
 compatibility_flags = ["nodejs_compat"]
 routes = [{ pattern = "tonk.network", custom_domain = true }]
 
+# Run near the bucket, D1 and KV rather than near the client. Every
+# object operation calls the R2 binding, and the buckets live in Europe:
+# from a client on the US west coast the worker paid a transatlantic
+# round trip per object on top of the client's own hop (400 to 800 ms
+# of server wait per block in a sign-in HAR). Placed near its storage
+# the worker's calls are local, and the client pays its one hop once.
+# `cf-placement` on a response says where it ran.
+[placement]
+mode = "smart"
+
 [observability]
 enabled = true
 head_sampling_rate = 1
@@ -27,10 +37,16 @@ run_worker_first = [
   "/@",
   "/@/*",
   "/customer/*",
+  "/object/*",
   "/ucan",
   "/ucan/*",
 ]
 
+# Every space's objects. `/ucan/` never presigns this bucket's S3
+# endpoint any more: a permit names an object at this worker's own
+# `/object/` path, and the worker reads and writes the bucket through
+# this binding. That keeps the bytes on an origin browsers reach over
+# HTTP/2, where the S3 endpoint's six-connection cap does not apply.
 [[r2_buckets]]
 binding = "BUCKET"
 bucket_name = "tonk-spaces"
@@ -43,7 +59,8 @@ bucket_name = "tonk-spaces"
 # tonk-access-control` and filled in here. Wrangler refuses to deploy
 # without it, so a forgotten bootstrap breaks visibly. The worker also
 # needs two secrets set via `wrangler secret put`: SERVICE_SECRET_KEY
-# (32 hex-encoded seed bytes for the service's signing identity) and
+# (32 hex-encoded seed bytes for the service's signing identity, which
+# also signs every object permit `/ucan/` answers with) and
 # RESEND_API_KEY (activation email delivery).
 [[d1_databases]]
 binding = "CONTROL"
@@ -99,8 +116,6 @@ namespace_id = "1001"
   period = 60
 
 [vars]
-R2_ACCOUNT_ID = "5f20ca8a0de0a5ac52a14fa8bf9c90db"
-R2_BUCKET_NAME = "tonk-spaces"
 ACCOUNT_SERVICE_URL = "https://accounts.tonk.xyz"
 EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 
@@ -152,8 +167,6 @@ namespace_id = "1001"
   period = 60
 
 [env.staging.vars]
-R2_ACCOUNT_ID = "5f20ca8a0de0a5ac52a14fa8bf9c90db"
-R2_BUCKET_NAME = "tonk-spaces-staging"
 ACCOUNT_SERVICE_URL = "https://accounts-staging.tonk.xyz"
 EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 
@@ -221,8 +234,6 @@ namespace_id = "1001"
   period = 60
 
 [env.preview.vars]
-R2_ACCOUNT_ID = "5f20ca8a0de0a5ac52a14fa8bf9c90db"
-R2_BUCKET_NAME = "tonk-spaces-preview"
 EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 # Replaced per pull request with the account worker's own preview alias, which
 # is only known once that upload returns. The checked-in values are deliberately

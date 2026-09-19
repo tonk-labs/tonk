@@ -35,6 +35,7 @@ function fixtureDist() {
   writeFileSync(join(dist, "worker.js"), "export const worker = 1;\n");
   writeFileSync(join(dist, "worker_bg.wasm"), "worker-wasm-fixture\n");
   writeFileSync(join(dist, "ui-a1b2c3.js"), "export const ui = 1;\n");
+  writeFileSync(join(dist, "ui-a1b2c3.js.map"), "source map fixture");
   mkdirSync(join(dist, "guest"));
   writeFileSync(
     join(dist, "guest", "manifest.json"),

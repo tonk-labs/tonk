@@ -10,6 +10,7 @@
 //! repo load and `BranchOpenProvider` for the branch open), the
 //! bound is `LoadProvider + BranchOpenProvider`.
 
+use dialog_artifacts::{Preload, Speculation};
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
 use dialog_effects::archive::{Get, Import, Put};
@@ -17,7 +18,7 @@ use dialog_effects::authority::{Attest, Identify};
 use dialog_effects::blob::{Import as BlobImport, Read as BlobRead};
 use dialog_effects::memory::{Publish, Resolve};
 use dialog_effects::space::Load;
-use dialog_repository::RemoteSite;
+use dialog_repository::{Hydrate, RemoteSite};
 
 /// Bound needed to load a repository via the profile.
 pub trait LoadProvider: Provider<Load> + ConditionalSync + 'static {}
@@ -40,6 +41,9 @@ pub trait SelectProvider:
     + Provider<Put>
     + Provider<Resolve>
     + Provider<Identify>
+    + Provider<Hydrate>
+    + Provider<Preload>
+    + Provider<Speculation>
     + Provider<Fork<RemoteSite, Get>>
     + Provider<Fork<RemoteSite, Resolve>>
     + ConditionalSync
@@ -51,6 +55,9 @@ impl<T> SelectProvider for T where
         + Provider<Put>
         + Provider<Resolve>
         + Provider<Identify>
+        + Provider<Hydrate>
+        + Provider<Preload>
+        + Provider<Speculation>
         + Provider<Fork<RemoteSite, Get>>
         + Provider<Fork<RemoteSite, Resolve>>
         + ConditionalSync
@@ -67,6 +74,9 @@ pub trait CommitProvider:
     + Provider<Publish>
     + Provider<Identify>
     + Provider<Attest>
+    + Provider<Hydrate>
+    + Provider<Preload>
+    + Provider<Speculation>
     + Provider<Fork<RemoteSite, Get>>
     + Provider<Fork<RemoteSite, Resolve>>
     + ConditionalSync
@@ -81,6 +91,9 @@ impl<T> CommitProvider for T where
         + Provider<Publish>
         + Provider<Identify>
         + Provider<Attest>
+        + Provider<Hydrate>
+        + Provider<Preload>
+        + Provider<Speculation>
         + Provider<Fork<RemoteSite, Get>>
         + Provider<Fork<RemoteSite, Resolve>>
         + ConditionalSync
@@ -97,6 +110,9 @@ pub trait PullProvider:
     + Provider<Publish>
     + Provider<Identify>
     + Provider<Attest>
+    + Provider<Hydrate>
+    + Provider<Preload>
+    + Provider<Speculation>
     + Provider<Fork<RemoteSite, Get>>
     + Provider<Fork<RemoteSite, Resolve>>
     + Provider<dialog_effects::blob::Read>
@@ -117,6 +133,9 @@ impl<T> PullProvider for T where
         + Provider<dialog_effects::blob::Import>
         + Provider<Fork<RemoteSite, dialog_effects::blob::Read>>
         + Provider<Attest>
+        + Provider<Hydrate>
+        + Provider<Preload>
+        + Provider<Speculation>
         + Provider<Fork<RemoteSite, Get>>
         + Provider<Fork<RemoteSite, Resolve>>
         + ConditionalSync
@@ -131,6 +150,7 @@ pub trait PushProvider:
     + Provider<Resolve>
     + Provider<Publish>
     + Provider<BlobRead>
+    + Provider<Hydrate>
     + Provider<Fork<RemoteSite, Get>>
     + Provider<Fork<RemoteSite, Put>>
     + Provider<Fork<RemoteSite, Resolve>>
@@ -147,6 +167,7 @@ impl<T> PushProvider for T where
         + Provider<Resolve>
         + Provider<Publish>
         + Provider<BlobRead>
+        + Provider<Hydrate>
         + Provider<Fork<RemoteSite, Get>>
         + Provider<Fork<RemoteSite, Put>>
         + Provider<Fork<RemoteSite, Resolve>>

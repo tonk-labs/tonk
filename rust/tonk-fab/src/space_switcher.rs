@@ -9,7 +9,7 @@
 //! scaffolding's `space`-attribute default, proving that seam accepts either
 //! shape.
 //!
-//! Reads `xyz.tonk.space/{subject,name,status}` through ONE inline
+//! Reads `xyz.tonk.space/{subject,name,presence}` through ONE inline
 //! directory-mode predicate (`this` unbound, so every account-level directory
 //! entry returns as a row) — see [`crate::logic::space_list_query_body`]. The
 //! mirrored `name` is available even when this device has not replicated the
@@ -19,8 +19,9 @@
 //! (this element's `current` attribute) is shown like the wireframe shows
 //! it — marked `current`, always making the cut — and picking it merely
 //! closes the stack (see `element.rs`): where you are is a fact, not a
-//! navigation. A row stamps `data-status` from the directory status so
-//! existing CSS can dim a still-seeding space.
+//! navigation. A row stamps `data-presence` so existing CSS can dim a
+//! still-seeding space; an absent presence means the space is not
+//! replicated here.
 //!
 //! It renders ONLY the space rows. `new +` and `more ↖` belong to the stack
 //! that hosts this flyout (`markup::STACKS_HTML`), not here — emitting them
@@ -56,7 +57,7 @@ const UNTITLED: &str = "Untitled";
 struct Row {
     subject: String,
     name: Option<String>,
-    status: String,
+    presence: String,
 }
 
 #[derive(Default)]
@@ -64,6 +65,7 @@ pub struct UiSpaceSwitcherElement {
     scaffold: subscribing::Scaffold,
     /// The live directory, keyed by each row's entity `this`, so an `update`
     /// delta can upsert/retract individual rows without a full snapshot.
+    /// Rendering separately collapses legacy aliases that repeat one subject.
     /// Order is insertion order.
     rows: Rc<RefCell<Vec<(String, Row)>>>,
 }
@@ -172,9 +174,11 @@ impl subscribing::Subscribing for SpaceSwitcherBehaviour {
     }
 }
 
-/// Read `(row.this, Row { subject, name?, status })` off a raw subscription
+/// Read `(row.this, Row { subject, name?, presence? })` off a raw subscription
 /// row. `None` for a missing/empty row, a missing entity id, or a missing
-/// required field. `name` is optional so pre-mirror entries remain reachable.
+/// required field. `name` is optional so pre-mirror entries remain reachable,
+/// and `presence` is optional because its absence is the not-replicated-here
+/// case rather than a malformed row.
 fn read_row(row: &JsValue) -> Option<(String, Row)> {
     if row.is_undefined() || row.is_null() {
         return None;
@@ -187,15 +191,20 @@ fn read_row(row: &JsValue) -> Option<(String, Row)> {
     let name = Reflect::get(&fields, &"name".into())
         .ok()
         .and_then(|v| v.as_string());
-    let status = Reflect::get(&fields, &"status".into())
+    // Optional in the query, and its ABSENCE is meaningful: a space the
+    // account knows about but this device has not replicated has no
+    // presence fact. Dropping such a row would hide exactly the remote
+    // spaces the switcher exists to offer.
+    let presence = Reflect::get(&fields, &"presence".into())
         .ok()
-        .and_then(|v| v.as_string())?;
+        .and_then(|v| v.as_string())
+        .unwrap_or_default();
     Some((
         this_id,
         Row {
             subject,
             name,
-            status,
+            presence,
         },
     ))
 }
@@ -215,10 +224,34 @@ fn render_menu(host: &HtmlElement, rows: &[(String, Row)]) {
     stack_rows::clear_rows(host, SUB_TAG);
     let current = host.get_attribute("current").unwrap_or_default();
 
-    let mut cut: Vec<&(String, Row)> = rows.iter().take(MAX_ROWS).collect();
+    // The directory contract anchors a space on its own subject entity, but
+    // old account data can retain an earlier alias entity carrying the same
+    // subject. The UI boundary is the stable subject: render it once, and
+    // prefer the canonical subject-anchored row when both are present.
+    let mut unique: Vec<&(String, Row)> = Vec::new();
+    for candidate @ (candidate_id, candidate_row) in rows {
+        if let Some(index) = unique
+            .iter()
+            .position(|(_, row)| row.subject == candidate_row.subject)
+        {
+            let (existing_id, existing_row) = unique[index];
+            let candidate_is_canonical = candidate_id == &candidate_row.subject;
+            let existing_is_canonical = existing_id == &existing_row.subject;
+            if candidate_is_canonical || !existing_is_canonical {
+                unique[index] = candidate;
+            }
+        } else {
+            unique.push(candidate);
+        }
+    }
+
+    let mut cut: Vec<&(String, Row)> = unique.iter().copied().take(MAX_ROWS).collect();
     if !current.is_empty()
         && !cut.iter().any(|(_, row)| row.subject == current)
-        && let Some(active) = rows.iter().find(|(_, row)| row.subject == current)
+        && let Some(active) = unique
+            .iter()
+            .copied()
+            .find(|(_, row)| row.subject == current)
     {
         cut.pop();
         cut.push(active);
@@ -230,7 +263,7 @@ fn render_menu(host: &HtmlElement, rows: &[(String, Row)]) {
         // The space is a user word — it passes through untouched, so this row
         // is deliberately NOT `chrome`.
         let _ = item.set_attribute("data-space", &row.subject);
-        let _ = item.set_attribute("data-status", &row.status);
+        let _ = item.set_attribute("data-presence", &row.presence);
         if row.subject == current {
             let _ = item.set_attribute("current", "");
         }

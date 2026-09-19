@@ -96,7 +96,12 @@ async fn refreshed_entry(tonk: &TonkState, email: Option<String>) -> RosterEntry
         root_did,
         provider: provider.clone(),
         email: provider.and(email),
-        display_name: super::profile_name::resolve_display_name(tonk).await,
+        // The ACCOUNT's name, not the profile's. The roster feeds the
+        // Hub's account cell, which names the account — and that name
+        // arrives with the account branch, so `None` here is what makes
+        // the cell hold a skeleton until it replicates. The profile-name
+        // override is a per-device legacy and cannot answer for it.
+        display_name: super::account_devices::account_display_name(tonk).await,
     }
 }
 
@@ -122,7 +127,9 @@ async fn inspected_entry(
         root_did,
         provider,
         email: None,
-        display_name: super::profile_name::resolve_display_name_from(profile, operator).await,
+        // The ACCOUNT's name, like the active row — read from this
+        // profile's own repository, since each names its own account.
+        display_name: super::account_devices::account_display_name_for(profile, operator).await,
     }
 }
 
@@ -163,7 +170,7 @@ fn response_from(active: &str, roster: Vec<RosterEntry>) -> ProfilesResponse {
                 root_did: entry.root_did,
                 provider: entry.provider,
                 email: entry.email,
-                display_name: Some(entry.display_name),
+                display_name: entry.display_name,
             })
             .collect(),
     }
@@ -251,7 +258,7 @@ async fn activate_named(
     };
     let _transition = transition.lock().await;
 
-    let (registry, active) = {
+    let (registry, active, profile_library) = {
         let tonk = state.read().await;
         // Validate before opening anything: `Profile::open` is
         // open-or-create, so an unvalidated name would silently mint a
@@ -272,7 +279,11 @@ async fn activate_named(
         // Keep the outgoing profile reachable: a switch must not proceed if
         // its local workspace cannot first be named in the roster.
         try_upsert_active_entry(&tonk, None).await?;
-        (tonk.registry.clone(), tonk.profile_name.clone())
+        (
+            tonk.registry.clone(),
+            tonk.profile_name.clone(),
+            tonk.profile_library.clone(),
+        )
     };
     if name == active {
         let tonk = state.read().await;
@@ -284,8 +295,14 @@ async fn activate_named(
     // IO, and in-flight requests must keep being served meanwhile.
     let storage = Storage::<DefaultSpace>::default();
     let profile = registry.open_profile(&storage, &name).await?;
-    let new_state =
-        crate::worker::boot_state(storage, name.clone(), profile, registry.clone()).await?;
+    let new_state = crate::worker::boot_state_with_profile_library(
+        storage,
+        name.clone(),
+        profile,
+        registry.clone(),
+        profile_library,
+    )
+    .await?;
     // Only a target that opened and booted repoints the pointer, so a
     // failed activation never strands the next SW restart.
     promote(state, new_state, source).await
@@ -315,7 +332,7 @@ async fn add_profile(
     };
     let _transition = transition.lock().await;
 
-    let registry = {
+    let (registry, profile_library) = {
         let tonk = state.read().await;
         // Abandoned-add reuse: a profile with no persisted root and no
         // user spaces is already a fresh landing pad — hand it back
@@ -329,12 +346,19 @@ async fn add_profile(
             }
         }
         try_upsert_active_entry(&tonk, None).await?;
-        tonk.registry.clone()
+        (tonk.registry.clone(), tonk.profile_library.clone())
     };
 
     let storage = Storage::<DefaultSpace>::default();
     let (name, profile) = registry.create_profile(&storage).await?;
-    let new_state = crate::worker::boot_state(storage, name, profile, registry).await?;
+    let new_state = crate::worker::boot_state_with_profile_library(
+        storage,
+        name,
+        profile,
+        registry,
+        profile_library,
+    )
+    .await?;
     promote(state, new_state, source).await
 }
 
@@ -353,7 +377,7 @@ pub(crate) async fn sign_out(
     };
     let _transition = transition.lock().await;
 
-    let (registry, storage, active_name, roster) = {
+    let (registry, storage, active_name, roster, profile_library) = {
         let current = state.read().await;
         try_upsert_active_entry(&current, None).await?;
         let roster = current
@@ -365,6 +389,7 @@ pub(crate) async fn sign_out(
             current.storage.clone(),
             current.profile_name.clone(),
             roster,
+            current.profile_library.clone(),
         )
     };
 
@@ -423,7 +448,14 @@ pub(crate) async fn sign_out(
         Some(candidate) => candidate,
         None => registry.create_profile(&storage).await?,
     };
-    let new_state = crate::worker::boot_state(storage, name, profile, registry).await?;
+    let new_state = crate::worker::boot_state_with_profile_library(
+        storage,
+        name,
+        profile,
+        registry,
+        profile_library,
+    )
+    .await?;
 
     let status = {
         let current = state.read().await;
@@ -463,6 +495,7 @@ pub(crate) async fn for_account(
     try_upsert_active_entry(&current, None).await?;
     let registry = current.registry.clone();
     let storage = current.storage.clone();
+    let profile_library = current.profile_library.clone();
     let roster = registry
         .read_roster(&current.storage, &current.operator)
         .await?;
@@ -527,13 +560,27 @@ pub(crate) async fn for_account(
 
     let (new_state, disposition) = match matched {
         Some((name, profile)) => (
-            crate::worker::boot_state(storage, name, profile, registry).await?,
+            crate::worker::boot_state_with_profile_library(
+                storage,
+                name,
+                profile,
+                registry,
+                profile_library,
+            )
+            .await?,
             AccountProfileDisposition::Existing,
         ),
         None => {
             let (name, profile) = registry.create_profile(&storage).await?;
             (
-                crate::worker::boot_state(storage, name, profile, registry).await?,
+                crate::worker::boot_state_with_profile_library(
+                    storage,
+                    name,
+                    profile,
+                    registry,
+                    profile_library,
+                )
+                .await?,
                 AccountProfileDisposition::Created,
             )
         }
@@ -663,21 +710,34 @@ mod tests {
             active.root_did.is_some(),
             "an attached profile names its account root"
         );
-        assert!(active.display_name.is_some());
+        // No name until the ACCOUNT carries one: a fresh profile has not
+        // replicated an account name, and the roster no longer invents a
+        // petname to fill the gap.
+        assert!(
+            active.display_name.is_none(),
+            "an unnamed account reports no name rather than a generated one"
+        );
     }
 
     #[dialog_common::test]
     async fn it_reads_an_inactive_profiles_current_display_name_and_account_state() {
-        use tonk_schema::{ProfileName, prelude::DidExt as _};
+        use tonk_schema::{AccountDisplayName, prelude::DidExt as _};
 
         let state = Arc::new(RwLock::new(test_state().await));
         let first = {
             let tonk = state.read().await;
+            // Keyed on the ACCOUNT root, which is the entity
+            // `account_display_name` queries — not the profile DID. The
+            // roster reports the account's name; the per-device profile
+            // override is a different thing and must not stand in for it.
+            let account = crate::router::identity::root_did(&tonk)
+                .await
+                .expect("the test profile has a root");
             tonk.reactor
                 .profile_repository()
                 .branch(tonk_account::MAIN_BRANCH)
                 .transaction()
-                .assert(ProfileName::new(tonk.profile.did().this(), "jack".into()))
+                .assert(AccountDisplayName::new(account.this(), "jack".into()))
                 .commit()
                 .perform(&tonk.operator)
                 .await

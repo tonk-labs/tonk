@@ -80,6 +80,7 @@ pub async fn test_state_without_root() -> TonkState {
         directory: dialog_effects::storage::Directory::Profile,
     };
     TonkState {
+        seed_upgrades: Default::default(),
         profile,
         operator: session.operator,
         storage,
@@ -95,6 +96,7 @@ pub async fn test_state_without_root() -> TonkState {
         commands: crate::router::command_providers(),
         clients: Default::default(),
         account_keys: Default::default(),
+        profile_library: Default::default(),
         registry,
         profile_transition: Default::default(),
         context_generation: Default::default(),

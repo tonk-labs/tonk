@@ -23,7 +23,6 @@ const ROUTES: &[&str] = &[
     "/api/account/devices/revoke",
     "/api/account/display-name",
     "/api/account/spaces/delete",
-    "/api/account/summary",
     "/api/custody/provision",
     "/api/custody/queue",
     "/api/customer",
@@ -38,11 +37,19 @@ const ROUTES: &[&str] = &[
     "/api/migrate/repo-vs-profile",
     "/api/profile",
     "/api/profile/branch/{branch}/evaluate",
+    // Raw data plane: serves the profile branch's tree as bytes, selected by
+    // Accept (CSV rows or a CARv1 snapshot). No user intent to carry as a
+    // fact, and the caller reads the body once — the same shape as the
+    // repository branch's `export` below.
+    "/api/profile/branch/{branch}/export",
     "/api/profile/branch/{branch}/query",
     "/api/profile/branch/{branch}/site",
     "/api/profile/branch/{branch}/transact",
     "/api/profile/join",
+    "/api/profile/library",
     "/api/profile/repository",
+    // Bootstrap must choose the initial route before the page mounts a site.
+    "/api/profile/welcome",
     "/api/profiles",
     "/api/profiles/activate",
     "/api/profiles/add",
@@ -56,6 +63,10 @@ const ROUTES: &[&str] = &[
     "/api/repository/{repo}/branch/{branch}/export",
     "/api/repository/{repo}/branch/{branch}/host/{host}/{entity}",
     "/api/repository/{repo}/branch/{branch}/import",
+    // Device-local continuation of the bundled snapshot import: hydrates fixed
+    // data/schema bytes before the selected page can resolve its model. This
+    // is data-plane import, not a user-authored operation or command.
+    "/api/repository/{repo}/branch/{branch}/onboarding",
     "/api/repository/{repo}/branch/{branch}/query",
     "/api/repository/{repo}/branch/{branch}/site",
     "/api/repository/{repo}/branch/{branch}/sync",

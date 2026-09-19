@@ -420,11 +420,17 @@ pub struct TonkState {
     /// whether we have observed it alive. The stale-client sweep reaps
     /// born-then-died clients from here. See [`crate::router::ClientRegistry`].
     pub clients: crate::router::ClientRegistry,
+    /// Spaces whose seed this worker instance already checked against the
+    /// shipped bundle. See [`crate::router::adopt::SeedUpgrades`].
+    pub(crate) seed_upgrades: crate::router::adopt::SeedUpgrades,
     /// Routing keys the hidden account repository answers to, resolved lazily.
     /// Consulted by the middleware that keeps that repository off the generic
     /// HTTP surface, so it sits on the hot path for every repository request.
     /// See [`crate::router::AccountKeys`].
     pub account_keys: crate::router::AccountKeys,
+    /// The profile-library bytes and branch revision most recently validated
+    /// by this worker instance.
+    pub(crate) profile_library: crate::router::ProfileLibraryCache,
     /// Handle to the fixed registry profile recording which profile is
     /// active and the roster of every profile this browser knows. Held so
     /// the profile-switching routes can validate, repoint, and annotate
@@ -1715,61 +1721,25 @@ pub(crate) async fn boot_state(
     profile: Profile,
     registry: crate::device::Registry,
 ) -> Result<TonkState, crate::TonkWorkerError> {
+    boot_state_with_profile_library(storage, profile_name, profile, registry, Default::default())
+        .await
+}
+
+/// Build profile state while retaining the running worker generation's
+/// acquired profile-library input across an in-memory profile switch.
+pub(crate) async fn boot_state_with_profile_library(
+    storage: Storage<DefaultSpace>,
+    profile_name: String,
+    profile: Profile,
+    registry: crate::device::Registry,
+    profile_library: crate::router::ProfileLibraryCache,
+) -> Result<TonkState, crate::TonkWorkerError> {
     let reactor = crate::Reactor::new(profile.clone());
-    let session = match crate::session::open(&profile, &storage).await {
-        Ok(session) => session,
-        Err(error) => {
-            // A partial access branch bricks session open: a remote
-            // profile update adopted by reference leaves the head ahead
-            // of the local blocks, and the authorization walk reads
-            // entirely locally by design (its recursion-bounding env has
-            // no network reach — hydration inside it would be circular).
-            // Hydrate the access branch with a network-capable operator
-            // and retry once; offline or truly broken states surface the
-            // original error.
-            tonk_common::log!(
-                "session open failed ({error}); hydrating the access branch and retrying"
-            );
-            use dialog_operator::DeriveOperator as _;
-            let context: [u8; 16] = rand::random();
-            let operator = profile
-                .derive(context.to_vec())
-                .build(storage.clone())
-                .await
-                .map_err(|e| {
-                    crate::TonkWorkerError::Internal(format!(
-                        "failed to derive a hydration operator: {e} (after session open failed: {error})"
-                    ))
-                })?;
-            let access = reactor
-                .profile_repository()
-                .branch(tonk_account::MAIN_BRANCH)
-                .acquire(&operator)
-                .await
-                .map_err(|e| {
-                    crate::TonkWorkerError::Internal(format!(
-                        "failed to open the access branch for hydration: {e} (after session open failed: {error})"
-                    ))
-                })?;
-            access
-                .handle()
-                .download()
-                .perform(&operator)
-                .await
-                .map_err(|e| {
-                    crate::TonkWorkerError::Internal(format!(
-                        "failed to hydrate the access branch: {e} (after session open failed: {error})"
-                    ))
-                })?;
-            crate::session::open(&profile, &storage)
-                .await
-                .map_err(|e| {
-                    crate::TonkWorkerError::Internal(format!(
-                        "failed to open a signing session after hydrating the access branch: {e}"
-                    ))
-                })?
-        }
-    };
+    // Session construction reads branch reference cells, but no longer
+    // walks or retains delegation content. Hydrating after a construction
+    // failure cannot repair entropy, signing, or local reference errors;
+    // surface them without touching the profile's durable contents.
+    let session = crate::session::open(&profile, &storage).await?;
 
     let state = TonkState {
         profile,
@@ -1787,7 +1757,9 @@ pub(crate) async fn boot_state(
         commands: crate::router::command_providers(),
         sync_queue: Default::default(),
         clients: Default::default(),
+        seed_upgrades: Default::default(),
         account_keys: Default::default(),
+        profile_library,
         registry,
         profile_transition: Arc::new(Mutex::new(())),
         context_generation: Arc::new(AtomicU64::new(0)),

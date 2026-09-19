@@ -99,6 +99,7 @@ pub struct QueryResponse {
 /// same `(entity, attribute)` is superseded across commits — required for the
 /// per-tab site params, which must reflect only the latest navigation rather than
 /// accumulate one value per visited route.
+#[derive(Clone)]
 pub(crate) struct RawClaim {
     pub(crate) the: Attribute,
     pub(crate) of: Entity,

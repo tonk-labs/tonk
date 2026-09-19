@@ -43,7 +43,15 @@ impl CustomElement for TonkInspectorElement {
     }
 
     fn observed_attributes() -> &'static [&'static str] {
-        &[]
+        // Routing context is resolved from this element's OWN `with`, which
+        // the mounting `<tonk-display>` stamps — normally into the view's
+        // template content before any clone connects. Should it ever land
+        // after connect instead, `connected_callback` has already rendered
+        // its error and bailed, and without observing the attribute the
+        // element never hears the context arrive. Observing it makes a late
+        // context recoverable rather than latched — the same cue
+        // `<tonk-notebook>` and `<ui-sync-status>` already take.
+        &["with"]
     }
 
     fn inject_children(&mut self, _this: &HtmlElement) {}
@@ -125,6 +133,26 @@ impl CustomElement for TonkInspectorElement {
             // No registry / bad name (shouldn't happen in a browser) — mount now.
             None => notebook.spawn_cell(true),
         }
+    }
+
+    fn attribute_changed_callback(
+        &mut self,
+        this: &HtmlElement,
+        _name: String,
+        old: Option<String>,
+        new: Option<String>,
+    ) {
+        if old == new {
+            return;
+        }
+        // The context arriving is the cue to mount: `connected_callback`
+        // renders its error and bails when it cannot resolve one, so an
+        // inspector whose `with` arrives post-connect would otherwise stay on
+        // that error forever. Re-entering is safe — the callback clears its
+        // own subtree before rebuilding, and this element holds no mount
+        // state beyond the closure bag the rebuild repopulates.
+        self.closures.borrow_mut().clear();
+        self.connected_callback(this);
     }
 
     fn disconnected_callback(&mut self, _this: &HtmlElement) {
@@ -288,15 +316,14 @@ impl DebugPanel {
             .flatten()
             .is_some_and(|details| details.has_attribute("open"));
         self.host.set_inner_html(html);
-        if expanded {
-            if let Some(details) = self
+        if expanded
+            && let Some(details) = self
                 .host
                 .query_selector(".inspector-debug__disclosure")
                 .ok()
                 .flatten()
-            {
-                details.set_attribute("open", "").ok();
-            }
+        {
+            details.set_attribute("open", "").ok();
         }
     }
 
@@ -764,6 +791,12 @@ pub(crate) fn reflect_string(value: &JsValue, key: &str) -> Option<String> {
         .and_then(|v| v.as_string())
 }
 
+fn reflect_f64(value: &JsValue, key: &str) -> Option<f64> {
+    js_sys::Reflect::get(value, &JsValue::from_str(key))
+        .ok()
+        .and_then(|v| v.as_f64())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -799,10 +832,4 @@ mod tests {
         space.remove();
         profile.remove();
     }
-}
-
-fn reflect_f64(value: &JsValue, key: &str) -> Option<f64> {
-    js_sys::Reflect::get(value, &JsValue::from_str(key))
-        .ok()
-        .and_then(|v| v.as_f64())
 }

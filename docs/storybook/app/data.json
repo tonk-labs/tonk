@@ -481,7 +481,7 @@
       "group": "Spaces: account directory, sync, and collaboration",
       "id": "SPACE-12",
       "title": "Pull an account space by name or subject.",
-      "variants": "Unique/ambiguous/missing name; existing local name/subject; offline/revoked."
+      "variants": "Unique/ambiguous/missing name; existing local name/subject; directory label that is not a local slug; offline/revoked."
     },
     {
       "evidence": "Broad sync/status tests.",
@@ -716,7 +716,7 @@
       "variants": "install script/npm/nix; newer/current; network/error/signature/swap failure."
     },
     {
-      "evidence": "Partial deployment and broad E2E setup.",
+      "evidence": "Partial deployment and broad E2E setup; first-root welcome seeding/return-to-Hub browser regression plus worker concurrency/resume tests.",
       "gaps": "Explicit boot state machine, update/reload failure, accessibility, recovery from stale assets.",
       "group": "Browser shell and runtime",
       "id": "UI-01",
@@ -748,12 +748,12 @@
       "variants": "Blank/configured home; missing view/entity; local/remote; unauthorized; named-space/profile inspector."
     },
     {
-      "evidence": "One deployment browser test plus build checks.",
-      "gaps": "Visible failure/retry, no infinite boot, diagnostics without leaking secrets.",
+      "evidence": "Deployment test, build checks, Doctor Node contracts and isolated Chrome fixtures; see Doctor diagnostics.",
+      "gaps": "Full installed-worker update/unregister preservation, real account APIs, Safari and hosted recovery.",
       "group": "Browser shell and runtime",
       "id": "UI-05",
-      "title": "Recover from service-worker or deployment configuration failure.",
-      "variants": "Missing env, wrong origins/DIDs, worker exception, stale cache."
+      "title": "Recover from service-worker or deployment failure; inspect /doctor and copy an agent debug bundle.",
+      "variants": "Missing env, wrong origins/DIDs, worker exception, stale cache, no controller, unavailable clipboard."
     }
   ],
   "schemaVersion": 1,
@@ -1969,7 +1969,7 @@
       "result": "—"
     },
     {
-      "claim": "Linking local-only to account is generation/subject-idempotent (Cross a boundary).",
+      "claim": "Signed-in creation and later linking are generation/subject-idempotent (Cross a boundary).",
       "device": "fault + restart",
       "file": "verification/cli-spaces-ui.md",
       "id": "SPACE-08",
@@ -2007,6 +2007,14 @@
       "id": "SPACE-12",
       "priority": "P1",
       "result": "Pass (local, 2026-08-29): the focused real-browser regression completed every step against the built product."
+    },
+    {
+      "claim": "Concurrent registry writers serialize the complete logical mutation (Interactions with other systems).",
+      "device": "two-process + locked",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "SPACE-13",
+      "priority": "P1",
+      "result": "Pass (native, 2026-08-30): focused real-binary create/create and bind/remove overlap regressions."
     },
     {
       "claim": "Status reports R0–R6 without mutation (Settle).",
@@ -2182,7 +2190,7 @@
       "file": "verification/cli-spaces-ui.md",
       "id": "UI-01",
       "priority": "P1",
-      "result": "—"
+      "result": "First-root/returning-Hub Chrome regression and four worker tests passed locally. Full route matrix, Safari, and crash-at-each-write remain unrun."
     },
     {
       "claim": "First/returning/offline boot has bounded visible recovery (Remain in flight).",
@@ -2263,14 +2271,22 @@
       "id": "UI-11",
       "priority": "P2",
       "result": "—"
+    },
+    {
+      "claim": "Doctor remains usable during boot failure and produces a reviewable debug bundle (Doctor diagnostics).",
+      "device": "browser + fault",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "UI-12",
+      "priority": "P1",
+      "result": "Node contracts and isolated Chrome fixtures passed. Full Trunk/installed-worker lifecycle, actual account services, Safari and hosted behavior unrun."
     }
   ],
   "verificationResults": {
     "blocked": 0,
     "fail": 0,
-    "other": 5,
-    "pass": 1,
-    "unrun": 111
+    "other": 7,
+    "pass": 2,
+    "unrun": 110
   },
   "visualCommit": "49a873a23"
 }

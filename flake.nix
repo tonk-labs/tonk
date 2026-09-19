@@ -53,8 +53,21 @@
         filter = nix-filter.lib;
 
         # We get wrangler from a 3P crate because nixpkgs#wrangler lags
-        # the latest release
-        wrangler = wrangler-flake.packages.${system}.wrangler;
+        # the latest release. Neither it nor nixpkgs' builds on a Mac: both
+        # die in pnpm's tsup step with "EBADF: bad file descriptor" inside
+        # the build sandbox, and neither has a Darwin cache, which left
+        # every dev shell unopenable there. Only the publish workflow, on
+        # Linux, runs wrangler, so a Mac shell gets a shim that fetches the
+        # same release through npx on first use instead of a store build.
+        wrangler =
+          if pkgs.stdenv.isLinux then
+            wrangler-flake.packages.${system}.wrangler
+          else
+            pkgs.writeShellScriptBin "wrangler" ''
+              exec ${pkgs.nodejs}/bin/npx --yes wrangler@${
+                wrangler-flake.packages.${system}.wrangler.version or "4.128.0"
+              } "$@"
+            '';
 
         # The official PostHog CLI moves faster than nixpkgs. Pin its release
         # archives directly so `posthog-cli login` and the API client are
@@ -539,13 +552,13 @@
           tests-web-debug = buildTestArchive {
             name = "web-debug";
             target = "wasm32-unknown-unknown";
-            args = "--workspace --exclude tonk-cli";
+            args = "--workspace --exclude tonk-cli --exclude tonk-perf";
           };
 
           tests-web-release = buildTestArchive {
             name = "web-release";
             target = "wasm32-unknown-unknown";
-            args = "--workspace --exclude tonk-cli --release";
+            args = "--workspace --exclude tonk-cli --exclude tonk-perf --release";
           };
 
           # The real-browser suite `test:e2e` runs. Its `integration-tests`
@@ -616,14 +629,20 @@
             with pkgs;
             writeScriptBin "tonk-ui-test-server" ''
               #!${bash}/bin/bash
+              set -euo pipefail
               PORT=''${1:-8080}
               ACCESS_SERVICE_PORT=''${2:-8090}
               DEPLOYMENT_FIXTURE_ROOT=''${3:-}
+              ARTIFACT_ROOT=''${TONK_UI_TEST_ARTIFACT:-${self.packages.${system}.tonk-ui}}
+              if [ ! -f "$ARTIFACT_ROOT/index.html" ] || [ ! -f "$ARTIFACT_ROOT/service_worker.js" ]; then
+                  echo "Invalid Tonk test artifact: $ARTIFACT_ROOT" >&2
+                  exit 1
+              fi
 
               if [ -n "$DEPLOYMENT_FIXTURE_ROOT" ]; then
                   GENERATION_A="$DEPLOYMENT_FIXTURE_ROOT/generation-a"
                   mkdir -p "$GENERATION_A"
-                  cp -r ${self.packages.${system}.tonk-ui}/. "$GENERATION_A/"
+                  cp -r "$ARTIFACT_ROOT"/. "$GENERATION_A/"
                   # Integration tests publish a separately stamped generation
                   # and atomically repoint this symlink. The browser profile,
                   # registration, caches, and IndexedDB all survive the swap.
@@ -631,9 +650,24 @@
                   ln -s generation-a "$DEPLOYMENT_FIXTURE_ROOT/current"
                   TONK_UI_ROOT="$DEPLOYMENT_FIXTURE_ROOT/current"
               else
-                  TONK_UI_ROOT=${self.packages.${system}.tonk-ui}
+                  TONK_UI_ROOT="$ARTIFACT_ROOT"
               fi
 
+              # Name the build under test. The artifact is pinned into this
+              # script when it is built, so a stale server silently serves a
+              # stale app; the harness records this line so a log always says
+              # which build produced it.
+              BUILD_ID=unknown
+              while IFS= read -r line; do
+                  case "$line" in
+                      'const BUILD_ID = "'*)
+                          BUILD_ID=''${line#const BUILD_ID = \"}
+                          BUILD_ID=''${BUILD_ID%\";}
+                          break
+                          ;;
+                  esac
+              done < "$ARTIFACT_ROOT/service_worker.js"
+              echo "Test server artifact $ARTIFACT_ROOT build $BUILD_ID"
               echo "Test server live at https://tonk.network:$PORT and https://localhost:$PORT"
               # `nix run` execs this script, and this exec in turn makes Caddy
               # the process owned by the test helper. Killing its `Child` then

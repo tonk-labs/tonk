@@ -125,8 +125,10 @@ impl<'a> TransactionBuilder<'a> {
     }
 
     /// Wrap the accumulated changes into a [`Commit`] effect.
+    #[track_caller]
     pub fn commit(self) -> Commit<'a> {
         Commit {
+            origin: std::panic::Location::caller(),
             branch: self.branch,
             changes: self.changes,
             transients: self.transients,
@@ -138,6 +140,8 @@ impl<'a> TransactionBuilder<'a> {
 /// every subscription on the branch so changed query results
 /// fan out to subscribers.
 pub struct Commit<'a> {
+    /// Where `.commit()` was called, so the commit log names its caller.
+    pub origin: &'static std::panic::Location<'static>,
     /// The branch the commit applies to.
     pub branch: BranchReference<'a>,
     /// Durable claims — integrated into the transaction and
@@ -166,6 +170,9 @@ impl Commit<'_> {
     where
         Env: LoadProvider + BranchOpenProvider + CommitProvider + SelectProvider,
     {
+        let repo = self.branch.repository.name().to_owned();
+        let name = self.branch.name.to_owned();
+        let origin = self.origin;
         let cached = self.branch.acquire(env).await?;
 
         // Serialize every commit on this branch through the per-branch
@@ -185,9 +192,27 @@ impl Commit<'_> {
         // advanced head is safe.
         let changes = self.changes;
         let transients = self.transients;
+        let instructions = changes.clone().into_instructions();
+        let claims = instructions.len();
+        // The attributes the claims touch, deduplicated: enough to name
+        // the concept a commit carries without printing its values.
+        let attributes = {
+            let mut names: Vec<String> = instructions
+                .iter()
+                .map(|instruction| match instruction {
+                    dialog_artifacts::Instruction::Assert(claim)
+                    | dialog_artifacts::Instruction::Replace(claim)
+                    | dialog_artifacts::Instruction::Retract(claim) => claim.the.to_string(),
+                })
+                .collect();
+            names.sort();
+            names.dedup();
+            names.join(",")
+        };
         let mut attempt = 0;
         let revision = loop {
             let branch = cached.handle();
+            let before = branch.revision();
             // Durable changes are asserted; transients are dispatched
             // as commands. Commit-time induction (dialog's) fires
             // installed rules over both and sweeps the transients.
@@ -197,10 +222,32 @@ impl Commit<'_> {
                 .dispatch(transients.clone());
 
             let t_commit = web_time::Instant::now();
-            match txn.commit().perform(env).await {
+            match txn.commit().publish().perform(env).await {
                 Ok(revision) => {
                     let commit_ms = t_commit.elapsed().as_millis();
-                    dialog_common::log!("reactor commit timing: commit {commit_ms}ms");
+                    // Name the commit: the branch, the claim count, and
+                    // whether the tree moved. A commit that lands an
+                    // identical tree still mints a revision and publishes
+                    // it, so a caller re-asserting what is already there
+                    // reads as "tree unchanged" here, and that is the one
+                    // to go and find.
+                    let moved =
+                        if before.as_ref().map(|before| &before.tree) == Some(&revision.tree) {
+                            "unchanged"
+                        } else {
+                            "moved"
+                        };
+                    let head = if before.as_ref().map(|before| before.version())
+                        == Some(revision.version())
+                    {
+                        "same"
+                    } else {
+                        "advanced"
+                    };
+                    dialog_common::log!(
+                        "reactor commit timing: commit {commit_ms}ms on {name}@{repo}, \
+                         {claims} claims ({attributes}), tree {moved}, head {head}, from {origin}"
+                    );
                     break revision;
                 }
                 Err(e) if is_head_moved(&e) && attempt < COMMIT_RETRY_LIMIT => {

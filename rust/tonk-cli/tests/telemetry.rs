@@ -127,6 +127,17 @@ fn help_posts_one_command_run_event() {
     let request = rx
         .recv_timeout(Duration::from_secs(5))
         .expect("request arrives");
+    let payload = request_body(&request);
+    let batch = payload["batch"].as_array().expect("batch array");
+    let product = batch
+        .iter()
+        .filter(|event| event["event"] == "product_event")
+        .collect::<Vec<_>>();
+    assert_eq!(product.len(), 2);
+    assert_eq!(product[0]["properties"]["action"], "help");
+    assert_eq!(product[0]["properties"]["phase"], "started");
+    assert_eq!(product[1]["properties"]["phase"], "finished");
+    assert_eq!(product[1]["properties"]["result"], "success");
     assert!(request.starts_with("POST /batch/"));
     assert!(request.contains("\"cli_command_run\""));
     assert!(request.contains("\"command\":\"help\""));

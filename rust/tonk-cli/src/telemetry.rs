@@ -90,6 +90,13 @@ fn store_at(path: &Path, settings: &Settings) -> std::io::Result<()> {
 pub struct Recorder {
     client: tonk_analytics::native::Client,
     properties: Map<String, Value>,
+    product: Option<ProductAttempt>,
+}
+
+struct ProductAttempt {
+    journey: tonk_analytics::product::Journey,
+    action: tonk_analytics::product::ProductAction,
+    attempt_id: String,
 }
 
 /// Start recording one invocation. Returns `None` (skip everything)
@@ -108,7 +115,7 @@ pub async fn begin(command: &'static str, subcommand: Option<&'static str>) -> O
     } else {
         "tonk:anonymous".to_owned()
     };
-    let client = tonk_analytics::native::Client::from_env(distinct, true);
+    let mut client = tonk_analytics::native::Client::from_env(distinct, true);
     if !client.is_enabled() {
         return None;
     }
@@ -127,7 +134,28 @@ pub async fn begin(command: &'static str, subcommand: Option<&'static str>) -> O
     // Same dimension the web app registers as a posthog super
     // property; keeps all surfaces separable on one dashboard axis.
     properties.insert("environment".to_owned(), Value::from("cli"));
-    Some(Recorder { client, properties })
+    let product = product_classification(command, subcommand).map(|(journey, action)| {
+        let attempt = ProductAttempt {
+            journey,
+            action,
+            attempt_id: tonk_analytics::product::attempt_id(),
+        };
+        let event = tonk_analytics::product::ProductEvent::started(
+            journey,
+            action,
+            tonk_analytics::product::Stage::Intent,
+            tonk_analytics::product::Surface::NativeCli,
+            tonk_analytics::product::Trigger::User,
+            attempt.attempt_id.clone(),
+        );
+        let _ = client.capture_product(&event);
+        attempt
+    });
+    Some(Recorder {
+        client,
+        properties,
+        product,
+    })
 }
 
 impl Recorder {
@@ -149,6 +177,21 @@ impl Recorder {
     /// Capture the event and flush, capped at 300 ms so a slow or
     /// absent network never holds the command hostage.
     pub async fn finish(mut self, exit: ExitCode, duration: Duration) {
+        if let Some(product) = self.product.take() {
+            let (result, failure) = product_outcome(exit);
+            let event = tonk_analytics::product::ProductEvent::finished(
+                product.journey,
+                product.action,
+                tonk_analytics::product::Stage::Complete,
+                tonk_analytics::product::Surface::NativeCli,
+                tonk_analytics::product::Trigger::User,
+                product.attempt_id,
+                duration.as_millis() as u64,
+                result,
+                failure,
+            );
+            let _ = self.client.capture_product(&event);
+        }
         self.properties
             .insert("success".to_owned(), Value::from(exit == ExitCode::Success));
         self.properties
@@ -161,6 +204,68 @@ impl Recorder {
         self.client
             .capture(tonk_analytics::event::CLI_COMMAND_RUN, properties);
         self.client.flush(Duration::from_millis(300)).await;
+    }
+}
+
+fn product_classification(
+    command: &str,
+    subcommand: Option<&str>,
+) -> Option<(
+    tonk_analytics::product::Journey,
+    tonk_analytics::product::ProductAction,
+)> {
+    use tonk_analytics::product::{Journey, ProductAction as Action};
+    let action = match (command, subcommand) {
+        ("telemetry" | "account", _) => return None,
+        ("help", _) => Action::Help,
+        ("identity", _) => Action::Identity,
+        ("space", Some("new")) => Action::CreateSpace,
+        ("space", Some("rm")) => Action::RemoveSpace,
+        ("space", _) => Action::ConfigureSpace,
+        ("invite", _) => Action::MintInvite,
+        ("join", _) => Action::JoinSpace,
+        ("connect", _) => Action::ConnectAgent,
+        ("eval", _) => Action::Evaluate,
+        ("show" | "query" | "status", _) => Action::Query,
+        ("assert" | "retract", _) => Action::Edit,
+        ("concept", _) => Action::Concept,
+        ("view", _) => Action::View,
+        ("import", _) => Action::Import,
+        ("export", _) => Action::Export,
+        ("render", _) => Action::Render,
+        ("blob", _) => Action::Blob,
+        ("push", _) => Action::Push,
+        ("pull", _) => Action::Pull,
+        ("remote", _) => Action::Remote,
+        ("migrate", _) => Action::Migrate,
+        ("update", _) => Action::Upgrade,
+        _ => return None,
+    };
+    let journey = match action {
+        Action::CreateSpace | Action::ConfigureSpace | Action::RemoveSpace => Journey::Space,
+        Action::MintInvite | Action::JoinSpace => Journey::Collaboration,
+        Action::ConnectAgent => Journey::Handoff,
+        Action::Push | Action::Pull => Journey::Sync,
+        _ => Journey::Workspace,
+    };
+    Some((journey, action))
+}
+
+fn product_outcome(
+    exit: ExitCode,
+) -> (
+    tonk_analytics::product::ProductResult,
+    Option<tonk_analytics::product::FailureKind>,
+) {
+    use tonk_analytics::product::{FailureKind, ProductResult};
+    match exit {
+        ExitCode::Success => (ProductResult::Success, None),
+        ExitCode::ParseError | ExitCode::AnalyzeError => (
+            ProductResult::TerminalFailure,
+            Some(FailureKind::InvalidInput),
+        ),
+        ExitCode::CommitError => (ProductResult::UnknownCommit, Some(FailureKind::LocalState)),
+        ExitCode::IoError => (ProductResult::RetryableFailure, Some(FailureKind::Network)),
     }
 }
 
@@ -184,6 +289,46 @@ mod tests {
         let settings = Settings::default();
         assert!(settings.enabled);
         assert!(!settings.notice_shown);
+    }
+
+    #[dialog_common::test]
+    fn every_current_non_account_command_family_has_a_product_classification() {
+        for command in [
+            "help", "space", "identity", "eval", "show", "query", "assert", "retract", "migrate",
+            "export", "render", "import", "push", "pull", "status", "invite", "join", "connect",
+            "remote", "concept", "view", "update", "blob",
+        ] {
+            assert!(
+                product_classification(command, None).is_some(),
+                "missing product classification for {command}"
+            );
+        }
+        assert!(product_classification("account", Some("status")).is_none());
+        assert!(product_classification("telemetry", None).is_none());
+    }
+
+    #[dialog_common::test]
+    fn command_exits_map_to_reviewed_product_outcomes() {
+        use tonk_analytics::product::{FailureKind, ProductResult};
+        assert_eq!(
+            product_outcome(ExitCode::Success),
+            (ProductResult::Success, None)
+        );
+        assert_eq!(
+            product_outcome(ExitCode::ParseError),
+            (
+                ProductResult::TerminalFailure,
+                Some(FailureKind::InvalidInput)
+            )
+        );
+        assert_eq!(
+            product_outcome(ExitCode::CommitError),
+            (ProductResult::UnknownCommit, Some(FailureKind::LocalState))
+        );
+        assert_eq!(
+            product_outcome(ExitCode::IoError),
+            (ProductResult::RetryableFailure, Some(FailureKind::Network))
+        );
     }
 
     #[dialog_common::test]
@@ -228,6 +373,7 @@ mod tests {
                 ("subcommand".to_owned(), Value::from("login")),
                 ("environment".to_owned(), Value::from("cli")),
             ]),
+            product: None,
         };
         let start = AccountEvent::started(
             Journey::Login,
