@@ -1085,6 +1085,26 @@ pub mod command {
             pub struct Time(pub f64);
         }
 
+        /// `tonk/switch-profile` — make another profile on this browser
+        /// the active one.
+        pub mod switch_profile {
+            use dialog_query::Attribute;
+
+            /// The storage handle of the profile to open — what
+            /// `Profile::open` takes. The switcher reads it off the row's
+            /// durable `xyz.tonk.roster/name`, so a command can only ever
+            /// name a profile the device actually has.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.switch-profile")]
+            pub struct Handle(pub String);
+
+            /// The click's timestamp, so switching back to a profile
+            /// already switched to re-fires rather than deduplicating.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("xyz.tonk.command.switch-profile")]
+            pub struct Time(pub f64);
+        }
+
         /// `tonk/rename-repository` — rename a space's repository.
         pub mod rename_repository {
             use dialog_query::Attribute;
