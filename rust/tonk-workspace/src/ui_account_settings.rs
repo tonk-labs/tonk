@@ -24,7 +24,7 @@ use wasm_bindgen::JsCast as _;
 use wasm_bindgen::JsValue;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{Element, Event, HtmlElement, HtmlInputElement, KeyboardEvent, window};
+use web_sys::{Element, Event, HtmlElement, HtmlInputElement, window};
 
 use tonk_analytics::product::{Journey, ProductAction, ProductResult, Stage, Surface, Trigger};
 
@@ -38,7 +38,6 @@ const CEREMONY_TAG: &str = "ui-account-settings:ceremony";
 /// The email row, read as a fact rather than fetched.
 const ACCOUNT_TAG: &str = "ui-account-settings:account";
 /// The passkey rows, likewise.
-const PASSKEY_TAG: &str = "ui-account-settings:passkeys";
 const DELETE_ACCOUNT_CONFIRMATION: &str = "delete account";
 const ANALYTICS_ATTEMPT: &str = "data-analytics-ceremony-attempt";
 const ANALYTICS_STARTED: &str = "data-analytics-ceremony-started";
@@ -66,8 +65,6 @@ struct UiAccountSettings {
     subscription: Rc<RefCell<Option<Subscription>>>,
     /// The account facts the email row renders.
     account_subscription: Rc<RefCell<Option<Subscription>>>,
-    /// The passkey rows the panel lists.
-    passkey_subscription: Rc<RefCell<Option<Subscription>>>,
     /// The frame delegates the host calls by name off the element.
     frames: Vec<FrameClosure>,
 }
@@ -128,80 +125,6 @@ impl CustomElement for UiAccountSettings {
         let _ = this.add_event_listener_with_callback("click", click.as_ref().unchecked_ref());
         self.click = Some(click);
 
-        // The display name saves on commit (change = Enter or blur). The
-        // roster subscription repaints the bar's account cell when the
-        // write lands, which is the visible receipt.
-        let host = this.clone();
-        let change: EventClosure = Closure::wrap(Box::new(move |event: Event| {
-            let Some(input) = event
-                .target()
-                .and_then(|target| target.dyn_into::<HtmlInputElement>().ok())
-                .filter(|input| input.has_attribute("data-settings-name"))
-            else {
-                return;
-            };
-            let name = input.value();
-            if name.trim().is_empty() {
-                prefill_name(&host);
-                return;
-            }
-            spawn_local(async move {
-                let mut attempt = crate::analytics::Attempt::start(
-                    Journey::Account,
-                    ProductAction::SaveDisplayName,
-                    Surface::Settings,
-                    Trigger::User,
-                    Stage::Intent,
-                );
-                let body = serde_json::json!({ "name": name }).to_string();
-                match tonk_host::post_json("/api/account/display-name", &body).await {
-                    Ok(_) => attempt.finish(Stage::RemoteCommit, ProductResult::Success, None),
-                    Err(error) => {
-                        attempt.finish_error(Stage::RemoteCommit, &error);
-                        tonk_common::log!("settings: display-name save failed: {error:?}");
-                    }
-                }
-            });
-        }));
-        let _ = this.add_event_listener_with_callback("change", change.as_ref().unchecked_ref());
-        self.change = Some(change);
-
-        // A plain text input does not commit on Enter by itself. End the edit
-        // so the browser emits the same `change` event as a pointer blur and
-        // the one save path above handles both gestures.
-        let host_enter = this.clone();
-        let keydown: EventClosure = Closure::wrap(Box::new(move |event: Event| {
-            let Some(key) = event.dyn_ref::<KeyboardEvent>() else {
-                return;
-            };
-            if key.key() != "Enter" {
-                return;
-            }
-            let Some(target) = event
-                .target()
-                .and_then(|target| target.dyn_into::<HtmlElement>().ok())
-            else {
-                return;
-            };
-            // Enter in the arming field submits when armed, and never
-            // breaks the line.
-            if target.has_attribute("data-delete-confirm") {
-                key.prevent_default();
-                submit_delete(&host_enter);
-                return;
-            }
-            let Some(input) = target
-                .dyn_into::<HtmlInputElement>()
-                .ok()
-                .filter(|input| input.has_attribute("data-settings-name"))
-            else {
-                return;
-            };
-            key.prevent_default();
-            let _ = input.blur();
-        }));
-        let _ = this.add_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref());
-        self.keydown = Some(keydown);
         // Every keystroke in the arming field re-judges the verb.
         let host = this.clone();
         let input: EventClosure = Closure::wrap(Box::new(move |event: Event| {
@@ -244,7 +167,6 @@ impl CustomElement for UiAccountSettings {
         let reset: FrameClosure = Closure::wrap(Box::new(
             move |payload: JsValue, opts: JsValue| match frame_tag(&opts).as_deref() {
                 Some(ACCOUNT_TAG) => on_account_snapshot(&host, payload),
-                Some(PASSKEY_TAG) => render_passkeys(&host, &js_sys::Array::from(&payload)),
                 _ => on_ceremony_snapshot(&host, payload),
             },
         ));
@@ -253,11 +175,6 @@ impl CustomElement for UiAccountSettings {
         let update: FrameClosure = Closure::wrap(Box::new(
             move |payload: JsValue, opts: JsValue| match frame_tag(&opts).as_deref() {
                 Some(ACCOUNT_TAG) => on_account_delta(&host, payload),
-                Some(PASSKEY_TAG) => {
-                    let asserted =
-                        Reflect::get(&payload, &"asserted".into()).unwrap_or(JsValue::UNDEFINED);
-                    render_passkeys(&host, &js_sys::Array::from(&asserted));
-                }
                 _ => on_ceremony_delta(&host, payload),
             },
         ));
@@ -265,7 +182,6 @@ impl CustomElement for UiAccountSettings {
         self.frames = vec![reset, update];
         subscribe_ceremony(this, self.subscription.clone());
         subscribe_account(this, self.account_subscription.clone());
-        subscribe_passkeys(this, self.passkey_subscription.clone());
 
         refresh(this);
         let host = this.clone();
@@ -441,7 +357,6 @@ pub(crate) fn refresh(this: &HtmlElement) {
                 provision_local_space_link(this, request);
             }
         }
-        prefill_name(this);
         crate::agent_connections::refresh(this);
         return;
     }
@@ -470,7 +385,6 @@ pub(crate) fn refresh(this: &HtmlElement) {
             }
         }
     }
-    prefill_name(this);
     crate::agent_connections::refresh(this);
 }
 
@@ -1341,130 +1255,6 @@ fn subscribe_account(this: &HtmlElement, subscription: Rc<RefCell<Option<Subscri
     });
 }
 
-/// Watch the passkey rows the settings panel lists.
-///
-/// `RecoveryPasskey` carries everything shown — the creation label and
-/// its timestamp — so this reads the concept directly.
-///
-/// The worker enumerates an account's passkeys by joining through the
-/// `SecretMessage` whose sender is the account, because the passkey row
-/// deliberately holds no second copy of the account it belongs to. That
-/// join answers "whose passkey is this", which a DISPLAY on this branch
-/// does not have to ask: passkey rows are written to the profile's own
-/// branch beside the account's envelope, and a profile branch carries
-/// one account. Every row here is this account's.
-fn subscribe_passkeys(this: &HtmlElement, subscription: Rc<RefCell<Option<Subscription>>>) {
-    let host = this.clone();
-    spawn_local(async move {
-        if !host.is_connected() || subscription.borrow().is_some() {
-            return;
-        }
-        if host.get_attribute("with").is_none() {
-            let _ = host.set_attribute("with", PROFILE_WITH);
-        }
-        let consumer: Element = host.clone().into();
-        let body = r#"{
-          "predicate": { "with": {
-            "created_on": { "the": "xyz.tonk.recovery/created-on", "as": "Text", "cardinality": "one" },
-            "created_at": { "the": "xyz.tonk.recovery/created-at", "as": "UnsignedInteger", "cardinality": "one" }
-          } },
-          "terms": {
-            "this": { "?": { "name": "this" } },
-            "created_on": { "?": { "name": "created_on" } },
-            "created_at": { "?": { "name": "created_at" } }
-          }
-        }"#;
-        let Ok(body) = JSON::parse(body) else {
-            return;
-        };
-        let tag = JsValue::from_str(PASSKEY_TAG);
-        match consumer::subscribe(&consumer, &body, Some(&tag)) {
-            Ok(sub) => *subscription.borrow_mut() = Some(sub),
-            Err(error) => {
-                tonk_common::log!("ui-account-settings: passkey subscribe failed: {error:?}")
-            }
-        }
-    });
-}
-
-/// List every passkey the account has, newest first.
-///
-/// Rows arrive unordered, so they are sorted here. The panel ships one
-/// row of markup as its template; the rest are cloned from it, and the
-/// whole list is rebuilt on each frame rather than diffed -- a handful
-/// of passkeys is not worth reconciling.
-fn render_passkeys(this: &HtmlElement, rows: &js_sys::Array) {
-    let Some(first) = this
-        .query_selector("[data-settings-passkey-device]")
-        .ok()
-        .flatten()
-        .and_then(|device| device.parent_element())
-    else {
-        return;
-    };
-    let Some(parent) = first.parent_element() else {
-        return;
-    };
-
-    let mut passkeys: Vec<(f64, String)> = Vec::new();
-    for row in rows.iter() {
-        let Ok(fields) = Reflect::get(&row, &"fields".into()) else {
-            continue;
-        };
-        let created_on = Reflect::get(&fields, &"created_on".into())
-            .ok()
-            .and_then(|value| value.as_string());
-        let created_at = Reflect::get(&fields, &"created_at".into())
-            .ok()
-            .and_then(|value| value.as_f64());
-        if let (Some(on), Some(at)) = (created_on, created_at) {
-            passkeys.push((at, on));
-        }
-    }
-    passkeys.sort_by(|a, b| b.0.total_cmp(&a.0));
-
-    // Drop every row this rebuild replaces, keeping the first as the
-    // template to clone from.
-    while let Some(extra) = first.next_element_sibling().filter(|sibling| {
-        sibling
-            .query_selector("[data-settings-passkey-device]")
-            .ok()
-            .flatten()
-            .is_some()
-    }) {
-        let _ = parent.remove_child(&extra);
-    }
-
-    if passkeys.is_empty() {
-        set_text(this, "[data-settings-passkey-device]", "Unavailable");
-        set_text(this, "[data-settings-passkey-created]", "");
-        return;
-    }
-
-    for (index, (created_at, created_on)) in passkeys.iter().enumerate() {
-        let row = if index == 0 {
-            first.clone()
-        } else {
-            let Ok(clone) = first.clone_node_with_deep(true) else {
-                break;
-            };
-            let Ok(clone) = clone.dyn_into::<Element>() else {
-                break;
-            };
-            let _ = parent.insert_before(&clone, first.next_sibling().as_ref());
-            clone
-        };
-        if let Ok(Some(device)) = row.query_selector("[data-settings-passkey-device]") {
-            device.set_text_content(Some(created_on));
-        }
-        if let Ok(Some(created)) = row.query_selector("[data-settings-passkey-created]") {
-            let date = js_sys::Date::new(&JsValue::from_f64(created_at * 1000.0))
-                .to_locale_date_string("default", &JsValue::UNDEFINED);
-            created.set_text_content(Some(&format!("created {}", String::from(date))));
-        }
-    }
-}
-
 /// A snapshot frame carrying the account row.
 fn on_account_snapshot(this: &HtmlElement, payload: JsValue) {
     let rows = js_sys::Array::from(&payload);
@@ -1637,65 +1427,6 @@ fn finish_ceremony_attempt(
     for attribute in [ANALYTICS_ATTEMPT, ANALYTICS_STARTED, ANALYTICS_CEREMONY] {
         let _ = this.remove_attribute(attribute);
     }
-}
-
-/// Seed the display-name editable with what the roster resolved, so the
-/// field is never blank while the member HAS a name.
-///
-/// A Hub seat used to read the name off a `data-active-name` attribute
-/// the surrounding `<ui-hub-account>` stamped. That element is gone —
-/// the bar renders `tonk:account/name` as a view — so the name is read
-/// from the rendered label when one is on the page, and asked for
-/// otherwise. Both seats now take the same road when nothing is
-/// rendered yet, which is the dialog's road.
-fn prefill_name(this: &HtmlElement) {
-    let Some(name) = name_input(this) else {
-        return;
-    };
-    if !name.value().trim().is_empty() {
-        return;
-    }
-    if let Some(active) = this
-        .owner_document()
-        .and_then(|document| {
-            document
-                .query_selector("[data-account-label]")
-                .ok()
-                .flatten()
-        })
-        .and_then(|label| label.text_content())
-        .filter(|active| !active.trim().is_empty())
-    {
-        name.set_value(active.trim());
-        return;
-    }
-    let host = this.clone();
-    spawn_local(async move {
-        let Ok(body) = tonk_host::get_json("/api/profiles").await else {
-            return;
-        };
-        let Ok(response) = serde_json::from_str::<tonk_worker_api::ProfilesResponse>(&body) else {
-            return;
-        };
-        let active = response
-            .profiles
-            .iter()
-            .find(|profile| profile.active || profile.profile_name == response.active)
-            .and_then(|profile| profile.display_name.clone())
-            .filter(|name| !name.trim().is_empty());
-        if let (Some(active), Some(name)) = (active, name_input(&host))
-            && name.value().trim().is_empty()
-        {
-            name.set_value(&active);
-        }
-    });
-}
-
-fn name_input(this: &HtmlElement) -> Option<HtmlInputElement> {
-    this.query_selector("[data-settings-name]")
-        .ok()
-        .flatten()
-        .and_then(|field| field.dyn_into().ok())
 }
 
 /// Register `<ui-account-settings>`. Idempotent.
@@ -2147,44 +1878,5 @@ mod tests {
         );
         host.remove();
         style.remove();
-    }
-
-    #[wasm_bindgen_test]
-    fn enter_ends_a_display_name_edit() {
-        super::register();
-        let document = window().unwrap().document().unwrap();
-        let host: HtmlElement = document
-            .create_element("ui-account-settings")
-            .unwrap()
-            .dyn_into()
-            .unwrap();
-        document.body().unwrap().append_child(&host).unwrap();
-        let input: HtmlInputElement = host
-            .query_selector("[data-settings-name]")
-            .unwrap()
-            .expect("display-name input")
-            .dyn_into()
-            .unwrap();
-        input.focus().expect("focus display name");
-        assert!(
-            document
-                .active_element()
-                .is_some_and(|active| active.is_same_node(Some(&input))),
-            "the edit must begin focused",
-        );
-
-        let init = KeyboardEventInit::new();
-        init.set_key("Enter");
-        init.set_bubbles(true);
-        let enter = KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
-        input.dispatch_event(&enter).unwrap();
-
-        assert!(
-            document
-                .active_element()
-                .is_none_or(|active| !active.is_same_node(Some(&input))),
-            "Enter must blur the field so its existing change-save path runs",
-        );
-        host.remove();
     }
 }

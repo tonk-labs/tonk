@@ -724,9 +724,16 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
     assert!(SETTINGS_PANEL_MARKUP.contains("data-add-passkey"));
     assert!(!SETTINGS_PANEL_MARKUP.contains("href=\"/account\""));
     assert!(!SETTINGS_PANEL_MARKUP.contains("href=\"/settings\""));
-    assert!(SETTINGS_PANEL_MARKUP.contains("data-settings-name"));
+    // The name, address and passkeys are facts now, so the panel mounts
+    // the view that renders them rather than carrying their markup.
+    assert!(
+        SETTINGS_PANEL_MARKUP
+            .contains(r#"<tonk-display model="tonk:account/registered" view="settings">"#),
+        "the account pane must render the registration facts, not paint them",
+    );
     // Editable settings fields use native text inputs and native carets.
-    let name_row = SETTINGS_PANEL_MARKUP
+    // The row moved to the view; the contract did not.
+    let name_row = PROFILE_LIBRARY
         .split("<span>display name</span>")
         .nth(1)
         .and_then(|rest| rest.split("</div>").next())

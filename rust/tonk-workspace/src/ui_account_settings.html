@@ -1,24 +1,10 @@
 <div class="s-body">
   <div class="pane" data-pane="account">
-    <div class="srowd">
-      <span>display name</span>
-      <span class="sname-seat"
-        ><input
-          class="sname"
-          data-settings-name
-          aria-label="display name"
-      /></span>
-    </div>
-    <div class="srowd"><span>account email</span><b data-settings-email>loading&hellip;</b></div>
-    <div class="sect">passkeys</div>
-    <div class="srowd">
-      <b class="lft" data-settings-passkey-device>loading&hellip;</b>
-      <b data-settings-passkey-created></b>
-    </div>
-    <p class="expl">
-      Your passkey replaces a password and may be saved to a device, browser
-      profile, or password manager.
-    </p>
+    <!-- The name, address and passkey list are facts, rendered by the
+         `settings` view on `tonk:account/registered`. What stays here
+         are the acts that need a live `navigator.credentials` call,
+         which no view can make. -->
+    <tonk-display model="tonk:account/registered" view="settings"></tonk-display>
     <div class="srowd">
       <span>another passkey for this account</span>
       <button class="cta" type="button" data-add-passkey>add a passkey with the current one</button>
