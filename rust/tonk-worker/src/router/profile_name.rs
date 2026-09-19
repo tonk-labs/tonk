@@ -19,10 +19,9 @@ use dialog_operator::Profile;
 #[cfg(target_arch = "wasm32")]
 use tonk_schema::{MemberName, Membership};
 
-// The profile repository lives on `main` (it has no content/meta
-// split); spaces re-stamp member names on their own `main` content
-// branch.
-const PROFILE_BRANCH: &str = "main";
+// Spaces re-stamp member names on their own `main` content branch,
+// which is the same name the profile's content branch carries.
+use super::repository::PROFILE_BRANCH;
 // Only the wasm-gated rename handler re-stamps member names, so this and
 // `restamp_member_name` exist only on the wasm target (the worker's real
 // runtime). Gating them keeps the native `clippy -D warnings` build clean.

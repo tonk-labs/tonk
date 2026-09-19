@@ -97,9 +97,7 @@ use super::repository::{
 };
 use crate::{TonkWorkerError, worker::TonkState};
 
-/// The single branch the profile repository lives on (`main`; the
-/// profile has no content/meta split).
-const PROFILE_BRANCH: &str = "main";
+use super::repository::PROFILE_BRANCH;
 
 /// Default upstream branch wired up when the invite carries a
 /// `remote=` URL.
