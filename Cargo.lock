@@ -4803,21 +4803,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tonk-board"
-version = "0.6.15"
-dependencies = [
- "custom-elements",
- "js-sys",
- "serde-wasm-bindgen",
- "serde_json",
- "tonk-host",
- "tonk-schema",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
-]
-
-[[package]]
 name = "tonk-cli"
 version = "0.6.15"
 dependencies = [
@@ -5017,13 +5002,11 @@ dependencies = [
  "custom-elements",
  "dialog-common",
  "js-sys",
- "tonk-board",
  "tonk-display",
  "tonk-fab",
  "tonk-host",
  "tonk-inspector",
  "tonk-portal",
- "tonk-sigil",
  "tonk-tree",
  "tonk-workspace",
  "wasm-bindgen",
@@ -5174,6 +5157,7 @@ dependencies = [
 name = "tonk-notation"
 version = "0.6.15"
 dependencies = [
+ "base64",
  "dialog-common",
  "lsp-types",
  "saphyr",
@@ -5299,18 +5283,6 @@ dependencies = [
  "tonk-notation",
  "tonk-worker-api",
  "wasm-bindgen-test",
-]
-
-[[package]]
-name = "tonk-sigil"
-version = "0.6.15"
-dependencies = [
- "blake3",
- "bs58",
- "custom-elements",
- "js-sys",
- "wasm-bindgen",
- "web-sys",
 ]
 
 [[package]]

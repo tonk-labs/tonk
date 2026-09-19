@@ -6,7 +6,6 @@ members = [
   "rust/tonk-account",
   "rust/tonk-analytics",
   "rust/tonk-analyzer",
-  "rust/tonk-board",
   "rust/tonk-cli",
   "rust/tonk-code",
   "rust/tonk-common",
@@ -29,7 +28,6 @@ members = [
   "rust/tonk-render",
   "rust/tonk-router",
   "rust/tonk-schema",
-  "rust/tonk-sigil",
   "rust/tonk-table",
   "rust/tonk-template",
   "rust/tonk-tree",
@@ -53,7 +51,6 @@ tonk-access-service = { path = "./rust/tonk-access-service" }
 tonk-account = { path = "./rust/tonk-account" }
 tonk-analytics = { path = "./rust/tonk-analytics" }
 tonk-analyzer = { path = "./rust/tonk-analyzer" }
-tonk-board = { path = "./rust/tonk-board" }
 tonk-code = { path = "./rust/tonk-code" }
 tonk-common = { path = "./rust/tonk-common" }
 tonk-core = { path = "./rust/tonk-core" }
@@ -73,7 +70,6 @@ tonk-prose = { path = "./rust/tonk-prose" }
 tonk-render = { path = "./rust/tonk-render" }
 tonk-router = { path = "./rust/tonk-router" }
 tonk-schema = { path = "./rust/tonk-schema" }
-tonk-sigil = { path = "./rust/tonk-sigil" }
 tonk-table = { path = "./rust/tonk-table" }
 tonk-template = { path = "./rust/tonk-template" }
 tonk-tree = { path = "./rust/tonk-tree" }

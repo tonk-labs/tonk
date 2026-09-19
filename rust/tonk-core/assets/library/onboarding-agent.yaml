@@ -121,11 +121,9 @@ view!:
       <div class="playground-agent">
         <style>.playground-agent tonk-display > [slot][hidden] { display: none !important; }</style>
         <tonk-page on:invite=tonk:agent-handoff></tonk-page>
-        <tonk-origin>
-          <tonk-display entity={subject} model=tonk:onboarding/agent-invite>
-            <tonk-display slot="no-entity" entity={subject} model=tonk:agent-handoff-state>
-              <p slot="no-entity">Preparing agent connection…</p>
-            </tonk-display>
+        <tonk-display entity={subject} model=tonk:onboarding/agent-invite>
+          <tonk-display slot="no-entity" entity={subject} model=tonk:agent-handoff-state>
+            <p slot="no-entity">Preparing agent connection…</p>
           </tonk-display>
-        </tonk-origin>
+        </tonk-display>
       </div>
