@@ -999,14 +999,17 @@
             data-target-path="tonk-prose"
         />
 
-        <!-- `<tonk-table>` IronCalc spreadsheet bundle, same layout
-       contract as tonk-prose above: the shell (`tonk-table.js`)
-       registers the element and lazily imports the grid core
-       (`tonk-table-grid.js`) from a sibling URL on first connect; the
-       grid in turn pulls `tonk-table-engine.js` (the base64-embedded
-       IronCalc engine wasm) the same way, so all three files must sit
-       in the same directory. Load it with the crate's
-       `install("/tonk-table/tonk-table.js")` or a module script. -->
+        <!-- `<tonk-table>` IronCalc spreadsheet core. Unlike tonk-prose
+       above there is no registration shell here: the element itself is
+       branch data (`element!: &tonk-table` in
+       `tonk-core/assets/library/table.yaml`), resolved by the element
+       registry the first time the tag is rendered. What is copied is
+       the core the shell imports on its first connect —
+       `tonk-table-grid.js` — which in turn pulls
+       `tonk-table-engine.js` (the base64-embedded IronCalc engine
+       wasm) from a sibling URL, so both files must sit in the same
+       directory. Point the shell at it with the crate's
+       `install("/tonk-table/tonk-table-grid.js")`. -->
         <link
             data-trunk
             rel="copy-dir"
