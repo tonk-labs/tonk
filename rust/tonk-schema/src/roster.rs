@@ -63,6 +63,54 @@ impl DeviceProfile {
     }
 }
 
+/// What a switcher row shows about a profile, as of this read.
+///
+/// OVERLAY ONLY — never committed. Its fields live on that profile's own
+/// account branch, which a sealed guest cannot reach: the guest queries the
+/// ACTIVE profile's branches and nothing else. The worker can open every
+/// profile, so it reads each one and republishes the result here, where the
+/// guest can see it.
+///
+/// This is the same shape the space directory uses, and for the same reason:
+/// `xyz.tonk.space/name` mirrors a name that belongs to the space's own repo
+/// so a device that has not replicated it can still label the card.
+///
+/// The difference is that this mirror is never written down. A durable copy
+/// is what [`DeviceProfile`]'s design refused — it would be a second home
+/// for a name owned elsewhere, free to disagree after a rename on another
+/// device. An overlay fact is rebuilt from the source on every roster read
+/// and discarded with the session, so there is nothing to invalidate.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ProfileRow {
+    /// The profile's DID — the same entity [`DeviceProfile`] uses, so a
+    /// query joins the durable handle to these transient fields.
+    pub this: Entity,
+    /// The account name to show, read from that profile's account branch.
+    pub label: crate::domain::roster::Label,
+    /// The access service the account is attached to. A local workspace
+    /// has none.
+    pub provider: crate::domain::roster::Provider,
+    /// Whether this is the profile the browser is using right now.
+    pub active: crate::domain::roster::Active,
+}
+
+impl ProfileRow {
+    /// The row for `profile`.
+    ///
+    /// `label` and `provider` fall back to the empty string rather than
+    /// being omitted: every field of a concept must be present for the row
+    /// to match, and a switcher that drops unnamed or unlinked profiles
+    /// would hide exactly the local workspace a person is trying to find.
+    pub fn new(profile: &Did, label: Option<&str>, provider: Option<&str>, active: bool) -> Self {
+        Self {
+            this: profile.this(),
+            label: crate::domain::roster::Label(label.unwrap_or_default().to_owned()),
+            provider: crate::domain::roster::Provider(provider.unwrap_or_default().to_owned()),
+            active: crate::domain::roster::Active(active),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
