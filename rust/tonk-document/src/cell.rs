@@ -38,7 +38,11 @@ pub fn cell_id(entity: &Entity) -> String {
 
 /// The capability naming a document's cell under `subject`.
 pub fn cell(subject: &Subject, entity: &Entity) -> Capability<Cell> {
-    subject.clone().memory().space(space(entity)).cell("automerge")
+    subject
+        .clone()
+        .memory()
+        .space(space(entity))
+        .cell("automerge")
 }
 
 /// Failures moving a document's bytes.
@@ -121,7 +125,12 @@ where
     }
 
     async fn publish(&self, bytes: Vec<u8>, when: Option<Version>) -> Result<Version, CellError> {
-        Ok(self.cell.clone().publish(bytes, when).perform(self.env).await?)
+        Ok(self
+            .cell
+            .clone()
+            .publish(bytes, when)
+            .perform(self.env)
+            .await?)
     }
 }
 
@@ -147,7 +156,8 @@ impl<'a, Env> RemoteCell<'a, Env> {
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl<Env> Transport for RemoteCell<'_, Env>
 where
-    Env: Provider<Fork<RemoteSite, Resolve>> + Provider<Fork<RemoteSite, Publish>> + ConditionalSync,
+    Env:
+        Provider<Fork<RemoteSite, Resolve>> + Provider<Fork<RemoteSite, Publish>> + ConditionalSync,
 {
     async fn resolve(&self) -> Result<Option<(Vec<u8>, Version)>, CellError> {
         let edition = self
@@ -243,7 +253,11 @@ pub(crate) mod tests {
                 .map(|(bytes, n)| (bytes.clone(), version(*n))))
         }
 
-        async fn publish(&self, bytes: Vec<u8>, when: Option<Version>) -> Result<Version, CellError> {
+        async fn publish(
+            &self,
+            bytes: Vec<u8>,
+            when: Option<Version>,
+        ) -> Result<Version, CellError> {
             let mut state = self.state.lock().unwrap();
             let current = state.as_ref().map(|(_, n)| version(*n));
             if current != when {

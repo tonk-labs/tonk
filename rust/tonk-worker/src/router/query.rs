@@ -147,10 +147,7 @@ async fn query_on_branch<'a>(
             // `document/*` formulas are history reads, resolved by the
             // host-neutral `tonk-document` crate so the CLI answers them
             // the same way; everything else is the reactor's `tree/*`.
-            let conclusions = if wire
-                .formula()
-                .is_some_and(tonk_document::formula::handles)
-            {
+            let conclusions = if wire.formula().is_some_and(tonk_document::formula::handles) {
                 tonk_document::formula::resolve(session.handle(), &tonk.operator, &wire)
                     .await
                     .map_err(|e| TonkWorkerError::Router(e.to_string()))?

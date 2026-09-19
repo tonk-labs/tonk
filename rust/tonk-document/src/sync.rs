@@ -56,9 +56,14 @@ pub struct Outcome {
     pub pushed: bool,
 }
 
-async fn read_marker<M: Transport + ?Sized>(marker: &M) -> Result<(Marker, Option<Version>), CellError> {
+async fn read_marker<M: Transport + ?Sized>(
+    marker: &M,
+) -> Result<(Marker, Option<Version>), CellError> {
     Ok(match marker.resolve().await? {
-        Some((bytes, version)) => (serde_json::from_slice(&bytes).unwrap_or_default(), Some(version)),
+        Some((bytes, version)) => (
+            serde_json::from_slice(&bytes).unwrap_or_default(),
+            Some(version),
+        ),
         None => (Marker::default(), None),
     })
 }
@@ -98,7 +103,10 @@ where
         let ours = document.store_heads();
         let remote_version = theirs.as_ref().map(|(_, version)| version.clone());
         let published = if ours != remote_heads {
-            match remote.publish(document.save(), remote_version.clone()).await {
+            match remote
+                .publish(document.save(), remote_version.clone())
+                .await
+            {
                 Ok(version) => Some(version),
                 Err(CellError::Conflict) => continue,
                 Err(other) => return Err(other),
@@ -131,8 +139,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cell::tests::MemoryCell;
     use crate::cell::load;
+    use crate::cell::tests::MemoryCell;
     use crate::engine::{Edit, Stamp};
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test_configure;
@@ -159,7 +167,15 @@ mod tests {
             };
             let heads = document.store_heads();
             let after = document
-                .edit(&heads, &Stamp::default(), &Edit::Splice { at: 0, delete: 0, text: text.into() })
+                .edit(
+                    &heads,
+                    &Stamp::default(),
+                    &Edit::Splice {
+                        at: 0,
+                        delete: 0,
+                        text: text.into(),
+                    },
+                )
                 .unwrap();
             save(&self.local, &mut document, version).await.unwrap();
             after
@@ -186,7 +202,10 @@ mod tests {
 
         assert!(a.sync(&remote).await.pushed, "a creates the remote cell");
         let second = b.sync(&remote).await;
-        assert!(second.pulled && second.pushed, "b merges a's changes and publishes the union");
+        assert!(
+            second.pulled && second.pushed,
+            "b merges a's changes and publishes the union"
+        );
         assert!(a.sync(&remote).await.pulled);
 
         let (ta, tb) = (a.text().await, b.text().await);
@@ -211,7 +230,10 @@ mod tests {
         // A faulty writer puts the older bytes back.
         remote.clobber(older);
         let healed = a.sync(&remote).await;
-        assert!(healed.pushed, "the replica that holds more publishes the union");
+        assert!(
+            healed.pushed,
+            "the replica that holds more publishes the union"
+        );
         let (mut document, _) = load(&remote).await.unwrap().unwrap();
         let heads = document.store_heads();
         assert!(document.text(&heads).unwrap().contains("second."));

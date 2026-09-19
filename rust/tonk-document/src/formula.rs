@@ -98,7 +98,10 @@ fn limit_term(query: &Query) -> usize {
     }
 }
 
-fn row(this: impl Into<String>, fields: impl IntoIterator<Item = (&'static str, Ipld)>) -> Conclusion {
+fn row(
+    this: impl Into<String>,
+    fields: impl IntoIterator<Item = (&'static str, Ipld)>,
+) -> Conclusion {
     Conclusion {
         this: this.into(),
         fields: fields
@@ -150,7 +153,10 @@ pub async fn resolve<Env: DocumentEnv>(
                                     ("name", text(sheet.name.clone())),
                                     ("at", text(at.clone())),
                                     ("content", text(content.clone())),
-                                    ("style", text(sheet.styles.get(at).cloned().unwrap_or_default())),
+                                    (
+                                        "style",
+                                        text(sheet.styles.get(at).cloned().unwrap_or_default()),
+                                    ),
                                     ("heads", text(joined.clone())),
                                 ],
                             ));
@@ -186,7 +192,8 @@ pub async fn resolve<Env: DocumentEnv>(
         }
 
         "document/diff" => {
-            let from = heads_term(query, "from").ok_or_else(|| bad(&name, "`from` must be heads"))?;
+            let from =
+                heads_term(query, "from").ok_or_else(|| bad(&name, "`from` must be heads"))?;
             let to = heads_term(query, "to").ok_or_else(|| bad(&name, "`to` must be heads"))?;
             let (mut opened, _) = session::open(branch, &entity, None, env).await?;
             let ops = opened.diff(&from, &to).map_err(SessionError::from)?;
@@ -198,7 +205,11 @@ pub async fn resolve<Env: DocumentEnv>(
                     match op {
                         DiffOp::Insert { at, text: inserted } => row(
                             this,
-                            [("op", text("insert")), ("at", Ipld::Integer(at as i128)), ("text", text(inserted))],
+                            [
+                                ("op", text("insert")),
+                                ("at", Ipld::Integer(at as i128)),
+                                ("text", text(inserted)),
+                            ],
                         ),
                         DiffOp::Delete { at, length } => row(
                             this,
@@ -210,9 +221,15 @@ pub async fn resolve<Env: DocumentEnv>(
                         ),
                         DiffOp::Put { path, value } => row(
                             this,
-                            [("op", text("put")), ("path", text(path)), ("value", text(plain(&value)))],
+                            [
+                                ("op", text("put")),
+                                ("path", text(path)),
+                                ("value", text(plain(&value))),
+                            ],
                         ),
-                        DiffOp::Remove { path } => row(this, [("op", text("remove")), ("path", text(path))]),
+                        DiffOp::Remove { path } => {
+                            row(this, [("op", text("remove")), ("path", text(path))])
+                        }
                     }
                 })
                 .collect())
@@ -245,7 +262,9 @@ async fn versions<Env: DocumentEnv>(
     limit: usize,
     env: &Env,
 ) -> Result<Vec<Conclusion>, FormulaError> {
-    let failed = |error: &dyn std::fmt::Display| FormulaError::Session(SessionError::Branch(error.to_string()));
+    let failed = |error: &dyn std::fmt::Display| {
+        FormulaError::Session(SessionError::Branch(error.to_string()))
+    };
     let heads_attribute = HEADS;
     // Revisions that did not touch the document are skipped, so scan a
     // generous window of the log for `limit` hits.
@@ -265,12 +284,12 @@ async fn versions<Env: DocumentEnv>(
             futures_util::pin_mut!(stream);
             while let Some(next) = stream.next().await {
                 let (_, entry) = next.map_err(|error| failed(&error))?;
-                if let dialog_artifacts::history::Record::Assert(claim) = entry {
-                    if &claim.of == entity && claim.the.to_string() == heads_attribute {
-                        if let Ok(head) = String::try_from(claim.is) {
-                            asserted.push(head);
-                        }
-                    }
+                if let dialog_artifacts::history::Record::Assert(claim) = entry
+                    && &claim.of == entity
+                    && claim.the.to_string() == heads_attribute
+                    && let Ok(head) = String::try_from(claim.is)
+                {
+                    asserted.push(head);
                 }
             }
         }
@@ -326,20 +345,73 @@ mod tests {
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
         let doc: Entity = "id:prose/doc".parse().unwrap();
-        let stamp = Stamp { author: Some("did:key:zAuthor".into()), time: 7 };
+        let stamp = Stamp {
+            author: Some("did:key:zAuthor".into()),
+            time: 7,
+        };
 
-        let v1 = session::write(&branch, &doc, Some(Format::Text), None, &[Edit::SetText { text: "one".into() }], &stamp, &operator).await?;
-        let v2 = session::write(&branch, &doc, None, None, &[Edit::SetText { text: "one two".into() }], &stamp, &operator).await?;
+        let v1 = session::write(
+            &branch,
+            &doc,
+            Some(Format::Text),
+            None,
+            &[Edit::SetText { text: "one".into() }],
+            &stamp,
+            &operator,
+        )
+        .await?;
+        let v2 = session::write(
+            &branch,
+            &doc,
+            None,
+            None,
+            &[Edit::SetText {
+                text: "one two".into(),
+            }],
+            &stamp,
+            &operator,
+        )
+        .await?;
 
-        let versions = resolve(&branch, &operator, &formula_query("document/versions", serde_json::json!({ "document": "id:prose/doc" }))).await?;
+        let versions = resolve(
+            &branch,
+            &operator,
+            &formula_query(
+                "document/versions",
+                serde_json::json!({ "document": "id:prose/doc" }),
+            ),
+        )
+        .await?;
         assert_eq!(versions.len(), 2, "one version per save");
-        assert_eq!(field(&versions[0], "heads"), format_heads(&v2.snapshot.heads), "newest first");
-        assert_eq!(field(&versions[1], "heads"), format_heads(&v1.snapshot.heads));
-        assert!(field(&versions[0], "author").starts_with("did:"), "the revision's signed attribution");
+        assert_eq!(
+            field(&versions[0], "heads"),
+            format_heads(&v2.snapshot.heads),
+            "newest first"
+        );
+        assert_eq!(
+            field(&versions[1], "heads"),
+            format_heads(&v1.snapshot.heads)
+        );
+        assert!(
+            field(&versions[0], "author").starts_with("did:"),
+            "the revision's signed attribution"
+        );
 
         let old = resolve(&branch, &operator, &formula_query("document/content", serde_json::json!({ "document": "id:prose/doc", "heads": format_heads(&v1.snapshot.heads) }))).await?;
-        assert_eq!(field(&old[0], "text"), "one", "content at old heads is the text saved then");
-        let now = resolve(&branch, &operator, &formula_query("document/content", serde_json::json!({ "document": "id:prose/doc" }))).await?;
+        assert_eq!(
+            field(&old[0], "text"),
+            "one",
+            "content at old heads is the text saved then"
+        );
+        let now = resolve(
+            &branch,
+            &operator,
+            &formula_query(
+                "document/content",
+                serde_json::json!({ "document": "id:prose/doc" }),
+            ),
+        )
+        .await?;
         assert_eq!(field(&now[0], "text"), "one two");
 
         let diff = resolve(&branch, &operator, &formula_query("document/diff", serde_json::json!({ "document": "id:prose/doc", "from": format_heads(&v1.snapshot.heads), "to": format_heads(&v2.snapshot.heads) }))).await?;
@@ -360,7 +432,12 @@ mod tests {
         let (operator, profile) = test_operator_with_profile().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
-        let result = resolve(&branch, &operator, &formula_query("document/content", serde_json::json!({}))).await;
+        let result = resolve(
+            &branch,
+            &operator,
+            &formula_query("document/content", serde_json::json!({})),
+        )
+        .await;
         assert!(matches!(result, Err(FormulaError::BadInput { .. })));
         assert!(handles("document/diff") && !handles("tree/node"));
         Ok(())

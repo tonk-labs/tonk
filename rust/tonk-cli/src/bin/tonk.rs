@@ -4080,7 +4080,12 @@ async fn list_concepts_op(site: &site::TonkSite, json: bool) -> ExitCode {
 
 /// Query every instance of `concept` as rendered by
 /// [`data_ops::query`].
-async fn query_op(concept: String, json: bool, terms: Vec<String>, space: Option<&str>) -> ExitCode {
+async fn query_op(
+    concept: String,
+    json: bool,
+    terms: Vec<String>,
+    space: Option<&str>,
+) -> ExitCode {
     let (_, site) = match open_selected(space).await {
         Ok(opened) => opened,
         Err(code) => return code,

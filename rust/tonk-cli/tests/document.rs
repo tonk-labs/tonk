@@ -31,7 +31,9 @@ async fn it_runs_a_document_command_asserted_from_the_cli() -> Result<()> {
             &doc,
             Some(Format::Text),
             None,
-            &[Edit::SetText { text: "hello world".into() }],
+            &[Edit::SetText {
+                text: "hello world".into(),
+            }],
             &Stamp::default(),
             &test.site.operator,
         )
@@ -42,17 +44,25 @@ async fn it_runs_a_document_command_asserted_from_the_cli() -> Result<()> {
     // command. The CLI has no command registry; its write path
     // dispatches the document commands itself after the commit.
     let outcome = test
-        .eval_inline("document/replace!:\n  document: id:prose/doc\n  find: \"world\"\n  with: \"there\"\n")
+        .eval_inline(
+            "document/replace!:\n  document: id:prose/doc\n  find: \"world\"\n  with: \"there\"\n",
+        )
         .await?;
     assert!(outcome.committed);
 
     let session = test.site.branch().await?;
     let after = session::read(session.handle(), &doc, None, &test.site.operator).await?;
-    assert_eq!(text(&after), "hello there", "the command edited the document");
+    assert_eq!(
+        text(&after),
+        "hello there",
+        "the command edited the document"
+    );
 
     // A refused command changes nothing.
-    test.eval_inline("document/replace!:\n  document: id:prose/doc\n  find: \"absent\"\n  with: \"x\"\n")
-        .await?;
+    test.eval_inline(
+        "document/replace!:\n  document: id:prose/doc\n  find: \"absent\"\n  with: \"x\"\n",
+    )
+    .await?;
     let still = session::read(session.handle(), &doc, None, &test.site.operator).await?;
     assert_eq!(text(&still), "hello there");
     Ok(())
@@ -80,7 +90,9 @@ async fn it_reads_document_text_and_history_with_queries() -> Result<()> {
             &doc,
             None,
             None,
-            &[Edit::SetText { text: "one two".into() }],
+            &[Edit::SetText {
+                text: "one two".into(),
+            }],
             &Stamp::default(),
             &test.site.operator,
         )
@@ -93,7 +105,10 @@ async fn it_reads_document_text_and_history_with_queries() -> Result<()> {
         .eval_inline("document/content:\n  this: ?doc\n  text: ?text\n")
         .await?;
     let rendered = format!("{:?}", query.response.matches_after);
-    assert!(rendered.contains("one two"), "the mirror is queryable: {rendered}");
+    assert!(
+        rendered.contains("one two"),
+        "the mirror is queryable: {rendered}"
+    );
 
     // History: the same formulas the worker's /query route resolves.
     let versions = tonk_cli::document::query_formula(
@@ -104,7 +119,11 @@ async fn it_reads_document_text_and_history_with_queries() -> Result<()> {
     .await
     .map_err(anyhow::Error::msg)?;
     let versions: serde_json::Value = serde_json::from_str(&versions)?;
-    assert_eq!(versions.as_array().map(Vec::len), Some(2), "one version per save");
+    assert_eq!(
+        versions.as_array().map(Vec::len),
+        Some(2),
+        "one version per save"
+    );
 
     let old = tonk_cli::document::query_formula(
         &test.site,

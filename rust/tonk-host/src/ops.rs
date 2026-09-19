@@ -378,7 +378,11 @@ fn handle_document(ev: &CustomEvent) {
         .ok()
         .filter(|value| value.is_object());
     // A read names the format to create with; a write carries it in its body.
-    let query_format = if write.is_some() { None } else { format.as_deref() };
+    let query_format = if write.is_some() {
+        None
+    } else {
+        format.as_deref()
+    };
     let Some(url) = document_url(
         space.as_deref(),
         branch.as_deref(),

@@ -298,8 +298,8 @@ fn fresh(format: Format) -> Result<AutoCommit, DocumentError> {
     // Without it each would create its own `text` object and one side's
     // edits would vanish on merge.
     let label = format!("tonk-document/genesis/{}", format.name());
-    let mut doc =
-        AutoCommit::new_with_encoding(TextEncoding::Utf16CodeUnit).with_actor(fixed_actor(label.as_bytes()));
+    let mut doc = AutoCommit::new_with_encoding(TextEncoding::Utf16CodeUnit)
+        .with_actor(fixed_actor(label.as_bytes()));
     match format {
         Format::Text => {
             doc.put_object(ROOT, TEXT_KEY, ObjType::Text)?;
@@ -395,9 +395,15 @@ impl Document {
             bytes,
             LoadOptions::new().text_encoding(TextEncoding::Utf16CodeUnit),
         )?;
-        let format = if matches!(doc.get(ROOT, TEXT_KEY)?, Some((Value::Object(ObjType::Text), _))) {
+        let format = if matches!(
+            doc.get(ROOT, TEXT_KEY)?,
+            Some((Value::Object(ObjType::Text), _))
+        ) {
             Format::Text
-        } else if matches!(doc.get(ROOT, SHEETS_KEY)?, Some((Value::Object(ObjType::Map), _))) {
+        } else if matches!(
+            doc.get(ROOT, SHEETS_KEY)?,
+            Some((Value::Object(ObjType::Map), _))
+        ) {
             Format::Table
         } else {
             return Err(DocumentError::WrongShape("a tonk document"));
@@ -497,7 +503,9 @@ impl Document {
         let sheets = sheets_object(doc, Some(at))?;
         let mut out = Vec::new();
         for id in doc.keys_at(&sheets, at) {
-            let Some((Value::Object(ObjType::Map), object)) = doc.get_at(&sheets, id.as_str(), at)? else {
+            let Some((Value::Object(ObjType::Map), object)) =
+                doc.get_at(&sheets, id.as_str(), at)?
+            else {
                 continue;
             };
             let mut sheet = Sheet {
@@ -539,7 +547,9 @@ impl Document {
             }
             out.push(sheet);
         }
-        out.sort_by(|a, b| (a.order.as_str(), a.id.as_str()).cmp(&(b.order.as_str(), b.id.as_str())));
+        out.sort_by(|a, b| {
+            (a.order.as_str(), a.id.as_str()).cmp(&(b.order.as_str(), b.id.as_str()))
+        });
         Ok(Table { sheets: out })
     }
 
@@ -603,12 +613,25 @@ impl Document {
                 let text = text_object(&self.doc, None)?;
                 self.doc.splice_text(&text, start, length as isize, with)?;
             }
-            (Format::Text, Edit::Insert { after, text: inserted }) => {
+            (
+                Format::Text,
+                Edit::Insert {
+                    after,
+                    text: inserted,
+                },
+            ) => {
                 let (start, length) = self.locate(at, after)?;
                 let text = text_object(&self.doc, None)?;
                 self.doc.splice_text(&text, start + length, 0, inserted)?;
             }
-            (Format::Text, Edit::Splice { at: start, delete, text: inserted }) => {
+            (
+                Format::Text,
+                Edit::Splice {
+                    at: start,
+                    delete,
+                    text: inserted,
+                },
+            ) => {
                 let text = text_object(&self.doc, None)?;
                 let length = self.doc.length(&text);
                 if start + delete > length {
@@ -618,7 +641,8 @@ impl Document {
                         length,
                     });
                 }
-                self.doc.splice_text(&text, *start, *delete as isize, inserted)?;
+                self.doc
+                    .splice_text(&text, *start, *delete as isize, inserted)?;
             }
             (Format::Text, Edit::SetText { text: new_text }) => {
                 let text = text_object(&self.doc, None)?;
@@ -648,10 +672,18 @@ impl Document {
             }
             (Format::Text, Edit::Put { .. }) => return Err(wrong_edit("put", Format::Text)),
             (Format::Text, Edit::Remove { .. }) => return Err(wrong_edit("remove", Format::Text)),
-            (Format::Table, Edit::Replace { .. }) => return Err(wrong_edit("replace", Format::Table)),
-            (Format::Table, Edit::Insert { .. }) => return Err(wrong_edit("insert", Format::Table)),
-            (Format::Table, Edit::Splice { .. }) => return Err(wrong_edit("splice", Format::Table)),
-            (Format::Table, Edit::SetText { .. }) => return Err(wrong_edit("set-text", Format::Table)),
+            (Format::Table, Edit::Replace { .. }) => {
+                return Err(wrong_edit("replace", Format::Table));
+            }
+            (Format::Table, Edit::Insert { .. }) => {
+                return Err(wrong_edit("insert", Format::Table));
+            }
+            (Format::Table, Edit::Splice { .. }) => {
+                return Err(wrong_edit("splice", Format::Table));
+            }
+            (Format::Table, Edit::SetText { .. }) => {
+                return Err(wrong_edit("set-text", Format::Table));
+            }
         }
         Ok(())
     }
@@ -759,7 +791,9 @@ impl Document {
                             at: index,
                             text: value.make_string(),
                         }),
-                        PatchAction::DeleteSeq { index, length } => out.push(DiffOp::Delete { at: index, length }),
+                        PatchAction::DeleteSeq { index, length } => {
+                            out.push(DiffOp::Delete { at: index, length })
+                        }
                         _ => {}
                     }
                 }
@@ -826,7 +860,12 @@ fn create_sheet(doc: &mut AutoCommit, sheets: &ObjId, id: &str) -> Result<ObjId,
     Ok(object)
 }
 
-fn string_at(doc: &AutoCommit, object: &ObjId, key: &str, at: &[ChangeHash]) -> Result<Option<String>, DocumentError> {
+fn string_at(
+    doc: &AutoCommit,
+    object: &ObjId,
+    key: &str,
+    at: &[ChangeHash],
+) -> Result<Option<String>, DocumentError> {
     Ok(match doc.get_at(object, key, at)? {
         Some((Value::Scalar(scalar), _)) => match scalar.as_ref() {
             ScalarValue::Str(text) => Some(text.to_string()),
@@ -836,7 +875,12 @@ fn string_at(doc: &AutoCommit, object: &ObjId, key: &str, at: &[ChangeHash]) -> 
     })
 }
 
-fn number_at(doc: &AutoCommit, object: &ObjId, key: &str, at: &[ChangeHash]) -> Result<Option<f64>, DocumentError> {
+fn number_at(
+    doc: &AutoCommit,
+    object: &ObjId,
+    key: &str,
+    at: &[ChangeHash],
+) -> Result<Option<f64>, DocumentError> {
     Ok(match doc.get_at(object, key, at)? {
         Some((Value::Scalar(scalar), _)) => match scalar.as_ref() {
             ScalarValue::F64(n) => Some(*n),
@@ -983,7 +1027,10 @@ mod tests {
         let mut a = Document::genesis(Format::Text).unwrap();
         let mut b = Document::genesis(Format::Text).unwrap();
         assert_eq!(a.store_heads(), b.store_heads());
-        assert_eq!(a.store_heads(), Document::genesis_heads(Format::Text).unwrap());
+        assert_eq!(
+            a.store_heads(),
+            Document::genesis_heads(Format::Text).unwrap()
+        );
 
         // Two replicas edit a new document with no contact, then merge.
         let genesis = a.store_heads();
@@ -994,7 +1041,10 @@ mod tests {
         let mut both = ha.clone();
         both.extend(hb);
         let merged = a.text(&both).unwrap();
-        assert!(merged.contains("hello") && merged.contains("world"), "{merged:?}");
+        assert!(
+            merged.contains("hello") && merged.contains("world"),
+            "{merged:?}"
+        );
     }
 
     #[dialog_common::test]
@@ -1004,8 +1054,15 @@ mod tests {
         assert_eq!(a.store_heads(), b.store_heads());
         let heads = a.store_heads();
         let bytes = b.save();
-        assert!(!a.merge(&bytes).unwrap(), "merging an identical import adds nothing");
-        assert_eq!(a.text(&heads).unwrap(), "# Title\n\nbody", "the text appears once");
+        assert!(
+            !a.merge(&bytes).unwrap(),
+            "merging an identical import adds nothing"
+        );
+        assert_eq!(
+            a.text(&heads).unwrap(),
+            "# Title\n\nbody",
+            "the text appears once"
+        );
     }
 
     #[dialog_common::test]
@@ -1013,21 +1070,37 @@ mod tests {
         let mut doc = Document::from_text("base").unwrap();
         let base = doc.store_heads();
         let main = doc.edit(&base, &stamp(), &text_edit("base main")).unwrap();
-        let feature = doc.edit(&base, &stamp(), &text_edit("base feature")).unwrap();
+        let feature = doc
+            .edit(&base, &stamp(), &text_edit("base feature"))
+            .unwrap();
 
         assert_eq!(doc.text(&main).unwrap(), "base main");
         assert_eq!(doc.text(&feature).unwrap(), "base feature");
-        assert_eq!(doc.text(&base).unwrap(), "base", "an old revision shows the old text");
+        assert_eq!(
+            doc.text(&base).unwrap(),
+            "base",
+            "an old revision shows the old text"
+        );
 
         // A branch merge is the union of both heads.
         let mut union = main.clone();
         union.extend(feature.clone());
         let merged = doc.text(&union).unwrap();
-        assert!(merged.contains("main") && merged.contains("feature"), "{merged:?}");
+        assert!(
+            merged.contains("main") && merged.contains("feature"),
+            "{merged:?}"
+        );
 
         // The next edit on the merged line collapses the heads to one.
         let next = doc
-            .edit(&union, &stamp(), &Edit::Insert { after: "base".into(), text: "!".into() })
+            .edit(
+                &union,
+                &stamp(),
+                &Edit::Insert {
+                    after: "base".into(),
+                    text: "!".into(),
+                },
+            )
             .unwrap();
         assert_eq!(next.len(), 1);
     }
@@ -1049,15 +1122,43 @@ mod tests {
         let mut doc = Document::from_text("one two two").unwrap();
         let heads = doc.store_heads();
         let after = doc
-            .edit(&heads, &stamp(), &Edit::Replace { find: "one".into(), with: "1".into() })
+            .edit(
+                &heads,
+                &stamp(),
+                &Edit::Replace {
+                    find: "one".into(),
+                    with: "1".into(),
+                },
+            )
             .unwrap();
         assert_eq!(doc.text(&after).unwrap(), "1 two two");
 
-        let none = doc.edit(&after, &stamp(), &Edit::Replace { find: "nine".into(), with: "9".into() });
+        let none = doc.edit(
+            &after,
+            &stamp(),
+            &Edit::Replace {
+                find: "nine".into(),
+                with: "9".into(),
+            },
+        );
         assert!(matches!(none, Err(DocumentError::NoMatch(_))));
-        let many = doc.edit(&after, &stamp(), &Edit::Replace { find: "two".into(), with: "2".into() });
-        assert!(matches!(many, Err(DocumentError::AmbiguousMatch { count: 2, .. })));
-        assert_eq!(doc.text(&after).unwrap(), "1 two two", "a refused edit changes nothing");
+        let many = doc.edit(
+            &after,
+            &stamp(),
+            &Edit::Replace {
+                find: "two".into(),
+                with: "2".into(),
+            },
+        );
+        assert!(matches!(
+            many,
+            Err(DocumentError::AmbiguousMatch { count: 2, .. })
+        ));
+        assert_eq!(
+            doc.text(&after).unwrap(),
+            "1 two two",
+            "a refused edit changes nothing"
+        );
     }
 
     #[dialog_common::test]
@@ -1066,11 +1167,27 @@ mod tests {
         let old = doc.store_heads();
         // Someone else prepends text after `old` was read.
         let newer = doc
-            .edit(&old, &stamp(), &Edit::Splice { at: 0, delete: 0, text: ">>> ".into() })
+            .edit(
+                &old,
+                &stamp(),
+                &Edit::Splice {
+                    at: 0,
+                    delete: 0,
+                    text: ">>> ".into(),
+                },
+            )
             .unwrap();
         // An agent computed "replace `world`" as index 6 against `old`.
         let agent = doc
-            .edit(&old, &stamp(), &Edit::Splice { at: 6, delete: 5, text: "there".into() })
+            .edit(
+                &old,
+                &stamp(),
+                &Edit::Splice {
+                    at: 6,
+                    delete: 5,
+                    text: "there".into(),
+                },
+            )
             .unwrap();
         let mut union = newer;
         union.extend(agent);
@@ -1083,11 +1200,26 @@ mod tests {
         let heads = doc.store_heads();
         // The emoji is two UTF-16 units, so `b` sits at 3.
         let after = doc
-            .edit(&heads, &stamp(), &Edit::Splice { at: 3, delete: 1, text: "c".into() })
+            .edit(
+                &heads,
+                &stamp(),
+                &Edit::Splice {
+                    at: 3,
+                    delete: 1,
+                    text: "c".into(),
+                },
+            )
             .unwrap();
         assert_eq!(doc.text(&after).unwrap(), "a😀c");
         let replaced = doc
-            .edit(&after, &stamp(), &Edit::Replace { find: "c".into(), with: "d".into() })
+            .edit(
+                &after,
+                &stamp(),
+                &Edit::Replace {
+                    find: "c".into(),
+                    with: "d".into(),
+                },
+            )
             .unwrap();
         assert_eq!(doc.text(&replaced).unwrap(), "a😀d");
     }
@@ -1099,7 +1231,10 @@ mod tests {
         let mut behind = Document::load(&ahead.save()).unwrap();
         let newer = ahead.edit(&base, &stamp(), &text_edit("newer")).unwrap();
         assert_eq!(behind.missing(&newer).unwrap(), newer);
-        assert!(matches!(behind.text(&newer), Err(DocumentError::MissingChanges(_))));
+        assert!(matches!(
+            behind.text(&newer),
+            Err(DocumentError::MissingChanges(_))
+        ));
         behind.merge(&ahead.save()).unwrap();
         assert!(behind.missing(&newer).unwrap().is_empty());
         assert_eq!(behind.text(&newer).unwrap(), "newer");
@@ -1119,7 +1254,9 @@ mod tests {
         let diff = doc.diff(&v1, &v2).unwrap();
         assert!(!diff.is_empty());
 
-        let restored = doc.edit(&v2, &stamp(), &Edit::Restore { heads: v1.clone() }).unwrap();
+        let restored = doc
+            .edit(&v2, &stamp(), &Edit::Restore { heads: v1.clone() })
+            .unwrap();
         assert_eq!(doc.text(&restored).unwrap(), "v1");
         assert_ne!(restored, v1, "a restore is a new change");
         assert_eq!(doc.text(&v2).unwrap(), "v2", "the old versions still read");
@@ -1130,15 +1267,36 @@ mod tests {
         let mut a = Document::genesis(Format::Table).unwrap();
         let genesis = a.store_heads();
         let with_sheet = a
-            .edit(&genesis, &stamp(), &Edit::Put { path: "sheets/s1/name".into(), value: "Sheet1".into() })
+            .edit(
+                &genesis,
+                &stamp(),
+                &Edit::Put {
+                    path: "sheets/s1/name".into(),
+                    value: "Sheet1".into(),
+                },
+            )
             .unwrap();
         let mut b = Document::load(&a.save()).unwrap();
 
         let ha = a
-            .edit(&with_sheet, &stamp(), &Edit::Put { path: "sheets/s1/cells/B2".into(), value: "from a".into() })
+            .edit(
+                &with_sheet,
+                &stamp(),
+                &Edit::Put {
+                    path: "sheets/s1/cells/B2".into(),
+                    value: "from a".into(),
+                },
+            )
             .unwrap();
         let hb = b
-            .edit(&with_sheet, &stamp(), &Edit::Put { path: "sheets/s1/cells/B2".into(), value: "from b".into() })
+            .edit(
+                &with_sheet,
+                &stamp(),
+                &Edit::Put {
+                    path: "sheets/s1/cells/B2".into(),
+                    value: "from b".into(),
+                },
+            )
             .unwrap();
         a.merge(&b.save()).unwrap();
         b.merge(&a.save()).unwrap();
@@ -1158,23 +1316,50 @@ mod tests {
         let mut doc = Document::genesis(Format::Table).unwrap();
         let g = doc.store_heads();
         let v1 = doc
-            .edit(&g, &stamp(), &Edit::Put { path: "sheets/s1/cells/A1".into(), value: "1".into() })
+            .edit(
+                &g,
+                &stamp(),
+                &Edit::Put {
+                    path: "sheets/s1/cells/A1".into(),
+                    value: "1".into(),
+                },
+            )
             .unwrap();
         let v2 = doc
-            .edit(&v1, &stamp(), &Edit::Put { path: "sheets/s1/cells/A1".into(), value: "2".into() })
+            .edit(
+                &v1,
+                &stamp(),
+                &Edit::Put {
+                    path: "sheets/s1/cells/A1".into(),
+                    value: "2".into(),
+                },
+            )
             .unwrap();
         let v3 = doc
-            .edit(&v2, &stamp(), &Edit::Remove { path: "sheets/s1/cells/A1".into() })
+            .edit(
+                &v2,
+                &stamp(),
+                &Edit::Remove {
+                    path: "sheets/s1/cells/A1".into(),
+                },
+            )
             .unwrap();
         assert_eq!(
             doc.diff(&v1, &v2).unwrap(),
-            vec![DiffOp::Put { path: "sheets/s1/cells/A1".into(), value: "2".into() }]
+            vec![DiffOp::Put {
+                path: "sheets/s1/cells/A1".into(),
+                value: "2".into()
+            }]
         );
         assert_eq!(
             doc.diff(&v2, &v3).unwrap(),
-            vec![DiffOp::Remove { path: "sheets/s1/cells/A1".into() }]
+            vec![DiffOp::Remove {
+                path: "sheets/s1/cells/A1".into()
+            }]
         );
-        let back = doc.edit(&v3, &stamp(), &Edit::Restore { heads: v1.clone() }).unwrap();
+        let back = doc
+            .edit(&v3, &stamp(), &Edit::Restore { heads: v1.clone() })
+            .unwrap();
         assert_eq!(doc.table(&back).unwrap().sheets[0].cells["A1"], "1");
     }
 
@@ -1188,7 +1373,9 @@ mod tests {
         };
         sheet.cells.insert("A1".into(), "Item".into());
         sheet.cells.insert("D2".into(), "=B2*C2".into());
-        let table = Table { sheets: vec![sheet] };
+        let table = Table {
+            sheets: vec![sheet],
+        };
         let mut a = Document::from_table(&table).unwrap();
         let mut b = Document::from_table(&table).unwrap();
         assert_eq!(a.store_heads(), b.store_heads());
@@ -1200,7 +1387,14 @@ mod tests {
     fn it_refuses_an_edit_of_the_wrong_shape() {
         let mut doc = Document::genesis(Format::Text).unwrap();
         let heads = doc.store_heads();
-        let result = doc.edit(&heads, &stamp(), &Edit::Put { path: "sheets/s/cells/A1".into(), value: "x".into() });
+        let result = doc.edit(
+            &heads,
+            &stamp(),
+            &Edit::Put {
+                path: "sheets/s/cells/A1".into(),
+                value: "x".into(),
+            },
+        );
         assert!(matches!(result, Err(DocumentError::WrongEdit { .. })));
     }
     #[dialog_common::test]
@@ -1208,26 +1402,53 @@ mod tests {
         let mut doc = Document::genesis(Format::Table).unwrap();
         let g = doc.store_heads();
         let paste = vec![
-            Edit::Put { path: "sheets/s1/cells/A1".into(), value: "1".into() },
-            Edit::Put { path: "sheets/s1/cells/A2".into(), value: "2".into() },
+            Edit::Put {
+                path: "sheets/s1/cells/A1".into(),
+                value: "1".into(),
+            },
+            Edit::Put {
+                path: "sheets/s1/cells/A2".into(),
+                value: "2".into(),
+            },
         ];
         let after = doc.edit_all(&g, &stamp(), &paste).unwrap();
-        assert_eq!(doc.changes(&g).unwrap().len(), 1, "one gesture is one change");
+        assert_eq!(
+            doc.changes(&g).unwrap().len(),
+            1,
+            "one gesture is one change"
+        );
         assert_eq!(doc.table(&after).unwrap().sheets[0].cells.len(), 2);
 
         let broken = vec![
-            Edit::Put { path: "sheets/s1/cells/A3".into(), value: "3".into() },
-            Edit::Put { path: "not/a/path".into(), value: "x".into() },
+            Edit::Put {
+                path: "sheets/s1/cells/A3".into(),
+                value: "3".into(),
+            },
+            Edit::Put {
+                path: "not/a/path".into(),
+                value: "x".into(),
+            },
         ];
         assert!(doc.edit_all(&after, &stamp(), &broken).is_err());
-        assert_eq!(doc.table(&after).unwrap().sheets[0].cells.len(), 2, "a refused gesture applies nothing");
+        assert_eq!(
+            doc.table(&after).unwrap().sheets[0].cells.len(),
+            2,
+            "a refused gesture applies nothing"
+        );
         assert_eq!(doc.changes(&g).unwrap().len(), 1);
     }
 
     #[dialog_common::test]
     fn it_reads_an_edit_off_the_wire() {
-        let edit: Edit = serde_json::from_str(r#"{"edit":"replace","find":"a","with":"b"}"#).unwrap();
-        assert_eq!(edit, Edit::Replace { find: "a".into(), with: "b".into() });
+        let edit: Edit =
+            serde_json::from_str(r#"{"edit":"replace","find":"a","with":"b"}"#).unwrap();
+        assert_eq!(
+            edit,
+            Edit::Replace {
+                find: "a".into(),
+                with: "b".into()
+            }
+        );
         let edit: Edit = serde_json::from_str(r#"{"edit":"set-text","text":"hi"}"#).unwrap();
         assert_eq!(edit, Edit::SetText { text: "hi".into() });
     }

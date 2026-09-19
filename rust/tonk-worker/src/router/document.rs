@@ -156,7 +156,9 @@ fn key(repo: &str, branch: &str, entity: &Entity) -> Key {
 
 fn note_requested(repo: &str, branch: &str, entity: &Entity) {
     if let Ok(mut tracker) = tracker().lock() {
-        tracker.requested.insert(key(repo, branch, entity), now_seconds());
+        tracker
+            .requested
+            .insert(key(repo, branch, entity), now_seconds());
     }
 }
 
@@ -167,8 +169,9 @@ fn note_dirty(repo: &str, branch: &str, entity: &Entity) {
 }
 
 fn parse_entity(text: &str) -> Result<Entity, TonkWorkerError> {
-    text.parse()
-        .map_err(|error| TonkWorkerError::Router(format!("Invalid document entity '{text}': {error}")))
+    text.parse().map_err(|error| {
+        TonkWorkerError::Router(format!("Invalid document entity '{text}': {error}"))
+    })
 }
 
 fn parse_format(name: Option<&str>) -> Result<Option<Format>, TonkWorkerError> {
@@ -217,7 +220,11 @@ async fn acquire(
 }
 
 /// Refresh the mirror of `entity` and let subscribers know.
-async fn refresh_mirror(tonk: &TonkState, session: &dialog_reactor::BranchSession, entity: &Entity) {
+async fn refresh_mirror(
+    tonk: &TonkState,
+    session: &dialog_reactor::BranchSession,
+    entity: &Entity,
+) {
     match session::mirror(session.handle(), entity, &tonk.operator).await {
         Ok(_) => {
             tonk.reactor.schedule_poll(Arc::clone(&session.state));
@@ -324,7 +331,8 @@ async fn run(env: &CommandEnv, request: tonk_document::command::Request) {
         Err(error) => return log!("document command on {document}: {error}"),
     };
     let result =
-        tonk_document::command::run(session.handle(), &tonk.operator, &stamp(&tonk), &request).await;
+        tonk_document::command::run(session.handle(), &tonk.operator, &stamp(&tonk), &request)
+            .await;
     match result {
         Ok(_) => {
             note_dirty(&origin.repo, &origin.branch, &document);
@@ -371,7 +379,11 @@ document_provider!(tonk_schema::command::DocumentRestore);
 /// asked for lately. Called after the branch itself reconciled, so the
 /// heads claims a pull brought in can be shown as soon as their bytes
 /// land.
-pub(crate) async fn sync_documents(state: &AppState, repo: &str, branch: &str) -> Result<(), String> {
+pub(crate) async fn sync_documents(
+    state: &AppState,
+    repo: &str,
+    branch: &str,
+) -> Result<(), String> {
     let tonk = state.read().await;
     let session = acquire(&tonk, repo, branch)
         .await
@@ -380,7 +392,11 @@ pub(crate) async fn sync_documents(state: &AppState, repo: &str, branch: &str) -
 
     let first_scan = tracker()
         .lock()
-        .map(|mut tracker| tracker.scanned.insert((repo.to_string(), branch.to_string())))
+        .map(|mut tracker| {
+            tracker
+                .scanned
+                .insert((repo.to_string(), branch.to_string()))
+        })
         .unwrap_or(false);
 
     let mut candidates: HashSet<String> = HashSet::new();
@@ -517,9 +533,13 @@ mod tests {
     }
 
     async fn post(state: &AppState, repo: &str, body: serde_json::Value) -> serde_json::Value {
-        let response = write(State(state.clone()), path(repo), Bytes::from(body.to_string()))
-            .await
-            .expect("the write is accepted");
+        let response = write(
+            State(state.clone()),
+            path(repo),
+            Bytes::from(body.to_string()),
+        )
+        .await
+        .expect("the write is accepted");
         json(response).await
     }
 
@@ -533,7 +553,13 @@ mod tests {
         let repo = space(&state).await;
 
         // A missing document is 404 until a caller names a format.
-        let missing = read(State(state.clone()), path(&repo), Query(ReadParams::default()), HeaderMap::new()).await;
+        let missing = read(
+            State(state.clone()),
+            path(&repo),
+            Query(ReadParams::default()),
+            HeaderMap::new(),
+        )
+        .await;
         assert!(matches!(missing, Err(TonkWorkerError::NotFound(_))));
 
         // The element's first write creates it.
@@ -547,17 +573,27 @@ mod tests {
         assert_eq!(first["format"], "automerge/text@1");
 
         // A read returns the same heads; the ETag answers 304 after.
-        let response = read(State(state.clone()), path(&repo), Query(ReadParams::default()), HeaderMap::new())
-            .await
-            .unwrap();
+        let response = read(
+            State(state.clone()),
+            path(&repo),
+            Query(ReadParams::default()),
+            HeaderMap::new(),
+        )
+        .await
+        .unwrap();
         let etag = response.headers().get(header::ETAG).unwrap().clone();
         let body = json(response).await;
         assert_eq!(heads(&body, "heads"), heads(&first, "heads"));
         let mut seen = HeaderMap::new();
         seen.insert(header::IF_NONE_MATCH, etag);
-        let again = read(State(state.clone()), path(&repo), Query(ReadParams::default()), seen)
-            .await
-            .unwrap();
+        let again = read(
+            State(state.clone()),
+            path(&repo),
+            Query(ReadParams::default()),
+            seen,
+        )
+        .await
+        .unwrap();
         assert_eq!(again.status(), StatusCode::NOT_MODIFIED);
 
         // An agent asserts `document/replace`: the same command a page
@@ -584,12 +620,20 @@ mod tests {
         dispatch(&state, origin, command).await;
 
         let after = json(
-            read(State(state.clone()), path(&repo), Query(ReadParams::default()), HeaderMap::new())
-                .await
-                .unwrap(),
+            read(
+                State(state.clone()),
+                path(&repo),
+                Query(ReadParams::default()),
+                HeaderMap::new(),
+            )
+            .await
+            .unwrap(),
         )
         .await;
-        assert_eq!(after["text"], "hello there", "the command edited the document");
+        assert_eq!(
+            after["text"], "hello there",
+            "the command edited the document"
+        );
 
         // The element, which still holds the OLD heads, sends its own
         // edit: both survive.

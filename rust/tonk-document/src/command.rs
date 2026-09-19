@@ -134,7 +134,10 @@ pub fn requests(transients: &Changes) -> Vec<Request> {
     let mut by_entity: HashMap<Entity, EntityFacts> = HashMap::new();
     for instruction in transients.clone().into_instructions() {
         if let Instruction::Assert(artifact) | Instruction::Replace(artifact) = instruction {
-            by_entity.entry(artifact.of.clone()).or_default().push(artifact);
+            by_entity
+                .entry(artifact.of.clone())
+                .or_default()
+                .push(artifact);
         }
     }
     let mut out = Vec::new();
@@ -214,17 +217,40 @@ mod tests {
         let branch = repo.branch("main").open().perform(&operator).await?;
         let doc: Entity = "id:prose/doc".parse().unwrap();
         let stamp = Stamp::default();
-        session::write(&branch, &doc, Some(Format::Text), None, &[Edit::SetText { text: "hello world".into() }], &stamp, &operator).await?;
+        session::write(
+            &branch,
+            &doc,
+            Some(Format::Text),
+            None,
+            &[Edit::SetText {
+                text: "hello world".into(),
+            }],
+            &stamp,
+            &operator,
+        )
+        .await?;
 
         let decoded = requests(&replace("world", "there"));
         assert_eq!(decoded.len(), 1);
         assert_eq!(decoded[0].document, doc);
         let written = run(&branch, &operator, &stamp, &decoded[0]).await?;
-        assert_eq!(written.snapshot.content, Content::Text("hello there".into()));
+        assert_eq!(
+            written.snapshot.content,
+            Content::Text("hello there".into())
+        );
 
-        let refused = run(&branch, &operator, &stamp, &requests(&replace("absent", "x"))[0]).await;
+        let refused = run(
+            &branch,
+            &operator,
+            &stamp,
+            &requests(&replace("absent", "x"))[0],
+        )
+        .await;
         assert!(refused.is_err(), "no match changes nothing");
-        assert_eq!(session::read(&branch, &doc, None, &operator).await?.content, Content::Text("hello there".into()));
+        assert_eq!(
+            session::read(&branch, &doc, None, &operator).await?.content,
+            Content::Text("hello there".into())
+        );
 
         assert!(requests(&Changes::new()).is_empty());
         Ok(())
@@ -232,7 +258,13 @@ mod tests {
 
     #[dialog_common::test]
     fn it_stores_sizes_as_numbers_and_cells_as_text() {
-        assert_eq!(put_value("sheets/s/widths/B", "120".into()), serde_json::json!(120.0));
-        assert_eq!(put_value("sheets/s/cells/B2", "120".into()), serde_json::json!("120"));
+        assert_eq!(
+            put_value("sheets/s/widths/B", "120".into()),
+            serde_json::json!(120.0)
+        );
+        assert_eq!(
+            put_value("sheets/s/cells/B2", "120".into()),
+            serde_json::json!("120")
+        );
     }
 }

@@ -32,8 +32,8 @@ use futures_util::StreamExt as _;
 use thiserror::Error;
 
 use crate::cell::{self, CellError, LocalCell, RETRY_LIMIT, RemoteCell, Transport as _};
-use crate::sync::{Marker, Outcome, sync_pass};
 use crate::engine::{Content, Document, DocumentError, Edit, Format, Sheet, Stamp, Table};
+use crate::sync::{Marker, Outcome, sync_pass};
 
 /// `xyz.tonk.document/format`
 pub const FORMAT: &str = "xyz.tonk.document/format";
@@ -307,14 +307,25 @@ async fn convert_table<Env: SelectProvider>(
 ) -> Result<Converted, SessionError> {
     let mut retract = Vec::new();
     let mut table = Table::default();
-    let mut sheets = select(branch, SHEET_TABLE, None, Some(Value::Entity(entity.clone())), env).await?;
+    let mut sheets = select(
+        branch,
+        SHEET_TABLE,
+        None,
+        Some(Value::Entity(entity.clone())),
+        env,
+    )
+    .await?;
     sheets.sort_by_key(|(sheet, _)| sheet.to_string());
     for (sheet_entity, _) in sheets {
         let mut sheet = Sheet {
             id: sheet_id(&sheet_entity),
             ..Sheet::default()
         };
-        retract.push(Fact::many(SHEET_TABLE, &sheet_entity, Value::Entity(entity.clone()))?);
+        retract.push(Fact::many(
+            SHEET_TABLE,
+            &sheet_entity,
+            Value::Entity(entity.clone()),
+        )?);
         if let Some(name) = text(branch, SHEET_NAME, &sheet_entity, env).await? {
             retract.push(Fact::many(SHEET_NAME, &sheet_entity, name.clone())?);
             sheet.name = name;
@@ -328,10 +339,21 @@ async fn convert_table<Env: SelectProvider>(
         // defect document mode removes); the smallest entity id wins so
         // every replica converts to the same document. Dialog does not
         // elect between them: they are two entities, not two values.
-        let mut cells = select(branch, CELL_SHEET, None, Some(Value::Entity(sheet_entity.clone())), env).await?;
+        let mut cells = select(
+            branch,
+            CELL_SHEET,
+            None,
+            Some(Value::Entity(sheet_entity.clone())),
+            env,
+        )
+        .await?;
         cells.sort_by_key(|(cell, _)| cell.to_string());
         for (cell_entity, _) in cells {
-            retract.push(Fact::many(CELL_SHEET, &cell_entity, Value::Entity(sheet_entity.clone()))?);
+            retract.push(Fact::many(
+                CELL_SHEET,
+                &cell_entity,
+                Value::Entity(sheet_entity.clone()),
+            )?);
             let at = text(branch, CELL_AT, &cell_entity, env).await?;
             let content = text(branch, CELL_CONTENT, &cell_entity, env).await?;
             let style = text(branch, CELL_STYLE, &cell_entity, env).await?;
@@ -360,10 +382,21 @@ async fn convert_table<Env: SelectProvider>(
             (COLUMN_SHEET, COLUMN_AT, COLUMN_WIDTH, true),
             (ROW_SHEET, ROW_AT, ROW_HEIGHT, false),
         ] {
-            let mut lines = select(branch, parent, None, Some(Value::Entity(sheet_entity.clone())), env).await?;
+            let mut lines = select(
+                branch,
+                parent,
+                None,
+                Some(Value::Entity(sheet_entity.clone())),
+                env,
+            )
+            .await?;
             lines.sort_by_key(|(line, _)| line.to_string());
             for (line, _) in lines {
-                retract.push(Fact::many(parent, &line, Value::Entity(sheet_entity.clone()))?);
+                retract.push(Fact::many(
+                    parent,
+                    &line,
+                    Value::Entity(sheet_entity.clone()),
+                )?);
                 let at = text(branch, key, &line, env).await?;
                 let size = text(branch, value, &line, env).await?;
                 if let Some(at) = &at {
@@ -372,10 +405,15 @@ async fn convert_table<Env: SelectProvider>(
                 if let Some(size) = &size {
                     retract.push(Fact::many(value, &line, size.clone())?);
                 }
-                let (Some(at), Some(size)) = (at, size.and_then(|size| size.parse::<f64>().ok())) else {
+                let (Some(at), Some(size)) = (at, size.and_then(|size| size.parse::<f64>().ok()))
+                else {
                     continue;
                 };
-                let map = if target { &mut sheet.widths } else { &mut sheet.heights };
+                let map = if target {
+                    &mut sheet.widths
+                } else {
+                    &mut sheet.heights
+                };
                 map.entry(at).or_insert(size);
             }
         }
@@ -421,7 +459,10 @@ pub async fn open<Env: DocumentEnv>(
     let format = claimed
         .or(create)
         .ok_or_else(|| SessionError::NotADocument(entity.to_string()))?;
-    let Converted { mut document, retract } = match format {
+    let Converted {
+        mut document,
+        retract,
+    } = match format {
         Format::Text => convert_prose(branch, entity, env).await?,
         Format::Table => convert_table(branch, entity, env).await?,
     };
@@ -443,7 +484,10 @@ pub async fn open<Env: DocumentEnv>(
 /// and cells are claims. A document-mode view matches on the format
 /// claim, so until this runs an old entity renders nothing. Returns how
 /// many were converted. Hosts call it once per branch.
-pub async fn adopt_legacy<Env: DocumentEnv>(branch: &Branch, env: &Env) -> Result<usize, SessionError> {
+pub async fn adopt_legacy<Env: DocumentEnv>(
+    branch: &Branch,
+    env: &Env,
+) -> Result<usize, SessionError> {
     let mut found: Vec<(Entity, Format)> = Vec::new();
     for (entity, _) in select(branch, LEGACY_PROSE_CONTENT, None, None, env).await? {
         found.push((entity, Format::Text));
@@ -478,10 +522,14 @@ async fn declare<Env: DocumentEnv>(
     env: &Env,
 ) -> Result<(), SessionError> {
     for attempt in 0..RETRY_LIMIT {
-        let claimed: BTreeSet<String> = claimed_heads(branch, entity, env).await?.into_iter().collect();
-        let mut transaction = branch
-            .transaction()
-            .assert(Fact::one(FORMAT, entity, format.name().to_string())?);
+        let claimed: BTreeSet<String> = claimed_heads(branch, entity, env)
+            .await?
+            .into_iter()
+            .collect();
+        let mut transaction =
+            branch
+                .transaction()
+                .assert(Fact::one(FORMAT, entity, format.name().to_string())?);
         for head in heads.iter().filter(|head| !claimed.contains(*head)) {
             transaction = transaction.assert(Fact::many(HEADS, entity, head.clone())?);
         }
@@ -523,7 +571,11 @@ pub async fn read<Env: DocumentEnv>(
     let (_, heads) = heads_or_genesis(branch, entity, format, env).await?;
     let heads = document.normalize(&heads)?;
     let content = document.content(&heads)?;
-    Ok(Snapshot { format, heads, content })
+    Ok(Snapshot {
+        format,
+        heads,
+        content,
+    })
 }
 
 /// Apply `edits` as one change on top of `base` — the heads the writer
@@ -581,13 +633,11 @@ pub async fn write<Env: DocumentEnv>(
             transaction = transaction.assert(Fact::many(HEADS, entity, head.clone())?);
             changed = true;
         }
-        if changed {
-            if transaction.commit().publish().perform(env).await.is_err() {
-                // The branch head moved under us: refresh and redo only
-                // the pointer.
-                branch.refresh(env).await.map_err(branch_error)?;
-                continue;
-            }
+        if changed && transaction.commit().publish().perform(env).await.is_err() {
+            // The branch head moved under us: refresh and redo only
+            // the pointer.
+            branch.refresh(env).await.map_err(branch_error)?;
+            continue;
         }
         let content = document.content(&next)?;
         return Ok(Written {
@@ -644,7 +694,11 @@ where
 
 /// Whether `entity` holds changes its remote has not seen, judged from
 /// local state alone: the store's heads against the sync marker's.
-pub async fn is_dirty<Env>(branch: &Branch, entity: &Entity, env: &Env) -> Result<bool, SessionError>
+pub async fn is_dirty<Env>(
+    branch: &Branch,
+    entity: &Entity,
+    env: &Env,
+) -> Result<bool, SessionError>
 where
     Env: DocumentEnv,
 {
@@ -699,12 +753,20 @@ pub async fn mirror<Env: DocumentEnv>(
             overlay.retain_entities(|overlaid| !overlaid.to_string().starts_with(&prefix));
             for sheet in &table.sheets {
                 let sheet_entity = mirror_entity(entity, &sheet.id)?;
-                overlay.assert(Fact::one(SHEET_TABLE, &sheet_entity, Value::Entity(entity.clone()))?);
+                overlay.assert(Fact::one(
+                    SHEET_TABLE,
+                    &sheet_entity,
+                    Value::Entity(entity.clone()),
+                )?);
                 overlay.assert(Fact::one(SHEET_NAME, &sheet_entity, sheet.name.clone())?);
                 overlay.assert(Fact::one(SHEET_ORDER, &sheet_entity, sheet.order.clone())?);
                 for (at, content) in &sheet.cells {
                     let cell_entity = mirror_entity(entity, &format!("{}/{at}", sheet.id))?;
-                    overlay.assert(Fact::one(CELL_SHEET, &cell_entity, Value::Entity(sheet_entity.clone()))?);
+                    overlay.assert(Fact::one(
+                        CELL_SHEET,
+                        &cell_entity,
+                        Value::Entity(sheet_entity.clone()),
+                    )?);
                     overlay.assert(Fact::one(CELL_AT, &cell_entity, at.clone())?);
                     overlay.assert(Fact::one(CELL_CONTENT, &cell_entity, content.clone())?);
                     if let Some(style) = sheet.styles.get(at) {
@@ -758,7 +820,10 @@ mod tests {
             None,
         );
         let claims = branch.query().select(query).perform(env).try_vec().await?;
-        Ok(claims.into_iter().map(|claim| (claim.of, claim.is)).collect())
+        Ok(claims
+            .into_iter()
+            .map(|claim| (claim.of, claim.is))
+            .collect())
     }
 
     async fn queried_texts<Env: SelectProvider>(
@@ -794,18 +859,51 @@ mod tests {
 
         let created = read(&branch, &doc, Some(Format::Text), &operator).await?;
         assert_eq!(text_of(&created), "");
-        assert_eq!(claimed_format(&branch, &doc, &operator).await?, Some(Format::Text));
-        assert!(claimed_heads(&branch, &doc, &operator).await?.is_empty(), "genesis needs no pointer");
+        assert_eq!(
+            claimed_format(&branch, &doc, &operator).await?,
+            Some(Format::Text)
+        );
+        assert!(
+            claimed_heads(&branch, &doc, &operator).await?.is_empty(),
+            "genesis needs no pointer"
+        );
 
-        let written = write(&branch, &doc, None, None, &set("hello"), &stamp(), &operator).await?;
+        let written = write(
+            &branch,
+            &doc,
+            None,
+            None,
+            &set("hello"),
+            &stamp(),
+            &operator,
+        )
+        .await?;
         assert_eq!(text_of(&written.snapshot), "hello");
-        assert_eq!(claimed_heads(&branch, &doc, &operator).await?, written.snapshot.heads);
+        assert_eq!(
+            claimed_heads(&branch, &doc, &operator).await?,
+            written.snapshot.heads
+        );
 
-        let again = write(&branch, &doc, None, None, &set("hello world"), &stamp(), &operator).await?;
+        let again = write(
+            &branch,
+            &doc,
+            None,
+            None,
+            &set("hello world"),
+            &stamp(),
+            &operator,
+        )
+        .await?;
         let claimed = claimed_heads(&branch, &doc, &operator).await?;
-        assert_eq!(claimed, again.snapshot.heads, "the old head is retracted, the new one asserted");
+        assert_eq!(
+            claimed, again.snapshot.heads,
+            "the old head is retracted, the new one asserted"
+        );
         assert_eq!(claimed.len(), 1);
-        assert_eq!(text_of(&read(&branch, &doc, None, &operator).await?), "hello world");
+        assert_eq!(
+            text_of(&read(&branch, &doc, None, &operator).await?),
+            "hello world"
+        );
         Ok(())
     }
 
@@ -815,10 +913,23 @@ mod tests {
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
         let doc = entity("id:prose/doc");
-        write(&branch, &doc, Some(Format::Text), None, &set("same"), &stamp(), &operator).await?;
+        write(
+            &branch,
+            &doc,
+            Some(Format::Text),
+            None,
+            &set("same"),
+            &stamp(),
+            &operator,
+        )
+        .await?;
         let revision = branch.revision();
         write(&branch, &doc, None, None, &set("same"), &stamp(), &operator).await?;
-        assert_eq!(branch.revision(), revision, "an edit that changes nothing commits nothing");
+        assert_eq!(
+            branch.revision(),
+            revision,
+            "an edit that changes nothing commits nothing"
+        );
         Ok(())
     }
 
@@ -828,23 +939,68 @@ mod tests {
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
         let doc = entity("id:prose/doc");
-        let start = write(&branch, &doc, Some(Format::Text), None, &set("start"), &stamp(), &operator).await?;
+        let start = write(
+            &branch,
+            &doc,
+            Some(Format::Text),
+            None,
+            &set("start"),
+            &stamp(),
+            &operator,
+        )
+        .await?;
 
         // Someone else edits the branch after the element last looked.
-        write(&branch, &doc, None, None, &[Edit::Insert { after: "start".into(), text: " + remote".into() }], &stamp(), &operator).await?;
+        write(
+            &branch,
+            &doc,
+            None,
+            None,
+            &[Edit::Insert {
+                after: "start".into(),
+                text: " + remote".into(),
+            }],
+            &stamp(),
+            &operator,
+        )
+        .await?;
 
         // The element sends its text against the heads it knew.
         let stale = start.snapshot.heads.clone();
-        let sent = write(&branch, &doc, None, Some(&stale), &set("local + start"), &stamp(), &operator).await?;
+        let sent = write(
+            &branch,
+            &doc,
+            None,
+            Some(&stale),
+            &set("local + start"),
+            &stamp(),
+            &operator,
+        )
+        .await?;
         let merged = text_of(&sent.snapshot);
-        assert!(merged.contains("local + ") && merged.contains(" + remote"), "{merged:?}");
+        assert!(
+            merged.contains("local + ") && merged.contains(" + remote"),
+            "{merged:?}"
+        );
 
         // It typed more during the round trip and sends again from the
         // heads the reply said its text corresponds to: nothing doubles.
-        let next = write(&branch, &doc, None, Some(&sent.local), &set("more local + start"), &stamp(), &operator).await?;
+        let next = write(
+            &branch,
+            &doc,
+            None,
+            Some(&sent.local),
+            &set("more local + start"),
+            &stamp(),
+            &operator,
+        )
+        .await?;
         let text = text_of(&next.snapshot);
         assert_eq!(text.matches("local").count(), 1, "{text:?}");
-        assert!(text.contains("more ") && text.contains(" + remote"), "{text:?}");
+        assert!(
+            text.contains("more ") && text.contains(" + remote"),
+            "{text:?}"
+        );
         Ok(())
     }
 
@@ -856,11 +1012,35 @@ mod tests {
         let feature = repo.branch("feature").open().perform(&operator).await?;
         let doc = entity("id:prose/doc");
 
-        write(&main, &doc, Some(Format::Text), None, &set("on main"), &stamp(), &operator).await?;
-        write(&feature, &doc, Some(Format::Text), None, &set("on feature"), &stamp(), &operator).await?;
+        write(
+            &main,
+            &doc,
+            Some(Format::Text),
+            None,
+            &set("on main"),
+            &stamp(),
+            &operator,
+        )
+        .await?;
+        write(
+            &feature,
+            &doc,
+            Some(Format::Text),
+            None,
+            &set("on feature"),
+            &stamp(),
+            &operator,
+        )
+        .await?;
 
-        assert_eq!(text_of(&read(&main, &doc, None, &operator).await?), "on main");
-        assert_eq!(text_of(&read(&feature, &doc, None, &operator).await?), "on feature");
+        assert_eq!(
+            text_of(&read(&main, &doc, None, &operator).await?),
+            "on main"
+        );
+        assert_eq!(
+            text_of(&read(&feature, &doc, None, &operator).await?),
+            "on feature"
+        );
         Ok(())
     }
 
@@ -882,11 +1062,19 @@ mod tests {
         let snapshot = read(&branch, &doc, Some(Format::Text), &operator).await?;
         assert_eq!(text_of(&snapshot), "# Hello\n\nbody");
         assert!(
-            texts(&branch, LEGACY_PROSE_CONTENT, &doc, &operator).await?.is_empty(),
+            texts(&branch, LEGACY_PROSE_CONTENT, &doc, &operator)
+                .await?
+                .is_empty(),
             "the old body claim is retracted"
         );
-        assert_eq!(snapshot.heads, claimed_heads(&branch, &doc, &operator).await?);
-        assert_eq!(text_of(&read(&branch, &doc, Some(Format::Text), &operator).await?), "# Hello\n\nbody");
+        assert_eq!(
+            snapshot.heads,
+            claimed_heads(&branch, &doc, &operator).await?
+        );
+        assert_eq!(
+            text_of(&read(&branch, &doc, Some(Format::Text), &operator).await?),
+            "# Hello\n\nbody"
+        );
         Ok(())
     }
 
@@ -896,13 +1084,37 @@ mod tests {
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
         let doc = entity("id:prose/doc");
-        write(&branch, &doc, Some(Format::Text), None, &set("first"), &stamp(), &operator).await?;
+        write(
+            &branch,
+            &doc,
+            Some(Format::Text),
+            None,
+            &set("first"),
+            &stamp(),
+            &operator,
+        )
+        .await?;
         let revision = branch.revision();
         mirror(&branch, &doc, &operator).await?;
-        assert_eq!(queried_texts(&branch, TEXT, &operator).await?, vec!["first".to_string()]);
-        assert!(texts(&branch, TEXT, &doc, &operator).await?.is_empty(), "the tree holds no mirror fact");
+        assert_eq!(
+            queried_texts(&branch, TEXT, &operator).await?,
+            vec!["first".to_string()]
+        );
+        assert!(
+            texts(&branch, TEXT, &doc, &operator).await?.is_empty(),
+            "the tree holds no mirror fact"
+        );
 
-        write(&branch, &doc, None, None, &set("second"), &stamp(), &operator).await?;
+        write(
+            &branch,
+            &doc,
+            None,
+            None,
+            &set("second"),
+            &stamp(),
+            &operator,
+        )
+        .await?;
         let after_write = branch.revision();
         mirror(&branch, &doc, &operator).await?;
         assert_eq!(
@@ -922,20 +1134,54 @@ mod tests {
         let branch = repo.branch("main").open().perform(&operator).await?;
         let book = entity("id:table/book");
         let edits = vec![
-            Edit::Put { path: "sheets/s1/name".into(), value: "Sheet1".into() },
-            Edit::Put { path: "sheets/s1/cells/B2".into(), value: "=A1*2".into() },
+            Edit::Put {
+                path: "sheets/s1/name".into(),
+                value: "Sheet1".into(),
+            },
+            Edit::Put {
+                path: "sheets/s1/cells/B2".into(),
+                value: "=A1*2".into(),
+            },
         ];
-        write(&branch, &book, Some(Format::Table), None, &edits, &stamp(), &operator).await?;
+        write(
+            &branch,
+            &book,
+            Some(Format::Table),
+            None,
+            &edits,
+            &stamp(),
+            &operator,
+        )
+        .await?;
         mirror(&branch, &book, &operator).await?;
 
         let sheets = queried(&branch, SHEET_TABLE, &operator).await?;
         assert_eq!(sheets.len(), 1);
         assert_eq!(sheets[0].1, Value::Entity(book.clone()));
-        assert_eq!(queried_texts(&branch, CELL_CONTENT, &operator).await?, vec!["=A1*2".to_string()]);
+        assert_eq!(
+            queried_texts(&branch, CELL_CONTENT, &operator).await?,
+            vec!["=A1*2".to_string()]
+        );
 
-        write(&branch, &book, None, None, &[Edit::Remove { path: "sheets/s1/cells/B2".into() }], &stamp(), &operator).await?;
+        write(
+            &branch,
+            &book,
+            None,
+            None,
+            &[Edit::Remove {
+                path: "sheets/s1/cells/B2".into(),
+            }],
+            &stamp(),
+            &operator,
+        )
+        .await?;
         mirror(&branch, &book, &operator).await?;
-        assert!(queried_texts(&branch, CELL_CONTENT, &operator).await?.is_empty(), "a removed cell leaves the mirror");
+        assert!(
+            queried_texts(&branch, CELL_CONTENT, &operator)
+                .await?
+                .is_empty(),
+            "a removed cell leaves the mirror"
+        );
         Ok(())
     }
 
@@ -951,7 +1197,11 @@ mod tests {
         let twin = entity("id:table/book/b");
         let mut transaction = branch
             .transaction()
-            .assert(Fact::one(LEGACY_PROSE_CONTENT, &prose, "old body".to_string())?)
+            .assert(Fact::one(
+                LEGACY_PROSE_CONTENT,
+                &prose,
+                "old body".to_string(),
+            )?)
             .assert(Fact::one(SHEET_TABLE, &sheet, Value::Entity(book.clone()))?)
             .assert(Fact::one(SHEET_NAME, &sheet, "Sheet1".to_string())?)
             .assert(Fact::one(SHEET_ORDER, &sheet, "m".to_string())?);
@@ -966,16 +1216,28 @@ mod tests {
         transaction.commit().publish().perform(&operator).await?;
 
         assert_eq!(adopt_legacy(&branch, &operator).await?, 2);
-        assert_eq!(adopt_legacy(&branch, &operator).await?, 0, "a second sweep finds nothing");
+        assert_eq!(
+            adopt_legacy(&branch, &operator).await?,
+            0,
+            "a second sweep finds nothing"
+        );
 
-        assert_eq!(text_of(&read(&branch, &prose, None, &operator).await?), "old body");
+        assert_eq!(
+            text_of(&read(&branch, &prose, None, &operator).await?),
+            "old body"
+        );
         let Content::Table(table) = read(&branch, &book, None, &operator).await?.content else {
             panic!("expected a workbook");
         };
         assert_eq!(table.sheets.len(), 1);
         assert_eq!(table.sheets[0].name, "Sheet1");
         assert_eq!(table.sheets[0].cells["B2"], "kept");
-        assert!(select(&branch, CELL_CONTENT, None, None, &operator).await?.is_empty(), "the old cell claims are retracted");
+        assert!(
+            select(&branch, CELL_CONTENT, None, None, &operator)
+                .await?
+                .is_empty(),
+            "the old cell claims are retracted"
+        );
         Ok(())
     }
 
@@ -985,23 +1247,68 @@ mod tests {
         let repo = test_repo(&operator, &profile).await;
         let main = repo.branch("main").open().perform(&operator).await?;
         let doc = entity("id:prose/doc");
-        write(&main, &doc, Some(Format::Text), None, &set("base"), &stamp(), &operator).await?;
+        write(
+            &main,
+            &doc,
+            Some(Format::Text),
+            None,
+            &set("base"),
+            &stamp(),
+            &operator,
+        )
+        .await?;
 
         let feature = repo.branch("feature").open().perform(&operator).await?;
         feature.set_upstream(&main).perform(&operator).await?;
         feature.pull().perform(&operator).await?;
-        assert_eq!(text_of(&read(&feature, &doc, None, &operator).await?), "base");
+        assert_eq!(
+            text_of(&read(&feature, &doc, None, &operator).await?),
+            "base"
+        );
 
         // Both sides edit without seeing each other. Each write is the
         // exact pair this design emits: retract the head it saw, assert
         // its own, in one transaction.
-        let ours = write(&feature, &doc, None, None, &[Edit::Insert { after: "base".into(), text: " feature".into() }], &stamp(), &operator).await?;
-        let theirs = write(&main, &doc, None, None, &[Edit::Splice { at: 0, delete: 0, text: "main ".into() }], &stamp(), &operator).await?;
-        assert_eq!(text_of(&read(&feature, &doc, None, &operator).await?), "base feature", "a branch sees only its own line");
+        let ours = write(
+            &feature,
+            &doc,
+            None,
+            None,
+            &[Edit::Insert {
+                after: "base".into(),
+                text: " feature".into(),
+            }],
+            &stamp(),
+            &operator,
+        )
+        .await?;
+        let theirs = write(
+            &main,
+            &doc,
+            None,
+            None,
+            &[Edit::Splice {
+                at: 0,
+                delete: 0,
+                text: "main ".into(),
+            }],
+            &stamp(),
+            &operator,
+        )
+        .await?;
+        assert_eq!(
+            text_of(&read(&feature, &doc, None, &operator).await?),
+            "base feature",
+            "a branch sees only its own line"
+        );
 
         // Dialog merges the branches. No document code runs: the merge
         // of the many-valued heads claim IS the automerge merge.
-        feature.pull().perform(&operator).await?.expect("pull merges");
+        feature
+            .pull()
+            .perform(&operator)
+            .await?
+            .expect("pull merges");
         let mut expected = ours.snapshot.heads.clone();
         expected.extend(theirs.snapshot.heads.clone());
         expected.sort();
@@ -1010,10 +1317,25 @@ mod tests {
             expected,
             "both heads are claimed and the shared base head is gone"
         );
-        assert_eq!(text_of(&read(&feature, &doc, None, &operator).await?), "main base feature");
+        assert_eq!(
+            text_of(&read(&feature, &doc, None, &operator).await?),
+            "main base feature"
+        );
 
         // The next write on the merged branch collapses the heads to one.
-        let next = write(&feature, &doc, None, None, &[Edit::Insert { after: "feature".into(), text: "!".into() }], &stamp(), &operator).await?;
+        let next = write(
+            &feature,
+            &doc,
+            None,
+            None,
+            &[Edit::Insert {
+                after: "feature".into(),
+                text: "!".into(),
+            }],
+            &stamp(),
+            &operator,
+        )
+        .await?;
         assert_eq!(claimed_heads(&feature, &doc, &operator).await?.len(), 1);
         assert_eq!(text_of(&next.snapshot), "main base feature!");
         Ok(())
@@ -1022,7 +1344,13 @@ mod tests {
     #[dialog_common::test]
     fn it_reads_the_markdown_out_of_an_envelope() {
         assert_eq!(prose_body("plain *markdown*"), "plain *markdown*");
-        assert_eq!(prose_body("Tonk-Prose-Version: 1\nETag: \"1\"\n\nbody\n\nmore"), "body\n\nmore");
-        assert_eq!(prose_body("tonk-prose-version: 1\r\nETag: \"1\"\r\n\r\nbody"), "body");
+        assert_eq!(
+            prose_body("Tonk-Prose-Version: 1\nETag: \"1\"\n\nbody\n\nmore"),
+            "body\n\nmore"
+        );
+        assert_eq!(
+            prose_body("tonk-prose-version: 1\r\nETag: \"1\"\r\n\r\nbody"),
+            "body"
+        );
     }
 }
