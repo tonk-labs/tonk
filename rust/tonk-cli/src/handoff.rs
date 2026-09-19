@@ -199,22 +199,11 @@ pub async fn synced_name(
     Ok(available_name(display_name, registry))
 }
 
+/// [`crate::space::derive_name`] against a registry's claimed names. A
+/// claim's storage directory is `connection-<nanos>`, not the name, so
+/// an occupied canonical site cannot collide with the alias chosen here.
 fn available_name(display_name: &str, registry: &crate::space::Registry) -> String {
-    let lowered = display_name.to_ascii_lowercase();
-    let stem = lowered
-        .split(|c: char| !c.is_ascii_lowercase() && !c.is_ascii_digit() && c != '_')
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join("-");
-    let stem = stem.trim_start_matches(|c: char| !c.is_ascii_alphanumeric());
-    let stem = if stem.is_empty() { "space" } else { stem };
-    let mut name = stem.to_owned();
-    let mut suffix = 2;
-    while registry.spaces.contains_key(&name) {
-        name = format!("{stem}-{suffix}");
-        suffix += 1;
-    }
-    name
+    crate::space::derive_name(display_name, |name| registry.spaces.contains_key(name))
 }
 
 /// Produce a stable, resumable local name when the remote display name is not

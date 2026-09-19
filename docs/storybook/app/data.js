@@ -481,7 +481,7 @@ window.STORYBOOK_DATA = {
       "group": "Spaces: account directory, sync, and collaboration",
       "id": "SPACE-12",
       "title": "Pull an account space by name or subject.",
-      "variants": "Unique/ambiguous/missing name; existing local name/subject; offline/revoked."
+      "variants": "Unique/ambiguous/missing name; existing local name/subject; directory label that is not a local slug; offline/revoked."
     },
     {
       "evidence": "Broad sync/status tests.",
