@@ -398,6 +398,17 @@ pub(crate) async fn sync_documents(state: &AppState, repo: &str, branch: &str) -
         }
     }
     if first_scan {
+        // Claims-era prose bodies and workbooks convert once: a
+        // document-mode view matches on the format claim, so until then
+        // an old entity renders nothing.
+        match session::adopt_legacy(handle, &tonk.operator).await {
+            Ok(0) => {}
+            Ok(converted) => {
+                log!("converted {converted} claims-era documents in {repo}/{branch}");
+                tonk.sync_queue.mark_dirty(repo, super::sync::now_millis());
+            }
+            Err(error) => log!("document conversion in {repo}/{branch} failed: {error}"),
+        }
         // After a restart the dirty set is gone but the cells are not:
         // find unpublished work once, and fill the mirror while here.
         match session::documents(handle, &tonk.operator).await {

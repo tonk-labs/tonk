@@ -46,6 +46,16 @@ pub async fn mirror_all(site: &TonkSite, branch: &Branch) {
     }
 }
 
+/// Convert the claims-era prose bodies and workbooks the branch still
+/// holds, as the worker does on its first sweep. It commits, so the CLI
+/// runs it only as part of a write that already committed — a read-only
+/// query never writes.
+pub async fn adopt_legacy(site: &TonkSite, branch: &Branch) {
+    if let Err(error) = session::adopt_legacy(branch, &site.operator).await {
+        eprintln!("warning: document conversion failed: {error}");
+    }
+}
+
 /// Run every document command among `transients`. Returns one line per
 /// refused command; a refused command changed nothing.
 pub async fn dispatch(site: &TonkSite, branch: &Branch, transients: &Changes) -> Vec<String> {

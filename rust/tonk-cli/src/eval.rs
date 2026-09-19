@@ -201,6 +201,7 @@ pub async fn run_against_site(
         // Run the document commands among them, as the worker's command
         // dispatcher does after `/transact`. This sits inside the caller's
         // auto-sync window, so what a handler writes is pushed.
+        crate::document::adopt_legacy(site, branch).await;
         for refusal in crate::document::dispatch(site, branch, &transients).await {
             eprintln!("warning: document command refused, nothing changed: {refusal}");
         }

@@ -411,15 +411,16 @@ pub async fn open<Env: DocumentEnv>(
         return Ok((document, format));
     }
 
-    if let Some(format) = claimed {
-        // Declared elsewhere; the bytes arrive with the next sync pass.
-        // Genesis is constant, so starting from it here is safe.
-        let mut document = Document::genesis(format)?;
-        cell::save(&local, &mut document, None).await?;
-        return Ok((document, format));
-    }
-
-    let format = create.ok_or_else(|| SessionError::NotADocument(entity.to_string()))?;
+    // No local bytes. The format is the claimed one (declared elsewhere,
+    // or by a seed) or the one the caller creates with. Either way any
+    // claims-era body still on the branch is converted: the conversion
+    // is deterministic, so a replica that does it here and another that
+    // did it there hold the same change. With nothing to convert this is
+    // genesis, which is constant too — bytes declared elsewhere arrive
+    // with the next sync pass and merge onto it.
+    let format = claimed
+        .or(create)
+        .ok_or_else(|| SessionError::NotADocument(entity.to_string()))?;
     let Converted { mut document, retract } = match format {
         Format::Text => convert_prose(branch, entity, env).await?,
         Format::Table => convert_table(branch, entity, env).await?,
@@ -431,8 +432,39 @@ pub async fn open<Env: DocumentEnv>(
     } else {
         heads
     };
-    declare(branch, entity, format, &imported, retract, env).await?;
+    if claimed.is_none() || !retract.is_empty() || !imported.is_empty() {
+        declare(branch, entity, format, &imported, retract, env).await?;
+    }
     Ok((document, format))
+}
+
+/// Convert every claims-era document the branch still holds: prose
+/// entities whose body is a `content` claim, and workbooks whose sheets
+/// and cells are claims. A document-mode view matches on the format
+/// claim, so until this runs an old entity renders nothing. Returns how
+/// many were converted. Hosts call it once per branch.
+pub async fn adopt_legacy<Env: DocumentEnv>(branch: &Branch, env: &Env) -> Result<usize, SessionError> {
+    let mut found: Vec<(Entity, Format)> = Vec::new();
+    for (entity, _) in select(branch, LEGACY_PROSE_CONTENT, None, None, env).await? {
+        found.push((entity, Format::Text));
+    }
+    for (_, value) in select(branch, SHEET_TABLE, None, None, env).await? {
+        if let Value::Entity(workbook) = value {
+            found.push((workbook, Format::Table));
+        }
+    }
+    found.sort_by_key(|(entity, _)| entity.to_string());
+    found.dedup_by(|a, b| a.0 == b.0);
+    let mut converted = 0;
+    for (entity, format) in found {
+        let local = LocalCell::new(&branch.subject(), &entity, env);
+        if cell::load(&local).await?.is_some() {
+            continue;
+        }
+        open(branch, &entity, Some(format), env).await?;
+        converted += 1;
+    }
+    Ok(converted)
 }
 
 /// Assert the format claim (and an import's heads), retracting the
@@ -904,6 +936,46 @@ mod tests {
         write(&branch, &book, None, None, &[Edit::Remove { path: "sheets/s1/cells/B2".into() }], &stamp(), &operator).await?;
         mirror(&branch, &book, &operator).await?;
         assert!(queried_texts(&branch, CELL_CONTENT, &operator).await?.is_empty(), "a removed cell leaves the mirror");
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_adopts_claims_era_documents_in_one_sweep() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+        let prose = entity("id:prose/old");
+        let book = entity("id:table/book");
+        let sheet = entity("id:table/book/sheet1");
+        let first = entity("id:table/book/a");
+        let twin = entity("id:table/book/b");
+        let mut transaction = branch
+            .transaction()
+            .assert(Fact::one(LEGACY_PROSE_CONTENT, &prose, "old body".to_string())?)
+            .assert(Fact::one(SHEET_TABLE, &sheet, Value::Entity(book.clone()))?)
+            .assert(Fact::one(SHEET_NAME, &sheet, "Sheet1".to_string())?)
+            .assert(Fact::one(SHEET_ORDER, &sheet, "m".to_string())?);
+        // Two claims-era cell entities at ONE address: the defect
+        // document mode removes. The smallest entity id wins.
+        for (cell, content) in [(&first, "kept"), (&twin, "dropped")] {
+            transaction = transaction
+                .assert(Fact::one(CELL_SHEET, cell, Value::Entity(sheet.clone()))?)
+                .assert(Fact::one(CELL_AT, cell, "B2".to_string())?)
+                .assert(Fact::one(CELL_CONTENT, cell, content.to_string())?);
+        }
+        transaction.commit().publish().perform(&operator).await?;
+
+        assert_eq!(adopt_legacy(&branch, &operator).await?, 2);
+        assert_eq!(adopt_legacy(&branch, &operator).await?, 0, "a second sweep finds nothing");
+
+        assert_eq!(text_of(&read(&branch, &prose, None, &operator).await?), "old body");
+        let Content::Table(table) = read(&branch, &book, None, &operator).await?.content else {
+            panic!("expected a workbook");
+        };
+        assert_eq!(table.sheets.len(), 1);
+        assert_eq!(table.sheets[0].name, "Sheet1");
+        assert_eq!(table.sheets[0].cells["B2"], "kept");
+        assert!(select(&branch, CELL_CONTENT, None, None, &operator).await?.is_empty(), "the old cell claims are retracted");
         Ok(())
     }
 

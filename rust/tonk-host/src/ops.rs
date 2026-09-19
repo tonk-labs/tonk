@@ -41,7 +41,7 @@ use crate::events;
 use crate::host::HostState;
 use crate::http;
 use crate::registry::{Entry, EntryId};
-use crate::url::{evaluate_url, query_url, transact_url};
+use crate::url::{document_url, evaluate_url, query_url, transact_url};
 
 /// One installed listener — the closure is held so it stays
 /// attached for the page's lifetime.
@@ -65,6 +65,9 @@ pub(crate) fn attach_all(
     }));
     listeners.push(install_listener(target, events::EVALUATE, {
         move |ev| handle_evaluate(&ev)
+    }));
+    listeners.push(install_listener(target, events::DOCUMENT, {
+        move |ev| handle_document(&ev)
     }));
     listeners.push(install_listener(target, events::SUBSCRIBE, {
         let state = state.clone();
@@ -336,6 +339,81 @@ fn handle_query(ev: &CustomEvent) {
 
     let promise = future_to_promise(async move {
         match http::post_json(&url, &body_str).await {
+            Ok(json_text) => parse_json_response(&json_text),
+            Err(e) => Err(error_to_js(&e)),
+        }
+    });
+    let _ = Reflect::set(&detail, &JsValue::from_str("result"), &promise);
+}
+
+/// `tonk-document` handler.
+///
+/// A document-mode element (`<tonk-prose subject=…>`, `<tonk-table
+/// subject=…>`) reads and edits the automerge document of `detail.entity`.
+/// The element knows neither its repository nor its branch; the route is
+/// resolved here, from the same `with` context every other operation
+/// uses. With `detail.write` (`{ heads, edits, format }`) the request is
+/// a POST and the answer is the branch's state after the merge; without
+/// it, a GET of the branch's current version. Either way `detail.result`
+/// resolves to the worker's JSON: `{ format, heads, local?, text | table }`.
+fn handle_document(ev: &CustomEvent) {
+    claim_event(ev);
+    let detail = match ev.detail().dyn_into::<Object>() {
+        Ok(o) => o,
+        Err(_) => return,
+    };
+
+    let (space, branch, profile) = match route_from(&detail, event_origin(ev).as_ref()) {
+        Ok(route) => route,
+        Err(error) => return install_rejected_promise(&detail, error),
+    };
+    let Some(entity) = get_string(&detail, "entity") else {
+        return install_rejected_promise(
+            &detail,
+            ErrorDetail::new(ErrorKind::Parse, "tonk-document: missing detail.entity"),
+        );
+    };
+    let format = get_string(&detail, "format");
+    let write = Reflect::get(&detail, &JsValue::from_str("write"))
+        .ok()
+        .filter(|value| value.is_object());
+    // A read names the format to create with; a write carries it in its body.
+    let query_format = if write.is_some() { None } else { format.as_deref() };
+    let Some(url) = document_url(
+        space.as_deref(),
+        branch.as_deref(),
+        profile,
+        &entity,
+        query_format,
+    ) else {
+        return install_rejected_promise(
+            &detail,
+            ErrorDetail::new(
+                ErrorKind::Parse,
+                "tonk-document: documents live in a space; this element has no space route",
+            ),
+        );
+    };
+
+    let body = match &write {
+        Some(write) => match js_sys::JSON::stringify(write) {
+            Ok(text) => Some(String::from(text)),
+            Err(_) => {
+                return install_rejected_promise(
+                    &detail,
+                    ErrorDetail::new(ErrorKind::Parse, "tonk-document: detail.write is not JSON"),
+                );
+            }
+        },
+        None => None,
+    };
+
+    let promise = future_to_promise(async move {
+        let response = match body {
+            Some(body) => http::post_json(&url, &body).await,
+            None => http::get_json(&url).await,
+        };
+        match response {
             Ok(json_text) => parse_json_response(&json_text),
             Err(e) => Err(error_to_js(&e)),
         }
