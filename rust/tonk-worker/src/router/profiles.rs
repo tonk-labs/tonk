@@ -364,6 +364,35 @@ async fn activate_named(
     promote(state, new_state, source).await
 }
 
+/// Run the [`SwitchProfile`] command.
+///
+/// The declarative twin of `POST /api/profiles/activate`: a switcher row
+/// dispatches this instead of the element fetching. Both land in
+/// `activate_named`, so the validation that refuses a handle the roster
+/// does not name covers the command path too — a guest cannot switch to a
+/// profile this device has no record of.
+///
+/// [`SwitchProfile`]: tonk_schema::command::SwitchProfile
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::SwitchProfile>
+    for crate::router::CommandEnv
+{
+    async fn execute(&self, command: tonk_schema::command::SwitchProfile) {
+        let handle = command.handle.0;
+        if handle.is_empty() {
+            log!("SwitchProfile: empty handle, skipping");
+            return;
+        }
+        // No source client: the switch was asked for from inside a guest,
+        // so every window reloads, including the one that asked. The HTTP
+        // route passes its caller so that tab keeps its response instead.
+        if let Err(error) = activate_named(self.state(), handle.clone(), None).await {
+            log!("SwitchProfile to '{handle}' failed: {error}");
+        }
+    }
+}
+
 /// `POST /api/profiles/add`.
 ///
 /// Promote a fresh profile as the landing pad for Add Account. The account
