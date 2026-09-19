@@ -93,11 +93,10 @@ impl<'a> BranchReference<'a> {
                 reason: e.to_string(),
             })?;
 
+        let opened = Arc::new(BranchState::open(branch, env).await?);
         let state = {
             let mut branches = repository.branches().write();
-            let entry = branches
-                .entry(name.to_owned())
-                .or_insert_with(|| Arc::new(BranchState::new(branch)));
+            let entry = branches.entry(name.to_owned()).or_insert(opened);
             Arc::clone(entry)
         };
 

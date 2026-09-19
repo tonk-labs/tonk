@@ -672,12 +672,16 @@ async fn stamp_account_linking(
             return;
         }
     };
-    if linking {
+    let written = if linking {
         main.state
-            .assert_overlay(tonk_schema::AccountLinking::new(account));
+            .write(tonk_schema::AccountLinking::new(account), &tonk.operator)
+            .await
     } else {
-        main.state
-            .retain_overlay_entities(|overlaid| overlaid != &account);
+        main.state.forget(vec![account], &tonk.operator).await
+    };
+    if let Err(error) = written {
+        log!("account linking stamp: write: {error}");
+        return;
     }
     tonk.reactor
         .schedule_poll(std::sync::Arc::clone(&main.state));

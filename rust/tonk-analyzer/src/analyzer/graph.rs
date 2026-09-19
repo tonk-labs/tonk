@@ -38,7 +38,7 @@ use tonk_schema::rule::{Rule, StoredRuleError, stored_rule};
 use super::assertion::{body_digest, derive_head_intent};
 use super::declaration::{
     DeclaredApplication, attribute_application, build_concept_retractions, concept_application,
-    parse_attribute_body, parse_concept_body,
+    parse_attribute_body, parse_concept_body, placement_applications,
 };
 use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::rule::{collect_rule_concepts, is_rule_retract_body, parse_rule_this_entity};
@@ -743,6 +743,7 @@ impl Graph {
                         DeclaredApplication {
                             application: Some(application),
                             inline_attributes: Vec::new(),
+                            placements: Vec::new(),
                             retractions: Vec::new(),
                         },
                     );
@@ -812,6 +813,13 @@ impl Graph {
                         .into_iter()
                         .map(|attr| attribute_application(&attr.descriptor, &attr.entity, None))
                         .collect();
+                    // `scope:` places every attribute the concept
+                    // names; a retraction-only body names none
+                    // (its descriptor is a stub) and places nothing.
+                    let placements = match (&plan.scope, plan.asserts_nothing) {
+                        (Some(scope), false) => placement_applications(&plan.descriptor, scope),
+                        _ => Vec::new(),
+                    };
                     // Field retractions (`with: { f: _ }` / `..: _`)
                     // dissociate stored fields read off the branch.
                     let resolved = scope.resolved_concept(&entity).flatten();
@@ -839,6 +847,7 @@ impl Graph {
                         DeclaredApplication {
                             application,
                             inline_attributes,
+                            placements,
                             retractions,
                         },
                     );

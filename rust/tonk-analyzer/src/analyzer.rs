@@ -326,6 +326,14 @@ fn expand(
                         claims.push(Statement::Assert(inline));
                         claim_labels.push(None);
                     }
+                    // `scope:` placements ride the same commit as
+                    // the concept: a placement takes effect in the
+                    // commit that declares it, so the concept's
+                    // first facts already route to the scope.
+                    for placement in declaration.placements {
+                        claims.push(Statement::Assert(placement));
+                        claim_labels.push(None);
+                    }
                     // `predicate`/`this`/`anchor` describe the head for
                     // the analysis tree. A normal declaration derives
                     // them from its asserted application; a
@@ -1484,6 +1492,96 @@ concept!: &person
             panic!("expected Assert(Concept) for concept");
         };
         assert_eq!(name.as_ref().map(AnchorName::as_str), Some("person"));
+    }
+
+    /// `scope: <uri>` on a concept lowers to one
+    /// `dialog.attribute/scope` placement per attribute the concept
+    /// names, emitted before the concept itself so the placement
+    /// takes effect in the same commit. The placement's subject is
+    /// dialog's `attribute:<the>` entity, not the `the:<hash>`
+    /// descriptor entity, so the layer recognises it.
+    #[dialog_common::test]
+    async fn it_lowers_a_concept_scope_to_attribute_placements() {
+        use dialog_artifacts::Value as ArtifactValue;
+        use dialog_query::Term as QueryTerm;
+
+        let syntax = must_parse(
+            r#"
+command!: &site
+  description: "The site a tab shows"
+  scope: memory:state
+  with:
+    path:
+      description: "Path"
+      the:         xyz.tonk.site/path
+      as:          Text
+      cardinality: one
+    at:
+      description: "When"
+      the:         xyz.tonk.site/at
+      as:          Text
+      cardinality: one
+"#,
+        );
+        let analysis = flat(analyze_empty(&syntax).await.unwrap());
+        // 2 inline attrs + 2 placements + 1 concept.
+        assert_eq!(analysis.mutate.statements.len(), 5);
+        let scope: Entity = "memory:state".parse().unwrap();
+        let mut placed = Vec::new();
+        for statement in &analysis.mutate.statements[2..4] {
+            let Statement::Assert(Application::Concept { query, this, .. }) = statement else {
+                panic!("expected a placement claim, got {statement:?}");
+            };
+            let (_, field) = query
+                .predicate
+                .with()
+                .iter()
+                .next()
+                .expect("the placement schema has its scope field");
+            assert_eq!(field.the().to_string(), "dialog.attribute/scope");
+            assert_eq!(
+                query.terms.get("scope"),
+                Some(&QueryTerm::Constant(ArtifactValue::Entity(scope.clone())))
+            );
+            let ThisIntent::Uri(subject) = this else {
+                panic!("placement subject is the attribute entity, got {this:?}");
+            };
+            placed.push(subject.to_string());
+        }
+        placed.sort();
+        assert_eq!(
+            placed,
+            vec![
+                "attribute:xyz.tonk.site/at".to_string(),
+                "attribute:xyz.tonk.site/path".to_string()
+            ]
+        );
+        assert!(matches!(
+            analysis.mutate.statements.last(),
+            Some(Statement::Assert(Application::Concept { .. }))
+        ));
+    }
+
+    /// `scope:` must be a URI: a literal cannot name a layer scope.
+    #[dialog_common::test]
+    async fn it_rejects_a_non_uri_concept_scope() {
+        let syntax = must_parse(
+            r#"
+concept!: &site
+  scope: "memory:state"
+  with:
+    path:
+      description: "Path"
+      the:         xyz.tonk.site/path
+      as:          Text
+      cardinality: one
+"#,
+        );
+        let err = analyze_empty(&syntax).await.unwrap_err();
+        assert!(
+            matches!(err.kind, AnalyzeErrorKind::InvalidConceptBody { .. }),
+            "got {err:?}"
+        );
     }
 
     /// A `maybe:` block declares optional fields. The descriptor

@@ -170,6 +170,26 @@ impl Commit<'_> {
     where
         Env: LoadProvider + BranchOpenProvider + CommitProvider + SelectProvider,
     {
+        self.perform_witnessed(env)
+            .await
+            .map(|(revision, _)| revision)
+    }
+
+    /// Execute the commit and hand back the commands it witnessed:
+    /// every transient the stack minted while the commit was under the
+    /// branch's transactor lock, as the facts they asserted. That is the
+    /// request's own dispatched commands, and also a command a rule
+    /// concluded during induction and a later round consumed, which
+    /// never appears in the pre-commit bucket. A caller that dispatches
+    /// commands uses this; [`perform`](Self::perform) leaves what it
+    /// witnessed queued on the branch for the next dispatching commit.
+    pub async fn perform_witnessed<Env>(
+        self,
+        env: &Env,
+    ) -> Result<(Revision, Changes), ReactorError>
+    where
+        Env: LoadProvider + BranchOpenProvider + CommitProvider + SelectProvider,
+    {
         let repo = self.branch.repository.name().to_owned();
         let name = self.branch.name.to_owned();
         let origin = self.origin;
@@ -216,13 +236,25 @@ impl Commit<'_> {
             // Durable changes are asserted; transients are dispatched
             // as commands. Commit-time induction (dialog's) fires
             // installed rules over both and sweeps the transients.
-            let txn = branch
+            let txn = cached
+                .stack()
                 .transaction()
-                .integrate(changes.clone())
+                .assert(changes.clone())
                 .dispatch(transients.clone());
-
             let t_commit = web_time::Instant::now();
-            match txn.commit().publish().perform(env).await {
+            let published = txn
+                .commit()
+                .publish()
+                .perform(env)
+                .await
+                .map_err(ReactorError::from)
+                .and_then(|heads| match heads.first() {
+                    Some(dialog_repository::Head::Tree(Some(revision))) => Ok(revision.clone()),
+                    _ => branch
+                        .revision()
+                        .ok_or(ReactorError::Commit(CommitError::Detached)),
+                });
+            match published {
                 Ok(revision) => {
                     let commit_ms = t_commit.elapsed().as_millis();
                     // Name the commit: the branch, the claim count, and
@@ -257,27 +289,31 @@ impl Commit<'_> {
                     );
                     // Refresh the handle's view of the head before retrying. If
                     // even that fails, give up with the original mismatch.
-                    if let Err(refresh_err) = branch.refresh(env).await {
+                    if let Err(advance_err) = cached.stack().advance(env).await {
                         dialog_common::log!(
-                            "reactor commit refresh after race failed: {refresh_err}"
+                            "reactor commit advance after race failed: {advance_err}"
                         );
-                        return Err(e.into());
+                        return Err(e);
                     }
                 }
-                Err(e) => return Err(e.into()),
+                Err(e) => return Err(e),
             }
         };
+        // Drained under the transactor lock, so the instants are this
+        // commit's (and any an undrained earlier commit left), never a
+        // concurrent request's.
+        let witnessed = cached.state.drain_commands();
 
         // Schedule the poll rather than running it inline: the request's
         // dispatcher drains the scheduled set once after its providers run
-        // (`Reactor::run_scheduled_polls`), so a commit and a session-overlay
+        // (`Reactor::run_scheduled_polls`), so a commit and a state-layer
         // write on the same branch in one turn coalesce into a single
         // re-evaluation. Every entry point that commits must drain.
         self.branch
             .reactor()
             .schedule_poll(std::sync::Arc::clone(&cached.state));
 
-        Ok(revision)
+        Ok((revision, witnessed))
     }
 }
 
@@ -291,6 +327,6 @@ const COMMIT_RETRY_LIMIT: usize = 4;
 /// signal to refresh and retry. Matched on the rendered error so the reactor
 /// need not import the dialog error hierarchy; the `VersionMismatch` leaf
 /// renders its distinctive text through the chain.
-fn is_head_moved(error: &CommitError) -> bool {
+fn is_head_moved(error: &ReactorError) -> bool {
     error.to_string().contains("Version mismatch")
 }

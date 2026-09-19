@@ -39,6 +39,11 @@ pub(crate) struct DeclaredApplication {
     /// Anonymous attribute applications declared inline inside
     /// this concept's `with:` map. Empty for `attribute!` heads.
     pub inline_attributes: Vec<Application>,
+    /// Placement applications lowered from the concept's `scope:`
+    /// field — one `dialog.attribute/scope` fact per attribute the
+    /// concept names, so the layer routes those facts to the scope.
+    /// Emitted before the concept itself. Empty without `scope:`.
+    pub placements: Vec<Application>,
     /// Per-field retraction applications emitted as
     /// `Statement::Retract` — one per `concept!:` field retraction
     /// (`with: { f: _ }` / `..: _`). Empty otherwise.
@@ -253,6 +258,13 @@ pub(crate) struct ConceptBody {
     /// fact in [`concept_application`] so the reactor's effects
     /// loop classifies this concept's facts as transient.
     pub transient: bool,
+    /// The scope named by `scope: <uri>` (e.g. `memory:state`).
+    /// Lowered by [`placement_applications`] into one
+    /// `dialog.attribute/scope` placement per attribute of the
+    /// concept, so a layer that binds the scope keeps the concept's
+    /// facts there instead of in its tree. `None` leaves the
+    /// attributes wherever the layer's default puts them.
+    pub scope: Option<Entity>,
     /// Attributes defined inline in the `with:` map (as opposed
     /// to referenced by name / URI). Each carries the descriptor
     /// needed to emit `db.attribute/{id,type,cardinality}`
@@ -267,6 +279,7 @@ pub(crate) fn parse_concept_body(
 ) -> Result<ConceptBody, AnalyzeError> {
     let mut description: Option<String> = None;
     let mut transient: bool = false;
+    let mut placement_scope: Option<Entity> = None;
     // Each entry: (field name, definition, optional). `with:` fields
     // are required; `maybe:` fields are optional.
     let mut fields: Vec<(String, AttributeDefinition, bool)> = Vec::new();
@@ -303,6 +316,9 @@ pub(crate) fn parse_concept_body(
             }
             "transient" => {
                 transient = parse_transient_tag(field)?;
+            }
+            "scope" => {
+                placement_scope = Some(parse_concept_scope(field)?);
             }
             "with" => {
                 parse_concept_field_block(
@@ -407,8 +423,98 @@ pub(crate) fn parse_concept_body(
         rest_retraction,
         asserts_nothing,
         transient,
+        scope: placement_scope,
         inline_attributes,
     })
+}
+
+/// Read a `concept!`'s `scope:` field as the scope entity its
+/// attributes are placed in. Only a URI (`memory:state`,
+/// `memory:tab`) names a scope: scopes are layer bindings, not
+/// values a document can compute, so a variable or literal here is
+/// an error rather than a silent no-op.
+fn parse_concept_scope(field: &tonk_notation::Field) -> Result<Entity, AnalyzeError> {
+    match &field.value {
+        FieldValue::Uri(uri) => uri
+            .parse()
+            .map_err(|e: dialog_artifacts::DialogArtifactsError| {
+                AnalyzeError::at(
+                    AnalyzeErrorKind::InvalidSubjectUri {
+                        subject: uri.clone(),
+                        reason: e.to_string(),
+                    },
+                    field.value_range,
+                )
+            }),
+        _ => Err(AnalyzeError::at(
+            AnalyzeErrorKind::InvalidConceptBody {
+                reason: "`scope:` names the layer scope the concept's facts live in — \
+                         write a scope URI such as `memory:state`"
+                    .into(),
+            },
+            field.value_range,
+        )),
+    }
+}
+
+/// The scheme dialog mints attribute entities under for facts
+/// *about* an attribute (`attribute:<namespace>/<name>`), the
+/// subject of every `dialog.attribute/*` placement.
+const ATTRIBUTE_ENTITY_SCHEME: &str = "attribute:";
+
+/// The built-in placement schema: one field, `scope`, whose
+/// attribute is dialog's `dialog.attribute/scope`. Synthesized like
+/// the `attribute`/`concept` schemas so a placement lowers to the
+/// wire as a concept claim, which is the only shape the seed carries.
+fn placement_schema() -> ConceptDescriptor {
+    let json = serde_json::json!({
+        "with": {
+            "scope": { "the": "dialog.attribute/scope", "as": "Entity", "cardinality": "one" },
+        }
+    });
+    serde_json::from_value(json).expect("placement schema is well-formed")
+}
+
+/// Lower a concept's `scope:` into placement applications: for
+/// each attribute the concept's fields name, one
+/// `(attribute:<the>, dialog.attribute/scope, <scope>)` fact. A
+/// layer that binds the scope routes the attribute's facts there;
+/// the placement itself is a tree fact, deliberately outside the
+/// concept's content address, so the same descriptor can be
+/// scoped on one branch and durable on another.
+///
+/// Two concepts sharing an attribute share its placement; the
+/// analyzer emits it from each, and the later assertion replaces
+/// the earlier one (the placement is cardinality one).
+pub(crate) fn placement_applications(
+    descriptor: &ConceptDescriptor,
+    scope: &Entity,
+) -> Vec<Application> {
+    let predicate = placement_schema();
+    descriptor
+        .with()
+        .iter()
+        .map(|(_, attr)| {
+            let subject: Entity = format!("{ATTRIBUTE_ENTITY_SCHEME}{}", attr.the())
+                .parse()
+                .expect("an attribute name is a valid opaque URI path");
+            let mut terms = Parameters::new();
+            terms.insert(
+                "this".into(),
+                Term::Constant(Value::Entity(subject.clone())),
+            );
+            terms.insert("scope".into(), Term::Constant(Value::Entity(scope.clone())));
+            Application::Concept {
+                query: ConceptQuery {
+                    terms,
+                    predicate: predicate.clone(),
+                },
+                join: Vec::new(),
+                this: ThisIntent::Uri(subject),
+                name: None,
+            }
+        })
+        .collect()
 }
 
 /// Placeholder field for the stub descriptor a retraction-only body

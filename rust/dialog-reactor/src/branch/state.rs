@@ -8,12 +8,13 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use dialog_artifacts::Statement;
+use dialog_artifacts::{Changes, Entity};
 use dialog_query::ConceptQuery;
-use dialog_repository::Branch;
+use dialog_repository::{Branch, Drained, Ephemeral, Observer, Stack};
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
-use crate::env::SelectProvider;
+use crate::env::{BranchOpenProvider, SelectProvider};
 use crate::error::ReactorError;
 use crate::subscription::{
     QueryHash, Status, Subscriber, SubscriberSession, Subscription, SubscriptionPoll,
@@ -23,110 +24,220 @@ use crate::subscription::{
 /// against it. Held inside the reactor's cache as
 /// `Arc<BranchState>` so callers can hand the state around
 /// without re-locking the reactor's outer map.
+/// The scope name the process's state layer is linked under: session
+/// facts a branch's readers see and nothing replicates or keeps.
+pub const STATE_SCOPE: &str = "memory:state";
+
+/// The scope name the branch itself is linked under.
+pub const SHARED_SCOPE: &str = "memory:shared";
+
+fn scope(name: &str) -> Entity {
+    name.parse().expect("a fixed scope name is a valid entity")
+}
+
+/// A branch as the reactor holds it: the branch, the stack every
+/// read, subscription, and write of it goes through, and the
+/// subscriptions standing over it.
+///
+/// The stack is `[branch, state, top]`: `state` is this process's
+/// ephemeral layer, linked under [`STATE_SCOPE`] by a wiring layer
+/// above it, so session facts placed on that scope — by the schema or
+/// explicitly by [`write`](Self::write) — land there and never reach
+/// the tree. Commands dispatched through the stack are witnessed on
+/// the layer their scope names, else the branch's own session store;
+/// both are observed, and [`drain_commands`](Self::drain_commands)
+/// hands back what fired.
 pub struct BranchState {
-    /// The open dialog branch handle. Cheap to clone (internal
-    /// `Cell<Revision>` keeps this handle current as the branch
-    /// advances).
+    /// The branch itself; transactions and pulls address it through
+    /// the stack.
     pub branch: Branch,
-    /// Subscriptions on this branch, keyed by query hash.
+    state: Ephemeral,
+    top: Ephemeral,
+    stack: Stack,
+    /// Instants on the state layer and on the branch's session store:
+    /// where dispatched commands are witnessed.
+    witnessed: [Observer; 2],
     subscriptions: Mutex<HashMap<QueryHash, Subscription>>,
-    /// Serializes *transactions* on this branch — concurrent writers (e.g.
-    /// two browser tabs committing through one service worker) line up rather
-    /// than racing the head CAS and failing. Guards nothing but the right to be
-    /// the one committing; the commit's data lives on the branch handle.
-    ///
-    /// An async [`tokio::sync::Mutex`], not `parking_lot`, because the guard is
-    /// held *across* the commit's `await`s. A mutex, not an `RwLock`: only
-    /// writers take it (readers and sync don't), so there is no read side to
-    /// share. Deliberately separate from the reactor's `TonkState` lock and NOT
-    /// taken by sync: sync coordinates with transactions through the head CAS
-    /// (it refreshes and retries on a mismatch), so it must never wait on — or
-    /// block — a transaction. Per branch, so commits to different branches
-    /// proceed in parallel.
     transactor: tokio::sync::Mutex<()>,
 }
 
 impl BranchState {
-    /// Construct a fresh state over an open branch.
-    pub fn new(branch: Branch) -> Self {
-        Self {
+    /// Open the branch's stack through the environment: a fresh state
+    /// layer and wiring layer, linked above the branch.
+    pub async fn open<Env>(branch: Branch, env: &Env) -> Result<Self, ReactorError>
+    where
+        Env: BranchOpenProvider,
+    {
+        let state = Ephemeral::create().perform(env).await;
+        let top = Ephemeral::create().perform(env).await;
+        // A commit made through the branch handle rather than the stack
+        // (the evaluate route's dialog transaction) still meets facts the
+        // schema places on the state scope; bound to the branch's own
+        // session store they land beside the tree, ephemeral, and the
+        // stack's composite reads them with the branch. Through the stack
+        // the scope resolves to the state layer instead.
+        branch.bind(scope(STATE_SCOPE), dialog_repository::Target::Session);
+        let stack = Stack::open(top.clone())
+            .link(&top, &state, scope(STATE_SCOPE))
+            .link(&state, &branch, scope(SHARED_SCOPE))
+            .perform(env)
+            .await?;
+        let witnessed = [
+            state.observe_everything(),
+            branch.overlay().observe_everything(),
+        ];
+        Ok(Self {
             branch,
+            state,
+            top,
+            stack,
+            witnessed,
             subscriptions: Mutex::new(HashMap::new()),
             transactor: tokio::sync::Mutex::new(()),
-        }
+        })
     }
 
-    /// The per-branch transaction lock. A transaction takes it
-    /// (`transactor().lock().await`) around its commit so concurrent
-    /// transactions serialize instead of failing the head CAS. Sync does not
-    /// participate — see the field docs.
+    /// The stack every read and write of this branch goes through.
+    pub fn stack(&self) -> &Stack {
+        &self.stack
+    }
+
+    /// The process's state layer above the branch.
+    pub fn state_layer(&self) -> &Ephemeral {
+        &self.state
+    }
+
+    /// The wiring layer at the top of the stack, which a per-client
+    /// stack links to reach the state layer.
+    pub fn top_layer(&self) -> &Ephemeral {
+        &self.top
+    }
+
+    /// Serializes commits on this branch. Held across the whole
+    /// commit so a concurrent transaction never builds on a head this
+    /// one is about to move.
     pub fn transactor(&self) -> &tokio::sync::Mutex<()> {
         &self.transactor
     }
 
-    /// Assert a [`Statement`] into the branch's session overlay —
-    /// ephemeral facts folded into every read of the branch (queries,
-    /// transaction views, and standing subscriptions) but never
-    /// committed. Delegates to [`Branch::overlay`]: dialog owns the
-    /// overlay now, folds it in at the single `QueryLayer::from(&Branch)`
-    /// point, and bumps an epoch so the branch's subscriptions re-evaluate
-    /// on their next poll. A cardinality-one re-assert overwrites in place.
-    pub fn assert_overlay<S: Statement>(&self, claim: S) {
-        self.branch.overlay().assert(claim);
+    /// Assert a [`Statement`] into the state layer: session facts every
+    /// read of the branch sees, never committed, never replicated.
+    /// Placed explicitly, so the schema need not declare the attributes.
+    pub async fn write<S: Statement, Env>(&self, claim: S, env: &Env) -> Result<(), ReactorError>
+    where
+        Env: BranchOpenProvider,
+    {
+        self.apply(Vec::new(), claim, env).await
     }
 
-    /// Retract a [`Statement`] from the branch's session overlay.
-    pub fn retract_overlay<S: Statement>(&self, claim: S) {
-        self.branch.overlay().retract(claim);
+    /// Forget `entities` in the state layer and assert `claim` there in
+    /// one commit, so a reader never sees the layer between the two: a
+    /// re-stamp that must replace an entity's facts rather than merge
+    /// into them goes through here.
+    pub async fn apply<S: Statement, Env>(
+        &self,
+        entities: Vec<Entity>,
+        claim: S,
+        env: &Env,
+    ) -> Result<(), ReactorError>
+    where
+        Env: BranchOpenProvider,
+    {
+        let mut transaction = self.stack.transaction();
+        if !entities.is_empty() {
+            transaction = transaction.forget(scope(STATE_SCOPE), entities);
+        }
+        transaction
+            .assert_into(scope(STATE_SCOPE), claim)
+            .commit()
+            .publish()
+            .perform(env)
+            .await?;
+        Ok(())
     }
 
-    /// Drop every fact in the branch's session overlay. Used to keep
-    /// exactly one live entry across keys that differ between writes (e.g.
-    /// each invitation is keyed by a fresh membership DID, so a
-    /// cardinality-one re-assert wouldn't replace the prior one — clearing
-    /// does).
-    pub fn clear_overlay(&self) {
-        self.branch.overlay().clear();
+    /// Retract a [`Statement`] from the state layer.
+    pub async fn erase<S: Statement, Env>(&self, claim: S, env: &Env) -> Result<(), ReactorError>
+    where
+        Env: BranchOpenProvider,
+    {
+        self.stack
+            .transaction()
+            .retract_from(scope(STATE_SCOPE), claim)
+            .commit()
+            .publish()
+            .perform(env)
+            .await?;
+        Ok(())
     }
 
-    /// Borrow the subscription map. Used by [`SubscriptionPoll`]
-    /// to walk subscribers, and by tests asserting on cache state.
+    /// Drop every fact in the state layer. Used to keep a process's
+    /// session facts from outliving the profile they were minted for.
+    pub async fn clear<Env>(&self, env: &Env) -> Result<(), ReactorError>
+    where
+        Env: BranchOpenProvider,
+    {
+        self.stack
+            .transaction()
+            .clear(scope(STATE_SCOPE))
+            .commit()
+            .publish()
+            .perform(env)
+            .await?;
+        Ok(())
+    }
+
+    /// Drop every state-layer fact recorded for `entities`: the
+    /// garbage-collection primitive for per-client facts keyed by
+    /// short-lived entities.
+    pub async fn forget<Env>(&self, entities: Vec<Entity>, env: &Env) -> Result<(), ReactorError>
+    where
+        Env: BranchOpenProvider,
+    {
+        if entities.is_empty() {
+            return Ok(());
+        }
+        self.stack
+            .transaction()
+            .forget(scope(STATE_SCOPE), entities)
+            .commit()
+            .publish()
+            .perform(env)
+            .await?;
+        Ok(())
+    }
+
+    /// The commands witnessed since the last drain, as the facts they
+    /// asserted: what a stack commit dispatched, including a command a
+    /// rule concluded and the next round consumed. A gapped observer
+    /// yields nothing for its store; a command it missed is lost, as a
+    /// command is when its consumer is gone.
+    pub fn drain_commands(&self) -> Changes {
+        use dialog_artifacts::Update as _;
+        let mut changes = Changes::new();
+        for observer in &self.witnessed {
+            let Drained::Instants(instants) = observer.drain() else {
+                continue;
+            };
+            for instant in instants {
+                for fact in instant.asserted {
+                    changes.associate(fact.the, fact.of, fact.is);
+                }
+            }
+        }
+        changes
+    }
+
     pub fn subscriptions(&self) -> &Mutex<HashMap<QueryHash, Subscription>> {
         &self.subscriptions
     }
 
-    /// Drop every subscriber session on this branch.
-    ///
-    /// Each session owns an `mpsc::Sender`; dropping it surfaces
-    /// `None` on the receiver side, which ends the
-    /// `UnboundedReceiverStream` driving the SSE response body, so
-    /// the in-flight fetch settles. Called from the worker's
-    /// `onupdatefound` path so the old SW can be replaced —
-    /// without this, the SW spec keeps the worker alive for as long
-    /// as any open fetch still holds a stream.
+    /// Drop every subscription's subscribers; used on shutdown so a
+    /// late poll finds nothing to deliver to.
     pub fn clear_subscribers(&self) {
         self.subscriptions.lock().clear();
     }
 
-    /// Register a fresh subscriber for `query`. Returns a
-    /// [`Subscriber`] carrying the subscription's hash and the
-    /// receiver to read broadcast bytes from. The caller is
-    /// expected to follow up with
-    /// `branch_session.subscription(hash).poll().perform(&env)`
-    /// so the new subscriber's first event is the current snapshot.
-    ///
-    /// Query identity is the blake3 hash of the serialized
-    /// [`Query`] projection. We **don't** re-check `PartialEq`
-    /// against the registered query, even though earlier
-    /// revisions did: `NamedAttributes` in dialog-query derives
-    /// `PartialEq` over a `Vec` whose order is randomized by the
-    /// `HashMap`-mediated `Serialize` / `Deserialize` impls, so
-    /// the same query round-tripped through ser/de can compare
-    /// `!=` even though the hashes match. A genuine blake3
-    /// collision is cryptographically impossible, so trusting
-    /// the hash is the right move here. Track the upstream fix
-    /// in dialog-db (make `NamedAttributes::PartialEq`
-    /// order-insensitive, or serialize in sorted order).
     /// Attach a subscriber that already owns its channel.
     ///
     /// The adoption path for a subscription registered before this
@@ -181,7 +292,9 @@ impl BranchState {
         // subscription sees ephemeral facts with no extra wiring here.
         let plan = tonk_schema::concept::QueryPlan::from(query);
         let subscription = entry.or_insert_with(|| Subscription {
-            engine: Arc::new(tokio::sync::Mutex::new(Some(self.branch.subscribe(plan)))),
+            engine: Arc::new(tokio::sync::Mutex::new(Some(
+                self.stack.query().subscribe(plan),
+            ))),
             terms,
             subscribers: Vec::new(),
         });
@@ -210,24 +323,31 @@ impl BranchState {
         });
     }
 
-    /// Drop every session-overlay fact recorded for entities that
-    /// fail `keep` — the branch-level surface of
-    /// [`Overlay::retain_entities`](dialog_repository::Overlay).
-    /// Returns whether anything was removed; the caller schedules a
-    /// poll when it was, so live subscribers observe the removal.
-    pub fn retain_overlay_entities<F: FnMut(&dialog_artifacts::Entity) -> bool>(
-        &self,
-        keep: F,
-    ) -> bool {
-        self.branch.overlay().retain_entities(keep)
+    /// Capture movement the stack has not seen: a commit made through
+    /// the branch handle rather than the stack (the evaluate route's
+    /// dialog transaction, a direct retract) moves the branch's head
+    /// under a stack whose reads are pinned to the head it captured.
+    /// Cheap when nothing moved; an advance otherwise.
+    pub async fn settle<Env>(&self, env: &Env) -> Result<(), ReactorError>
+    where
+        Env: BranchOpenProvider,
+    {
+        if self.stack.behind() {
+            self.stack.advance(env).await?;
+        }
+        Ok(())
     }
 
-    /// Re-poll every subscription on this branch. Mutating leaf
-    /// effects call this on success so changed query results
-    /// fan out to subscribers. Each subscription is polled via
-    /// the same `SubscriptionPoll::perform` path the public
-    /// chain uses.
-    pub async fn poll<'a, Env: SelectProvider>(self: &'a Arc<Self>, env: &'a Env) {
+    /// Re-evaluate every subscription over the stack's current heads:
+    /// movement made outside the stack is captured first, so a poll
+    /// scheduled after a plain branch commit sees that commit.
+    pub async fn poll<'a, Env: SelectProvider + BranchOpenProvider>(
+        self: &'a Arc<Self>,
+        env: &'a Env,
+    ) {
+        if let Err(error) = self.settle(env).await {
+            dialog_common::log!("reactor poll: advance over moved heads failed: {error}");
+        }
         let hashes: Vec<QueryHash> = {
             let subs = self.subscriptions.lock();
             subs.keys().cloned().collect()

@@ -355,13 +355,11 @@ async fn stamp_site_on(
     // `/space/{id}/inspector` a merge would leave `rest="inspector"` on the
     // site and the nested `<tonk-site path={rest}>` would keep routing the
     // old sub-path. Pruned only once the route matched (above), so a
-    // no-match navigation still keeps the previous stamp; the write below
-    // schedules the poll that lets subscribers observe the swap atomically.
-    state
-        .state
-        .retain_overlay_entities(|overlaid| overlaid.as_str() != site);
-
-    // Write through the overlay builder: it asserts into the session overlay and
+    // no-match navigation still keeps the previous stamp; the forget rides
+    // the same commit as the new stamp, so subscribers observe the swap
+    // atomically.
+    //
+    // Write through the overlay builder: it asserts into the state layer and
     // schedules a poll so subscribers are notified — the request dispatcher
     // drains the poll once. Cardinality-one fields supersede in place, so a
     // navigation re-call just updates this site's path/route/concept.
@@ -382,7 +380,7 @@ async fn stamp_site_on(
         matched.route,
         matched.concept,
     );
-    let mut overlay = branch.overlay().assert(stamp);
+    let mut overlay = branch.overlay().forget(entity.clone()).assert(stamp);
     for (name, value) in matched.params.iter() {
         // Decode captured params so both URL spellings of a value stamp the same
         // fact — a raw `/space/did:key:z…` and its `encodeURIComponent`'d

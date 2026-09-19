@@ -266,6 +266,7 @@ event!: &on/invite
     time: ".timeStamp"
 
 command!: &tonk/invite
+  scope: memory:state
   this: tonk:invite
   description: Mint a repo invite — generates a membership keypair and delegation.
   with:
@@ -292,6 +293,7 @@ command!: &tonk/invite
 # branch's overlay — superseding in place on navigation. One field, so it keeps
 # decoding against an older seeded descriptor.
 command!: &tonk/load
+  scope: memory:state
   this: tonk:load
   description: Stamp the requesting tab's site for its current path on this branch.
   with:
@@ -335,6 +337,7 @@ concept!: &authorization
 # membership DID as its `tonk:authorization`, so `tonk:invitation` joins the
 # two.
 concept!: &credential
+  scope: memory:state
   this: tonk:credential
   description: The private ed25519 seed of a membership principal, and its invite URL (overlay-only).
   with:
@@ -433,6 +436,7 @@ concept!:
       cardinality: one
 
 concept!: &tonk/agent-handoff-state
+  scope: memory:state
   this: tonk:agent-handoff-state
   description: Session-only account-scoped handoff response, independent of ordinary sharing.
   with:
@@ -484,6 +488,7 @@ concept!: &tonk/agent-invite
 # label; if minting is refused they replace that label with the worker-owned
 # reason sentence.
 concept!: &share/blocked
+  scope: memory:state
   this: tonk:share/blocked
   description: Why the latest invite request could not produce a shareable link.
   with:
@@ -797,6 +802,7 @@ concept!: &member
 # shape. `xyz.tonk.command.expel-member/member` is that distinctness by
 # construction, so the name can just say what it means.
 command!: &member/expel
+  scope: memory:state
   description: Remove a member from this space.
   with:
     member:
@@ -1039,6 +1045,7 @@ event!: &on/repository-rename
     name: ".currentTarget.value"
 
 command!: &tonk/rename-repository
+  scope: memory:state
   description: Rename the repository.
   with:
     subject:
@@ -1118,6 +1125,7 @@ concept!: &tonk/identity
 # shapes disjoint — without it every space rename also renamed the
 # profile. Separate attribute namespaces do that now.
 command!: &profile/rename
+  scope: memory:state
   description: Rename the signed-in member (set their display name).
   with:
     name:
@@ -1575,6 +1583,7 @@ concept!: &tonk/replica
 # `enabled` pause preference, which is a boolean keyed on the replica entity
 # (worker-only, off the chip's path).
 concept!: &tonk/sync
+  scope: memory:state
   this: tonk:sync
   description: This device's live sync status for the space in scope.
   with:
@@ -1595,6 +1604,7 @@ concept!: &tonk/sync
 # the same branch overlay, isolated by entity URI.
 
 concept!: &site
+  scope: memory:state
   this: tonk:site
   description: A tab's location and the route concept it renders.
   with:
@@ -1633,6 +1643,14 @@ concept!: &site
       the: xyz.tonk.site/concept
       cardinality: one
       as: entity
+  maybe:
+    target:
+      description: |
+          Where this tab has been asked to go. A worker command that ends in
+          a redirect asserts it; the page navigates and its re-stamp clears it.
+      the: xyz.tonk.site/target
+      cardinality: one
+      as: text
 
 # A site renders the route model it matched. The shell mounts a fixed
 # `<tonk-display entity=site:… model=tonk:site>`; this view nests into the
