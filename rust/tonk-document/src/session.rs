@@ -980,6 +980,46 @@ mod tests {
     }
 
     #[dialog_common::test]
+    async fn it_merges_a_document_when_dialog_merges_two_branches() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let main = repo.branch("main").open().perform(&operator).await?;
+        let doc = entity("id:prose/doc");
+        write(&main, &doc, Some(Format::Text), None, &set("base"), &stamp(), &operator).await?;
+
+        let feature = repo.branch("feature").open().perform(&operator).await?;
+        feature.set_upstream(&main).perform(&operator).await?;
+        feature.pull().perform(&operator).await?;
+        assert_eq!(text_of(&read(&feature, &doc, None, &operator).await?), "base");
+
+        // Both sides edit without seeing each other. Each write is the
+        // exact pair this design emits: retract the head it saw, assert
+        // its own, in one transaction.
+        let ours = write(&feature, &doc, None, None, &[Edit::Insert { after: "base".into(), text: " feature".into() }], &stamp(), &operator).await?;
+        let theirs = write(&main, &doc, None, None, &[Edit::Splice { at: 0, delete: 0, text: "main ".into() }], &stamp(), &operator).await?;
+        assert_eq!(text_of(&read(&feature, &doc, None, &operator).await?), "base feature", "a branch sees only its own line");
+
+        // Dialog merges the branches. No document code runs: the merge
+        // of the many-valued heads claim IS the automerge merge.
+        feature.pull().perform(&operator).await?.expect("pull merges");
+        let mut expected = ours.snapshot.heads.clone();
+        expected.extend(theirs.snapshot.heads.clone());
+        expected.sort();
+        assert_eq!(
+            claimed_heads(&feature, &doc, &operator).await?,
+            expected,
+            "both heads are claimed and the shared base head is gone"
+        );
+        assert_eq!(text_of(&read(&feature, &doc, None, &operator).await?), "main base feature");
+
+        // The next write on the merged branch collapses the heads to one.
+        let next = write(&feature, &doc, None, None, &[Edit::Insert { after: "feature".into(), text: "!".into() }], &stamp(), &operator).await?;
+        assert_eq!(claimed_heads(&feature, &doc, &operator).await?.len(), 1);
+        assert_eq!(text_of(&next.snapshot), "main base feature!");
+        Ok(())
+    }
+
+    #[dialog_common::test]
     fn it_reads_the_markdown_out_of_an_envelope() {
         assert_eq!(prose_body("plain *markdown*"), "plain *markdown*");
         assert_eq!(prose_body("Tonk-Prose-Version: 1\nETag: \"1\"\n\nbody\n\nmore"), "body\n\nmore");
