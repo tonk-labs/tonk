@@ -5927,8 +5927,9 @@ mod tests {
                         trigger: document.querySelector('[data-account-trigger]')?.textContent,
                         error: document.querySelector('[data-account-error]')?.textContent,
                         errorHidden: document.querySelector('[data-account-error]')?.hidden,
-                        activeProfile: document.querySelector('ui-hub-account')?.dataset.activeProfile,
-                        activeProvider: document.querySelector('ui-hub-account')?.dataset.activeProvider,
+                        tab: document.querySelector('hub-bar')?.getAttribute('tab'),
+                        linking: document.querySelector('hub-bar')?.getAttribute('linking'),
+                        barRegistered: !!customElements.get('hub-bar'),
                         hasTonkFetch: typeof window.tonk?.fetch === 'function'
                     }"#,
                     Vec::new(),

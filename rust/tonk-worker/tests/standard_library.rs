@@ -42,7 +42,6 @@ const ISSUE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/issue.y
 /// Light-DOM markup mounted by the Hub account custom element. The profile
 /// library supplies its geometry, so their visual contract is checked here
 /// together.
-const HUB_ACCOUNT_MARKUP: &str = include_str!("../../tonk-workspace/src/ui_hub_account.html");
 
 const SETTINGS_PANEL_MARKUP: &str =
     include_str!("../../tonk-workspace/src/ui_account_settings.html");

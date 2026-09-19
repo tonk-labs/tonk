@@ -382,7 +382,7 @@ view!:
          (linking ceremony or account stack) is up. The mock's solid-ink
          account cell belongs only to its fully signed-out state, where
          the roster is gone — an unlinked profile here still has one. */
-      ui-hub-account[data-linking] .hc-acct { cursor:default; }
+      hub-bar[linking="true"] .hc-acct { cursor:default; }
       .hcell .g { font-size:14px; font-weight:500; }
       .settings-icon { width:9px; height:9px; flex:none; margin-bottom:1px; }
 
@@ -391,7 +391,7 @@ view!:
          so the rows are only ways onward: settings first, one row per
          other account carrying its switch verb, then the add door — the
          page's one CTA, solid ink. ── */
-      .hub-page ui-hub-account { position:relative; display:block; width:100%; }
+      .hub-page hub-bar { position:relative; display:block; width:100%; }
       /* The menu's own `open` attribute drives its visibility, rather
          than a `hidden` attribute script has to remember to toggle. */
       hub-menu { display:block; }
@@ -448,7 +448,7 @@ view!:
          rather than the neutral fill: the wireframes' rule is that waiting
          never takes a color. The sheen carries the motion, so nothing here
          animates by hand. */
-      ui-hub-account [data-account-skeleton] {
+      hub-bar [data-account-skeleton] {
         display:block; width:88px; height:0.7em; align-self:center;
         flex:0 0 auto; border-radius:2px;
         /* A travelling highlight over a dim base -- the sheen, done in two
@@ -463,7 +463,7 @@ view!:
           color-mix(in srgb, currentColor 12%, transparent) 100%);
         background-size:400% 100%;
         animation:tonk-sheen 2.2s ease-in-out infinite; }
-      ui-hub-account [data-account-skeleton][hidden] { display:none; }
+      hub-bar [data-account-skeleton][hidden] { display:none; }
       @keyframes tonk-sheen {
         from { background-position:200% 0; }
         to { background-position:-200% 0; } }

@@ -1640,8 +1640,14 @@ fn finish_ceremony_attempt(
 }
 
 /// Seed the display-name editable with what the roster resolved, so the
-/// field is never blank while the member HAS a name. A Hub seat can read it
-/// off the surrounding `<ui-hub-account>`; a dialog seat asks the roster.
+/// field is never blank while the member HAS a name.
+///
+/// A Hub seat used to read the name off a `data-active-name` attribute
+/// the surrounding `<ui-hub-account>` stamped. That element is gone —
+/// the bar renders `tonk:account/name` as a view — so the name is read
+/// from the rendered label when one is on the page, and asked for
+/// otherwise. Both seats now take the same road when nothing is
+/// rendered yet, which is the dialog's road.
 fn prefill_name(this: &HtmlElement) {
     let Some(name) = name_input(this) else {
         return;
@@ -1650,13 +1656,17 @@ fn prefill_name(this: &HtmlElement) {
         return;
     }
     if let Some(active) = this
-        .closest("ui-hub-account")
-        .ok()
-        .flatten()
-        .and_then(|hub| hub.get_attribute("data-active-name"))
+        .owner_document()
+        .and_then(|document| {
+            document
+                .query_selector("[data-account-label]")
+                .ok()
+                .flatten()
+        })
+        .and_then(|label| label.text_content())
         .filter(|active| !active.trim().is_empty())
     {
-        name.set_value(&active);
+        name.set_value(active.trim());
         return;
     }
     let host = this.clone();

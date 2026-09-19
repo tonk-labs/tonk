@@ -20,7 +20,6 @@ mod ancestors;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod editable;
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
-mod hub_account;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -41,7 +40,6 @@ mod ui_account_settings;
 mod ui_copy_link;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-mod ui_hub_account;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod ui_space_remove;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -57,7 +55,6 @@ pub fn register() {
     sync::register();
     ui_sync_status::register();
     ui_copy_link::register();
-    ui_hub_account::register();
     ui_account_settings::register();
     ui_space_remove::register();
     editable::register();
