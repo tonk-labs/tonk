@@ -6105,6 +6105,84 @@ mod tests {
         Ok(())
     }
 
+    /// A tab left open on another account reloads itself when the
+    /// profile switches under it.
+    ///
+    /// The worker binds each client to the active-profile generation
+    /// and answers a stale client's profile-scoped requests with `409
+    /// profile changed; reload required`, so the old tab cannot ACT on
+    /// the account it is showing. Without a reload it goes on
+    /// DISPLAYING it, which is the worse state: a page that looks
+    /// signed in as someone it can no longer be.
+    ///
+    /// The reload comes from `tonk_host::navigate`, which listens for
+    /// the worker's `profile-changed` broadcast and reloads the TOP
+    /// page — the guest that may have asked for the switch is an
+    /// opaque document whose own reload would fix nothing. That path
+    /// had unit coverage but nothing end to end, so a change to the
+    /// broadcast, the listener, or the message shape could break every
+    /// open tab and no test would notice.
+    ///
+    /// Proven by a marker planted on the document: a reload discards
+    /// it. Asserting on rendered account text instead would pass for
+    /// the wrong reason, since a tab that merely re-rendered would
+    /// satisfy it too.
+    #[dialog_common::test]
+    async fn it_reloads_a_tab_whose_profile_switched_in_another_tab(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        sign_up(&driver, &env, "watcher@example.com").await?;
+
+        goto(&driver, env.tonk_web.as_str()).await?;
+        enter_hub(&driver).await?;
+        driver.enter_default_frame().await?;
+        let observer = driver.window().await?;
+
+        // Plant the marker. It lives on `window`, so only a genuine
+        // document reload clears it.
+        driver
+            .execute("window.__tonkReloadProbe = 'original';", Vec::new())
+            .await?;
+
+        // A second tab switches the profile out from under the first.
+        let switcher = driver.new_tab().await?;
+        driver.switch_to_window(switcher).await?;
+        goto(&driver, env.tonk_web.as_str()).await?;
+        enter_hub(&driver).await?;
+        click(&driver, "[data-account-trigger]").await?;
+        click(&driver, "[data-add-profile]").await?;
+        driver.enter_default_frame().await?;
+        await_register_dialog(&driver).await?;
+
+        // Back to the observer: its marker must be gone.
+        driver.switch_to_window(observer).await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            let probe = driver
+                .execute("return window.__tonkReloadProbe ?? null;", Vec::new())
+                .await
+                .ok()
+                .map(|ret| ret.json().clone());
+            let stale = matches!(
+                probe.as_ref().and_then(|value| value.as_str()),
+                Some("original")
+            );
+            if !stale {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "the tab kept its pre-switch document; it never reloaded on `profile-changed`"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+
+        driver.quit().await?;
+        Ok(())
+    }
+
     #[dialog_common::test]
     async fn it_adds_a_second_account_and_switches_between_disjoint_space_lists(
         env: TestEnvironment,
