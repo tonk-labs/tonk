@@ -68,6 +68,13 @@ struct Watch {
     /// Live subscription on the current entity's methods. Replaced when
     /// the name comes to mean a different entity.
     methods: Option<Subscription>,
+    /// Live subscription on the current entity's attribute defaults,
+    /// replaced alongside `methods`. Separate because the two are
+    /// separate queries: binding both in one would join entry against
+    /// entry and hand back their cross product, and an element with
+    /// methods but no defaults — which is most of them — would match
+    /// neither.
+    attributes: Option<Subscription>,
     /// The entity the tag currently names, so a name frame that does
     /// not actually move it does not churn the methods subscription.
     entity: Option<String>,
@@ -183,6 +190,7 @@ async fn watch(source: &Element, tag: &str) {
         consumer: consumer.clone(),
         _name: None,
         methods: None,
+        attributes: None,
         entity: None,
         applied: None,
     }));
@@ -270,10 +278,11 @@ async fn refresh(tag: &str, stream: &str) {
             return;
         }
         watch.borrow_mut().entity = entity.clone();
-        // Drop the old stream before opening the new one: the tag now
+        // Drop the old streams before opening the new ones: the tag now
         // means something else, and frames from the old entity would
         // otherwise keep re-registering it.
         watch.borrow_mut().methods = None;
+        watch.borrow_mut().attributes = None;
         watch.borrow_mut().applied = None;
         let Some(entity) = entity else {
             return;
@@ -288,8 +297,20 @@ async fn refresh(tag: &str, stream: &str) {
                 }
             }
         }
-        // Same reason as the name hop: read the methods now rather than
-        // waiting for the subscription to volunteer them.
+        if let Some(body) = attribute_query(&entity) {
+            match consumer::subscribe_claimed(&consumer, &body, Some(&"attributes".into())).await {
+                Ok(subscription) => watch.borrow_mut().attributes = Some(subscription),
+                Err(error) => {
+                    web_sys::console::warn_1(
+                        &format!("<{tag}>: attribute subscription failed: {}", error.message)
+                            .into(),
+                    );
+                }
+            }
+        }
+        // Same reason as the name hop: read now rather than waiting for
+        // the subscriptions to volunteer. One re-read covers both, since
+        // the module is rendered from the pair.
         Box::pin(refresh(tag, "methods")).await;
         return;
     }
@@ -297,11 +318,15 @@ async fn refresh(tag: &str, stream: &str) {
     let Some(entity) = watch.borrow().entity.clone() else {
         return;
     };
+    // Either stream re-reads both: the module is rendered from the
+    // pair, and `applied` below is what keeps the extra read from
+    // costing a re-registration.
     let methods = methods_of(&consumer, &entity).await;
     if methods.is_empty() {
         return;
     }
-    let source = element_module(tag, &methods);
+    let attributes = attributes_of(&consumer, &entity).await;
+    let source = element_module(tag, &methods, &attributes);
     let already = watch.borrow().applied.as_deref() == Some(source.as_str());
     if already {
         return;
@@ -341,38 +366,66 @@ fn method_query(entity: &str) -> Option<JsValue> {
     serde_wasm_bindgen::to_value(&query).ok()
 }
 
+/// The wire query for one entity's `attribute` defaults.
+fn attribute_query(entity: &str) -> Option<JsValue> {
+    let query = tonk_template::resolve::element_attribute_query(entity).ok()?;
+    serde_wasm_bindgen::to_value(&query).ok()
+}
+
 /// Hop two: the entity's methods, folded to `(key, source)` in key
 /// order.
 async fn methods_of(consumer: &Element, entity: &str) -> BTreeMap<String, String> {
-    let mut out = BTreeMap::new();
     let Some(body) = method_query(entity) else {
-        return out;
+        return BTreeMap::new();
     };
-    let Ok(rows) = consumer::query(consumer, &body).await else {
+    dictionary_of(consumer, &body, "method").await
+}
+
+/// The entity's attribute defaults, folded to `(name, value)` in name
+/// order. Empty for an element that declares none, which is the common
+/// case and not an error.
+async fn attributes_of(consumer: &Element, entity: &str) -> BTreeMap<String, String> {
+    let Some(body) = attribute_query(entity) else {
+        return BTreeMap::new();
+    };
+    dictionary_of(consumer, &body, "attribute").await
+}
+
+/// Run `body` and fold `field` — a keyed dictionary — out of the
+/// response.
+///
+/// A dictionary query answers one flat row per ENTRY, each carrying a
+/// one-entry `{key: value}` map under the field, so reading the first
+/// row would see one entry and call it the whole map. Merge them.
+async fn dictionary_of(
+    consumer: &Element,
+    body: &JsValue,
+    field: &str,
+) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    let Ok(rows) = consumer::query(consumer, body).await else {
         return out;
     };
     let Ok(rows) = rows.dyn_into::<js_sys::Array>() else {
         return out;
     };
-    // One flat row per entry, each carrying a one-entry `{key: source}`
-    // map; merge them into the whole dictionary.
     for row in rows.iter() {
         let Ok(fields) = Reflect::get(&row, &"fields".into()) else {
             continue;
         };
-        let Ok(method) = Reflect::get(&fields, &"method".into()) else {
+        let Ok(entries) = Reflect::get(&fields, &field.into()) else {
             continue;
         };
-        if method.is_undefined() || method.is_null() {
+        if entries.is_undefined() || entries.is_null() {
             continue;
         }
-        let method_object: js_sys::Object = method.clone().unchecked_into();
-        for key in js_sys::Object::keys(&method_object).iter() {
+        let object: js_sys::Object = entries.clone().unchecked_into();
+        for key in js_sys::Object::keys(&object).iter() {
             let Some(key) = key.as_string() else { continue };
-            if let Ok(value) = Reflect::get(&method, &key.clone().into())
-                && let Some(source) = value.as_string()
+            if let Ok(value) = Reflect::get(&entries, &key.clone().into())
+                && let Some(text) = value.as_string()
             {
-                out.insert(key, source);
+                out.insert(key, text);
             }
         }
     }
@@ -395,13 +448,15 @@ mod tests {
 
     wasm_bindgen_test_configure!(run_in_browser);
 
-    /// A mutable stand-in for the branch: the name bindings and method
-    /// dictionaries the fake host answers from. Tests mutate it and
-    /// then push a frame, which is exactly the shape of a real edit.
+    /// A mutable stand-in for the branch: the name bindings, method
+    /// dictionaries and attribute defaults the fake host answers from.
+    /// Tests mutate it and then push a frame, which is exactly the
+    /// shape of a real edit.
     #[derive(Default)]
     struct Branch {
         names: HashMap<String, String>,
         methods: HashMap<String, BTreeMap<String, String>>,
+        attributes: HashMap<String, BTreeMap<String, String>>,
     }
 
     thread_local! {
@@ -414,16 +469,28 @@ mod tests {
     }
 
     fn define(tag: &str, entity: &str, methods: &[(&str, &str)]) {
+        define_with_defaults(tag, entity, methods, &[]);
+    }
+
+    /// [`define`] plus the element's attribute defaults.
+    fn define_with_defaults(
+        tag: &str,
+        entity: &str,
+        methods: &[(&str, &str)],
+        attributes: &[(&str, &str)],
+    ) {
+        let pairs = |kv: &[(&str, &str)]| -> BTreeMap<String, String> {
+            kv.iter()
+                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                .collect()
+        };
         BRANCH.with(|branch| {
             let mut branch = branch.borrow_mut();
             branch.names.insert(tag.to_owned(), entity.to_owned());
-            branch.methods.insert(
-                entity.to_owned(),
-                methods
-                    .iter()
-                    .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
-                    .collect(),
-            );
+            branch.methods.insert(entity.to_owned(), pairs(methods));
+            branch
+                .attributes
+                .insert(entity.to_owned(), pairs(attributes));
         });
     }
 
@@ -521,10 +588,18 @@ mod tests {
         on_subscribe.forget();
     }
 
-    /// Whether a query body is one of the two this fake branch serves.
+    /// Whether a query body is one of the three this fake branch
+    /// serves.
+    ///
+    /// The attribute domain has to be listed even though most tests
+    /// declare no defaults: leaving it out does not mean "answers
+    /// none", it means the query is never claimed, and the registry
+    /// then waits on a result nobody will produce — which showed up as
+    /// every element failing to register at all.
     fn ours(body: &str) -> bool {
         body.contains("db.name/referent")
             || body.contains(tonk_template::resolve::ELEMENT_METHOD_DOMAIN)
+            || body.contains(tonk_template::resolve::ELEMENT_ATTRIBUTE_DOMAIN)
     }
 
     /// The rows the fake branch returns for one query body.
@@ -548,23 +623,40 @@ mod tests {
             }
             return rows;
         }
-        if body.contains(tonk_template::resolve::ELEMENT_METHOD_DOMAIN) {
+        // The attribute domain is checked FIRST: `xyz.tonk.element.method`
+        // and `xyz.tonk.element.attribute` are distinct strings, but
+        // ordering the arms this way keeps the pair from ever being
+        // matched by a shared prefix if either domain is renamed.
+        let (domain, field) = if body.contains(tonk_template::resolve::ELEMENT_ATTRIBUTE_DOMAIN) {
+            (
+                tonk_template::resolve::ELEMENT_ATTRIBUTE_DOMAIN,
+                "attribute",
+            )
+        } else {
+            (tonk_template::resolve::ELEMENT_METHOD_DOMAIN, "method")
+        };
+        if body.contains(domain) {
             let found = BRANCH.with(|branch| {
-                branch
-                    .borrow()
-                    .methods
+                let branch = branch.borrow();
+                let table = if field == "attribute" {
+                    &branch.attributes
+                } else {
+                    &branch.methods
+                };
+                table
                     .iter()
                     .find(|(entity, _)| body.contains(entity.as_str()))
-                    .map(|(entity, methods)| (entity.clone(), methods.clone()))
+                    .map(|(entity, entries)| (entity.clone(), entries.clone()))
             });
-            if let Some((entity, methods)) = found {
+            if let Some((entity, entries)) = found {
                 // One flat row per entry, as the wire delivers a keyed
-                // collection.
-                for (key, source) in methods {
+                // collection. An empty map yields no rows at all, which
+                // is what an element declaring no defaults looks like.
+                for (key, value) in entries {
                     let map = js_sys::Object::new();
-                    let _ = Reflect::set(&map, &key.into(), &source.into());
+                    let _ = Reflect::set(&map, &key.into(), &value.into());
                     let fields = js_sys::Object::new();
-                    let _ = Reflect::set(&fields, &"method".into(), &map);
+                    let _ = Reflect::set(&fields, &field.into(), &map);
                     let row = js_sys::Object::new();
                     let _ = Reflect::set(&row, &"this".into(), &entity.clone().into());
                     let _ = Reflect::set(&row, &"fields".into(), &fields);

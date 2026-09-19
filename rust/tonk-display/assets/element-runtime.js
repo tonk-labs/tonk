@@ -27,6 +27,8 @@
   const live = new Map();
   /** Tags whose wrapper class is already registered. */
   const defined = new Set();
+  /** tag -> {attribute: default}, applied to instances that lack one. */
+  const defaults = new Map();
 
   /** `attribute-changed` -> `attributeChanged`; `bump` -> `bump`. */
   const property = (key) =>
@@ -104,10 +106,33 @@
     observers.get(self)?.takeRecords();
   };
 
+  /**
+   * Write `<tag>`'s declared defaults onto `self` for the attributes
+   * it does not already carry.
+   *
+   * Written into the DOM rather than resolved on read, because there
+   * is no accessor to resolve through: `getAttribute`, a CSS
+   * `[color=red]` rule and devtools all read the attribute itself, and
+   * only a real attribute is seen by all three. `hasAttribute` is the
+   * test, not a truthy value -- `count="0"` is a supplied value and
+   * must not be overwritten.
+   *
+   * Runs BEFORE `connected`, and before the attribute replay, so a
+   * hook never sees a half-defaulted element.
+   */
+  const applyDefaults = (tag, self) => {
+    const declared = defaults.get(tag);
+    if (!declared) return;
+    for (const [name, value] of Object.entries(declared)) {
+      if (!self.hasAttribute(name)) self.setAttribute(name, value);
+    }
+  };
+
   const connect = (tag, self) => {
     let set = live.get(tag);
     if (!set) live.set(tag, (set = new Set()));
     set.add(self);
+    applyDefaults(tag, self);
     if (table.get(tag)?.["attribute-changed"]) {
       watchAttributes(tag, self);
       replayAttributes(tag, self);
@@ -163,7 +188,11 @@
    * register INSTEAD of the wrapper, and every other key is ignored --
    * the escape hatch for what a method table cannot say.
    */
-  globalThis.defineTonkElement = (tag, methods) => {
+  globalThis.defineTonkElement = (tag, methods, attributes) => {
+    // Recorded before the `define` escape hatch, so a raw class still
+    // gets its declared defaults -- they are data about the tag, not
+    // part of the generated wrapper.
+    defaults.set(tag, attributes ?? {});
     if (methods.define) {
       if (customElements.get(tag)) return;
       try {
@@ -199,6 +228,13 @@
         });
       }
     }
+
+    // A default added or changed by an edit reaches instances already
+    // mounted, for the same reason an edited method does: the author
+    // changed the definition, and every live instance is an instance
+    // OF that definition. Only attributes the instance does not carry
+    // are written, so a value the view supplied still wins.
+    for (const self of live.get(tag) ?? []) applyDefaults(tag, self);
 
     // An edit only reaches instances already in the DOM if something
     // re-runs against them: call-time dispatch makes FUTURE calls live,

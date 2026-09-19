@@ -167,6 +167,60 @@ async fn it_registers_an_element_from_a_real_branch() {
     );
 }
 
+/// An element's attribute defaults come off the real branch through
+/// their own query and reach the instance before `connected` runs.
+///
+/// Its own full-stack test because the defaults are a SEPARATE wire
+/// query from the methods, and the ways that query can be silently
+/// wrong — a `the:` written as an attribute where the schema declares
+/// a domain, a keyed collection missing its key operand — all read as
+/// "this element declares no defaults" rather than as an error.
+#[wasm_bindgen_test::wasm_bindgen_test]
+async fn it_applies_attribute_defaults_from_a_real_branch() {
+    let container = boot().await;
+    evaluate(&container, STANDARD_LIBRARY).await;
+    evaluate(
+        &container,
+        r#"element!: &themed-widget
+  description: "Carries a default"
+  method:
+    connected: |
+      (self) => { self.textContent = `tone ${self.getAttribute('tone')}`; }
+  attribute:
+    tone: "quiet"
+"#,
+    )
+    .await;
+
+    let host = document()
+        .create_element("themed-widget")
+        .expect("create themed-widget");
+    container.append_child(&host).expect("attach");
+
+    settle_until(|| host.text_content().as_deref() == Some("tone quiet")).await;
+    assert_eq!(
+        host.text_content().as_deref(),
+        Some("tone quiet"),
+        "the default should have been read off the branch and written \
+         on before `connected` ran",
+    );
+    assert_eq!(
+        host.get_attribute("tone").as_deref(),
+        Some("quiet"),
+        "the default belongs in the DOM, where CSS and getAttribute \
+         can both see it",
+    );
+
+    // A supplied value still wins, on an instance added afterwards.
+    let supplied = document()
+        .create_element("themed-widget")
+        .expect("create themed-widget");
+    let _ = supplied.set_attribute("tone", "loud");
+    container.append_child(&supplied).expect("attach");
+    settle_until(|| supplied.text_content().as_deref() == Some("tone loud")).await;
+    assert_eq!(supplied.get_attribute("tone").as_deref(), Some("loud"));
+}
+
 /// Rendered before anything defines it, defined afterwards on the real
 /// branch, picked up with nothing re-rendered — driven by a real
 /// subscription frame rather than a pushed one.

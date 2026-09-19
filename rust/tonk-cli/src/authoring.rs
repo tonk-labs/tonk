@@ -127,6 +127,14 @@ pub enum AuthoringError {
     /// An element was authored without a description.
     #[error("an element needs a description; pass --description <text>")]
     NoDescription,
+    /// An attribute default named something no element could carry.
+    #[error("'{raw}' is not a usable attribute name: {reason}")]
+    BadAttributeName {
+        /// The offending name, as given.
+        raw: String,
+        /// Which rule it broke, phrased for a terminal.
+        reason: &'static str,
+    },
 }
 
 /// Canonical `as:` type spellings the analyzer accepts, matching
@@ -563,6 +571,7 @@ pub fn build_element_decl(
     tag: &str,
     description: &str,
     methods: &[(String, String)],
+    attributes: &[(String, String)],
 ) -> Result<String, AuthoringError> {
     validate_element_tag(tag)?;
     if description.trim().is_empty() {
@@ -593,7 +602,46 @@ pub fn build_element_decl(
             }
         }
     }
+    // Omitted entirely when there are none. A keyed collection is
+    // zero-or-more, so an absent map is an empty one — writing
+    // `attribute: {}` would say the same thing at more length.
+    if !attributes.is_empty() {
+        out.push_str("  attribute:\n");
+        for (name, value) in attributes {
+            validate_attribute_name(name)?;
+            // Quoted, always: a default is DATA, and a bare `red`
+            // would be read as a reference to something else on the
+            // branch rather than as the three letters.
+            let _ = writeln!(out, "    {name}: {}", quote_string(value));
+        }
+    }
     Ok(out)
+}
+
+/// Refuse an attribute name a browser would not let an element carry.
+///
+/// The HTML parser's own rule, minus the exotic middle: an attribute
+/// name may not contain whitespace, a quote, `>`, `/` or `=`, and may
+/// not be empty. Kept narrow rather than mirroring the full grammar —
+/// anything stricter would refuse names (`data-*`, `aria-*`, a bare
+/// `count`) that authors legitimately use.
+fn validate_attribute_name(name: &str) -> Result<(), AuthoringError> {
+    let bad = |reason: &'static str| {
+        Err(AuthoringError::BadAttributeName {
+            raw: name.to_owned(),
+            reason,
+        })
+    };
+    if name.is_empty() {
+        return bad("it is empty");
+    }
+    if name
+        .chars()
+        .any(|c| c.is_whitespace() || matches!(c, '"' | '\'' | '>' | '/' | '='))
+    {
+        return bad("an attribute name may not contain whitespace, quotes, '>', '/' or '='");
+    }
+    Ok(())
 }
 
 /// Build the space-home recipe: the origin-keyed root concept, its
@@ -806,6 +854,7 @@ mod tests {
             "tally-widget",
             "A running tally",
             &methods(&[("connected", "(self) => { self.textContent = 'hi'; }")]),
+            &[],
         )
         .expect("valid tag and method");
         assert!(doc.starts_with("element!: &tally-widget\n"), "{doc}");
@@ -833,6 +882,7 @@ mod tests {
                 ("attribute-changed", "(self, name, before, after) => {}"),
                 ("bump", "(self) => {}"),
             ]),
+            &[],
         )
         .expect("valid");
         // Each key is its own entry, so each is its own fact and
@@ -851,6 +901,7 @@ mod tests {
             "x-y",
             "Two letters",
             &methods(&[("connected", "(self) => {\n\n  const a = 1;\n}")]),
+            &[],
         )
         .expect("valid");
         // A blank line inside the source stays blank (indenting it
@@ -928,7 +979,7 @@ mod tests {
     #[test]
     fn it_refuses_an_element_with_no_methods() {
         assert!(matches!(
-            build_element_decl("tally-widget", "A running tally", &[]),
+            build_element_decl("tally-widget", "A running tally", &[], &[]),
             Err(AuthoringError::NoMethods)
         ));
     }
@@ -939,10 +990,67 @@ mod tests {
             build_element_decl(
                 "tally-widget",
                 "A running tally",
-                &methods(&[("connected", "  \n\n")])
+                &methods(&[("connected", "  \n\n")]),
+                &[]
             ),
             Err(AuthoringError::EmptyMethod { .. })
         ));
+    }
+
+    #[test]
+    fn it_writes_attribute_defaults_as_quoted_data() {
+        let doc = build_element_decl(
+            "tally-widget",
+            "A running tally",
+            &methods(&[("connected", "(self) => {}")]),
+            &[
+                ("color".to_owned(), "red".to_owned()),
+                ("size".to_owned(), String::new()),
+            ],
+        )
+        .expect("valid");
+        // Quoted even when the value looks like a bare identifier: a
+        // default is DATA, and `red` unquoted would be read as a
+        // reference to something else on the branch.
+        assert!(doc.contains("  attribute:\n    color: \"red\"\n"), "{doc}");
+        assert!(doc.contains("    size: \"\"\n"), "{doc}");
+    }
+
+    #[test]
+    fn it_omits_the_attribute_map_when_there_are_no_defaults() {
+        let doc = build_element_decl(
+            "tally-widget",
+            "A running tally",
+            &methods(&[("connected", "(self) => {}")]),
+            &[],
+        )
+        .expect("valid");
+        // A keyed collection is zero-or-more, so an absent map already
+        // says "none"; `attribute: {}` would say it at more length.
+        assert!(!doc.contains("attribute:"), "{doc}");
+    }
+
+    #[test]
+    fn it_refuses_an_attribute_name_no_element_could_carry() {
+        for (name, why) in [
+            ("", "empty"),
+            ("two words", "whitespace"),
+            ("a=b", "equals"),
+            ("a/b", "slash"),
+            ("a>b", "gt"),
+            ("a\"b", "quote"),
+        ] {
+            assert!(
+                validate_attribute_name(name).is_err(),
+                "expected {name:?} to be refused ({why})",
+            );
+        }
+        for name in ["color", "data-count", "aria-label", "x"] {
+            assert!(
+                validate_attribute_name(name).is_ok(),
+                "expected {name:?} to pass",
+            );
+        }
     }
 
     #[test]
@@ -951,7 +1059,8 @@ mod tests {
             build_element_decl(
                 "tally-widget",
                 "   ",
-                &methods(&[("connected", "(self) => {}")])
+                &methods(&[("connected", "(self) => {}")]),
+                &[]
             ),
             Err(AuthoringError::NoDescription)
         ));

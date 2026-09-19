@@ -118,17 +118,53 @@ async fn claims_for_attribute(site: &TonkSite, uri: &str) -> Result<Vec<dialog_q
 /// right now, and that is the only thing that does. An entity the tag
 /// used to point at is a previous value and is deliberately not read.
 pub async fn methods_of(site: &TonkSite, tag: &str) -> Result<Vec<(String, String)>> {
+    entries_of(
+        site,
+        tag,
+        tonk_template::resolve::element_method_predicate(),
+        "method",
+    )
+    .await
+}
+
+/// The attribute defaults currently bound to `tag`, as `(name, value)`
+/// pairs in name order. Empty when the tag names nothing, and equally
+/// when it names an element that declares no defaults — which is most
+/// of them, and is not an error.
+pub async fn attributes_of(site: &TonkSite, tag: &str) -> Result<Vec<(String, String)>> {
+    entries_of(
+        site,
+        tag,
+        tonk_template::resolve::element_attribute_predicate(),
+        "attribute",
+    )
+    .await
+}
+
+/// One dictionary of the element `tag` names, read through `predicate`
+/// and folded out of `field`.
+///
+/// Resolves through the name, not through any URI built from the tag:
+/// `id:<tag>`'s `db.name/referent` says which entity the tag means
+/// right now, and that is the only thing that does. An entity the tag
+/// used to point at is a previous value and is deliberately not read.
+async fn entries_of(
+    site: &TonkSite,
+    tag: &str,
+    predicate: serde_json::Value,
+    field: &str,
+) -> Result<Vec<(String, String)>> {
     let Some(entity) = crate::views::entity_for_name(site, tag).await? else {
         return Ok(Vec::new());
     };
-    let mut methods: Vec<(String, String)> = source_dictionaries(site)
+    let mut entries: Vec<(String, String)> = dictionaries(site, predicate, field)
         .await?
         .into_iter()
         .find(|(candidate, _)| *candidate == entity)
         .map(|(_, sources)| sources.into_iter().collect())
         .unwrap_or_default();
-    methods.sort_by(|a, b| a.0.cmp(&b.0));
-    Ok(methods)
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(entries)
 }
 
 /// Every element's method dictionary, folded to one entry per entity.
@@ -153,35 +189,49 @@ async fn method_dictionaries(site: &TonkSite) -> Result<Vec<(Entity, Vec<String>
 
 /// [`method_dictionaries`], keeping each method's source.
 async fn source_dictionaries(site: &TonkSite) -> Result<Vec<(Entity, BTreeMap<String, String>)>> {
+    dictionaries(
+        site,
+        tonk_template::resolve::element_method_predicate(),
+        "method",
+    )
+    .await
+}
+
+/// Every element's `field` dictionary, folded to one entry per entity.
+async fn dictionaries(
+    site: &TonkSite,
+    predicate: serde_json::Value,
+    field: &str,
+) -> Result<Vec<(Entity, BTreeMap<String, String>)>> {
     // `this` left as a variable so this matches every element on the
     // branch; the predicate is the shared one, so the listing and the
-    // browser registry cannot drift about what a method dictionary
-    // looks like on the wire.
+    // browser registry cannot drift about what a dictionary looks like
+    // on the wire.
     let body = serde_json::json!({
         "terms": {
-            "this":       { "?": { "name": "this" } },
-            "method":     { "?": { "name": "method" } },
-            "method/key": { "?": { "name": "method/key" } },
+            "this":                    { "?": { "name": "this" } },
+            field:                     { "?": { "name": field } },
+            format!("{field}/key"):    { "?": { "name": format!("{field}/key") } },
         },
-        "predicate": tonk_template::resolve::element_method_predicate(),
+        "predicate": predicate,
     });
     let query: tonk_schema::query::Query =
-        serde_json::from_value(body).context("method query body is well-formed")?;
+        serde_json::from_value(body).context("dictionary query body is well-formed")?;
     let concept_query = query
         .into_concept_query()
         .map_err(|e| anyhow!("method query should lower to a concept query: {e:?}"))?;
     let rows = site
         .query(concept_query)
         .await
-        .map_err(|e| anyhow!("method enumeration failed: {e}"))?;
-    // One flat row per entry, `method` a one-entry `{key: source}`
-    // map; merge rows by entity.
+        .map_err(|e| anyhow!("{field} enumeration failed: {e}"))?;
+    // One flat row per entry, `field` a one-entry `{key: value}` map;
+    // merge rows by entity.
     let mut folded: BTreeMap<Entity, BTreeMap<String, String>> = BTreeMap::new();
     for row in rows {
         let Ok(entity) = row.this.parse::<Entity>() else {
             continue;
         };
-        let Some(ipld_core::ipld::Ipld::Map(entries)) = row.fields.get("method") else {
+        let Some(ipld_core::ipld::Ipld::Map(entries)) = row.fields.get(field) else {
             continue;
         };
         let slot = folded.entry(entity).or_default();

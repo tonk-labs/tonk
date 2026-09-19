@@ -399,6 +399,7 @@ mod when_defining_an_element {
                 ("connected", "(self) => { self.textContent = 'v1'; }"),
                 ("disconnected", "(self) => {}"),
             ]),
+            &[],
             Default::default(),
         )
         .await?;
@@ -432,6 +433,7 @@ mod when_defining_an_element {
                 ("disconnected", "(self) => { self.dataset.gone = '1'; }"),
                 ("bump", "(self) => 1"),
             ]),
+            &[],
             Default::default(),
         )
         .await?;
@@ -441,6 +443,7 @@ mod when_defining_an_element {
             "tally-widget",
             "A running tally",
             &methods(&[("connected", "(self) => { self.textContent = 'v2'; }")]),
+            &[],
             Default::default(),
         )
         .await?;
@@ -481,6 +484,7 @@ mod when_defining_an_element {
                 ("connected", "(self) => { self.textContent = 'v1'; }"),
                 ("bump", "(self) => 1"),
             ]),
+            &[],
             Default::default(),
         )
         .await?;
@@ -526,6 +530,7 @@ mod when_defining_an_element {
                 tag,
                 "The same description on purpose",
                 &methods(&[("connected", &format!("(self) => '{tag}'"))]),
+                &[],
                 Default::default(),
             )
             .await?;
@@ -555,6 +560,7 @@ mod when_defining_an_element {
                 tag,
                 "Identical in every respect",
                 &methods(&[("connected", "(self) => {}")]),
+                &[],
                 Default::default(),
             )
             .await?;
@@ -586,6 +592,10 @@ mod when_defining_an_element {
             "new-widget",
             "The new shape",
             &methods(&[("connected", "(self) => { self.textContent = 'new'; }")]),
+            // A default, so this row answers the generic concept
+            // query below — see
+            // `it_answers_the_generic_concept_query_only_with_defaults`.
+            &[("tone".to_owned(), "new".to_owned())],
             Default::default(),
         )
         .await?;
@@ -623,6 +633,167 @@ mod when_defining_an_element {
         Ok(())
     }
 
+    /// Attribute defaults land as their own dictionary, read back
+    /// under the tag, and an element that declares none reads as none
+    /// rather than as an error.
+    #[dialog_common::test]
+    async fn it_stores_attribute_defaults_under_the_tag() -> Result<()> {
+        let test = TestSite::new().await?;
+        tonk_cli::data_ops::element_add(
+            &test.site,
+            "tally-widget",
+            "A running tally",
+            &methods(&[("connected", "(self) => {}")]),
+            &[
+                ("color".to_owned(), "red".to_owned()),
+                ("size".to_owned(), String::new()),
+            ],
+            Default::default(),
+        )
+        .await?;
+        let defaults = tonk_cli::elements::attributes_of(&test.site, "tally-widget").await?;
+        assert_eq!(
+            defaults,
+            vec![
+                ("color".to_owned(), "red".to_owned()),
+                ("size".to_owned(), String::new()),
+            ],
+            "an empty default is a real one — `size=\"\"` is a state an \
+             attribute can be in, distinct from declaring nothing",
+        );
+
+        tonk_cli::data_ops::element_add(
+            &test.site,
+            "plain-widget",
+            "Declares no defaults",
+            &methods(&[("connected", "(self) => {}")]),
+            &[],
+            Default::default(),
+        )
+        .await?;
+        assert!(
+            tonk_cli::elements::attributes_of(&test.site, "plain-widget")
+                .await?
+                .is_empty(),
+        );
+        // And it is still a first-class element: the methods read back,
+        // and the tag resolves.
+        assert!(
+            !tonk_cli::elements::methods_of(&test.site, "plain-widget")
+                .await?
+                .is_empty(),
+        );
+        Ok(())
+    }
+
+    /// Editing one method leaves the defaults alone, and editing one
+    /// default leaves the methods alone — the CLI carries each map
+    /// forward independently.
+    #[dialog_common::test]
+    async fn it_carries_methods_and_defaults_forward_independently() -> Result<()> {
+        let test = TestSite::new().await?;
+        tonk_cli::data_ops::element_add(
+            &test.site,
+            "tally-widget",
+            "A running tally",
+            &methods(&[("connected", "(self) => 'v1'"), ("bump", "(self) => 1")]),
+            &[("color".to_owned(), "red".to_owned())],
+            Default::default(),
+        )
+        .await?;
+
+        // Author one method: the other method AND the default survive.
+        tonk_cli::data_ops::element_add(
+            &test.site,
+            "tally-widget",
+            "A running tally",
+            &methods(&[("connected", "(self) => 'v2'")]),
+            &[],
+            Default::default(),
+        )
+        .await?;
+        let keys: Vec<String> = tonk_cli::elements::methods_of(&test.site, "tally-widget")
+            .await?
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect();
+        assert_eq!(keys, vec!["bump", "connected"]);
+        assert_eq!(
+            tonk_cli::elements::attributes_of(&test.site, "tally-widget").await?,
+            vec![("color".to_owned(), "red".to_owned())],
+            "authoring a method should not drop a default",
+        );
+
+        // Author one default: the methods survive and the default
+        // supersedes.
+        tonk_cli::data_ops::element_add(
+            &test.site,
+            "tally-widget",
+            "A running tally",
+            &[],
+            &[("color".to_owned(), "blue".to_owned())],
+            Default::default(),
+        )
+        .await?;
+        assert_eq!(
+            tonk_cli::elements::attributes_of(&test.site, "tally-widget").await?,
+            vec![("color".to_owned(), "blue".to_owned())],
+        );
+        let keys: Vec<String> = tonk_cli::elements::methods_of(&test.site, "tally-widget")
+            .await?
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect();
+        assert_eq!(keys, vec!["bump", "connected"]);
+        Ok(())
+    }
+
+    /// The one place `attribute` being a required collection shows: a
+    /// GENERIC concept query binds every field the concept declares,
+    /// and a collection with no entries binds nothing, so an element
+    /// declaring no defaults does not answer it.
+    ///
+    /// Recorded rather than worked around. It is the reason
+    /// `tonk element` reads the method domain directly instead of
+    /// going through `tonk query element`, and the reason the browser
+    /// registry reads the two dictionaries as separate queries.
+    #[dialog_common::test]
+    async fn it_answers_the_generic_concept_query_only_with_defaults() -> Result<()> {
+        let test = TestSite::new().await?;
+        for (tag, defaults) in [
+            (
+                "with-defaults",
+                vec![("color".to_owned(), "red".to_owned())],
+            ),
+            ("no-defaults", vec![]),
+        ] {
+            tonk_cli::data_ops::element_add(
+                &test.site,
+                tag,
+                &format!("The <{tag}> element"),
+                &methods(&[("connected", "(self) => {}")]),
+                &defaults,
+                Default::default(),
+            )
+            .await?;
+        }
+
+        let generic = tonk_cli::data_ops::query(&test.site, "element", false).await?;
+        assert!(generic.contains("with-defaults"), "{generic}");
+        assert!(
+            !generic.contains("no-defaults"),
+            "a collection with no entries binds nothing, so this row \
+             cannot answer a query that pins every field: {generic}",
+        );
+
+        // The listing people actually use is unaffected: it reads the
+        // method domain, which both elements have.
+        let listed = tonk_cli::elements::list(&test.site).await?;
+        let tags: Vec<Option<&str>> = listed.iter().map(|row| row.tag.as_deref()).collect();
+        assert_eq!(tags, vec![Some("no-defaults"), Some("with-defaults")]);
+        Ok(())
+    }
+
     /// The queries the BROWSER registry runs, executed here against a
     /// real branch and the real query engine.
     ///
@@ -645,6 +816,7 @@ mod when_defining_an_element {
                 ("attribute-changed", "(self, name, before, after) => {}"),
                 ("bump", "(self) => 1"),
             ]),
+            &[],
             Default::default(),
         )
         .await?;
@@ -704,6 +876,7 @@ mod when_defining_an_element {
                 tag,
                 &format!("The <{tag}> element"),
                 &methods(&[("connected", &format!("(self) => '{tag}'"))]),
+                &[],
                 Default::default(),
             )
             .await?;
@@ -777,6 +950,7 @@ mod when_defining_an_element {
             "widget",
             "No hyphen, no element",
             &methods(&[("connected", "(self) => {}")]),
+            &[],
             Default::default(),
         )
         .await
@@ -793,6 +967,7 @@ mod when_defining_an_element {
             "tally-widget",
             "A running tally",
             &methods(&[("remove", "(self) => {}")]),
+            &[],
             Default::default(),
         )
         .await

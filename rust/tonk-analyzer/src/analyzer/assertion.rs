@@ -919,8 +919,22 @@ fn check_complete_when_unbound(
     let mut missing: Vec<String> = Vec::new();
     for (field_name, attr) in descriptor.with().iter() {
         // Optional fields never count toward completeness — omitting
-        // one on a fresh entity is intentional, not an error.
-        if attr.is_optional() {
+        // one on a fresh entity is intentional, not an error. Neither
+        // do keyed collections, for the same reason said the other way
+        // round: a collection is zero-or-more, so omitting one
+        // declares zero entries rather than leaving a field unset.
+        //
+        // dialog-query says as much when it REFUSES to mark a
+        // collection optional ("a keyed collection is zero-or-more
+        // already and cannot be widened"). Without this exemption a
+        // collection would be the one field shape that can be neither
+        // declared optional nor left out — every assertion against the
+        // concept would have to carry at least one entry.
+        //
+        // A collection has no name half, which is what distinguishes
+        // it here: its name is a key that varies per entry rather than
+        // a fixed part of the selector.
+        if attr.is_optional() || attr.name().is_none() {
             if matches!(user_fields.get(field_name), Some((value, _)) if !matches!(value, FieldValue::Blank))
             {
                 set.push(field_name.to_string());
@@ -946,6 +960,28 @@ fn check_complete_when_unbound(
     }
     if missing.is_empty() {
         // Body sets every field — intentional fresh entity.
+        //
+        // A body that sets NOTHING is a different matter: not a
+        // complete assertion but an empty one, and on a derived entity
+        // every empty body in the realm digests alike and collapses
+        // onto a single subject. A concept made only of collections
+        // would reach that state through the exemption above, so name
+        // it rather than let it through.
+        if set.is_empty() && descriptor.with().iter().len() > 0 {
+            return Some(AnalyzeError::at(
+                AnalyzeErrorKind::IncompleteAssertion {
+                    concept: concept_name.to_owned(),
+                    set,
+                    missing: descriptor
+                        .with()
+                        .iter()
+                        .map(|(name, _)| name.to_string())
+                        .collect(),
+                    selector_form,
+                },
+                range,
+            ));
+        }
         return None;
     }
     Some(AnalyzeError::at(

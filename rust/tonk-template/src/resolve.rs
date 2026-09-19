@@ -91,6 +91,49 @@ pub fn element_method_query(entity: &str) -> Result<Query, serde_json::Error> {
     }))
 }
 
+/// The domain an `element!:` assertion writes its attribute defaults
+/// under. Each entry lands as `<domain>/<attribute-name>`.
+pub const ELEMENT_ATTRIBUTE_DOMAIN: &str = "xyz.tonk.element.attribute";
+
+/// The `element` concept's `attribute` shape.
+///
+/// Its own predicate rather than a second field on
+/// [`element_method_predicate`], for two reasons. A concept query binds
+/// every field it names, so an element with methods but no defaults —
+/// which is most of them — would match neither. And two keyed
+/// collections in one query would join entry against entry, handing
+/// back the cross product of methods and defaults instead of each map.
+pub fn element_attribute_predicate() -> Value {
+    json!({
+        "with": {
+            "attribute": {
+                "the": { "domain": ELEMENT_ATTRIBUTE_DOMAIN, "keyed": "dictionary" },
+                "as": "Text",
+                "cardinality": "one"
+            }
+        }
+    })
+}
+
+/// Build the query that reads one element's `attribute` defaults.
+///
+/// Empty for an element that declares none, which is not an error and
+/// is the common case: the defaults are a separate hop precisely so
+/// that "no defaults" costs the methods nothing.
+pub fn element_attribute_query(entity: &str) -> Result<Query, serde_json::Error> {
+    let mut terms: IndexMap<String, Value> = IndexMap::new();
+    terms.insert("this".into(), json!(entity));
+    terms.insert("attribute".into(), json!({ "?": { "name": "attribute" } }));
+    terms.insert(
+        "attribute/key".into(),
+        json!({ "?": { "name": "attribute/key" } }),
+    );
+    serde_json::from_value(json!({
+        "terms": terms,
+        "predicate": element_attribute_predicate(),
+    }))
+}
+
 /// The `event` concept's shape, kept in step with the built-in
 /// registered as `event` in `tonk_schema::builtin`.
 ///

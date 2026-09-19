@@ -287,6 +287,39 @@ hook sees every attribute, including the ones already present when an
 instance upgrades (those are replayed with `before` as `null`), and a
 hook that writes an attribute does not re-enter itself.
 
+What you *can* declare is a **default**:
+
+```yaml tonk=illustrative-fragment-of-an-element
+attribute:
+  color: "red"
+  size: ""
+```
+
+An instance that does not carry the attribute gets it written on
+before `connected` runs — into the DOM, so `getAttribute`, a CSS
+`[color=red]` rule and devtools all agree. A value the view supplied
+wins, and `hasAttribute` is the test, so `count="0"` and `label=""`
+count as supplied. `size: ""` above declares a default of the empty
+string, which is a real attribute state (`<input disabled="">`) and
+not the same as declaring nothing.
+
+Quote the values — a default is *data*, and a bare `red` would be read
+as a reference to something else on the branch. Adding a default later
+reaches instances already mounted, the way an edited method does.
+
+```text
+tonk element add tally-widget --description 'A running tally' \
+  --attribute color=red --method-file connected=tally.js
+```
+
+The map narrows nothing: it supplies defaults, and that is all. Most
+elements declare none and simply leave it out — a keyed collection is
+zero-or-more, so an `element!:` body without it is complete, not
+partial. The one visible consequence is that the generic `tonk query
+element` binds every field the concept declares and so answers only
+for elements that *do* declare defaults; `tonk element`, the listing
+you actually use, reads the method domain directly and lists them all.
+
 Nothing registers your element ahead of time. The runtime watches the
 document for custom elements nobody has defined (`:not(:defined)`, the
 browser's own answer to that question) and looks each tag up by name the

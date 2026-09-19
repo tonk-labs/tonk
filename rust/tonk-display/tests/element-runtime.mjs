@@ -104,6 +104,61 @@ check('a method calls a sibling method through self', await page.evaluate(async 
   return first && el.textContent === '30' && el.total() === 30;
 }));
 
+// 4c. attribute defaults are written on before `connected` runs, and
+// only where the instance does not already carry the attribute.
+check('defaults fill in only the missing attributes', await page.evaluate(() => {
+  globalThis.seenAtConnect = null;
+  defineTonkElement('def-el', {
+    connected: (self) => {
+      globalThis.seenAtConnect = [self.getAttribute('color'), self.getAttribute('size')];
+    },
+  }, { color: 'red', size: 'big' });
+  const el = document.createElement('def-el');
+  el.setAttribute('color', 'blue');
+  document.body.append(el);
+  return el.getAttribute('color') === 'blue'      // supplied value wins
+      && el.getAttribute('size') === 'big'        // missing one filled in
+      // and `connected` saw both, so a hook never reads a
+      // half-defaulted element.
+      && JSON.stringify(globalThis.seenAtConnect) === JSON.stringify(['blue', 'big']);
+}));
+
+// 4d. a supplied EMPTY or ZERO value is still a supplied value:
+// `hasAttribute` is the test, not truthiness.
+check('a falsy supplied value is not overwritten', await page.evaluate(() => {
+  defineTonkElement('falsy-el', { connected: (self) => {} }, { count: '10', label: 'x' });
+  const el = document.createElement('falsy-el');
+  el.setAttribute('count', '0');
+  el.setAttribute('label', '');
+  document.body.append(el);
+  return el.getAttribute('count') === '0' && el.getAttribute('label') === '';
+}));
+
+// 4e. a default added by a later edit reaches instances already mounted
+check('an added default reaches live instances', await page.evaluate(async () => {
+  defineTonkElement('late-def-el', { connected: (self) => {} }, {});
+  const el = document.createElement('late-def-el');
+  document.body.append(el);
+  const before = el.hasAttribute('tone');
+  defineTonkElement('late-def-el', { connected: (self) => {} }, { tone: 'quiet' });
+  await new Promise(r => setTimeout(r, 0));
+  return !before && el.getAttribute('tone') === 'quiet';
+}));
+
+// 4f. defaults feed `attribute-changed` through the normal replay, so a
+// hook sees the defaulted value with no special case
+check('attribute-changed sees a defaulted value', await page.evaluate(() => {
+  globalThis.defSeen = [];
+  defineTonkElement('def-hook-el', {
+    'attribute-changed': (self, name, before, after) => {
+      globalThis.defSeen.push([name, before, after]);
+    },
+  }, { color: 'red' });
+  const el = document.createElement('def-hook-el');
+  document.body.append(el);
+  return JSON.stringify(globalThis.defSeen) === JSON.stringify([['color', null, 'red']]);
+}));
+
 // 5. attribute-changed via MutationObserver, incl. replay at upgrade
 check('attribute-changed replays initial then observes', await page.evaluate(async () => {
   globalThis.seen = [];

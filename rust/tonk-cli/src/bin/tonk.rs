@@ -1018,6 +1018,11 @@ enum ElementCommand {
         /// Inline method source: `<name>=<js>`. Repeatable.
         #[arg(long, value_name = "NAME=JS")]
         method: Vec<String>,
+        /// Default value for an attribute: `<name>=<value>`. An
+        /// instance that does not carry the attribute gets it written
+        /// on before `connected` runs. Repeatable.
+        #[arg(long, value_name = "NAME=VALUE")]
+        attribute: Vec<String>,
         /// Read a method's source from a file: `<name>=<path>`. Repeatable.
         #[arg(long, value_name = "NAME=PATH")]
         method_file: Vec<String>,
@@ -1032,12 +1037,29 @@ enum ElementCommand {
 /// Split a `<name>=<rest>` flag value on its FIRST `=`, so a method
 /// body containing `=` survives.
 fn split_method_arg(raw: &str) -> Result<(String, String), String> {
+    split_named_arg(raw, "--method/--method-file", false)
+}
+
+/// [`split_method_arg`] for `--attribute`, where an EMPTY value is
+/// meaningful: `--attribute size=` declares a default of the empty
+/// string, which is a real attribute state (`<input disabled="">`) and
+/// not the same as declaring no default at all.
+fn split_attribute_arg(raw: &str) -> Result<(String, String), String> {
+    split_named_arg(raw, "--attribute", true)
+}
+
+/// Split a `<name>=<value>` flag, naming `flag` in the error.
+fn split_named_arg(
+    raw: &str,
+    flag: &str,
+    allow_empty_value: bool,
+) -> Result<(String, String), String> {
     match raw.split_once('=') {
-        Some((name, rest)) if !name.is_empty() && !rest.is_empty() => {
+        Some((name, rest)) if !name.is_empty() && (allow_empty_value || !rest.is_empty()) => {
             Ok((name.to_owned(), rest.to_owned()))
         }
         _ => Err(format!(
-            "--method/--method-file '{raw}' is malformed; expected <name>=<value>"
+            "{flag} '{raw}' is malformed; expected <name>=<value>"
         )),
     }
 }
@@ -4546,6 +4568,7 @@ async fn element_op(command: Option<ElementCommand>, json: bool, space: Option<&
             description,
             method,
             method_file,
+            attribute,
             notation,
             write,
         }) => {
@@ -4571,11 +4594,19 @@ async fn element_op(command: Option<ElementCommand>, json: bool, space: Option<&
                     }
                 }
             }
+            let mut attributes: Vec<(String, String)> = Vec::new();
+            for raw in &attribute {
+                match split_attribute_arg(raw) {
+                    Ok(pair) => attributes.push(pair),
+                    Err(message) => return print_error(message),
+                }
+            }
             match data_ops::element_add(
                 &site,
                 &tag,
                 &description,
                 &methods,
+                &attributes,
                 write.options(notation),
             )
             .await
@@ -5127,10 +5158,17 @@ mod account_spaces_parser_tests {
             "--attr",
             "--format",
         ] {
-            assert!(
-                !guide::GUIDE.contains(retired),
-                "guide still teaches retired spelling `{retired}`"
-            );
+            // Matched at a word boundary rather than as a bare
+            // substring: `--attr` is a prefix of the live
+            // `--attribute`, and a plain `contains` flagged the guide
+            // for teaching the CURRENT spelling.
+            let flagged = guide::GUIDE.match_indices(retired).any(|(at, _)| {
+                guide::GUIDE[at + retired.len()..]
+                    .chars()
+                    .next()
+                    .is_none_or(|next| !next.is_alphanumeric() && next != '-' && next != '_')
+            });
+            assert!(!flagged, "guide still teaches retired spelling `{retired}`");
         }
     }
 

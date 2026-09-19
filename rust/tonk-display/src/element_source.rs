@@ -27,7 +27,8 @@ use std::collections::BTreeMap;
 /// than a crash — the guard below skips it.
 const ENTRY: &str = "defineTonkElement";
 
-/// Render the module that installs `tag`'s methods.
+/// Render the module that installs `tag`'s methods and attribute
+/// defaults.
 ///
 /// Method sources are emitted as object values in key order, each
 /// quoted as a string key so a kebab name (`attribute-changed`) is
@@ -35,7 +36,17 @@ const ENTRY: &str = "defineTonkElement";
 /// an element module evaluated before the runtime asset does nothing
 /// rather than throwing, and the registry re-emits it once the runtime
 /// is in place.
-pub fn element_module(tag: &str, methods: &BTreeMap<String, String>) -> String {
+///
+/// The two maps are emitted differently on purpose. A method is
+/// authored JS and goes out as an EXPRESSION, parenthesised so an
+/// arrow function is legal in value position. A default is data and
+/// goes out as a STRING LITERAL — an author writing `color: red`
+/// means the six characters, not an identifier to evaluate.
+pub fn element_module(
+    tag: &str,
+    methods: &BTreeMap<String, String>,
+    attributes: &BTreeMap<String, String>,
+) -> String {
     let mut out = String::new();
     out.push_str("globalThis.");
     out.push_str(ENTRY);
@@ -52,6 +63,14 @@ pub fn element_module(tag: &str, methods: &BTreeMap<String, String>) -> String {
         out.push('(');
         out.push_str(source.trim_end());
         out.push_str("),\n");
+    }
+    out.push_str("}, {\n");
+    for (name, value) in attributes {
+        out.push_str("  ");
+        out.push_str(&js_string(name));
+        out.push_str(": ");
+        out.push_str(&js_string(value));
+        out.push_str(",\n");
     }
     out.push_str("});\n");
     out
@@ -194,6 +213,7 @@ mod tests {
                 ("connected", "(self) => { self.textContent = 'hi'; }"),
                 ("attribute-changed", "(self, name, before, after) => {}"),
             ]),
+            &BTreeMap::new(),
         );
         assert!(source.starts_with("globalThis.defineTonkElement?.(\"tally-widget\", {\n"));
         assert!(source.contains("\"connected\": ((self) => { self.textContent = 'hi'; }),\n"));
@@ -204,7 +224,11 @@ mod tests {
 
     #[test]
     fn it_guards_the_entry_point_so_load_order_cannot_throw() {
-        let source = element_module("x-y", &methods(&[("connected", "(s) => {}")]));
+        let source = element_module(
+            "x-y",
+            &methods(&[("connected", "(s) => {}")]),
+            &BTreeMap::new(),
+        );
         assert!(
             source.contains("defineTonkElement?.("),
             "an element module landing before the runtime must be a no-op: {source}",
@@ -218,6 +242,7 @@ mod tests {
         let source = element_module(
             "x\"-y",
             &methods(&[("a\\b", "(s) => {}"), ("c<d", "(s) => {}")]),
+            &BTreeMap::new(),
         );
         assert!(source.contains(r#""x\"-y""#), "{source}");
         assert!(source.contains(r#""a\\b""#), "{source}");
@@ -228,8 +253,40 @@ mod tests {
 
     #[test]
     fn it_parenthesises_each_source_so_an_arrow_is_a_value() {
-        let source = element_module("x-y", &methods(&[("connected", "(s) => {}\n")]));
+        let source = element_module(
+            "x-y",
+            &methods(&[("connected", "(s) => {}\n")]),
+            &BTreeMap::new(),
+        );
         assert!(source.contains("\"connected\": ((s) => {}),"), "{source}");
+    }
+
+    #[test]
+    fn it_renders_a_default_as_data_and_a_method_as_an_expression() {
+        let source = element_module(
+            "x-y",
+            &methods(&[("connected", "(s) => {}")]),
+            &methods(&[("color", "red"), ("size", "")]),
+        );
+        // A method is JS, parenthesised so an arrow is legal in value
+        // position; a default is TEXT, so it goes out as a string
+        // literal. `red` emitted bare would be an undefined identifier.
+        assert!(source.contains("\"connected\": ((s) => {}),"), "{source}");
+        assert!(source.contains("\"color\": \"red\","), "{source}");
+        assert!(source.contains("\"size\": \"\","), "{source}");
+    }
+
+    #[test]
+    fn it_passes_an_empty_map_when_no_defaults_are_declared() {
+        let source = element_module(
+            "x-y",
+            &methods(&[("connected", "(s) => {}")]),
+            &BTreeMap::new(),
+        );
+        // The third argument is always present, so the runtime can
+        // clear a tag's defaults by re-authoring without them rather
+        // than having to distinguish "none" from "not passed".
+        assert!(source.ends_with("}, {\n});\n"), "{source}");
     }
 
     #[test]
@@ -237,6 +294,7 @@ mod tests {
         let source = element_module(
             "x-y",
             &methods(&[("zeta", "(s) => {}"), ("alpha", "(s) => {}")]),
+            &BTreeMap::new(),
         );
         let alpha = source.find("alpha").expect("alpha present");
         let zeta = source.find("zeta").expect("zeta present");

@@ -664,7 +664,7 @@ pub async fn view_add(
 }
 
 /// Author a custom element: an `element!: &<tag>` describing itself as
-/// `description` and carrying `methods`.
+/// `description` and carrying `methods` and `attributes`.
 ///
 /// The body derives the entity, `description` and methods alike, so
 /// the value this mints IS this exact element. Two consequences:
@@ -672,10 +672,11 @@ pub async fn view_add(
 /// - Two tags with different methods derive different entities, and a
 ///   tag re-authored with different methods derives a new one. The
 ///   anchor repoints, and every live instance follows.
-/// - A body is the whole element, never a patch. So `methods` is
-///   MERGED over whatever the tag currently resolves to before the
-///   notation is built: authoring `connected` alone on an existing tag
-///   still carries `disconnected` forward rather than dropping it.
+/// - A body is the whole element, never a patch. So `methods` and
+///   `attributes` are each MERGED over whatever the tag currently
+///   resolves to before the notation is built: authoring `connected`
+///   alone on an existing tag still carries `disconnected` forward
+///   rather than dropping it, and leaves its defaults alone.
 ///
 /// Authors writing notation by hand keep the finer-grained road —
 /// `element!: this: <entity>` with one `method:` entry supersedes just
@@ -691,10 +692,12 @@ pub async fn element_add(
     tag: &str,
     description: &str,
     methods: &[(String, String)],
+    attributes: &[(String, String)],
     write: WriteOptions,
 ) -> Result<String, DataOpError> {
     let merged = carry_methods_forward(site, tag, methods).await?;
-    let doc = build_element_decl(tag, description, &merged)?;
+    let carried_attrs = carry_attributes_forward(site, tag, attributes).await?;
+    let doc = build_element_decl(tag, description, &merged, &carried_attrs)?;
     if write.notation {
         return Ok(doc);
     }
@@ -740,6 +743,25 @@ pub async fn element_add(
 /// at contributes nothing — carrying forward means carrying forward
 /// what `<tag>` means now. A tag nobody has defined reads as no
 /// methods, which is how a first authoring works.
+/// [`carry_methods_forward`] for the attribute defaults. Same reason,
+/// same shape — a tag nobody has defined reads as none.
+async fn carry_attributes_forward(
+    site: &TonkSite,
+    tag: &str,
+    authored: &[(String, String)],
+) -> Result<Vec<(String, String)>, DataOpError> {
+    let current = crate::elements::attributes_of(site, tag)
+        .await
+        .map_err(|e| DataOpError::Read(format!("could not read <{tag}>'s attributes: {e}")))?;
+    let mut merged: Vec<(String, String)> = authored.to_vec();
+    for (name, value) in current {
+        if !merged.iter().any(|(named, _)| *named == name) {
+            merged.push((name, value));
+        }
+    }
+    Ok(merged)
+}
+
 async fn carry_methods_forward(
     site: &TonkSite,
     tag: &str,

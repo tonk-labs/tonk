@@ -1528,6 +1528,37 @@ concept!: &element
       the: xyz.tonk.element.method
       as: {[symbol]: text}
       cardinality: one
+    attribute:
+      description: |
+        Default values for the element's attributes, keyed by
+        attribute name. An instance missing one has it written on
+        before `connected` runs, so every hook, every CSS rule and
+        every `getAttribute` reads the same value whether the view
+        supplied it or not.
+
+        This is NOT `observedAttributes`, and it narrows nothing.
+        `attribute-changed` fires for every attribute whether or not
+        it appears here, because the runtime watches them with a
+        `MutationObserver` rather than declaring a list up front.
+        Narrowing to a declared list would only restore the footgun
+        that observer exists to avoid: an attribute left out of the
+        list goes silently unnoticed. So an attribute needs no entry
+        here to work — it needs one to have a DEFAULT, which is the
+        only thing this map supplies.
+
+        An attribute whose default is empty is written `size: ""` —
+        present and empty, like `<input disabled="">`.
+
+        Most elements declare none, and the map is then simply absent.
+        That is what a keyed collection means: zero-or-more, so an
+        `element!:` body omitting it is complete, not partial. The one
+        place the difference shows is the generic `tonk query element`
+        listing, which binds every field and so answers only for
+        elements that do declare defaults; `tonk element`, which reads
+        the method domain directly, lists them all.
+      the: xyz.tonk.element.attribute
+      as: {[symbol]: text}
+      cardinality: one
 
 # The older shape: one anonymous JS module that calls
 # `customElements.define` itself. Superseded by `element` for new work
