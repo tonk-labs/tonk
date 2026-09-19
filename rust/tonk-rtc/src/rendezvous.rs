@@ -193,6 +193,36 @@ pub fn port(phrase: &str) -> u16 {
     49152 + offset
 }
 
+/// How many ports a rendezvous spans.
+///
+/// One port per phrase would mean one listener per machine: a second
+/// `tonk` finds the port taken and fails, which is not a rendezvous so
+/// much as a lock. A span lets every program on the machine hold its own
+/// port while still being findable, because a dialer that knows the
+/// phrase knows the whole range.
+///
+/// Sixteen because the cost is asymmetric. A listener walks the span
+/// once at startup and stops at the first free port; a dialer that has
+/// to scan sends at most sixteen probes, which is nothing next to the
+/// handshake that follows. Widening it buys concurrency nobody has and
+/// makes an unlucky scan slower.
+pub const SPAN: u16 = 16;
+
+/// The ports `phrase` derives, in the dynamic range.
+///
+/// The span starts at [`port`] so the two agree by construction: a
+/// dialer that only knows the old single-port derivation still finds a
+/// listener that took the first slot.
+///
+/// Clamped at the top of the dynamic range rather than wrapping, because
+/// a range that wrapped past 65535 would hand out privileged-adjacent
+/// ports for a phrase that happened to hash high.
+pub fn ports(phrase: &str) -> std::ops::RangeInclusive<u16> {
+    let base = port(phrase);
+    let last = base.saturating_add(SPAN - 1).min(u16::MAX);
+    base..=last
+}
+
 /// Which end of a local rendezvous a transport address names.
 ///
 /// Two names rather than one, because a transport maps an address to a

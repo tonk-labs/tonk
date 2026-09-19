@@ -12,6 +12,8 @@ import {
     localAddress,
     rendezvousFingerprint,
     rendezvousPort,
+    rendezvousPorts,
+    RENDEZVOUS_SPAN,
     mungeOffer,
     synthesizeAnswer,
 } from "../assets/rtc.mjs";
@@ -143,6 +145,36 @@ test("munging replaces our own ICE credentials, not just the first", () => {
     assert.ok(!munged.includes("AbCd"), "a stale ufrag survived");
     assert.ok(!munged.includes("originalpassword"), "a stale password survived");
     assert.equal(munged.match(new RegExp(CREDENTIAL, "g")).length, 4);
+});
+
+test("the span is as wide as Rust says, and starts where the port does", async () => {
+    // Read out of the Rust rather than copied, for the same reason the
+    // port test does it: a span the two halves disagree about means a
+    // browser that cannot find a listener which is running perfectly.
+    const rust = readFileSync(
+        new URL("../../tonk-rtc/src/rendezvous.rs", import.meta.url),
+        "utf8",
+    );
+    const [, span] = /SPAN: u16 = (\d+)/.exec(rust);
+
+    assert.equal(RENDEZVOUS_SPAN, Number(span), "the two halves disagree about the span");
+
+    const ports = await rendezvousPorts(RENDEZVOUS);
+    assert.equal(ports.length, RENDEZVOUS_SPAN);
+    assert.equal(ports[0], await rendezvousPort(RENDEZVOUS), "the span starts at the derived port");
+    assert.equal(ports.at(-1), ports[0] + RENDEZVOUS_SPAN - 1, "and runs contiguously");
+});
+
+test("a local address offers every port in the span", async () => {
+    // One candidate per slot: ICE races them and keeps the pair that
+    // answers, so a listener on any slot is found in one dial. A single
+    // candidate would only ever reach the first `tonk` on a machine.
+    const der = new Uint8Array([1, 2, 3]);
+    const address = await localAddress(
+        `data:application/octet-stream;base64,${Buffer.from(der).toString("base64")}`,
+    );
+    assert.equal(address.candidates.length, RENDEZVOUS_SPAN);
+    assert.ok(address.candidates.every((c) => c.host === "127.0.0.1"));
 });
 
 test("the port is derived from the phrase, matching Rust", async () => {

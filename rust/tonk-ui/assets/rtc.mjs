@@ -199,6 +199,30 @@ export async function rendezvousPort(phrase = RENDEZVOUS) {
 }
 
 /**
+ * How many ports a rendezvous spans. Mirrors `rendezvous::SPAN`.
+ *
+ * One port per phrase would mean one listener per machine: a second
+ * `tonk` finds it taken and fails. A span lets each program hold its own
+ * port and stay findable, because knowing the phrase means knowing the
+ * whole range.
+ */
+export const RENDEZVOUS_SPAN = 16;
+
+/**
+ * Every port a listener for `phrase` may have taken.
+ *
+ * Starts at `rendezvousPort` so the span agrees with the single-port
+ * derivation by construction: the first listener on a machine takes that
+ * slot, and a dialer trying it first usually stops there.
+ */
+export async function rendezvousPorts(phrase = RENDEZVOUS) {
+    const base = await rendezvousPort(phrase);
+    const ports = [];
+    for (let i = 0; i < RENDEZVOUS_SPAN && base + i <= 65535; i += 1) ports.push(base + i);
+    return ports;
+}
+
+/**
  * The fingerprint of a DER-encoded certificate, in SDP form.
  *
  * A fingerprint is the hash of a whole certificate, and a certificate
@@ -224,11 +248,19 @@ export async function localAddress(url = RENDEZVOUS_CERT_URL) {
     const response = await fetch(url);
     if (!response.ok) throw new Error(`could not read ${url}: ${response.status}`);
 
-    const [port, fingerprint] = await Promise.all([
-        rendezvousPort(),
+    const [ports, fingerprint] = await Promise.all([
+        rendezvousPorts(),
         rendezvousFingerprint(new Uint8Array(await response.arrayBuffer())),
     ]);
-    return { candidates: [{ host: "127.0.0.1", port }], fingerprint };
+    // Every port in the span, as candidates. ICE already races a
+    // candidate list and keeps the pair that answers, so the scan is
+    // the connectivity check it would run anyway rather than a loop
+    // this code has to write — and a listener on any slot is found in
+    // one dial instead of sixteen.
+    return {
+        candidates: ports.map((port) => ({ host: "127.0.0.1", port })),
+        fingerprint,
+    };
 }
 
 /**

@@ -356,6 +356,51 @@ async fn answer_dial(
 /// restart unchanged, so a dialer can cache it indefinitely. Dials may
 /// arrive concurrently and repeatedly; each gets its own peer
 /// connection over the one shared port.
+/// Listen on the first free port a rendezvous spans.
+///
+/// A fixed port makes a machine hold one listener: the second `tonk`
+/// finds it taken and fails. Walking the span means every program on the
+/// machine gets its own port and stays findable, because a dialer that
+/// knows the phrase knows the whole range.
+///
+/// Only a port already in use is skipped. Any other bind failure —
+/// permissions, an address that cannot be bound at all — is returned as
+/// it happens rather than retried fifteen more times, because walking
+/// the span would report the last port's error for a problem that has
+/// nothing to do with the port.
+///
+/// Fails with the last [`PeerError::Bind`] when the whole span is taken,
+/// which on this design means sixteen listeners are already running.
+pub async fn listen_in(
+    identity: Identity,
+    ports: std::ops::RangeInclusive<u16>,
+) -> Result<Listener, PeerError> {
+    let mut last = None;
+    for port in ports {
+        match listen(identity.clone(), port).await {
+            Ok(listener) => return Ok(listener),
+            Err(PeerError::Bind { port, detail }) if in_use(&detail) => {
+                last = Some(PeerError::Bind { port, detail });
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last.unwrap_or_else(|| PeerError::Bind {
+        port: 0,
+        detail: "the rendezvous span is empty".to_owned(),
+    }))
+}
+
+/// Whether a bind failure says the port is taken.
+///
+/// Matched on the message because `std::io::ErrorKind::AddrInUse` is
+/// lost by the time the error is a [`PeerError::Bind`] carrying a
+/// string. Both spellings appear across platforms.
+fn in_use(detail: &str) -> bool {
+    let detail = detail.to_ascii_lowercase();
+    detail.contains("address already in use") || detail.contains("addrinuse")
+}
+
 pub async fn listen(identity: Identity, port: u16) -> Result<Listener, PeerError> {
     let socket = tokio::net::UdpSocket::bind(("0.0.0.0", port))
         .await
@@ -493,6 +538,47 @@ mod tests {
         assert!(
             offer.contains("a=candidate:1 1 udp 2130706431 ::1 50502 typ host"),
             "wrong candidate:\n{offer}"
+        );
+    }
+
+    /// Two listeners on one machine, which a fixed port made impossible.
+    ///
+    /// This is the whole reason for a span: the second `tonk` used to
+    /// fail with "could not start the WebRTC listener" because the first
+    /// held the only port a phrase derived.
+    #[tokio::test]
+    async fn it_gives_each_listener_its_own_port_in_the_span() {
+        let span = crate::rendezvous::ports(crate::rendezvous::RENDEZVOUS);
+
+        let first = listen_in(Identity::generate().unwrap(), span.clone())
+            .await
+            .expect("the first listener takes a port");
+        let second = listen_in(Identity::generate().unwrap(), span.clone())
+            .await
+            .expect("the second listener takes the next free one");
+
+        let (a, b) = (
+            first.address().candidates[0].port,
+            second.address().candidates[0].port,
+        );
+        assert_ne!(a, b, "two listeners must not claim one port");
+        assert!(
+            span.contains(&a) && span.contains(&b),
+            "both are in the span: {a}, {b}"
+        );
+    }
+
+    /// The span starts where the single-port derivation pointed, so a
+    /// dialer that only knows `port()` still finds the first listener.
+    #[test]
+    fn it_starts_the_span_at_the_derived_port() {
+        let phrase = crate::rendezvous::RENDEZVOUS;
+        let span = crate::rendezvous::ports(phrase);
+        assert_eq!(*span.start(), crate::rendezvous::port(phrase));
+        assert_eq!(
+            span.count(),
+            crate::rendezvous::SPAN as usize,
+            "the span is as wide as it claims"
         );
     }
 

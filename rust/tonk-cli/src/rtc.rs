@@ -540,12 +540,22 @@ mod serving {
         // every invocation.
         let served = mount_registry(site).await?;
 
-        let port = options
-            .port
-            .unwrap_or_else(|| tonk_rtc::rendezvous::port(tonk_rtc::rendezvous::RENDEZVOUS));
-        let listener = tonk_rtc::dial::listen(rtc_identity()?, port)
-            .await
-            .context("could not start the WebRTC listener")?;
+        // A span, not a port: several `tonk`s on one machine each take
+        // their own slot and stay findable, because a dialer that knows
+        // the phrase knows the whole range. `--port` still pins one,
+        // which is what a test or a second machine wants.
+        let listener = match options.port {
+            Some(port) => tonk_rtc::dial::listen(rtc_identity()?, port).await,
+            None => {
+                tonk_rtc::dial::listen_in(
+                    rtc_identity()?,
+                    tonk_rtc::rendezvous::ports(tonk_rtc::rendezvous::RENDEZVOUS),
+                )
+                .await
+            }
+        }
+        .context("could not start the WebRTC listener")?;
+        let port = listener.address().candidates[0].port;
 
         // The transport announces itself *as* the local-dial address, which
         // is what lets one `?route=` hint carry everything a dialer needs:
