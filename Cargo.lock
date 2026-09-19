@@ -4937,6 +4937,7 @@ dependencies = [
  "tonk-access-service",
  "tonk-account",
  "tonk-analytics",
+ "tonk-document",
  "tonk-evaluator",
  "tonk-identity",
  "tonk-invite",

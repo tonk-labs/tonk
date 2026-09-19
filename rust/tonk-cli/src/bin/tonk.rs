@@ -202,14 +202,24 @@ enum Command {
     /// Reads every instance through a dialog query — read-only,
     /// nothing commits. Filter flags (e.g. `--where`) are the
     /// intended future direction; today the whole concept is returned.
-    #[command(after_help = "Examples:\n  tonk query task\n  tonk query task --json")]
+    ///
+    /// A `document/*` name is a history formula, not a concept: it reads
+    /// an automerge document's past and takes its inputs as `--term`.
+    /// The rows are the ones the web's `tonk.query` returns, as JSON.
+    #[command(
+        after_help = "Examples:\n  tonk query task\n  tonk query task --json\n  tonk query document/versions --term document=id:prose/doc\n  tonk query document/content --term document=id:prose/doc --term heads=<heads>\n  tonk query document/diff --term document=id:prose/doc --term from=<heads> --term to=<heads>"
+    )]
     Query {
-        /// Name of the concept to query.
+        /// Name of the concept to query, or a `document/*` formula.
         #[arg(value_name = "CONCEPT")]
         concept: String,
         /// Emit `EvaluateResponse` as pretty JSON instead of notation.
         #[arg(long)]
         json: bool,
+        /// An input of a `document/*` formula, as NAME=VALUE. Repeatable.
+        /// Refused for a concept query, which takes no inputs.
+        #[arg(long = "term", value_name = "NAME=VALUE")]
+        terms: Vec<String>,
     },
 
     /// Retract a field, or a whole instance
@@ -1315,7 +1325,11 @@ async fn main() {
             json,
             notation,
         } => show_op(name, entity, json, notation, space.as_deref()).await,
-        Command::Query { concept, json } => query_op(concept, json, space.as_deref()).await,
+        Command::Query {
+            concept,
+            json,
+            terms,
+        } => query_op(concept, json, terms, space.as_deref()).await,
         Command::Assert { concept, rest } => assert_cmd(concept, rest, space.as_deref()).await,
         Command::Retract {
             concept,
@@ -4066,11 +4080,44 @@ async fn list_concepts_op(site: &site::TonkSite, json: bool) -> ExitCode {
 
 /// Query every instance of `concept` as rendered by
 /// [`data_ops::query`].
-async fn query_op(concept: String, json: bool, space: Option<&str>) -> ExitCode {
+async fn query_op(concept: String, json: bool, terms: Vec<String>, space: Option<&str>) -> ExitCode {
     let (_, site) = match open_selected(space).await {
         Ok(opened) => opened,
         Err(code) => return code,
     };
+
+    let formula = tonk_document::formula::handles(&concept);
+    if !formula && !terms.is_empty() {
+        return print_error(format!(
+            "`--term` is an input of a document/* formula; `{concept}` is a concept and takes none"
+        ));
+    }
+    if formula {
+        let mut parsed = Vec::new();
+        for term in &terms {
+            match term.split_once('=') {
+                Some((name, value)) if !name.is_empty() => {
+                    parsed.push((name.to_string(), value.to_string()));
+                }
+                _ => return print_error(format!("`--term {term}` is not NAME=VALUE")),
+            }
+        }
+        // A document may have changed elsewhere: bring its bytes in the
+        // way a write's pull-before does.
+        if tonk_cli::auto_sync::enabled(false) {
+            tonk_cli::document::sync_all(&site).await;
+        }
+        return match tonk_cli::document::query_formula(&site, &concept, &parsed).await {
+            Ok(text) => {
+                let mut stdout = std::io::stdout().lock();
+                if let Err(e) = stdout.write_all(text.as_bytes()) {
+                    return print_error(format!("failed to write stdout: {e}"));
+                }
+                ExitCode::Success
+            }
+            Err(error) => print_error(error),
+        };
+    }
 
     match data_ops::query(&site, &concept, json).await {
         Ok(text) => {
