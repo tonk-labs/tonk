@@ -11,6 +11,7 @@
 
 pub mod cell;
 pub mod engine;
+pub mod formula;
 pub mod session;
 pub mod sync;
 
