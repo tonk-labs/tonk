@@ -117,6 +117,7 @@ the most important gaps, not the only variants required.
 | `DATA-09` | Render a route to stdout or a file. | Directory/detail/explicit view; zero/one/many matching views; mixed portal types; missing fields/view; output path errors. | Ten render integration tests cover ordered multi-view siblings and frame-wide portal mode. | Atomic output file, broken pipe, real-browser parity, concurrent source change. |
 | `DATA-10` | Add/list/read a content-addressed blob. | Inferred/explicit type; dry-run; missing/corrupt file/blob; stdout pipe. | Ten blob integration tests. | Large stream/disk full, signal, content changed mid-read, broken pipe. |
 | `DATA-11` | Export or import CSV. | stdout/file; branch; empty/malformed/duplicate rows; write flags. | Transfer integration tests. | Atomic output/import, partial row failure/retry, escaping/large file, concurrent branch. |
+| `DATA-12` | Define a custom element and have the browser resolve it on use. | List/empty; inline/file method source; attribute defaults; re-authoring one method or one default; notation; write flags. | Seventeen authoring integration tests against a real branch, thirty-six browser tests of the runtime, four full-stack wasm tests through the real host. | Malformed method source, a tag another module already defined, a definition swapped while instances are live in several open tabs. |
 
 ## CLI setup and maintenance
 

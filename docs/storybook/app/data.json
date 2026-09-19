@@ -644,6 +644,14 @@
       "variants": "stdout/file; branch; empty/malformed/duplicate rows; write flags."
     },
     {
+      "evidence": "Seventeen authoring integration tests against a real branch, thirty-six browser tests of the runtime, four full-stack wasm tests through the real host.",
+      "gaps": "Malformed method source, a tag another module already defined, a definition swapped while instances are live in several open tabs.",
+      "group": "Authoring, data, rendering, and transfer",
+      "id": "DATA-12",
+      "title": "Define a custom element and have the browser resolve it on use.",
+      "variants": "List/empty; inline/file method source; attribute defaults; re-authoring one method or one default; notation; write flags."
+    },
+    {
       "evidence": "Parser/unit and process coverage.",
       "gaps": "Snapshot of every help route, width/color/broken pipe, hidden-command discoverability.",
       "group": "CLI setup and maintenance",
@@ -1239,7 +1247,8 @@
         "DATA-05",
         "DATA-06",
         "DATA-08",
-        "DATA-09"
+        "DATA-09",
+        "DATA-12"
       ],
       "name": "Concepts, views, and data verbs",
       "source_paths": [
@@ -1247,7 +1256,9 @@
         "rust/tonk-cli/src/bin/tonk.rs",
         "rust/tonk-cli/src/data.rs",
         "rust/tonk-cli/src/data_ops.rs",
+        "rust/tonk-cli/src/elements.rs",
         "rust/tonk-cli/src/render.rs",
+        "rust/tonk-display/src/registry.rs",
         "rust/tonk-render/src/page/orchestrate.rs"
       ],
       "status": "captured",
