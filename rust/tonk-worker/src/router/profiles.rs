@@ -364,6 +364,33 @@ async fn activate_named(
     promote(state, new_state, source).await
 }
 
+/// Run the [`AddProfile`] command.
+///
+/// The declarative twin of `POST /api/profiles/add`. Rotating onto a
+/// fresh profile is worker work and happens here; the ceremony that
+/// follows is a top-page dialog with a passkey prompt, so the page is
+/// asked to raise it.
+///
+/// The order matters: rotate first, notify second. A ceremony opened
+/// before the rotation would run against the outgoing profile and write
+/// its account onto the wrong one.
+///
+/// [`AddProfile`]: tonk_schema::command::AddProfile
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::AddProfile> for crate::router::CommandEnv {
+    async fn execute(&self, _command: tonk_schema::command::AddProfile) {
+        if let Err(error) = add_profile(self.state(), self.client()).await {
+            log!("AddProfile failed: {error}");
+            return;
+        }
+        // The rotation already told every OTHER window to reload. This
+        // one is asked to open the ceremony instead, which is why the
+        // client is passed here and withheld there.
+        super::navigate::notify_register(self.client(), "profile-transition");
+    }
+}
+
 /// Run the [`SwitchProfile`] command.
 ///
 /// The declarative twin of `POST /api/profiles/activate`: a switcher row
@@ -787,6 +814,46 @@ mod tests {
     ///
     /// Asserted through a QUERY rather than by inspecting the response: the
     /// point is that the guest's own read path finds them.
+    /// The add-account command rotates onto a fresh profile.
+    ///
+    /// Exercised through the Provider, not `add_profile`, so the command
+    /// wiring is covered too: a command registered but never reaching its
+    /// handler would pass a test that called the inner function.
+    ///
+    /// The ceremony it then asks the page to raise needs a document, so
+    /// only the rotation is asserted here; the notify is a fire-and-forget
+    /// that logs when no client is attached.
+    #[dialog_common::test]
+    async fn it_rotates_onto_a_fresh_profile_for_the_add_command() {
+        let state = Arc::new(RwLock::new(test_state().await));
+        let before = {
+            let tonk = state.read().await;
+            tonk.profile_name.clone()
+        };
+
+        let env =
+            crate::router::CommandEnv::new(state.clone(), crate::router::CommandOrigin::default());
+        <crate::router::CommandEnv as dialog_capability::Provider<
+            tonk_schema::command::AddProfile,
+        >>::execute(
+            &env,
+            tonk_schema::command::AddProfile {
+                this: "cmd:add-one".parse().expect("entity"),
+                time: tonk_schema::domain::command::current::add_profile::Time(1.0),
+            },
+        )
+        .await;
+
+        let after = {
+            let tonk = state.read().await;
+            tonk.profile_name.clone()
+        };
+        assert_ne!(
+            before, after,
+            "adding an account must land on a different profile",
+        );
+    }
+
     #[dialog_common::test]
     async fn it_publishes_the_roster_where_a_guest_can_query_it() {
         use dialog_query::{Output as _, Query, Term};
