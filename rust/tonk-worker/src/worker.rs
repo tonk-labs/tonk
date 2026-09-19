@@ -385,7 +385,13 @@ pub struct TonkState {
     /// so subscription broadcasts happen automatically.
     pub reactor: crate::Reactor,
     pub(crate) admission: crate::router::adopt::cache::AdmissionCache,
-    #[cfg(test)]
+    // Also under `helpers`: the state fixture in `helpers::state`
+    // constructs a `TonkState` literally, so every field it names has to
+    // exist whenever that fixture compiles. Only this crate's own tests
+    // READ it, hence the allow — under `helpers` alone it exists purely
+    // to keep that struct literal valid.
+    #[cfg(any(test, feature = "helpers"))]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) reject_admission_content_reads: std::sync::atomic::AtomicBool,
     /// Terminal lifecycle latch for this worker generation. Once a verified
     /// successor installs, no later query reconnect may recreate an SSE stream
@@ -1743,7 +1749,7 @@ pub(crate) async fn boot_state_with_profile_library(
         profile_name,
         reactor,
         admission: Default::default(),
-        #[cfg(test)]
+        #[cfg(any(test, feature = "helpers"))]
         reject_admission_content_reads: Default::default(),
         retiring: Arc::new(AtomicBool::new(false)),
         view_bindings: Default::default(),
