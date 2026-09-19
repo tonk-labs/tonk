@@ -1062,6 +1062,83 @@ route!: &route/home
   path: "/"
   concept: tonk:hub
 
+# ============================================================
+# PROFILE SWITCHER — the accounts this browser holds
+# ============================================================
+
+# One row of the account switcher.
+#
+# The handle is durable (`device:profile`); the label, provider and
+# active flag are OVERLAY facts the worker republishes each time it reads
+# the roster. They have to be: they describe OTHER profiles, whose own
+# branches a sealed guest cannot reach. The worker can open every
+# profile, so it stamps what it finds where the guest is looking.
+#
+# Overlay rather than a durable mirror is what keeps them honest. A
+# committed copy would be a second home for a name owned elsewhere, free
+# to disagree after a rename on another device, with nothing to
+# invalidate it. These are rebuilt from source on every roster read.
+concept!: &profile/row
+  this: tonk:profile/row
+  description: A profile this browser can switch to.
+  with:
+    name:
+      description: The storage handle the profile opens under.
+      the: xyz.tonk.roster/name
+      cardinality: one
+      as: text
+    label:
+      description: The account name to show, as of this read.
+      the: xyz.tonk.roster/label
+      cardinality: one
+      as: text
+    provider:
+      description: The access service the account is attached to. Empty for a local workspace.
+      the: xyz.tonk.roster/provider
+      cardinality: one
+      as: text
+    active:
+      description: Whether this is the profile the browser is using now.
+      the: xyz.tonk.roster/active
+      cardinality: one
+      as: boolean
+
+# Switching reads the row's own handle off the clicked button, so a
+# command can only ever name a profile this device already has.
+event!: &on/switch-profile
+  type: "click"
+  prevent-default: true
+  where:
+    handle: ".currentTarget.dataset.handle"
+    time: ".timeStamp"
+
+command!: &profile/switch
+  this: tonk:switch-profile
+  description: Make another profile on this browser the active one.
+  with:
+    handle:
+      description: The storage handle of the profile to open.
+      the: xyz.tonk.command.switch-profile/handle
+      as: text
+    time:
+      description: The click's timestamp, so switching back re-fires.
+      the: xyz.tonk.command.switch-profile/time
+      as: float
+
+# The switcher list. Renders every profile but the active one: the active
+# account is already named in the bar above, and offering to switch to
+# where you are is a no-op the worker would reject anyway.
+view!:
+  this: tonk:profile/row
+  show:
+    directory: |
+      <div class="account-menu__profiles" aria-label="other accounts on this browser">
+        <button class="account-menu__row" type="button" data-id={this}
+          data-handle={name} data-active={active} on:switch-profile=tonk:switch-profile>
+          <span class="account-menu__name">{label}</span>
+        </button>
+      </div>
+
 # The Hub route model + its view: the space directory over this (profile) branch.
 # `tonk:hub` is the concept the `/` route resolves to; its view renders the
 # `space` directory view, the same picker the legacy `<tonk-hub>` element mounted.
