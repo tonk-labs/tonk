@@ -371,6 +371,30 @@ pub struct CheckUpdate {
     pub space: crate::domain::command::check_update::Space,
 }
 
+/// Ask the local `tonk` who it is and what it holds.
+///
+/// A command rather than a route: asking is a user action, and its
+/// outcome is a fact the network page already subscribes to. A route
+/// would answer one caller once and leave every other tab stale.
+///
+/// The answer lands as the `tonk:peer` overlay on the profile branch —
+/// a live observation, never committed, so a CLI running on this laptop
+/// does not replicate to every other device on the account.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct ReachPeer {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The CLI's `did:key`.
+    pub peer: crate::domain::command::reach_peer::Peer,
+    /// The click's timestamp, so a repeat ask re-fires.
+    pub time: crate::domain::command::reach_peer::Time,
+}
+
+impl Command for ReachPeer {
+    type Input = Self;
+    type Output = ();
+}
+
 impl Command for CheckUpdate {
     type Input = Self;
     type Output = ();

@@ -250,6 +250,39 @@ pub mod device {
 ///
 /// Keeping them separate avoids overloading one value: the chip reads
 /// `enabled` for paused-vs-running and `status` for the running detail.
+/// Attributes on the `tonk:peer` concept — this device's live view of the
+/// local `tonk` process, stamped into an overlay rather than stored.
+///
+/// A CLI that is running is an observation, not a fact about the account:
+/// writing it to the branch would replicate "my laptop had a CLI up" to
+/// every other device. Keyed on the `state:cli` singleton, the way
+/// [`sync`] keys its live status on `state:here`.
+pub mod peer {
+    use super::{Attribute, Entity};
+
+    /// The live reachability observation — `peer:reachable` or
+    /// `peer:unreachable`. An entity URI rather than a boolean so the
+    /// vocabulary can grow (a dialing state, a refused one) without
+    /// changing the attribute's type. Cardinality one, so the row always
+    /// folds to the latest.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.peer")]
+    #[cardinality(one)]
+    pub struct Status(pub Entity);
+
+    /// The authority the CLI answered for, present only while reachable.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.peer")]
+    #[cardinality(one)]
+    pub struct Subject(pub String);
+
+    /// How many spaces the CLI is serving, present only while reachable.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.peer")]
+    #[cardinality(one)]
+    pub struct Spaces(pub u64);
+}
+
 pub mod sync {
     use super::{Attribute, Entity};
 
@@ -704,6 +737,29 @@ pub mod command {
         #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
         #[domain("xyz.tonk.check-update")]
         pub struct Space(pub Entity);
+    }
+
+    /// Attributes the `tonk:reach-peer` command carries.
+    pub mod reach_peer {
+        use super::Attribute;
+
+        /// The CLI's `did:key`, as `tonk rtc serve` prints it.
+        ///
+        /// Not derivable: the rendezvous phrase names the *route*, while
+        /// the endpoint key is the CLI's own identity, so it has to be
+        /// carried.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.reach-peer")]
+        pub struct Peer(pub String);
+
+        /// The click's timestamp, so asking again re-fires rather than
+        /// decoding as the same transient.
+        ///
+        /// A float because that is what a declaration's `as: float`
+        /// decodes to, and what `Date.now()` arrives as from a view.
+        #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+        #[domain("xyz.tonk.reach-peer")]
+        pub struct Time(pub f64);
     }
 
     pub mod pause_sync {

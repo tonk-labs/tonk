@@ -398,6 +398,39 @@ command!: &profile/rename
 # shape distinct from `tonk:invite`'s identical {this, time}. Each
 # command now owns its attribute namespace, so the two cannot collide.
 
+# Ask the local `tonk` who it is and what it holds.
+#
+# A command, not a route: asking is a user action, and the answer is a
+# fact this page already subscribes to, so every tab showing /network
+# updates rather than one caller reading one response. `time` makes each
+# ask a distinct transient, the way `tonk:check-update` does.
+# The ask's DOM binding. Fields read off `.currentTarget.elements`,
+# which is where a form's controls live — `FormData` is not what the
+# binder reads. `Date.now()` makes each ask a distinct transient, so
+# asking twice re-fires instead of decoding as the same command.
+event!: &on/reach-peer
+  type: "submit"
+  prevent-default: true
+  where:
+    peer: ".currentTarget.elements.peer.value"
+    time: "Date.now()"
+
+command!: &tonk/reach-peer
+  this: tonk:reach-peer
+  description: Ask the local `tonk` who it is and what it holds.
+  with:
+    peer:
+      description: >
+        The CLI's did:key, as `tonk rtc serve` prints it. Not derivable:
+        the rendezvous phrase names the route, the endpoint key is the
+        CLI's own identity.
+      the: xyz.tonk.reach-peer/peer
+      as: text
+    time:
+      description: The click's timestamp; makes each ask a distinct transient.
+      the: xyz.tonk.reach-peer/time
+      as: float
+
 # Ask whether a newer seed is waiting for a space, without installing it.
 # The command fetches the space's own seed source, compares the bytes
 # against what it is running, and asserts the answer as an OVERLAY fact:
@@ -780,6 +813,192 @@ view!:
       <div class="display-view-slot">
         <tonk-title text="Tonk"></tonk-title>
         <tonk-display model="space"></tonk-display>
+      </div>
+
+# The /network route — the remotes this profile can reach.
+#
+# Two kinds of row, and the difference is the point. A stored remote is a
+# durable `xyz.tonk.remote` fact on this branch: a space's configured
+# upstream, written when sync was enabled, and true whether or not
+# anything is reachable right now. The local `tonk` is not stored at all
+# — it is a process that may or may not be running — so it is always
+# listed and carries a live status instead.
+route!: &route/network
+  this: id:tonk:route/network
+  path: "/network"
+  concept: tonk:network
+
+concept!: &network-route
+  this: tonk:network
+  description: The network page — every remote this profile can reach.
+  with:
+    # A route model must declare at least one field, and `path` is the
+    # one a route carries; the view reads the directories, not this.
+    path:
+      description: The active path, picked off the site.
+      the: xyz.tonk.site/path
+      cardinality: one
+      as: text
+
+# A remote: where a space syncs to.
+#
+# These attributes have been written since remotes existed and were never
+# declared, which is the drift `schema-first` warns about — the facts were
+# real, the schema only looked authoritative. Declared here because this
+# is the branch that holds them: the account-level mount records anchor
+# each remote on the space's directory entity, so every device derives the
+# same entity and the rows converge.
+concept!: &remote
+  this: tonk:remote
+  description: A sync endpoint a space on this profile points at.
+  with:
+    name:
+      description: >
+        The remote's local name on the owning replica — `origin` for the
+        upstream a space was created with.
+      the: xyz.tonk.remote/name
+      cardinality: one
+      as: text
+    origin:
+      description: >
+        The entity that owns this remote. For the account-level records
+        this page lists, that is the space's directory entity rather than
+        a per-device replica, which is what makes the row converge across
+        devices instead of appearing once per device.
+      the: xyz.tonk.remote/origin
+      cardinality: one
+      as: entity
+    subject:
+      description: The repository on the remote side, as its subject DID.
+      the: xyz.tonk.remote/subject
+      cardinality: one
+      as: entity
+    address:
+      description: >
+        The serialized `SiteAddress` — dag-cbor bytes naming the
+        transport and endpoint. Opaque here: the page shows that a
+        remote exists and what it serves, not how to dial it.
+      the: xyz.tonk.remote/address
+      cardinality: one
+      as: bytes
+
+# The local `tonk`, and whether this device can currently reach it.
+#
+# Keyed on the well-known singleton `state:cli` and stamped into an
+# overlay, the way `tonk:sync` stamps `state:here`: a live observation is
+# not a durable fact, and writing one to the branch would replicate "my
+# laptop had a CLI running" to every other device. The row is always
+# rendered — a CLI that is not running is a status, not an absence.
+concept!: &peer
+  this: tonk:peer
+  description: This device's live view of the local `tonk` process.
+  with:
+    status:
+      description: |
+          Live observation — peer:reachable | peer:unreachable.
+      the: xyz.tonk.peer/status
+      cardinality: one
+      as: entity
+  maybe:
+    subject:
+      description: >
+        The authority the CLI answered for, present only while reachable.
+      the: xyz.tonk.peer/subject
+      cardinality: one
+      as: text
+    spaces:
+      description: >
+        How many spaces the CLI is serving, present only while
+        reachable. A count rather than the list: the list belongs to
+        whichever page opens that peer, and this one says a peer is
+        there and worth opening.
+      the: xyz.tonk.peer/spaces
+      cardinality: one
+      as: unsigned-integer
+
+view!:
+  this: tonk:network
+  show:
+    ui: |
+      <div class="hub-page">
+        <tonk-title text="network — Tonk"></tonk-title>
+        <div class="hub-logo" role="img" aria-label="tonk"></div>
+        <main class="hubcol">
+          <!-- The local `tonk` first: it is the remote a person is most
+               likely here to check, and it is the one that can be down.
+               An entity view on the `state:cli` singleton, so the row
+               renders from whatever status the worker last stamped. -->
+          <tonk-display model="tonk:peer" entity="state:cli" view="ui">
+            <!-- A state slot has to be a DIRECT child of the display:
+                 `update_slot_children` matches on `parent_element() ==
+                 host`, so one nested inside the view's own wrapper is
+                 never found and the built-in diagnostic shows instead.
+                 Nothing has asked yet on a fresh page, and that is the
+                 ordinary first state, not an error worth a red callout. -->
+            <div slot="no-entity" class="nrow nrow--peer" data-status="peer:unknown">
+              <span class="nrow__name">local tonk</span>
+              <span class="nrow__note">not checked yet</span>
+              <!-- The did:key is typed rather than derived: the
+                   rendezvous phrase names the route, but the endpoint
+                   key is the CLI's own identity, so only `tonk rtc
+                   serve` knows it. -->
+              <form class="nask-form" on:reach-peer=tonk:reach-peer>
+                <input class="nask-peer" name="peer" type="text"
+                       placeholder="did:key: from `tonk rtc serve`" required>
+                <button class="nask chrome" type="submit">ask</button>
+              </form>
+            </div>
+          </tonk-display>
+          <tonk-display model="tonk:remote">
+            <!-- Direct child, for the same reason as the peer slot
+                 above. An account whose spaces are all local-only has
+                 no remote facts at all — `record_space_mount` writes a
+                 row only for a space configured with one — so empty is
+                 the ordinary first state here. -->
+            <div slot="empty" class="nrow nrow--empty">
+              <span class="nrow__name">no remotes</span>
+              <span class="nrow__note">a space syncs once you enable sync on it</span>
+            </div>
+          </tonk-display>
+        </main>
+      </div>
+
+# The local `tonk` row. An entity view, not a directory: there is one
+# CLI per device and it is always listed, so the row is keyed on the
+# `state:cli` singleton rather than discovered among many.
+view!:
+  this: tonk:peer
+  show:
+    ui: |
+      <div class="stack chrome" aria-label="local tonk">
+        <div class="nrow nrow--peer" data-status={status}>
+          <span class="nrow__name">local tonk</span>
+          <span class="nrow__subject">{subject}</span>
+        </div>
+      </div>
+
+# The stored remotes, as a directory over this branch. One row per
+# configured upstream; an account with no synced space shows the empty
+# line rather than a bare page.
+view!:
+  this: tonk:remote
+  show:
+    directory: |
+      <div class="stack chrome" aria-label="remotes">
+        <!-- A directory view IS the repeat: this template renders once
+             per row, so there is no loop to write. `data-id={this}`
+             designates the row the way the spaces stack does.
+
+             An account whose spaces are all local-only has no remote
+             facts at all — `record_space_mount` writes a row only when
+             a space is configured with one — so the empty case is the
+             ordinary first state here, not a failure. It is stated
+             rather than left blank, because an empty page and a page
+             that has not loaded look identical otherwise. -->
+        <div class="nrow" data-id={this}>
+          <span class="nrow__name">{name}</span>
+          <a class="nrow__subject blk" href="/space/{subject}">{subject}</a>
+        </div>
       </div>
 
 # The /settings route — the account settings page, per the fabb wireframes:

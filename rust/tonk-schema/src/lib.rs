@@ -73,8 +73,10 @@ pub mod custody;
 pub use custody::{Replacement, SecretMessage, SecretPrincipal, SeedKind};
 
 pub mod device_link;
+pub mod peer;
 pub mod replica;
 pub use device_link::*;
+pub use peer::*;
 pub use replica::*;
 
 pub mod repository;

@@ -7,15 +7,21 @@
 //! into a route iroh can use. Everything above that is ordinary dialog:
 //! a signed invocation, verified at the far end.
 //!
-//! # Why this is a route and not a command
+//! # Why this is a command and not a route
 //!
-//! `commands-not-routes` is right about almost everything a page
-//! triggers, and this is one of the exceptions it names: something the
-//! worker must answer *before* the page has a branch to subscribe to.
-//! "Is a CLI reachable, and which identities does it answer for" is a
-//! probe, like `/api/identify` and `/api/site` beside it. There is no
-//! durable fact to assert — a peer being up is not something to write to
-//! a branch — and nothing would subscribe to it.
+//! This began as two routes, on the argument that a reachability probe
+//! is something the worker must answer before the page has a branch to
+//! subscribe to. That was wrong twice over. The page *does* have a
+//! branch — the profile one it is already rendering — and "is a CLI
+//! reachable" is exactly a fact to put on it, just not a durable one:
+//! an overlay stamp, live for the session, keyed on the `state:cli`
+//! singleton the way `tonk:sync` keys `state:here`.
+//!
+//! Asking is a user action, so it is a command. The difference is not
+//! stylistic: a route answers one caller once, while the command's
+//! outcome reaches every tab showing the network page through the
+//! subscription it already holds, and the same ask runs from a test or
+//! the CLI with no second code path.
 
 use std::sync::Arc;
 
@@ -34,7 +40,7 @@ pub struct Carrier {
     pub phrase: String,
 }
 
-/// What `/api/cli/status` answers with.
+/// What asking a peer who it is answers with.
 ///
 /// Flat rather than an enum so a page can render it without a match: a
 /// CLI that is not there is `reachable: false` with a reason, not an
@@ -83,7 +89,7 @@ impl Status {
     }
 }
 
-/// What `/api/cli/spaces` answers with.
+/// What asking a peer what it holds answers with.
 ///
 /// Flat and always-200 for the same reason [`Status`] is: a CLI that is
 /// not there is `reachable: false` with a reason, because nothing
@@ -442,65 +448,95 @@ impl Probe {
     }
 }
 
-/// `GET /api/cli/status?peer=<did:key>` — ask a local `tonk` who it is.
-///
-/// `peer` is the CLI's `did:key`, printed by `tonk rtc serve`. It is not
-/// derivable: the rendezvous phrase names the *route*, and the endpoint
-/// key is the CLI's own identity.
-#[axum_wasm_macros::wasm_compat]
-pub async fn status_route(
-    axum::extract::State(state): axum::extract::State<crate::router::AppState>,
-    axum::extract::Query(query): axum::extract::Query<StatusQuery>,
-) -> Result<axum::Json<Status>, crate::TonkWorkerError> {
-    let probe = match Probe::prepare(&state, &query.peer).await {
-        Ok(probe) => probe,
-        Err(detail) => return Ok(axum::Json(Status::unreachable(detail))),
-    };
+/// The profile branch the network page renders, and where the live CLI
+/// observation is stamped.
+const PROFILE_BRANCH: &str = "main";
 
-    Ok(axum::Json(
-        status(
-            &probe.reach,
-            *probe.peer.endpoint(),
-            tonk_rtc::rendezvous::RENDEZVOUS,
-            probe.subject,
-            &probe.operator,
-        )
-        .await,
-    ))
+/// Ask the local `tonk` who it is and what it holds.
+///
+/// A command rather than a route, per `commands-not-routes`. Asking is
+/// a user action, and its outcome is a fact the network page already
+/// subscribes to — so every tab showing that page updates, rather than
+/// one caller reading one response body once. It is also the same ask
+/// from a test or the CLI, which a route could not be.
+///
+/// Reaching a peer needs a carrier some page opened. A command that
+/// arrives before one does stamps `unreachable` and says why; that is
+/// the ordinary state before anybody has dialed, not a fault.
+///
+/// Target-agnostic: the ask runs anywhere, and only the overlay stamp
+/// is browser-shaped — a native caller has no page to render for.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::ReachPeer> for crate::router::CommandEnv {
+    async fn execute(&self, command: tonk_schema::command::ReachPeer) {
+        let inventory = reach(self.state(), &command.peer.0).await;
+        publish_inventory(self.state(), &inventory).await;
+    }
 }
 
-/// `GET /api/cli/spaces?peer=<did:key>` — ask a local `tonk` what it
-/// holds.
+/// The whole of the ask: parse the peer, find a carrier, invoke.
 ///
-/// A directory listing and nothing more: every space comes back as a
-/// DID, and nothing is opened, replicated or delegated by asking. What
-/// it takes to *use* one of these is a delegation the CLI has not been
-/// asked for here.
-#[axum_wasm_macros::wasm_compat]
-pub async fn spaces_route(
-    axum::extract::State(state): axum::extract::State<crate::router::AppState>,
-    axum::extract::Query(query): axum::extract::Query<StatusQuery>,
-) -> Result<axum::Json<Inventory>, crate::TonkWorkerError> {
-    let probe = match Probe::prepare(&state, &query.peer).await {
+/// Shared by the command and by tests, so what a test exercises is what
+/// a click runs.
+pub async fn reach(state: &crate::router::AppState, peer: &str) -> Inventory {
+    let probe = match Probe::prepare(state, peer).await {
         Ok(probe) => probe,
-        Err(detail) => return Ok(axum::Json(Inventory::unreachable(detail))),
+        Err(detail) => return Inventory::unreachable(detail),
     };
 
-    Ok(axum::Json(
-        spaces(
-            &probe.reach,
-            *probe.peer.endpoint(),
-            tonk_rtc::rendezvous::RENDEZVOUS,
-            probe.subject,
-            &probe.operator,
-        )
-        .await,
-    ))
+    spaces(
+        &probe.reach,
+        *probe.peer.endpoint(),
+        tonk_rtc::rendezvous::RENDEZVOUS,
+        probe.subject,
+        &probe.operator,
+    )
+    .await
 }
 
-/// The `peer` a status probe is about.
-#[derive(Debug, Clone, Deserialize)]
-pub struct StatusQuery {
-    /// The CLI's `did:key`, as `tonk rtc serve` prints it.
-    pub peer: String,
+/// Stamp an inventory answer as the live peer observation.
+///
+/// Overlay, not a commit: a running CLI is an observation with the
+/// lifetime of a session, and committing it would replicate "this
+/// laptop had a CLI up" to every other device on the profile. The
+/// singleton key means asserting supersedes rather than accumulates, so
+/// the page always folds to the latest.
+///
+/// Off wasm there is no page to render for, so this is the whole of it.
+pub async fn publish_inventory(state: &crate::router::AppState, inventory: &Inventory) {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        use std::sync::Arc;
+        use tonk_common::log;
+        use tonk_schema::Peer;
+
+        let tonk = state.read().await;
+        let session = match tonk
+            .reactor
+            .profile_repository()
+            .branch(PROFILE_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+        {
+            Ok(session) => session,
+            Err(error) => {
+                log!("publish_inventory: could not acquire the profile branch: {error}");
+                return;
+            }
+        };
+
+        // `Peer` carries only the status, so the row still resolves when
+        // the CLI is down. The identity fields ride in their own concept
+        // because a required field that is sometimes absent makes the
+        // whole row unresolvable.
+        if inventory.reachable {
+            session.state.assert_overlay(Peer::reachable());
+        } else {
+            session.state.assert_overlay(Peer::unreachable());
+        }
+        tonk.reactor.schedule_poll(Arc::clone(&session.state));
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    let _ = (state, inventory);
 }

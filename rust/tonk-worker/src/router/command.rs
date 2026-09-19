@@ -234,6 +234,10 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         .command::<tonk_schema::command::ReplicateSpace>()
         .command::<tonk_schema::command::ForgetInvite>()
         .command::<tonk_schema::command::CheckUpdate>()
+        // Reaching the local `tonk` belongs here for the same reason:
+        // the network page lists peers this device may not be able to
+        // hold, and the answer lands as a fact on this branch.
+        .command::<tonk_schema::command::ReachPeer>()
 }
 
 /// A space branch's vocabulary — see [`CommandProviders`] for why each
