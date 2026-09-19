@@ -11,10 +11,12 @@
 
 pub mod cell;
 pub mod engine;
+pub mod session;
 pub mod sync;
 
 pub use cell::{CellError, LocalCell, RemoteCell, Transport};
 pub use engine::{
     ChangeInfo, Content, DiffOp, Document, DocumentError, Edit, Format, Sheet, Stamp, Table,
 };
+pub use session::{DocumentEnv, SessionError, Snapshot, Written};
 pub use sync::{Marker, Outcome, sync_pass};
