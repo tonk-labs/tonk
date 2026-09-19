@@ -114,6 +114,24 @@ fn it_switches_profiles_by_handle_not_by_label() {
     );
 }
 
+/// Adding an account dispatches a command rather than fetching.
+///
+/// The ceremony that follows is a top-page passkey dialog the worker
+/// cannot raise, so the command's handler asks the page to open it. What
+/// this pins is the dispatch: if the row went back to calling
+/// `/api/profiles/add` directly, the element would be back with it.
+#[test]
+fn it_adds_an_account_through_a_command() {
+    assert!(
+        PROFILE_LIBRARY.contains("on:add-profile=tonk:add-profile"),
+        "the add-account row must dispatch the command",
+    );
+    assert!(
+        PROFILE_LIBRARY.contains("xyz.tonk.command.add-profile/time"),
+        "the command must carry a timestamp so a retry re-fires",
+    );
+}
+
 /// The overlay fields the switcher renders are declared as its concept's
 /// fields, so a missing one is a compile-time error rather than a blank row.
 #[test]

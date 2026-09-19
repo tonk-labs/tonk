@@ -1112,6 +1112,24 @@ event!: &on/switch-profile
     handle: ".currentTarget.dataset.handle"
     time: ".timeStamp"
 
+# Adding an account rotates onto a fresh profile and opens the regular
+# signup ceremony on it. The rotation is worker work; the ceremony is a
+# top-page passkey dialog the worker asks the page to raise.
+event!: &on/add-profile
+  type: "click"
+  prevent-default: true
+  where:
+    time: ".timeStamp"
+
+command!: &profile/add
+  this: tonk:add-profile
+  description: Rotate onto a fresh profile and open the account ceremony.
+  with:
+    time:
+      description: The click's timestamp, so a retry after a cancelled ceremony re-fires.
+      the: xyz.tonk.command.add-profile/time
+      as: float
+
 command!: &profile/switch
   this: tonk:switch-profile
   description: Make another profile on this browser the active one.
@@ -1138,6 +1156,18 @@ view!:
           <span class="account-menu__name">{label}</span>
         </button>
       </div>
+
+# The add-account row. Its own view rather than a slot in the switcher
+# list: the list repeats per profile, and this row must appear exactly
+# once whether the browser holds one account or five.
+view!:
+  this: tonk:hub
+  show:
+    add-account: |
+      <button class="account-menu__row account-menu__row--ink" type="button"
+        on:add-profile=tonk:add-profile>
+        add account<span class="g" aria-hidden="true">+</span>
+      </button>
 
 # The Hub route model + its view: the space directory over this (profile) branch.
 # `tonk:hub` is the concept the `/` route resolves to; its view renders the

@@ -1085,6 +1085,18 @@ pub mod command {
             pub struct Time(pub f64);
         }
 
+        /// `tonk/add-profile` — rotate onto a fresh profile and open the
+        /// account ceremony on it.
+        pub mod add_profile {
+            use dialog_query::Attribute;
+
+            /// The click's timestamp, so a second attempt after a
+            /// cancelled ceremony re-fires rather than deduplicating.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("xyz.tonk.command.add-profile")]
+            pub struct Time(pub f64);
+        }
+
         /// `tonk/switch-profile` — make another profile on this browser
         /// the active one.
         pub mod switch_profile {

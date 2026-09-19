@@ -318,6 +318,27 @@ impl Command for EnableSync {
     type Output = ();
 }
 
+/// Rotate onto a fresh profile and open the account ceremony on it.
+///
+/// Adding an account IS the regular signup, run for a profile that has
+/// none. The worker does the rotation; the ceremony itself is a top-page
+/// dialog with a passkey prompt, which the worker asks the originating
+/// page to raise.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct AddProfile {
+    /// The command entity (a fresh id per click).
+    pub this: Entity,
+    /// The click's timestamp — one attempt from the next.
+    pub time: crate::domain::command::current::add_profile::Time,
+}
+
+/// `AddProfile` is a [`dialog_capability::Command`]; its handler rotates
+/// the profile and notifies the page to open the ceremony.
+impl Command for AddProfile {
+    type Input = Self;
+    type Output = ();
+}
+
 /// Make another profile on this browser the active one.
 ///
 /// Dispatched when a switcher row is clicked. Carries the target
