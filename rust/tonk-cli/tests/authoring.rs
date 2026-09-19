@@ -395,11 +395,14 @@ mod when_defining_an_element {
             &test.site,
             "tally-widget",
             "A running tally",
-            &methods(&[
-                ("connected", "(self) => { self.textContent = 'v1'; }"),
-                ("disconnected", "(self) => {}"),
-            ]),
-            &[],
+            &tonk_cli::authoring::ElementParts {
+                methods: &methods(&[
+                    ("connected", "(self) => { self.textContent = 'v1'; }"),
+                    ("disconnected", "(self) => {}"),
+                ]),
+                attributes: &[],
+                ..Default::default()
+            },
             Default::default(),
         )
         .await?;
@@ -428,12 +431,15 @@ mod when_defining_an_element {
             &test.site,
             "tally-widget",
             "A running tally",
-            &methods(&[
-                ("connected", "(self) => { self.textContent = 'v1'; }"),
-                ("disconnected", "(self) => { self.dataset.gone = '1'; }"),
-                ("bump", "(self) => 1"),
-            ]),
-            &[],
+            &tonk_cli::authoring::ElementParts {
+                methods: &methods(&[
+                    ("connected", "(self) => { self.textContent = 'v1'; }"),
+                    ("disconnected", "(self) => { self.dataset.gone = '1'; }"),
+                    ("bump", "(self) => 1"),
+                ]),
+                attributes: &[],
+                ..Default::default()
+            },
             Default::default(),
         )
         .await?;
@@ -442,8 +448,11 @@ mod when_defining_an_element {
             &test.site,
             "tally-widget",
             "A running tally",
-            &methods(&[("connected", "(self) => { self.textContent = 'v2'; }")]),
-            &[],
+            &tonk_cli::authoring::ElementParts {
+                methods: &methods(&[("connected", "(self) => { self.textContent = 'v2'; }")]),
+                attributes: &[],
+                ..Default::default()
+            },
             Default::default(),
         )
         .await?;
@@ -480,11 +489,14 @@ mod when_defining_an_element {
             &test.site,
             "tally-widget",
             "A running tally",
-            &methods(&[
-                ("connected", "(self) => { self.textContent = 'v1'; }"),
-                ("bump", "(self) => 1"),
-            ]),
-            &[],
+            &tonk_cli::authoring::ElementParts {
+                methods: &methods(&[
+                    ("connected", "(self) => { self.textContent = 'v1'; }"),
+                    ("bump", "(self) => 1"),
+                ]),
+                attributes: &[],
+                ..Default::default()
+            },
             Default::default(),
         )
         .await?;
@@ -529,8 +541,11 @@ mod when_defining_an_element {
                 &test.site,
                 tag,
                 "The same description on purpose",
-                &methods(&[("connected", &format!("(self) => '{tag}'"))]),
-                &[],
+                &tonk_cli::authoring::ElementParts {
+                    methods: &methods(&[("connected", &format!("(self) => '{tag}'"))]),
+                    attributes: &[],
+                    ..Default::default()
+                },
                 Default::default(),
             )
             .await?;
@@ -559,8 +574,11 @@ mod when_defining_an_element {
                 &test.site,
                 tag,
                 "Identical in every respect",
-                &methods(&[("connected", "(self) => {}")]),
-                &[],
+                &tonk_cli::authoring::ElementParts {
+                    methods: &methods(&[("connected", "(self) => {}")]),
+                    attributes: &[],
+                    ..Default::default()
+                },
                 Default::default(),
             )
             .await?;
@@ -591,11 +609,14 @@ mod when_defining_an_element {
             &test.site,
             "new-widget",
             "The new shape",
-            &methods(&[("connected", "(self) => { self.textContent = 'new'; }")]),
-            // A default, so this row answers the generic concept
-            // query below — see
-            // `it_answers_the_generic_concept_query_only_with_defaults`.
-            &[("tone".to_owned(), "new".to_owned())],
+            &tonk_cli::authoring::ElementParts {
+                methods: &methods(&[("connected", "(self) => { self.textContent = 'new'; }")]),
+                // A default, so this row answers the generic concept
+                // query below — see
+                // `it_answers_the_generic_concept_query_only_with_defaults`.
+                attributes: &[("tone".to_owned(), "new".to_owned())],
+                ..Default::default()
+            },
             Default::default(),
         )
         .await?;
@@ -613,20 +634,24 @@ mod when_defining_an_element {
             "component row disappeared: {listed:?}",
         );
 
-        // Each concept's own query sees ONLY its own rows: the
-        // component's module is not visible as an element, and the
-        // element's methods are not visible as a component. The
-        // element is recognised by its description and its method
-        // source, not by its tag — the tag lives in the anchor, so a
-        // concept query, which reads fields, never sees it.
-        let elements = tonk_cli::data_ops::query(&test.site, "element", false).await?;
-        assert!(elements.contains("The new shape"), "{elements}");
-        assert_eq!(
-            elements.matches("this:").count(),
-            1,
-            "only the element row should answer: {elements}"
+        // Each shape's facts stay its own: the component's module is
+        // not visible under the element's domains, and the element's
+        // methods are not visible as a component.
+        //
+        // Read through the per-domain queries rather than through
+        // `tonk query element`, which needs every dictionary set — see
+        // `it_answers_the_generic_concept_query_only_when_every_map_is_set`.
+        assert!(
+            !tonk_cli::elements::methods_of(&test.site, "new-widget")
+                .await?
+                .is_empty(),
         );
-        assert!(!elements.contains("old-widget"), "{elements}");
+        assert!(
+            tonk_cli::elements::methods_of(&test.site, "old-widget")
+                .await?
+                .is_empty(),
+            "the legacy module must not read back as element methods",
+        );
         let components = tonk_cli::data_ops::query(&test.site, "component", false).await?;
         assert!(components.contains("old-widget"), "{components}");
         assert!(!components.contains("The new shape"), "{components}");
@@ -643,11 +668,14 @@ mod when_defining_an_element {
             &test.site,
             "tally-widget",
             "A running tally",
-            &methods(&[("connected", "(self) => {}")]),
-            &[
-                ("color".to_owned(), "red".to_owned()),
-                ("size".to_owned(), String::new()),
-            ],
+            &tonk_cli::authoring::ElementParts {
+                methods: &methods(&[("connected", "(self) => {}")]),
+                attributes: &[
+                    ("color".to_owned(), "red".to_owned()),
+                    ("size".to_owned(), String::new()),
+                ],
+                ..Default::default()
+            },
             Default::default(),
         )
         .await?;
@@ -666,8 +694,11 @@ mod when_defining_an_element {
             &test.site,
             "plain-widget",
             "Declares no defaults",
-            &methods(&[("connected", "(self) => {}")]),
-            &[],
+            &tonk_cli::authoring::ElementParts {
+                methods: &methods(&[("connected", "(self) => {}")]),
+                attributes: &[],
+                ..Default::default()
+            },
             Default::default(),
         )
         .await?;
@@ -696,8 +727,11 @@ mod when_defining_an_element {
             &test.site,
             "tally-widget",
             "A running tally",
-            &methods(&[("connected", "(self) => 'v1'"), ("bump", "(self) => 1")]),
-            &[("color".to_owned(), "red".to_owned())],
+            &tonk_cli::authoring::ElementParts {
+                methods: &methods(&[("connected", "(self) => 'v1'"), ("bump", "(self) => 1")]),
+                attributes: &[("color".to_owned(), "red".to_owned())],
+                ..Default::default()
+            },
             Default::default(),
         )
         .await?;
@@ -707,8 +741,11 @@ mod when_defining_an_element {
             &test.site,
             "tally-widget",
             "A running tally",
-            &methods(&[("connected", "(self) => 'v2'")]),
-            &[],
+            &tonk_cli::authoring::ElementParts {
+                methods: &methods(&[("connected", "(self) => 'v2'")]),
+                attributes: &[],
+                ..Default::default()
+            },
             Default::default(),
         )
         .await?;
@@ -730,8 +767,11 @@ mod when_defining_an_element {
             &test.site,
             "tally-widget",
             "A running tally",
-            &[],
-            &[("color".to_owned(), "blue".to_owned())],
+            &tonk_cli::authoring::ElementParts {
+                methods: &[],
+                attributes: &[("color".to_owned(), "blue".to_owned())],
+                ..Default::default()
+            },
             Default::default(),
         )
         .await?;
@@ -836,40 +876,134 @@ mod when_defining_an_element {
         Ok(())
     }
 
-    /// The one place `attribute` being a required collection shows: a
-    /// GENERIC concept query binds every field the concept declares,
-    /// and a collection with no entries binds nothing, so an element
-    /// declaring no defaults does not answer it.
-    ///
-    /// Recorded rather than worked around. It is the reason
-    /// `tonk element` reads the method domain directly instead of
-    /// going through `tonk query element`, and the reason the browser
-    /// registry reads the two dictionaries as separate queries.
+    /// Accessors round-trip as their own dictionaries, and each
+    /// carries forward independently of the others.
     #[dialog_common::test]
-    async fn it_answers_the_generic_concept_query_only_with_defaults() -> Result<()> {
+    async fn it_stores_getters_and_setters_under_the_tag() -> Result<()> {
         let test = TestSite::new().await?;
-        for (tag, defaults) in [
-            (
-                "with-defaults",
-                vec![("color".to_owned(), "red".to_owned())],
-            ),
-            ("no-defaults", vec![]),
-        ] {
-            tonk_cli::data_ops::element_add(
-                &test.site,
-                tag,
-                &format!("The <{tag}> element"),
-                &methods(&[("connected", "(self) => {}")]),
-                &defaults,
-                Default::default(),
-            )
-            .await?;
-        }
+        tonk_cli::data_ops::element_add(
+            &test.site,
+            "counter-widget",
+            "Counts, and says so through a property",
+            &tonk_cli::authoring::ElementParts {
+                methods: &methods(&[("connected", "(self) => {}")]),
+                getters: &methods(&[("total", "(self) => Number(self.dataset.n ?? 0)")]),
+                setters: &methods(&[(
+                    "total",
+                    "(self, next) => { self.dataset.n = String(next); }",
+                )]),
+                ..Default::default()
+            },
+            Default::default(),
+        )
+        .await?;
+
+        let getters =
+            tonk_cli::elements::entries_of(&test.site, "counter-widget", "getter").await?;
+        let setters =
+            tonk_cli::elements::entries_of(&test.site, "counter-widget", "setter").await?;
+        assert_eq!(getters.len(), 1, "{getters:?}");
+        assert_eq!(setters.len(), 1, "{setters:?}");
+        assert!(getters[0].1.contains("Number("), "{getters:?}");
+        assert!(setters[0].1.contains("String(next)"), "{setters:?}");
+        // The two are distinct facts under distinct domains: reading
+        // one must not answer with the other, which is the mistake a
+        // shared domain or a swapped argument would produce.
+        assert_ne!(getters[0].1, setters[0].1);
+
+        // Author only the getter: the setter and the methods survive.
+        tonk_cli::data_ops::element_add(
+            &test.site,
+            "counter-widget",
+            "Counts, and says so through a property",
+            &tonk_cli::authoring::ElementParts {
+                getters: &methods(&[("total", "(self) => 99")]),
+                ..Default::default()
+            },
+            Default::default(),
+        )
+        .await?;
+        let getters =
+            tonk_cli::elements::entries_of(&test.site, "counter-widget", "getter").await?;
+        assert!(getters[0].1.contains("99"), "{getters:?}");
+        assert_eq!(
+            tonk_cli::elements::entries_of(&test.site, "counter-widget", "setter")
+                .await?
+                .len(),
+            1,
+            "editing a getter should not drop the setter",
+        );
+        assert!(
+            !tonk_cli::elements::methods_of(&test.site, "counter-widget")
+                .await?
+                .is_empty(),
+            "editing a getter should not drop the methods",
+        );
+        Ok(())
+    }
+
+    /// A dictionary the schema does not declare reads empty rather
+    /// than erroring, so a caller out of step with the list does not
+    /// look like a branch failure.
+    #[dialog_common::test]
+    async fn it_reads_an_unknown_dictionary_as_empty() -> Result<()> {
+        let test = TestSite::new().await?;
+        assert!(
+            tonk_cli::elements::entries_of(&test.site, "tally-widget", "no-such-field")
+                .await?
+                .is_empty(),
+        );
+        Ok(())
+    }
+
+    /// What the four dictionaries cost: a GENERIC concept query binds
+    /// every field the concept declares, and a keyed collection with no
+    /// entries binds nothing — so `tonk query element` answers only for
+    /// an element that declares ALL FOUR, which almost none do.
+    ///
+    /// Recorded rather than worked around, and worth stating plainly
+    /// because it got worse as dictionaries were added: with `method`
+    /// alone the generic query worked, with `attribute` it needed a
+    /// default, and with accessors it needs all four. Fixing it means
+    /// teaching the query layer to widen an empty collection, which is
+    /// a dialog-query change, not a schema one.
+    ///
+    /// It is why `tonk element` reads the domains directly rather than
+    /// going through `tonk query element`, and why the browser registry
+    /// runs one query per dictionary instead of one for the concept.
+    #[dialog_common::test]
+    async fn it_answers_the_generic_concept_query_only_when_every_map_is_set() -> Result<()> {
+        let test = TestSite::new().await?;
+        let full = tonk_cli::authoring::ElementParts {
+            methods: &methods(&[("connected", "(self) => {}")]),
+            attributes: &methods(&[("color", "red")]),
+            getters: &methods(&[("total", "(self) => 0")]),
+            setters: &methods(&[("total", "(self, next) => {}")]),
+        };
+        tonk_cli::data_ops::element_add(
+            &test.site,
+            "every-map",
+            "Declares all four dictionaries",
+            &full,
+            Default::default(),
+        )
+        .await?;
+        tonk_cli::data_ops::element_add(
+            &test.site,
+            "methods-only",
+            "Declares only methods",
+            &tonk_cli::authoring::ElementParts {
+                methods: &methods(&[("connected", "(self) => {}")]),
+                ..Default::default()
+            },
+            Default::default(),
+        )
+        .await?;
 
         let generic = tonk_cli::data_ops::query(&test.site, "element", false).await?;
-        assert!(generic.contains("with-defaults"), "{generic}");
+        assert!(generic.contains("Declares all four"), "{generic}");
         assert!(
-            !generic.contains("no-defaults"),
+            !generic.contains("Declares only methods"),
             "a collection with no entries binds nothing, so this row \
              cannot answer a query that pins every field: {generic}",
         );
@@ -878,7 +1012,7 @@ mod when_defining_an_element {
         // method domain, which both elements have.
         let listed = tonk_cli::elements::list(&test.site).await?;
         let tags: Vec<Option<&str>> = listed.iter().map(|row| row.tag.as_deref()).collect();
-        assert_eq!(tags, vec![Some("no-defaults"), Some("with-defaults")]);
+        assert_eq!(tags, vec![Some("every-map"), Some("methods-only")]);
         Ok(())
     }
 
@@ -899,12 +1033,15 @@ mod when_defining_an_element {
             &test.site,
             "tally-widget",
             "A running tally",
-            &methods(&[
-                ("connected", "(self) => { self.textContent = 'hi'; }"),
-                ("attribute-changed", "(self, name, before, after) => {}"),
-                ("bump", "(self) => 1"),
-            ]),
-            &[],
+            &tonk_cli::authoring::ElementParts {
+                methods: &methods(&[
+                    ("connected", "(self) => { self.textContent = 'hi'; }"),
+                    ("attribute-changed", "(self, name, before, after) => {}"),
+                    ("bump", "(self) => 1"),
+                ]),
+                attributes: &[],
+                ..Default::default()
+            },
             Default::default(),
         )
         .await?;
@@ -963,8 +1100,11 @@ mod when_defining_an_element {
                 &test.site,
                 tag,
                 &format!("The <{tag}> element"),
-                &methods(&[("connected", &format!("(self) => '{tag}'"))]),
-                &[],
+                &tonk_cli::authoring::ElementParts {
+                    methods: &methods(&[("connected", &format!("(self) => '{tag}'"))]),
+                    attributes: &[],
+                    ..Default::default()
+                },
                 Default::default(),
             )
             .await?;
@@ -1037,8 +1177,11 @@ mod when_defining_an_element {
             &test.site,
             "widget",
             "No hyphen, no element",
-            &methods(&[("connected", "(self) => {}")]),
-            &[],
+            &tonk_cli::authoring::ElementParts {
+                methods: &methods(&[("connected", "(self) => {}")]),
+                attributes: &[],
+                ..Default::default()
+            },
             Default::default(),
         )
         .await
@@ -1054,8 +1197,11 @@ mod when_defining_an_element {
             &test.site,
             "tally-widget",
             "A running tally",
-            &methods(&[("remove", "(self) => {}")]),
-            &[],
+            &tonk_cli::authoring::ElementParts {
+                methods: &methods(&[("remove", "(self) => {}")]),
+                attributes: &[],
+                ..Default::default()
+            },
             Default::default(),
         )
         .await

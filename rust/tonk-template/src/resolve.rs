@@ -54,15 +54,7 @@ pub const ELEMENT_METHOD_DOMAIN: &str = "xyz.tonk.element.method";
 /// descriptor types. The library is the source of truth; the parity
 /// test in `tonk-worker` is what keeps the two honest.
 pub fn element_method_predicate() -> Value {
-    json!({
-        "with": {
-            "method": {
-                "the": { "domain": ELEMENT_METHOD_DOMAIN, "keyed": "dictionary" },
-                "as": "Text",
-                "cardinality": "one"
-            }
-        }
-    })
+    element_dictionary_predicate("method", ELEMENT_METHOD_DOMAIN)
 }
 
 /// Build the query that reads one element's whole `method` dictionary.
@@ -78,36 +70,44 @@ pub fn element_method_predicate() -> Value {
 /// `the:` written as an attribute rather than a domain) all read as an
 /// element with no methods.
 pub fn element_method_query(entity: &str) -> Result<Query, serde_json::Error> {
-    let mut terms: IndexMap<String, Value> = IndexMap::new();
-    terms.insert("this".into(), json!(entity));
-    terms.insert("method".into(), json!({ "?": { "name": "method" } }));
-    terms.insert(
-        "method/key".into(),
-        json!({ "?": { "name": "method/key" } }),
-    );
-    serde_json::from_value(json!({
-        "terms": terms,
-        "predicate": element_method_predicate(),
-    }))
+    element_dictionary_query(entity, "method", ELEMENT_METHOD_DOMAIN)
 }
 
 /// The domain an `element!:` assertion writes its attribute defaults
 /// under. Each entry lands as `<domain>/<attribute-name>`.
 pub const ELEMENT_ATTRIBUTE_DOMAIN: &str = "xyz.tonk.element.attribute";
 
-/// The `element` concept's `attribute` shape.
+/// The domain an `element!:` assertion writes its property reads under.
+pub const ELEMENT_GETTER_DOMAIN: &str = "xyz.tonk.element.getter";
+
+/// The domain an `element!:` assertion writes its property writes under.
+pub const ELEMENT_SETTER_DOMAIN: &str = "xyz.tonk.element.setter";
+
+/// Every dictionary an `element!:` carries, as `(field, domain)`.
 ///
-/// Its own predicate rather than a second field on
-/// [`element_method_predicate`], for two reasons. A concept query binds
-/// every field it names, so an element with methods but no defaults —
-/// which is most of them — would match neither. And two keyed
-/// collections in one query would join entry against entry, handing
-/// back the cross product of methods and defaults instead of each map.
-pub fn element_attribute_predicate() -> Value {
+/// One list so the browser registry, the CLI listing and the tests
+/// cannot disagree about how many there are — adding a fifth means
+/// adding it here and nowhere else.
+pub const ELEMENT_DICTIONARIES: &[(&str, &str)] = &[
+    ("method", ELEMENT_METHOD_DOMAIN),
+    ("attribute", ELEMENT_ATTRIBUTE_DOMAIN),
+    ("getter", ELEMENT_GETTER_DOMAIN),
+    ("setter", ELEMENT_SETTER_DOMAIN),
+];
+
+/// The `element` concept's shape for one of its dictionaries.
+///
+/// One field per predicate rather than all four in one, for two
+/// reasons. A concept query binds every field it names, so an element
+/// with methods but no defaults — which is most of them — would match
+/// neither. And two keyed collections in one query would join entry
+/// against entry, handing back the cross product of the two maps
+/// instead of each map.
+pub fn element_dictionary_predicate(field: &str, domain: &str) -> Value {
     json!({
         "with": {
-            "attribute": {
-                "the": { "domain": ELEMENT_ATTRIBUTE_DOMAIN, "keyed": "dictionary" },
+            field: {
+                "the": { "domain": domain, "keyed": "dictionary" },
                 "as": "Text",
                 "cardinality": "one"
             }
@@ -115,23 +115,37 @@ pub fn element_attribute_predicate() -> Value {
     })
 }
 
-/// Build the query that reads one element's `attribute` defaults.
+/// The `element` concept's `attribute` shape.
+pub fn element_attribute_predicate() -> Value {
+    element_dictionary_predicate("attribute", ELEMENT_ATTRIBUTE_DOMAIN)
+}
+
+/// Build the query that reads one of an element's dictionaries.
 ///
-/// Empty for an element that declares none, which is not an error and
-/// is the common case: the defaults are a separate hop precisely so
-/// that "no defaults" costs the methods nothing.
-pub fn element_attribute_query(entity: &str) -> Result<Query, serde_json::Error> {
+/// Empty for an element that declares none of that kind, which is not
+/// an error and is the common case: each map is a separate hop
+/// precisely so that declaring none of one costs the others nothing.
+pub fn element_dictionary_query(
+    entity: &str,
+    field: &str,
+    domain: &str,
+) -> Result<Query, serde_json::Error> {
     let mut terms: IndexMap<String, Value> = IndexMap::new();
     terms.insert("this".into(), json!(entity));
-    terms.insert("attribute".into(), json!({ "?": { "name": "attribute" } }));
+    terms.insert(field.into(), json!({ "?": { "name": field } }));
     terms.insert(
-        "attribute/key".into(),
-        json!({ "?": { "name": "attribute/key" } }),
+        format!("{field}/key"),
+        json!({ "?": { "name": format!("{field}/key") } }),
     );
     serde_json::from_value(json!({
         "terms": terms,
-        "predicate": element_attribute_predicate(),
+        "predicate": element_dictionary_predicate(field, domain),
     }))
+}
+
+/// Build the query that reads one element's `attribute` defaults.
+pub fn element_attribute_query(entity: &str) -> Result<Query, serde_json::Error> {
+    element_dictionary_query(entity, "attribute", ELEMENT_ATTRIBUTE_DOMAIN)
 }
 
 /// The `event` concept's shape, kept in step with the built-in

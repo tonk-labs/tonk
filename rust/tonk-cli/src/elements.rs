@@ -118,13 +118,7 @@ async fn claims_for_attribute(site: &TonkSite, uri: &str) -> Result<Vec<dialog_q
 /// right now, and that is the only thing that does. An entity the tag
 /// used to point at is a previous value and is deliberately not read.
 pub async fn methods_of(site: &TonkSite, tag: &str) -> Result<Vec<(String, String)>> {
-    entries_of(
-        site,
-        tag,
-        tonk_template::resolve::element_method_predicate(),
-        "method",
-    )
-    .await
+    entries_of(site, tag, "method").await
 }
 
 /// The attribute defaults currently bound to `tag`, as `(name, value)`
@@ -132,28 +126,30 @@ pub async fn methods_of(site: &TonkSite, tag: &str) -> Result<Vec<(String, Strin
 /// when it names an element that declares no defaults — which is most
 /// of them, and is not an error.
 pub async fn attributes_of(site: &TonkSite, tag: &str) -> Result<Vec<(String, String)>> {
-    entries_of(
-        site,
-        tag,
-        tonk_template::resolve::element_attribute_predicate(),
-        "attribute",
-    )
-    .await
+    entries_of(site, tag, "attribute").await
 }
 
-/// One dictionary of the element `tag` names, read through `predicate`
-/// and folded out of `field`.
+/// One dictionary of the element `tag` names, chosen by its `field`
+/// (`method`, `attribute`, `getter` or `setter`), as `(key, value)`
+/// pairs in key order.
 ///
 /// Resolves through the name, not through any URI built from the tag:
 /// `id:<tag>`'s `db.name/referent` says which entity the tag means
 /// right now, and that is the only thing that does. An entity the tag
 /// used to point at is a previous value and is deliberately not read.
-async fn entries_of(
-    site: &TonkSite,
-    tag: &str,
-    predicate: serde_json::Value,
-    field: &str,
-) -> Result<Vec<(String, String)>> {
+///
+/// A `field` the schema does not declare reads empty rather than
+/// erroring, so a caller out of step with the dictionary list does not
+/// look like a branch failure.
+pub async fn entries_of(site: &TonkSite, tag: &str, field: &str) -> Result<Vec<(String, String)>> {
+    let Some(domain) = tonk_template::resolve::ELEMENT_DICTIONARIES
+        .iter()
+        .find(|(named, _)| *named == field)
+        .map(|(_, domain)| *domain)
+    else {
+        return Ok(Vec::new());
+    };
+    let predicate = tonk_template::resolve::element_dictionary_predicate(field, domain);
     let Some(entity) = crate::views::entity_for_name(site, tag).await? else {
         return Ok(Vec::new());
     };

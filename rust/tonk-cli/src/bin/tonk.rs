@@ -1005,7 +1005,7 @@ enum ElementCommand {
     /// and points the tag at the result — so naming one method edits
     /// it without dropping the others.
     #[command(
-        after_help = "Lifecycle keys: connected, disconnected, adopted, attribute-changed.\nAny other key becomes a method on the element, camelCased.\n\nExamples:\n  tonk element add tally-widget --description 'A running tally' --method-file connected=tally.js\n  tonk element add tally-widget --description 'A running tally' --method 'connected=(self) => { self.textContent = \"hi\"; }'\n  tonk element add tally-widget --description 'A running tally' --method 'bump=(self) => 1' --notation"
+        after_help = "Lifecycle keys: connected, disconnected, adopted, attribute-changed.\nAny other key becomes a method on the element, camelCased.\n\nExamples:\n  tonk element add tally-widget --description 'A running tally' --method-file connected=tally.js\n  tonk element add tally-widget --description 'A running tally' --method 'connected=(self) => { self.textContent = \"hi\"; }'\n  tonk element add tally-widget --description 'A running tally' --getter 'value=(self) => self.textContent'\n  tonk element add tally-widget --description 'A running tally' --method 'bump=(self) => 1' --notation"
     )]
     Add {
         /// The custom element name to define (must contain a hyphen).
@@ -1023,6 +1023,16 @@ enum ElementCommand {
         /// on before `connected` runs. Repeatable.
         #[arg(long, value_name = "NAME=VALUE")]
         attribute: Vec<String>,
+        /// A property read: `<name>=<js>`, the JS being
+        /// `(self) => …`. Makes `el.<name>` read through the branch's
+        /// current definition. Repeatable.
+        #[arg(long, value_name = "NAME=JS")]
+        getter: Vec<String>,
+        /// A property write: `<name>=<js>`, the JS being
+        /// `(self, next) => …`. Pair it with `--getter` of the same
+        /// name for a read-write property. Repeatable.
+        #[arg(long, value_name = "NAME=JS")]
+        setter: Vec<String>,
         /// Read a method's source from a file: `<name>=<path>`. Repeatable.
         #[arg(long, value_name = "NAME=PATH")]
         method_file: Vec<String>,
@@ -4569,6 +4579,8 @@ async fn element_op(command: Option<ElementCommand>, json: bool, space: Option<&
             method,
             method_file,
             attribute,
+            getter,
+            setter,
             notation,
             write,
         }) => {
@@ -4601,12 +4613,28 @@ async fn element_op(command: Option<ElementCommand>, json: bool, space: Option<&
                     Err(message) => return print_error(message),
                 }
             }
+            let mut accessors: Vec<Vec<(String, String)>> = Vec::new();
+            for (flag, raws) in [("--getter", &getter), ("--setter", &setter)] {
+                let mut collected: Vec<(String, String)> = Vec::new();
+                for raw in raws.iter() {
+                    match split_named_arg(raw.as_str(), flag, false) {
+                        Ok(pair) => collected.push(pair),
+                        Err(message) => return print_error(message),
+                    }
+                }
+                accessors.push(collected);
+            }
+            let (getters, setters) = (&accessors[0], &accessors[1]);
             match data_ops::element_add(
                 &site,
                 &tag,
                 &description,
-                &methods,
-                &attributes,
+                &tonk_cli::authoring::ElementParts {
+                    methods: &methods,
+                    attributes: &attributes,
+                    getters,
+                    setters,
+                },
                 write.options(notation),
             )
             .await

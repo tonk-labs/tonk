@@ -159,6 +159,65 @@ check('attribute-changed sees a defaulted value', await page.evaluate(() => {
   return JSON.stringify(globalThis.defSeen) === JSON.stringify([['color', null, 'red']]);
 }));
 
+// 4g. getters and setters land as real accessors, and resolve through
+// the live table the way a method does.
+check('a getter and setter make a live property', await page.evaluate(() => {
+  defineTonkElement('acc-el',
+    { connected: (self) => {} },
+    {},
+    { total: (self) => Number(self.dataset.n ?? 0) },
+    { total: (self, next) => { self.dataset.n = String(next * 2); } },
+  );
+  const el = document.createElement('acc-el');
+  document.body.append(el);
+  el.total = 5;                    // setter doubles on the way in
+  const read = el.total;           // getter reads it back
+  // Re-author ONLY the getter; the property a page is already reading
+  // changes with it.
+  defineTonkElement('acc-el',
+    { connected: (self) => {} },
+    {},
+    { total: (self) => Number(self.dataset.n ?? 0) + 100 },
+    { total: (self, next) => { self.dataset.n = String(next * 2); } },
+  );
+  return read === 10 && el.total === 110;
+}));
+
+// 4h. a getter alone is read-only; a setter alone is write-only. Both
+// are real shapes, so both are built rather than refused.
+check('one-sided accessors are built, not refused', await page.evaluate(() => {
+  defineTonkElement('half-el',
+    { connected: (self) => {} },
+    {},
+    { readable: (self) => 'r' },
+    { writable: (self, next) => { self.dataset.got = next; } },
+  );
+  const el = document.createElement('half-el');
+  document.body.append(el);
+  const readOnly = el.readable === 'r';
+  // Writing a read-only property is a silent no-op outside strict
+  // mode; what matters is that it does not throw and does not stick.
+  try { el.readable = 'x'; } catch { /* strict-mode TypeError is fine */ }
+  el.writable = 'w';
+  return readOnly && el.readable === 'r'
+      && el.dataset.got === 'w' && el.writable === undefined;
+}));
+
+// 4i. an accessor is camelCased like a method, and one that would
+// shadow an HTMLElement member is refused
+check('accessor keys camelCase and refuse shadowing', await page.evaluate(() => {
+  defineTonkElement('case-el',
+    { connected: (self) => {} },
+    {},
+    { 'row-count': (self) => 7, id: (self) => 'nope' },
+    {},
+  );
+  const el = document.createElement('case-el');
+  document.body.append(el);
+  el.id = 'set-normally';
+  return el.rowCount === 7 && el.id === 'set-normally';
+}));
+
 // 5. attribute-changed via MutationObserver, incl. replay at upgrade
 check('attribute-changed replays initial then observes', await page.evaluate(async () => {
   globalThis.seen = [];

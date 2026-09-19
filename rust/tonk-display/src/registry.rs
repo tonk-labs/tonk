@@ -50,9 +50,9 @@ use web_sys::{CustomEvent, Element, window};
 
 use tonk_host::consumer::{self, Subscription};
 use tonk_host::events::ELEMENT_NEEDED;
-use tonk_template::resolve::name_query;
+use tonk_template::resolve::{ELEMENT_DICTIONARIES, name_query};
 
-use crate::element_source::element_module;
+use crate::element_source::{ElementDefinition, element_module};
 
 /// The runtime asset, embedded so the guest bundle carries it and no
 /// extra fetch stands between a rendered tag and its definition.
@@ -65,16 +65,16 @@ struct Watch {
     consumer: Element,
     /// Live subscription on `id:<tag>`'s referent.
     _name: Option<Subscription>,
-    /// Live subscription on the current entity's methods. Replaced when
+    /// Live subscriptions on the current entity's dictionaries, one
+    /// per entry of [`ELEMENT_DICTIONARIES`], replaced together when
     /// the name comes to mean a different entity.
-    methods: Option<Subscription>,
-    /// Live subscription on the current entity's attribute defaults,
-    /// replaced alongside `methods`. Separate because the two are
-    /// separate queries: binding both in one would join entry against
-    /// entry and hand back their cross product, and an element with
-    /// methods but no defaults — which is most of them — would match
-    /// neither.
-    attributes: Option<Subscription>,
+    ///
+    /// One each rather than one for all, because they are separate
+    /// queries: binding two keyed collections in one would join entry
+    /// against entry and hand back their cross product, and an element
+    /// with methods but no defaults — which is most of them — would
+    /// match neither.
+    dictionaries: Vec<Subscription>,
     /// The entity the tag currently names, so a name frame that does
     /// not actually move it does not churn the methods subscription.
     entity: Option<String>,
@@ -189,8 +189,7 @@ async fn watch(source: &Element, tag: &str) {
     let watch = Rc::new(RefCell::new(Watch {
         consumer: consumer.clone(),
         _name: None,
-        methods: None,
-        attributes: None,
+        dictionaries: Vec::new(),
         entity: None,
         applied: None,
     }));
@@ -281,52 +280,42 @@ async fn refresh(tag: &str, stream: &str) {
         // Drop the old streams before opening the new ones: the tag now
         // means something else, and frames from the old entity would
         // otherwise keep re-registering it.
-        watch.borrow_mut().methods = None;
-        watch.borrow_mut().attributes = None;
+        watch.borrow_mut().dictionaries.clear();
         watch.borrow_mut().applied = None;
         let Some(entity) = entity else {
             return;
         };
-        if let Some(body) = method_query(&entity) {
-            match consumer::subscribe_claimed(&consumer, &body, Some(&"methods".into())).await {
-                Ok(subscription) => watch.borrow_mut().methods = Some(subscription),
+        for (field, domain) in ELEMENT_DICTIONARIES {
+            let Some(body) = dictionary_query(&entity, field, domain) else {
+                continue;
+            };
+            match consumer::subscribe_claimed(&consumer, &body, Some(&(*field).into())).await {
+                Ok(subscription) => watch.borrow_mut().dictionaries.push(subscription),
                 Err(error) => {
                     web_sys::console::warn_1(
-                        &format!("<{tag}>: method subscription failed: {}", error.message).into(),
-                    );
-                }
-            }
-        }
-        if let Some(body) = attribute_query(&entity) {
-            match consumer::subscribe_claimed(&consumer, &body, Some(&"attributes".into())).await {
-                Ok(subscription) => watch.borrow_mut().attributes = Some(subscription),
-                Err(error) => {
-                    web_sys::console::warn_1(
-                        &format!("<{tag}>: attribute subscription failed: {}", error.message)
-                            .into(),
+                        &format!("<{tag}>: {field} subscription failed: {}", error.message).into(),
                     );
                 }
             }
         }
         // Same reason as the name hop: read now rather than waiting for
-        // the subscriptions to volunteer. One re-read covers both, since
-        // the module is rendered from the pair.
-        Box::pin(refresh(tag, "methods")).await;
+        // the subscriptions to volunteer. One re-read covers every
+        // dictionary, since the module is rendered from all of them.
+        Box::pin(refresh(tag, "method")).await;
         return;
     }
 
     let Some(entity) = watch.borrow().entity.clone() else {
         return;
     };
-    // Either stream re-reads both: the module is rendered from the
-    // pair, and `applied` below is what keeps the extra read from
-    // costing a re-registration.
-    let methods = methods_of(&consumer, &entity).await;
-    if methods.is_empty() {
+    // Any stream re-reads every dictionary: the module is rendered
+    // from all of them together, and `applied` below is what keeps the
+    // extra reads from costing a re-registration.
+    let definition = definition_of(&consumer, &entity).await;
+    if definition.methods.is_empty() {
         return;
     }
-    let attributes = attributes_of(&consumer, &entity).await;
-    let source = element_module(tag, &methods, &attributes);
+    let source = element_module(tag, &definition);
     let already = watch.borrow().applied.as_deref() == Some(source.as_str());
     if already {
         return;
@@ -354,41 +343,43 @@ async fn named_entity(consumer: &Element, tag: &str) -> Option<String> {
     first_field(&rows, "entity")
 }
 
-/// The wire query for one entity's `method` dictionary, serialized for
+/// The wire query for one of an entity's dictionaries, serialized for
 /// the host bridge.
 ///
 /// The query itself is built in [`tonk_template::resolve`], shared with
 /// the CLI listing and with the test that runs it against a real branch
 /// — the three have to agree, and every way they can silently disagree
-/// reads as "this element has no methods" rather than as an error.
-fn method_query(entity: &str) -> Option<JsValue> {
-    let query = tonk_template::resolve::element_method_query(entity).ok()?;
+/// reads as "this element declares none of these" rather than as an
+/// error.
+fn dictionary_query(entity: &str, field: &str, domain: &str) -> Option<JsValue> {
+    let query = tonk_template::resolve::element_dictionary_query(entity, field, domain).ok()?;
     serde_wasm_bindgen::to_value(&query).ok()
 }
 
-/// The wire query for one entity's `attribute` defaults.
-fn attribute_query(entity: &str) -> Option<JsValue> {
-    let query = tonk_template::resolve::element_attribute_query(entity).ok()?;
-    serde_wasm_bindgen::to_value(&query).ok()
-}
-
-/// Hop two: the entity's methods, folded to `(key, source)` in key
-/// order.
-async fn methods_of(consumer: &Element, entity: &str) -> BTreeMap<String, String> {
-    let Some(body) = method_query(entity) else {
-        return BTreeMap::new();
-    };
-    dictionary_of(consumer, &body, "method").await
-}
-
-/// The entity's attribute defaults, folded to `(name, value)` in name
-/// order. Empty for an element that declares none, which is the common
-/// case and not an error.
-async fn attributes_of(consumer: &Element, entity: &str) -> BTreeMap<String, String> {
-    let Some(body) = attribute_query(entity) else {
-        return BTreeMap::new();
-    };
-    dictionary_of(consumer, &body, "attribute").await
+/// Hop two: every dictionary the entity carries, each folded to
+/// `(key, value)` in key order.
+///
+/// A dictionary an element declares none of reads empty, which is the
+/// common case for all but `method` and is not an error.
+async fn definition_of(consumer: &Element, entity: &str) -> ElementDefinition {
+    let mut out = ElementDefinition::default();
+    for (field, domain) in ELEMENT_DICTIONARIES {
+        let Some(body) = dictionary_query(entity, field, domain) else {
+            continue;
+        };
+        let entries = dictionary_of(consumer, &body, field).await;
+        match *field {
+            "method" => out.methods = entries,
+            "attribute" => out.attributes = entries,
+            "getter" => out.getters = entries,
+            "setter" => out.setters = entries,
+            // Unreachable while the list and this match agree; a new
+            // dictionary added to one and not the other reads as
+            // "declares none" rather than as a panic in a browser.
+            _ => {}
+        }
+    }
+    out
 }
 
 /// Run `body` and fold `field` — a keyed dictionary — out of the
@@ -455,8 +446,12 @@ mod tests {
     #[derive(Default)]
     struct Branch {
         names: HashMap<String, String>,
-        methods: HashMap<String, BTreeMap<String, String>>,
-        attributes: HashMap<String, BTreeMap<String, String>>,
+        /// Entity -> field -> entries, mirroring [`ELEMENT_DICTIONARIES`]:
+        /// keyed by field name so the fake host answers every dictionary
+        /// the registry asks for without a table per kind. A field with
+        /// no entry reads empty, which is what "declares none of these"
+        /// looks like.
+        dictionaries: HashMap<String, HashMap<String, BTreeMap<String, String>>>,
     }
 
     thread_local! {
@@ -479,18 +474,31 @@ mod tests {
         methods: &[(&str, &str)],
         attributes: &[(&str, &str)],
     ) {
-        let pairs = |kv: &[(&str, &str)]| -> BTreeMap<String, String> {
-            kv.iter()
-                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
-                .collect()
-        };
+        define_dictionaries(
+            tag,
+            entity,
+            &[("method", methods), ("attribute", attributes)],
+        );
+    }
+
+    /// [`define`] over any of the element's dictionaries, named the way
+    /// [`ELEMENT_DICTIONARIES`] names them.
+    fn define_dictionaries(tag: &str, entity: &str, maps: &[(&str, &[(&str, &str)])]) {
         BRANCH.with(|branch| {
             let mut branch = branch.borrow_mut();
             branch.names.insert(tag.to_owned(), entity.to_owned());
-            branch.methods.insert(entity.to_owned(), pairs(methods));
-            branch
-                .attributes
-                .insert(entity.to_owned(), pairs(attributes));
+            for (field, kv) in maps {
+                branch
+                    .dictionaries
+                    .entry((*field).to_owned())
+                    .or_default()
+                    .insert(
+                        entity.to_owned(),
+                        kv.iter()
+                            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                            .collect(),
+                    );
+            }
         });
     }
 
@@ -598,8 +606,9 @@ mod tests {
     /// every element failing to register at all.
     fn ours(body: &str) -> bool {
         body.contains("db.name/referent")
-            || body.contains(tonk_template::resolve::ELEMENT_METHOD_DOMAIN)
-            || body.contains(tonk_template::resolve::ELEMENT_ATTRIBUTE_DOMAIN)
+            || ELEMENT_DICTIONARIES
+                .iter()
+                .any(|(_, domain)| body.contains(domain))
     }
 
     /// The rows the fake branch returns for one query body.
@@ -623,27 +632,21 @@ mod tests {
             }
             return rows;
         }
-        // The attribute domain is checked FIRST: `xyz.tonk.element.method`
-        // and `xyz.tonk.element.attribute` are distinct strings, but
-        // ordering the arms this way keeps the pair from ever being
-        // matched by a shared prefix if either domain is renamed.
-        let (domain, field) = if body.contains(tonk_template::resolve::ELEMENT_ATTRIBUTE_DOMAIN) {
-            (
-                tonk_template::resolve::ELEMENT_ATTRIBUTE_DOMAIN,
-                "attribute",
-            )
-        } else {
-            (tonk_template::resolve::ELEMENT_METHOD_DOMAIN, "method")
-        };
-        if body.contains(domain) {
+        // The LONGEST matching domain wins. The four are distinct
+        // strings today, but one being a prefix of another — which a
+        // rename could introduce — would otherwise have the shorter
+        // arm answer for the longer one's query, and the registry
+        // would read a dictionary of the wrong kind without error.
+        let matched = ELEMENT_DICTIONARIES
+            .iter()
+            .filter(|(_, domain)| body.contains(domain))
+            .max_by_key(|(_, domain)| domain.len());
+        if let Some((field, _)) = matched {
             let found = BRANCH.with(|branch| {
                 let branch = branch.borrow();
-                let table = if field == "attribute" {
-                    &branch.attributes
-                } else {
-                    &branch.methods
-                };
-                table
+                branch
+                    .dictionaries
+                    .get(*field)?
                     .iter()
                     .find(|(entity, _)| body.contains(entity.as_str()))
                     .map(|(entity, entries)| (entity.clone(), entries.clone()))
@@ -656,7 +659,7 @@ mod tests {
                     let map = js_sys::Object::new();
                     let _ = Reflect::set(&map, &key.into(), &value.into());
                     let fields = js_sys::Object::new();
-                    let _ = Reflect::set(&fields, &field.into(), &map);
+                    let _ = Reflect::set(&fields, &(*field).into(), &map);
                     let row = js_sys::Object::new();
                     let _ = Reflect::set(&row, &"this".into(), &entity.clone().into());
                     let _ = Reflect::set(&row, &"fields".into(), &fields);
@@ -801,7 +804,7 @@ mod tests {
             "did:key:zSwap",
             &[("connected", "(self) => { self.textContent = 'v2'; }")],
         );
-        notify("probe-swap", "methods");
+        notify("probe-swap", "method");
 
         settle_until(|| host.text_content().as_deref() == Some("v2")).await;
         assert_eq!(
@@ -836,7 +839,7 @@ mod tests {
             "did:key:zRevert",
             &[("connected", "(self) => { self.textContent = 'second'; }")],
         );
-        notify("probe-revert", "methods");
+        notify("probe-revert", "method");
         settle_until(|| host.text_content().as_deref() == Some("second")).await;
 
         // Back to the exact earlier source.
@@ -845,7 +848,7 @@ mod tests {
             "did:key:zRevert",
             &[("connected", "(self) => { self.textContent = 'first'; }")],
         );
-        notify("probe-revert", "methods");
+        notify("probe-revert", "method");
         settle_until(|| host.text_content().as_deref() == Some("first")).await;
         assert_eq!(
             host.text_content().as_deref(),
@@ -880,7 +883,7 @@ mod tests {
                 ("bump", "(self) => 'bumped'"),
             ],
         );
-        notify("probe-grow", "methods");
+        notify("probe-grow", "method");
 
         settle_until(|| {
             Reflect::get(&host, &"bump".into())
@@ -925,17 +928,22 @@ mod tests {
         // on the stale subscription would otherwise re-register the
         // definition the tag has moved away from.
         BRANCH.with(|branch| {
-            branch.borrow_mut().methods.insert(
-                "did:key:zOld".to_owned(),
-                [(
-                    "connected".to_owned(),
-                    "(self) => { self.textContent = 'resurrected'; }".to_owned(),
-                )]
-                .into_iter()
-                .collect(),
-            );
+            branch
+                .borrow_mut()
+                .dictionaries
+                .entry("method".to_owned())
+                .or_default()
+                .insert(
+                    "did:key:zOld".to_owned(),
+                    [(
+                        "connected".to_owned(),
+                        "(self) => { self.textContent = 'resurrected'; }".to_owned(),
+                    )]
+                    .into_iter()
+                    .collect(),
+                );
         });
-        notify("probe-repoint", "methods");
+        notify("probe-repoint", "method");
         settle_briefly().await;
         assert_eq!(
             host.text_content().as_deref(),
@@ -972,7 +980,7 @@ mod tests {
             "did:key:zMany",
             &[("connected", "(self) => { self.textContent = 'b'; }")],
         );
-        notify("probe-many", "methods");
+        notify("probe-many", "method");
         settle_until(|| first.text_content().as_deref() == Some("b")).await;
         for el in std::iter::once(&first).chain(others.iter()) {
             assert_eq!(
@@ -1001,7 +1009,7 @@ mod tests {
             "did:key:zFresh",
             &[("connected", "(self) => { self.textContent = 'two'; }")],
         );
-        notify("probe-fresh", "methods");
+        notify("probe-fresh", "method");
         settle_until(|| first.text_content().as_deref() == Some("two")).await;
 
         let later = document().create_element("probe-fresh").expect("create");
@@ -1041,7 +1049,7 @@ mod tests {
         assert_eq!(runs(), 1.0);
 
         // Same methods, new frame.
-        notify("probe-idem", "methods");
+        notify("probe-idem", "method");
         settle_briefly().await;
         assert_eq!(
             runs(),
@@ -1085,7 +1093,7 @@ mod tests {
                 ),
             ],
         );
-        notify("probe-hooks", "methods");
+        notify("probe-hooks", "method");
 
         settle_until(|| host.text_content().as_deref() == Some("kept 3")).await;
         assert_eq!(

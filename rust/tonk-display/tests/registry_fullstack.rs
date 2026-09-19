@@ -221,6 +221,58 @@ async fn it_applies_attribute_defaults_from_a_real_branch() {
     assert_eq!(supplied.get_attribute("tone").as_deref(), Some("loud"));
 }
 
+/// An element's getters and setters come off the real branch through
+/// their own queries and land as real properties.
+///
+/// Its own full-stack test for the same reason the defaults have one:
+/// each dictionary is a SEPARATE wire query, and the ways one can be
+/// silently wrong all read as "this element declares no accessors"
+/// rather than as an error. Reading through the write half — the
+/// mistake the renderer's struct exists to prevent — would also pass a
+/// test that only checked that `el.value` exists.
+#[wasm_bindgen_test::wasm_bindgen_test]
+async fn it_installs_accessors_from_a_real_branch() {
+    let container = boot().await;
+    evaluate(&container, STANDARD_LIBRARY).await;
+    evaluate(
+        &container,
+        r#"element!: &counter-widget
+  description: "Counts, and says so through a property"
+  method:
+    connected: |
+      (self) => { self.dataset.n = self.dataset.n ?? '0'; }
+  getter:
+    total: |
+      (self) => Number(self.dataset.n ?? 0)
+  setter:
+    total: |
+      (self, next) => { self.dataset.n = String(next); }
+"#,
+    )
+    .await;
+
+    let host = document()
+        .create_element("counter-widget")
+        .expect("create counter-widget");
+    container.append_child(&host).expect("attach");
+    settle_until(|| host.get_attribute("data-n").is_some()).await;
+
+    let read = |what: &str| {
+        js_sys::Reflect::get(&host, &what.into())
+            .ok()
+            .and_then(|value| value.as_f64())
+    };
+    assert_eq!(read("total"), Some(0.0), "the getter should answer");
+
+    let _ = js_sys::Reflect::set(&host, &"total".into(), &7_f64.into());
+    assert_eq!(
+        host.get_attribute("data-n").as_deref(),
+        Some("7"),
+        "the setter should have run — a definition that read through          the write half would leave this untouched",
+    );
+    assert_eq!(read("total"), Some(7.0));
+}
+
 /// Rendered before anything defines it, defined afterwards on the real
 /// branch, picked up with nothing re-rendered — driven by a real
 /// subscription frame rather than a pushed one.

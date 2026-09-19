@@ -218,7 +218,7 @@ repoints. Editing is a separate road from deriving, and it still works
 fact by fact — name the entity and assert only the key you are
 changing:
 
-```yaml
+```yaml tonk=illustrative-entity-stands-in-for-a-real-one
 element!:
   this: did:key:z6Mk…            # what &tally-widget names today
   method:
@@ -315,10 +315,42 @@ tonk element add tally-widget --description 'A running tally' \
 The map narrows nothing: it supplies defaults, and that is all. Most
 elements declare none and simply leave it out — a keyed collection is
 zero-or-more, so an `element!:` body without it is complete, not
-partial. The one visible consequence is that the generic `tonk query
-element` binds every field the concept declares and so answers only
-for elements that *do* declare defaults; `tonk element`, the listing
-you actually use, reads the method domain directly and lists them all.
+partial.
+
+### Properties
+
+`self.total()` is a method call; `el.total` is a property, and a
+consumer written against the DOM expects the second. Declare those in
+their own maps:
+
+```yaml tonk=illustrative-fragment-of-an-element
+getter:
+  total: |
+    (self) => Number(self.dataset.n ?? 0)
+setter:
+  total: |
+    (self, next) => { self.dataset.n = String(next); }
+```
+
+Both maps are keyed by property name: declaring both makes the property
+read-write, a getter alone makes it read-only, and a setter alone makes
+it write-only — a real shape (a sink that takes a value and renders it),
+so it is built rather than refused. Names camelCase like method keys
+(`row-count` → `el.rowCount`), and one that would shadow a member every
+element already has is refused.
+
+Like a method, each half resolves through the branch's current
+definition at access time, so re-authoring a getter changes what a page
+already reading the property sees.
+
+### What four dictionaries cost
+
+`tonk query element` answers only for an element that declares *all
+four* maps, which almost none do. A generic concept query binds every
+field the concept declares, and a keyed collection with no entries binds
+nothing. `tonk element` — the listing you actually use — reads the
+domains directly and lists them all, which is why it exists; the browser
+registry runs one query per dictionary for the same reason.
 
 Nothing registers your element ahead of time. The runtime watches the
 document for custom elements nobody has defined (`:not(:defined)`, the

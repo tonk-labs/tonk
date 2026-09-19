@@ -3,8 +3,8 @@
 //! binary maps errors to exit codes.
 
 use crate::authoring::{
-    AuthoringError, ViewKind, build_concept_decl, build_element_decl, build_home_recipe,
-    build_view_decl, lint_view_template, parse_attr_spec,
+    AuthoringError, ElementParts, ViewKind, build_concept_decl, build_element_decl,
+    build_home_recipe, build_view_decl, lint_view_template, parse_attr_spec,
 };
 use crate::auto_sync;
 use crate::data::{build_assert, build_retract, build_supersede};
@@ -691,19 +691,33 @@ pub async fn element_add(
     site: &TonkSite,
     tag: &str,
     description: &str,
-    methods: &[(String, String)],
-    attributes: &[(String, String)],
+    authored: &ElementParts<'_>,
     write: WriteOptions,
 ) -> Result<String, DataOpError> {
-    let merged = carry_methods_forward(site, tag, methods).await?;
-    let carried_attrs = carry_attributes_forward(site, tag, attributes).await?;
-    let doc = build_element_decl(tag, description, &merged, &carried_attrs)?;
+    let merged = carry_forward(site, tag, "method", authored.methods).await?;
+    let attributes = carry_forward(site, tag, "attribute", authored.attributes).await?;
+    let getters = carry_forward(site, tag, "getter", authored.getters).await?;
+    let setters = carry_forward(site, tag, "setter", authored.setters).await?;
+    let doc = build_element_decl(
+        tag,
+        description,
+        &ElementParts {
+            methods: &merged,
+            attributes: &attributes,
+            getters: &getters,
+            setters: &setters,
+        },
+    )?;
     if write.notation {
         return Ok(doc);
     }
     let outcome =
         auto_sync::run_eval(site, Source::Inline(doc), write.eval(), write.sync()).await?;
-    let named: Vec<&str> = methods.iter().map(|(key, _)| key.as_str()).collect();
+    let named: Vec<&str> = authored
+        .methods
+        .iter()
+        .map(|(key, _)| key.as_str())
+        .collect();
     let carried = merged.len() - named.len();
     let mut out = format!(
         "{}\n",
@@ -726,54 +740,35 @@ pub async fn element_add(
     Ok(out)
 }
 
-/// `authored` followed by whichever of `tag`'s current methods it
-/// does not replace.
+/// `authored` followed by whichever of `tag`'s current `field` entries
+/// it does not replace.
 ///
 /// Needed because the entity is derived from the whole body: rebuilding
-/// an element from only the methods being edited would mint a value
-/// that HAS only those methods, and repointing the tag at it would
-/// silently drop the rest. Reading first makes the CLI's edit additive
-/// again.
+/// an element from only the entries being edited would mint a value
+/// that HAS only those, and repointing the tag at it would silently
+/// drop the rest. Reading first makes the CLI's edit additive again.
 ///
-/// Authored methods come first, in the order they were typed, so a
+/// Authored entries come first, in the order they were typed, so a
 /// `--notation` dry run still reads the way it was asked for and the
 /// carried ones trail behind it.
 ///
 /// Resolution goes through the name, so an entity the tag used to point
 /// at contributes nothing — carrying forward means carrying forward
 /// what `<tag>` means now. A tag nobody has defined reads as no
-/// methods, which is how a first authoring works.
-/// [`carry_methods_forward`] for the attribute defaults. Same reason,
-/// same shape — a tag nobody has defined reads as none.
-async fn carry_attributes_forward(
+/// entries, which is how a first authoring works.
+async fn carry_forward(
     site: &TonkSite,
     tag: &str,
+    field: &str,
     authored: &[(String, String)],
 ) -> Result<Vec<(String, String)>, DataOpError> {
-    let current = crate::elements::attributes_of(site, tag)
+    let current = crate::elements::entries_of(site, tag, field)
         .await
-        .map_err(|e| DataOpError::Read(format!("could not read <{tag}>'s attributes: {e}")))?;
+        .map_err(|e| DataOpError::Read(format!("could not read <{tag}>'s {field}s: {e}")))?;
     let mut merged: Vec<(String, String)> = authored.to_vec();
-    for (name, value) in current {
-        if !merged.iter().any(|(named, _)| *named == name) {
-            merged.push((name, value));
-        }
-    }
-    Ok(merged)
-}
-
-async fn carry_methods_forward(
-    site: &TonkSite,
-    tag: &str,
-    authored: &[(String, String)],
-) -> Result<Vec<(String, String)>, DataOpError> {
-    let current = crate::elements::methods_of(site, tag)
-        .await
-        .map_err(|e| DataOpError::Read(format!("could not read <{tag}>'s methods: {e}")))?;
-    let mut merged: Vec<(String, String)> = authored.to_vec();
-    for (key, source) in current {
+    for (key, value) in current {
         if !merged.iter().any(|(named, _)| *named == key) {
-            merged.push((key, source));
+            merged.push((key, value));
         }
     }
     Ok(merged)

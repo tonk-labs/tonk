@@ -27,53 +27,83 @@ use std::collections::BTreeMap;
 /// than a crash — the guard below skips it.
 const ENTRY: &str = "defineTonkElement";
 
-/// Render the module that installs `tag`'s methods and attribute
-/// defaults.
+/// Everything one `element!:` declares, as the registry read it back.
 ///
-/// Method sources are emitted as object values in key order, each
-/// quoted as a string key so a kebab name (`attribute-changed`) is
-/// legal JS. The optional-call guard means load order does not matter:
-/// an element module evaluated before the runtime asset does nothing
+/// A struct rather than four parameters: they are all
+/// `BTreeMap<String, String>`, so positional arguments would let a
+/// caller swap two of them with nothing to catch it — and swapping
+/// `getters` for `setters` produces a module that parses, registers,
+/// and silently reads through the write half.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ElementDefinition {
+    /// Lifecycle hooks, the `define` escape hatch, and custom methods.
+    pub methods: BTreeMap<String, String>,
+    /// Attribute defaults, keyed by attribute name.
+    pub attributes: BTreeMap<String, String>,
+    /// Property reads, keyed by property name.
+    pub getters: BTreeMap<String, String>,
+    /// Property writes, keyed by property name.
+    pub setters: BTreeMap<String, String>,
+}
+
+/// Render the module that installs `tag`'s definition.
+///
+/// Keys are quoted so a kebab name (`attribute-changed`) is legal JS.
+/// The optional-call guard means load order does not matter: an
+/// element module evaluated before the runtime asset does nothing
 /// rather than throwing, and the registry re-emits it once the runtime
 /// is in place.
 ///
-/// The two maps are emitted differently on purpose. A method is
-/// authored JS and goes out as an EXPRESSION, parenthesised so an
-/// arrow function is legal in value position. A default is data and
-/// goes out as a STRING LITERAL — an author writing `color: red`
-/// means the six characters, not an identifier to evaluate.
-pub fn element_module(
-    tag: &str,
-    methods: &BTreeMap<String, String>,
-    attributes: &BTreeMap<String, String>,
-) -> String {
+/// The maps are emitted two different ways on purpose. Methods,
+/// getters and setters are authored JS and go out as EXPRESSIONS;
+/// attribute defaults are data and go out as STRING LITERALS.
+pub fn element_module(tag: &str, definition: &ElementDefinition) -> String {
     let mut out = String::new();
     out.push_str("globalThis.");
     out.push_str(ENTRY);
     out.push_str("?.(");
     out.push_str(&js_string(tag));
-    out.push_str(", {\n");
-    for (key, source) in methods {
+    out.push_str(", ");
+    push_expressions(&mut out, &definition.methods);
+    out.push_str(", ");
+    push_literals(&mut out, &definition.attributes);
+    out.push_str(", ");
+    push_expressions(&mut out, &definition.getters);
+    out.push_str(", ");
+    push_expressions(&mut out, &definition.setters);
+    out.push_str(");\n");
+    out
+}
+
+/// An object literal whose values are the authored JS, each
+/// parenthesised so an arrow function is an expression in value
+/// position: `{ connected: (self) => {} }` parses, but a source that
+/// begins with a newline or a comment would not.
+fn push_expressions(out: &mut String, entries: &BTreeMap<String, String>) {
+    out.push_str("{\n");
+    for (key, source) in entries {
         out.push_str("  ");
         out.push_str(&js_string(key));
-        out.push_str(": ");
-        // Parenthesised so an arrow function is an expression in
-        // value position: `{ connected: (self) => {} }` parses, but a
-        // source that begins with a newline or a comment would not.
-        out.push('(');
+        out.push_str(": (");
         out.push_str(source.trim_end());
         out.push_str("),\n");
     }
-    out.push_str("}, {\n");
-    for (name, value) in attributes {
+    out.push('}');
+}
+
+/// An object literal whose values are DATA, emitted as string
+/// literals. An author writing `color: red` means the three letters,
+/// not an identifier to evaluate.
+fn push_literals(out: &mut String, entries: &BTreeMap<String, String>) {
+    out.push_str("{\n");
+    for (name, value) in entries {
         out.push_str("  ");
         out.push_str(&js_string(name));
         out.push_str(": ");
         out.push_str(&js_string(value));
         out.push_str(",\n");
     }
-    out.push_str("});\n");
-    out
+    out.push('}');
 }
 
 /// A JS string literal for `value` — double-quoted, with the
@@ -197,7 +227,6 @@ mod tests {
         assert_ne!(fnv1a64("a"), fnv1a64("b"));
         assert_eq!(fnv1a64("same"), fnv1a64("same"));
     }
-
     fn methods(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         pairs
             .iter()
@@ -205,15 +234,22 @@ mod tests {
             .collect()
     }
 
+    /// A definition with nothing but methods — the common shape.
+    fn definition(pairs: &[(&str, &str)]) -> ElementDefinition {
+        ElementDefinition {
+            methods: methods(pairs),
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn it_renders_a_call_with_every_method() {
         let source = element_module(
             "tally-widget",
-            &methods(&[
+            &definition(&[
                 ("connected", "(self) => { self.textContent = 'hi'; }"),
                 ("attribute-changed", "(self, name, before, after) => {}"),
             ]),
-            &BTreeMap::new(),
         );
         assert!(source.starts_with("globalThis.defineTonkElement?.(\"tally-widget\", {\n"));
         assert!(source.contains("\"connected\": ((self) => { self.textContent = 'hi'; }),\n"));
@@ -224,11 +260,7 @@ mod tests {
 
     #[test]
     fn it_guards_the_entry_point_so_load_order_cannot_throw() {
-        let source = element_module(
-            "x-y",
-            &methods(&[("connected", "(s) => {}")]),
-            &BTreeMap::new(),
-        );
+        let source = element_module("x-y", &definition(&[("connected", "(s) => {}")]));
         assert!(
             source.contains("defineTonkElement?.("),
             "an element module landing before the runtime must be a no-op: {source}",
@@ -241,8 +273,7 @@ mod tests {
         // hand-written notation document never sees it.
         let source = element_module(
             "x\"-y",
-            &methods(&[("a\\b", "(s) => {}"), ("c<d", "(s) => {}")]),
-            &BTreeMap::new(),
+            &definition(&[("a\\b", "(s) => {}"), ("c<d", "(s) => {}")]),
         );
         assert!(source.contains(r#""x\"-y""#), "{source}");
         assert!(source.contains(r#""a\\b""#), "{source}");
@@ -253,11 +284,7 @@ mod tests {
 
     #[test]
     fn it_parenthesises_each_source_so_an_arrow_is_a_value() {
-        let source = element_module(
-            "x-y",
-            &methods(&[("connected", "(s) => {}\n")]),
-            &BTreeMap::new(),
-        );
+        let source = element_module("x-y", &definition(&[("connected", "(s) => {}\n")]));
         assert!(source.contains("\"connected\": ((s) => {}),"), "{source}");
     }
 
@@ -265,8 +292,11 @@ mod tests {
     fn it_renders_a_default_as_data_and_a_method_as_an_expression() {
         let source = element_module(
             "x-y",
-            &methods(&[("connected", "(s) => {}")]),
-            &methods(&[("color", "red"), ("size", "")]),
+            &ElementDefinition {
+                methods: methods(&[("connected", "(s) => {}")]),
+                attributes: methods(&[("color", "red"), ("size", "")]),
+                ..Default::default()
+            },
         );
         // A method is JS, parenthesised so an arrow is legal in value
         // position; a default is TEXT, so it goes out as a string
@@ -277,24 +307,48 @@ mod tests {
     }
 
     #[test]
-    fn it_passes_an_empty_map_when_no_defaults_are_declared() {
+    fn it_renders_accessors_as_expressions_in_their_own_maps() {
         let source = element_module(
             "x-y",
-            &methods(&[("connected", "(s) => {}")]),
-            &BTreeMap::new(),
+            &ElementDefinition {
+                methods: methods(&[("connected", "(s) => {}")]),
+                getters: methods(&[("value", "(s) => s.textContent")]),
+                setters: methods(&[("value", "(s, next) => { s.textContent = next; }")]),
+                ..Default::default()
+            },
         );
-        // The third argument is always present, so the runtime can
-        // clear a tag's defaults by re-authoring without them rather
-        // than having to distinguish "none" from "not passed".
-        assert!(source.ends_with("}, {\n});\n"), "{source}");
+        // An accessor is JS, like a method, not data like a default.
+        assert!(
+            source.contains("\"value\": ((s) => s.textContent),"),
+            "{source}"
+        );
+        assert!(
+            source.contains("\"value\": ((s, next) => { s.textContent = next; }),"),
+            "{source}"
+        );
+        // The getter map comes before the setter map. Swapping them
+        // yields a module that parses, registers, and silently reads
+        // through the write half — which is why the renderer takes one
+        // struct rather than four positional maps.
+        let getter = source.find("s.textContent),").expect("getter present");
+        let setter = source.find("next; }),").expect("setter present");
+        assert!(getter < setter, "{source}");
+    }
+
+    #[test]
+    fn it_passes_every_map_even_when_only_methods_are_declared() {
+        let source = element_module("x-y", &definition(&[("connected", "(s) => {}")]));
+        // All four are always passed, so the runtime can CLEAR a tag's
+        // defaults or accessors by re-authoring without them rather
+        // than having to tell "none" from "not passed".
+        assert!(source.ends_with("}, {\n}, {\n}, {\n});\n"), "{source}");
     }
 
     #[test]
     fn it_renders_methods_in_key_order() {
         let source = element_module(
             "x-y",
-            &methods(&[("zeta", "(s) => {}"), ("alpha", "(s) => {}")]),
-            &BTreeMap::new(),
+            &definition(&[("zeta", "(s) => {}"), ("alpha", "(s) => {}")]),
         );
         let alpha = source.find("alpha").expect("alpha present");
         let zeta = source.find("zeta").expect("zeta present");

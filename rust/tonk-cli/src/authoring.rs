@@ -570,9 +570,14 @@ pub fn validate_method_key(key: &str) -> Result<(), AuthoringError> {
 pub fn build_element_decl(
     tag: &str,
     description: &str,
-    methods: &[(String, String)],
-    attributes: &[(String, String)],
+    parts: &ElementParts<'_>,
 ) -> Result<String, AuthoringError> {
+    let ElementParts {
+        methods,
+        attributes,
+        getters,
+        setters,
+    } = parts;
     validate_element_tag(tag)?;
     if description.trim().is_empty() {
         return Err(AuthoringError::NoDescription);
@@ -588,7 +593,7 @@ pub fn build_element_decl(
     // lives in the anchor above, where it can be repointed.
     let _ = writeln!(out, "  description: {}", quote_string(description));
     out.push_str("  method:\n");
-    for (key, source) in methods {
+    for (key, source) in *methods {
         validate_method_key(key)?;
         if source.trim().is_empty() {
             return Err(AuthoringError::EmptyMethod { key: key.clone() });
@@ -602,12 +607,12 @@ pub fn build_element_decl(
             }
         }
     }
-    // Omitted entirely when there are none. A keyed collection is
+    // Each map is omitted entirely when empty. A keyed collection is
     // zero-or-more, so an absent map is an empty one — writing
     // `attribute: {}` would say the same thing at more length.
     if !attributes.is_empty() {
         out.push_str("  attribute:\n");
-        for (name, value) in attributes {
+        for (name, value) in *attributes {
             validate_attribute_name(name)?;
             // Quoted, always: a default is DATA, and a bare `red`
             // would be read as a reference to something else on the
@@ -615,7 +620,49 @@ pub fn build_element_decl(
             let _ = writeln!(out, "    {name}: {}", quote_string(value));
         }
     }
+    for (field, entries) in [("getter", getters), ("setter", setters)] {
+        if entries.is_empty() {
+            continue;
+        }
+        let _ = writeln!(out, "  {field}:");
+        for (key, source) in *entries {
+            // An accessor lands on the prototype the way a method
+            // does, so it answers to the same key rules.
+            validate_method_key(key)?;
+            if source.trim().is_empty() {
+                return Err(AuthoringError::EmptyMethod { key: key.clone() });
+            }
+            let _ = writeln!(out, "    {key}: |");
+            for line in source.lines() {
+                if line.trim().is_empty() {
+                    out.push('\n');
+                } else {
+                    let _ = writeln!(out, "      {line}");
+                }
+            }
+        }
+    }
     Ok(out)
+}
+
+/// The four dictionaries an `element!:` carries, as the CLI collected
+/// them from flags.
+///
+/// Borrowed slices in a struct rather than four parameters: they are
+/// all `&[(String, String)]`, so positional arguments would let a
+/// caller swap two with nothing to catch it, and swapping `getters`
+/// for `setters` produces notation that evaluates and registers while
+/// reading through the write half.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ElementParts<'a> {
+    /// Lifecycle hooks, `define`, and custom methods.
+    pub methods: &'a [(String, String)],
+    /// Attribute defaults, keyed by attribute name.
+    pub attributes: &'a [(String, String)],
+    /// Property reads, keyed by property name.
+    pub getters: &'a [(String, String)],
+    /// Property writes, keyed by property name.
+    pub setters: &'a [(String, String)],
 }
 
 /// Refuse an attribute name a browser would not let an element carry.
@@ -853,8 +900,10 @@ mod tests {
         let doc = build_element_decl(
             "tally-widget",
             "A running tally",
-            &methods(&[("connected", "(self) => { self.textContent = 'hi'; }")]),
-            &[],
+            &ElementParts {
+                methods: &methods(&[("connected", "(self) => { self.textContent = 'hi'; }")]),
+                ..Default::default()
+            },
         )
         .expect("valid tag and method");
         assert!(doc.starts_with("element!: &tally-widget\n"), "{doc}");
@@ -877,12 +926,14 @@ mod tests {
         let doc = build_element_decl(
             "tally-widget",
             "A running tally",
-            &methods(&[
-                ("connected", "(self) => {}"),
-                ("attribute-changed", "(self, name, before, after) => {}"),
-                ("bump", "(self) => {}"),
-            ]),
-            &[],
+            &ElementParts {
+                methods: &methods(&[
+                    ("connected", "(self) => {}"),
+                    ("attribute-changed", "(self, name, before, after) => {}"),
+                    ("bump", "(self) => {}"),
+                ]),
+                ..Default::default()
+            },
         )
         .expect("valid");
         // Each key is its own entry, so each is its own fact and
@@ -900,8 +951,10 @@ mod tests {
         let doc = build_element_decl(
             "x-y",
             "Two letters",
-            &methods(&[("connected", "(self) => {\n\n  const a = 1;\n}")]),
-            &[],
+            &ElementParts {
+                methods: &methods(&[("connected", "(self) => {\n\n  const a = 1;\n}")]),
+                ..Default::default()
+            },
         )
         .expect("valid");
         // A blank line inside the source stays blank (indenting it
@@ -979,7 +1032,7 @@ mod tests {
     #[test]
     fn it_refuses_an_element_with_no_methods() {
         assert!(matches!(
-            build_element_decl("tally-widget", "A running tally", &[], &[]),
+            build_element_decl("tally-widget", "A running tally", &ElementParts::default()),
             Err(AuthoringError::NoMethods)
         ));
     }
@@ -990,8 +1043,10 @@ mod tests {
             build_element_decl(
                 "tally-widget",
                 "A running tally",
-                &methods(&[("connected", "  \n\n")]),
-                &[]
+                &ElementParts {
+                    methods: &methods(&[("connected", "  \n\n")]),
+                    ..Default::default()
+                }
             ),
             Err(AuthoringError::EmptyMethod { .. })
         ));
@@ -1002,11 +1057,14 @@ mod tests {
         let doc = build_element_decl(
             "tally-widget",
             "A running tally",
-            &methods(&[("connected", "(self) => {}")]),
-            &[
-                ("color".to_owned(), "red".to_owned()),
-                ("size".to_owned(), String::new()),
-            ],
+            &ElementParts {
+                methods: &methods(&[("connected", "(self) => {}")]),
+                attributes: &[
+                    ("color".to_owned(), "red".to_owned()),
+                    ("size".to_owned(), String::new()),
+                ],
+                ..Default::default()
+            },
         )
         .expect("valid");
         // Quoted even when the value looks like a bare identifier: a
@@ -1021,13 +1079,59 @@ mod tests {
         let doc = build_element_decl(
             "tally-widget",
             "A running tally",
-            &methods(&[("connected", "(self) => {}")]),
-            &[],
+            &ElementParts {
+                methods: &methods(&[("connected", "(self) => {}")]),
+                ..Default::default()
+            },
         )
         .expect("valid");
         // A keyed collection is zero-or-more, so an absent map already
         // says "none"; `attribute: {}` would say it at more length.
         assert!(!doc.contains("attribute:"), "{doc}");
+    }
+
+    #[test]
+    fn it_writes_getters_and_setters_as_their_own_blocks() {
+        let doc = build_element_decl(
+            "tally-widget",
+            "A running tally",
+            &ElementParts {
+                methods: &methods(&[("connected", "(self) => {}")]),
+                getters: &methods(&[("value", "(self) => self.textContent")]),
+                setters: &methods(&[("value", "(self, next) => { self.textContent = next; }")]),
+                ..Default::default()
+            },
+        )
+        .expect("valid");
+        assert!(
+            doc.contains("  getter:\n    value: |\n      (self) => self.textContent\n"),
+            "{doc}"
+        );
+        assert!(
+            doc.contains(
+                "  setter:\n    value: |\n      (self, next) => { self.textContent = next; }\n"
+            ),
+            "{doc}"
+        );
+        // Unlike a default, an accessor is JS and goes out as a block
+        // scalar, the way a method does.
+        assert!(!doc.contains("getter: {"), "{doc}");
+    }
+
+    #[test]
+    fn it_refuses_an_accessor_key_that_would_shadow_an_html_element_member() {
+        assert!(matches!(
+            build_element_decl(
+                "tally-widget",
+                "A running tally",
+                &ElementParts {
+                    methods: &methods(&[("connected", "(self) => {}")]),
+                    getters: &methods(&[("id", "(self) => 1")]),
+                    ..Default::default()
+                }
+            ),
+            Err(AuthoringError::BadMethodKey { .. })
+        ));
     }
 
     #[test]
@@ -1059,8 +1163,10 @@ mod tests {
             build_element_decl(
                 "tally-widget",
                 "   ",
-                &methods(&[("connected", "(self) => {}")]),
-                &[]
+                &ElementParts {
+                    methods: &methods(&[("connected", "(self) => {}")]),
+                    ..Default::default()
+                }
             ),
             Err(AuthoringError::NoDescription)
         ));

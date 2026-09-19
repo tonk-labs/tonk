@@ -29,6 +29,10 @@
   const defined = new Set();
   /** tag -> {attribute: default}, applied to instances that lack one. */
   const defaults = new Map();
+  /** tag -> {property: getter}, installed as prototype accessors. */
+  const getters = new Map();
+  /** tag -> {property: setter}, paired with `getters` by name. */
+  const setters = new Map();
 
   /** `attribute-changed` -> `attributeChanged`; `bump` -> `bump`. */
   const property = (key) =>
@@ -176,6 +180,45 @@
   };
 
   /**
+   * Install `tag`'s declared getters and setters on `prototype`.
+   *
+   * A property is read-write when both maps name it, read-only with a
+   * getter alone, and write-only with a setter alone -- which is a real
+   * shape (a sink that takes a value and renders it), so it is built
+   * rather than refused. `Object.defineProperty` needs both halves in
+   * ONE call: two calls for the same name would have the second
+   * replace the first, leaving a property that can only be read or
+   * only be written.
+   *
+   * Like a method, each half resolves through the table at access
+   * time, so a re-authored getter changes what a page already reading
+   * the property sees.
+   */
+  const installAccessors = (tag, prototype) => {
+    const reads = getters.get(tag) ?? {};
+    const writes = setters.get(tag) ?? {};
+    for (const key of new Set([...Object.keys(reads), ...Object.keys(writes)])) {
+      const name = property(key);
+      if (name in HTMLElement.prototype) {
+        console.error(`<${tag}> accessor '${key}' would shadow HTMLElement.${name}`);
+        continue;
+      }
+      const descriptor = { configurable: true };
+      if (reads[key]) {
+        descriptor.get = function () {
+          return invoke(tag, `get ${key}`, getters.get(tag)?.[key], this);
+        };
+      }
+      if (writes[key]) {
+        descriptor.set = function (next) {
+          invoke(tag, `set ${key}`, setters.get(tag)?.[key], this, next);
+        };
+      }
+      Object.defineProperty(prototype, name, descriptor);
+    }
+  };
+
+  /**
    * Install `methods` for `tag` and register it.
    *
    * Custom keys (anything but the four lifecycle names) are installed
@@ -188,11 +231,13 @@
    * register INSTEAD of the wrapper, and every other key is ignored --
    * the escape hatch for what a method table cannot say.
    */
-  globalThis.defineTonkElement = (tag, methods, attributes) => {
+  globalThis.defineTonkElement = (tag, methods, attributes, reads, writes) => {
     // Recorded before the `define` escape hatch, so a raw class still
     // gets its declared defaults -- they are data about the tag, not
     // part of the generated wrapper.
     defaults.set(tag, attributes ?? {});
+    getters.set(tag, reads ?? {});
+    setters.set(tag, writes ?? {});
     if (methods.define) {
       if (customElements.get(tag)) return;
       try {
@@ -227,6 +272,7 @@
           },
         });
       }
+      installAccessors(tag, prototype);
     }
 
     // A default added or changed by an edit reaches instances already

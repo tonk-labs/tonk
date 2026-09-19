@@ -1536,6 +1536,41 @@ concept!: &element
       the: xyz.tonk.element.method
       as: {[symbol]: text}
       cardinality: one
+    getter:
+      description: |
+        Property reads, keyed by property name, each `(self) => …`.
+
+        `value: (self) => …` makes `el.value` read through the branch's
+        current definition the way `el.total()` calls through it, so a
+        re-authored getter changes what a page already reading the
+        property sees. A method could not do this job: `el.value` and
+        `el.value()` are different things, and a consumer written
+        against the DOM expects the first.
+
+        Its own dictionary rather than a prefix inside `method`,
+        because a getter, a setter and a method have three different
+        signatures and a key like `get.value` could not be told apart
+        from a method genuinely called that. The cost is one more live
+        query per watched tag.
+
+        A key that would shadow a member every element already has is
+        refused, the same as a method key.
+      the: xyz.tonk.element.getter
+      as: {[symbol]: text}
+      cardinality: one
+    setter:
+      description: |
+        Property writes, keyed by property name, each
+        `(self, next) => …`.
+
+        Paired with `getter` by name: declaring both makes the property
+        read-write, `getter` alone makes it read-only, and `setter`
+        alone makes it write-only — which is a real shape (a sink that
+        takes a value and renders it) rather than a mistake, so it is
+        allowed.
+      the: xyz.tonk.element.setter
+      as: {[symbol]: text}
+      cardinality: one
     attribute:
       description: |
         Default values for the element's attributes, keyed by
@@ -1559,11 +1594,18 @@ concept!: &element
 
         Most elements declare none, and the map is then simply absent.
         That is what a keyed collection means: zero-or-more, so an
-        `element!:` body omitting it is complete, not partial. The one
-        place the difference shows is the generic `tonk query element`
-        listing, which binds every field and so answers only for
-        elements that do declare defaults; `tonk element`, which reads
-        the method domain directly, lists them all.
+        `element!:` body omitting it is complete, not partial.
+
+        What all four dictionaries here cost, stated once: a GENERIC
+        concept query binds every field the concept declares, and a
+        keyed collection with no entries binds nothing — so `tonk query
+        element` answers only for an element that declares ALL FOUR,
+        which almost none do. `tonk element` reads the domains directly
+        and lists them all, which is why it exists, and the browser
+        registry runs one query per dictionary for the same reason.
+        Fixing it properly means teaching the query layer to widen an
+        empty collection, which is a dialog-query change rather than a
+        schema one.
       the: xyz.tonk.element.attribute
       as: {[symbol]: text}
       cardinality: one
