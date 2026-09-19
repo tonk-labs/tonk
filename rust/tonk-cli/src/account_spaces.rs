@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use dialog_operator::{Operator, Profile};
 use dialog_query::{Output as _, Query, Term};
-use dialog_remote_ucan_s3::UcanAddress;
+use dialog_remote_ucan::UcanAddress;
 use dialog_repository::{Branch, SiteAddress};
 use dialog_storage::provider::storage::NativeSpace;
 use dialog_varsig::Did;
@@ -282,12 +282,29 @@ pub async fn pull(
         });
     }
 
-    let name = requested_name
-        .map(str::to_string)
-        .or(directory_name)
-        .ok_or_else(|| name_error(None, "the directory has no stored name"))?;
-    space::validate_name(&name).map_err(|error| name_error(Some(&name), error))?;
     let registry = store.load()?;
+    // The account directory stores a *display label*, authored where no
+    // slug rule applies: the web UI's "Space name" editable, an invite
+    // link, or the worker's own `Untitled` / `Untitled 2` default. Using
+    // it verbatim as the local name made every such space unpullable
+    // until the person guessed a slug, so derive one instead — the same
+    // separation `tonk join` already makes via `handoff::synced_name`.
+    // An explicit `--name` is a request for that exact name and is still
+    // validated and refused on collision; only a derived name steps
+    // aside to the next free suffix.
+    let name = match requested_name {
+        Some(requested) => {
+            space::validate_name(requested).map_err(|error| name_error(Some(requested), error))?;
+            requested.to_string()
+        }
+        None => {
+            let label = directory_name
+                .ok_or_else(|| name_error(None, "the directory has no stored name"))?;
+            space::derive_name(&label, |name| {
+                registry.spaces.contains_key(name) || store.canonical_site(name).exists()
+            })
+        }
+    };
     if registry.spaces.contains_key(&name) {
         return Err(name_error(
             Some(&name),

@@ -436,7 +436,7 @@ pub(super) async fn publish_revocation(
     state: &TonkState,
     artifact: &[u8],
 ) -> Result<(), TonkWorkerError> {
-    use dialog_remote_ucan_s3::UcanAddress;
+    use dialog_remote_ucan::UcanAddress;
     use std::collections::BTreeSet;
 
     let mut endpoints: BTreeSet<String> = BTreeSet::new();

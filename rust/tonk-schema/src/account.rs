@@ -497,14 +497,15 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_converges_divergent_display_names_in_both_orders() -> Result<()> {
-        let a_then_b = converge(true).await?;
-        let b_then_a = converge(false).await?;
-
-        // Order independence is the property that matters, and it is the one
-        // this pins. Which of two concurrent names wins is dialog's
-        // cardinality-one merge to decide, not wall-clock latest-write, so
-        // asserting the specific winner would only pin that internal choice.
-        assert_eq!(a_then_b, b_then_a);
+        // Order independence is the property that matters, and it is the
+        // one this pins: whichever replica pulls first, both end up on
+        // the same name, which `converge` asserts for each order. Which
+        // of two concurrent names wins is dialog's cardinality-one
+        // election to decide; it goes by the revisions that wrote them,
+        // so two runs with freshly minted identities need not agree with
+        // each other, and this does not compare them.
+        converge(true).await?;
+        converge(false).await?;
         Ok(())
     }
 }
