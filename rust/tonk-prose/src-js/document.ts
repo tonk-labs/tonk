@@ -41,6 +41,9 @@ export interface Reply<T> {
   /** The format rule: the document is in a format newer than this app
    *  knows. It can be shown and must not be edited. */
   readonly?: boolean;
+  /** After a write: the stored document passed the size at which the
+   *  host asks for a warning. Past the hard limit a write is refused. */
+  large?: boolean;
 }
 
 /** How the session reaches the host. */
@@ -78,18 +81,21 @@ export class DocumentSession<T, E> {
    *  sure nothing the editor holds can leave. */
   readonly #pinned: boolean;
   readonly #onOpen: (() => void) | undefined;
+  readonly #onLarge: (() => void) | undefined;
+  #large = false;
   /** The host said the document is in a newer format. */
   #newer = false;
 
   constructor(
     transport: Transport<T, E>,
     editor: Editor<T, E>,
-    options: { pinned?: boolean; onOpen?: () => void } = {},
+    options: { pinned?: boolean; onOpen?: () => void; onLarge?: () => void } = {},
   ) {
     this.#transport = transport;
     this.#editor = editor;
     this.#pinned = options.pinned === true;
     this.#onOpen = options.onOpen;
+    this.#onLarge = options.onLarge;
   }
 
   get pinned(): boolean {
@@ -146,6 +152,11 @@ export class DocumentSession<T, E> {
       const edits = this.#editor.edits(this.#accounted, sent);
       const reply = await this.#transport.write(this.#known, edits);
       if (this.#closed) return;
+      if (reply.large === true && !this.#large) {
+        // Said once: automerge keeps every edit, so it only gets larger.
+        this.#large = true;
+        this.#onLarge?.();
+      }
       if (this.#editor.same(this.#editor.current(), sent)) {
         // Nothing typed meanwhile: take the merged branch state.
         this.#known = reply.heads;
@@ -255,6 +266,7 @@ export function eventTransport<T>(
       local: body.local as string[] | undefined,
       content: content(body),
       readonly: body.readonly === true,
+      large: body.large === true,
     };
   };
   return {

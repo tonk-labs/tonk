@@ -243,6 +243,26 @@ test("a document in a newer format is shown and never written", async () => {
   assert.equal(writes, 0);
 });
 
+test("says once that the document became large", async () => {
+  const host = new FakeHost();
+  let text = "";
+  let warnings = 0;
+  const session = new DocumentSession<string, TextEdit>(
+    { read: host.read, write: async (heads, edits) => ({ ...(await host.write(heads, edits)), large: true }) },
+    textEditor(
+      () => text,
+      (next) => (text = next),
+    ),
+    { onLarge: () => warnings++ },
+  );
+  await session.open();
+  text = "a";
+  await session.flush();
+  text = "a b";
+  await session.flush();
+  assert.equal(warnings, 1);
+});
+
 test("reads the heads of an `at` attribute", () => {
   assert.deepEqual(parseHeads(" ab  cd\n"), ["ab", "cd"]);
   assert.deepEqual(parseHeads(null), []);

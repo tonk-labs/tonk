@@ -182,6 +182,9 @@ export interface Reply {
   /** The format rule: the workbook is in a format newer than this app
    *  knows. It can be shown and must not be edited. */
   readonly?: boolean;
+  /** After a write: the stored workbook passed the size at which the
+   *  host asks for a warning. Past the hard limit a write is refused. */
+  large?: boolean;
 }
 
 export interface Transport {
@@ -207,18 +210,21 @@ export class TableSession {
    *  polled. */
   readonly #pinned: boolean;
   readonly #onOpen: (() => void) | undefined;
+  readonly #onLarge: (() => void) | undefined;
+  #large = false;
   /** The host said the workbook is in a newer format. */
   #newer = false;
 
   constructor(
     transport: Transport,
     apply: (table: TableSnapshot) => void,
-    options: { pinned?: boolean; onOpen?: () => void } = {},
+    options: { pinned?: boolean; onOpen?: () => void; onLarge?: () => void } = {},
   ) {
     this.#transport = transport;
     this.#apply = apply;
     this.#pinned = options.pinned === true;
     this.#onOpen = options.onOpen;
+    this.#onLarge = options.onLarge;
   }
 
   get opened(): boolean {
@@ -269,6 +275,11 @@ export class TableSession {
     try {
       const reply = await this.#transport.write(this.#known, edits);
       if (this.#closed) return;
+      if (reply.large === true && !this.#large) {
+        // Said once: automerge keeps every edit, so it only gets larger.
+        this.#large = true;
+        this.#onLarge?.();
+      }
       this.#known = reply.heads;
       this.#apply(reply.table);
     } catch (error) {
@@ -343,6 +354,7 @@ export function eventTransport(
       local: body.local as string[] | undefined,
       table: (body.table as TableSnapshot) ?? { sheets: [] },
       readonly: body.readonly === true,
+      large: body.large === true,
     };
   };
   return {

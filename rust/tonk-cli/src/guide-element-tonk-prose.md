@@ -59,8 +59,9 @@ failed. A document whose `format` is newer than the app knows — for example
 refused until the app is updated.
 
 A document takes no more edits once it is stored as 8 MiB (automerge keeps
-every edit, so a document only grows); the edit is refused and nothing
-changes. `tonk export` carries the document with the branch, and
+every edit, so a document only grows); the edit is refused, nothing
+changes, and `documenterror` says so. At 1 MiB the element fires
+`documentlarge` once. `tonk export` carries the document with the branch, and
 `tonk import` puts it back.
 
 ## Standalone — content as element text

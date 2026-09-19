@@ -456,6 +456,10 @@ class TonkTableElement extends HTMLElement {
       },
       {
         pinned,
+        onLarge: () => {
+          console.warn("[tonk-table] the workbook is large; it stops taking edits at 8 MiB");
+          this.dispatchEvent(new CustomEvent("documentlarge", { bubbles: true, composed: true }));
+        },
         onOpen: () => {
           this.#documentError = "";
           this.#applyReadOnly();
@@ -476,8 +480,10 @@ class TonkTableElement extends HTMLElement {
     this.#pollTimer = setInterval(() => {
       if (document.visibilityState !== "visible") return;
       // Before the open worked a poll retries it; a failed poll is
-      // retried by the next tick.
-      void session.poll().catch((err) => {
+      // retried by the next tick. Edits a failed save left queued go
+      // first.
+      const step = session.opened && session.pending > 0 ? session.flush() : session.poll();
+      void step.catch((err) => {
         if (!session.opened) this.#reportDocumentError(err);
       });
     }, DOCUMENT_POLL_MS);
@@ -491,13 +497,13 @@ class TonkTableElement extends HTMLElement {
     this.#grid?.setReadOnly(locked || this.hasAttribute("readonly"));
   }
 
-  /** Tell the page why the document did not open — once per reason,
-   *  not once per retry. */
+  /** Tell the page why the document did not open, or why an edit was
+   *  not saved — once per reason, not once per retry. */
   #reportDocumentError(err: unknown): void {
     const message = err instanceof Error ? err.message : String(err);
     if (message === this.#documentError) return;
     this.#documentError = message;
-    console.warn("[tonk-table] could not open the document:", err);
+    console.warn("[tonk-table] document:", err);
     this.dispatchEvent(
       new CustomEvent("documenterror", {
         detail: { message },
@@ -529,9 +535,16 @@ class TonkTableElement extends HTMLElement {
     this.#flushQueued = true;
     queueMicrotask(() => {
       this.#flushQueued = false;
-      void session.flush().catch((err) => {
-        console.warn("[tonk-table] the edit was not saved:", err);
-      });
+      void session
+        .flush()
+        .then(() => {
+          this.#documentError = "";
+        })
+        .catch((err) => {
+          // Offline, or past the size limit: the edits stay queued and the
+          // next flush sends them again. The page is told why.
+          this.#reportDocumentError(err);
+        });
     });
   }
 
