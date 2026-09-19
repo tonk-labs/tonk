@@ -266,6 +266,10 @@ fn body_byte_len(value: &Value) -> usize {
 /// lives in the claim's subject as `id:<name>`; the *target* is
 /// the value. We invert that mapping here so callers can ask
 /// "what's this entity's display name?" with one lookup.
+pub async fn names_by_entity(site: &TonkSite) -> Result<HashMap<Entity, String>> {
+    name_claims_by_entity(site).await
+}
+
 async fn name_claims_by_entity(site: &TonkSite) -> Result<HashMap<Entity, String>> {
     let name_attr: Attribute = "db.name/referent"
         .parse()

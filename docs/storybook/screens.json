@@ -282,8 +282,8 @@
       "artifact": "app/screens/cli-08-authoring.png",
       "capture": "captured CLI output",
       "status": "captured",
-      "journey_ids": ["DATA-01", "DATA-02", "DATA-03", "DATA-04", "DATA-05", "DATA-06", "DATA-08", "DATA-09"],
-      "source_paths": ["rust/tonk-cli/src/authoring.rs", "rust/tonk-cli/src/bin/tonk.rs", "rust/tonk-cli/src/data.rs", "rust/tonk-cli/src/data_ops.rs", "rust/tonk-cli/src/render.rs", "rust/tonk-render/src/page/orchestrate.rs"]
+      "journey_ids": ["DATA-01", "DATA-02", "DATA-03", "DATA-04", "DATA-05", "DATA-06", "DATA-08", "DATA-09", "DATA-12"],
+      "source_paths": ["rust/tonk-cli/src/authoring.rs", "rust/tonk-cli/src/bin/tonk.rs", "rust/tonk-cli/src/data.rs", "rust/tonk-cli/src/data_ops.rs", "rust/tonk-cli/src/elements.rs", "rust/tonk-cli/src/render.rs", "rust/tonk-display/src/registry.rs", "rust/tonk-render/src/page/orchestrate.rs"]
     },
     {
       "id": "CLI-09",
