@@ -3,8 +3,8 @@
 //! binary maps errors to exit codes.
 
 use crate::authoring::{
-    AuthoringError, ViewKind, build_concept_decl, build_home_recipe, build_view_decl,
-    lint_view_template, parse_attr_spec,
+    AuthoringError, ElementParts, ViewKind, build_concept_decl, build_element_decl,
+    build_home_recipe, build_view_decl, lint_view_template, parse_attr_spec,
 };
 use crate::auto_sync;
 use crate::data::{build_assert, build_retract, build_supersede};
@@ -123,6 +123,9 @@ pub enum DataOpError {
     /// The underlying eval pipeline failed.
     #[error(transparent)]
     Eval(#[from] crate::eval::EvalError),
+    /// A branch read the verb needed before writing failed.
+    #[error("{0}")]
+    Read(String),
     /// The raw CLI flags for `assert` failed clap's
     /// dynamically-built parse: an unknown `--flag` or a bad value
     /// for the arg's type. Display text mirrors clap's own rendered
@@ -177,7 +180,8 @@ impl crate::Coded for DataOpError {
             DataOpError::NoConcept { .. }
             | DataOpError::Io(_)
             | DataOpError::NoInstance { .. }
-            | DataOpError::ConceptExists { .. } => crate::ExitCode::IoError,
+            | DataOpError::ConceptExists { .. }
+            | DataOpError::Read(_) => crate::ExitCode::IoError,
             // A bad field/value, or a rejected flag parse, is an
             // analysis-level rejection, not an I/O failure.
             DataOpError::Data(_)
@@ -657,6 +661,117 @@ pub async fn view_add(
         out.push_str("home unchanged; use --home or `tonk space home <concept>`\n");
     }
     Ok(out)
+}
+
+/// Author a custom element: an `element!: &<tag>` describing itself as
+/// `description` and carrying `methods` and `attributes`.
+///
+/// The body derives the entity, `description` and methods alike, so
+/// the value this mints IS this exact element. Two consequences:
+///
+/// - Two tags with different methods derive different entities, and a
+///   tag re-authored with different methods derives a new one. The
+///   anchor repoints, and every live instance follows.
+/// - A body is the whole element, never a patch. So `methods` and
+///   `attributes` are each MERGED over whatever the tag currently
+///   resolves to before the notation is built: authoring `connected`
+///   alone on an existing tag still carries `disconnected` forward
+///   rather than dropping it, and leaves its defaults alone.
+///
+/// Authors writing notation by hand keep the finer-grained road —
+/// `element!: this: <entity>` with one `method:` entry supersedes just
+/// that fact, since naming the entity means nothing has to be derived.
+/// The CLI cannot take it: it works in tags, and a tag is a name, not
+/// an entity.
+///
+/// The anchor publishes `id:<tag>`, which is how the browser finds the
+/// definition — by name, on first sight of the tag, never ahead of
+/// time.
+pub async fn element_add(
+    site: &TonkSite,
+    tag: &str,
+    description: &str,
+    authored: &ElementParts<'_>,
+    write: WriteOptions,
+) -> Result<String, DataOpError> {
+    let merged = carry_forward(site, tag, "method", authored.methods).await?;
+    let attributes = carry_forward(site, tag, "attribute", authored.attributes).await?;
+    let getters = carry_forward(site, tag, "getter", authored.getters).await?;
+    let setters = carry_forward(site, tag, "setter", authored.setters).await?;
+    let doc = build_element_decl(
+        tag,
+        description,
+        &ElementParts {
+            methods: &merged,
+            attributes: &attributes,
+            getters: &getters,
+            setters: &setters,
+        },
+    )?;
+    if write.notation {
+        return Ok(doc);
+    }
+    let outcome =
+        auto_sync::run_eval(site, Source::Inline(doc), write.eval(), write.sync()).await?;
+    let named: Vec<&str> = authored
+        .methods
+        .iter()
+        .map(|(key, _)| key.as_str())
+        .collect();
+    let carried = merged.len() - named.len();
+    let mut out = format!(
+        "{}\n",
+        write.summarize(format_args!(
+            "authored {n} method{s} on <{tag}>: {list}{also}",
+            n = named.len(),
+            s = if named.len() == 1 { "" } else { "s" },
+            list = named.join(", "),
+            also = if carried == 0 {
+                String::new()
+            } else {
+                format!(" (carrying {carried} forward)")
+            },
+        ))
+    );
+    out.push_str(&outcome.stdout);
+    out.push_str(&format!(
+        "\nuse it in any view as <{tag}>; the browser resolves it by name on first render\n"
+    ));
+    Ok(out)
+}
+
+/// `authored` followed by whichever of `tag`'s current `field` entries
+/// it does not replace.
+///
+/// Needed because the entity is derived from the whole body: rebuilding
+/// an element from only the entries being edited would mint a value
+/// that HAS only those, and repointing the tag at it would silently
+/// drop the rest. Reading first makes the CLI's edit additive again.
+///
+/// Authored entries come first, in the order they were typed, so a
+/// `--notation` dry run still reads the way it was asked for and the
+/// carried ones trail behind it.
+///
+/// Resolution goes through the name, so an entity the tag used to point
+/// at contributes nothing — carrying forward means carrying forward
+/// what `<tag>` means now. A tag nobody has defined reads as no
+/// entries, which is how a first authoring works.
+async fn carry_forward(
+    site: &TonkSite,
+    tag: &str,
+    field: &str,
+    authored: &[(String, String)],
+) -> Result<Vec<(String, String)>, DataOpError> {
+    let current = crate::elements::entries_of(site, tag, field)
+        .await
+        .map_err(|e| DataOpError::Read(format!("could not read <{tag}>'s {field}s: {e}")))?;
+    let mut merged: Vec<(String, String)> = authored.to_vec();
+    for (key, value) in current {
+        if !merged.iter().any(|(named, _)| *named == key) {
+            merged.push((key, value));
+        }
+    }
+    Ok(merged)
 }
 
 #[cfg(test)]

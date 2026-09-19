@@ -1426,14 +1426,209 @@ view!:
     ui: |
       <tonk-portal html:content={content} />
 
-# A web component carried as branch data. `module` is a JS module the
-# `<tonk-component>` element executes once per document realm — the
-# place a template defines its own custom elements
-# (`customElements.get('x-foo') || customElements.define('x-foo', …)`)
-# and then uses them in any view, no shell change required. Unlike a
-# `portal` (an isolated iframe realm), a component's definitions share
-# the realm with every view on the branch, so they compose with
-# `{field}` bindings and the CustomEvent -> command pipeline.
+# An author-defined custom element carried as branch data.
+#
+# `element!: &tally-widget` publishes `id:tally-widget` pointing at the
+# entity the assertion derives, and the browser resolves a tag through
+# that name the moment it first meets the tag in the DOM. Nothing is
+# registered ahead of time, and repointing the name — at a definition
+# authored elsewhere, or back at an earlier one — swaps the element for
+# everything that refers to it.
+#
+# The entity is DERIVED, so it is a digest of the whole body, methods
+# included. An element is a value: two definitions with the same
+# methods and the same description ARE the same element, and changing
+# a method makes a different one. The tag is the mutable part — a name
+# pointing at whichever value it currently means — which is what makes
+# a definition swappable at all.
+#
+# That bears on DERIVATION, not on editing. A body that derives its
+# own entity is the whole element, so re-deriving from a single method
+# mints a one-method element rather than patching the existing one.
+# Editing in place is untouched: name the entity and assert only the
+# key you are changing —
+#
+#     element!:
+#       this: <the entity &tally-widget names>
+#       method:
+#         connected: |
+#           (self) => { ... }
+#
+# — which supersedes that one fact and leaves the rest standing,
+# exactly as re-authoring one view facet does. `tonk element add`
+# takes the other road, reading the current methods and carrying them
+# forward before it re-derives, because the CLI works in tags rather
+# than entities and a fresh value has to repoint the anchor.
+#
+# The tag itself is deliberately NOT a field. It lives in the anchor,
+# where it can be repointed; a copy of it in the body would be a
+# second, immutable answer to the same question.
+#
+# `method` is a keyed dictionary, the same construct as a view's
+# `show`. A view is a dictionary of templates keyed by facet; an
+# element is a dictionary of functions keyed by method.
+#
+# The concept is anchored, not pinned, like the other view-layer
+# concepts here: a pin is for a concept some code names by URI, and
+# nothing names this one.
+#
+# `description` is the only field a body must set. Both dictionaries
+# below are keyed collections, which are zero-or-more, so omitting one
+# declares an empty map rather than leaving a field unset — an
+# `element!:` carrying a description alone is a complete assertion. It
+# defines an element with no methods and no defaults: the tag resolves,
+# the row lists, and the browser leaves the tag inert because there is
+# nothing to register.
+concept!: &element
+  description: A custom element definition carried as branch data
+  with:
+    description:
+      description: |
+        What this element is for, in the author's own words — the same
+        thing a concept's `description` carries, and required for the
+        same reason: an element is read by people and by agents that
+        have only the branch to go on, and a tag name alone does not
+        say what `<tally-widget>` is meant to do.
+
+        It is an ordinary field, but it does reach the entity digest
+        along with the methods, so two elements that differ only in
+        their description are two different values. That is the right
+        reading: the description is part of what the definition says.
+      the: xyz.tonk.element/description
+      cardinality: one
+      as: text
+    method:
+      description: |
+        The element's methods, keyed by name, each a JS arrow-function
+        expression taking the element as its first argument.
+
+        Four keys are dispatched by the DOM lifecycle: `connected`,
+        `disconnected`, `adopted` — all `(self) => …` — and
+        `attribute-changed`, `(self, name, before, after) => …`.
+
+        Two more cover a definition being REPLACED while instances are
+        live, which the DOM has no notion of. `released`, `(self) =>
+        …`, runs on the OUTGOING definition before the swap: undo what
+        `connected` set up, and stash anything worth keeping on the
+        element. `swapped`, `(self) => …`, runs on the incoming one and
+        takes over the live instance; without it the runtime re-runs
+        `connected`, which is right only when nothing needed undoing.
+
+        The reserved `define` key is the escape hatch for what a method
+        table cannot express (`static formAssociated`, extending a
+        built-in): `() => class extends HTMLElement { … }`, whose
+        returned class the runtime registers INSTEAD of the generated
+        wrapper, ignoring every other key. Any other key becomes a
+        method on the element, callable as `el.<name>()`; a key that
+        would shadow a member of `HTMLElement.prototype` is refused.
+
+        That is also how one method calls another — `self.total()`
+        inside `connected`. The call resolves through the live table
+        rather than through the definition it was written in, so
+        re-authoring `total` alone changes what an untouched
+        `connected` computes.
+
+        There is no `observedAttributes` to declare.
+        `attribute-changed` is driven by a `MutationObserver` over
+        every attribute; `attributeChangedCallback`'s list is read once
+        when the tag is registered and so could never grow with an
+        edited method.
+      the: xyz.tonk.element.method
+      as: {[symbol]: text}
+      cardinality: one
+    getter:
+      description: |
+        Property reads, keyed by property name, each `(self) => …`.
+
+        `value: (self) => …` makes `el.value` read through the branch's
+        current definition the way `el.total()` calls through it, so a
+        re-authored getter changes what a page already reading the
+        property sees. A method could not do this job: `el.value` and
+        `el.value()` are different things, and a consumer written
+        against the DOM expects the first.
+
+        Its own dictionary rather than a prefix inside `method`,
+        because a getter, a setter and a method have three different
+        signatures and a key like `get.value` could not be told apart
+        from a method genuinely called that. The cost is one more live
+        query per watched tag.
+
+        A key that would shadow a member every element already has is
+        refused, the same as a method key.
+      the: xyz.tonk.element.getter
+      as: {[symbol]: text}
+      cardinality: one
+    setter:
+      description: |
+        Property writes, keyed by property name, each
+        `(self, next) => …`.
+
+        Paired with `getter` by name: declaring both makes the property
+        read-write, `getter` alone makes it read-only, and `setter`
+        alone makes it write-only — which is a real shape (a sink that
+        takes a value and renders it) rather than a mistake, so it is
+        allowed.
+      the: xyz.tonk.element.setter
+      as: {[symbol]: text}
+      cardinality: one
+    attribute:
+      description: |
+        Default values for the element's attributes, keyed by
+        attribute name. An instance missing one has it written on
+        before `connected` runs, so every hook, every CSS rule and
+        every `getAttribute` reads the same value whether the view
+        supplied it or not.
+
+        This is NOT `observedAttributes`, and it narrows nothing.
+        `attribute-changed` fires for every attribute whether or not
+        it appears here, because the runtime watches them with a
+        `MutationObserver` rather than declaring a list up front.
+        Narrowing to a declared list would only restore the footgun
+        that observer exists to avoid: an attribute left out of the
+        list goes silently unnoticed. So an attribute needs no entry
+        here to work — it needs one to have a DEFAULT, which is the
+        only thing this map supplies.
+
+        An attribute whose default is empty is written `size: ""` —
+        present and empty, like `<input disabled="">`.
+
+        Most elements declare none, and the map is then simply absent.
+        That is what a keyed collection means: zero-or-more, so an
+        `element!:` body omitting it is complete, not partial.
+
+        What all four dictionaries here cost, stated once: a GENERIC
+        concept query binds every field the concept declares, and a
+        keyed collection with no entries binds nothing — so `tonk query
+        element` answers only for an element that declares ALL FOUR,
+        which almost none do. `tonk element` reads the domains directly
+        and lists them all, which is why it exists, and the browser
+        registry runs one query per dictionary for the same reason.
+        Fixing it properly means teaching the query layer to widen an
+        empty collection, which is a dialog-query change rather than a
+        schema one.
+      the: xyz.tonk.element.attribute
+      as: {[symbol]: text}
+      cardinality: one
+
+# The older shape: one anonymous JS module that calls
+# `customElements.define` itself. Superseded by `element` for new work
+# but still fully supported — the two COEXIST on a branch and nothing
+# has to be migrated.
+#
+# They coexist because they share nothing — no pin or migration is
+# involved. A component's facts are `xyz.tonk.component/module`; an
+# element's are `xyz.tonk.element.method/<key>`. The two names are
+# distinct, so neither concept's query can match the other's rows, each
+# has its own loader, and a branch can mount both directories. `tonk
+# element` lists both, naming the concept each row came from.
+#
+# What `component` cannot offer is identity. An assertion that omits
+# `this:` is keyed by its own body digest, so editing the module writes
+# a SECOND row rather than replacing the first — the directory mounts
+# both, and the `customElements.get(name) ||` guard every such module
+# carries lets whichever executes first win. That is the reason to
+# prefer `element` for new work, not a reason `component` stops
+# working.
 concept!: &component
   description: A JS module defining web components for the branch's views
   with:

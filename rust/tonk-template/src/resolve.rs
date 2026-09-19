@@ -42,6 +42,112 @@ pub fn view_query(model_entity: &str) -> Result<Query, serde_json::Error> {
     serde_json::from_value(json!({ "terms": terms, "predicate": view_predicate() }))
 }
 
+/// The domain an `element!:` assertion writes its methods under. Each
+/// entry lands as `<domain>/<key>`.
+pub const ELEMENT_METHOD_DOMAIN: &str = "xyz.tonk.element.method";
+
+/// The `element` concept's `method` shape, kept in step with the
+/// declaration in the standard library.
+///
+/// A hand-mirrored copy for the same reason [`view_predicate`] is one:
+/// this crate builds wire queries as JSON and does not go through the
+/// descriptor types. The library is the source of truth; the parity
+/// test in `tonk-worker` is what keeps the two honest.
+pub fn element_method_predicate() -> Value {
+    element_dictionary_predicate("method", ELEMENT_METHOD_DOMAIN)
+}
+
+/// Build the query that reads one element's whole `method` dictionary.
+///
+/// A keyed collection binds TWO terms — the field and its key operand —
+/// because an entry is a `(key, value)` pair. Requesting only the field
+/// leaves the key unbound, and the wire fold that turns the pair into
+/// `{key: value}` then has nothing to fold: every entry reads empty.
+///
+/// Shared rather than rebuilt per caller: the browser registry, the CLI
+/// listing and the parity test all have to agree about this body, and
+/// the ways they can silently disagree (a missing key operand, a
+/// `the:` written as an attribute rather than a domain) all read as an
+/// element with no methods.
+pub fn element_method_query(entity: &str) -> Result<Query, serde_json::Error> {
+    element_dictionary_query(entity, "method", ELEMENT_METHOD_DOMAIN)
+}
+
+/// The domain an `element!:` assertion writes its attribute defaults
+/// under. Each entry lands as `<domain>/<attribute-name>`.
+pub const ELEMENT_ATTRIBUTE_DOMAIN: &str = "xyz.tonk.element.attribute";
+
+/// The domain an `element!:` assertion writes its property reads under.
+pub const ELEMENT_GETTER_DOMAIN: &str = "xyz.tonk.element.getter";
+
+/// The domain an `element!:` assertion writes its property writes under.
+pub const ELEMENT_SETTER_DOMAIN: &str = "xyz.tonk.element.setter";
+
+/// Every dictionary an `element!:` carries, as `(field, domain)`.
+///
+/// One list so the browser registry, the CLI listing and the tests
+/// cannot disagree about how many there are — adding a fifth means
+/// adding it here and nowhere else.
+pub const ELEMENT_DICTIONARIES: &[(&str, &str)] = &[
+    ("method", ELEMENT_METHOD_DOMAIN),
+    ("attribute", ELEMENT_ATTRIBUTE_DOMAIN),
+    ("getter", ELEMENT_GETTER_DOMAIN),
+    ("setter", ELEMENT_SETTER_DOMAIN),
+];
+
+/// The `element` concept's shape for one of its dictionaries.
+///
+/// One field per predicate rather than all four in one, for two
+/// reasons. A concept query binds every field it names, so an element
+/// with methods but no defaults — which is most of them — would match
+/// neither. And two keyed collections in one query would join entry
+/// against entry, handing back the cross product of the two maps
+/// instead of each map.
+pub fn element_dictionary_predicate(field: &str, domain: &str) -> Value {
+    json!({
+        "with": {
+            field: {
+                "the": { "domain": domain, "keyed": "dictionary" },
+                "as": "Text",
+                "cardinality": "one"
+            }
+        }
+    })
+}
+
+/// The `element` concept's `attribute` shape.
+pub fn element_attribute_predicate() -> Value {
+    element_dictionary_predicate("attribute", ELEMENT_ATTRIBUTE_DOMAIN)
+}
+
+/// Build the query that reads one of an element's dictionaries.
+///
+/// Empty for an element that declares none of that kind, which is not
+/// an error and is the common case: each map is a separate hop
+/// precisely so that declaring none of one costs the others nothing.
+pub fn element_dictionary_query(
+    entity: &str,
+    field: &str,
+    domain: &str,
+) -> Result<Query, serde_json::Error> {
+    let mut terms: IndexMap<String, Value> = IndexMap::new();
+    terms.insert("this".into(), json!(entity));
+    terms.insert(field.into(), json!({ "?": { "name": field } }));
+    terms.insert(
+        format!("{field}/key"),
+        json!({ "?": { "name": format!("{field}/key") } }),
+    );
+    serde_json::from_value(json!({
+        "terms": terms,
+        "predicate": element_dictionary_predicate(field, domain),
+    }))
+}
+
+/// Build the query that reads one element's `attribute` defaults.
+pub fn element_attribute_query(entity: &str) -> Result<Query, serde_json::Error> {
+    element_dictionary_query(entity, "attribute", ELEMENT_ATTRIBUTE_DOMAIN)
+}
+
 /// The `event` concept's shape, kept in step with the built-in
 /// registered as `event` in `tonk_schema::builtin`.
 ///
