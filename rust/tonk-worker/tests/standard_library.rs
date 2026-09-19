@@ -90,6 +90,47 @@ fn it_lowers_the_profile_library() {
     assert_library_lowers("profile library (profile.yaml)", PROFILE_LIBRARY);
 }
 
+/// The switcher row binds the handle a command can actually act on.
+///
+/// The command carries `handle`, read off the button's `data-handle`,
+/// which the row fills from the DURABLE `xyz.tonk.roster/name`. Binding
+/// the label instead would look identical on screen and fail at the
+/// worker, which validates the handle against the roster — so this pins
+/// which field the button carries, not merely that it carries one.
+#[test]
+fn it_switches_profiles_by_handle_not_by_label() {
+    let row = PROFILE_LIBRARY
+        .split("data-handle=")
+        .nth(1)
+        .expect("the switcher row must bind a handle");
+    let bound = row.split_whitespace().next().unwrap_or_default();
+    assert_eq!(
+        bound, "{name}",
+        "the handle must come from the durable roster name, not the overlay label",
+    );
+    assert!(
+        PROFILE_LIBRARY.contains("on:switch-profile=tonk:switch-profile"),
+        "the row must dispatch the switch command",
+    );
+}
+
+/// The overlay fields the switcher renders are declared as its concept's
+/// fields, so a missing one is a compile-time error rather than a blank row.
+#[test]
+fn it_declares_every_field_the_switcher_renders() {
+    for attribute in [
+        "xyz.tonk.roster/name",
+        "xyz.tonk.roster/label",
+        "xyz.tonk.roster/provider",
+        "xyz.tonk.roster/active",
+    ] {
+        assert!(
+            PROFILE_LIBRARY.contains(attribute),
+            "the switcher concept must declare `{attribute}`",
+        );
+    }
+}
+
 #[test]
 fn it_titles_a_downloading_space_from_the_directory_name() {
     let downloading = PROFILE_LIBRARY
