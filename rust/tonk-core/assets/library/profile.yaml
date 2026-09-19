@@ -392,6 +392,10 @@ view!:
          other account carrying its switch verb, then the add door — the
          page's one CTA, solid ink. ── */
       .hub-page ui-hub-account { position:relative; display:block; width:100%; }
+      /* The menu's own `open` attribute drives its visibility, rather
+         than a `hidden` attribute script has to remember to toggle. */
+      hub-menu { display:block; }
+      hub-menu[open="false"] { display:none; }
       .account-trigger { overflow:hidden; }
       .account-trigger [data-account-label] { overflow:hidden; text-overflow:ellipsis;
         white-space:nowrap; text-transform:none; }
@@ -1178,6 +1182,239 @@ concept!: &ceremony/status
       cardinality: one
       as: text
 
+# ============================================================
+# ELEMENTS — custom elements this branch defines
+# ============================================================
+
+# The same concept `core.yaml` declares, repeated here for the same
+# reason `profile/rename` is: the hub and FAB are sealed to the profile
+# meta branch, and a guest resolves a definition by querying THIS
+# branch. A concept that lives only in core.yaml is unreachable from
+# here, however correct it is there.
+#
+# Kept verbatim rather than trimmed. The two copies describe one shape,
+# and a copy that has been edited down is one that has started to
+# disagree.
+concept!: &element
+  description: A custom element definition carried as branch data
+  with:
+    description:
+      description: |
+        What this element is for, in the author's own words — the same
+        thing a concept's `description` carries, and required for the
+        same reason: an element is read by people and by agents that
+        have only the branch to go on, and a tag name alone does not
+        say what `<tally-widget>` is meant to do.
+
+        It is an ordinary field, but it does reach the entity digest
+        along with the methods, so two elements that differ only in
+        their description are two different values. That is the right
+        reading: the description is part of what the definition says.
+      the: xyz.tonk.element/description
+      cardinality: one
+      as: text
+    method:
+      description: |
+        The element's methods, keyed by name, each a JS arrow-function
+        expression taking the element as its first argument.
+
+        Four keys are dispatched by the DOM lifecycle: `connected`,
+        `disconnected`, `adopted` — all `(self) => …` — and
+        `attribute-changed`, `(self, name, before, after) => …`.
+
+        Two more cover a definition being REPLACED while instances are
+        live, which the DOM has no notion of. `released`, `(self) =>
+        …`, runs on the OUTGOING definition before the swap: undo what
+        `connected` set up, and stash anything worth keeping on the
+        element. `swapped`, `(self) => …`, runs on the incoming one and
+        takes over the live instance; without it the runtime re-runs
+        `connected`, which is right only when nothing needed undoing.
+
+        The reserved `define` key is the escape hatch for what a method
+        table cannot express (`static formAssociated`, extending a
+        built-in): `() => class extends HTMLElement { … }`, whose
+        returned class the runtime registers INSTEAD of the generated
+        wrapper, ignoring every other key. Any other key becomes a
+        method on the element, callable as `el.<name>()`; a key that
+        would shadow a member of `HTMLElement.prototype` is refused.
+
+        That is also how one method calls another — `self.total()`
+        inside `connected`. The call resolves through the live table
+        rather than through the definition it was written in, so
+        re-authoring `total` alone changes what an untouched
+        `connected` computes.
+
+        There is no `observedAttributes` to declare.
+        `attribute-changed` is driven by a `MutationObserver` over
+        every attribute; `attributeChangedCallback`'s list is read once
+        when the tag is registered and so could never grow with an
+        edited method.
+      the: xyz.tonk.element.method
+      as: {[symbol]: text}
+      cardinality: one
+    getter:
+      description: |
+        Property reads, keyed by property name, each `(self) => …`.
+
+        `value: (self) => …` makes `el.value` read through the branch's
+        current definition the way `el.total()` calls through it, so a
+        re-authored getter changes what a page already reading the
+        property sees. A method could not do this job: `el.value` and
+        `el.value()` are different things, and a consumer written
+        against the DOM expects the first.
+
+        Its own dictionary rather than a prefix inside `method`,
+        because a getter, a setter and a method have three different
+        signatures and a key like `get.value` could not be told apart
+        from a method genuinely called that. The cost is one more live
+        query per watched tag.
+
+        A key that would shadow a member every element already has is
+        refused, the same as a method key.
+      the: xyz.tonk.element.getter
+      as: {[symbol]: text}
+      cardinality: one
+    setter:
+      description: |
+        Property writes, keyed by property name, each
+        `(self, next) => …`.
+
+        Paired with `getter` by name: declaring both makes the property
+        read-write, `getter` alone makes it read-only, and `setter`
+        alone makes it write-only — which is a real shape (a sink that
+        takes a value and renders it) rather than a mistake, so it is
+        allowed.
+      the: xyz.tonk.element.setter
+      as: {[symbol]: text}
+      cardinality: one
+    attribute:
+      description: |
+        Default values for the element's attributes, keyed by
+        attribute name. An instance missing one has it written on
+        before `connected` runs, so every hook, every CSS rule and
+        every `getAttribute` reads the same value whether the view
+        supplied it or not.
+
+        This is NOT `observedAttributes`, and it narrows nothing.
+        `attribute-changed` fires for every attribute whether or not
+        it appears here, because the runtime watches them with a
+        `MutationObserver` rather than declaring a list up front.
+        Narrowing to a declared list would only restore the footgun
+        that observer exists to avoid: an attribute left out of the
+        list goes silently unnoticed. So an attribute needs no entry
+        here to work — it needs one to have a DEFAULT, which is the
+        only thing this map supplies.
+
+        An attribute whose default is empty is written `size: ""` —
+        present and empty, like `<input disabled="">`.
+
+        Most elements declare none, and the map is then simply absent.
+        That is what a keyed collection means: zero-or-more, so an
+        `element!:` body omitting it is complete, not partial.
+
+        What all four dictionaries here cost, stated once: a GENERIC
+        concept query binds every field the concept declares, and a
+        keyed collection with no entries binds nothing — so `tonk query
+        element` answers only for an element that declares ALL FOUR,
+        which almost none do. `tonk element` reads the domains directly
+        and lists them all, which is why it exists, and the browser
+        registry runs one query per dictionary for the same reason.
+        Fixing it properly means teaching the query layer to widen an
+        empty collection, which is a dialog-query change rather than a
+        schema one.
+      the: xyz.tonk.element.attribute
+      as: {[symbol]: text}
+      cardinality: one
+
+# The account menu's keyboard and focus behaviour, as branch data.
+#
+# Everything here is DOM work with no fact behind it: which item holds
+# focus, whether the menu is open, where focus returns when it closes.
+# That is why it stayed in Rust while the bar's contents became views,
+# and why it can leave Rust without becoming one — an element is a
+# place for behaviour that is not data.
+#
+# `open` is an attribute rather than internal state so CSS, devtools
+# and `getAttribute` all agree on it, and so a view can render a menu
+# already open without a script having run first.
+#
+# The methods are `open`/`close`, not `show`/`hide`: `show` is what a
+# view calls its dictionary of templates, and one word meaning two
+# things across the two halves of the same file is a trap.
+element!: &hub-menu
+  description: A roving-focus menu — arrows move, Escape closes, focus returns to the opener.
+  attribute:
+    open: "false"
+  method:
+    # Focusable items only. A disabled or hidden row is still in the DOM
+    # and must not take focus, which is why this is a method rather than
+    # a selector each caller inlines.
+    items: |
+      (self) => [...self.querySelectorAll('[role=menuitem]')].filter(
+        (item) => !item.hidden
+          && item.getAttribute('aria-disabled') !== 'true'
+          && !item.matches(':disabled'))
+    # Move focus by `step`, wrapping. With nothing focused yet, entering
+    # forwards lands on the first item and backwards on the last, so
+    # ArrowUp from the trigger opens at the bottom, as a menu should.
+    move: |
+      (self, step) => {
+        const items = self.items();
+        if (!items.length) return;
+        const at = items.indexOf(document.activeElement);
+        const next = at < 0
+          ? (step > 0 ? 0 : items.length - 1)
+          : (at + step + items.length) % items.length;
+        items[next].focus();
+      }
+    # The opener is whatever points at this menu with `aria-controls`.
+    # Read from the DOM rather than remembered, so a menu re-rendered
+    # under a fresh trigger still finds the right one.
+    opener: |
+      (self) => {
+        const id = self.getAttribute('id');
+        return id ? document.querySelector(`[aria-controls="${id}"]`) : null;
+      }
+    open: |
+      (self) => {
+        self.setAttribute('open', 'true');
+        self.opener()?.setAttribute('aria-expanded', 'true');
+        self.move(1);
+      }
+    # Closing returns focus to the opener, which is what makes the menu a
+    # detour rather than somewhere you get stranded. `restoreFocus` is
+    # false when the menu is closing because it is going away.
+    close: |
+      (self, restoreFocus) => {
+        self.setAttribute('open', 'false');
+        const trigger = self.opener();
+        if (!trigger) return;
+        trigger.setAttribute('aria-expanded', 'false');
+        if (restoreFocus !== false) trigger.focus();
+      }
+    connected: |
+      (self) => {
+        self.addEventListener('keydown', (event) => {
+          switch (event.key) {
+            case 'ArrowDown': event.preventDefault(); self.move(1); break;
+            case 'ArrowUp': event.preventDefault(); self.move(-1); break;
+            case 'Home': event.preventDefault(); self.items()[0]?.focus(); break;
+            case 'End': {
+              event.preventDefault();
+              const items = self.items();
+              items[items.length - 1]?.focus();
+              break;
+            }
+            case 'Escape': event.preventDefault(); self.close(true); break;
+          }
+        });
+      }
+    # A definition replaced while a menu is open would leave it open with
+    # no handlers. Closing without taking focus is the honest recovery:
+    # the page keeps whatever had focus, and the replacement starts shut.
+    released: |
+      (self) => self.close(false)
+
 # The hub's account bar and menu.
 #
 # The account name comes from `tonk:account/name`, the switcher list from
@@ -1198,7 +1435,7 @@ view!:
         </button>
       </nav>
 
-      <div id="hub-account-menu" class="account-menu chrome" data-account-menu role="menu" hidden>
+      <hub-menu id="hub-account-menu" class="account-menu chrome" data-account-menu role="menu">
         <a class="account-menu__row" href="/settings" data-open-settings role="menuitem">
           settings
           <svg class="settings-icon" viewBox="0 0 9 9" aria-hidden="true">
@@ -1215,7 +1452,7 @@ view!:
           on:add-profile=tonk:add-profile role="menuitem">
           add account<span class="g" aria-hidden="true">+</span>
         </button>
-      </div>
+      </hub-menu>
 
 # The Hub route model + its view: the space directory over this (profile) branch.
 # `tonk:hub` is the concept the `/` route resolves to; its view renders the

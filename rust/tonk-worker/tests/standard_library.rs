@@ -114,6 +114,54 @@ fn it_switches_profiles_by_handle_not_by_label() {
     );
 }
 
+/// The account menu's behaviour is branch data, not Rust.
+///
+/// Roving focus, Escape and focus restoration are DOM work with no fact
+/// behind them, which is why they stayed in the element while the bar's
+/// contents became views. An `element!:` is where that kind of
+/// behaviour goes instead.
+///
+/// The concept is repeated in this library on purpose: the hub is
+/// sealed to the profile meta branch and resolves a definition by
+/// querying THIS branch, so one that lives only in core.yaml cannot be
+/// reached. This asserts the copy is here, because without it the tag
+/// renders inert and the menu silently stops responding to keys.
+#[test]
+fn it_carries_the_menu_element_on_the_branch_that_renders_it() {
+    assert!(
+        PROFILE_LIBRARY.contains("concept!: &element"),
+        "the element concept must be seeded on the profile branch, not only in core.yaml",
+    );
+    assert!(
+        PROFILE_LIBRARY.contains("element!: &hub-menu"),
+        "the menu's behaviour must be defined as branch data",
+    );
+    assert!(
+        PROFILE_LIBRARY.contains("<hub-menu"),
+        "and the account menu must actually be one",
+    );
+}
+
+/// The menu's methods do not shadow a view's `show`.
+///
+/// One word meaning a dictionary of templates in one half of the file
+/// and "reveal the menu" in the other is a trap for whoever reads it
+/// next.
+#[test]
+fn it_names_the_menu_methods_open_and_close() {
+    let menu = PROFILE_LIBRARY
+        .split("element!: &hub-menu")
+        .nth(1)
+        .and_then(|rest| rest.split("# The hub's account bar").next())
+        .expect("the hub-menu definition");
+    assert!(menu.contains("    open: |"), "the menu opens with `open`");
+    assert!(menu.contains("    close: |"), "and closes with `close`");
+    assert!(
+        !menu.contains("    show: |") && !menu.contains("    hide: |"),
+        "`show` belongs to views; the menu must not borrow it",
+    );
+}
+
 /// The account bar renders its name and switcher from facts.
 ///
 /// The bar used to be markup an element painted from a fetch, which is
