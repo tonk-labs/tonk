@@ -59,6 +59,14 @@ const ROW_SHEET: &str = "xyz.tonk.table.row/sheet";
 const ROW_AT: &str = "xyz.tonk.table.row/at";
 const ROW_HEIGHT: &str = "xyz.tonk.table.row/height";
 
+/// Above this many bytes a document is reported as large. Automerge
+/// keeps every edit and cannot drop history, so a document only grows.
+pub const SIZE_WARNING: usize = 1024 * 1024;
+/// Above this many bytes a document takes no further edits. Well under
+/// the 32 MiB the access service accepts per in-request write, which it
+/// also buffers twice inside a 128 MB isolate.
+pub const SIZE_LIMIT: usize = 8 * 1024 * 1024;
+
 /// The env a document operation needs: queries, commits and the memory
 /// effects (which [`CommitProvider`] already carries).
 pub trait DocumentEnv: SelectProvider + CommitProvider {}
@@ -87,6 +95,15 @@ pub enum SessionError {
     /// The branch head kept moving under the pointer write.
     #[error("the branch stayed contended after {RETRY_LIMIT} tries")]
     Contended,
+    /// The edit would take the document past [`SIZE_LIMIT`]. Nothing was
+    /// written; reading and syncing continue.
+    #[error(
+        "the document is {size} bytes, past the {SIZE_LIMIT}-byte limit; the edit was not applied"
+    )]
+    TooLarge {
+        /// The size the edit would have produced.
+        size: usize,
+    },
 }
 
 /// A document's state on one branch.
@@ -109,6 +126,8 @@ pub struct Written {
     /// The branch's state after the write, which may include changes the
     /// writer had not seen.
     pub snapshot: Snapshot,
+    /// The stored size in bytes. Past [`SIZE_WARNING`] a host should say so.
+    pub size: usize,
 }
 
 /// One `(entity, attribute, value)` statement.
@@ -545,7 +564,7 @@ async fn declare<Env: DocumentEnv>(
     Err(SessionError::Contended)
 }
 
-async fn heads_or_genesis<Env: SelectProvider>(
+pub(crate) async fn heads_or_genesis<Env: SelectProvider>(
     branch: &Branch,
     entity: &Entity,
     format: Format,
@@ -581,6 +600,144 @@ pub async fn read<Env: DocumentEnv>(
 /// Apply `edits` as one change on top of `base` — the heads the writer
 /// last saw, or the branch's own when `None` — and advance the branch's
 /// heads claim to include the result.
+/// The document at `heads` instead of the branch's own: a past version,
+/// for history. Read-only by construction — nothing here moves a pointer.
+pub async fn read_at<Env: DocumentEnv>(
+    branch: &Branch,
+    entity: &Entity,
+    heads: &[String],
+    env: &Env,
+) -> Result<Snapshot, SessionError> {
+    let (mut document, format) = open(branch, entity, None, env).await?;
+    let heads = document.normalize(heads)?;
+    let content = document.content(&heads)?;
+    Ok(Snapshot {
+        format,
+        heads,
+        content,
+    })
+}
+
+/// The cell's raw automerge bytes: the second interface a space has, for
+/// code that bundles its own pinned automerge. The file format is stable
+/// across automerge versions, so such code keeps working when the app
+/// moves to a new automerge, which the JS API would not promise.
+pub async fn bytes<Env: DocumentEnv>(
+    branch: &Branch,
+    entity: &Entity,
+    env: &Env,
+) -> Result<Vec<u8>, SessionError> {
+    let (mut document, _) = open(branch, entity, None, env).await?;
+    Ok(document.save())
+}
+
+/// Merge raw automerge bytes into the cell. Always safe: a merge only
+/// grows the cell, so there is nothing to compare-and-swap against and
+/// no way to overwrite another writer. It moves no branch pointer — the
+/// changes become visible on a branch when a writer advances that
+/// branch's heads to include them, which [`adopt_heads`] does.
+pub async fn merge_bytes<Env: DocumentEnv>(
+    branch: &Branch,
+    entity: &Entity,
+    bytes: &[u8],
+    env: &Env,
+) -> Result<(), SessionError> {
+    let incoming = Document::load(bytes)?;
+    let (mut document, format) = open(branch, entity, Some(incoming.format()), env).await?;
+    if incoming.format() != format {
+        return Err(SessionError::Document(DocumentError::WrongShape(
+            format.name(),
+        )));
+    }
+    document.merge(bytes)?;
+    let size = document.save().len();
+    if size > SIZE_LIMIT {
+        return Err(SessionError::TooLarge { size });
+    }
+    let local = LocalCell::new(&branch.subject(), entity, env);
+    let version = cell::load(&local).await?.map(|(_, version)| version);
+    cell::save(&local, &mut document, version).await?;
+    Ok(())
+}
+
+/// Advance the branch's heads to include `heads`, whose changes the
+/// cell already holds. The pointer half of a write, for a writer that
+/// stored its bytes through [`merge_bytes`].
+pub async fn adopt_heads<Env: DocumentEnv>(
+    branch: &Branch,
+    entity: &Entity,
+    heads: &[String],
+    env: &Env,
+) -> Result<Snapshot, SessionError> {
+    let written = write_pointer(branch, entity, heads, env).await?;
+    Ok(written.snapshot)
+}
+
+async fn write_pointer<Env: DocumentEnv>(
+    branch: &Branch,
+    entity: &Entity,
+    line: &[String],
+    env: &Env,
+) -> Result<Written, SessionError> {
+    let (_, format) = open(branch, entity, None, env).await?;
+    let local_cell = LocalCell::new(&branch.subject(), entity, env);
+    for _ in 0..RETRY_LIMIT {
+        let Some((mut document, _)) = cell::load(&local_cell).await? else {
+            return Err(SessionError::NotADocument(entity.to_string()));
+        };
+        let (claimed, effective) = heads_or_genesis(branch, entity, format, env).await?;
+        let mut union = effective.clone();
+        union.extend(line.iter().cloned());
+        let next = document.normalize(&union)?;
+        if advance(branch, entity, &claimed, &next, env).await? {
+            let content = document.content(&next)?;
+            let size = document.save().len();
+            return Ok(Written {
+                local: line.to_vec(),
+                snapshot: Snapshot {
+                    format,
+                    heads: next,
+                    content,
+                },
+                size,
+            });
+        }
+    }
+    Err(SessionError::Contended)
+}
+
+/// Move the heads claim from `claimed` to `next` in one transaction,
+/// obeying the three rules in the module docs. `false` = the branch head
+/// moved under the publish and the caller should re-read and retry.
+async fn advance<Env: DocumentEnv>(
+    branch: &Branch,
+    entity: &Entity,
+    claimed: &[String],
+    next: &[String],
+    env: &Env,
+) -> Result<bool, SessionError> {
+    let claimed_set: BTreeSet<&String> = claimed.iter().collect();
+    let next_set: BTreeSet<&String> = next.iter().collect();
+    let mut transaction = branch.transaction();
+    let mut changed = false;
+    // Rule 2: retract only what was read from the tree.
+    for head in claimed.iter().filter(|head| !next_set.contains(head)) {
+        transaction = transaction.retract(Fact::many(HEADS, entity, head.clone())?);
+        changed = true;
+    }
+    // Rule 1: never re-assert a head the branch already claims.
+    for head in next.iter().filter(|head| !claimed_set.contains(head)) {
+        transaction = transaction.assert(Fact::many(HEADS, entity, head.clone())?);
+        changed = true;
+    }
+    if changed && transaction.commit().publish().perform(env).await.is_err() {
+        // The branch head moved under us: refresh and redo the pointer.
+        branch.refresh(env).await.map_err(branch_error)?;
+        return Ok(false);
+    }
+    Ok(true)
+}
+
 pub async fn write<Env: DocumentEnv>(
     branch: &Branch,
     entity: &Entity,
@@ -590,9 +747,25 @@ pub async fn write<Env: DocumentEnv>(
     stamp: &Stamp,
     env: &Env,
 ) -> Result<Written, SessionError> {
+    write_within(branch, entity, create, base, edits, stamp, SIZE_LIMIT, env).await
+}
+
+/// [`write`] with the size limit as a parameter, so a test can reach it
+/// without building an 8 MiB document.
+#[allow(clippy::too_many_arguments)]
+async fn write_within<Env: DocumentEnv>(
+    branch: &Branch,
+    entity: &Entity,
+    create: Option<Format>,
+    base: Option<&[String]>,
+    edits: &[Edit],
+    stamp: &Stamp,
+    limit: usize,
+    env: &Env,
+) -> Result<Written, SessionError> {
     let (_, format) = open(branch, entity, create, env).await?;
     let local_cell = LocalCell::new(&branch.subject(), entity, env);
-    let mut local: Option<Vec<String>> = None;
+    let mut local: Option<(Vec<String>, usize)> = None;
 
     for _ in 0..RETRY_LIMIT {
         // Reload each round: the cell is shared with other sessions.
@@ -604,14 +777,18 @@ pub async fn write<Env: DocumentEnv>(
 
         // Bytes first. The edit is applied once; later rounds only retry
         // the pointer.
-        let line = match &local {
-            Some(line) => line.clone(),
+        let (line, size) = match &local {
+            Some(applied) => applied.clone(),
             None => {
                 let at = base.map_or_else(|| effective.clone(), <[String]>::to_vec);
                 let line = document.edit_all(&at, stamp, edits)?;
+                let size = document.save().len();
+                if size > limit {
+                    return Err(SessionError::TooLarge { size });
+                }
                 cell::save(&local_cell, &mut document, version).await?;
-                local = Some(line.clone());
-                line
+                local = Some((line.clone(), size));
+                (line, size)
             }
         };
 
@@ -619,24 +796,7 @@ pub async fn write<Env: DocumentEnv>(
         union.extend(line.iter().cloned());
         let next = document.normalize(&union)?;
 
-        let claimed_set: BTreeSet<&String> = claimed.iter().collect();
-        let next_set: BTreeSet<&String> = next.iter().collect();
-        let mut transaction = branch.transaction();
-        let mut changed = false;
-        // Rule 2: retract only what was read from the tree.
-        for head in claimed.iter().filter(|head| !next_set.contains(head)) {
-            transaction = transaction.retract(Fact::many(HEADS, entity, head.clone())?);
-            changed = true;
-        }
-        // Rule 1: never re-assert a head the branch already claims.
-        for head in next.iter().filter(|head| !claimed_set.contains(head)) {
-            transaction = transaction.assert(Fact::many(HEADS, entity, head.clone())?);
-            changed = true;
-        }
-        if changed && transaction.commit().publish().perform(env).await.is_err() {
-            // The branch head moved under us: refresh and redo only
-            // the pointer.
-            branch.refresh(env).await.map_err(branch_error)?;
+        if !advance(branch, entity, &claimed, &next, env).await? {
             continue;
         }
         let content = document.content(&next)?;
@@ -647,6 +807,7 @@ pub async fn write<Env: DocumentEnv>(
                 heads: next,
                 content,
             },
+            size,
         });
     }
     Err(SessionError::Contended)
@@ -1338,6 +1499,149 @@ mod tests {
         .await?;
         assert_eq!(claimed_heads(&feature, &doc, &operator).await?.len(), 1);
         assert_eq!(text_of(&next.snapshot), "main base feature!");
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_reads_a_past_version_without_moving_the_branch() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+        let doc = entity("id:prose/doc");
+
+        let first = write(
+            &branch,
+            &doc,
+            Some(Format::Text),
+            None,
+            &set("first"),
+            &stamp(),
+            &operator,
+        )
+        .await?;
+        let second = write(
+            &branch,
+            &doc,
+            None,
+            None,
+            &set("first second"),
+            &stamp(),
+            &operator,
+        )
+        .await?;
+
+        let past = read_at(&branch, &doc, &first.snapshot.heads, &operator).await?;
+        assert_eq!(text_of(&past), "first");
+        assert_eq!(past.heads, first.snapshot.heads);
+        assert_eq!(
+            claimed_heads(&branch, &doc, &operator).await?,
+            second.snapshot.heads,
+            "reading the past moves nothing"
+        );
+        assert!(
+            read_at(&branch, &doc, &["00".repeat(32)], &operator)
+                .await
+                .is_err(),
+            "heads the cell does not hold are refused"
+        );
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_refuses_an_edit_past_the_size_limit() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+        let doc = entity("id:prose/doc");
+
+        let small = write(
+            &branch,
+            &doc,
+            Some(Format::Text),
+            None,
+            &set("small"),
+            &stamp(),
+            &operator,
+        )
+        .await?;
+        assert!(small.size > 0 && small.size < SIZE_WARNING);
+
+        // Text that does not compress, so the stored size tracks it.
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        let noise: String = (0..8192)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                char::from(b'!' + (state % 90) as u8)
+            })
+            .collect();
+        let refused = write_within(
+            &branch,
+            &doc,
+            None,
+            None,
+            &set(&noise),
+            &stamp(),
+            4096,
+            &operator,
+        )
+        .await;
+        assert!(matches!(refused, Err(SessionError::TooLarge { size }) if size > 4096));
+        assert_eq!(
+            text_of(&read(&branch, &doc, None, &operator).await?),
+            "small",
+            "a refused edit leaves the document as it was"
+        );
+        assert_eq!(
+            claimed_heads(&branch, &doc, &operator).await?,
+            small.snapshot.heads
+        );
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_takes_bytes_from_code_that_bundles_its_own_automerge() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+        let doc = entity("id:prose/doc");
+        let base = write(
+            &branch,
+            &doc,
+            Some(Format::Text),
+            None,
+            &set("base"),
+            &stamp(),
+            &operator,
+        )
+        .await?;
+
+        // The space's own automerge: load the bytes, edit, save.
+        let mut theirs = Document::load(&bytes(&branch, &doc, &operator).await?)?;
+        let line = theirs.edit_all(&base.snapshot.heads, &stamp(), &set("base theirs"))?;
+        merge_bytes(&branch, &doc, &theirs.save(), &operator).await?;
+
+        assert_eq!(
+            text_of(&read(&branch, &doc, None, &operator).await?),
+            "base",
+            "merged bytes alone do not move the branch"
+        );
+
+        let adopted = adopt_heads(&branch, &doc, &line, &operator).await?;
+        assert_eq!(text_of(&adopted), "base theirs");
+        assert_eq!(claimed_heads(&branch, &doc, &operator).await?, line);
+
+        assert!(
+            merge_bytes(&branch, &doc, b"not automerge", &operator)
+                .await
+                .is_err()
+        );
+        let table = Document::genesis(Format::Table)?.save();
+        assert!(
+            merge_bytes(&branch, &doc, &table, &operator).await.is_err(),
+            "bytes of another format are refused"
+        );
         Ok(())
     }
 

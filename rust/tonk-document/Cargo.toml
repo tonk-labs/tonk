@@ -9,6 +9,7 @@ description = "Automerge documents in tonk: the document engine, command handler
 [dependencies]
 async-trait = { workspace = true }
 automerge = { workspace = true }
+base64 = { workspace = true }
 blake3 = { workspace = true }
 bs58 = { workspace = true }
 dialog-artifacts = { workspace = true }

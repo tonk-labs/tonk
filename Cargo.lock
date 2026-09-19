@@ -5028,6 +5028,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "automerge",
+ "base64",
  "blake3",
  "bs58",
  "dialog-artifacts",

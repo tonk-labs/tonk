@@ -429,6 +429,13 @@ impl Document {
         self.doc.save()
     }
 
+    /// The document as it is at `heads`, alone: those changes and their
+    /// ancestors, none of another branch's. What an export carries.
+    pub fn save_at(&mut self, heads: &[String]) -> Result<Vec<u8>, DocumentError> {
+        let at = self.resolve(heads)?;
+        Ok(self.doc.fork_at(&at)?.save())
+    }
+
     /// The heads of the whole store — every branch's changes together.
     /// NOT what a branch shows; compare with a marker to tell whether
     /// the store changed.

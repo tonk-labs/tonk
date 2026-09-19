@@ -15,6 +15,7 @@ pub mod engine;
 pub mod formula;
 pub mod session;
 pub mod sync;
+pub mod transfer;
 
 pub use cell::{CellError, LocalCell, RemoteCell, Transport};
 pub use engine::{
