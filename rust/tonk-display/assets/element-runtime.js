@@ -146,11 +146,28 @@
 
   /**
    * Register `tag` with a wrapper class that resolves every call
-   * through `table`. Idempotent: a second call for an already-defined
-   * tag only refreshes the table.
+   * through `table`, having first let `furnish` put this definition's
+   * methods and accessors on the class's prototype. Idempotent: a
+   * second call for an already-defined tag only refreshes the table.
+   *
+   * `furnish` runs BEFORE `customElements.define`, and that ordering is
+   * load-bearing. `define` upgrades matching elements already in the
+   * document SYNCHRONOUSLY, so their `connectedCallback` — and through
+   * it `connected`, and the attribute replay before it — runs inside
+   * this call. Furnishing afterwards would mean a `connected` that
+   * calls a sibling method (`self.helper()`) or reads a declared
+   * accessor hits the prototype a moment before that member exists,
+   * which is not a failure a definition can be written to avoid.
    */
-  const define = (tag) => {
-    if (defined.has(tag)) return;
+  const define = (tag, furnish) => {
+    if (defined.has(tag)) {
+      // Already registered: the prototype is standing, so furnish it
+      // in place. This is the edit path, where a new method or
+      // accessor appears on a definition already in use.
+      const standing = customElements.get(tag)?.prototype;
+      if (standing) furnish(standing);
+      return;
+    }
     if (customElements.get(tag)) {
       // Something else owns this name -- a built-in, or a module that
       // called `customElements.define` itself. Leave it alone rather
@@ -160,23 +177,22 @@
       return;
     }
     defined.add(tag);
-    customElements.define(
-      tag,
-      class extends HTMLElement {
-        connectedCallback() {
-          connect(tag, this);
-        }
-        disconnectedCallback() {
-          live.get(tag)?.delete(this);
-          observers.get(this)?.disconnect();
-          observers.delete(this);
-          call(tag, "disconnected", this);
-        }
-        adoptedCallback() {
-          call(tag, "adopted", this);
-        }
-      },
-    );
+    const Wrapper = class extends HTMLElement {
+      connectedCallback() {
+        connect(tag, this);
+      }
+      disconnectedCallback() {
+        live.get(tag)?.delete(this);
+        observers.get(this)?.disconnect();
+        observers.delete(this);
+        call(tag, "disconnected", this);
+      }
+      adoptedCallback() {
+        call(tag, "adopted", this);
+      }
+    };
+    furnish(Wrapper.prototype);
+    customElements.define(tag, Wrapper);
   };
 
   /**
@@ -251,10 +267,7 @@
 
     const previous = table.get(tag);
     table.set(tag, methods);
-    define(tag);
-
-    const prototype = customElements.get(tag)?.prototype;
-    if (prototype) {
+    define(tag, (prototype) => {
       for (const key of Object.keys(methods)) {
         if (LIFECYCLE.has(key)) continue;
         const name = property(key);
@@ -273,7 +286,7 @@
         });
       }
       installAccessors(tag, prototype);
-    }
+    });
 
     // A default added or changed by an edit reaches instances already
     // mounted, for the same reason an edited method does: the author

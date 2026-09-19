@@ -218,6 +218,41 @@ check('accessor keys camelCase and refuse shadowing', await page.evaluate(() => 
   return el.rowCount === 7 && el.id === 'set-normally';
 }));
 
+// 4j. a method may call a sibling from `connected` even when the
+// definition arrives for an element ALREADY in the document.
+//
+// `customElements.define` upgrades matching elements synchronously, so
+// `connected` runs inside the define call; installing the custom
+// methods afterwards left this throwing `self.helper is not a
+// function` on the one path a definition cannot defend against.
+check('connected can call a sibling on a synchronous upgrade', await page.evaluate(() => {
+  const el = document.createElement('upgrade-el');   // rendered FIRST
+  document.body.append(el);
+  globalThis.upgradeError = null;
+  const onError = (e) => { globalThis.upgradeError = String(e.message ?? e); };
+  window.addEventListener('error', onError);
+  defineTonkElement('upgrade-el', {
+    helper: (self) => 'helped',
+    connected: (self) => { self.textContent = self.helper(); },
+  });
+  window.removeEventListener('error', onError);
+  return el.textContent === 'helped' && globalThis.upgradeError === null;
+}));
+
+// 4k. and the same for an accessor read from `connected`
+check('connected can read an accessor on a synchronous upgrade', await page.evaluate(() => {
+  const el = document.createElement('upgrade-acc-el');
+  el.dataset.n = '3';
+  document.body.append(el);
+  defineTonkElement('upgrade-acc-el',
+    { connected: (self) => { self.textContent = String(self.doubled); } },
+    {},
+    { doubled: (self) => Number(self.dataset.n) * 2 },
+    {},
+  );
+  return el.textContent === '6';
+}));
+
 // 5. attribute-changed via MutationObserver, incl. replay at upgrade
 check('attribute-changed replays initial then observes', await page.evaluate(async () => {
   globalThis.seen = [];
