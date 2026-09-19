@@ -388,6 +388,24 @@ impl dialog_capability::Provider<tonk_schema::command::AddProfile> for crate::ro
         // one is asked to open the ceremony instead, which is why the
         // client is passed here and withheld there.
         super::navigate::notify_register(self.client(), "profile-transition");
+
+        // Report the ask, so the hub can render "a signup is up" from a
+        // fact rather than from element state. The element carried this
+        // on the document body precisely because a re-render replaced it
+        // mid-ceremony; an overlay row survives re-renders by not living
+        // in the DOM at all.
+        //
+        // The worker does not drive this ceremony to completion — the
+        // page's signup does — so the terminal states are written by
+        // whatever finishes it, not here.
+        let tonk = self.state().read().await;
+        super::ceremony::report(
+            &tonk,
+            tonk_schema::ceremony::ADD_PROFILE,
+            tonk_schema::ceremony_state::PENDING_CEREMONY,
+            "",
+        )
+        .await;
     }
 }
 

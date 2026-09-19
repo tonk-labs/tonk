@@ -578,6 +578,14 @@ pub mod ceremony {
     pub const AUTHORIZE_DEVICE: &str = "authorize-device";
     /// `tonk:add-passkey`.
     pub const ADD_PASSKEY: &str = "add-passkey";
+    /// `tonk:add-profile` — signing up a fresh profile's account.
+    ///
+    /// Unlike its siblings the worker does not drive this one to
+    /// completion: it rotates the profile, asks the page to raise the
+    /// signup, and the page's own ceremony runs from there. The status
+    /// exists so the hub can show that a signup is up without holding
+    /// that fact in element state, which a re-render would lose.
+    pub const ADD_PROFILE: &str = "add-profile";
 }
 
 /// The states a [`CeremonyStatus`] can report.
