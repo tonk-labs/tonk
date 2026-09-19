@@ -234,6 +234,8 @@ class TonkProseElement extends HTMLElement {
 
   /** Interval handle for the document-mode poll. */
   #pollTimer: ReturnType<typeof setInterval> | null = null;
+  /** Why the document last failed to open; "" once it is open. */
+  #documentError = "";
 
   /** Pending teardown scheduled by `disconnectedCallback`. Reactive
    *  frameworks (Leptos, mostly) detach and re-attach DOM nodes
@@ -315,21 +317,58 @@ class TonkProseElement extends HTMLElement {
         // the caret, so a remote edit does not disturb typing.
         (text) => editor.setMarkdown(text),
       ),
-      { pinned },
+      {
+        pinned,
+        onOpen: () => {
+          this.#documentError = "";
+          this.#applyReadOnly();
+          if (session.readonly && !session.pinned) {
+            this.#reportDocumentError(
+              new Error("this document is in a newer format; update the app to edit it"),
+            );
+          }
+        },
+      },
     );
     this.#session = session;
-    // A past version cannot be edited, whatever `readonly` says.
-    editor.setReadOnly(pinned || this.hasAttribute("readonly"));
-    void session.open().catch((err) => {
-      console.warn("[tonk-prose] could not open the document:", err);
-    });
-    if (pinned) return;
+    // Locked until the document is open: text typed before that would
+    // be replaced by the document's. It stays locked when the open keeps
+    // failing — a format this build does not know (the app needs an
+    // update), or heads whose bytes have not arrived yet.
+    this.#applyReadOnly();
+    void session.open().catch((err) => this.#reportDocumentError(err));
     this.#pollTimer = setInterval(() => {
       if (document.visibilityState !== "visible") return;
-      void session.poll().catch(() => {
-        // A failed poll is retried by the next tick.
+      // Before the open worked a poll retries it; a failed poll is
+      // retried by the next tick.
+      void session.poll().catch((err) => {
+        if (!session.opened) this.#reportDocumentError(err);
       });
     }, DOCUMENT_POLL_MS);
+  }
+
+  /** The editor is read-only when the page says so, and whenever the
+   *  document cannot take an edit: not open yet, or a past version. */
+  #applyReadOnly(): void {
+    const session = this.#session;
+    const locked = session !== null && (session.readonly || !session.opened);
+    this.#editor?.setReadOnly(locked || this.hasAttribute("readonly"));
+  }
+
+  /** Tell the page why the document did not open — once per reason,
+   *  not once per retry. */
+  #reportDocumentError(err: unknown): void {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message === this.#documentError) return;
+    this.#documentError = message;
+    console.warn("[tonk-prose] could not open the document:", err);
+    this.dispatchEvent(
+      new CustomEvent("documenterror", {
+        detail: { message },
+        bubbles: true,
+        composed: true,
+      }),
+    );
   }
 
   #stopDocument(): void {
@@ -544,7 +583,7 @@ class TonkProseElement extends HTMLElement {
         }
         break;
       case "readonly":
-        this.#editor?.setReadOnly(next !== null || this.#session?.pinned === true);
+        this.#applyReadOnly();
         break;
       case "placeholder":
         this.#editor?.setPlaceholder(next ?? "");

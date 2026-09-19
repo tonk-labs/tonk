@@ -92,8 +92,14 @@ pub struct WriteRequest {
 /// A document as one branch sees it, on the wire.
 #[derive(Debug, Serialize)]
 pub struct DocumentResponse {
-    /// `automerge/text@1` or `automerge/table@1`.
-    pub format: &'static str,
+    /// `automerge/text@1` or `automerge/table@1` — or, with `readonly`,
+    /// the newer format the branch claims.
+    pub format: String,
+    /// The format rule: the document is in a format newer than this app
+    /// knows. It is shown through the shape the app does know, and every
+    /// edit and command is refused until the app is updated.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub readonly: bool,
     /// The heads the branch is at.
     pub heads: Vec<String>,
     /// After a write: the heads the writer's own content corresponds to.
@@ -121,7 +127,10 @@ impl DocumentResponse {
             Content::Table(table) => (None, Some(table)),
         };
         Self {
-            format: snapshot.format.name(),
+            readonly: snapshot.newer.is_some(),
+            format: snapshot
+                .newer
+                .unwrap_or_else(|| snapshot.format.name().to_string()),
             heads: snapshot.heads,
             local,
             text,

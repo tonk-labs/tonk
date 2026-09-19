@@ -49,6 +49,23 @@ impl Format {
         }
     }
 
+    /// The shape a NEWER version of a known format started from:
+    /// `automerge/text@7` is still a text document. The format rule lets
+    /// an older build read such a document through the shape it knows and
+    /// forbids it every edit, so old code can never damage new data.
+    /// `None` for a name this build knows ([`Format::parse`] covers
+    /// those) or cannot place at all.
+    pub fn family(name: &str) -> Option<Self> {
+        if Self::parse(name).is_some() {
+            return None;
+        }
+        let (family, version) = name.rsplit_once('@')?;
+        version.parse::<u32>().ok()?;
+        [Format::Text, Format::Table]
+            .into_iter()
+            .find(|format| format.name().rsplit_once('@').map(|(known, _)| known) == Some(family))
+    }
+
     /// Parse a format claim. An unknown name — a newer format — is
     /// `None`, and the caller opens the document read-only.
     pub fn parse(name: &str) -> Option<Self> {

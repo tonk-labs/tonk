@@ -182,6 +182,67 @@ test("a session pinned to a past version never writes and never polls", async ()
   assert.equal(text, "past typed", "a past version does not follow the branch");
 });
 
+test("waits for a document whose bytes are not here yet", async () => {
+  const host = new FakeHost();
+  host.remote("late");
+  let text = "";
+  let ready = false;
+  let opens = 0;
+  const session = new DocumentSession<string, TextEdit>(
+    {
+      read: async () => {
+        if (!ready) throw new Error("the document is missing changes the heads name");
+        return host.read();
+      },
+      write: host.write,
+    },
+    textEditor(
+      () => text,
+      (next) => (text = next),
+    ),
+    { onOpen: () => opens++ },
+  );
+  await assert.rejects(session.open());
+  assert.equal(session.opened, false);
+
+  text = "typed into a closed document";
+  await session.flush();
+  assert.equal(host.branch, "h1", "an unopened document sends nothing");
+
+  await assert.rejects(session.poll(), "a poll retries the open");
+  ready = true;
+  await session.poll();
+  assert.equal(session.opened, true);
+  assert.equal(text, "late");
+  assert.equal(opens, 1);
+});
+
+test("a document in a newer format is shown and never written", async () => {
+  const host = new FakeHost();
+  host.remote("newer");
+  let text = "";
+  let writes = 0;
+  const session = new DocumentSession<string, TextEdit>(
+    {
+      read: async () => ({ ...(await host.read()), readonly: true }),
+      write: (heads, edits) => {
+        writes++;
+        return host.write(heads, edits);
+      },
+    },
+    textEditor(
+      () => text,
+      (next) => (text = next),
+    ),
+  );
+  await session.open();
+  assert.equal(text, "newer");
+  assert.equal(session.readonly, true);
+  text = "newer typed";
+  await session.flush();
+  assert.equal(writes, 0);
+});
+
 test("reads the heads of an `at` attribute", () => {
   assert.deepEqual(parseHeads(" ab  cd\n"), ["ab", "cd"]);
   assert.deepEqual(parseHeads(null), []);

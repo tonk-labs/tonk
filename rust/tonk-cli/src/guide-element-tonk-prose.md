@@ -51,6 +51,13 @@ and follows nothing; remove `at` to go back to the live version:
 <tonk-prose subject={this} at="<heads from document/versions>"></tonk-prose>
 ```
 
+Until the document is open the editor is locked, so nothing typed is lost;
+the element keeps trying, because a branch's heads can arrive before the
+document's bytes. A `documenterror` event (`detail.message`) says why an open
+failed. A document whose `format` is newer than the app knows — for example
+`automerge/text@2` — is shown read-only, and every edit and command on it is
+refused until the app is updated.
+
 A document takes no more edits once it is stored as 8 MiB (automerge keeps
 every edit, so a document only grows); the edit is refused and nothing
 changes. `tonk export` carries the document with the branch, and

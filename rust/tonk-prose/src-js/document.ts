@@ -38,6 +38,9 @@ export interface Reply<T> {
   local?: string[];
   /** The content at `heads`. */
   content: T;
+  /** The format rule: the document is in a format newer than this app
+   *  knows. It can be shown and must not be edited. */
+  readonly?: boolean;
 }
 
 /** How the session reaches the host. */
@@ -74,15 +77,29 @@ export class DocumentSession<T, E> {
    *  polled. The transport reads that version; the session only makes
    *  sure nothing the editor holds can leave. */
   readonly #pinned: boolean;
+  readonly #onOpen: (() => void) | undefined;
+  /** The host said the document is in a newer format. */
+  #newer = false;
 
-  constructor(transport: Transport<T, E>, editor: Editor<T, E>, options: { pinned?: boolean } = {}) {
+  constructor(
+    transport: Transport<T, E>,
+    editor: Editor<T, E>,
+    options: { pinned?: boolean; onOpen?: () => void } = {},
+  ) {
     this.#transport = transport;
     this.#editor = editor;
     this.#pinned = options.pinned === true;
+    this.#onOpen = options.onOpen;
   }
 
   get pinned(): boolean {
     return this.#pinned;
+  }
+
+  /** Whether the document takes no edits from this element: a past
+   *  version, or a format newer than this app knows. */
+  get readonly(): boolean {
+    return this.#pinned || this.#newer;
   }
 
   /** The heads this element is at. */
@@ -100,7 +117,9 @@ export class DocumentSession<T, E> {
     if (this.#closed) return;
     this.#known = reply.heads;
     this.#accounted = reply.content;
+    this.#newer = reply.readonly === true;
     this.#editor.apply(reply.content);
+    this.#onOpen?.();
   }
 
   /** Whether the editor holds edits the host has not accounted for. */
@@ -114,7 +133,7 @@ export class DocumentSession<T, E> {
   /** Send the editor's unsent edits. Safe to call at any time and any
    *  number of times; concurrent calls coalesce. */
   async flush(): Promise<void> {
-    if (this.#closed || this.#pinned || this.#accounted === null) return;
+    if (this.#closed || this.readonly || this.#accounted === null) return;
     if (this.#inFlight) {
       this.#again = true;
       return;
@@ -154,7 +173,12 @@ export class DocumentSession<T, E> {
   /** Look for changes made elsewhere. Skipped while the editor holds
    *  unsent edits — those go first, and their reply brings the rest. */
   async poll(): Promise<void> {
-    if (this.#closed || this.#pinned || this.#accounted === null) return;
+    if (this.#closed) return;
+    // The first read failed — the heads can arrive before their bytes,
+    // and the host may not be up yet. Try again; until it works the
+    // element shows nothing and takes no edits.
+    if (this.#accounted === null) return this.open();
+    if (this.#pinned) return;
     if (this.#inFlight || this.dirty) return;
     const reply = await this.#transport.read();
     if (this.#closed || this.#inFlight || this.dirty) return;
@@ -230,6 +254,7 @@ export function eventTransport<T>(
       heads: (body.heads as string[]) ?? [],
       local: body.local as string[] | undefined,
       content: content(body),
+      readonly: body.readonly === true,
     };
   };
   return {

@@ -179,6 +179,9 @@ export interface Reply {
   heads: string[];
   local?: string[];
   table: TableSnapshot;
+  /** The format rule: the workbook is in a format newer than this app
+   *  knows. It can be shown and must not be edited. */
+  readonly?: boolean;
 }
 
 export interface Transport {
@@ -203,15 +206,29 @@ export class TableSession {
   /** Pinned to a past version: opened once, then neither written nor
    *  polled. */
   readonly #pinned: boolean;
+  readonly #onOpen: (() => void) | undefined;
+  /** The host said the workbook is in a newer format. */
+  #newer = false;
 
   constructor(
     transport: Transport,
     apply: (table: TableSnapshot) => void,
-    options: { pinned?: boolean } = {},
+    options: { pinned?: boolean; onOpen?: () => void } = {},
   ) {
     this.#transport = transport;
     this.#apply = apply;
     this.#pinned = options.pinned === true;
+    this.#onOpen = options.onOpen;
+  }
+
+  get opened(): boolean {
+    return this.#opened;
+  }
+
+  /** Whether the workbook takes no edits from this element: a past
+   *  version, or a format newer than this app knows. */
+  get readonly(): boolean {
+    return this.#pinned || this.#newer;
   }
 
   get pinned(): boolean {
@@ -227,13 +244,16 @@ export class TableSession {
     if (this.#closed) return;
     this.#known = reply.heads;
     this.#opened = true;
+    this.#newer = reply.readonly === true;
+    if (this.#newer) this.#queue = [];
     this.#apply(reply.table);
+    this.#onOpen?.();
     if (this.#queue.length > 0) await this.flush();
   }
 
   /** Queue edits. The caller flushes once the gesture settled. */
   push(edits: TableEdit[]): void {
-    if (this.#pinned) return;
+    if (this.readonly) return;
     this.#queue.push(...edits);
   }
 
@@ -263,6 +283,10 @@ export class TableSession {
 
   /** Look for changes made elsewhere. */
   async poll(): Promise<void> {
+    if (this.#closed) return;
+    // The first read failed — the heads can arrive before their bytes.
+    // Try again; until it works the grid shows nothing and takes no edits.
+    if (!this.#opened) return this.open();
     if (this.#pinned) return;
     if (this.#closed || !this.#opened || this.#inFlight || this.#queue.length > 0) return;
     const reply = await this.#transport.read();
@@ -318,6 +342,7 @@ export function eventTransport(
       heads: (body.heads as string[]) ?? [],
       local: body.local as string[] | undefined,
       table: (body.table as TableSnapshot) ?? { sheets: [] },
+      readonly: body.readonly === true,
     };
   };
   return {

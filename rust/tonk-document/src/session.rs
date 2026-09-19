@@ -115,6 +115,10 @@ pub struct Snapshot {
     pub heads: Vec<String>,
     /// The content at those heads.
     pub content: Content,
+    /// Set when the branch claims a format NEWER than this build knows:
+    /// the claimed name. The content was read through the family's
+    /// shape, and the document takes no edits from this build.
+    pub newer: Option<String>,
 }
 
 /// The result of a write.
@@ -586,7 +590,12 @@ pub async fn read<Env: DocumentEnv>(
     create: Option<Format>,
     env: &Env,
 ) -> Result<Snapshot, SessionError> {
-    let (mut document, format) = open(branch, entity, create, env).await?;
+    let (mut document, format) = match open(branch, entity, create, env).await {
+        Err(SessionError::UnknownFormat(entity_name, name)) => {
+            return read_newer(branch, entity, entity_name, name, env).await;
+        }
+        other => other?,
+    };
     let (_, heads) = heads_or_genesis(branch, entity, format, env).await?;
     let heads = document.normalize(&heads)?;
     let content = document.content(&heads)?;
@@ -594,6 +603,40 @@ pub async fn read<Env: DocumentEnv>(
         format,
         heads,
         content,
+        newer: None,
+    })
+}
+
+/// The format rule's read half. The branch claims a format this build
+/// does not know. When it is a newer version of one it does know, and
+/// the bytes still load through that shape, show them — read-only:
+/// every write path goes through [`open`], which refuses the format, so
+/// nothing here can change the document. Creates and converts nothing.
+async fn read_newer<Env: DocumentEnv>(
+    branch: &Branch,
+    entity: &Entity,
+    entity_name: String,
+    name: String,
+    env: &Env,
+) -> Result<Snapshot, SessionError> {
+    let unknown = || SessionError::UnknownFormat(entity_name.clone(), name.clone());
+    let family = Format::family(&name).ok_or_else(unknown)?;
+    let local = LocalCell::new(&branch.subject(), entity, env);
+    let (mut document, _) = cell::load(&local)
+        .await
+        .map_err(|_| unknown())?
+        .ok_or_else(unknown)?;
+    if document.format() != family {
+        return Err(unknown());
+    }
+    let (_, heads) = heads_or_genesis(branch, entity, family, env).await?;
+    let heads = document.normalize(&heads)?;
+    let content = document.content(&heads).map_err(|_| unknown())?;
+    Ok(Snapshot {
+        format: family,
+        heads,
+        content,
+        newer: Some(name),
     })
 }
 
@@ -615,6 +658,7 @@ pub async fn read_at<Env: DocumentEnv>(
         format,
         heads,
         content,
+        newer: None,
     })
 }
 
@@ -698,6 +742,7 @@ async fn write_pointer<Env: DocumentEnv>(
                     format,
                     heads: next,
                     content,
+                    newer: None,
                 },
                 size,
             });
@@ -806,6 +851,7 @@ async fn write_within<Env: DocumentEnv>(
                 format,
                 heads: next,
                 content,
+                newer: None,
             },
             size,
         });
@@ -1642,6 +1688,71 @@ mod tests {
             merge_bytes(&branch, &doc, &table, &operator).await.is_err(),
             "bytes of another format are refused"
         );
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_opens_a_newer_format_read_only() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+        let doc = entity("id:prose/doc");
+        let written = write(
+            &branch,
+            &doc,
+            Some(Format::Text),
+            None,
+            &set("from a newer app"),
+            &stamp(),
+            &operator,
+        )
+        .await?;
+
+        // A newer app moved the document to a format this build lacks.
+        branch
+            .transaction()
+            .assert(Fact::one(FORMAT, &doc, "automerge/text@2".to_string())?)
+            .commit()
+            .publish()
+            .perform(&operator)
+            .await?;
+
+        let snapshot = read(&branch, &doc, None, &operator).await?;
+        assert_eq!(text_of(&snapshot), "from a newer app");
+        assert_eq!(snapshot.newer.as_deref(), Some("automerge/text@2"));
+        assert_eq!(snapshot.heads, written.snapshot.heads);
+
+        let refused = write(&branch, &doc, None, None, &set("x"), &stamp(), &operator).await;
+        assert!(matches!(refused, Err(SessionError::UnknownFormat(..))));
+        let command = crate::command::Request {
+            command: entity("cmd:replace"),
+            document: doc.clone(),
+            base: None,
+            edits: set("y"),
+        };
+        assert!(
+            crate::command::run(&branch, &operator, &stamp(), &command)
+                .await
+                .is_err(),
+            "a command is refused too"
+        );
+        assert_eq!(
+            text_of(&read(&branch, &doc, None, &operator).await?),
+            "from a newer app"
+        );
+
+        // A format of no family this build knows cannot be shown at all.
+        branch
+            .transaction()
+            .assert(Fact::one(FORMAT, &doc, "automerge/canvas@1".to_string())?)
+            .commit()
+            .publish()
+            .perform(&operator)
+            .await?;
+        assert!(matches!(
+            read(&branch, &doc, None, &operator).await,
+            Err(SessionError::UnknownFormat(..))
+        ));
         Ok(())
     }
 

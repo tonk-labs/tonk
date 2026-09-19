@@ -58,7 +58,9 @@ paths also cover `name`, `order`, `styles/<A1>`, `widths/<col>`,
 `heights/<row>`. History works as for prose (`tonk query document/versions
 --term document=id:table/book`), and so does showing a past version:
 `<tonk-table subject={this} document at="<heads>">` is read-only and follows
-nothing. These need
+nothing. The grid is locked until the workbook is open, a `documenterror`
+event says why an open failed, and a workbook in a newer format than the app
+knows is shown read-only. These need
 `rust/tonk-core/assets/library/document.yaml` evaluated into the space.
 
 ## Claims mode (individuated, store-backed)

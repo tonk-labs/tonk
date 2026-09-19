@@ -47,8 +47,9 @@ pub async fn documents<Env: DocumentEnv>(
     let mut artifacts = Vec::new();
     let mut missing = Vec::new();
     for (entity, name) in session::documents(branch, env).await? {
-        let Some(format) = Format::parse(&name) else {
-            // A format this build does not know: its claims still export.
+        // A newer format still exports: saving at heads needs no shape,
+        // only the family's genesis for a document nobody edited yet.
+        let Some(format) = Format::parse(&name).or_else(|| Format::family(&name)) else {
             missing.push(entity);
             continue;
         };

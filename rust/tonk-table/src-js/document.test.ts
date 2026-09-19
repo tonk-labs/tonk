@@ -155,3 +155,47 @@ test("a session pinned to a past version takes no edits and does not follow the 
   assert.equal(latest.sheets[0].cells.A1, "past");
   assert.deepEqual(parseHeads("ab cd"), ["ab", "cd"]);
 });
+
+test("waits for a workbook whose bytes are not here yet", async () => {
+  const host = new FakeHost();
+  host.remote("A1", "late");
+  let ready = false;
+  let opens = 0;
+  let latest: TableSnapshot = { sheets: [] };
+  const session = new TableSession(
+    {
+      read: async () => {
+        if (!ready) throw new Error("the document is missing changes the heads name");
+        return host.read();
+      },
+      write: host.write,
+    },
+    (table) => (latest = table),
+    { onOpen: () => opens++ },
+  );
+  await assert.rejects(session.open());
+  assert.equal(session.opened, false);
+  await assert.rejects(session.poll(), "a poll retries the open");
+
+  ready = true;
+  await session.poll();
+  assert.equal(session.opened, true);
+  assert.equal(latest.sheets[0].cells.A1, "late");
+  assert.equal(opens, 1);
+});
+
+test("a workbook in a newer format is shown and never written", async () => {
+  const host = new FakeHost();
+  host.remote("A1", "newer");
+  let latest: TableSnapshot = { sheets: [] };
+  const session = new TableSession(
+    { read: async () => ({ ...(await host.read()), readonly: true }), write: host.write },
+    (table) => (latest = table),
+  );
+  await session.open();
+  assert.equal(latest.sheets[0].cells.A1, "newer");
+  assert.equal(session.readonly, true);
+  session.push(editsOf("createcell", { cellSheet: "s1", cellAt: "B1", cellContent: "x" }, () => "x"));
+  await session.flush();
+  assert.equal(host.writes.length, 0);
+});
