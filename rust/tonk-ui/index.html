@@ -407,32 +407,10 @@
                     self.tonkBootLife?.();
                 }
             };
-            // A profile switch in ANOTHER tab retires this document's
-            // account context. The worker binds each client to the
-            // active-profile generation and answers every later
-            // profile-scoped request from a stale one with `409 profile
-            // changed; reload required`, so this tab cannot keep
-            // operating on the account it was showing — it can only
-            // keep DISPLAYING it, which is the worse failure: the page
-            // looks signed in as someone it can no longer act as.
-            //
-            // Reloading is the whole recovery. The worker has already
-            // repointed the active profile, so a fresh document binds
-            // to the new generation and renders the account that is now
-            // active. Latched, because the broadcast reaches every tab
-            // and a reload already under way must not be restarted.
-            let profileReloadRequested = false;
-            const noteProfileChanged = (message) => {
-                if (message?.type !== "profile-changed") return;
-                if (profileReloadRequested) return;
-                profileReloadRequested = true;
-                location.reload();
-            };
             if (serviceWorkersSupported) {
-                navigator.serviceWorker.addEventListener("message", (event) => {
-                    noteInstallProgress(event.data);
-                    noteProfileChanged(event.data);
-                });
+                navigator.serviceWorker.addEventListener("message", (event) =>
+                    noteInstallProgress(event.data),
+                );
                 try {
                     const installProgress = new BroadcastChannel(
                         INSTALL_PROGRESS_CHANNEL,
