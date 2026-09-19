@@ -748,6 +748,94 @@ mod when_defining_an_element {
         Ok(())
     }
 
+    /// `description` is the only field an `element!:` body must set.
+    /// Both dictionaries are keyed collections, which are zero-or-more,
+    /// so a body that omits them is COMPLETE, not partial — it declares
+    /// an element with no methods and no defaults.
+    ///
+    /// Pinned because the completeness check on a derived entity used
+    /// to count a collection as missing: this body was refused, and so
+    /// was every `element!:` that did not declare a default. The tag
+    /// still resolves and the row still lists; the browser just leaves
+    /// the tag inert, since there is nothing to register.
+    #[dialog_common::test]
+    async fn it_accepts_an_element_that_declares_only_a_description() -> Result<()> {
+        let test = TestSite::new().await?;
+        test.eval_inline("element!: &bare-widget\n  description: \"Nothing but a name\"\n")
+            .await?;
+
+        assert!(
+            tonk_cli::views::entity_for_name(&test.site, "bare-widget")
+                .await?
+                .is_some(),
+            "the anchor should still publish the tag",
+        );
+        assert!(
+            tonk_cli::elements::methods_of(&test.site, "bare-widget")
+                .await?
+                .is_empty(),
+        );
+        assert!(
+            tonk_cli::elements::attributes_of(&test.site, "bare-widget")
+                .await?
+                .is_empty(),
+        );
+        Ok(())
+    }
+
+    /// The complement: `description` is a plain required field, and a
+    /// collection cannot stand in for it. A body carrying methods but
+    /// no description derives an entity that says nothing about what
+    /// the element is for, which is the thing the field exists to stop.
+    #[dialog_common::test]
+    async fn it_requires_a_description_even_when_methods_are_given() -> Result<()> {
+        let test = TestSite::new().await?;
+        for body in [
+            "element!: &m-only\n  method:\n    connected: |\n      (self) => {}\n",
+            "element!: &a-only\n  attribute:\n    color: \"red\"\n",
+        ] {
+            let err = test
+                .eval_inline(body)
+                .await
+                .expect_err("a body with no description should be refused");
+            let text = err.to_string();
+            assert!(text.contains("description"), "{text}");
+        }
+        Ok(())
+    }
+
+    /// Collections are exempt from the completeness check because
+    /// omitting one means zero entries. BLANKING one is different: `_`
+    /// retracts, and retracting every field of an entity that does not
+    /// exist yet sets nothing at all — on a derived entity every such
+    /// body digests alike and collapses onto one subject.
+    ///
+    /// Uses a concept whose `with:` is nothing but a collection, since
+    /// `element`'s required `description` would trip the check first.
+    #[dialog_common::test]
+    async fn it_refuses_a_body_that_only_blanks_its_collections() -> Result<()> {
+        let test = TestSite::new().await?;
+        test.eval_inline(
+            "concept!: &thing\n  description: \"A thing\"\n  with:\n    bit:\n      description: \"Bits\"\n      the: xyz.probe.thing.bit\n      as: {[symbol]: text}\n      cardinality: one\n",
+        )
+        .await?;
+
+        // One entry is a complete body.
+        test.eval_inline("thing!: &t-one\n  bit:\n    a: \"1\"\n")
+            .await?;
+
+        let err = test
+            .eval_inline("thing!: &t-two\n  bit: _\n")
+            .await
+            .expect_err("a body that sets nothing should be refused");
+        let text = err.to_string();
+        assert!(
+            text.contains("sets only some of the concept's fields"),
+            "{text}",
+        );
+        Ok(())
+    }
+
     /// The one place `attribute` being a required collection shows: a
     /// GENERIC concept query binds every field the concept declares,
     /// and a collection with no entries binds nothing, so an element

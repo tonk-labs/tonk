@@ -1471,6 +1471,14 @@ view!:
 # The concept is anchored, not pinned, like the other view-layer
 # concepts here: a pin is for a concept some code names by URI, and
 # nothing names this one.
+#
+# `description` is the only field a body must set. Both dictionaries
+# below are keyed collections, which are zero-or-more, so omitting one
+# declares an empty map rather than leaving a field unset — an
+# `element!:` carrying a description alone is a complete assertion. It
+# defines an element with no methods and no defaults: the tag resolves,
+# the row lists, and the browser leaves the tag inert because there is
+# nothing to register.
 concept!: &element
   description: A custom element definition carried as branch data
   with:
