@@ -695,7 +695,7 @@ async fn it_recovers_space_access_on_a_second_device(env: AccessServiceAddress) 
     let second_remote = dialog_repository::Repository::from(&second.profile)
         .remote("account")
         .create(dialog_repository::SiteAddress::from(
-            dialog_remote_ucan_s3::UcanAddress::new(&remote),
+            dialog_remote_ucan::UcanAddress::new(&remote),
         ))
         .subject(account_root.clone())
         .perform(second_operator)

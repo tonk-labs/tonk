@@ -2513,7 +2513,7 @@ async fn run_pause_sync(
 /// Shared by [`enable_sync_inner`] (called for both the create and
 /// enable-sync forms) so they produce an identical remote shape.
 fn space_config(remote: &str) -> Result<RepositoryConfiguration, RepositoryError> {
-    use dialog_remote_ucan_s3::UcanAddress;
+    use dialog_remote_ucan::UcanAddress;
 
     let remote = remote.trim();
     if remote.is_empty() {
@@ -4886,6 +4886,152 @@ pub(crate) async fn reconcile_profile_library(
 ) -> Result<ProfileLibraryOutcome, RepositoryError> {
     let prepared = tonk.profile_library.acquire().await?;
     reconcile_prepared_profile_library(tonk, prepared).await
+}
+
+/// The version of every commit that installed the shipped library on
+/// this branch, in changelog order, retired records included.
+///
+/// Read from the branch's own history: each install records its version
+/// as a fact on the seed's entity, and a retired record's assertion is
+/// still in the changelog even though the fact is gone.
+async fn recorded_library_install_versions(
+    tonk: &TonkState,
+    session: &dialog_reactor::BranchSession,
+) -> Result<Vec<String>, RepositoryError> {
+    use dialog_artifacts::history::HistorySelector;
+    use futures_util::StreamExt as _;
+
+    let history = session.handle().history(&tonk.operator).await;
+    let records = history.select(HistorySelector::All);
+    tokio::pin!(records);
+
+    let mut sources: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut versions: Vec<(String, String)> = Vec::new();
+    while let Some(record) = records.next().await {
+        let (_, record) = record
+            .map_err(|e| RepositoryError::Internal(format!("read library install history: {e}")))?;
+        if !record.is_assertion() {
+            continue;
+        }
+        let claim = record.claim();
+        match (claim.the.as_str(), &claim.is) {
+            ("xyz.tonk.seed/source", dialog_artifacts::Value::String(source)) => {
+                sources.insert(claim.of.to_string(), source.clone());
+            }
+            ("xyz.tonk.seed/version", dialog_artifacts::Value::String(version)) => {
+                versions.push((claim.of.to_string(), version.clone()));
+            }
+            _ => {}
+        }
+    }
+    Ok(versions
+        .into_iter()
+        .filter(|(seed, _)| {
+            sources
+                .get(seed)
+                .is_some_and(|source| source == PROFILE_LIBRARY_URL)
+        })
+        .map(|(_, version)| version)
+        .collect())
+}
+
+/// What [`retract_local_profile_library`] withdrew: the installations it
+/// found and the claims it retracted for them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RetractedLibrary {
+    pub(crate) installations: usize,
+    pub(crate) claims: usize,
+}
+
+/// Withdraw this profile's own library installations, before its first
+/// contact with an account that already holds one.
+///
+/// A device installs the shipped library the moment it boots, long
+/// before it knows which account it will join, and the account was
+/// installed the same way by whichever device came first. Left alone, a
+/// first contact replays the device's copy onto the account: the same
+/// claims when the digests match (the merge collapses those, but not
+/// the install record, whose version names this device's own commit),
+/// or a second set of name bindings when they differ, which is the
+/// mixed state the reconcile then has to repair by reading every
+/// installation's changelog over the wire. Retracting the local
+/// installation first, in a local commit, keeps the device's copy out
+/// of the delta the pull replays: the account's library is what this
+/// device runs from then on, and if the account's is older than the
+/// running build the reconcile upgrades it through its normal path,
+/// reading one installation's changelog rather than one per device.
+///
+/// Everything read here is local: the installation records are facts
+/// on this branch, and the installing commit's changelog is this
+/// device's own. The install's assertions and its records go in one
+/// commit. Nothing is pushed; the sweep publishes once the pull is in.
+///
+/// Only for a first contact with an account that has content. A brand
+/// new account has no library to take over, and a device that retracted
+/// its own would join with no UI at all.
+pub(crate) async fn retract_local_profile_library(
+    tonk: &TonkState,
+) -> Result<RetractedLibrary, RepositoryError> {
+    let session = tonk
+        .reactor
+        .profile_repository()
+        .branch(PROFILE_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|error| {
+            RepositoryError::Internal(format!(
+                "open profile branch to retract the library: {error}"
+            ))
+        })?;
+    let installations = profile_library_installations(tonk, &session).await?;
+    if installations.is_empty() {
+        return Ok(RetractedLibrary {
+            installations: 0,
+            claims: 0,
+        });
+    }
+    // Every install this branch ever recorded, not only the live record:
+    // an upgrade's commit carries just what changed, and the claims it
+    // kept were written by the install before it, whose record it
+    // retired. The changelog still lists that record's assertion, so the
+    // whole chain is recoverable locally.
+    let mut claims = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for version in recorded_library_install_versions(tonk, &session).await? {
+        for claim in assertions_at_version(tonk, &session, &version).await? {
+            let identity = (
+                claim.the.to_string(),
+                claim.of.to_string(),
+                format!("{:?}", claim.is),
+            );
+            if seen.insert(identity) {
+                claims.push(claim);
+            }
+        }
+    }
+    for installation in &installations {
+        claims.extend(raw_seed_metadata(installation));
+    }
+    let retracted = RetractedLibrary {
+        installations: installations.len(),
+        claims: claims.len(),
+    };
+    let mut transaction = tonk
+        .reactor
+        .profile_repository()
+        .branch(PROFILE_BRANCH)
+        .transaction();
+    for claim in claims {
+        transaction = transaction.retract(claim);
+    }
+    transaction
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| {
+            RepositoryError::Internal(format!("retract the local profile library: {error}"))
+        })?;
+    Ok(retracted)
 }
 
 /// Parse, analyze, and lower a self-contained profile-library document into
@@ -7927,7 +8073,7 @@ mod tests {
     use tower::ServiceExt;
 
     use axum::Router;
-    use dialog_remote_ucan_s3::UcanAddress;
+    use dialog_remote_ucan::UcanAddress;
     use dialog_repository::SiteAddress;
 
     use super::{
@@ -9839,7 +9985,7 @@ block/insert!:
         endpoint: &str,
         relay: Option<&str>,
     ) -> RepositoryInfo {
-        use dialog_remote_ucan_s3::UcanAddress;
+        use dialog_remote_ucan::UcanAddress;
 
         let mut remote = RemoteConfiguration::new(SiteAddress::from(UcanAddress::new(endpoint)));
         if let Some(relay) = relay {

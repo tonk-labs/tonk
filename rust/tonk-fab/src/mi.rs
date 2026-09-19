@@ -11,6 +11,19 @@
 //! the pick and discloses the sub-stack in place instead (see
 //! `bar::open_sub`), because a flyout needs room a finger does not imply.
 //!
+//! ## Hover is forgiving
+//!
+//! The gaps a stack is built from are pure page (law 2), so hover alone made
+//! the flyout twitchy: a pointer that clipped the 7px above a row lost the
+//! row, and the stack it was reaching for vanished mid-approach. Two answers,
+//! both here:
+//!
+//! * a row's hit area reaches half a gap past its box, so the gaps between
+//!   rows are live ground rather than a trap; and
+//! * a flyout opened by hover keeps standing for [`FLYOUT_GRACE_MS`] after
+//!   the pointer leaves ([`hold`]/[`release`] on the `hot` attribute), so a
+//!   pointer that strays and comes back finds it where it left it.
+//!
 //! Attributes: `muted` `chrome` `tall` `current` `cap=left|right` `label`.
 
 use std::cell::RefCell;
@@ -19,6 +32,7 @@ use std::rc::Rc;
 use custom_elements::CustomElement;
 use js_sys::{Object, Reflect};
 use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::Closure;
 use web_sys::{Element, HtmlElement, window};
 
 use crate::shadow::{self, Bound};
@@ -33,16 +47,37 @@ const CLIP_MARGIN_PX: f64 = 8.0;
 /// The width a flyout is assumed to need before it has been measured.
 const DEFAULT_MENU_WIDTH_PX: f64 = 216.0;
 
+/// How long a hover-opened flyout stands after the pointer leaves the row.
+///
+/// Long enough to cross a gap, a corner or a slip of the wrist and come
+/// back; short enough that a flyout the pointer has genuinely abandoned is
+/// gone before it is in the way.
+const FLYOUT_GRACE_MS: i32 = 320;
+
 const CSS: &str = r#"
 :host{ display:block; position:relative; }
 :host([hidden]){ display:none !important; }
-.row{ width:100%; min-height:var(--_mi-min-height, 36px); display:flex; align-items:flex-end; justify-content:flex-end;
+.row{ position:relative; width:100%; min-height:var(--_mi-min-height, 36px); display:flex; align-items:flex-end; justify-content:flex-end;
   gap:8px; padding:0 10px 9px 22px;
   font-size:13px; line-height:1; font-weight:500; color:var(--_ink);
   background:transparent; /* the stack's underlay wears the glass */
   box-shadow:var(--_ring); }
 .row:hover{ background:var(--_hover); }
 .row:active{ background:var(--_press); }
+/* The 7px between rows is pure page (law 2), which also made it dead
+   ground: a pointer that clipped it dropped the row and took the flyout the
+   row was holding open with it. Two transparent strips let a row answer the
+   half-gap above and below it, so the whole column is live and the gaps
+   still read as page. They sit OUTSIDE the row's border box on purpose —
+   over it they would cover the label, and a renaming row's label is a caret
+   target. The stack's own ends keep theirs to themselves: past them lies
+   the bar or the page, and neither wants a row reaching into it. */
+.row::before, .row::after{ content:""; position:absolute; left:0; right:0;
+  height:var(--_mi-bridge, 4px); }
+.row::before{ top:calc(-1 * var(--_mi-bridge, 4px)); }
+.row::after{ bottom:calc(-1 * var(--_mi-bridge, 4px)); }
+:host(:first-child) .row::before, :host([cap]) .row::before{ display:none; }
+:host(:last-child) .row::after, :host([cap]) .row::after{ display:none; }
 /* capped rows keep their own frost — the underlay is rectangular and cannot
    follow the 18px radii (dialog rails only, and the mask skips them so no
    square glass shows behind the curve) */
@@ -80,8 +115,12 @@ const CSS: &str = r#"
   background:transparent; border:0; -webkit-backdrop-filter:none; backdrop-filter:none;
   pointer-events:auto; }
 .fly.flip::before{ left:auto; right:-8px; }
+/* `hot` is hover with a grace period: set on `pointerenter`, dropped a beat
+   after `pointerleave` (see `release`). Hover itself still opens the flyout
+   on the spot, so the opening never waits on a listener — `hot` only
+   governs how it goes away. */
 @media (hover:hover) and (pointer:fine){
-  :host(:hover) .fly, :host(:focus-within) .fly{ display:block; }
+  :host(:hover) .fly, :host(:focus-within) .fly, :host([hot]) .fly{ display:block; }
 }
 /* Picked open. Hover is the pointer's way in, but a row that is taken --
    by click, by keyboard, by anything that is not a hovering mouse -- has
@@ -94,12 +133,66 @@ const HTML: &str = r#"<div class="w" style="display:contents">
   <div class="fly"><slot name="sub"></slot></div>
 </div>"#;
 
+/// The grace period a hover-opened flyout coasts on after the pointer
+/// leaves the row.
+///
+/// The expiry callback is made once per element and reused: a stack is
+/// hovered across dozens of times in a sitting, and a closure leaked per
+/// pass would be a slow drip for no reason.
+#[derive(Clone)]
+struct Grace {
+    /// The timer still to fire, so re-entering the row can cancel it.
+    pending: Rc<RefCell<Option<i32>>>,
+    /// Drops `hot` when it fires.
+    expire: Rc<Closure<dyn FnMut()>>,
+}
+
+impl Grace {
+    fn new(this: &HtmlElement) -> Self {
+        let host = this.clone();
+        let pending = Rc::new(RefCell::new(None));
+        let slot = pending.clone();
+        let expire = Closure::<dyn FnMut()>::new(move || {
+            *slot.borrow_mut() = None;
+            let _ = host.remove_attribute("hot");
+        });
+        Self {
+            pending,
+            expire: Rc::new(expire),
+        }
+    }
+
+    /// Cancel the pending expiry, if any.
+    fn cancel(&self) {
+        let Some(id) = self.pending.borrow_mut().take() else {
+            return;
+        };
+        if let Some(win) = window() {
+            win.clear_timeout_with_handle(id);
+        }
+    }
+
+    /// Start the countdown, replacing any already running.
+    fn start(&self) {
+        self.cancel();
+        let Some(win) = window() else { return };
+        if let Ok(id) = win.set_timeout_with_callback_and_timeout_and_arguments_0(
+            self.expire.as_ref().as_ref().unchecked_ref(),
+            FLYOUT_GRACE_MS,
+        ) {
+            *self.pending.borrow_mut() = Some(id);
+        }
+    }
+}
+
 /// Per-element state — listeners kept alive for the element's lifetime.
 #[derive(Default)]
 pub(crate) struct TonkMi {
     listeners: Vec<Bound>,
     /// Retained so repeated `slotchange` wiring is not re-installed.
     wired: Rc<RefCell<bool>>,
+    /// Built on connect, so it can hold this element's host and timer.
+    grace: Option<Grace>,
 }
 
 impl CustomElement for TonkMi {
@@ -157,10 +250,45 @@ impl CustomElement for TonkMi {
                 .push(shadow::bind(this, event, move |_| aim_flyout(&host)));
         }
 
+        // Hover, held. `pointerenter` takes `hot`; `pointerleave` only starts
+        // the countdown to dropping it. A flyout is a descendant of the row,
+        // so crossing into one fires no leave at all — the grace is for the
+        // pointer that misses, clips a gap, or rounds a corner on its way.
+        //
+        // Focus is deliberately not wired here: `:focus-within` already
+        // shows the flyout and gives it back the moment focus moves, and a
+        // `hot` taken on `focusin` would need a matching `focusout` to ever
+        // come off.
+        let grace = Grace::new(this);
+        {
+            let host = this.clone();
+            let grace = grace.clone();
+            self.listeners
+                .push(shadow::bind(this, "pointerenter", move |_| {
+                    hold(&host, &grace)
+                }));
+        }
+        {
+            let host = this.clone();
+            let grace = grace.clone();
+            self.listeners
+                .push(shadow::bind(this, "pointerleave", move |_| {
+                    release(&host, &grace)
+                }));
+        }
+        self.grace = Some(grace);
+
         self.listeners.push(shadow::install_visibility_pause(this));
     }
 
-    fn disconnected_callback(&mut self, _this: &HtmlElement) {
+    fn disconnected_callback(&mut self, this: &HtmlElement) {
+        if let Some(grace) = self.grace.take() {
+            grace.cancel();
+        }
+        // A row taken off the page mid-grace must not come back hot: the bar
+        // moves stacks between parents to disclose a sub in place, and the
+        // row would return with a flyout standing that nothing is pointing at.
+        let _ = this.remove_attribute("hot");
         self.listeners.clear();
         *self.wired.borrow_mut() = false;
     }
@@ -217,6 +345,43 @@ fn unhide_subs(this: &HtmlElement) {
         };
         let _ = element.remove_attribute("hidden");
     }
+}
+
+/// Take `hot`: the pointer is on this row, so its flyout stands until the
+/// grace period says otherwise.
+///
+/// A sibling still coasting on its own grace loses `hot` here rather than
+/// when its timer fires — two flyouts standing over the same column is the
+/// one thing the grace period could otherwise introduce. Its timer fires
+/// later and finds nothing to do.
+fn hold(this: &HtmlElement, grace: &Grace) {
+    grace.cancel();
+    let _ = this.set_attribute("hot", "");
+    let Some(parent) = this.parent_element() else {
+        return;
+    };
+    let Ok(siblings) = parent.query_selector_all("tonk-mi[hot]") else {
+        return;
+    };
+    for index in 0..siblings.length() {
+        if let Some(node) = siblings.item(index)
+            && let Ok(sibling) = node.dyn_into::<Element>()
+            && !sibling.is_same_node(Some(this))
+        {
+            let _ = sibling.remove_attribute("hot");
+        }
+    }
+}
+
+/// Start the countdown to dropping `hot`.
+///
+/// Nothing is hidden here. The flyout goes when the timer fires, and a
+/// pointer that comes back before then cancels it in [`hold`].
+fn release(this: &HtmlElement, grace: &Grace) {
+    if !this.has_attribute("hot") {
+        return;
+    }
+    grace.start();
 }
 
 /// Open this row's flyout, and close any sibling that was open.
@@ -348,5 +513,242 @@ pub(crate) fn register() {
     let Some(win) = window() else { return };
     if win.custom_elements().get("tonk-mi").is_undefined() {
         TonkMi::define("tonk-mi");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use wasm_bindgen::JsCast as _;
+    use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
+    use web_sys::{Element, Event, HtmlElement, window};
+
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    /// The stack the tests drive: a row carrying a flyout, then two plain
+    /// rows, with the usual 7px between them.
+    const STACK: &str = r#"
+        <tonk-mi id="opener"><span>open</span>
+          <tonk-menu slot="sub">
+            <tonk-mi><span>tonk team</span></tonk-mi>
+            <tonk-mi><span>Notebook</span></tonk-mi>
+          </tonk-menu>
+        </tonk-mi>
+        <tonk-mi id="second"><span>rename</span></tonk-mi>
+        <tonk-mi id="third"><span>settings</span></tonk-mi>"#;
+
+    fn mount() -> HtmlElement {
+        super::register();
+        crate::menu::register();
+        let document = window().expect("window").document().expect("document");
+        let stack: HtmlElement = document
+            .create_element("tonk-menu")
+            .expect("stack")
+            .dyn_into()
+            .expect("HtmlElement");
+        // Fixed and away from the page edges, so a point taken just outside
+        // a row is still a point in the viewport.
+        stack
+            .set_attribute("style", "position:fixed; left:60px; top:60px; width:216px;")
+            .expect("place the stack");
+        stack.set_inner_html(STACK);
+        document
+            .body()
+            .expect("body")
+            .append_child(&stack)
+            .expect("append the stack");
+        stack
+    }
+
+    fn row(stack: &HtmlElement, selector: &str) -> HtmlElement {
+        stack
+            .query_selector(selector)
+            .expect("valid selector")
+            .unwrap_or_else(|| panic!("missing {selector}"))
+            .dyn_into()
+            .expect("HtmlElement")
+    }
+
+    fn pointer(target: &HtmlElement, kind: &str) {
+        let event = Event::new(kind).expect("pointer event");
+        target.dispatch_event(&event).expect("dispatch");
+    }
+
+    async fn rest(ms: i32) {
+        let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+            window()
+                .expect("window")
+                .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms)
+                .expect("set timeout");
+        });
+        wasm_bindgen_futures::JsFuture::from(promise)
+            .await
+            .expect("the timeout resolves");
+    }
+
+    /// What the document finds under a point — a hit inside a row's shadow
+    /// retargets to the `tonk-mi` host.
+    fn hit(x: f64, y: f64) -> Option<Element> {
+        window()
+            .expect("window")
+            .document()
+            .expect("document")
+            .element_from_point(x as f32, y as f32)
+    }
+
+    /// `hot` is asserted rather than the flyout's `display` on purpose: the
+    /// flyout is gated behind `(hover:hover) and (pointer:fine)`, which a
+    /// headless browser reports as false, and a test that reads `display`
+    /// there would quietly pass on a stack that never opens. The CSS half of
+    /// the bargain is pinned by
+    /// `the_flyout_stands_on_hot_wherever_hover_opens_it`.
+    fn is_hot(row: &HtmlElement) -> bool {
+        row.has_attribute("hot")
+    }
+
+    /// The pointer leaves the row and comes back — across a gap, around a
+    /// corner, or by a slip of the wrist. The flyout it was reaching for has
+    /// to still be there.
+    #[wasm_bindgen_test]
+    async fn a_flyout_outlives_a_pointer_that_strays_and_comes_back() {
+        let stack = mount();
+        let opener = row(&stack, "#opener");
+
+        pointer(&opener, "pointerenter");
+        assert!(is_hot(&opener), "a pointer on the row opens its flyout");
+
+        pointer(&opener, "pointerleave");
+        assert!(
+            is_hot(&opener),
+            "leaving the row must not take the flyout with it on the spot"
+        );
+
+        pointer(&opener, "pointerenter");
+        rest(super::FLYOUT_GRACE_MS + 120).await;
+        assert!(
+            is_hot(&opener),
+            "coming back inside the grace period cancels the expiry"
+        );
+
+        pointer(&opener, "pointerleave");
+        rest(super::FLYOUT_GRACE_MS + 120).await;
+        assert!(
+            !is_hot(&opener),
+            "a flyout the pointer has genuinely left still goes"
+        );
+
+        stack.remove();
+    }
+
+    /// One flyout at a time: entering another row ends the neighbour's grace
+    /// period there and then, rather than leaving two stacks standing over
+    /// the same column.
+    #[wasm_bindgen_test]
+    async fn entering_a_sibling_ends_the_grace_period_early() {
+        let stack = mount();
+        let opener = row(&stack, "#opener");
+        let second = row(&stack, "#second");
+
+        pointer(&opener, "pointerenter");
+        pointer(&opener, "pointerleave");
+        pointer(&second, "pointerenter");
+        assert!(
+            !is_hot(&opener),
+            "the neighbour goes the moment another row is entered"
+        );
+
+        stack.remove();
+    }
+
+    /// A row taken off the page mid-grace must not come back holding a
+    /// flyout: the bar moves stacks between parents to disclose a sub-stack
+    /// in place.
+    #[wasm_bindgen_test]
+    async fn a_row_does_not_come_back_hot() {
+        let stack = mount();
+        let opener = row(&stack, "#opener");
+
+        pointer(&opener, "pointerenter");
+        pointer(&opener, "pointerleave");
+        stack.remove();
+        assert!(!is_hot(&opener), "leaving the page drops the grace period");
+
+        window()
+            .expect("window")
+            .document()
+            .expect("document")
+            .body()
+            .expect("body")
+            .append_child(&stack)
+            .expect("re-append the stack");
+        rest(super::FLYOUT_GRACE_MS + 120).await;
+        assert!(
+            !is_hot(&opener),
+            "and the expired timer cannot bring it back"
+        );
+
+        stack.remove();
+    }
+
+    /// The other half of the grace period: what `hot` is worth once the
+    /// browser does report a hover pointer.
+    #[wasm_bindgen_test]
+    fn the_flyout_stands_on_hot_wherever_hover_opens_it() {
+        let at = super::CSS
+            .find("@media (hover:hover) and (pointer:fine){")
+            .expect("the hover gate");
+        let block = &super::CSS[at..];
+        let block = &block[..block.find('}').expect("a closed block")];
+        assert!(
+            block.contains(":host([hot]) .fly"),
+            "hot must open the flyout on exactly the pointers hover does: {block}"
+        );
+        assert!(
+            block.contains(":host(:hover) .fly"),
+            "and hover must still open it directly, without waiting on a listener: {block}"
+        );
+    }
+
+    /// The 7px between two rows answers to the row it is nearest, so a
+    /// pointer crossing it never falls through to the page.
+    #[wasm_bindgen_test]
+    async fn the_gap_between_two_rows_belongs_to_them() {
+        let stack = mount();
+        let opener = row(&stack, "#opener");
+        let second = row(&stack, "#second");
+        let above = opener.get_bounding_client_rect();
+        let below = second.get_bounding_client_rect();
+        let x = below.left() + below.width() / 2.0;
+
+        let mut y = above.bottom() + 1.0;
+        while y < below.top() {
+            let under = hit(x, y).expect("something under the gap");
+            assert_eq!(
+                under.tag_name(),
+                "TONK-MI",
+                "the gap at {y} must land on a row, not fall through the stack"
+            );
+            y += 1.0;
+        }
+
+        stack.remove();
+    }
+
+    /// The reach stops at the stack's ends. Past them lies the bar or the
+    /// page, and a row that took presses there would be stealing them.
+    #[wasm_bindgen_test]
+    async fn the_ends_of_a_stack_do_not_reach_past_it() {
+        let stack = mount();
+        let first = row(&stack, "#opener").get_bounding_client_rect();
+        let last = row(&stack, "#third").get_bounding_client_rect();
+        let x = first.left() + first.width() / 2.0;
+
+        for y in [first.top() - 3.0, last.bottom() + 3.0] {
+            assert!(
+                hit(x, y).is_none_or(|element| element.tag_name() != "TONK-MI"),
+                "the stack must leave the page at {y} alone"
+            );
+        }
+
+        stack.remove();
     }
 }

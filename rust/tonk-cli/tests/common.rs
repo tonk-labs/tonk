@@ -302,7 +302,7 @@ impl AccountFixture {
                     vec![MountRemote {
                         name: "origin".to_string(),
                         address: dialog_repository::SiteAddress::from(
-                            dialog_remote_ucan_s3::UcanAddress::new(url),
+                            dialog_remote_ucan::UcanAddress::new(url),
                         ),
                         subject: subject.clone(),
                         revocation: None,

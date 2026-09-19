@@ -68,7 +68,7 @@ use dialog_effects::authority::{Attest, Identify};
 use dialog_effects::memory::{Publish, Resolve};
 use dialog_effects::space::{Space, SpaceExt as _};
 use dialog_query::{Output as _, Query, Term};
-use dialog_remote_ucan_s3::UcanAddress;
+use dialog_remote_ucan::UcanAddress;
 use dialog_repository::{
     Branch, Hydrate, PullError, RemoteSite, Repository, RepositoryExt as _, SiteAddress,
 };
@@ -2268,7 +2268,7 @@ pub(crate) mod tests {
             .remote(
                 "origin",
                 crate::router::repository::RemoteConfiguration::new(
-                    dialog_repository::SiteAddress::from(dialog_remote_ucan_s3::UcanAddress::new(
+                    dialog_repository::SiteAddress::from(dialog_remote_ucan::UcanAddress::new(
                         "https://sync.example.test/ucan/",
                     )),
                 )

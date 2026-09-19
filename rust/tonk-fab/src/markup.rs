@@ -254,6 +254,31 @@ pub fn stacks_html(space_did: &str) -> String {
     STACKS_HTML.replace("{space}", space_did)
 }
 
+/// Every `{space}` slot in [`STACKS_HTML`], as `(selector, attribute,
+/// prefix)` — the value written is `prefix` followed by the space DID.
+///
+/// One table, read twice. [`stacks_html`] stamps these slots when the
+/// subtree is authored, and `element::restamp_space` writes the same
+/// attributes again when a bar authored with a BLANK space finally
+/// learns its own — the unsubstituted first projection the space route
+/// hands it before `{id}` resolves.
+///
+/// The two lists used to be written out separately, and `<tonk-share>`
+/// was in the first but not the second. A bar that came up blank
+/// therefore kept `<tonk-share space="">` for the life of the page: its
+/// invite subscription never opened (an empty subject is a query error)
+/// and its click handler returned on the spot, so picking "copy link"
+/// dispatched nothing at all — no mint, no spinner, no refusal. Keep
+/// them one table, and `it_binds_every_space_slot` keeps it honest.
+pub const SPACE_BINDINGS: &[(&str, &str, &str)] = &[
+    // The sync disc's contract is `branch@repo`, not a bare DID.
+    ("ui-sync-status", "with", "main@"),
+    ("ui-space-name", "space", ""),
+    ("ui-space-switcher", "current", ""),
+    ("tonk-share", "space", ""),
+    ("ui-member-roster", "space", ""),
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -399,6 +424,35 @@ mod tests {
         // The sync disc's contract is branch@repo, not a bare DID.
         assert!(html.contains(r#"with="main@did:key:z6Mk""#));
         assert!(!html.contains("{space}"), "every slot must be substituted");
+    }
+
+    /// [`SPACE_BINDINGS`] must name every `{space}` slot, and no others.
+    ///
+    /// Both directions matter. A slot missing from the table is a child
+    /// the restamp leaves pointed at nothing when the space arrives late
+    /// — which is how `<tonk-share>` came to swallow every click. A
+    /// table entry with no slot is a selector that matches nothing, and
+    /// would fail silently in the other direction.
+    #[test]
+    fn it_binds_every_space_slot() {
+        let did = "did:key:z6Mk";
+        let html = stacks_html(did);
+        for &(selector, attribute, prefix) in SPACE_BINDINGS {
+            assert!(
+                html.contains(&format!(r#"<{selector} "#))
+                    || html.contains(&format!(r#"<{selector}>"#)),
+                "{selector} is bound but never authored",
+            );
+            assert!(
+                html.contains(&format!(r#"{attribute}="{prefix}{did}""#)),
+                "{selector} must carry {attribute}=\"{prefix}{did}\"",
+            );
+        }
+        assert_eq!(
+            html.matches(did).count(),
+            SPACE_BINDINGS.len(),
+            "every authored slot must be bound, so the restamp reaches it",
+        );
     }
 
     #[test]

@@ -86,7 +86,7 @@ remote-required mutation. A rerun inspects current state and is safe.
 | `account logout` | `ACCT-C08` | Active/pending/signed out, provider online/offline, lock/concurrency/crash. |
 | `account delete [--no-open]` | `ACCT-C12`, `AUTH-05` | Browser open failure, safe review URL, stale/deleted account, no direct mutation. |
 | `account space`, `account space --json` | `SPACE-11` | Empty/owned/joined/duplicates/offline/stale, human/JSON. |
-| `account space pull NAME_OR_SUBJECT [--name]` | `SPACE-12` | Unique/ambiguous/missing, subject, local collisions, offline/revoked/crash. |
+| `account space pull NAME_OR_SUBJECT [--name]` | `SPACE-12` | Unique/ambiguous/missing, subject, local collisions, label-derived vs explicit names, offline/revoked/crash. |
 | `account space delete SUBJECT [--no-open]` | `ACCT-C12`, `AUTH-04` | Exact subject URL, owned/joined/stale, browser open failure. |
 | `account devices [--json]` | `ACCT-C10` | Self/other/empty/duplicate/revoked, online/offline fallback, provider cross-check. |
 | `account revoke DID` | `ACCT-C11`, `AUTH-01`, `AUTH-02` | Self/other/unknown/already revoked, partial publish, retry, process output. |

@@ -11,7 +11,8 @@ use dialog_artifacts::Index;
 use dialog_artifacts::tree::TreeStorageBridge;
 use dialog_common::Blake3Hash as NodeHash;
 use dialog_repository::{
-    NetworkedIndex, PushError, RepositoryArchiveExt as _, RepositoryMemoryExt as _, Upstream,
+    NetworkedIndex, PushError, RepositoryArchiveExt as _, RepositoryMemoryExt as _, Revision,
+    Upstream,
 };
 use dialog_search_tree::{
     ContentAddressedStorage as TreeStorage, DialogSearchTreeError, TreeDifference,
@@ -63,16 +64,38 @@ where
 pub struct Push<'a> {
     /// The branch to push from.
     pub branch: BranchReference<'a>,
+    /// Whether to confirm where upstream stands before pushing.
+    confirm_upstream: bool,
 }
 
 impl<'a> Push<'a> {
     /// Build a new `Push` effect.
     pub fn new(branch: BranchReference<'a>) -> Self {
-        Self { branch }
+        Self {
+            branch,
+            confirm_upstream: true,
+        }
+    }
+
+    /// Push without first confirming where upstream stands, for a
+    /// caller that just read it. See
+    /// [`dialog_repository::Push::assuming_upstream`] for what that
+    /// gives up: the novelty ships before a doomed push is refused, and
+    /// the refusal is a version mismatch rather than a
+    /// non-fast-forward.
+    pub fn assuming_upstream(mut self) -> Self {
+        self.confirm_upstream = false;
+        self
     }
 
     /// Execute the push.
-    pub async fn perform<Env>(self, env: &Env) -> Result<(), ReactorError>
+    ///
+    /// Answers with the revision upstream now stands at, or `None` when
+    /// there was nothing to push. A caller that would otherwise read the
+    /// upstream head back — to colour a status, to compare against local
+    /// — takes it from here rather than paying another round trip for a
+    /// cell this call just settled.
+    pub async fn perform<Env>(self, env: &Env) -> Result<Option<Revision>, ReactorError>
     where
         Env: LoadProvider + BranchOpenProvider + PushProvider,
     {
@@ -85,8 +108,17 @@ impl<'a> Push<'a> {
         // and repair exactly that on demand, by hydrating only the
         // divergent paths the diff visits. Uploads before the failure are
         // content-addressed, so retrying after hydration is idempotent.
-        let error = match cached.handle().push().perform(env).await {
-            Ok(_) => return Ok(()),
+        let push = || {
+            let push = cached.handle().push();
+            if self.confirm_upstream {
+                push
+            } else {
+                push.assuming_upstream()
+            }
+        };
+
+        let error = match push().perform(env).await {
+            Ok(pushed) => return Ok(pushed),
             Err(error) if is_missing_local_tree_node(&error) => error,
             Err(error) => return Err(error.into()),
         };
@@ -118,8 +150,10 @@ impl<'a> Push<'a> {
         .await
         .map_err(PushError::from)?;
 
-        cached.handle().push().perform(env).await?;
-        Ok(())
+        // The retry confirms upstream regardless: the first attempt
+        // failed on a shape that means our local view was incomplete,
+        // so this is no longer the caller's "I just read it" case.
+        Ok(cached.handle().push().perform(env).await?)
     }
 }
 

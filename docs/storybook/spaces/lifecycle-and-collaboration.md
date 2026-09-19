@@ -59,16 +59,40 @@ This source-derived update covers `COLLAB-01`, `COLLAB-05`, `WEB-04`, and
 `WEB-05`. Browser component regressions exercise copy completion and popup
 geometry; existing screenshots retain their older visual provenance.
 
+### Share control space-binding decision
+
+The FABB's share control answers for the space the bar names, and it learns
+that space from the bar rather than from the page around it. A bar that is
+rendered before its route has resolved the space is stamped again once the
+space lands, and the share control is included in that second stamp along with
+the space name, the sync disc, the switcher and the member roster.
+
+This matters because a share control bound to no space is silent rather than
+broken: it opens no invite subscription and dispatches no mint, so **copy link**
+renders, hovers and takes the click while producing no **copying...**, no
+**copied** and no **couldn't copy**. The documented Share behaviour above is
+unchanged; what changed is that the control now reliably has the space it needs
+in order to honour it. The Hub's own copy-link already re-delivered the space to
+the same control, which is why the Hub copied links while the FABB did not.
+
+This source-and-browser-tested binding decision restores `COLLAB-01`,
+`COLLAB-05`, `WEB-04`, and `WEB-05` on 2026-09-17. No screenshot was recaptured
+because every rendered state of the stack is unchanged.
+
 ### FABB naming and blank-space prompt decision
 
 The in-place FABB rename remains an edit while ordinary whitespace is typed;
 Enter or leaving the field commits the complete trimmed name. A blank space's
 agent prompt has one textual contract: the text on screen and the value copied
 by its button include the same task, commands, and final build guidance.
+The rename starts in a single-line text control with its caret after the current
+name, so Safari accepts the first typed character inside the FABB shadow root.
 
 This source-and-browser-tested interaction decision refines `SPACE-03`,
-`SPACE-04`, and `DATA-02` on 2026-09-02. No screenshot was recaptured because
-the resting FABB and prompt geometry are unchanged.
+`SPACE-04`, and `DATA-02` on 2026-09-02, with the Safari caret boundary refined
+by a focused Safari shadow-root reproduction and FABB browser regression on
+2026-09-17. No screenshot was recaptured because the resting FABB and prompt
+geometry are unchanged.
 
 ### Space-switcher and absent-space presentation decision
 
@@ -88,6 +112,26 @@ press behavior follow the surrounding Rust UI contract.
 This is a source-derived presentation decision for `SPACE-11`, `UI-04`,
 `WEB-04`, and `WEB-05`. The focused query, DOM-frame, and profile-library tests
 cover the authored contract; running-product browser evidence remains distinct.
+
+### FABB stack pointer-tolerance decision
+
+The 7px between two rows of a stack is presentation, not dead ground. Each row
+answers the half-gap above and below it, so a pointer travelling down a stack
+is always on a row and a press aimed just off a row still lands on it. A
+stack's outer edges keep their reach to themselves: the page above it and the
+bar below it stay free.
+
+A sub-stack opened by hover — the space switcher hanging off `open` — stands
+for a further 320ms once the pointer leaves the row that opened it, and coming
+back inside that beat cancels the retreat. Entering a different row ends its
+neighbour's grace at once, so only one sub-stack is ever up. Nothing else
+changes: a row picked open stays open until the stack closes, keyboard focus
+still opens and closes a sub-stack directly, and a coarse pointer still gets
+in-place disclosure rather than sideways flight.
+
+This source-and-browser-tested interaction decision refines `SPACE-11` and
+`UI-04` on 2026-09-16. No screenshot was recaptured because the stack's gaps,
+geometry, and resting appearance are unchanged to the pixel.
 
 ## The interaction, event by event
 
