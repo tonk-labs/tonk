@@ -168,13 +168,16 @@ pub struct Reach {
 pub type Lazy = tokio::sync::OnceCell<Arc<Reach>>;
 
 impl Reach {
-    /// Bind an endpoint over a fresh transport.
+    /// Bind an endpoint over a fresh transport, as this device profile.
     ///
-    /// The key is ephemeral on purpose: this side is the dialer, and
-    /// what the CLI verifies is the *invocation's* proof chain, not who
-    /// carried it. A persisted key here would be an identity nothing
-    /// asks about.
-    pub async fn bind() -> Result<Self, String> {
+    /// The key is the profile's own, held durably in its credential
+    /// store, not minted per run. It used to be ephemeral on the
+    /// argument that this side only ever dials, and what a CLI verifies
+    /// is the invocation's proof chain rather than who carried it. That
+    /// held while the browser was only a client; it stops holding the
+    /// moment a peer is something you can *add as a remote*, because a
+    /// remote records an identity and has to keep reaching it.
+    pub async fn bind(seed: [u8; 32]) -> Result<Self, String> {
         let transport =
             tonk_rtc::transport::WebRtcTransport::new(tonk_rtc::rendezvous::transport_tag(
                 tonk_rtc::rendezvous::RENDEZVOUS,
@@ -183,7 +186,7 @@ impl Reach {
 
         let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Empty)
             .crypto_provider(iroh::tls::default_provider())
-            .secret_key(iroh::SecretKey::generate())
+            .secret_key(iroh::SecretKey::from_bytes(&seed))
             .add_custom_transport(transport.clone())
             .bind()
             .await
@@ -368,12 +371,19 @@ pub async fn handle_carrier(
         return;
     };
 
-    let reach = {
+    let (reach, seed) = {
         let tonk = state.read().await;
-        tonk.reach.clone()
+        let seed = match super::peer_identity::seed(&tonk).await {
+            Ok(seed) => seed,
+            Err(error) => {
+                log!("cli: no peer identity to bind an endpoint with: {error}");
+                return;
+            }
+        };
+        (tonk.reach.clone(), seed)
     };
     let reach = match reach
-        .get_or_try_init(|| async { Reach::bind().await.map(Arc::new) })
+        .get_or_try_init(|| async { Reach::bind(seed).await.map(Arc::new) })
         .await
     {
         Ok(reach) => reach.clone(),

@@ -480,37 +480,50 @@ mod serving {
         Ok(data.join("tonk").join("rtc-endpoint.key"))
     }
 
-    /// Load this machine's iroh secret key, minting one the first time.
+    /// The credential-store key this profile's peer seed is held under.
     ///
-    /// Persisted, and with more at stake than the certificate was: this key
-    /// *is* the peer's name. Mint a fresh one per run and every remote
-    /// anyone registered points at a peer that no longer exists — not a
-    /// stale route, which iroh would re-resolve, but a different identity.
-    fn endpoint_key() -> Result<iroh::SecretKey> {
-        use base64::Engine as _;
-        let path = endpoint_key_path()?;
+    /// The same name the worker uses, because it is the same identity:
+    /// a device profile has one peer key whether a browser or this
+    /// binary binds the endpoint.
+    const PEER_SEED_SITE: &str = "tonk:peer-seed";
 
-        if let Ok(stored) = std::fs::read_to_string(&path)
-            && let Ok(bytes) =
-                base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(stored.trim())
-            && let Ok(bytes) = <[u8; 32]>::try_from(bytes.as_slice())
+    /// This device profile's iroh secret key, minting one the first time.
+    ///
+    /// Held in the profile's credential store rather than a file beside
+    /// the binary. The endpoint key *is* the peer's name, so it has to
+    /// survive a restart — a remote that recorded this peer must keep
+    /// reaching it — and it has to be per device profile, which is what
+    /// the profile-scoped store already is.
+    ///
+    /// Replaces the old `rtc-endpoint.key`: that file was a third
+    /// identity with its own lifecycle, which is what made a peer
+    /// something you had to copy a `did:key` for rather than something
+    /// a profile simply *is*.
+    async fn endpoint_key(site: &crate::site::TonkSite) -> Result<iroh::SecretKey> {
+        use dialog_capability::SiteId;
+        use dialog_effects::credential::Secret;
+
+        let handle = || {
+            site.profile
+                .credential()
+                .site(SiteId::from(PEER_SEED_SITE.to_owned()))
+        };
+
+        if let Ok(secret) = handle().load::<Secret>().perform(&site.operator).await
+            && let Ok(seed) = <[u8; 32]>::try_from(secret.as_bytes())
         {
-            return Ok(iroh::SecretKey::from_bytes(&bytes));
+            return Ok(iroh::SecretKey::from_bytes(&seed));
         }
 
+        // iroh's own generator rather than a fresh entropy dependency:
+        // the bytes it mints are exactly the 32 a secret key is.
         let key = iroh::SecretKey::generate();
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("could not create {}", parent.display()))?;
-        }
-        if let Err(error) = write_private(
-            &path,
-            &base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.to_bytes()),
-        ) {
-            eprintln!(
-                "warning: could not save the iroh identity ({error}); this peer will have a different did:key after a restart"
-            );
-        }
+        let seed = key.to_bytes();
+        handle()
+            .save(Secret::from(seed.to_vec()))
+            .perform(&site.operator)
+            .await
+            .context("could not store the peer seed")?;
         Ok(key)
     }
 
@@ -541,7 +554,7 @@ mod serving {
         let transport = tonk_rtc::transport::WebRtcTransport::new(listener.address().encode());
         let route = transport.local_addr();
 
-        let key = endpoint_key()?;
+        let key = endpoint_key(site).await?;
         let id = key.public();
         let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Empty)
             .crypto_provider(iroh::tls::default_provider())

@@ -139,6 +139,7 @@ pub use transfer::ImportResponse;
 
 pub mod bridge;
 pub mod cli;
+pub mod peer_identity;
 pub use bridge::BridgeRegistry;
 
 mod host;
