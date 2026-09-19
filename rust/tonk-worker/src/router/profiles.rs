@@ -19,7 +19,6 @@ use axum::{Extension, Json, extract::State};
 use axum_wasm_macros::wasm_compat;
 use dialog_operator::{DeriveOperator as _, Profile};
 use dialog_storage::provider::storage::Storage;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use dialog_varsig::Did;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
@@ -184,9 +183,16 @@ async fn refreshed_roster(tonk: &TonkState) -> Result<Vec<RosterEntry>, TonkWork
         .registry
         .read_roster(&tonk.storage, &tonk.operator)
         .await?;
-    for slot in &mut roster {
+    // Each profile's DID, paired with the row read from it, so the rows can
+    // be republished as overlay facts once the loop has them all. Collected
+    // rather than written per-iteration: one overlay write replaces the whole
+    // set, which is what keeps a profile that has since been removed from
+    // lingering in the switcher.
+    let mut seen: Vec<(Did, usize)> = Vec::new();
+    for (index, slot) in roster.iter_mut().enumerate() {
         if slot.profile_name == tonk.profile_name {
             *slot = refreshed_entry(tonk, None).await;
+            seen.push((tonk.profile.did(), index));
             continue;
         }
         let profile = match tonk
@@ -213,10 +219,60 @@ async fn refreshed_roster(tonk: &TonkState) -> Result<Vec<RosterEntry>, TonkWork
                 continue;
             }
         };
+        seen.push((profile.did(), index));
         *slot = inspected_entry(slot.profile_name.clone(), &profile, &operator).await;
     }
+    publish_roster_overlay(tonk, &roster, &seen).await;
     Ok(roster)
 }
+
+/// Republish the switcher rows as overlay facts on the active profile's
+/// branch, so a sealed guest can render the switcher from a query.
+///
+/// The guest can only read the ACTIVE profile's branches; every other
+/// profile's name and provider live on branches it cannot reach. The worker
+/// has just read them all, so it stamps what it found where the guest is
+/// looking.
+///
+/// Overlay rather than a durable write, which is the whole point: a
+/// committed copy would be a second home for a name owned elsewhere, free
+/// to disagree after a rename on another device. These rows are rebuilt
+/// from source on every roster read and vanish with the session.
+///
+/// Best-effort. The switcher is a convenience; `GET /api/profiles` remains
+/// the authority and is unaffected if this write fails.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn publish_roster_overlay(tonk: &TonkState, roster: &[RosterEntry], seen: &[(Did, usize)]) {
+    use tonk_schema::ProfileRow;
+
+    // Cardinality-one fields supersede in place, so re-asserting a row
+    // updates it rather than stacking a second copy. A profile dropped from
+    // the roster keeps a stale row until the session ends; the switcher
+    // renders from `DeviceProfile`, which IS durable and is retracted on
+    // removal, so a row with no matching handle is never shown.
+    let mut overlay = tonk
+        .reactor
+        .profile_repository()
+        .branch(super::repository::PROFILE_BRANCH)
+        .overlay();
+    for (did, index) in seen {
+        let Some(entry) = roster.get(*index) else {
+            continue;
+        };
+        overlay = overlay.assert(ProfileRow::new(
+            did,
+            entry.display_name.as_deref(),
+            entry.provider.as_deref(),
+            entry.profile_name == tonk.profile_name,
+        ));
+    }
+    if let Err(error) = overlay.write().perform(&tonk.operator).await {
+        log!("profile roster overlay not published: {error}");
+    }
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+async fn publish_roster_overlay(_: &TonkState, _: &[RosterEntry], _: &[(Did, usize)]) {}
 
 /// The roster with every profile's live label and account state.
 async fn refreshed_response(tonk: &TonkState) -> Result<ProfilesResponse, TonkWorkerError> {
@@ -691,6 +747,105 @@ mod tests {
             .await
             .unwrap();
         info.space.into_iter().map(|entry| entry.key).collect()
+    }
+
+    /// Reading the roster publishes it where a sealed guest can query it.
+    ///
+    /// The guest reads the ACTIVE profile's branches and nothing else, so
+    /// the switcher could never be a view while every other profile's name
+    /// lived only on its own branch. The worker can open them all, so it
+    /// republishes what it found as overlay facts.
+    ///
+    /// Asserted through a QUERY rather than by inspecting the response: the
+    /// point is that the guest's own read path finds them.
+    #[dialog_common::test]
+    async fn it_publishes_the_roster_where_a_guest_can_query_it() {
+        use dialog_query::{Output as _, Query, Term};
+        use tonk_schema::ProfileRow;
+
+        let state = Arc::new(RwLock::new(test_state().await));
+        let Json(response) = list(State(state.clone())).await.unwrap();
+
+        let tonk = state.read().await;
+        let session = tonk
+            .reactor
+            .profile_repository()
+            .branch(super::super::repository::PROFILE_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .expect("profile branch opens");
+        let rows: Vec<ProfileRow> = session
+            .handle()
+            .query()
+            .select(Query::<ProfileRow> {
+                this: Term::var("this"),
+                label: Term::var("label"),
+                provider: Term::var("provider"),
+                active: Term::var("active"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("roster rows read back");
+
+        assert_eq!(
+            rows.len(),
+            response.profiles.len(),
+            "every profile the roster lists gets a queryable row",
+        );
+        assert!(
+            rows.iter().any(|row| row.active.0),
+            "the active profile is marked so the switcher can show which is current",
+        );
+        assert_eq!(
+            rows.iter().filter(|row| row.active.0).count(),
+            1,
+            "exactly one row is active",
+        );
+    }
+
+    /// A second read updates the rows rather than stacking duplicates.
+    #[dialog_common::test]
+    async fn it_republishes_the_roster_without_duplicating_rows() {
+        use dialog_query::{Output as _, Query, Term};
+        use tonk_schema::ProfileRow;
+
+        let state = Arc::new(RwLock::new(test_state().await));
+
+        let count = || async {
+            let tonk = state.read().await;
+            let session = tonk
+                .reactor
+                .profile_repository()
+                .branch(super::super::repository::PROFILE_BRANCH)
+                .acquire(&tonk.operator)
+                .await
+                .expect("profile branch opens");
+            let rows: Vec<ProfileRow> = session
+                .handle()
+                .query()
+                .select(Query::<ProfileRow> {
+                    this: Term::var("this"),
+                    label: Term::var("label"),
+                    provider: Term::var("provider"),
+                    active: Term::var("active"),
+                })
+                .perform(&tonk.operator)
+                .try_vec()
+                .await
+                .expect("roster rows read back");
+            rows.len()
+        };
+
+        let _ = list(State(state.clone())).await.unwrap();
+        let first = count().await;
+        let _ = list(State(state.clone())).await.unwrap();
+        let second = count().await;
+
+        assert_eq!(
+            first, second,
+            "re-reading supersedes each row in place; it must not accumulate",
+        );
     }
 
     #[dialog_common::test]
