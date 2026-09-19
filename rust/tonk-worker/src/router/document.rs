@@ -308,98 +308,63 @@ pub async fn write(
     Ok(([(header::ETAG, etag)], Json(body)).into_response())
 }
 
-/// Run one document command: apply `edits` to `document` on the branch
-/// the command fired in. A refused edit (no match, two matches, a bad
-/// path) changes nothing and is reported as an overlay fact on the
-/// command's own entity, so the page that asked can read why.
-async fn run(env: &CommandEnv, command: &Entity, document: &Entity, base: Option<Vec<String>>, edits: Vec<Edit>) {
+/// Run one document command on the branch it fired in. The behaviour
+/// is `tonk_document::command::run`, the same function the CLI calls;
+/// this wrapper adds what only the worker has — the sync queue, the
+/// mirror and the subscription poll. A refused edit (no match, two
+/// matches, a bad path) changes nothing and is reported as an overlay
+/// fact on the command's own entity, so the page that asked can read
+/// why.
+async fn run(env: &CommandEnv, request: tonk_document::command::Request) {
     let origin = env.origin().clone();
+    let document = request.document.clone();
     let tonk = env.state().read().await;
     let session = match acquire(&tonk, &origin.repo, &origin.branch).await {
         Ok(session) => session,
         Err(error) => return log!("document command on {document}: {error}"),
     };
-    let result = session::write(
-        session.handle(),
-        document,
-        None,
-        base.as_deref(),
-        &edits,
-        &stamp(&tonk),
-        &tonk.operator,
-    )
-    .await;
+    let result =
+        tonk_document::command::run(session.handle(), &tonk.operator, &stamp(&tonk), &request).await;
     match result {
         Ok(_) => {
-            note_dirty(&origin.repo, &origin.branch, document);
+            note_dirty(&origin.repo, &origin.branch, &document);
             if !origin.repo.is_empty() {
                 tonk.sync_queue
                     .mark_dirty(&origin.repo, super::sync::now_millis());
             }
-            refresh_mirror(&tonk, &session, document).await;
+            refresh_mirror(&tonk, &session, &document).await;
         }
         Err(error) => {
             log!("document command on {document} refused: {error}");
-            session
-                .state
-                .assert_overlay(session::failure(command, document, &error.to_string()));
+            session.state.assert_overlay(session::failure(
+                &request.command,
+                &document,
+                &error.to_string(),
+            ));
             tonk.reactor.schedule_poll(Arc::clone(&session.state));
             tonk.reactor.run_scheduled_polls(&tonk.operator).await;
         }
     }
 }
 
-/// A `put` value as the table shape stores it: sizes are numbers,
-/// everything else is the text as given.
-fn put_value(path: &str, value: String) -> serde_json::Value {
-    let sized = path.contains("/widths/") || path.contains("/heights/");
-    match value.parse::<f64>() {
-        Ok(number) if sized => serde_json::json!(number),
-        _ => serde_json::Value::String(value),
-    }
-}
-
 macro_rules! document_provider {
-    ($command:ty, |$c:ident| $base:expr, $edits:expr) => {
+    ($command:ty) => {
         #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
         #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
         impl dialog_capability::Provider<$command> for CommandEnv {
-            async fn execute(&self, $c: $command) {
-                let base: Option<Vec<String>> = $base;
-                let edits: Vec<Edit> = $edits;
-                run(self, &$c.this, &$c.document.0, base, edits).await;
+            async fn execute(&self, command: $command) {
+                run(self, command.into()).await;
             }
         }
     };
 }
 
-document_provider!(tonk_schema::command::DocumentReplace, |c| None, vec![Edit::Replace {
-    find: c.find.0.clone(),
-    with: c.with.0.clone(),
-}]);
-document_provider!(tonk_schema::command::DocumentInsert, |c| None, vec![Edit::Insert {
-    after: c.after.0.clone(),
-    text: c.text.0.clone(),
-}]);
-document_provider!(
-    tonk_schema::command::DocumentSplice,
-    |c| Some(tonk_document::formula::parse_heads(&c.heads.0)),
-    vec![Edit::Splice {
-        at: c.at.0 as usize,
-        delete: c.delete.0 as usize,
-        text: c.text.0.clone(),
-    }]
-);
-document_provider!(tonk_schema::command::DocumentPut, |c| None, vec![Edit::Put {
-    value: put_value(&c.path.0, c.value.0.clone()),
-    path: c.path.0.clone(),
-}]);
-document_provider!(tonk_schema::command::DocumentRemove, |c| None, vec![Edit::Remove {
-    path: c.path.0.clone(),
-}]);
-document_provider!(tonk_schema::command::DocumentRestore, |c| None, vec![Edit::Restore {
-    heads: tonk_document::formula::parse_heads(&c.heads.0),
-}]);
+document_provider!(tonk_schema::command::DocumentReplace);
+document_provider!(tonk_schema::command::DocumentInsert);
+document_provider!(tonk_schema::command::DocumentSplice);
+document_provider!(tonk_schema::command::DocumentPut);
+document_provider!(tonk_schema::command::DocumentRemove);
+document_provider!(tonk_schema::command::DocumentRestore);
 
 /// The document half of a repository's sync sweep: run the sync pass
 /// for every document of `branch` that is dirty or that an element

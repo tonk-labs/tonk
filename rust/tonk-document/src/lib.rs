@@ -10,6 +10,7 @@
 //! CLI call the same functions and differ only in when they call them.
 
 pub mod cell;
+pub mod command;
 pub mod engine;
 pub mod formula;
 pub mod session;

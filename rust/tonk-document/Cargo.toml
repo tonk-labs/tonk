@@ -24,6 +24,7 @@ ipld-core = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+tonk-schema = { workspace = true }
 
 # automerge draws its actor ids from getrandom, which has no default
 # backend on wasm32-unknown-unknown.
