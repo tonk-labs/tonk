@@ -18,6 +18,7 @@ use tonk_cli::auto_sync;
 use tonk_cli::blob::{self, AddOutcome as BlobAddOutcome};
 use tonk_cli::context::SpaceContext;
 use tonk_cli::data_ops;
+use tonk_cli::elements;
 use tonk_cli::eval::{self, Source};
 use tonk_cli::invite::{self, ClaimOutcome, InviteOutcome};
 use tonk_cli::listing::{self, Listing};
@@ -57,6 +58,7 @@ write facts
 define
    concept    List concepts, or define one with typed fields
    view       List views, or author one for a concept
+   element    List custom elements, or define one from a JS module
 
 collaborate (see also: tonk help sync)
    invite     Create an invite URL granting access to this space
@@ -160,6 +162,15 @@ enum Command {
         json: bool,
         #[command(subcommand)]
         command: Option<ViewCommand>,
+    },
+
+    /// Define a custom element a view can use
+    Element {
+        /// Emit versioned camelCase JSON when listing.
+        #[arg(long)]
+        json: bool,
+        #[command(subcommand)]
+        command: Option<ElementCommand>,
     },
 
     // -- data ---------------------------------------------------------
@@ -975,6 +986,86 @@ impl From<ViewKindArg> for tonk_cli::authoring::ViewKind {
     }
 }
 
+#[derive(Debug, Subcommand)]
+enum ElementCommand {
+    /// Define a custom element's methods
+    ///
+    /// The tag names the definition and can be repointed; the
+    /// definition itself is a value derived from its description and
+    /// its methods. Re-running this against a tag that already exists
+    /// reads its current methods, lays the ones named here over them,
+    /// and points the tag at the result — so naming one method edits
+    /// it without dropping the others.
+    #[command(
+        after_help = "Lifecycle keys: connected, disconnected, adopted, attribute-changed.\nAny other key becomes a method on the element, camelCased.\n\nExamples:\n  tonk element add tally-widget --description 'A running tally' --method-file connected=tally.js\n  tonk element add tally-widget --description 'A running tally' --method 'connected=(self) => { self.textContent = \"hi\"; }'\n  tonk element add tally-widget --description 'A running tally' --getter 'value=(self) => self.textContent'\n  tonk element add tally-widget --description 'A running tally' --method 'bump=(self) => 1' --notation"
+    )]
+    Add {
+        /// The custom element name to define (must contain a hyphen).
+        #[arg(value_name = "TAG")]
+        tag: String,
+        /// What the element is for, in a sentence. Required, the way
+        /// a concept's description is.
+        #[arg(long, value_name = "TEXT")]
+        description: String,
+        /// Inline method source: `<name>=<js>`. Repeatable.
+        #[arg(long, value_name = "NAME=JS")]
+        method: Vec<String>,
+        /// Default value for an attribute: `<name>=<value>`. An
+        /// instance that does not carry the attribute gets it written
+        /// on before `connected` runs. Repeatable.
+        #[arg(long, value_name = "NAME=VALUE")]
+        attribute: Vec<String>,
+        /// A property read: `<name>=<js>`, the JS being
+        /// `(self) => …`. Makes `el.<name>` read through the branch's
+        /// current definition. Repeatable.
+        #[arg(long, value_name = "NAME=JS")]
+        getter: Vec<String>,
+        /// A property write: `<name>=<js>`, the JS being
+        /// `(self, next) => …`. Pair it with `--getter` of the same
+        /// name for a read-write property. Repeatable.
+        #[arg(long, value_name = "NAME=JS")]
+        setter: Vec<String>,
+        /// Read a method's source from a file: `<name>=<path>`. Repeatable.
+        #[arg(long, value_name = "NAME=PATH")]
+        method_file: Vec<String>,
+        /// Print the notation document without evaluating it.
+        #[arg(long)]
+        notation: bool,
+        #[command(flatten)]
+        write: WriteArgs,
+    },
+}
+
+/// Split a `<name>=<rest>` flag value on its FIRST `=`, so a method
+/// body containing `=` survives.
+fn split_method_arg(raw: &str) -> Result<(String, String), String> {
+    split_named_arg(raw, "--method/--method-file", false)
+}
+
+/// [`split_method_arg`] for `--attribute`, where an EMPTY value is
+/// meaningful: `--attribute size=` declares a default of the empty
+/// string, which is a real attribute state (`<input disabled="">`) and
+/// not the same as declaring no default at all.
+fn split_attribute_arg(raw: &str) -> Result<(String, String), String> {
+    split_named_arg(raw, "--attribute", true)
+}
+
+/// Split a `<name>=<value>` flag, naming `flag` in the error.
+fn split_named_arg(
+    raw: &str,
+    flag: &str,
+    allow_empty_value: bool,
+) -> Result<(String, String), String> {
+    match raw.split_once('=') {
+        Some((name, rest)) if !name.is_empty() && (allow_empty_value || !rest.is_empty()) => {
+            Ok((name.to_owned(), rest.to_owned()))
+        }
+        _ => Err(format!(
+            "{flag} '{raw}' is malformed; expected <name>=<value>"
+        )),
+    }
+}
+
 /// The switches every write verb takes, matching `tonk eval`'s.
 ///
 /// Flattened rather than repeated so the three stay spelled, defaulted, and
@@ -1156,6 +1247,13 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
                 Some(ViewCommand::Add { .. }) => "add",
             }),
         ),
+        Command::Element { command, .. } => (
+            "element",
+            Some(match command {
+                None => "list",
+                Some(ElementCommand::Add { .. }) => "add",
+            }),
+        ),
         Command::Telemetry { .. } => ("telemetry", None),
         Command::Update { .. } => ("update", None),
         Command::Blob { command, .. } => (
@@ -1217,6 +1315,7 @@ fn uses_active_space(command: &Command) -> bool {
             | Command::Blob { .. }
             | Command::Concept { .. }
             | Command::View { .. }
+            | Command::Element { .. }
     )
 }
 
@@ -1373,6 +1472,7 @@ async fn main() {
         Command::Blob { command, json } => blob_op(command, json, space.as_deref()).await,
         Command::Concept { command, json } => concept_op(command, json, space.as_deref()).await,
         Command::View { command, json } => view_op(command, json, space.as_deref()).await,
+        Command::Element { command, json } => element_op(command, json, space.as_deref()).await,
         Command::Telemetry { action } => telemetry_op(action),
         Command::Update {
             disable_check,
@@ -4497,6 +4597,132 @@ async fn view_op(command: Option<ViewCommand>, json: bool, space: Option<&str>) 
     }
 }
 
+/// Author a custom element definition, as rendered by
+/// [`data_ops::element_add`]. `--module-file` is read here (the thin
+/// binary owns I/O); an empty module surfaces as
+/// [`tonk_cli::authoring::AuthoringError::EmptyModule`] from the
+/// builder itself.
+async fn element_op(command: Option<ElementCommand>, json: bool, space: Option<&str>) -> ExitCode {
+    let (_, site) = match open_selected(space).await {
+        Ok(opened) => opened,
+        Err(code) => return code,
+    };
+
+    match command {
+        Some(ElementCommand::Add {
+            tag,
+            description,
+            method,
+            method_file,
+            attribute,
+            getter,
+            setter,
+            notation,
+            write,
+        }) => {
+            // Inline methods first, then file-backed ones, each in the
+            // order given — the notation preserves that order so a
+            // `--notation` dry run reads the way it was typed.
+            let mut methods: Vec<(String, String)> = Vec::new();
+            for raw in &method {
+                match split_method_arg(raw) {
+                    Ok(pair) => methods.push(pair),
+                    Err(message) => return print_error(message),
+                }
+            }
+            for raw in &method_file {
+                let (name, path) = match split_method_arg(raw) {
+                    Ok(pair) => pair,
+                    Err(message) => return print_error(message),
+                };
+                match tokio::fs::read_to_string(&path).await {
+                    Ok(text) => methods.push((name, text)),
+                    Err(e) => {
+                        return print_error(format!("could not read method file {path}: {e}"));
+                    }
+                }
+            }
+            let mut attributes: Vec<(String, String)> = Vec::new();
+            for raw in &attribute {
+                match split_attribute_arg(raw) {
+                    Ok(pair) => attributes.push(pair),
+                    Err(message) => return print_error(message),
+                }
+            }
+            let mut accessors: Vec<Vec<(String, String)>> = Vec::new();
+            for (flag, raws) in [("--getter", &getter), ("--setter", &setter)] {
+                let mut collected: Vec<(String, String)> = Vec::new();
+                for raw in raws.iter() {
+                    match split_named_arg(raw.as_str(), flag, false) {
+                        Ok(pair) => collected.push(pair),
+                        Err(message) => return print_error(message),
+                    }
+                }
+                accessors.push(collected);
+            }
+            let (getters, setters) = (&accessors[0], &accessors[1]);
+            match data_ops::element_add(
+                &site,
+                &tag,
+                &description,
+                &tonk_cli::authoring::ElementParts {
+                    methods: &methods,
+                    attributes: &attributes,
+                    getters,
+                    setters,
+                },
+                write.options(notation),
+            )
+            .await
+            {
+                Ok(text) => {
+                    let mut stdout = std::io::stdout().lock();
+                    if let Err(e) = stdout.write_all(text.as_bytes()) {
+                        return print_error(format!("failed to write stdout: {e}"));
+                    }
+                    ExitCode::Success
+                }
+                Err(err) => print_coded(err),
+            }
+        }
+        None => list_elements_op(&site, json).await,
+    }
+}
+
+/// Bare `tonk element` — every custom element defined on the branch.
+async fn list_elements_op(site: &site::TonkSite, json: bool) -> ExitCode {
+    let listed = match elements::list(site).await {
+        Ok(v) => v,
+        Err(err) => return print_failure(err),
+    };
+    if json {
+        return print_json(&Rows::new("tonk.element-ls.v1", listed));
+    }
+    let mut listing = Listing::new(
+        &["TAG", "ENTITY", "METHODS", "CONCEPT"],
+        "no custom elements on this branch; define one with `tonk element add <tag> --method-file connected=<path>`",
+    );
+    for row in &listed {
+        listing.push([
+            listing::cell(row.tag.as_deref()),
+            row.entity.to_string(),
+            if row.methods.is_empty() {
+                "-".to_string()
+            } else {
+                row.methods.join(" ")
+            },
+            if row.deprecated {
+                "component"
+            } else {
+                "element"
+            }
+            .to_string(),
+        ]);
+    }
+    println!("{}", listing.render());
+    ExitCode::Success
+}
+
 /// Put one or more concepts' directories on the space home, as
 /// rendered by [`data_ops::home`].
 async fn home_op(
@@ -4996,10 +5222,17 @@ mod account_spaces_parser_tests {
             "--attr",
             "--format",
         ] {
-            assert!(
-                !guide::GUIDE.contains(retired),
-                "guide still teaches retired spelling `{retired}`"
-            );
+            // Matched at a word boundary rather than as a bare
+            // substring: `--attr` is a prefix of the live
+            // `--attribute`, and a plain `contains` flagged the guide
+            // for teaching the CURRENT spelling.
+            let flagged = guide::GUIDE.match_indices(retired).any(|(at, _)| {
+                guide::GUIDE[at + retired.len()..]
+                    .chars()
+                    .next()
+                    .is_none_or(|next| !next.is_alphanumeric() && next != '-' && next != '_')
+            });
+            assert!(!flagged, "guide still teaches retired spelling `{retired}`");
         }
     }
 
