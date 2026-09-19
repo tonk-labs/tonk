@@ -152,7 +152,8 @@ fn it_names_the_menu_methods_open_and_close() {
     let menu = PROFILE_LIBRARY
         .split("element!: &hub-menu")
         .nth(1)
-        .and_then(|rest| rest.split("# The hub's account bar").next())
+        .map(|rest| rest.split("\nelement!:").next().unwrap_or(rest))
+        .and_then(|rest| rest.split("\nview!:").next())
         .expect("the hub-menu definition");
     assert!(menu.contains("    open: |"), "the menu opens with `open`");
     assert!(menu.contains("    close: |"), "and closes with `close`");
@@ -605,7 +606,11 @@ fn it_builds_one_centered_hub_launcher_with_a_settings_route() {
         );
     }
     for contract in [
-        "<ui-hub-account>",
+        // The account affordance, whatever renders it. This named
+        // `<ui-hub-account>` while the bar was an element; the contract
+        // is that a provider-free Hub still offers the account tab, not
+        // which tag draws it.
+        "<hub-bar",
         "href=\"/space/{subject}\"",
         "class=\"snew-form\"",
     ] {
@@ -681,21 +686,22 @@ fn it_separates_the_account_roster_into_independent_blocks() {
 
 #[test]
 fn it_serves_settings_as_a_routed_page_of_the_hub() {
-    // `/settings` is a real route: the hub chrome with the settings
-    // section already open (`view="settings"`), reached by href from the
-    // account menu and the FAB alike. Every account act lives in this
-    // panel; nothing links out to a top-level page. `/settings/link` is
-    // the same page opened by a terminal asking for access.
+    // `/settings` is a real route: the hub chrome with the account tab
+    // already open, reached by href from the account menu and the FAB
+    // alike. Every account act lives in this panel; nothing links out to
+    // a top-level page. `/settings/link` is the same page opened by a
+    // terminal asking for access.
     assert!(PROFILE_LIBRARY.contains("path: \"/settings\""));
     assert!(PROFILE_LIBRARY.contains("path: \"/settings/link\""));
-    assert!(PROFILE_LIBRARY.contains("<ui-hub-account view=\"settings\">"));
+    // The route states which tab it wants as an attribute, rather than
+    // mounting a different element in a different mode.
+    assert!(PROFILE_LIBRARY.contains("<hub-bar class=\"hub-bar\" tab=\"account\">"));
     assert!(!PROFILE_LIBRARY.contains(".hub-settings"));
-    assert!(HUB_ACCOUNT_MARKUP.contains("data-settings-view"));
-    assert!(HUB_ACCOUNT_MARKUP.contains("href=\"/settings\""));
+    assert!(PROFILE_LIBRARY.contains("href=\"/settings\""));
     // The panes live in the shared panel — one element, two seats: the
     // Hub's account tab and the FAB's settings dialog on the space route.
     // Device revocation is no longer a separate settings pane.
-    assert!(HUB_ACCOUNT_MARKUP.contains("<ui-account-settings>"));
+    assert!(PROFILE_LIBRARY.contains("<ui-account-settings>"));
     assert!(SETTINGS_PANEL_MARKUP.contains("data-pane=\"account\""));
     assert!(!SETTINGS_PANEL_MARKUP.contains("data-pane=\"devices\""));
     assert!(SETTINGS_PANEL_MARKUP.contains("data-pane=\"link\""));

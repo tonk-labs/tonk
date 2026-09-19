@@ -564,7 +564,41 @@ view!:
         <div class="hub-logo" role="img" aria-label="tonk"><svg viewBox="0 0 1024 343" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M337.41 169.57C337.41 136.215 363.983 109.171 396.764 109.171C429.539 109.171 456.112 136.215 456.112 169.57C456.112 202.932 429.539 229.975 396.764 229.975C363.983 229.975 337.41 202.932 337.41 169.57ZM643.51 54C614.396 54 589.91 61.6682 572.703 77.2353C563.913 85.1861 557.227 94.8795 552.759 105.986C552.206 97.3086 549.67 85.1977 540.937 75.1754C530.712 63.4453 515.039 55.8233 494.461 56.2041C488.76 56.3253 484.229 61.045 484.345 66.7514C484.46 72.3886 489.06 76.8833 494.668 76.8833C494.737 76.8833 494.812 76.8833 494.881 76.8833C509.044 76.6006 519.252 81.8339 525.282 88.6654C534.084 98.6415 532.072 113.834 532.02 114.197C531.167 119.817 535.012 125.079 540.626 125.962C541.168 126.048 545.537 126.602 547.612 124.565C546.673 130.203 546.171 136.076 546.171 142.192C546.171 183.349 531.225 224.038 507.39 247.764C488.403 266.66 465.219 275.805 434.911 279.382C479.549 263.671 511.569 221.038 511.569 170.874C511.569 107.365 460.262 55.8868 396.966 55.8868C333.675 55.8868 282.368 107.365 282.368 170.874C282.368 234.383 333.675 285.868 396.966 285.868C399.121 285.868 401.254 285.793 403.375 285.677C451.126 285.1 484.569 276.722 510.508 250.902C535.196 226.328 550.592 184.555 550.592 142.192C550.592 90.1771 586.197 57.8658 643.51 57.8658C737.703 57.8658 741.576 107.169 741.657 113.96C731.477 116.378 708.795 127.093 708.795 147.247V284.702H742.314C745.744 284.702 746.107 282.556 746.107 281.333V114.209C746.107 107.983 743.208 54 643.51 54Z" fill="currentColor"/><path d="M144.171 58.5683L129.662 58.5856C106.081 58.6318 91.4574 69.3695 83.3356 77.9031C72.9486 88.8081 67 103.873 67 119.221C67 148.151 86.5636 179.285 133.299 179.285V155.658C100.513 155.658 90.6043 136.029 90.6043 119.221C90.6043 104.029 99.7116 81.7516 130.135 81.7516L144.171 81.7458V261.448C131.691 261.448 124.786 248.968 124.786 238.08L104.974 238.092C104.974 267.316 130.095 284.383 143.98 284.706H170.432C195.829 284.706 215.053 259.717 215.053 196.924V107.306H225.924V155.658H274.164V58.5683H144.171Z" fill="currentColor"/><path d="M926.713 197.694L895.344 197.463C903.656 193.101 910.337 187.937 915.461 183.073C941.844 158.049 955.222 116.16 955.222 58.5828H938.99C938.99 111.527 927.318 149.447 904.302 171.286C893.817 181.227 875.475 192.721 847.444 191.544V58.5828H776.988V211.663C776.988 244.701 754.468 249.9 754.468 249.9C754.474 249.9 754.468 284.715 754.468 284.715H847.444V216.815C847.444 211.703 856.764 211.721 856.764 216.815C856.764 225.54 856.741 239.803 856.741 248.977C856.741 275.98 879.85 289.735 907.633 289.735C932.039 289.735 955.43 274.601 956.098 248.977C956.536 232.186 960.612 197.694 926.713 197.694Z" fill="currentColor"/></svg></div>
 
         <main class="hubcol">
-          <ui-hub-account></ui-hub-account>
+        <!-- The bar owns tab state and the ceremony seat; the menu owns
+             roving focus and Escape. Both are `element!:` definitions on
+             this branch, so their behaviour is data the branch carries
+             rather than code the bundle ships. -->
+        <hub-bar class="hub-bar">
+          <nav class="hubbar chrome" aria-label="hub">
+            <button class="hcell hc-acct account-trigger" type="button" data-tab="account"
+              data-account-trigger aria-haspopup="menu" aria-expanded="false"
+              aria-controls="hub-account-menu">
+              <span data-account-label><tonk-display model="tonk:account/name"></tonk-display></span>
+            </button>
+            <button class="hcell hc-view" type="button" data-tab="spaces" aria-current="page">
+              spaces
+            </button>
+          </nav>
+
+          <hub-menu id="hub-account-menu" class="account-menu chrome" role="menu">
+            <a class="account-menu__row" href="/settings" role="menuitem">
+              settings
+              <svg class="settings-icon" viewBox="0 0 9 9" aria-hidden="true">
+                <g stroke="currentColor" stroke-width="1.2">
+                  <line x1="0" y1="2.5" x2="9" y2="2.5"></line>
+                  <line x1="0" y1="6.5" x2="9" y2="6.5"></line>
+                </g>
+                <rect x="5" y="1" width="3" height="3" fill="currentColor"></rect>
+                <rect x="1" y="5" width="3" height="3" fill="currentColor"></rect>
+              </svg>
+            </a>
+            <tonk-display model="tonk:profile/row"></tonk-display>
+            <button class="account-menu__row account-menu__row--ink" type="button"
+              on:add-profile=tonk:add-profile role="menuitem">
+              add account<span class="g" aria-hidden="true">+</span>
+            </button>
+          </hub-menu>
+        </hub-bar>
 
         <div class="stack chrome" data-spaces-view aria-label="spaces">
           <!-- No empty-state bar. An account with no spaces and an
@@ -1415,45 +1449,106 @@ element!: &hub-menu
     released: |
       (self) => self.close(false)
 
+# The hub bar's tab and ceremony behaviour, as branch data.
+#
+# What is left in the bar once its contents are views: which tab is
+# showing, whether a signup ceremony is up, and where that ceremony
+# should sit. All three are DOM state with no fact behind them, or —
+# in the ceremony's case — a measurement only this element can take.
+#
+# The ceremony cannot measure the bar itself. The hub is a sealed guest
+# at an opaque origin, so the top page that draws the dialog cannot
+# reach in; the bar measures and reports, and `reseat` repeats that
+# whenever the bar moves.
+#
+# `tab` is an attribute rather than internal state so CSS selects on it
+# (`[tab=account] .stack { display: none }`) instead of a script
+# toggling `hidden` on every switch.
+element!: &hub-bar
+  description: The hub's tab bar — switches tabs and seats the signup ceremony.
+  attribute:
+    tab: "spaces"
+    linking: "false"
+  method:
+    # The bar's viewport rectangle, or null when it has no layout yet.
+    # A zero-sized bar is one the top page must not seat against: the
+    # replacement bar after a profile switch has not been laid out, and
+    # a ceremony placed at its empty rectangle lands in the corner.
+    seat: |
+      (self) => {
+        const bar = self.querySelector('.hubbar');
+        if (!bar) return null;
+        const box = bar.getBoundingClientRect();
+        if (!(box.width > 0 && box.height > 0)) return null;
+        return { left: box.left, bottom: box.bottom, width: box.width };
+      }
+    # Ask the top page to place the ceremony. `reason` distinguishes an
+    # opening from a move: a move must never open a cluster the person
+    # has just dismissed, which is why the top page keys on it.
+    #
+    # A transition sends its request even with no usable rectangle,
+    # because the outgoing bar is already gone and the request must
+    # still arrive; every other reason waits for layout.
+    place: |
+      (self, reason) => {
+        const anchor = self.seat();
+        if (!anchor && reason !== 'profile-transition') return;
+        window.tonk?.register?.(JSON.stringify(
+          anchor ? { reason, space: '', anchor } : { reason, space: '' }));
+      }
+    select: |
+      (self, tab) => {
+        self.setAttribute('tab', tab);
+        for (const cell of self.querySelectorAll('[data-tab]')) {
+          const current = cell.dataset.tab === tab;
+          if (current) cell.setAttribute('aria-current', 'page');
+          else cell.removeAttribute('aria-current');
+        }
+      }
+    # A ceremony is up: show the account tab and keep it there. The flag
+    # is an attribute so a re-render restores the same view rather than
+    # dropping back to spaces mid-signup.
+    link: |
+      (self) => {
+        self.setAttribute('linking', 'true');
+        self.select('account');
+        self.place('profile-transition');
+      }
+    unlink: |
+      (self) => {
+        self.setAttribute('linking', 'false');
+        self.select('spaces');
+      }
+    connected: |
+      (self) => {
+        self.addEventListener('click', (event) => {
+          const cell = event.target.closest('[data-tab]');
+          if (cell) self.select(cell.dataset.tab);
+        });
+        // Re-seat on anything that can move the bar. The top page
+        // ignores the update when no ceremony is open, so this is free
+        // when nothing is up.
+        const reseat = () => {
+          if (self.getAttribute('linking') === 'true') self.place('reseat');
+        };
+        self._reseat = reseat;
+        window.addEventListener('resize', reseat);
+        window.addEventListener('scroll', reseat, true);
+      }
+    disconnected: |
+      (self) => {
+        if (!self._reseat) return;
+        window.removeEventListener('resize', self._reseat);
+        window.removeEventListener('scroll', self._reseat, true);
+      }
+    released: |
+      (self) => self.disconnected()
+
 # The hub's account bar and menu.
 #
 # The account name comes from `tonk:account/name`, the switcher list from
 # `tonk:profile/row`, and whether a signup is up from the ceremony row —
 # all of them facts, so a re-render rebuilds the bar instead of losing it.
-view!:
-  this: tonk:hub
-  show:
-    account-bar: |
-      <nav class="hubbar chrome" aria-label="hub">
-        <button class="hcell hc-acct account-trigger" type="button"
-          data-account-trigger aria-haspopup="menu" aria-expanded="false"
-          aria-controls="hub-account-menu">
-          <span data-account-label><tonk-display model="tonk:account/name"></tonk-display></span>
-        </button>
-        <button class="hcell hc-view" type="button" data-return-spaces aria-current="page">
-          spaces
-        </button>
-      </nav>
-
-      <hub-menu id="hub-account-menu" class="account-menu chrome" data-account-menu role="menu">
-        <a class="account-menu__row" href="/settings" data-open-settings role="menuitem">
-          settings
-          <svg class="settings-icon" viewBox="0 0 9 9" aria-hidden="true">
-            <g stroke="currentColor" stroke-width="1.2">
-              <line x1="0" y1="2.5" x2="9" y2="2.5"></line>
-              <line x1="0" y1="6.5" x2="9" y2="6.5"></line>
-            </g>
-            <rect x="5" y="1" width="3" height="3" fill="currentColor"></rect>
-            <rect x="1" y="5" width="3" height="3" fill="currentColor"></rect>
-          </svg>
-        </a>
-        <tonk-display model="tonk:profile/row"></tonk-display>
-        <button class="account-menu__row account-menu__row--ink" type="button"
-          on:add-profile=tonk:add-profile role="menuitem">
-          add account<span class="g" aria-hidden="true">+</span>
-        </button>
-      </hub-menu>
-
 # The Hub route model + its view: the space directory over this (profile) branch.
 # `tonk:hub` is the concept the `/` route resolves to; its view renders the
 # `space` directory view, the same picker the legacy `<tonk-hub>` element mounted.
@@ -1481,7 +1576,7 @@ view!:
 
 # The /settings route — the account settings page, per the fabb wireframes:
 # the same hub chrome (logo, two-cell bar) with the settings section open
-# under it. `<ui-hub-account view="settings">` opens its settings page on
+# under it. `<hub-bar tab="account">` states which tab is open; the
 # mount; its spaces cell navigates home rather than swapping in place,
 # because on this route there is no spaces stack behind it.
 route!: &route/settings
@@ -1515,7 +1610,21 @@ view!:
         <tonk-title text="settings — Tonk"></tonk-title>
         <div class="hub-logo" role="img" aria-label="tonk"><svg viewBox="0 0 1024 343" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M337.41 169.57C337.41 136.215 363.983 109.171 396.764 109.171C429.539 109.171 456.112 136.215 456.112 169.57C456.112 202.932 429.539 229.975 396.764 229.975C363.983 229.975 337.41 202.932 337.41 169.57ZM643.51 54C614.396 54 589.91 61.6682 572.703 77.2353C563.913 85.1861 557.227 94.8795 552.759 105.986C552.206 97.3086 549.67 85.1977 540.937 75.1754C530.712 63.4453 515.039 55.8233 494.461 56.2041C488.76 56.3253 484.229 61.045 484.345 66.7514C484.46 72.3886 489.06 76.8833 494.668 76.8833C494.737 76.8833 494.812 76.8833 494.881 76.8833C509.044 76.6006 519.252 81.8339 525.282 88.6654C534.084 98.6415 532.072 113.834 532.02 114.197C531.167 119.817 535.012 125.079 540.626 125.962C541.168 126.048 545.537 126.602 547.612 124.565C546.673 130.203 546.171 136.076 546.171 142.192C546.171 183.349 531.225 224.038 507.39 247.764C488.403 266.66 465.219 275.805 434.911 279.382C479.549 263.671 511.569 221.038 511.569 170.874C511.569 107.365 460.262 55.8868 396.966 55.8868C333.675 55.8868 282.368 107.365 282.368 170.874C282.368 234.383 333.675 285.868 396.966 285.868C399.121 285.868 401.254 285.793 403.375 285.677C451.126 285.1 484.569 276.722 510.508 250.902C535.196 226.328 550.592 184.555 550.592 142.192C550.592 90.1771 586.197 57.8658 643.51 57.8658C737.703 57.8658 741.576 107.169 741.657 113.96C731.477 116.378 708.795 127.093 708.795 147.247V284.702H742.314C745.744 284.702 746.107 282.556 746.107 281.333V114.209C746.107 107.983 743.208 54 643.51 54Z" fill="currentColor"/><path d="M144.171 58.5683L129.662 58.5856C106.081 58.6318 91.4574 69.3695 83.3356 77.9031C72.9486 88.8081 67 103.873 67 119.221C67 148.151 86.5636 179.285 133.299 179.285V155.658C100.513 155.658 90.6043 136.029 90.6043 119.221C90.6043 104.029 99.7116 81.7516 130.135 81.7516L144.171 81.7458V261.448C131.691 261.448 124.786 248.968 124.786 238.08L104.974 238.092C104.974 267.316 130.095 284.383 143.98 284.706H170.432C195.829 284.706 215.053 259.717 215.053 196.924V107.306H225.924V155.658H274.164V58.5683H144.171Z" fill="currentColor"/><path d="M926.713 197.694L895.344 197.463C903.656 193.101 910.337 187.937 915.461 183.073C941.844 158.049 955.222 116.16 955.222 58.5828H938.99C938.99 111.527 927.318 149.447 904.302 171.286C893.817 181.227 875.475 192.721 847.444 191.544V58.5828H776.988V211.663C776.988 244.701 754.468 249.9 754.468 249.9C754.474 249.9 754.468 284.715 754.468 284.715H847.444V216.815C847.444 211.703 856.764 211.721 856.764 216.815C856.764 225.54 856.741 239.803 856.741 248.977C856.741 275.98 879.85 289.735 907.633 289.735C932.039 289.735 955.43 274.601 956.098 248.977C956.536 232.186 960.612 197.694 926.713 197.694Z" fill="currentColor"/></svg></div>
         <main class="hubcol">
-          <ui-hub-account view="settings"></ui-hub-account>
+          <!-- The account tab, open. `tab` is an attribute, so the route
+               states which tab it wants rather than mounting a different
+               element in a different mode. -->
+          <hub-bar class="hub-bar" tab="account">
+            <nav class="hubbar chrome" aria-label="hub">
+              <button class="hcell hc-acct account-trigger" type="button" data-tab="account"
+                aria-current="page">
+                <span data-account-label><tonk-display model="tonk:account/name"></tonk-display></span>
+              </button>
+              <a class="hcell hc-view" href="/">spaces</a>
+            </nav>
+            <section class="settings chrome">
+              <ui-account-settings></ui-account-settings>
+            </section>
+          </hub-bar>
         </main>
       </div>
 
