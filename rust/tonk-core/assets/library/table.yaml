@@ -1,21 +1,33 @@
 # ===========================================================================
-# table — a <tonk-table> spreadsheet over INDIVIDUATED claims.
+# table — a <tonk-table> spreadsheet whose workbook is ONE automerge document.
 # ===========================================================================
-# The workbook is not a blob: every sheet and every non-empty cell is its
-# own claim instance, so cells are addressable (`tonk query table/cell`,
-# `tonk assert table/cell --at B2 --content '=A1*2'`), concurrent editors
-# merge at cell grain, and rules can react to individual cells. Only the
-# raw INPUT is stored (`"=B2*C2"`, `"3.5"`); computed values are derived —
-# every replica's IronCalc engine recomputes them.
+# The workbook lives in a memory cell named after the `tonk:table` entity
+# (see document.yaml); the branch holds only a pointer, `document/heads`.
+# `<tonk-table subject={this} document>` is all a view needs: no command
+# bindings and no hidden data rows. Cell edits from several people merge —
+# two people who fill one empty cell write the same key, so there is one
+# cell and the other value is kept as a visible conflict — and editing
+# writes nothing into the body of branch history.
 #
-# Wiring follows the board pattern: directory views materialize each claim
-# as a hidden data-row div inside the element's light DOM (claims IN, via
-# the element's MutationObserver); the element emits one typed CustomEvent
-# per user mutation (claims OUT), each bound below to a command whose rule
-# asserts or retracts the one claim. Facet concepts (`table/cell-content`,
-# `table/sheet-name`) give rules a partial-upsert head, and clearing a
-# cell RETRACTS its content — the keystone fact whose absence unmatches
-# the cell from the directory.
+# Cells stay readable as facts. The host mirrors the workbook, at this
+# branch's heads, into the session overlay as `table/sheet` and
+# `table/cell` facts: `tonk query table/cell` lists them and views and
+# rules can read them. The mirror is READ-ONLY — asserting a `table/cell`
+# fact does not edit the workbook. Agents write with the `document/put`
+# and `document/remove` commands:
+#
+#   document/put!:
+#     document: id:table/book
+#     path: "sheets/<sheet>/cells/B2"
+#     value: "=A1*2"
+#
+# Only the raw INPUT is stored ("=B2*C2", "3.5"); computed values are
+# derived — every replica's IronCalc engine recomputes them.
+#
+# The same concepts also describe a workbook written when cells were
+# individual claims, and the seed below. The first open converts those
+# claims into the document and retracts them, the same way on every
+# replica.
 # ===========================================================================
 
 # ---------------------------------------------------------------------------
@@ -96,13 +108,23 @@ attribute!: &row/height
 
 concept!: &table
   this: tonk:table
-  description: A spreadsheet workbook edited with <tonk-table>.
+  description: A spreadsheet workbook edited with <tonk-table>; its body is an automerge document.
   with:
     name:
       description: The workbook's display name.
       the: xyz.tonk.table/name
       as: text
+    format:
+      description: |
+        The document format, "automerge/table@1". The same attribute
+        document.yaml declares: its presence is what makes this entity a
+        document.
+      the: xyz.tonk.document/format
+      as: text
 
+# The read shapes. In a converted workbook these are MIRROR facts, in the
+# session overlay; in a seed or a claims-era workbook they are durable
+# claims awaiting conversion.
 concept!: &table/sheet
   this: tonk:table/sheet
   description: One sheet of a table workbook.
@@ -110,12 +132,6 @@ concept!: &table/sheet
     table: sheet/table
     name: sheet/name
     order: sheet/order
-
-# A sheet's name as a standalone fact, so a rename upserts one field.
-concept!: &table/sheet-name
-  description: A sheet's name, as a standalone fact.
-  with:
-    name: sheet/name
 
 concept!: &table/cell
   this: tonk:table/cell
@@ -127,417 +143,34 @@ concept!: &table/cell
   maybe:
     style: cell/style
 
-# A cell's content as a standalone fact: the edit rule's upsert head,
-# and the keystone the clear rule retracts — a cell without content
-# no longer matches `table/cell`, so its row (and the cell) disappear.
-concept!: &table/cell-content
-  description: A cell's raw input, as a standalone fact.
-  with:
-    content: cell/content
-
-# A cell's style as a standalone fact (formatting edits never contend
-# with typing).
-concept!: &table/cell-style
-  description: A cell's style JSON, as a standalone fact.
-  with:
-    style: cell/style
-
-# Sizing claims: only EXPLICITLY sized columns/rows have one — every
-# other line uses the engine default, so a fresh sheet mints zero
-# sizing claims.
+# Claims-era sizing, read by the conversion only.
 concept!: &table/column
   this: tonk:table/column
-  description: An explicitly-sized column of a sheet.
+  description: An explicitly-sized column of a claims-era sheet.
   with:
     sheet: column/sheet
     at: column/at
     width: column/width
 
-concept!: &table/column-width
-  description: A column's width, as a standalone fact.
-  with:
-    width: column/width
-
 concept!: &table/row
   this: tonk:table/row
-  description: An explicitly-sized row of a sheet.
+  description: An explicitly-sized row of a claims-era sheet.
   with:
     sheet: row/sheet
     at: row/at
     height: row/height
 
-concept!: &table/row-height
-  description: A row's height, as a standalone fact.
-  with:
-    height: row/height
-
 # ---------------------------------------------------------------------------
-# Commands — domain-shaped, each in its own namespace so one can never
-# read as another. `time` is a component-minted monotonic nonce that
-# keeps otherwise-identical creates distinct. How the element's payload
-# fills them is the `event!:` declarations below.
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# Events — how `<tonk-table>`'s CustomEvents fill the commands.
-#
-# Detail keys are spelled the way the element spells them. The old
-# `dom.event.detail/edit-cell` identifier kebab-cased then camel-cased
-# on the way to `detail.editCell`, so the wire name was never written
-# down; here it is verbatim and there is no translation to get wrong.
-#
-# The keys are prefixed (`sheet-name`, `rename-name`) only because two
-# commands reading the same key used to be structurally the same
-# concept. With each command's fields in its own namespace that
-# constraint is gone, so they are read here under domain names and the
-# element's payload can be simplified independently.
-# ---------------------------------------------------------------------------
-
-event!: &on/table-create-sheet
-  type: "createsheet"
-  where:
-    table: ".detail.sheetTable"
-    name: ".detail.sheetName"
-    order: ".detail.sheetOrder"
-    time: ".detail.time"
-
-event!: &on/table-rename-sheet
-  type: "renamesheet"
-  where:
-    sheet: ".detail.renameSheet"
-    name: ".detail.renameName"
-
-event!: &on/table-create-cell
-  type: "createcell"
-  where:
-    sheet: ".detail.cellSheet"
-    at: ".detail.cellAt"
-    content: ".detail.cellContent"
-    time: ".detail.time"
-
-event!: &on/table-edit-cell
-  type: "editcell"
-  where:
-    cell: ".detail.editCell"
-    content: ".detail.editContent"
-
-event!: &on/table-clear-cell
-  type: "clearcell"
-  where:
-    cell: ".detail.clearCell"
-
-event!: &on/table-create-column
-  type: "createcolumn"
-  where:
-    sheet: ".detail.columnSheet"
-    at: ".detail.columnAt"
-    width: ".detail.columnWidth"
-    time: ".detail.time"
-
-event!: &on/table-resize-column
-  type: "resizecolumn"
-  where:
-    column: ".detail.resizeColumn"
-    width: ".detail.resizeWidth"
-
-event!: &on/table-create-row
-  type: "createrow"
-  where:
-    sheet: ".detail.rowSheet"
-    at: ".detail.rowAt"
-    height: ".detail.rowHeight"
-    time: ".detail.time"
-
-event!: &on/table-resize-row
-  type: "resizerow"
-  where:
-    row: ".detail.resizeRow"
-    height: ".detail.resizeHeight"
-
-command!: &table/create-sheet
-  description: Create a sheet in workbook `table`.
-  with:
-    table:
-      description: The workbook gaining the sheet
-      the: xyz.tonk.table.create-sheet/table
-      as: entity
-    name:
-      description: The new sheet's name
-      the: xyz.tonk.table.create-sheet/name
-      as: text
-    order:
-      description: Tab-strip order key, computed by the element
-      the: xyz.tonk.table.create-sheet/order
-      as: text
-    time:
-      description: A monotonic integer nonce from the element
-      the: xyz.tonk.table.create-sheet/time
-      as: unsigned-integer
-
-command!: &table/rename-sheet
-  description: Rename `sheet` to `name`.
-  with:
-    sheet:
-      description: The sheet being renamed
-      the: xyz.tonk.table.rename-sheet/sheet
-      as: entity
-    name:
-      description: The new name
-      the: xyz.tonk.table.rename-sheet/name
-      as: text
-
-command!: &table/create-cell
-  description: Set a previously-empty cell (mints its claim).
-  with:
-    sheet:
-      description: The sheet the cell is on
-      the: xyz.tonk.table.create-cell/sheet
-      as: entity
-    at:
-      description: A1-style address
-      the: xyz.tonk.table.create-cell/at
-      as: text
-    content:
-      description: The raw input
-      the: xyz.tonk.table.create-cell/content
-      as: text
-    time:
-      description: A monotonic integer nonce from the element
-      the: xyz.tonk.table.create-cell/time
-      as: unsigned-integer
-
-command!: &table/edit-cell
-  description: Replace `cell`'s raw input.
-  with:
-    cell:
-      description: The edited cell
-      the: xyz.tonk.table.edit-cell/cell
-      as: entity
-    content:
-      description: The new raw input
-      the: xyz.tonk.table.edit-cell/content
-      as: text
-
-command!: &table/clear-cell
-  description: Empty `cell` (retracts it from the sheet).
-  with:
-    cell:
-      description: The cleared cell
-      the: xyz.tonk.table.clear-cell/cell
-      as: entity
-
-command!: &table/create-column
-  description: Size a previously-default column (mints its claim).
-  with:
-    sheet:
-      description: The sheet the column is on
-      the: xyz.tonk.table.create-column/sheet
-      as: entity
-    at:
-      description: Column letters
-      the: xyz.tonk.table.create-column/at
-      as: text
-    width:
-      description: Width px, as decimal text
-      the: xyz.tonk.table.create-column/width
-      as: text
-    time:
-      description: A monotonic integer nonce from the element
-      the: xyz.tonk.table.create-column/time
-      as: unsigned-integer
-
-command!: &table/resize-column
-  description: Change `column`'s width.
-  with:
-    column:
-      description: The resized column
-      the: xyz.tonk.table.resize-column/column
-      as: entity
-    width:
-      description: The new width px, as decimal text
-      the: xyz.tonk.table.resize-column/width
-      as: text
-
-command!: &table/create-row
-  description: Size a previously-default row (mints its claim).
-  with:
-    sheet:
-      description: The sheet the row is on
-      the: xyz.tonk.table.create-row/sheet
-      as: entity
-    at:
-      description: The row number, as text
-      the: xyz.tonk.table.create-row/at
-      as: text
-    height:
-      description: Height px, as decimal text
-      the: xyz.tonk.table.create-row/height
-      as: text
-    time:
-      description: A monotonic integer nonce from the element
-      the: xyz.tonk.table.create-row/time
-      as: unsigned-integer
-
-command!: &table/resize-row
-  description: Change `row`'s height.
-  with:
-    row:
-      description: The resized row
-      the: xyz.tonk.table.resize-row/row
-      as: entity
-    height:
-      description: The new height px, as decimal text
-      the: xyz.tonk.table.resize-row/height
-      as: text
-
-# ---------------------------------------------------------------------------
-# Rules
-# ---------------------------------------------------------------------------
-
-# Sheet lifecycle. The created sheet's entity is the command entity
-# (`?this` flows from the command match into the head).
-rule!:
-  description: Creates a sheet
-  assert!: table/sheet
-  when:
-    - assert: table/create-sheet
-      where: { this: ?this, table: ?table, name: ?name, order: ?order }
-
-rule!:
-  description: Renames a sheet
-  assert!: table/sheet-name
-  when:
-    - assert: table/rename-sheet
-      where: { sheet: ?this, name: ?name }
-
-# Cell lifecycle. Created cells are the command entity; edits upsert
-# the content facet in place.
-rule!:
-  description: Sets a previously-empty cell
-  assert!: table/cell
-  when:
-    - assert: table/create-cell
-      where: { this: ?this, sheet: ?sheet, at: ?at, content: ?content }
-
-rule!:
-  description: Replaces an edited cell's input
-  assert!: table/cell-content
-  when:
-    - assert: table/edit-cell
-      where: { cell: ?this, content: ?content }
-
-# Clearing retracts the content fact — the keystone whose absence
-# unmatches the cell from `table/cell` (its style may linger on the
-# entity, harmlessly, until the address is written again).
-rule!:
-  description: Empties a cleared cell
-  retract!: table/cell-content
-  when:
-    - assert: table/clear-cell
-      where: { cell: ?this }
-    - assert: table/cell-content
-      where: { this: ?this, content: ?content }
-
-# Sizing lifecycle, same shape as cells: creates flow the command
-# entity into the head, resizes upsert the single-fact facet.
-rule!:
-  description: Sizes a previously-default column
-  assert!: table/column
-  when:
-    - assert: table/create-column
-      where: { this: ?this, sheet: ?sheet, at: ?at, width: ?width }
-
-rule!:
-  description: Resizes a column
-  assert!: table/column-width
-  when:
-    - assert: table/resize-column
-      where: { column: ?this, width: ?width }
-
-rule!:
-  description: Sizes a previously-default row
-  assert!: table/row
-  when:
-    - assert: table/create-row
-      where: { this: ?this, sheet: ?sheet, at: ?at, height: ?height }
-
-rule!:
-  description: Resizes a row
-  assert!: table/row-height
-  when:
-    - assert: table/resize-row
-      where: { row: ?this, height: ?height }
-
-# ---------------------------------------------------------------------------
-# Data-row views (invisible; feed the element)
-# ---------------------------------------------------------------------------
-#
-# Each directory view renders one bare data div per claim. The element
-# reads and observes these rows inside its light DOM; the `hidden`
-# wrapper in the main view keeps them unpainted. `subject={this}`
-# carries each claim's entity id.
-
-view!:
-  this: tonk:table/sheet
-  show:
-    directory: |
-      <div class="table-sheet-rows">
-        <div class="table-sheet-row" subject={this} data-table={table} data-name={name} data-order={order}></div>
-      </div>
-
-view!:
-  this: tonk:table/cell
-  show:
-    directory: |
-      <div class="table-cell-rows">
-        <div class="table-cell-row" subject={this} data-sheet={sheet} data-at={at} data-content={content} data-style={style}></div>
-      </div>
-
-view!:
-  this: tonk:table/column
-  show:
-    directory: |
-      <div class="table-column-rows">
-        <div class="table-column-row" subject={this} data-sheet={sheet} data-at={at} data-width={width}></div>
-      </div>
-
-view!:
-  this: tonk:table/row
-  show:
-    directory: |
-      <div class="table-rowsize-rows">
-        <div class="table-rowsize-row" subject={this} data-sheet={sheet} data-at={at} data-height={height}></div>
-      </div>
-
-# ---------------------------------------------------------------------------
-# Views — the live grid. `subject={this}` selects the element's claims
-# mode; the nested hidden displays materialize this branch's sheet and
-# cell claims where the element's observer can see them; each on* binds
-# one element event to its command.
+# Views — the live grid. `subject={this}` names the workbook and `document`
+# selects the element's document mode: it asks the host for this entity's
+# workbook at this branch's heads and sends its edits back as path writes.
 # ---------------------------------------------------------------------------
 
 view!:
   this: table
   show:
     ui: |
-      <tonk-table subject={this}
-        on:table-create-sheet=table/create-sheet
-        on:table-rename-sheet=table/rename-sheet
-        on:table-create-cell=table/create-cell
-        on:table-edit-cell=table/edit-cell
-        on:table-clear-cell=table/clear-cell
-        on:table-create-column=table/create-column
-        on:table-resize-column=table/resize-column
-        on:table-create-row=table/create-row
-        on:table-resize-row=table/resize-row
-      >
-        <div hidden>
-          <tonk-display model=tonk:table/sheet></tonk-display>
-          <tonk-display model=tonk:table/cell></tonk-display>
-          <tonk-display model=tonk:table/column></tonk-display>
-          <tonk-display model=tonk:table/row></tonk-display>
-        </div>
-      </tonk-table>
+      <tonk-table subject={this} document></tonk-table>
 
 # A directory view so `tonk render table` (list of workbooks) resolves.
 view!:
@@ -549,15 +182,16 @@ view!:
       </div>
 
 # ---------------------------------------------------------------------------
-# Starter content: one workbook, one sheet, and the demo cells — each
-# cell ITS OWN CLAIM (`tonk query table/cell` lists them; agents assert
-# more). Stable `id:` URIs keep re-seeding idempotent. Only raw input
-# is seeded; D-column values compute on load.
+# Starter content: one workbook, one sheet, and the demo cells, seeded as
+# claims. The first open converts them into the workbook document and
+# retracts them; from then on `tonk query table/cell` reads the mirror.
+# Only raw input is seeded; D-column values compute on load.
 # ---------------------------------------------------------------------------
 
 table!:
   this: id:table/book
   name: "Demo"
+  format: "automerge/table@1"
 
 table/sheet!:
   this: id:table/book/sheet1

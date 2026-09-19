@@ -21,7 +21,48 @@ the element drops its own echo by the version. This is the same
 one-attribute pattern as `<tonk-prose>`; good for embedding a table in a
 document or a `board` card.
 
-## Claims mode (individuated, store-backed) — the norm for a data app
+## Document mode — a workbook that merges (the `table` library)
+
+```html
+<tonk-table subject={this} document></tonk-table>
+```
+
+With `subject` and `document`, the workbook is ONE **automerge document**
+named after the entity: no command bindings, no hidden data rows. Two people
+who fill the same empty cell write the same key, so there is one cell and the
+other value is kept as a conflict (`cellconflict` event, `detail.cells`). A
+branch shows its own version, and editing writes no cells into branch
+history. This is what `rust/tonk-core/assets/library/table.yaml` uses. The
+entity needs `format: "automerge/table@1"`.
+
+Cells stay readable as facts — the host mirrors the workbook into
+`table/sheet` and `table/cell`:
+
+```
+tonk query table/cell
+```
+
+The mirror is read-only. To write a cell, assert a command:
+
+```yaml
+document/put!:
+  document: id:table/book
+  path: "sheets/<sheet>/cells/B2"
+  value: "=A1*2"
+```
+
+`document/remove` (`document`, `path`) clears a cell or drops a sheet;
+paths also cover `name`, `order`, `styles/<A1>`, `widths/<col>`,
+`heights/<row>`. History works as for prose (`tonk query document/versions
+--term document=id:table/book`). These need
+`rust/tonk-core/assets/library/document.yaml` evaluated into the space.
+
+## Claims mode (individuated, store-backed)
+
+The earlier store-backed mode, still supported: every cell is its own
+claim. Concurrent fills of one empty cell leave two cell entities for one
+address, which is what document mode removes.
+
 
 Add a `subject` and the workbook lives in the store as **one claim per
 sheet and per non-empty cell** (raw input only; values are recomputed on
