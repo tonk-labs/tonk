@@ -1022,6 +1022,73 @@ fn the_event_query_predicate_matches_the_builtin() {
 /// it is optional, so pinning it in the view query would make a view
 /// that carries none match nothing.
 #[dialog_common::test]
+/// The element-method predicate is a hand-mirrored copy of what the
+/// LIBRARY declares, the same way the view predicate mirrors a built-in.
+/// Nothing makes them agree, and a disagreement does not error: a query
+/// whose `the:` or shape has drifted simply returns no rows, which reads
+/// as "this element has no methods" everywhere it surfaces.
+fn the_element_method_query_matches_the_library() {
+    // Pull the declaration straight out of the seeded document rather
+    // than restating it here — restating is how the copies drift.
+    let declared = STANDARD_LIBRARY
+        .split("concept!: &element")
+        .nth(1)
+        .expect("the library declares `element`");
+    // Built from the constant, not written out again: a literal here
+    // would match the library whatever the constant said, and the test
+    // would pass through exactly the drift it exists to catch.
+    let domain = tonk_template::resolve::ELEMENT_METHOD_DOMAIN;
+    assert!(
+        declared.contains(&format!("the: {domain}")),
+        "the wire predicate's domain ({domain}) is not what the library \
+         declares for `element.method`",
+    );
+    assert!(
+        declared.contains("as: {[symbol]: text}"),
+        "the library declares `method` as something other than a keyed \
+         dictionary of text",
+    );
+    assert!(
+        declared.contains("cardinality: one"),
+        "the library declares `method` at a cardinality the predicate \
+         does not mirror",
+    );
+
+    let predicate = tonk_template::resolve::element_method_predicate();
+    let method = predicate
+        .get("with")
+        .and_then(|with| with.get("method"))
+        .expect("the predicate declares `method`");
+    assert_eq!(
+        method.get("the").and_then(|the| the.get("domain")),
+        Some(&serde_json::json!(domain)),
+    );
+    assert_eq!(
+        method.get("the").and_then(|the| the.get("keyed")),
+        Some(&serde_json::json!("dictionary")),
+        "a keyed collection's `the:` names a domain and a key kind",
+    );
+    assert_eq!(method.get("as"), Some(&serde_json::json!("Text")));
+    assert_eq!(method.get("cardinality"), Some(&serde_json::json!("one")));
+
+    // The built query binds the key operand as well as the field. An
+    // entry is a `(key, value)` pair; requesting only the field leaves
+    // every entry keyless once folded.
+    let query = tonk_template::resolve::element_method_query("did:key:zDemo")
+        .expect("the method query builds");
+    let query = serde_json::to_value(&query).expect("the method query serializes");
+    let terms = query
+        .get("terms")
+        .and_then(serde_json::Value::as_object)
+        .expect("the query has terms");
+    assert!(
+        terms.contains_key("method") && terms.contains_key("method/key"),
+        "a keyed collection binds both the field and its key operand: {terms:?}",
+    );
+    assert_eq!(terms.get("this"), Some(&serde_json::json!("did:key:zDemo")));
+}
+
+#[dialog_common::test]
 fn the_view_queries_match_the_builtin() {
     let builtin = tonk_schema::builtin::lookup_concept("view").expect("`view` is a built-in");
     let serialized =
