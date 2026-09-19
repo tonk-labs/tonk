@@ -20,6 +20,7 @@ use ::axum::{
 };
 use axum_wasm_macros::wasm_compat;
 use dialog_csv::{CsvExporter, CsvImporter};
+use futures_util::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -129,9 +130,31 @@ async fn export_branch_csv(
     tonk_state: &crate::worker::TonkState,
     tonk_branch: dialog_reactor::BranchReference<'_>,
 ) -> Result<String, TonkWorkerError> {
+    // A document's bytes live in a memory cell, not in the tree the
+    // export walks: carry them along, each as the branch sees it. A
+    // document whose cell is not on this device keeps its claims and
+    // loses its content; say so rather than export it silently.
+    let documents = {
+        let session = tonk_branch
+            .acquire(&tonk_state.operator)
+            .await
+            .map_err(|e| TonkWorkerError::NotFound(e.to_string()))?;
+        let (documents, missing) =
+            tonk_document::transfer::documents(session.handle(), &tonk_state.operator)
+                .await
+                .map_err(|e| TonkWorkerError::Internal(e.to_string()))?;
+        for entity in &missing {
+            log!("export: the document {entity} is not on this device; its content is left out");
+        }
+        documents
+    };
+
     let mut buf: Vec<u8> = Vec::new();
     tonk_branch
-        .export(CsvExporter::from(&mut buf))
+        .export(tonk_document::transfer::WithDocuments::new(
+            CsvExporter::from(&mut buf),
+            documents,
+        ))
         .perform(&tonk_state.operator)
         .await
         .map_err(|e| TonkWorkerError::NotFound(e.to_string()))?;
@@ -255,9 +278,23 @@ pub async fn import(
         .repository(&path.repo)
         .branch(&path.branch);
 
-    let importer = CsvImporter::from(Cursor::new(body.to_vec()));
+    // Document bytes go back to their cells first and never become
+    // claims; the rest is committed as one transaction.
+    let rows = CsvImporter::from(Cursor::new(body.to_vec()))
+        .collect::<Vec<_>>()
+        .await;
+    let (rest, documents) = tonk_document::transfer::take_documents(rows);
+    if !documents.is_empty() {
+        let session = tonk_branch
+            .acquire(&tonk_state.operator)
+            .await
+            .map_err(|e| TonkWorkerError::NotFound(e.to_string()))?;
+        tonk_document::transfer::restore(session.handle(), &documents, &tonk_state.operator)
+            .await
+            .map_err(|e| TonkWorkerError::Router(e.to_string()))?;
+    }
     let revision = tonk_branch
-        .import(importer)
+        .import(futures_util::stream::iter(rest))
         .perform(&tonk_state.operator)
         .await
         .map_err(|e| TonkWorkerError::Router(e.to_string()))?;

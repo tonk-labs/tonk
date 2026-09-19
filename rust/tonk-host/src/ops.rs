@@ -354,8 +354,10 @@ fn handle_query(ev: &CustomEvent) {
 /// resolved here, from the same `with` context every other operation
 /// uses. With `detail.write` (`{ heads, edits, format }`) the request is
 /// a POST and the answer is the branch's state after the merge; without
-/// it, a GET of the branch's current version. Either way `detail.result`
-/// resolves to the worker's JSON: `{ format, heads, local?, text | table }`.
+/// it, a GET of the branch's current version, or — with `detail.heads`,
+/// an array of change hashes — of that past version, which is read-only.
+/// Either way `detail.result` resolves to the worker's JSON:
+/// `{ format, heads, local?, text | table, size?, large? }`.
 fn handle_document(ev: &CustomEvent) {
     claim_event(ev);
     let detail = match ev.detail().dyn_into::<Object>() {
@@ -383,12 +385,29 @@ fn handle_document(ev: &CustomEvent) {
     } else {
         format.as_deref()
     };
+    // A past version is only ever read.
+    let heads = if write.is_some() {
+        None
+    } else {
+        Reflect::get(&detail, &JsValue::from_str("heads"))
+            .ok()
+            .filter(|value| js_sys::Array::is_array(value))
+            .map(|value| {
+                js_sys::Array::from(&value)
+                    .iter()
+                    .filter_map(|head| head.as_string())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .filter(|heads| !heads.is_empty())
+    };
     let Some(url) = document_url(
         space.as_deref(),
         branch.as_deref(),
         profile,
         &entity,
         query_format,
+        heads.as_deref(),
     ) else {
         return install_rejected_promise(
             &detail,

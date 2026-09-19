@@ -66,7 +66,15 @@ pub struct ReadParams {
     /// one yet. An element names its own; without it a missing document
     /// is 404.
     pub format: Option<String>,
+    /// Space-separated heads of a past version to read instead of the
+    /// branch's own. On a bytes write: heads the branch should advance
+    /// to include once the bytes are merged.
+    pub heads: Option<String>,
 }
+
+/// The media type of a raw automerge document: the second interface,
+/// for code in a space that bundles its own pinned automerge.
+const AUTOMERGE_BYTES: &str = "application/vnd.automerge";
 
 /// The body of a write.
 #[derive(Debug, Deserialize)]
@@ -97,6 +105,13 @@ pub struct DocumentResponse {
     /// The workbook of a table document.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub table: Option<Table>,
+    /// After a write: the stored size in bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<usize>,
+    /// Set once the document passed the size at which a host should
+    /// warn; past `session::SIZE_LIMIT` edits are refused with 413.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub large: bool,
 }
 
 impl DocumentResponse {
@@ -111,7 +126,15 @@ impl DocumentResponse {
             local,
             text,
             table,
+            size: None,
+            large: false,
         }
+    }
+
+    fn sized(mut self, size: usize) -> Self {
+        self.size = Some(size);
+        self.large = size > session::SIZE_WARNING;
+        self
     }
 
     fn etag(&self) -> String {
@@ -183,6 +206,29 @@ fn parse_format(name: Option<&str>) -> Result<Option<Format>, TonkWorkerError> {
     }
 }
 
+/// 413 in the worker's error body shape. Kept here rather than as a
+/// `TonkWorkerError` variant: no other route can produce it.
+fn too_large(error: &session::SessionError) -> Response {
+    (
+        StatusCode::PAYLOAD_TOO_LARGE,
+        Json(serde_json::json!({
+            "error": {
+                "kind": "too_large",
+                "message": error.to_string(),
+                "code": "DOCUMENT_TOO_LARGE",
+            }
+        })),
+    )
+        .into_response()
+}
+
+fn wants_bytes(headers: &HeaderMap, name: header::HeaderName) -> bool {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with(AUTOMERGE_BYTES))
+}
+
 fn session_error(error: session::SessionError) -> TonkWorkerError {
     use session::SessionError;
     match error {
@@ -252,6 +298,27 @@ pub async fn read(
     let session = acquire(&tonk, &path.repo, &path.branch).await?;
     note_requested(&path.repo, &path.branch, &entity);
 
+    if wants_bytes(&headers, header::ACCEPT) {
+        let bytes = session::bytes(session.handle(), &entity, &tonk.operator)
+            .await
+            .map_err(session_error)?;
+        return Ok(([(header::CONTENT_TYPE, AUTOMERGE_BYTES)], bytes).into_response());
+    }
+    if let Some(heads) = params
+        .heads
+        .as_deref()
+        .filter(|heads| !heads.trim().is_empty())
+    {
+        // A past version: read-only, and never the branch's business.
+        let heads = tonk_document::formula::parse_heads(heads);
+        let snapshot = session::read_at(session.handle(), &entity, &heads, &tonk.operator)
+            .await
+            .map_err(session_error)?;
+        let body = DocumentResponse::new(snapshot, None);
+        let etag = body.etag();
+        return Ok(([(header::ETAG, etag)], Json(body)).into_response());
+    }
+
     let before = session.handle().revision();
     let snapshot = session::read(session.handle(), &entity, create, &tonk.operator)
         .await
@@ -283,9 +350,14 @@ pub async fn read(
 pub async fn write(
     State(state): State<AppState>,
     Path(path): Path<DocumentPath>,
+    Query(params): Query<ReadParams>,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, TonkWorkerError> {
     let entity = parse_entity(&path.entity)?;
+    if wants_bytes(&headers, header::CONTENT_TYPE) {
+        return merge(state, path, entity, params, body).await;
+    }
     let request: WriteRequest = serde_json::from_slice(&body)
         .map_err(|error| TonkWorkerError::Router(format!("invalid document write: {error}")))?;
     let create = parse_format(request.format.as_deref())?;
@@ -302,7 +374,53 @@ pub async fn write(
         &stamp(&tonk),
         &tonk.operator,
     )
-    .await
+    .await;
+    let written = match written {
+        Err(error @ session::SessionError::TooLarge { .. }) => return Ok(too_large(&error)),
+        other => other.map_err(session_error)?,
+    };
+
+    note_dirty(&path.repo, &path.branch, &entity);
+    tonk.sync_queue
+        .mark_dirty(&path.repo, super::sync::now_millis());
+    refresh_mirror(&tonk, &session, &entity).await;
+
+    let body = DocumentResponse::new(written.snapshot, Some(written.local)).sized(written.size);
+    let etag = body.etag();
+    Ok(([(header::ETAG, etag)], Json(body)).into_response())
+}
+
+/// A bytes write: `Content-Type: application/vnd.automerge`. The bytes
+/// are MERGED into the cell, never stored over it, so code with its own
+/// automerge cannot overwrite another writer. `?heads=` then advances
+/// the branch to include those heads; without it the branch stays where
+/// it is and the changes wait in the cell.
+async fn merge(
+    state: AppState,
+    path: DocumentPath,
+    entity: Entity,
+    params: ReadParams,
+    body: Bytes,
+) -> Result<Response, TonkWorkerError> {
+    let tonk = state.read().await;
+    let session = acquire(&tonk, &path.repo, &path.branch).await?;
+    note_requested(&path.repo, &path.branch, &entity);
+
+    match session::merge_bytes(session.handle(), &entity, &body, &tonk.operator).await {
+        Err(error @ session::SessionError::TooLarge { .. }) => return Ok(too_large(&error)),
+        other => other.map_err(session_error)?,
+    }
+    let snapshot = match params
+        .heads
+        .as_deref()
+        .filter(|heads| !heads.trim().is_empty())
+    {
+        Some(heads) => {
+            let heads = tonk_document::formula::parse_heads(heads);
+            session::adopt_heads(session.handle(), &entity, &heads, &tonk.operator).await
+        }
+        None => session::read(session.handle(), &entity, None, &tonk.operator).await,
+    }
     .map_err(session_error)?;
 
     note_dirty(&path.repo, &path.branch, &entity);
@@ -310,7 +428,7 @@ pub async fn write(
         .mark_dirty(&path.repo, super::sync::now_millis());
     refresh_mirror(&tonk, &session, &entity).await;
 
-    let body = DocumentResponse::new(written.snapshot, Some(written.local));
+    let body = DocumentResponse::new(snapshot, None);
     let etag = body.etag();
     Ok(([(header::ETAG, etag)], Json(body)).into_response())
 }
@@ -536,6 +654,8 @@ mod tests {
         let response = write(
             State(state.clone()),
             path(repo),
+            Query(ReadParams::default()),
+            HeaderMap::new(),
             Bytes::from(body.to_string()),
         )
         .await
@@ -645,5 +765,93 @@ mod tests {
         .await;
         assert_eq!(merged["text"], "oh hello there");
         assert_ne!(heads(&merged, "local"), heads(&merged, "heads"));
+        assert!(merged["size"].as_u64().unwrap() > 0);
+        assert!(
+            merged.get("large").is_none(),
+            "a small document is not flagged"
+        );
+
+        // History: the first version is still readable, and reading it
+        // does not move the branch.
+        let past = json(
+            read(
+                State(state.clone()),
+                path(&repo),
+                Query(ReadParams {
+                    format: None,
+                    heads: Some(heads(&first, "heads").join(" ")),
+                }),
+                HeaderMap::new(),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(past["text"], "hello world");
+        assert_eq!(heads(&past, "heads"), heads(&first, "heads"));
+    }
+
+    #[dialog_common::test]
+    async fn it_exchanges_bytes_with_code_that_bundles_its_own_automerge() {
+        use tonk_document::engine::Document;
+
+        let state = test_state().await;
+        let repo = space(&state).await;
+        let first = post(
+            &state,
+            &repo,
+            serde_json::json!({ "format": "automerge/text@1", "edits": [{ "edit": "set-text", "text": "base" }] }),
+        )
+        .await;
+
+        let mut accept = HeaderMap::new();
+        accept.insert(header::ACCEPT, AUTOMERGE_BYTES.parse().unwrap());
+        let response = read(
+            State(state.clone()),
+            path(&repo),
+            Query(ReadParams::default()),
+            accept,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            AUTOMERGE_BYTES
+        );
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+
+        // The space's own automerge edits its copy and sends it back.
+        let mut theirs = Document::load(&bytes).unwrap();
+        let line = theirs
+            .edit_all(
+                &heads(&first, "heads"),
+                &Stamp {
+                    author: None,
+                    time: 2,
+                },
+                &[Edit::SetText {
+                    text: "base theirs".into(),
+                }],
+            )
+            .unwrap();
+        let mut content_type = HeaderMap::new();
+        content_type.insert(header::CONTENT_TYPE, AUTOMERGE_BYTES.parse().unwrap());
+        let merged = json(
+            write(
+                State(state.clone()),
+                path(&repo),
+                Query(ReadParams {
+                    format: None,
+                    heads: Some(line.join(" ")),
+                }),
+                content_type,
+                Bytes::from(theirs.save()),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(merged["text"], "base theirs");
+        assert_eq!(heads(&merged, "heads"), line);
     }
 }

@@ -63,7 +63,8 @@ pub(crate) fn evaluate_url(
 /// `/api/repository/{space}/branch/{branch}/document/{entity}`. The
 /// entity is one path segment, so it is percent-encoded — entity URIs
 /// contain `:` and `/`. `format` names the format to create the
-/// document with when the entity is not one yet. `None` when the route
+/// document with when the entity is not one yet; `heads` (space-
+/// separated) selects a past version to read. `None` when the route
 /// has no named space: documents live in a space's cells, and neither
 /// the profile endpoint nor the bare endpoint serves them.
 pub(crate) fn document_url(
@@ -72,6 +73,7 @@ pub(crate) fn document_url(
     profile: bool,
     entity: &str,
     format: Option<&str>,
+    heads: Option<&str>,
 ) -> Option<String> {
     if profile {
         return None;
@@ -82,9 +84,15 @@ pub(crate) fn document_url(
         "/api/repository/{space}/branch/{}/document/{entity}",
         branch.unwrap_or(DEFAULT_BRANCH),
     );
-    if let Some(format) = format {
-        url.push_str("?format=");
-        url.push_str(&String::from(js_sys::encode_uri_component(format)));
+    let mut separator = '?';
+    for (name, value) in [("format", format), ("heads", heads)] {
+        if let Some(value) = value {
+            url.push(separator);
+            url.push_str(name);
+            url.push('=');
+            url.push_str(&String::from(js_sys::encode_uri_component(value)));
+            separator = '&';
+        }
     }
     Some(url)
 }
