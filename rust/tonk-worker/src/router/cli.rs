@@ -177,7 +177,7 @@ impl Reach {
     /// held while the browser was only a client; it stops holding the
     /// moment a peer is something you can *add as a remote*, because a
     /// remote records an identity and has to keep reaching it.
-    pub async fn bind(seed: [u8; 32]) -> Result<Self, String> {
+    pub async fn bind(key: iroh::SecretKey) -> Result<Self, String> {
         let transport =
             tonk_rtc::transport::WebRtcTransport::new(tonk_rtc::rendezvous::transport_tag(
                 tonk_rtc::rendezvous::RENDEZVOUS,
@@ -186,7 +186,7 @@ impl Reach {
 
         let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Empty)
             .crypto_provider(iroh::tls::default_provider())
-            .secret_key(iroh::SecretKey::from_bytes(&seed))
+            .secret_key(key)
             .add_custom_transport(transport.clone())
             .bind()
             .await
@@ -371,19 +371,19 @@ pub async fn handle_carrier(
         return;
     };
 
-    let (reach, seed) = {
+    let (reach, key) = {
         let tonk = state.read().await;
-        let seed = match super::peer_identity::seed(&tonk).await {
-            Ok(seed) => seed,
+        let key = match super::peer_identity::peer_key(tonk.profile.signer()).await {
+            Ok(key) => key,
             Err(error) => {
                 log!("cli: no peer identity to bind an endpoint with: {error}");
                 return;
             }
         };
-        (tonk.reach.clone(), seed)
+        (tonk.reach.clone(), key)
     };
     let reach = match reach
-        .get_or_try_init(|| async { Reach::bind(seed).await.map(Arc::new) })
+        .get_or_try_init(|| async { Reach::bind(key).await.map(Arc::new) })
         .await
     {
         Ok(reach) => reach.clone(),
