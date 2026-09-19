@@ -5024,10 +5024,20 @@ dependencies = [
 name = "tonk-document"
 version = "0.6.15"
 dependencies = [
+ "anyhow",
+ "async-trait",
  "automerge",
  "blake3",
  "bs58",
+ "dialog-artifacts",
+ "dialog-capability",
  "dialog-common",
+ "dialog-effects",
+ "dialog-operator",
+ "dialog-query",
+ "dialog-reactor",
+ "dialog-repository",
+ "futures-util",
  "getrandom 0.4.3",
  "hex",
  "serde",
