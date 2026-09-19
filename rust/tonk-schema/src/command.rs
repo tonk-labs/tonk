@@ -318,6 +318,46 @@ impl Command for EnableSync {
     type Output = ();
 }
 
+/// Rotate onto a fresh profile and open the account ceremony on it.
+///
+/// Adding an account IS the regular signup, run for a profile that has
+/// none. The worker does the rotation; the ceremony itself is a top-page
+/// dialog with a passkey prompt, which the worker asks the originating
+/// page to raise.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct AddProfile {
+    /// The command entity (a fresh id per click).
+    pub this: Entity,
+    /// The click's timestamp — one attempt from the next.
+    pub time: crate::domain::command::current::add_profile::Time,
+}
+
+/// `AddProfile` is a [`dialog_capability::Command`]; its handler rotates
+/// the profile and notifies the page to open the ceremony.
+impl Command for AddProfile {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Make another profile on this browser the active one.
+///
+/// Dispatched when a switcher row is clicked. Carries the target
+/// profile's storage `handle` and a timestamp so switching back to a
+/// profile re-fires rather than deduplicating.
+///
+/// Naming the handle rather than firing on the profile's own entity is
+/// what lets this dispatch from the ACTIVE profile's branch: the profile
+/// being switched TO has branches this guest cannot reach.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct SwitchProfile {
+    /// The command entity (a fresh id per click).
+    pub this: Entity,
+    /// The click's timestamp — one click from the next.
+    pub time: crate::domain::command::current::switch_profile::Time,
+    /// The storage handle of the profile to make active.
+    pub handle: crate::domain::command::current::switch_profile::Handle,
+}
+
 /// Toggle background sync for a space's replica.
 ///
 /// Dispatched when the FAB's sync cap is alt/option-clicked. Carries the
@@ -425,6 +465,14 @@ impl Command for ForgetInvite {
 /// `PauseSync` is a [`dialog_capability::Command`]; its handler lives in
 /// `tonk-worker` (flips the replica's durable `auto-sync` preference).
 impl Command for PauseSync {
+    type Input = Self;
+    type Output = ();
+}
+
+/// `SwitchProfile` is a [`dialog_capability::Command`]; its handler lives
+/// in `tonk-worker` and lands in the same `activate_named` the HTTP route
+/// uses, so both paths share one validation.
+impl Command for SwitchProfile {
     type Input = Self;
     type Output = ();
 }

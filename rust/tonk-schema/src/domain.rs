@@ -1085,6 +1085,38 @@ pub mod command {
             pub struct Time(pub f64);
         }
 
+        /// `tonk/add-profile` — rotate onto a fresh profile and open the
+        /// account ceremony on it.
+        pub mod add_profile {
+            use dialog_query::Attribute;
+
+            /// The click's timestamp, so a second attempt after a
+            /// cancelled ceremony re-fires rather than deduplicating.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("xyz.tonk.command.add-profile")]
+            pub struct Time(pub f64);
+        }
+
+        /// `tonk/switch-profile` — make another profile on this browser
+        /// the active one.
+        pub mod switch_profile {
+            use dialog_query::Attribute;
+
+            /// The storage handle of the profile to open — what
+            /// `Profile::open` takes. The switcher reads it off the row's
+            /// durable `xyz.tonk.roster/name`, so a command can only ever
+            /// name a profile the device actually has.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.switch-profile")]
+            pub struct Handle(pub String);
+
+            /// The click's timestamp, so switching back to a profile
+            /// already switched to re-fires rather than deduplicating.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("xyz.tonk.command.switch-profile")]
+            pub struct Time(pub f64);
+        }
+
         /// `tonk/rename-repository` — rename a space's repository.
         pub mod rename_repository {
             use dialog_query::Attribute;
@@ -1308,13 +1340,49 @@ pub mod roster {
 
     /// The storage name the profile opens under: the activation handle.
     ///
-    /// The only fact about a profile that lives on the device rather than on
-    /// that profile's own account branch. Display name and address are read
-    /// from there; copies here could only go stale.
+    /// The only DURABLE fact about a profile that lives on the device rather
+    /// than on that profile's own account branch. The label and address below
+    /// are read from there and republished here as overlay facts, which is why
+    /// they cannot go stale: nothing persists them.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.roster")]
     #[cardinality(one)]
     pub struct Name(pub String);
+
+    /// The account name to show for a profile, as of this read.
+    ///
+    /// OVERLAY ONLY. It lives on the profile whose branch a guest can
+    /// actually query, but it describes ANOTHER profile, whose account
+    /// branch the guest cannot reach. The worker can open every profile,
+    /// so it republishes what it finds each time the roster is read.
+    ///
+    /// A durable copy here is what the design refused, and rightly: it
+    /// would be a second home for a name that is owned elsewhere, free to
+    /// disagree after a rename. An overlay fact is rebuilt from the source
+    /// on every read and never written down, so there is nothing to drift.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.roster")]
+    #[cardinality(one)]
+    pub struct Label(pub String);
+
+    /// The access service a profile's account is attached to, as of this
+    /// read. Presence is what the switcher needs: a profile with no
+    /// provider is a local workspace, never signed in or signed out.
+    ///
+    /// OVERLAY ONLY, for the same reason as [`Label`].
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.roster")]
+    #[cardinality(one)]
+    pub struct Provider(pub String);
+
+    /// Whether this row is the profile the browser is currently using.
+    ///
+    /// OVERLAY ONLY. Which profile is active is a property of the running
+    /// worker, not of any profile, so it has no durable home at all.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.roster")]
+    #[cardinality(one)]
+    pub struct Active(pub bool);
 }
 
 /// Root-owned account state replicated through the hidden account repository.
