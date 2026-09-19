@@ -114,6 +114,27 @@ fn it_switches_profiles_by_handle_not_by_label() {
     );
 }
 
+/// The account bar renders its name and switcher from facts.
+///
+/// The bar used to be markup an element painted from a fetch, which is
+/// why "a signup is up" had to live on the document body: the route view
+/// re-renders whenever profile facts land, replacing the element
+/// mid-ceremony. Rendering from facts is what removes that problem
+/// rather than working around it.
+#[test]
+fn it_renders_the_account_bar_from_facts() {
+    for model in ["tonk:account/name", "tonk:profile/row"] {
+        assert!(
+            PROFILE_LIBRARY.contains(&format!(r#"model="{model}""#)),
+            "the account bar must render `{model}` as a display, not paint it",
+        );
+    }
+    assert!(
+        PROFILE_LIBRARY.contains("xyz.tonk.ceremony/state"),
+        "ceremony progress must be a fact the bar can read, not element state",
+    );
+}
+
 /// Adding an account dispatches a command rather than fetching.
 ///
 /// The ceremony that follows is a top-page passkey dialog the worker

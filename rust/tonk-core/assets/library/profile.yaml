@@ -1157,17 +1157,65 @@ view!:
         </button>
       </div>
 
-# The add-account row. Its own view rather than a slot in the switcher
-# list: the list repeats per profile, and this row must appear exactly
-# once whether the browser holds one account or five.
+# The signup ceremony's progress, as the worker reports it.
+#
+# The hub used to hold "a signup is up" on the document body, because the
+# route view re-renders whenever profile facts land — the passkey itself
+# lands one — and that replaced the element mid-ceremony. An overlay row
+# survives re-renders by not living in the DOM at all.
+concept!: &ceremony/status
+  this: state:ceremony
+  description: Where a passkey-gated ceremony got to.
+  with:
+    ceremony:
+      description: Which ceremony this row describes.
+      the: xyz.tonk.ceremony/ceremony
+      cardinality: one
+      as: text
+    state:
+      description: Where it got to — pending-ceremony, working, done, failed, refused.
+      the: xyz.tonk.ceremony/state
+      cardinality: one
+      as: text
+
+# The hub's account bar and menu.
+#
+# The account name comes from `tonk:account/name`, the switcher list from
+# `tonk:profile/row`, and whether a signup is up from the ceremony row —
+# all of them facts, so a re-render rebuilds the bar instead of losing it.
 view!:
   this: tonk:hub
   show:
-    add-account: |
-      <button class="account-menu__row account-menu__row--ink" type="button"
-        on:add-profile=tonk:add-profile>
-        add account<span class="g" aria-hidden="true">+</span>
-      </button>
+    account-bar: |
+      <nav class="hubbar chrome" aria-label="hub">
+        <button class="hcell hc-acct account-trigger" type="button"
+          data-account-trigger aria-haspopup="menu" aria-expanded="false"
+          aria-controls="hub-account-menu">
+          <span data-account-label><tonk-display model="tonk:account/name"></tonk-display></span>
+        </button>
+        <button class="hcell hc-view" type="button" data-return-spaces aria-current="page">
+          spaces
+        </button>
+      </nav>
+
+      <div id="hub-account-menu" class="account-menu chrome" data-account-menu role="menu" hidden>
+        <a class="account-menu__row" href="/settings" data-open-settings role="menuitem">
+          settings
+          <svg class="settings-icon" viewBox="0 0 9 9" aria-hidden="true">
+            <g stroke="currentColor" stroke-width="1.2">
+              <line x1="0" y1="2.5" x2="9" y2="2.5"></line>
+              <line x1="0" y1="6.5" x2="9" y2="6.5"></line>
+            </g>
+            <rect x="5" y="1" width="3" height="3" fill="currentColor"></rect>
+            <rect x="1" y="5" width="3" height="3" fill="currentColor"></rect>
+          </svg>
+        </a>
+        <tonk-display model="tonk:profile/row"></tonk-display>
+        <button class="account-menu__row account-menu__row--ink" type="button"
+          on:add-profile=tonk:add-profile role="menuitem">
+          add account<span class="g" aria-hidden="true">+</span>
+        </button>
+      </div>
 
 # The Hub route model + its view: the space directory over this (profile) branch.
 # `tonk:hub` is the concept the `/` route resolves to; its view renders the
