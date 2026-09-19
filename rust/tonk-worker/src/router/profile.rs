@@ -14,14 +14,7 @@ use tonk_schema::{Replica, domain::replica::Profile as ProfileEntity, prelude::D
 use super::{AppState, RepositoryInfo, repository::build_repository_info};
 use crate::TonkWorkerError;
 
-/// The profile repository's content branch — where hub bookkeeping
-/// (the space directory, account facts) lives.
-///
-/// Despite the name this is NOT the meta branch; see
-/// [`ensure_profile_meta_branch`] for that. A space repository splits
-/// content from `meta`, and the profile is gaining the same split so
-/// its branches can be enumerated like any other repository's.
-const PROFILE_BRANCH: &str = "main";
+use super::repository::PROFILE_BRANCH;
 
 /// Give the profile repository the `meta` branch every space
 /// repository has, recording `main` in the branch enumeration.

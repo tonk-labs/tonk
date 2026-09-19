@@ -49,11 +49,14 @@ use crate::{Notification, RepositoryError, TonkWorkerError, broadcast, worker::T
 /// that must never replicate (see [`tonk_schema`]).
 pub(crate) const META_BRANCH: &str = "meta";
 
-/// The single branch the *profile* repository lives on. The profile
-/// has no content/meta split (its whole state is device-local hub
-/// bookkeeping), so it uses `main` like any repository's default
-/// branch rather than a separate meta branch.
-const PROFILE_BRANCH: &str = "main";
+/// The profile repository's content branch — the device-local hub
+/// bookkeeping (space directory, account facts) every route reads.
+///
+/// Named alongside [`META_BRANCH`], which carries the profile's replica
+/// record and branch enumeration. The profile once had only this
+/// branch; `ensure_profile_meta_branch` gives it the same content/meta
+/// split a space repository has.
+pub(crate) const PROFILE_BRANCH: &str = "main";
 
 /// Configuration for a single remote.
 #[derive(Clone, Debug, Serialize, Deserialize)]
