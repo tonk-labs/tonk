@@ -61,6 +61,10 @@
 //                 channel); the text child takes precedence.
 //   value       — legacy/convenience standalone content source.
 //   readonly    — boolean attribute. Presence locks the grid.
+//   at          — document mode only: the heads (space-separated change
+//                 hashes) of a past version to show. The grid is then
+//                 read-only and follows nothing; remove `at` to return
+//                 to the branch's live version.
 //   auto-focus  — boolean attribute. Focus the grid once mounted.
 //   min-rows,
 //   min-cols    — minimum rendered grid extent (defaults 100×26); small
@@ -134,6 +138,7 @@ import {
   conflictsOf,
   editsOf,
   eventTransport,
+  parseHeads,
   rowsOf,
   type TableSnapshot,
 } from "./document";
@@ -148,6 +153,7 @@ const DOCUMENT_POLL_MS = 1500;
 const OBSERVED = [
   "subject",
   "document",
+  "at",
   "content",
   "value",
   "readonly",
@@ -424,12 +430,16 @@ class TonkTableElement extends HTMLElement {
     const subject = this.getAttribute("subject");
     const grid = this.#grid;
     if (subject === null || subject === "" || !grid) return;
+    const at = parseHeads(this.getAttribute("at"));
+    const pinned = at.length > 0;
     const session = new TableSession(
-      eventTransport(this, subject, TABLE_FORMAT),
+      eventTransport(this, subject, TABLE_FORMAT, at),
       (table: TableSnapshot) => {
         const rows = rowsOf(subject, table);
         grid.applyRows(rows.sheets, rows.cells, rows.columns, rows.rowSizes);
         const conflicts = conflictsOf(table);
+        // `::part(cell conflict)`; cleared when the conflict is resolved.
+        grid.setConflicts(conflicts);
         if (conflicts.length > 0) {
           // Two people wrote one cell: both replicas show one value, and
           // the page is told which cells hold another.
@@ -442,11 +452,15 @@ class TonkTableElement extends HTMLElement {
           );
         }
       },
+      { pinned },
     );
     this.#session = session;
+    // A past version cannot be edited, whatever `readonly` says.
+    grid.setReadOnly(pinned || this.hasAttribute("readonly"));
     void session.open().catch((err) => {
       console.warn("[tonk-table] could not open the document:", err);
     });
+    if (pinned) return;
     this.#pollTimer = setInterval(() => {
       if (document.visibilityState !== "visible") return;
       void session.poll().catch(() => {
@@ -757,8 +771,13 @@ class TonkTableElement extends HTMLElement {
           this.#adopt(next ?? "");
         }
         break;
+      case "at":
+        // A different version of the same document: reopen the session;
+        // the grid reconciles to the rows it brings.
+        if (_old !== next && this.#grid && this.#documentMode()) this.#startDocument();
+        break;
       case "readonly":
-        this.#grid?.setReadOnly(next !== null);
+        this.#grid?.setReadOnly(next !== null || this.#session?.pinned === true);
         break;
       case "min-rows":
       case "min-cols":

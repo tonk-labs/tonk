@@ -200,10 +200,22 @@ export class TableSession {
   #inFlight = false;
   #opened = false;
   #closed = false;
+  /** Pinned to a past version: opened once, then neither written nor
+   *  polled. */
+  readonly #pinned: boolean;
 
-  constructor(transport: Transport, apply: (table: TableSnapshot) => void) {
+  constructor(
+    transport: Transport,
+    apply: (table: TableSnapshot) => void,
+    options: { pinned?: boolean } = {},
+  ) {
     this.#transport = transport;
     this.#apply = apply;
+    this.#pinned = options.pinned === true;
+  }
+
+  get pinned(): boolean {
+    return this.#pinned;
   }
 
   get heads(): readonly string[] {
@@ -221,6 +233,7 @@ export class TableSession {
 
   /** Queue edits. The caller flushes once the gesture settled. */
   push(edits: TableEdit[]): void {
+    if (this.#pinned) return;
     this.#queue.push(...edits);
   }
 
@@ -250,6 +263,7 @@ export class TableSession {
 
   /** Look for changes made elsewhere. */
   async poll(): Promise<void> {
+    if (this.#pinned) return;
     if (this.#closed || !this.#opened || this.#inFlight || this.#queue.length > 0) return;
     const reply = await this.#transport.read();
     if (this.#closed || this.#inFlight || this.#queue.length > 0) return;
@@ -263,6 +277,11 @@ export class TableSession {
   }
 }
 
+/** The heads an `at` attribute names: change hashes separated by spaces. */
+export function parseHeads(text: string | null): string[] {
+  return (text ?? "").split(/\s+/).filter((head) => head !== "");
+}
+
 export function sameHeads(a: readonly string[], b: readonly string[]): boolean {
   if (a.length !== b.length) return false;
   const left = [...a].sort();
@@ -273,10 +292,17 @@ export function sameHeads(a: readonly string[], b: readonly string[]): boolean {
 /** Reach the host through a bubbling `tonk-document` event. The host
  *  (or, in a sealed guest, its relay) resolves the repository and the
  *  branch from the element's routing context. */
-export function eventTransport(element: HTMLElement, entity: string, format: string): Transport {
+export function eventTransport(
+  element: HTMLElement,
+  entity: string,
+  format: string,
+  at: string[] = [],
+): Transport {
   const call = async (write?: { heads: string[]; edits: TableEdit[] }): Promise<Reply> => {
     const detail: Record<string, unknown> = { entity, format };
     if (write) detail.write = { ...write, format };
+    // A past version: the host reads at these heads instead of the branch's.
+    else if (at.length > 0) detail.heads = at;
     const event = new CustomEvent("tonk-document", {
       detail,
       bubbles: true,

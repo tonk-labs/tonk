@@ -5,6 +5,7 @@ import {
   TableSession,
   conflictsOf,
   editsOf,
+  parseHeads,
   rowsOf,
   type Reply,
   type TableEdit,
@@ -135,4 +136,22 @@ test("brings in a remote cell on poll and keeps edits across a failed write", as
   await session.flush();
   assert.equal(latest.sheets[0].cells.A1, "kept");
   assert.equal(latest.sheets[0].cells.C3, "remote");
+});
+
+test("a session pinned to a past version takes no edits and does not follow the branch", async () => {
+  const host = new FakeHost();
+  host.remote("A1", "past");
+  let latest: TableSnapshot = { sheets: [] };
+  const session = new TableSession(host, (table) => (latest = table), { pinned: true });
+  await session.open();
+  assert.equal(latest.sheets[0].cells.A1, "past");
+
+  session.push(editsOf("createcell", { cellSheet: "s1", cellAt: "B1", cellContent: "x" }, () => "x"));
+  await session.flush();
+  assert.equal(host.writes.length, 0);
+
+  host.remote("A1", "later");
+  await session.poll();
+  assert.equal(latest.sheets[0].cells.A1, "past");
+  assert.deepEqual(parseHeads("ab cd"), ["ab", "cd"]);
 });

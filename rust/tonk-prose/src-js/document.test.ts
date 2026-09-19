@@ -1,7 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { DocumentSession, textEditor, sameHeads, type Reply, type TextEdit } from "./document";
+import {
+  DocumentSession,
+  parseHeads,
+  textEditor,
+  sameHeads,
+  type Reply,
+  type TextEdit,
+} from "./document";
 
 /** A host that behaves like the real one for text: a write is merged
  *  on top of the heads it names. Text is modelled as a list of tokens
@@ -142,6 +149,42 @@ test("an unchanged poll does not touch the editor", async () => {
   const before = s.applied.length;
   await s.session.poll();
   assert.equal(s.applied.length, before);
+});
+
+test("a session pinned to a past version never writes and never polls", async () => {
+  const host = new FakeHost();
+  host.remote("past");
+  let text = "";
+  let writes = 0;
+  const session = new DocumentSession<string, TextEdit>(
+    {
+      read: host.read,
+      write: (heads, edits) => {
+        writes++;
+        return host.write(heads, edits);
+      },
+    },
+    textEditor(
+      () => text,
+      (next) => (text = next),
+    ),
+    { pinned: true },
+  );
+  await session.open();
+  assert.equal(text, "past");
+
+  text = "past typed";
+  await session.flush();
+  assert.equal(writes, 0, "a past version takes no edits");
+
+  host.remote("later");
+  await session.poll();
+  assert.equal(text, "past typed", "a past version does not follow the branch");
+});
+
+test("reads the heads of an `at` attribute", () => {
+  assert.deepEqual(parseHeads(" ab  cd\n"), ["ab", "cd"]);
+  assert.deepEqual(parseHeads(null), []);
 });
 
 test("compares heads as sets", () => {

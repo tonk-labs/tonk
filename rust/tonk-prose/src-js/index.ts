@@ -27,6 +27,10 @@
 //                 text channel; the text child takes precedence when both
 //                 are present.
 //   readonly    — boolean attribute. Presence locks the editor.
+//   at          — document mode only: the heads (space-separated change
+//                 hashes) of a past version to show. The element is then
+//                 read-only and follows nothing; remove `at` to return
+//                 to the branch's live version.
 //   placeholder — ghost text shown while the document is empty.
 //   auto-focus  — boolean attribute. Focus the editor once mounted.
 //
@@ -59,10 +63,17 @@
 import type { ProseEditor, EditorModule } from "./editor/api";
 import { Clock, formatHlc } from "./editor/hlc";
 import { parseContent, formatContent } from "./editor/content";
-import { DocumentSession, eventTransport, textEditor, type TextEdit } from "./document";
+import {
+  DocumentSession,
+  eventTransport,
+  parseHeads,
+  textEditor,
+  type TextEdit,
+} from "./document";
 
 const OBSERVED = [
   "subject",
+  "at",
   "content",
   "value",
   "readonly",
@@ -294,19 +305,25 @@ class TonkProseElement extends HTMLElement {
     const subject = this.getAttribute("subject") ?? "";
     const editor = this.#editor;
     if (subject === "" || !editor) return;
+    const at = parseHeads(this.getAttribute("at"));
+    const pinned = at.length > 0;
     const session = new DocumentSession<string, TextEdit>(
-      eventTransport(this, subject, TEXT_FORMAT, (body) => String(body.text ?? "")),
+      eventTransport(this, subject, TEXT_FORMAT, (body) => String(body.text ?? ""), at),
       textEditor(
         () => editor.getMarkdown(),
         // `setMarkdown` replaces only the span that differs and keeps
         // the caret, so a remote edit does not disturb typing.
         (text) => editor.setMarkdown(text),
       ),
+      { pinned },
     );
     this.#session = session;
+    // A past version cannot be edited, whatever `readonly` says.
+    editor.setReadOnly(pinned || this.hasAttribute("readonly"));
     void session.open().catch((err) => {
       console.warn("[tonk-prose] could not open the document:", err);
     });
+    if (pinned) return;
     this.#pollTimer = setInterval(() => {
       if (document.visibilityState !== "visible") return;
       void session.poll().catch(() => {
@@ -509,9 +526,11 @@ class TonkProseElement extends HTMLElement {
   ): void {
     switch (name) {
       case "subject":
-        // A different subject is a different document: reopen. Before
-        // the editor exists the mount starts it.
-        if (this.#editor) this.#startDocument();
+      case "at":
+        // A different subject is a different document, a different `at`
+        // a different version of it: reopen. Before the editor exists
+        // the mount starts it.
+        if (this.#editor && this.#documentMode()) this.#startDocument();
         break;
       case "content":
         this.#adopt(next ?? "");
@@ -525,7 +544,7 @@ class TonkProseElement extends HTMLElement {
         }
         break;
       case "readonly":
-        this.#editor?.setReadOnly(next !== null);
+        this.#editor?.setReadOnly(next !== null || this.#session?.pinned === true);
         break;
       case "placeholder":
         this.#editor?.setPlaceholder(next ?? "");

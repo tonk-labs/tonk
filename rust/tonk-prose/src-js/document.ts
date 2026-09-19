@@ -70,10 +70,19 @@ export class DocumentSession<T, E> {
   #inFlight = false;
   #again = false;
   #closed = false;
+  /** Pinned to a past version: opened once, then neither written nor
+   *  polled. The transport reads that version; the session only makes
+   *  sure nothing the editor holds can leave. */
+  readonly #pinned: boolean;
 
-  constructor(transport: Transport<T, E>, editor: Editor<T, E>) {
+  constructor(transport: Transport<T, E>, editor: Editor<T, E>, options: { pinned?: boolean } = {}) {
     this.#transport = transport;
     this.#editor = editor;
+    this.#pinned = options.pinned === true;
+  }
+
+  get pinned(): boolean {
+    return this.#pinned;
   }
 
   /** The heads this element is at. */
@@ -105,7 +114,7 @@ export class DocumentSession<T, E> {
   /** Send the editor's unsent edits. Safe to call at any time and any
    *  number of times; concurrent calls coalesce. */
   async flush(): Promise<void> {
-    if (this.#closed || this.#accounted === null) return;
+    if (this.#closed || this.#pinned || this.#accounted === null) return;
     if (this.#inFlight) {
       this.#again = true;
       return;
@@ -145,7 +154,7 @@ export class DocumentSession<T, E> {
   /** Look for changes made elsewhere. Skipped while the editor holds
    *  unsent edits — those go first, and their reply brings the rest. */
   async poll(): Promise<void> {
-    if (this.#closed || this.#accounted === null) return;
+    if (this.#closed || this.#pinned || this.#accounted === null) return;
     if (this.#inFlight || this.dirty) return;
     const reply = await this.#transport.read();
     if (this.#closed || this.#inFlight || this.dirty) return;
@@ -158,6 +167,11 @@ export class DocumentSession<T, E> {
   close(): void {
     this.#closed = true;
   }
+}
+
+/** The heads an `at` attribute names: change hashes separated by spaces. */
+export function parseHeads(text: string | null): string[] {
+  return (text ?? "").split(/\s+/).filter((head) => head !== "");
 }
 
 export function sameHeads(a: readonly string[], b: readonly string[]): boolean {
@@ -194,10 +208,13 @@ export function eventTransport<T>(
   entity: string,
   format: string,
   content: (body: Record<string, unknown>) => T,
+  at: string[] = [],
 ): Transport<T, unknown> {
   const call = async (write?: { heads: string[]; edits: unknown[] }): Promise<Reply<T>> => {
     const detail: Record<string, unknown> = { entity, format };
     if (write) detail.write = { ...write, format };
+    // A past version: the host reads at these heads instead of the branch's.
+    else if (at.length > 0) detail.heads = at;
     const event = new CustomEvent("tonk-document", {
       detail,
       bubbles: true,

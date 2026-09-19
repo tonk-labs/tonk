@@ -100,6 +100,10 @@ export interface TableGrid {
     rowSizes: RowSizeRow[],
   ): void;
 
+  /** Document mode: the cells that hold concurrent values, as
+   *  `<sheet id>!<A1>`. They carry the `conflict` part token. */
+  setConflicts(cells: readonly string[]): void;
+
   // --- Data ----------------------------------------------------------
 
   /** Write a cell by A1 address on the active (or named) sheet. */
