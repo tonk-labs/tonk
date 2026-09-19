@@ -43,6 +43,7 @@ remote-required mutation. A rerun inspects current state and is safe.
 | --- | --- | --- |
 | `concept`, `concept --json`, `concept add` | `DATA-01` | Empty/list, typed fields/cardinality, optional description, notation, write modifiers. |
 | `view`, `view --json`, `view add` | `DATA-02` | Detail/directory/label/title, inline/file template, explicit/default anchor and derived entity, entity-like anchor rejection, home, notation, write modifiers. |
+| `element`, `element --json`, `element add` | `DATA-12` | Empty/list, inline/file method source, attribute defaults, description required, re-authoring one method or one default, legacy `component` rows alongside, notation, write modifiers. |
 | `assert [CONCEPT] [ENTITY] ...` | `DATA-03`, `DATA-04` | Dynamic help, create/update/no-op, schema flags, notation/dry-run/no-sync/quiet. |
 | `query CONCEPT` | `DATA-05` | Empty/many, human/JSON, invalid/missing concept, broken pipe. |
 | `retract CONCEPT ENTITY [--field]` | `DATA-06` | Whole/field/many field, notation/dry-run/no-sync/quiet, already retracted. |
