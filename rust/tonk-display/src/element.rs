@@ -40,7 +40,7 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{
     CustomEvent, CustomEventInit, Element, HtmlElement, MutationObserver, MutationObserverInit,
-    MutationRecord, Node, window,
+    MutationRecord, Node, NodeList, window,
 };
 
 use crate::fold::show_template;
@@ -2568,21 +2568,57 @@ fn forward_with(host: &Element, view_el: &Element) {
     // (the notebook space wraps the scratch notebook's) hands its context
     // down, and that display's own forward reaches the consumers inside
     // its view — context never dies at a display boundary.
-    let selector = "[data-tonk-with], tonk-display, tonk-tree, tonk-inspector, tonk-notebook, \
-                    ui-sync-status";
     if view_el
-        .matches(&format!("{selector}, [with]"))
+        .matches(&format!("{ROUTING_CONSUMERS}, [with]"))
         .unwrap_or(false)
         && !view_el.has_attribute("with")
     {
         let _ = view_el.set_attribute("with", &context);
     }
-    if let Ok(list) = view_el.query_selector_all(selector) {
+    // The view's markup is parsed into an inert `<template>` (see
+    // `mount_view_slide`), and the renderer clones that template's
+    // content per frame, so the consumers to stamp live in template
+    // content, which `querySelectorAll` on the view never enters. Stamp
+    // the light DOM AND every template's content, recursively: a view's
+    // own row template nests inside the mount's. Clones inherit whatever
+    // the template nodes carry, so stamping the content once is what
+    // gives every frame its context.
+    stamp_context(
+        view_el.query_selector_all(ROUTING_CONSUMERS).ok(),
+        view_el.query_selector_all("template").ok(),
+        &context,
+    );
+}
+
+/// Every element whose routing context a display forwards: the routing
+/// consumers, and a nested display, which forwards it on in turn.
+const ROUTING_CONSUMERS: &str = "[data-tonk-with], tonk-display, tonk-tree, tonk-inspector, \
+                                 tonk-notebook, ui-sync-status";
+
+/// Stamp `context` as `with` on each of `consumers` that lacks one, then
+/// descend into each of `templates` and do the same for its content.
+fn stamp_context(consumers: Option<NodeList>, templates: Option<NodeList>, context: &str) {
+    if let Some(list) = consumers {
         for i in 0..list.length() {
             if let Some(el) = list.item(i).and_then(|n| n.dyn_into::<Element>().ok())
                 && !el.has_attribute("with")
             {
-                let _ = el.set_attribute("with", &context);
+                let _ = el.set_attribute("with", context);
+            }
+        }
+    }
+    if let Some(list) = templates {
+        for i in 0..list.length() {
+            if let Some(template) = list
+                .item(i)
+                .and_then(|n| n.dyn_into::<web_sys::HtmlTemplateElement>().ok())
+            {
+                let content = template.content();
+                stamp_context(
+                    content.query_selector_all(ROUTING_CONSUMERS).ok(),
+                    content.query_selector_all("template").ok(),
+                    context,
+                );
             }
         }
     }
@@ -2611,7 +2647,19 @@ fn mount_view_slide(
             let _ = view_el.set_attribute("data-scalar-fields", &csv);
         }
     }
-    view_el.set_inner_html(display);
+    // Parse the view's markup into an inert `<template>` rather than
+    // into the view's live children. `<tonk-view>` snapshots its row
+    // template on connect, and markup without a `<template>` is moved
+    // into a fragment to become one: had it been parsed as live
+    // children, every custom element in it would have connected once
+    // as that template instance (a `<tonk-site>` booting a guest it
+    // then tears down, a `<tonk-fab>` subscribing from inside the
+    // fragment for its whole retry window) before being exiled for
+    // its clones to take over. A template's content is inert: nothing
+    // in it upgrades or connects until a clone lands in the document.
+    let template = document.create_element("template").ok()?;
+    template.set_inner_html(display);
+    let _ = view_el.append_child(&template);
     forward_with(host, &view_el);
     // Record whose template is being rendered here, so a display mounted
     // inside this view can tell whether it would be re-entering its own
@@ -3534,6 +3582,123 @@ mod tests {
         );
     }
 
+    /// The view's markup is parsed into an inert `<template>` (so nothing
+    /// in it connects as the template instance), and the renderer clones
+    /// that template's content per frame. Consumers therefore live in the
+    /// template's content fragment, not the view's light DOM, and a
+    /// `querySelectorAll` on the view never sees them. The forward pass
+    /// must stamp the content, and the content of any `<template>` nested
+    /// inside it (a view's own row template), or every routing consumer
+    /// inside a view loses its context: `<tonk-tree>`, `<tonk-inspector>`,
+    /// `<tonk-notebook>`, `<ui-sync-status>` and the nested display that
+    /// is how context cascades.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    fn it_forwards_its_with_into_template_content() {
+        let document = web_sys::window().unwrap().document().unwrap();
+        let host = document.create_element("tonk-display").unwrap();
+        host.set_attribute("with", "main@did:key:zSpace").unwrap();
+        let view = document.create_element("tonk-view").unwrap();
+        let template = document.create_element("template").unwrap();
+        template.set_inner_html(concat!(
+            "<ui-sync-status></ui-sync-status>",
+            "<tonk-inspector></tonk-inspector>",
+            "<tonk-display></tonk-display>",
+            "<template><tonk-tree></tonk-tree></template>",
+        ));
+        view.append_child(&template).unwrap();
+        host.append_child(&view).unwrap();
+
+        forward_with(&host, &view);
+
+        let content = template
+            .dyn_into::<web_sys::HtmlTemplateElement>()
+            .unwrap()
+            .content();
+        for tag in ["ui-sync-status", "tonk-inspector", "tonk-display"] {
+            assert_eq!(
+                content
+                    .query_selector(tag)
+                    .unwrap()
+                    .unwrap()
+                    .get_attribute("with")
+                    .as_deref(),
+                Some("main@did:key:zSpace"),
+                "{tag} inside the view template inherits the display's context",
+            );
+        }
+        let row = content
+            .query_selector("template")
+            .unwrap()
+            .unwrap()
+            .dyn_into::<web_sys::HtmlTemplateElement>()
+            .unwrap()
+            .content();
+        assert_eq!(
+            row.query_selector("tonk-tree")
+                .unwrap()
+                .unwrap()
+                .get_attribute("with")
+                .as_deref(),
+            Some("main@did:key:zSpace"),
+            "a consumer inside the view's own row template inherits it too",
+        );
+    }
+
+    /// The same, through the real mount: `mount_view_slide` parses the
+    /// markup into a `<template>` and forwards over it in one place, so a
+    /// consumer in a mounted view must come out stamped. This is the path
+    /// `/inspector` and `/diagnose` take, and the one that lost its
+    /// context when the parse moved into a template.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    fn it_stamps_context_into_the_mounted_view_template() {
+        let document = web_sys::window().unwrap().document().unwrap();
+        let host = document.create_element("tonk-display").unwrap();
+        host.set_attribute("with", "main@did:key:zSpace").unwrap();
+        let mut inner = Inner::new();
+        let slide = mount_view_slide(
+            &host,
+            &mut inner,
+            concat!(
+                "<tonk-inspector></tonk-inspector>",
+                r#"<tonk-tree with="main@did:key:zOther"></tonk-tree>"#,
+            ),
+            "tonk:test",
+            "ui",
+        )
+        .expect("slide mounts");
+
+        let content = slide
+            .view_el
+            .query_selector("template")
+            .unwrap()
+            .expect("the markup is parsed into a template")
+            .dyn_into::<web_sys::HtmlTemplateElement>()
+            .unwrap()
+            .content();
+        assert_eq!(
+            content
+                .query_selector("tonk-inspector")
+                .unwrap()
+                .unwrap()
+                .get_attribute("with")
+                .as_deref(),
+            Some("main@did:key:zSpace"),
+            "the mounted view's inspector inherits the display's context",
+        );
+        assert_eq!(
+            content
+                .query_selector("tonk-tree")
+                .unwrap()
+                .unwrap()
+                .get_attribute("with")
+                .as_deref(),
+            Some("main@did:key:zOther"),
+            "a consumer with its own with is left untouched",
+        );
+    }
+
     /// A nested `tonk-display` inherits the context too, so it CASCADES:
     /// the nested display's own forward pass hands it on to the consumers
     /// inside its view. Without this, a view that wraps another display
@@ -3734,6 +3899,68 @@ mod tests {
         assert_eq!(
             host.get_attribute("data-state").as_deref(),
             Some("unauthorized")
+        );
+    }
+
+    /// A view's markup is parsed inertly: no custom element in it
+    /// connects as the template instance.
+    ///
+    /// `<tonk-view>` snapshots its row template on connect, and markup
+    /// without a `<template>` was parsed as the view's live children and
+    /// then MOVED into a fragment to become one. Every custom element in
+    /// the space chrome therefore connected once inside the document (or
+    /// inside the fragment, its `connectedCallback` already queued) before
+    /// being exiled: a `<tonk-site>` booted a guest it then tore down, a
+    /// `<tonk-fab>` subscribed from inside the fragment for its whole
+    /// retry window and logged `no host claimed the event
+    /// (connected=false root=#document-fragment)` when it gave up. Only
+    /// the clones the renderer stamps per frame are meant to connect.
+    #[dialog_common::test]
+    fn it_connects_no_custom_element_as_the_template_instance() {
+        let document = web_sys::window().expect("window").document().expect("doc");
+        crate::view::register();
+        // A probe element counting its connects and where it stood.
+        js_sys::eval(
+            r#"
+            if (!customElements.get("probe-connects")) {
+                window.__probeConnects = [];
+                customElements.define("probe-connects", class extends HTMLElement {
+                    connectedCallback() {
+                        window.__probeConnects.push(
+                            this.isConnected + ":" + this.getRootNode().nodeName.toLowerCase()
+                        );
+                    }
+                });
+            }
+            window.__probeConnects = [];
+            "#,
+        )
+        .expect("probe element");
+
+        let host = document.create_element("div").expect("host");
+        document
+            .body()
+            .expect("body")
+            .append_child(&host)
+            .expect("attach");
+        let mut inner = Inner::new();
+        mount_view_slide(
+            &host,
+            &mut inner,
+            "<probe-connects></probe-connects>",
+            "tonk:test",
+            "ui",
+        )
+        .expect("slide mounts");
+
+        let connects = js_sys::eval("window.__probeConnects.join(\" \")")
+            .expect("read")
+            .as_string()
+            .unwrap_or_default();
+        host.remove();
+        assert_eq!(
+            connects, "",
+            "the template instance must never connect; it did, as: {connects}"
         );
     }
 

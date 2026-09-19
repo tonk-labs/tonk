@@ -1,15 +1,19 @@
 # tonk-access-service
 
-A UCAN-authorizing proxy that turns verified UCAN invocations into pre-signed R2 (S3) requests.
+A UCAN-authorizing gateway to R2: verified UCAN invocations become service-signed permits for one object operation each, redeemed at this same worker.
 
-This crate is a Cloudflare Worker. It sits in front of Cloudflare R2 storage and never proxies object bytes itself: a client sends a CBOR-encoded UCAN invocation container, the service verifies the delegation chain and invocation, and on success returns a pre-signed S3 request descriptor (URL, method, headers) that the client then uses to talk to R2 directly. The R2 credentials stay on the service; clients only ever hold UCANs. Verification and presigning are delegated to `dialog-remote-ucan-s3`'s `UcanAuthorizer` (over `dialog-remote-s3`).
+This crate is a Cloudflare Worker. A client sends a CBOR-encoded UCAN invocation container, the service verifies the delegation chain and invocation, and on success returns a permit (URL, method, headers) naming one operation on one object under the worker's own `/object/` path. The client presents that URL, and the worker performs the operation over its R2 binding and streams the bytes. Nothing S3 ever reaches a client, and no R2 credential is held anywhere: the bucket is a binding. Verification is delegated to `dialog-remote-ucan-s3`'s `UcanAuthorizer` (over `dialog-remote-s3`); the permit signing lives in `src/permit.rs`.
+
+The worker is in the byte path on purpose. R2's S3 endpoint speaks HTTP/1.1, so a browser caps it at six connections per origin and a cold load of a few hundred blocks queues behind that cap; the worker's own origin is HTTP/2, where the cap does not exist.
 
 ## Endpoints
 
 The Worker (`src/lib.rs`) routes:
 
-- `POST /ucan/`: authorize a UCAN invocation container and return a pre-signed S3 request.
+- `POST /ucan/`: authorize a UCAN invocation container and return a signed object permit.
 - `OPTIONS /ucan/`: CORS preflight (returns 204; `/ucan/` responses carry permissive CORS headers).
+- `GET`, `PUT`, `DELETE /object/{key}`: perform the operation a permit names; the permit travels in the query string.
+- `OPTIONS /object/{key}`: CORS preflight.
 - `GET /.well-known/tonk`: same-origin browser deployment configuration.
 - `GET /`: service info as JSON (`service`, `version`).
 - `GET /health`: liveness check (`OK`).
@@ -33,13 +37,21 @@ The request body is a CBOR-encoded UCAN container following the [UCAN Container 
 { "ctn-v1": [invocation_bytes, delegation_0_bytes, ..., delegation_n_bytes] }
 ```
 
-The handler reads the body, builds a `UcanAuthorizer` from the Worker environment, and calls `authorize(&body)`. On success it returns the `AuthorizedRequest` as CBOR (`Content-Type: application/cbor`) carrying:
+The handler reads the body, builds a `UcanAuthorizer` from the Worker environment, and calls `authorize(&body)`. The authorizer describes the one request the chain admits (method, object key, body checksum, precondition) against a placeholder address; that description is lifted off and reissued as a permit signed by the service (`src/permit.rs`). The answer is the `Permit` as CBOR (`Content-Type: application/cbor`) carrying:
 
-- `url`: pre-signed S3 URL
+- `url`: `{origin}/object/{key}?permit=…&signature=…`, at the origin the request arrived on
 - `method`: HTTP method (GET, PUT, DELETE)
-- `headers`: headers to send with the request
+- `headers`: headers to send with the request (none; everything is in the URL)
 
 On failure it returns a JSON error (`{ "error": { "code", "message" } }`). Error codes map verification outcomes to HTTP status (see `src/error.rs`): `INVALID_ARGUMENT` (400); `SIGNATURE_INVALID` / `AUDIENCE_MISMATCH` / `INVOCATION_EXPIRED` (401); `CHAIN_INVALID` / `COMMAND_MISMATCH` / `SUBJECT_NOT_ALLOWED` / `CREDENTIAL_REVOKED` (403); `INTERNAL_ERROR` (500); `REVOCATION_UNAVAILABLE` (503).
+
+### `/object/{key}`
+
+The `permit` parameter is the DAG-CBOR encoding of the claims — method, key, expiry (an hour from issue), the SHA-256 a write must hash to, and the precondition (`if-match` a version, or create-only) — and `signature` is an HMAC-SHA256 over exactly those bytes under a key derived from `SERVICE_SECRET_KEY`. The handler (`src/handlers/object.rs`) verifies the MAC before decoding anything, then checks the expiry and that the request's method and path are the ones the claims name. Nothing else about the operation is read from the request: a permit for one object is worth nothing against another, and a read permit is worth nothing as a write or a delete.
+
+Answers keep the shape the client knew from S3: `200` with `ETag` on a read or write, `206` with `Content-Range` for a `Range` read, `404` for an absent object, `412` when the precondition did not hold, `400` for a body that does not hash to the bound checksum, and `401`/`403` for a permit that is not good here (lapsed, unsigned, or presented beyond what it names), which is what tells the client to redeem afresh. Nothing is buffered in either direction: reads are handed to the runtime as the binding's own stream, and a write flows chunk by chunk into the binding through a fixed-length stream (so it must declare a `Content-Length`; `411` otherwise), hashed on the way past. R2 verifies the bound checksum itself and never stores a mismatch; the hash taken in the worker only decides whether a refused write is answered as the client's fault (`400`) or the store's (`500`).
+
+Conditional deletes are checked against the object's current version and then performed, since the binding has no conditional delete. The two steps are not atomic. Nothing in the client issues one today.
 
 ## Credential screening
 
@@ -55,26 +67,24 @@ A match returns `403 CREDENTIAL_REVOKED`; clients accept the legacy `DEVICE_REVO
 
 ## Configuration
 
-The authorizer is constructed per request from the Worker environment (`src/handlers/ucan.rs`):
+From the Worker environment (`src/handlers/ucan.rs`, `src/handlers/object.rs`):
 
-- `R2_ACCOUNT_ID` (var): used to build the endpoint `https://{account_id}.r2.cloudflarestorage.com`
-- `R2_BUCKET_NAME` (var): target bucket
-- `R2_ACCESS_KEY_ID` (secret): R2 access key
-- `R2_SECRET_ACCESS_KEY` (secret): R2 secret key
+- `BUCKET` (R2 binding): the bucket every object operation runs against, and that deletion purges.
+- `SERVICE_SECRET_KEY` (secret): the service's 32-byte hex seed. Its ed25519 identity issues activation delegations, and the permit MAC key is derived from it (HKDF, `tonk/permit/v1`). Without it `/ucan/` cannot answer and `/object/` cannot verify, so a deployment missing it serves no data.
 - `ACCOUNT_SERVICE_URL` (var): account provider returned by
   `/.well-known/tonk`.
 
-The S3 address uses region `auto`, as R2 requires.
+No S3 credential is configured: the worker never presigns.
 
 ## Running
 
 As a Cloudflare Worker, build and deploy with `worker-build` / `wrangler` like any `worker`-based crate (the `cdylib` target).
 
-`wrangler.toml` at the repo root carries three environments. The top level is production on `tonk.network`, `[env.staging]` is `staging.tonk.xyz`, and `[env.preview]` is on no route: the deploy workflow uploads one version of it per pull request under a `pr-<number>` preview alias, reached at a workers.dev URL. Each has its own R2 buckets, because this Worker presigns writes into whichever bucket it is bound to and a preview must not be able to write into a real one.
+`wrangler.toml` at the repo root carries three environments. The top level is production on `tonk.network`, `[env.staging]` is `staging.tonk.xyz`, and `[env.preview]` is on no route: the deploy workflow uploads one version of it per pull request under a `pr-<number>` preview alias, reached at a workers.dev URL. Each has its own R2 buckets, because this Worker writes into whichever bucket it is bound to and a preview must not be able to write into a real one. A permit is redeemed at the origin that issued it, so each environment serves its own bytes.
 
 `ACCOUNT_SERVICE_URL` is checked in for production and staging but overridden per pull request for preview, since the account worker's own alias URL is not known until its upload returns. The checked-in preview value points at an unresolvable host on purpose: a preview that failed to wire itself has to break rather than serve a real service through `/.well-known/tonk` to browsers that trust it. Bootstrapping the preview environment is described in `tonk-account-service`'s README.
 
-For local development and integration tests, the `helpers` feature builds a native HTTP server that mirrors the Worker behavior without deploying to Cloudflare. The `tonk-access-local` binary (`src/bin/local.rs`, requires `--features helpers`) starts that server against a local backing S3 and prints its URL:
+For local development and integration tests, the `helpers` feature builds a native HTTP server that mirrors the Worker behavior without deploying to Cloudflare. It issues the same permits and serves `/object/` by forwarding each verified operation to a local backing S3 with a SigV4-signed request, standing in for the R2 binding. A write streams through it one chunk behind, hashed on the way: the last chunk is released only once the digest and length check out, so a mismatch ends the upstream write short of its declared length and the local store, which verifies no checksum of its own, never completes the object. The `tonk-access-local` binary (`src/bin/local.rs`, requires `--features helpers`) starts that server and prints its URL:
 
 ```sh
 cargo run --bin tonk-access-local --features helpers

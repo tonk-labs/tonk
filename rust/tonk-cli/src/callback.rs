@@ -326,7 +326,7 @@ fn confirmation(message: &str) -> String {
   }}
 
   .account__ceremony {{
-    width: min(432px, 100%);
+    width: 100%;
     margin-inline: auto;
   }}
 
@@ -387,8 +387,8 @@ fn confirmation(message: &str) -> String {
   }}
 
   .account__narrator {{
-    width: min(432px, 100%);
-    margin: 7px auto 0;
+    width: 100%;
+    margin: 0;
     padding: 10px 16px 11px;
     background: var(--frost-solid);
     box-shadow: 0 0 0 1px var(--ring);
@@ -436,10 +436,10 @@ fn confirmation(message: &str) -> String {
   <section class="account__ceremony" aria-labelledby="confirmation-title">
     <div class="account__stack">
       <h1 id="confirmation-title" class="account__ceremony-head">command-line access</h1>
+      <div class="account__narrator" role="status">
+        <p>{message}</p>
+      </div>
       <button class="account__run" type="button" onclick="window.close()">close this window</button>
-    </div>
-    <div class="account__narrator" role="status">
-      <p>{message}</p>
     </div>
   </section>
 </main>
@@ -560,7 +560,8 @@ mod tests {
         assert!(page.contains("Authorized. You can return to your terminal."));
         assert!(page.contains("--page: #e8e6e4"));
         assert!(page.contains("--page: #161313"));
-        assert!(page.contains("width: min(432px, 100%)"));
+        assert!(page.contains("width: min(576px, calc(100vw - 32px))"));
+        assert!(page.find(r#"role="status""#).unwrap() < page.find("close this window").unwrap());
         assert!(page.contains("min-height: 44px"));
         assert!(page.contains("@media (max-width: 463px)"));
         assert!(page.contains("@media (prefers-reduced-motion: reduce)"));

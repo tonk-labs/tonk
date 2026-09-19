@@ -21,6 +21,19 @@
 use anyhow::{Context, Result};
 use url::Url;
 
+/// How long one leg of a shortcut attempt may take, in milliseconds.
+///
+/// The service answers a `PUT /@` in ~10ms, so this is a hang detector
+/// rather than a budget: a host that stops answering (a captive portal,
+/// a stalled origin, a dropped connection) must not pin a mint on a
+/// convenience when the long URL is already complete.
+///
+/// Lives here because both mint paths — the worker's share control and
+/// the CLI's `tonk invite` — shorten through this module's glue, and a
+/// timeout only one of them honours is how the CLI came to be able to
+/// hang where the browser could not.
+pub const TIMEOUT_MS: u32 = 2_000;
+
 /// The pieces needed to shorten a URL: what to store, where to store
 /// it, and how to assemble the short link from the returned hash.
 #[derive(Debug, Clone)]

@@ -11,7 +11,7 @@ use std::collections::HashSet;
 use std::sync::Mutex;
 
 use dialog_query::{Output as _, Query, Term};
-use dialog_remote_ucan_s3::UcanAddress;
+use dialog_remote_ucan::UcanAddress;
 use dialog_repository::{RemoteAddress, RemoteRepository, Repository, SiteAddress, Upstream};
 use dialog_ucan_core::DelegationChain;
 use dialog_varsig::Principal;
@@ -25,11 +25,11 @@ use tonk_schema::{
 };
 use zeroize::Zeroizing;
 
-use crate::TonkWorkerError;
 use crate::worker::TonkState;
+use crate::{RepositoryError, TonkWorkerError};
 
 /// Remote name for the account's access branch in the profile repository.
-const ACCOUNT_ACCESS_REMOTE: &str = "account-access";
+pub(crate) const ACCOUNT_ACCESS_REMOTE: &str = "account-access";
 
 /// Identity returned only after the trusted-base gate has passed.
 #[allow(dead_code)]
@@ -433,6 +433,13 @@ async fn record_account_replica(
     let remote = replica.remote(tonk_account::ORIGIN_REMOTE, subject.clone(), address);
     let tracked = remote.branch(tonk_account::MAIN_BRANCH);
 
+    // Re-asserted on every sweep, on purpose. A guard that skipped the
+    // write when the rows were already present cost a real-browser
+    // regression (the Hub's account label no longer followed a rename
+    // on a second account) and saved only a reactor transaction dialog
+    // finds to be a no-op. What the write path does besides writing,
+    // the cache invalidation and the poll drain below, is load-bearing.
+
     tonk.reactor
         .profile_repository()
         .branch(tonk_account::MAIN_BRANCH)
@@ -460,6 +467,25 @@ async fn record_account_replica(
     Ok(())
 }
 
+/// Withdraw this device's own library installation ahead of a first
+/// contact with an account that has content, so the merge carries the
+/// device's own facts and not a second copy of the library. Best-effort:
+/// a failure leaves the reconcile after the pull to repair the
+/// duplicate the old way, at the cost of the changelog reads it makes.
+async fn retract_library_before_first_contact(tonk: &TonkState) {
+    match super::repository::retract_local_profile_library(tonk).await {
+        Ok(retracted) if retracted.installations > 0 => log!(
+            "withdrew {} local profile-library installation(s), {} claims, ahead of the account's",
+            retracted.installations,
+            retracted.claims
+        ),
+        Ok(_) => {}
+        Err(error) => {
+            log!("the local profile library was not withdrawn before first contact: {error}")
+        }
+    }
+}
+
 async fn hydrate_untrusted(tonk: &TonkState) -> Result<(), TonkWorkerError> {
     let session = tonk
         .reactor
@@ -482,10 +508,23 @@ async fn hydrate_untrusted(tonk: &TonkState) -> Result<(), TonkWorkerError> {
 
     match probe_remote_main(&remote, &tonk.operator).await {
         Ok(RemotePresence::Present(_)) => {
+            // The account has content, so it has a library: this
+            // device's own installation must not ride the merge (see
+            // `retract_local_profile_library`).
+            retract_library_before_first_contact(tonk).await;
+            // Adopt the head and materialize the OPERATIONAL regions:
+            // the entity/attribute/value indexes and the blob index.
+            // That is every fact the branch holds — every delegation
+            // included — so authorization reads entirely locally, while
+            // history and coverage stay by reference. Those are the
+            // regions that grow with every edit ever made rather than
+            // with the live fact count, and no read path can reach
+            // them.
             session
                 .handle()
                 .pull()
                 .download()
+                .operational()
                 .perform(&tonk.operator)
                 .await
                 .map_err(|error| {
@@ -517,6 +556,9 @@ async fn hydrate_untrusted(tonk: &TonkState) -> Result<(), TonkWorkerError> {
                 // `it_adopts_a_losing_candidate_onto_the_winners_content`
                 // in tonk-access-service's `account_remote` tests.
                 Ok(CreateGenesis::Loser(_)) => {
+                    // Another device won the genesis race, and its
+                    // content carries its library.
+                    retract_library_before_first_contact(tonk).await;
                     session
                         .handle()
                         .pull()
@@ -584,6 +626,20 @@ pub(crate) async fn push_account_main(tonk: &TonkState) -> Result<(), String> {
     Ok(())
 }
 
+/// Preserve both retryable failures when library repair and account push fail
+/// in the same sweep.
+fn finish_account_sweep(
+    reconciliation: Result<super::repository::ProfileLibraryOutcome, RepositoryError>,
+    push: Result<(), String>,
+) -> Result<(), String> {
+    let reconciliation = reconciliation.map_err(|error| format!("profile library: {error}"));
+    match (reconciliation, push) {
+        (Ok(_), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+        (Err(reconciliation), Err(push)) => Err(format!("{reconciliation}; {push}")),
+    }
+}
+
 /// What a push outcome says about registration, if anything.
 ///
 /// `None` means it said nothing and no fact should be written. That is
@@ -638,7 +694,15 @@ async fn observe_registration(
 
     // The address rides along because `record_customer_status` writes
     // the whole fact; it is not being changed here. No recorded address
-    // means no enrollment on this device, and nothing to complete.
+    // means no enrollment on this device, and nothing to complete — an
+    // account still on its onboarding standin has no registration to
+    // observe, and `tonk:account/onboarding` is what represents it.
+    //
+    // `account_registration` now reports a blank address as `None`, so
+    // this guard sees the state it was always written for: it used to
+    // read `Some("")` as an address and write the blank back on every
+    // sweep, which is how an emailless registration kept re-creating
+    // itself.
     let email = match super::customer::registration(tonk).await {
         super::customer::Registration::AwaitingActivation { email } => email,
         _ => match super::customer::account_registration(tonk).await.email {
@@ -652,7 +716,53 @@ async fn observe_registration(
     }
 }
 
-async fn sync_ready(tonk: &TonkState, _key: &str) -> Result<(), String> {
+/// Whether a sweep uploads what it made durable before it answers.
+///
+/// The sync heartbeat pushes: it is the background, and the push is what
+/// it is for. A sweep that a page is waiting on (the login, the account
+/// status read, a profile switch, boot) does not: everything the page
+/// needs is local once the pull and the convergence have run, so it
+/// answers first. The login then pushes right behind its answer
+/// ([`push_after_answer`]); everything else leaves the push to the
+/// heartbeat that follows within seconds. Before this the passkey login
+/// held its answer until the last PUT of the push had landed, which on a
+/// cold account was longer than the pull itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Publish {
+    /// Push before answering.
+    Now,
+    /// Answer first; the caller or the heartbeat pushes.
+    Later,
+}
+
+/// Push profile main behind an answer already on its way.
+///
+/// The login's sweep answers before it pushes ([`Publish::Later`]) so the
+/// page is not held for the upload; this is the upload, started once the
+/// caller has let go of its read guard. Detached in the browser, where
+/// the answer has gone out; awaited natively, so the tests that follow a
+/// link with a remote check see what the browser will have seen a
+/// moment later.
+pub(crate) async fn push_after_answer(app: crate::router::AppState) {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        wasm_bindgen_futures::spawn_local(async move {
+            let tonk = app.read().await;
+            if let Err(error) = push_account_main(&tonk).await {
+                log!("push behind the login's answer did not land: {error}");
+            }
+        });
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    {
+        let tonk = app.read().await;
+        if let Err(error) = push_account_main(&tonk).await {
+            log!("push behind the login's answer did not land: {error}");
+        }
+    }
+}
+
+async fn sync_ready(tonk: &TonkState, _key: &str, publish: Publish) -> Result<(), String> {
     let session = tonk
         .reactor
         .profile_repository()
@@ -660,15 +770,26 @@ async fn sync_ready(tonk: &TonkState, _key: &str) -> Result<(), String> {
         .acquire(&tonk.operator)
         .await
         .map_err(|error| format!("account branch unavailable: {error}"))?;
-    // Pull-and-materialize: profile main is also the access branch, and
-    // the authorization walk over it must read entirely locally at the
-    // next session open (see `adopt_account_upstream`). Downloading here,
-    // while this session can still authorize remote reads, is what keeps
-    // a bare adoption from bricking the next boot.
+    // Adopt the upstream head and materialize the OPERATIONAL regions.
+    //
+    // A plain `.download()` walked every block the revision references,
+    // history included — and history lives in the same tree as the
+    // data, so it dragged the branch's entire lineage down before
+    // anything could render. `.operational()` walks only the regions a
+    // read can reach: the three data orderings and the blob index.
+    //
+    // That is every fact the branch holds, so every delegation is local
+    // and the authorization walk at the next boot resolves with no
+    // network. It replaces proving capabilities one scope at a time,
+    // which could only ever cover the scopes it thought to ask for.
+    // The download is also ordered BEFORE the head advance, so a failed
+    // or offline download leaves the local revision untouched rather
+    // than pointing at blocks the store lacks.
     session
         .handle()
         .pull()
         .download()
+        .operational()
         .perform(&tonk.operator)
         .await
         .map_err(|error| format!("account pull failed: {error}"))?;
@@ -694,16 +815,21 @@ async fn sync_ready(tonk: &TonkState, _key: &str) -> Result<(), String> {
     if let Err(error) = converge_account_state(tonk).await {
         log!("account-state convergence after sync failed: {error}");
     }
-    // Pushed through the session this function already holds, rather
-    // than `push_account_main`, which acquires one of its own for the
-    // hydrate arm.
-    session
-        .handle()
-        .push()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|error| format!("account push failed: {error}"))?;
-    Ok(())
+    let reconciliation = super::repository::reconcile_profile_library(tonk).await;
+    let push = match publish {
+        // Pushed through the session this function already holds, rather
+        // than `push_account_main`, which acquires one of its own for the
+        // hydrate arm.
+        Publish::Now => session
+            .handle()
+            .push()
+            .perform(&tonk.operator)
+            .await
+            .map(|_| ())
+            .map_err(|error| format!("account push failed: {error}")),
+        Publish::Later => Ok(()),
+    };
+    finish_account_sweep(reconciliation, push)
 }
 
 /// Mount and, when necessary, hydrate the configured account repository.
@@ -714,9 +840,11 @@ async fn sync_ready(tonk: &TonkState, _key: &str) -> Result<(), String> {
 /// An already-ready branch is reconciled on the way through, so this doubles as
 /// the account repository's catch-up on boot and before an authoritative write.
 /// That reconcile is best-effort here; [`ensure_account_state_swept`] is the
-/// same work with its outcome reported.
+/// same work with its outcome reported. This is the form a page waits on, so
+/// it answers once the local state is converged and leaves the push to the
+/// heartbeat ([`Publish::Later`]).
 pub(crate) async fn ensure_account_state(tonk: &TonkState) -> AccountStateStatus {
-    let (status, swept) = ensure_account_state_swept(tonk).await;
+    let (status, swept) = sweep_account_state(tonk, Publish::Later).await;
     if let Err(error) = swept {
         log!("account repository is ready but did not reconcile: {error}");
     }
@@ -731,6 +859,15 @@ pub(crate) async fn ensure_account_state(tonk: &TonkState) -> AccountStateStatus
 /// on any path that ran no reconcile — the status carries that story instead.
 pub(crate) async fn ensure_account_state_swept(
     tonk: &TonkState,
+) -> (AccountStateStatus, Result<(), String>) {
+    sweep_account_state(tonk, Publish::Now).await
+}
+
+/// The sweep behind both entry points; `publish` says whether it pushes
+/// before returning.
+async fn sweep_account_state(
+    tonk: &TonkState,
+    publish: Publish,
 ) -> (AccountStateStatus, Result<(), String>) {
     // One ensure at a time. The drain heartbeat, the link path, and the
     // save path can all arrive here concurrently, and their futures
@@ -750,6 +887,9 @@ pub(crate) async fn ensure_account_state_swept(
     };
     if !account_configured(tonk).await {
         return (AccountStateStatus::Unconfigured, Ok(()));
+    }
+    if let Err(error) = super::customer::migrate_customer_record(tonk, &root.root_did).await {
+        log!("legacy customer record did not migrate: {error}");
     }
 
     let key = match configure_account_upstream(tonk, &root.root_did).await {
@@ -775,7 +915,7 @@ pub(crate) async fn ensure_account_state_swept(
 
     match trusted_marker(tonk).await {
         Ok(marker) if marker_matches(marker.as_deref(), &root.root_did) => {
-            let swept = sync_ready(tonk, &key).await;
+            let swept = sync_ready(tonk, &key, publish).await;
             (AccountStateStatus::Ready, swept)
         }
         Ok(_) => match hydrate_untrusted(tonk).await {
@@ -799,17 +939,21 @@ pub(crate) async fn ensure_account_state_swept(
                     if let Err(error) = converge_account_state(tonk).await {
                         log!("account-state convergence after hydration failed: {error}");
                     }
-                    // Push what this sweep just made durable. Without
-                    // it, hydrating leaves the account Ready but never
-                    // uploaded, so nothing local reaches the account
-                    // remote until some *later* sweep happens to take
-                    // the `marker_matches` arm above — which is the only
-                    // other place profile main is pushed. A device that
-                    // is not poked again simply never publishes: its
-                    // spaces stay invisible to the account's other
-                    // devices.
-                    let pushed = push_account_main(tonk).await;
-                    (AccountStateStatus::Ready, pushed)
+                    // Push what this sweep just made durable, when this
+                    // is the heartbeat's sweep. The marker is written now,
+                    // so every later sweep takes the `marker_matches` arm
+                    // above, and the heartbeat's pushes there; a sweep a
+                    // page is waiting on answers first and leaves the push
+                    // to it (see `Publish`).
+                    let reconciliation = super::repository::reconcile_profile_library(tonk).await;
+                    let pushed = match publish {
+                        Publish::Now => push_account_main(tonk).await,
+                        Publish::Later => Ok(()),
+                    };
+                    (
+                        AccountStateStatus::Ready,
+                        finish_account_sweep(reconciliation, pushed),
+                    )
                 }
                 Err(error) => {
                     log!("account repository hydrated but marker save failed: {error}");
@@ -1646,9 +1790,27 @@ pub(crate) mod tests {
         use tonk_schema::prelude::DidExt as _;
 
         let state = crate::router::tests::test_state().await;
-        crate::router::profile_name::ensure_display_name(&state)
-            .await
-            .unwrap();
+        // This test is about PROJECTING a name into each space, so it
+        // needs one to exist. Nothing writes a name at bootstrap any
+        // more (a derived placeholder was indistinguishable from a name
+        // the person chose), so the test stamps its own.
+        {
+            use tonk_schema::prelude::DidExt as _;
+            let profile_entity = state.profile.did().this();
+            state
+                .reactor
+                .profile_repository()
+                .branch("main")
+                .transaction()
+                .assert(tonk_schema::ProfileName::new(
+                    profile_entity,
+                    tonk_schema::petname(&state.profile.did()),
+                ))
+                .commit()
+                .perform(&state.operator)
+                .await
+                .unwrap();
+        }
         let (app, state, _lsp) = crate::router::api_router_with_state(state);
         let key_a = crate::router::tests::put_repo(&app, "account-project-a").await;
         let key_c = crate::router::tests::put_repo(&app, "account-project-c").await;
@@ -1876,7 +2038,9 @@ pub(crate) mod tests {
             sync_queue: Default::default(),
             commands: crate::router::command_providers(),
             clients: Default::default(),
+            seed_upgrades: Default::default(),
             account_keys: Default::default(),
+            profile_library: Default::default(),
             registry: crate::device::Registry {
                 profile: name.clone(),
                 directory: dialog_effects::storage::Directory::Profile,
@@ -2096,6 +2260,49 @@ pub(crate) mod tests {
             "the registration names where to sync"
         );
 
+        service.stop().await.unwrap();
+        discard(state, &ready.key);
+    }
+
+    /// Accounts enrolled before registration became a replicated fact still
+    /// carry the verified address in their device-local customer record. The
+    /// ordinary boot sweep promotes that record once, so settings and a newly
+    /// linked device can read the address from profile main.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_migrates_a_legacy_customer_record_during_account_startup() {
+        use tonk_account::customer::CustomerStatus;
+
+        let (state, service, root, remote) = ready_account_state(None).await;
+        super::super::customer::save_customer(
+            &state,
+            &super::super::customer::CustomerRecord {
+                customer: root.did().to_string(),
+                email: "legacy@example.com".to_string(),
+                status: CustomerStatus::Active,
+                enrolled_at: 1,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            super::super::customer::account_registration(&state)
+                .await
+                .email,
+            None,
+            "the fixture starts with only the legacy record"
+        );
+
+        assert_eq!(
+            ensure_account_state(&state).await,
+            AccountStateStatus::Ready
+        );
+
+        let registration = super::super::customer::account_registration(&state).await;
+        assert_eq!(registration.email.as_deref(), Some("legacy@example.com"));
+        assert_eq!(registration.provider.as_deref(), Some(remote.as_str()));
+
+        let ready = require_ready_account_state(&state).await.unwrap();
         service.stop().await.unwrap();
         discard(state, &ready.key);
     }
@@ -2335,6 +2542,7 @@ pub(crate) mod tests {
                 .transaction()
                 .retract(row)
                 .commit()
+                .publish()
                 .perform(&state.operator)
                 .await
                 .unwrap();
@@ -2923,6 +3131,145 @@ pub(crate) mod tests {
             AccountStateStatus::Ready
         );
 
+        discard(state, &ready.key);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn stale_profile_library() -> String {
+        const CURRENT: &str = include_str!("../../../tonk-core/assets/library/profile.yaml");
+        let marker = "<div class=\"stack chrome\" data-spaces-view aria-label=\"spaces\">";
+        let stale = format!("{marker}\n          <div class=\"sempty\">no spaces yet</div>");
+        let historical = CURRENT.replacen(marker, &stale, 1);
+        assert_ne!(historical, CURRENT, "the historical fixture must differ");
+        historical
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn profile_library_reconciles_during_initial_account_hydration() {
+        let (state, service, _root, _remote) = linked_account_state(None, false).await;
+        crate::router::repository::reconcile_profile_library_from(&state, stale_profile_library())
+            .await
+            .expect("the historical profile installs");
+
+        service
+            .address
+            .confirm_email("worker-account-state@example.com")
+            .await
+            .unwrap();
+        let (status, swept) = ensure_account_state_swept(&state).await;
+        assert_eq!(status, AccountStateStatus::Ready);
+        swept.expect("hydration, reconciliation, and push all succeed");
+        assert_eq!(
+            crate::router::repository::reconcile_profile_library(&state)
+                .await
+                .expect("the installed library validates"),
+            crate::router::repository::ProfileLibraryOutcome::Unchanged,
+            "the hydration sweep already repaired the stale library"
+        );
+
+        let ready = require_ready_account_state(&state).await.unwrap();
+        service.stop().await.unwrap();
+        discard(state, &ready.key);
+    }
+
+    /// A device withdraws its own library installation ahead of a first
+    /// contact with an account that has content: every claim the install
+    /// asserted and its records go in one local commit, read from local
+    /// facts and the device's own changelog, so the merge that follows
+    /// carries none of it. A second withdrawal finds nothing, and the
+    /// reconcile afterwards installs afresh rather than reporting an
+    /// installed library it no longer has.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn profile_library_is_withdrawn_before_first_contact() {
+        use crate::router::repository::{
+            ProfileLibraryOutcome, reconcile_profile_library, reconcile_profile_library_from,
+            retract_local_profile_library,
+        };
+
+        let (state, service, _root, _remote) = linked_account_state(None, false).await;
+        reconcile_profile_library_from(&state, stale_profile_library())
+            .await
+            .expect("the historical profile installs");
+
+        let withdrawn = retract_local_profile_library(&state)
+            .await
+            .expect("the local installation withdraws");
+        assert_eq!(withdrawn.installations, 1, "one recorded installation");
+        assert!(
+            withdrawn.claims > 2,
+            "the install's assertions and its two records: {withdrawn:?}"
+        );
+
+        let again = retract_local_profile_library(&state)
+            .await
+            .expect("a second withdrawal is a no-op");
+        assert_eq!(again.installations, 0);
+        assert_eq!(again.claims, 0);
+
+        assert_eq!(
+            reconcile_profile_library(&state)
+                .await
+                .expect("the shipped library installs on a bare branch"),
+            ProfileLibraryOutcome::Installed,
+            "nothing of the withdrawn installation is left to repair"
+        );
+
+        service.stop().await.unwrap();
+        let key = super::super::identity::local_root(&state)
+            .await
+            .map(|root| root.root_did.repo_key().to_owned())
+            .unwrap_or_default();
+        discard(state, &key);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn profile_library_reconciles_a_ready_account_pull_and_settles() {
+        let (state, service, _root, _remote) = ready_account_state(None).await;
+        assert_eq!(
+            ensure_account_state(&state).await,
+            AccountStateStatus::Ready
+        );
+        let ready = require_ready_account_state(&state).await.unwrap();
+
+        crate::router::repository::reconcile_profile_library_from(&state, stale_profile_library())
+            .await
+            .expect("the historical profile installs");
+        push_account_main(&state)
+            .await
+            .expect("the stale account head publishes");
+
+        let (status, swept) = ensure_account_state_swept(&state).await;
+        assert_eq!(status, AccountStateStatus::Ready);
+        swept.expect("ready pull, reconciliation, and push succeed");
+        assert_eq!(
+            crate::router::repository::reconcile_profile_library(&state)
+                .await
+                .expect("the installed library validates"),
+            crate::router::repository::ProfileLibraryOutcome::Unchanged,
+            "the ready sweep already repaired the stale library"
+        );
+        let branch = state
+            .reactor
+            .profile_repository()
+            .branch(tonk_account::MAIN_BRANCH)
+            .acquire(&state.operator)
+            .await
+            .unwrap();
+        let repaired = branch.handle().revision();
+
+        let (status, swept) = ensure_account_state_swept(&state).await;
+        assert_eq!(status, AccountStateStatus::Ready);
+        swept.expect("unchanged ready sweep succeeds");
+        assert_eq!(
+            branch.handle().revision(),
+            repaired,
+            "an unchanged sweep performs no profile-library write"
+        );
+
+        service.stop().await.unwrap();
         discard(state, &ready.key);
     }
 

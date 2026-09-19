@@ -338,6 +338,38 @@ fn remote_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
         .filter(|url| !url.is_empty())
 }
 
+/// The `space/create` transient's optional `open` flag.
+///
+/// Absent (or false) means create only — the space appears in the Hub and
+/// the person stays where they are. Present and true means create and
+/// navigate, which is what the Hub's own create form asks for.
+///
+/// Read from the raw facts rather than declared on [`CreateSpace`] for
+/// the same reason the remote is: the command is matched name-only, so a
+/// declared field would make every create that omits it fail to decode.
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+const OPEN_ATTR: &str = "xyz.tonk.command.create-space/open";
+
+/// Whether the create should navigate the caller into the new space.
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+fn open_from_facts(facts: &crate::reactor::EntityFacts) -> bool {
+    use dialog_artifacts::Value;
+
+    facts
+        .iter()
+        .find(|artifact| artifact.the.to_string() == OPEN_ATTR)
+        .map(|artifact| match &artifact.is {
+            Value::Boolean(open) => *open,
+            // A form field arrives as text; treat anything but an
+            // explicit falsehood as asking to open, since carrying the
+            // field at all is the request.
+            Value::String(text) => !matches!(text.trim(), "" | "false" | "0"),
+            Value::Entity(uri) => uri.to_string() != "case:false",
+            _ => false,
+        })
+        .unwrap_or(false)
+}
+
 /// The `tonk:enable-sync` transient's target space, read from the raw facts.
 const ENABLE_SYNC_SPACE_ATTR: &str = "xyz.tonk.enable-sync/space";
 
@@ -1345,12 +1377,36 @@ async fn run_invite(
     )
     .await?;
 
+    // Attempt the shortcut HERE, before the credential overlay and the
+    // share control's row are written. Both are read for the first url
+    // they carry, and that url is what reaches the clipboard — a shorter
+    // one published afterwards arrives too late to be copied.
+    //
+    // Outside the state lock, which guards the whole worker (profile,
+    // operator, and the reactor's cached handles and subscriptions).
+    // Holding it across a network round-trip would stall every reader,
+    // not just a writer: the lock is write-preferring, so one queued
+    // writer parks every reader behind it. Nothing below the drop
+    // borrows from the guard — the rest of the mint reaches state
+    // through `tonk.reactor` and `tonk.operator`, both re-resolved from
+    // the guard taken back afterwards, which also means this picks up a
+    // session rotated while the shortcut was in flight rather than
+    // committing under a retired operator.
+    //
+    // Best effort, as the shortcut always was: a `PUT /@` that fails,
+    // answers non-conformingly, or stops answering at all (each leg
+    // carries its own timeout) leaves the long URL standing, which is
+    // fully functional. Minting never fails, or hangs, because a
+    // convenience did.
+    drop(tonk);
+    let link = shortened_or_full(link).await;
+    let tonk = env.state().read().await;
+
     let authorization = Authorization {
         this: subject_entity.clone(),
         proof: Proof(proof),
         remote: AuthorizationRemote(remote),
     };
-    let subject_entity_for_short = subject_entity.clone();
 
     // Write the private seed and the assembled URL into the session overlay
     // and schedule a poll of this branch so the change propagates even
@@ -1367,24 +1423,33 @@ async fn run_invite(
         .overlay()
         .assert(Credential {
             this: subject_entity.clone(),
-            seed: Seed(seed.clone()),
+            seed: Seed(seed),
             link: Link(link.clone()),
         })
-        // The same answer in the shape the share control subscribes to:
-        // one row per space whose `status` says where the invite has got
-        // to, carrying the url once there is one. `Credential` keeps the
-        // seed beside it for readers that need both; this is what a view
-        // renders. See `plan/share-intent.md`.
-        .assert(tonk_schema::command::InviteState::granted(
-            subject_entity.clone(),
-            link.clone(),
-        ))
         .write()
         .perform(&tonk.operator)
         .await
         .map_err(|e| {
             TonkWorkerError::Internal(format!("failed to write credential overlay: {e}"))
         })?;
+
+    // The same answer in the shape the share control subscribes to, on
+    // PROFILE main rather than the space: one row per space whose
+    // `status` says where the invite has got to, carrying the url once
+    // there is one. `Credential` above keeps the seed beside it on the
+    // space for readers that need both; this is what a view renders.
+    //
+    // On profile main because the Hub renders one share control per row,
+    // and a control subscribed to the space made merely LISTING spaces
+    // query into each one — which mounts it (`query.rs` adopts on first
+    // use), so opening the Hub replicated the whole account. The state is
+    // this device's view of a click it made; nothing about it needs the
+    // space's branch. See `plan/share-intent.md`.
+    publish_invite_state(
+        &tonk,
+        tonk_schema::command::InviteState::granted(subject_entity, link.clone()),
+    )
+    .await;
 
     // Ensure the self-identity overlay (`state:self`) is present so the
     // topbar identity chip renders. The overlay builder above no longer
@@ -1438,47 +1503,12 @@ async fn run_invite(
     );
     log!("Minted invitation for repo '{}'", repo_name);
 
-    // The mint is complete and the LONG link is what the share control
-    // copies — fan it out NOW, before any shortening network. Minting an
-    // invocation must never wait on a convenience round-trip.
+    // The mint is complete and the link it carries is final — already
+    // shortened, or the long URL a failed shortcut fell back to. Fan it
+    // out; there is no second, better url coming, so the control settles
+    // its clipboard write on this one.
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
-    drop(tonk);
 
-    // Best-effort shortening, off the critical path and outside the
-    // state lock: PUT the target and probe the stored shortcut (HEAD —
-    // the landing URL is the whole answer). A host that provides no
-    // shortening, or answers non-conformingly, leaves the long link
-    // standing; a conforming answer supersedes the overlay credential
-    // in place, and the dispatcher's drain broadcasts the update.
-    match super::create_invite::shorten(&link).await {
-        Ok(short) if short != link => {
-            let tonk = env.state().read().await;
-            if let Err(error) = tonk
-                .reactor
-                .repository(repo_name)
-                .branch(CONTENT_BRANCH)
-                .overlay()
-                .assert(Credential {
-                    this: subject_entity_for_short.clone(),
-                    seed: Seed(seed),
-                    link: Link(short.clone()),
-                })
-                .assert(tonk_schema::command::InviteState::granted(
-                    subject_entity_for_short,
-                    short,
-                ))
-                .write()
-                .perform(&tonk.operator)
-                .await
-            {
-                log!("short link overlay update failed; the long link stands: {error}");
-            }
-        }
-        Ok(_) => {}
-        Err(error) => {
-            log!("invite shortcut failed; using the full URL: {error}");
-        }
-    }
     Ok(RunInvite::Settled)
 }
 
@@ -1537,25 +1567,75 @@ async fn publish_share_blocked<'a>(
             detail: share::Detail(detail.to_owned()),
             time: share::Time(time),
         })
-        // The same refusal in the shape the share control subscribes to.
-        // Only a terminal reason becomes a terminal status: a refusal
-        // the user can repair (no account yet, no remote yet) leaves the
-        // request open, because the click has not finished failing — it
-        // is waiting on something. See `plan/share-intent.md`.
-        .assert(tonk_schema::command::InviteState::denied(
-            subject,
-            invite_status_for(code),
-        ))
         .write()
         .perform(&tonk.operator)
         .await
     {
         log!("failed to publish share refusal for '{repo_name}': {error}");
     }
+
+    // The same refusal in the shape the share control subscribes to, on
+    // profile main for the reason the grant is. Only a terminal reason
+    // becomes a terminal status: a refusal the user can repair (no
+    // account yet, no remote yet) leaves the request open, because the
+    // click has not finished failing — it is waiting on something.
+    publish_invite_state(
+        &tonk,
+        tonk_schema::command::InviteState::denied(subject, invite_status_for(code)),
+    )
+    .await;
 }
 
-/// Assemble the invite URL a recipient opens, shortened when the
-/// shortcut service answers.
+/// Publish the share control's view of an invite onto PROFILE main's
+/// overlay, keyed on the space's subject.
+///
+/// Overlay because the url carries the membership seed in its fragment
+/// and must not reach storage, and because the row is a per-session view
+/// of one click rather than a durable record — the durable record of a
+/// minted invite is `Invitation`, on the space.
+async fn publish_invite_state(tonk: &TonkState, state: tonk_schema::command::InviteState) {
+    let main = match tonk
+        .reactor
+        .profile_repository()
+        .branch(PROFILE_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+    {
+        Ok(main) => main,
+        Err(error) => {
+            log!("invite state: open profile main: {error}");
+            return;
+        }
+    };
+    main.state.assert_overlay(state);
+    tonk.reactor
+        .schedule_poll(std::sync::Arc::clone(&main.state));
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+}
+
+/// The shortcut for `link`, or `link` itself when there isn't one.
+///
+/// Every way the attempt can end badly resolves to the full URL: an
+/// unreachable or unresolvable host, a request that times out, a non-2xx
+/// (a target over the service's size cap answers 400), a 200 carrying
+/// anything but the target's own content address, and a stored shortcut
+/// whose probe serves bytes instead of redirecting or redirects somewhere
+/// else. All of them mean the host does not provide shortening, and the
+/// long URL is fully functional, so none of them may fail a mint.
+///
+/// Named rather than inlined so the fallback is reachable from a test
+/// without standing up a misbehaving shortcut host.
+async fn shortened_or_full(link: String) -> String {
+    match super::create_invite::shorten(&link).await {
+        Ok(short) => short,
+        Err(error) => {
+            log!("invite shortcut failed; using the full URL: {error}");
+            link
+        }
+    }
+}
+
+/// Assemble the long invite URL a recipient opens.
 ///
 /// The long form is
 /// `{origin}/join?access={proof}{remote}&tonk_channel=reshare&tonk_space={hash}#{seed}`.
@@ -1565,10 +1645,10 @@ async fn publish_share_blocked<'a>(
 /// view used to concatenate from three overlay fields; building it here gives
 /// it one definition and lets it be shortened.
 ///
-/// Shortening is best-effort: a failed `PUT /@` (offline, no service
-/// deployed, a non-2xx, a non-conforming answer) logs and yields the long
-/// URL, which is fully functional. Minting must not fail because a
-/// convenience failed.
+/// Shortening is not done here — it is a network round-trip, and this
+/// runs while the URL is still being assembled. [`run_invite`] attempts it
+/// on the result, before the link is written anywhere, and falls back to
+/// this long form when the shortcut service does not answer.
 async fn invite_url(
     proof: &str,
     remote: &str,
@@ -1587,10 +1667,9 @@ async fn invite_url(
     // origin here is a bug worth failing on, not a case to paper over
     // with a link rooted somewhere the space is not served.
     //
-    // No network here, deliberately: this is on the mint's critical
-    // path, and the long URL is complete. Shortening is a later,
-    // best-effort pass (`run_invite` runs it after the link has been
-    // delivered, outside the state lock).
+    // No network here: this only assembles. `run_invite` attempts the
+    // shortcut on the result, before the link reaches the overlay or the
+    // share control's row, so what it delivers is already final.
     let base = tonk_invite::base_url_for_remote(access_url.as_str()).map_err(|error| {
         TonkWorkerError::Internal(format!(
             "the space's access endpoint yields no invite base: {error:#}"
@@ -1971,6 +2050,39 @@ impl dialog_capability::Provider<tonk_schema::command::RemoveSpace> for crate::r
                 return;
             }
         };
+        // A space this account PROVIDES has a copy on Tonk services,
+        // and dropping the local replica alone would strand it there.
+        //
+        // `space_provider_recorded` is the whole difference between
+        // LEAVING a space and destroying it for everyone: the fact
+        // exists only when THIS account hosts the space, so a space
+        // someone else provides falls straight through to the local
+        // removal below and its hosted copy is untouched.
+        //
+        // No passkey: deprovisioning signs `/provider/remove` with this
+        // device's own authority. The passkey belongs to deleting the
+        // ACCOUNT, which is a different command.
+        {
+            let tonk = self.state().read().await;
+            // The worker's own origin: a command has no request behind
+            // it to carry one, and the access service that provides the
+            // space is the one this worker is served from.
+            let origin = super::customer::service_origin();
+            if super::customer::space_provider_recorded(&tonk, &subject).await
+                && let Ok(origin) = origin
+                && let Err(error) =
+                    super::customer::deprovision_consumer(&tonk, &origin, &subject).await
+            {
+                // Reported, not fatal: the local removal still runs, so
+                // the row disappears and the service copy is reconciled
+                // by the next sweep rather than blocking the person.
+                log!(
+                    "RemoveSpace '{}' could not be deprovisioned: {}",
+                    subject,
+                    error
+                );
+            }
+        }
         if let Err(error) = remove_space_inner(self.state(), &subject).await {
             log!("RemoveSpace '{}' failed: {}", subject, error);
         }
@@ -2401,7 +2513,7 @@ async fn run_pause_sync(
 /// Shared by [`enable_sync_inner`] (called for both the create and
 /// enable-sync forms) so they produce an identical remote shape.
 fn space_config(remote: &str) -> Result<RepositoryConfiguration, RepositoryError> {
-    use dialog_remote_ucan_s3::UcanAddress;
+    use dialog_remote_ucan::UcanAddress;
 
     let remote = remote.trim();
     if remote.is_empty() {
@@ -2778,10 +2890,28 @@ async fn seed_and_initialize(
             })?;
 
         let name_body = repository_name_body(subject, display_name)?;
+        let version = seed_version(&scaffold);
         let tonk = state.read().await;
         for branch_name in branches {
+            // The record names the commit that installs the library. That
+            // commit STAGES, so its version is minted and authoritative
+            // before the record is written; the record then chains on and
+            // one publish makes both visible. Recording separately would
+            // name the record's own commit instead, and the seed's claims
+            // — which route provenance and an upgrade both read — would
+            // sit in a revision nothing pointed at.
             let body = format!("{scaffold}\n{name_body}");
-            seed_standard_library(&tonk, key, branch_name, &body)
+            // A fresh space has no predecessor, and nothing to replace.
+            let record = |minted: &dialog_artifacts::history::Version| {
+                seed_record_facts(
+                    &version,
+                    STANDARD_LIBRARY_URL,
+                    SEED_NONE,
+                    SEED_NONE,
+                    &encode_seed_version(minted),
+                )
+            };
+            super::evaluate::evaluate_body_recording(&tonk, key, branch_name, body, &record)
                 .await
                 .map_err(|e| RepositoryError::Internal(format!("seed '{branch_name}': {e}")))?;
             log!(
@@ -2821,6 +2951,828 @@ const STANDARD_LIBRARY_URL: &str = "/library/core.yaml";
 /// the SW-scoped profile seed path.
 const PROFILE_LIBRARY_URL: &str = "/library/profile.yaml";
 
+/// Result of reconciling the system-owned profile library.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ProfileLibraryOutcome {
+    /// The installed library and its resolved claims already match.
+    Unchanged,
+    /// No earlier profile-library definitions were present.
+    Installed,
+    /// Existing definitions were replaced. `deferred_cleanup` means an
+    /// unrecorded or damaged legacy install may still own unknown claims that
+    /// cannot safely be attributed and removed.
+    Repaired { deferred_cleanup: bool },
+}
+
+/// Complete desired profile-library input, derived from the shipped document
+/// before it is evaluated against any populated branch.
+#[derive(Clone)]
+struct PreparedProfileLibrary {
+    source: String,
+    target: String,
+    assertions: Vec<super::claim::RawClaim>,
+}
+
+type ProfileLibraryReceipts = HashMap<String, (String, Option<dialog_repository::Revision>)>;
+
+/// Worker-scoped profile-library input and the last profile revision whose
+/// system-library claims were fully checked.
+///
+/// A target hash by itself is insufficient because an account pull can move
+/// the branch back to stale values while retaining the install record. Pairing
+/// it with the branch revision makes unchanged sweeps cheap without letting a
+/// pull, profile replacement, or development asset change reuse the receipt.
+#[derive(Clone, Default)]
+pub(crate) struct ProfileLibraryCache {
+    receipt: std::sync::Arc<std::sync::Mutex<ProfileLibraryReceipts>>,
+    input: std::sync::Arc<tokio::sync::Mutex<Option<PreparedProfileLibrary>>>,
+    #[cfg(test)]
+    acquisitions: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    #[cfg(test)]
+    acquisition_failures: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl ProfileLibraryCache {
+    fn contains(
+        &self,
+        profile: &str,
+        target: &str,
+        revision: &Option<dialog_repository::Revision>,
+    ) -> bool {
+        self.receipt
+            .lock()
+            .map(|cached| cached.get(profile) == Some(&(target.to_owned(), revision.clone())))
+            .unwrap_or(false)
+    }
+
+    fn store(
+        &self,
+        profile: String,
+        library: String,
+        revision: Option<dialog_repository::Revision>,
+    ) {
+        if let Ok(mut cached) = self.receipt.lock() {
+            cached.insert(profile, (library, revision));
+        }
+    }
+
+    async fn acquire(&self) -> Result<PreparedProfileLibrary, RepositoryError> {
+        let mut cached = self.input.lock().await;
+        if let Some(input) = cached.as_ref() {
+            return Ok(input.clone());
+        }
+        #[cfg(test)]
+        self.acquisitions
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        #[cfg(test)]
+        if self
+            .acquisition_failures
+            .fetch_update(
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+                |remaining| remaining.checked_sub(1),
+            )
+            .is_ok()
+        {
+            return Err(RepositoryError::Internal(
+                "injected profile library acquisition failure".to_owned(),
+            ));
+        }
+        let library = fetch_profile_library()
+            .await
+            .map_err(|e| RepositoryError::Internal(format!("fetch profile library: {e}")))?;
+        let prepared = prepare_profile_library(library)?;
+        *cached = Some(prepared.clone());
+        Ok(prepared)
+    }
+
+    async fn replace_input(
+        &self,
+        library: String,
+    ) -> Result<PreparedProfileLibrary, RepositoryError> {
+        let prepared = prepare_profile_library(library)?;
+        let mut cached = self.input.lock().await;
+        *cached = Some(prepared.clone());
+        Ok(prepared)
+    }
+
+    #[cfg(test)]
+    fn acquisition_count(&self) -> usize {
+        self.acquisitions.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    fn fail_next_acquisition(&self) {
+        self.acquisition_failures
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// The seed a space is running: both halves, joined on the seed entity.
+///
+/// `seed/available` carries identity and source; `seed/installed` adds
+/// the version its install commit landed at. A space that has fetched an
+/// update has the first without the second for THAT seed, which is why
+/// the version is read separately rather than assumed present.
+#[derive(Clone)]
+struct InstalledSeed {
+    /// The seed's entity — the hash of its bytes.
+    seed: dialog_artifacts::Entity,
+    /// Where those bytes were fetched from.
+    source: String,
+    /// The seed it replaced, or `seed:none` on a first install.
+    prior: dialog_artifacts::Entity,
+    /// The version of the commit that installed it.
+    version: String,
+}
+
+/// One complete installation record for the exact profile-library source.
+#[derive(Clone)]
+struct ProfileInstallation {
+    available: tonk_schema::SeedAvailable,
+    installed: tonk_schema::SeedInstalled,
+}
+
+/// Read the seed a space is running, if it recorded one.
+async fn read_installed_seed(
+    tonk: &TonkState,
+    session: &crate::reactor::BranchSession,
+) -> Result<Option<InstalledSeed>, String> {
+    use dialog_query::{Output as _, Query, Term};
+
+    let installed: Vec<tonk_schema::SeedInstalled> = session
+        .handle()
+        .query()
+        .select(Query::<tonk_schema::SeedInstalled> {
+            this: Term::var("this"),
+            prior: Term::var("prior"),
+            version: Term::var("version"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|e| format!("{e:?}"))?;
+    let Some(current) = installed.into_iter().next() else {
+        return Ok(None);
+    };
+
+    let available: Vec<tonk_schema::SeedAvailable> = session
+        .handle()
+        .query()
+        .select(Query::<tonk_schema::SeedAvailable> {
+            this: Term::from(current.this.clone()),
+            source: Term::var("source"),
+            replaces: Term::var("replaces"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|e| format!("{e:?}"))?;
+    let Some(source) = available.into_iter().next() else {
+        // The install half without its identity half. A seed is always
+        // written as both, so this means the record was damaged.
+        return Err(format!("seed {} records no source", current.this));
+    };
+
+    Ok(Some(InstalledSeed {
+        seed: current.this,
+        source: source.source.0,
+        prior: current.prior.0,
+        version: current.version.0,
+    }))
+}
+
+/// The retractions that withdraw `current`'s install half, so that after
+/// an upgrade the branch records one running seed, not every seed it
+/// ever ran.
+///
+/// [`prior_seed_retractions`] cannot cover this: the record commits as
+/// the link AFTER the version it names, so inverting that version's
+/// history withdraws the library and leaves its record standing. The
+/// `seed/available` half stays: it says the seed exists and where it
+/// came from, which is still true of a seed no longer running.
+fn installed_record_retractions(current: &InstalledSeed) -> Vec<super::claim::RawClaim> {
+    use dialog_artifacts::Statement as _;
+
+    let mut changes = dialog_artifacts::Changes::new();
+    tonk_schema::SeedInstalled {
+        this: current.seed.clone(),
+        prior: tonk_schema::domain::seed::Prior(current.prior.clone()),
+        version: tonk_schema::domain::seed::Version(current.version.clone()),
+    }
+    .retract(&mut changes);
+    changes
+        .into_instructions()
+        .into_iter()
+        .filter_map(|instruction| match instruction {
+            dialog_artifacts::Instruction::Retract(claim) => Some(super::claim::RawClaim {
+                the: claim.the,
+                of: claim.of,
+                is: claim.is,
+                unique: false,
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Check whether a newer seed is waiting for the space the command names.
+///
+/// Target-agnostic: the source fetch resolves through
+/// `fetch_standard_library`, which already answers natively from the
+/// embedded libraries, so a CLI or a test can check for an update too.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::CheckUpdate> for crate::router::CommandEnv {
+    async fn execute(&self, command: tonk_schema::command::CheckUpdate) {
+        let key = command.space.0.to_string();
+        if !self.may_target_space(&key) {
+            log!("CheckUpdate '{key}': refused from another space's branch");
+            return;
+        }
+        let Ok(subject) = key.parse::<dialog_varsig::Did>() else {
+            log!("CheckUpdate: '{key}' is not a space DID");
+            return;
+        };
+        let tonk = self.state().read().await;
+        // The command's own entity marks the check in flight, so a
+        // marker stranded by a crashed worker names the check that left
+        // it rather than being an anonymous flag.
+        let check = command.this.clone();
+        if let Err(error) = check_seed_update(&tonk, &subject, check).await {
+            log!("CheckUpdate '{subject}': {error}");
+        }
+    }
+}
+
+/// Drop a space's invite row once its link has reached the clipboard.
+///
+/// The row lives in profile main's overlay, and the url in it carries a
+/// membership seed. Cleared by dropping the entity's overlay facts
+/// rather than retracting: an overlay retract records a tombstone beside
+/// the assertion instead of removing it, so the row — and the seed —
+/// would still read back.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::ForgetInvite> for crate::router::CommandEnv {
+    async fn execute(&self, command: tonk_schema::command::ForgetInvite) {
+        let space = command.space.0.clone();
+        if !self.may_target_space(&space.to_string()) {
+            log!("ForgetInvite '{space}': refused from another space's branch");
+            return;
+        }
+        let tonk = self.state().read().await;
+        let main = match tonk
+            .reactor
+            .profile_repository()
+            .branch(PROFILE_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+        {
+            Ok(main) => main,
+            Err(error) => {
+                log!("ForgetInvite: open profile main: {error}");
+                return;
+            }
+        };
+        main.state
+            .retain_overlay_entities(|overlaid| overlaid != &space);
+        tonk.reactor
+            .schedule_poll(std::sync::Arc::clone(&main.state));
+        tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+    }
+}
+
+/// Look for a newer seed without installing one.
+///
+/// Records the check on this device's REPLICA — the entity already
+/// pairing this profile with this subject, on the profile meta branch,
+/// which never replicates. That is the right scope: one device checking
+/// says nothing about another, and keying on the space alone would let
+/// two devices overwrite each other's answer.
+///
+/// What a seed IS, by contrast, is global: an available seed is asserted
+/// on the space's own content branch, so one member's check informs
+/// everyone rather than each device rediscovering the same bytes.
+///
+/// The check is the cheap half of [`upgrade_seed`] — a fetch and a hash —
+/// so an affordance can offer the update and leave installing it to the
+/// user.
+pub(crate) async fn check_seed_update(
+    tonk: &TonkState,
+    subject: &Did,
+    check: dialog_artifacts::Entity,
+) -> Result<(), RepositoryError> {
+    let replica = Replica::new(tonk.profile.did(), subject.clone())
+        .this()
+        .clone();
+
+    // Announce the check BEFORE the fetch, so a view can show it running
+    // rather than only ever learning the outcome.
+    stamp_checking(tonk, replica.clone(), check.clone()).await;
+
+    let outcome = run_seed_check(tonk, subject).await;
+
+    // The in-flight marker is retracted either way; what lands beside it
+    // is what differs. The SAME check entity, so the retraction matches
+    // the fact that was asserted.
+    clear_checking(tonk, replica.clone(), check).await;
+    match outcome {
+        Ok(found) => {
+            stamp_check_failure(tonk, replica.clone(), None).await;
+            if let Some(found) = found {
+                publish_available_seed(tonk, subject, &found).await;
+            }
+        }
+        Err(error) => {
+            log!("update check '{subject}': {error}");
+            stamp_check_failure(tonk, replica.clone(), Some(&error)).await;
+        }
+    }
+    stamp_checked(tonk, replica).await;
+    Ok(())
+}
+
+/// A seed the check found waiting, and the installed one it supersedes.
+struct FoundSeed {
+    /// The waiting seed's entity — the hash of the fetched bytes.
+    seed: String,
+    /// Where those bytes came from.
+    source: String,
+    /// The installed seed it would replace.
+    replaces: dialog_artifacts::Entity,
+}
+
+/// Fetch the space's own source and compare it against what is installed.
+///
+/// `Some` when the fetched bytes hash to something other than the
+/// installed seed, `None` when the space is already current, and `Err`
+/// with a message meant for the person when the check could not run.
+///
+/// A space with no install record is not an error: nothing names its
+/// definitions, so an upgrade could not withdraw them. The absence of an
+/// install fact is itself the answer, so no failure is recorded for it.
+async fn run_seed_check(tonk: &TonkState, subject: &Did) -> Result<Option<FoundSeed>, String> {
+    let key = subject.repo_key();
+    let session = tonk
+        .reactor
+        .repository(key)
+        .branch(CONTENT_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|e| format!("could not open this space: {e}"))?;
+
+    let Some(current) = read_installed_seed(tonk, &session)
+        .await
+        .map_err(|e| format!("could not read the seed record: {e}"))?
+    else {
+        return Ok(None);
+    };
+
+    let library = fetch_standard_library(&current.source)
+        .await
+        .map_err(|e| format!("could not fetch {}: {e}", current.source))?;
+
+    let seed = seed_version(&library);
+    if seed == current.seed.to_string() {
+        return Ok(None);
+    }
+    Ok(Some(FoundSeed {
+        seed,
+        source: current.source,
+        replaces: current.seed,
+    }))
+}
+
+/// Assert a waiting seed on the space's own content branch.
+///
+/// Durable and global, unlike the per-device check facts: the bytes exist
+/// for everyone, so one member's check spares the rest a fetch. Only
+/// `seed/available` is asserted — the install-specific half stays absent
+/// until something installs it, so a waiting seed can never be mistaken
+/// for a running one.
+async fn publish_available_seed(tonk: &TonkState, subject: &Did, found: &FoundSeed) {
+    let Ok(seed) = found.seed.parse() else {
+        log!("update check: '{}' is not an entity", found.seed);
+        return;
+    };
+    let key = subject.repo_key();
+    let fact = tonk_schema::SeedAvailable {
+        this: seed,
+        source: tonk_schema::domain::seed::Source(found.source.clone()),
+        replaces: tonk_schema::domain::seed::Replaces(found.replaces.clone()),
+    };
+    let commit = tonk
+        .reactor
+        .repository(key)
+        .branch(CONTENT_BRANCH)
+        .transaction()
+        .assert(fact)
+        .commit()
+        .perform(&tonk.operator)
+        .await;
+    if let Err(error) = commit {
+        log!("update check: record available seed: {error}");
+    }
+}
+
+/// Stamp the in-flight marker on this device's replica.
+///
+/// Presence is the state, so clearing means retracting the attribute
+/// rather than writing a "done" value — see [`clear_checking`], which
+/// needs the SAME check entity this stored.
+async fn stamp_checking(
+    tonk: &TonkState,
+    replica: dialog_artifacts::Entity,
+    check: dialog_artifacts::Entity,
+) {
+    let transaction = tonk
+        .reactor
+        .profile_repository()
+        .branch(PROFILE_BRANCH)
+        .transaction()
+        .assert(tonk_schema::ReplicaChecking {
+            this: replica,
+            checking: tonk_schema::domain::check::Checking(check),
+        });
+    commit_replica_stamp(tonk, transaction).await;
+}
+
+/// Drop the in-flight marker [`stamp_checking`] left.
+///
+/// A retraction matches on the VALUE as well as the entity and
+/// attribute, so this has to name the same `check` that was asserted.
+/// Passing anything else (the replica entity, say) retracts a fact that
+/// was never stored and leaves the real marker standing, so a settled
+/// check still reads as running.
+async fn clear_checking(
+    tonk: &TonkState,
+    replica: dialog_artifacts::Entity,
+    check: dialog_artifacts::Entity,
+) {
+    let transaction = tonk
+        .reactor
+        .profile_repository()
+        .branch(PROFILE_BRANCH)
+        .transaction()
+        .retract(tonk_schema::ReplicaChecking {
+            this: replica,
+            checking: tonk_schema::domain::check::Checking(check),
+        });
+    commit_replica_stamp(tonk, transaction).await;
+}
+
+/// Record when this device's check completed.
+async fn stamp_checked(tonk: &TonkState, replica: dialog_artifacts::Entity) {
+    let transaction = tonk
+        .reactor
+        .profile_repository()
+        .branch(PROFILE_BRANCH)
+        .transaction()
+        .assert(tonk_schema::ReplicaChecked {
+            this: replica,
+            checked: tonk_schema::domain::check::Checked(js_sys::Date::now()),
+        });
+    commit_replica_stamp(tonk, transaction).await;
+}
+
+/// Record why this device's check failed, or clear a previous failure.
+async fn stamp_check_failure(
+    tonk: &TonkState,
+    replica: dialog_artifacts::Entity,
+    failure: Option<&str>,
+) {
+    let transaction = tonk
+        .reactor
+        .profile_repository()
+        .branch(PROFILE_BRANCH)
+        .transaction();
+    let transaction = match failure {
+        Some(failure) => transaction.assert(tonk_schema::ReplicaCheckFailure {
+            this: replica,
+            failure: tonk_schema::domain::check::Failure(failure.to_owned()),
+        }),
+        None => transaction.retract(tonk_schema::ReplicaCheckFailure {
+            this: replica,
+            failure: tonk_schema::domain::check::Failure(String::new()),
+        }),
+    };
+    commit_replica_stamp(tonk, transaction).await;
+}
+
+/// Commit one replica stamp to the profile meta branch.
+///
+/// Durable rather than overlay: a check's answer should survive a worker
+/// restart, and replica records never replicate, so this stays device
+/// local without being ephemeral.
+async fn commit_replica_stamp(
+    tonk: &TonkState,
+    transaction: crate::reactor::TransactionBuilder<'_>,
+) {
+    match transaction.commit().perform(&tonk.operator).await {
+        Ok(revision) => broadcast(
+            "/api/profile",
+            &Notification {
+                branch: PROFILE_BRANCH.to_string(),
+                revision,
+            },
+        ),
+        Err(error) => log!("update check: stamp replica: {error}"),
+    }
+}
+
+/// Bring a space's seed up to the one this worker ships, if it is behind.
+///
+/// One atomic batch: the previous seed's assertions are retracted and the
+/// new library installed together. A retract followed by an assert of the
+/// same fact keeps it, citing what it overrode, so the overlap between
+/// two seeds survives untouched — only what the old seed had and the new
+/// one does not actually goes.
+///
+/// A space whose seed already matches is left alone, which is the common
+/// case: this runs on every mount.
+pub(crate) async fn upgrade_seed(tonk: &TonkState, key: &str) -> Result<bool, RepositoryError> {
+    // Replicas exist under either key spelling — legacy mounts used the
+    // bare suffix, newer ones the full did:key URI — so try the given
+    // spelling and fall back to the other before reporting a miss.
+    let session = match tonk
+        .reactor
+        .repository(key)
+        .branch(CONTENT_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+    {
+        Ok(session) => session,
+        Err(first) => {
+            let alternate = match key.strip_prefix("did:key:") {
+                Some(suffix) => suffix.to_string(),
+                None => format!("did:key:{key}"),
+            };
+            tonk.reactor
+                .repository(&alternate)
+                .branch(CONTENT_BRANCH)
+                .acquire(&tonk.operator)
+                .await
+                .map_err(|_| RepositoryError::Internal(format!("open '{key}': {first}")))?
+        }
+    };
+
+    // Older onboarding builds recorded their composite inputs as core.yaml.
+    // Replaying that library over the imported app replaces its home alias.
+    // Snapshot spaces have no single replaceable library; preserve their
+    // authored state, including custom home aliases and agent-page changes.
+    if super::onboarding_space::has_welcome_snapshot(tonk, key)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("read welcome marker: {e}")))?
+    {
+        return Ok(false);
+    }
+
+    let current = read_installed_seed(tonk, &session)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("read seed record: {e}")))?;
+
+    let Some(current) = current else {
+        // No record: a space seeded before this worker tracked one. Its
+        // definitions are whatever it was created with and nothing names
+        // them, so an upgrade would have to guess what to withdraw.
+        log!("seed upgrade: '{key}' predates the seed record, leaving it alone");
+        return Ok(false);
+    };
+
+    // Re-fetch the space's OWN source, not the shipped one. A space on a
+    // custom seed follows that seed; comparing against `core.yaml` would
+    // force it onto the built-in library on its next mount.
+    let source = current.source.clone();
+    let library = fetch_standard_library(&source)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("fetch '{source}': {e}")))?;
+    let shipped = seed_version(&library);
+    if current.seed.to_string() == shipped {
+        return Ok(false);
+    }
+
+    let mut retract = prior_seed_retractions(tonk, &session, &current.version).await?;
+    retract.extend(installed_record_retractions(&current));
+    log!(
+        "seed upgrade: '{key}' moves to {shipped}, withdrawing {} claims",
+        retract.len()
+    );
+
+    // The record names the commit that installs the new library. That
+    // commit stages, so the version is minted before the record is
+    // written rather than predicted.
+    let prior = current.seed.to_string();
+    let record = |minted: &dialog_artifacts::history::Version| {
+        seed_record_facts(
+            &shipped,
+            &source,
+            &prior,
+            &prior,
+            &encode_seed_version(minted),
+        )
+    };
+
+    // Retractions and the new library are one staged commit; the record
+    // naming it chains on, and a single publish makes both visible. A
+    // retract followed by an assert of the same fact keeps it, so what
+    // both seeds carry survives while what only the old one had goes.
+    super::evaluate::evaluate_with_retractions(
+        tonk,
+        key,
+        CONTENT_BRANCH,
+        library,
+        retract,
+        &record,
+    )
+    .await
+    .map_err(|e| RepositoryError::Internal(format!("upgrade seed '{key}': {e}")))?;
+    Ok(true)
+}
+
+/// The routes the seed installed at `version`.
+///
+/// Read from that commit's own history rather than recorded separately:
+/// a route the seed installed is a claim it asserted, so the changelog
+/// already names them. The router asks this to settle an
+/// equal-specificity tie — a route the seed installed loses to one the
+/// space authored.
+pub(crate) async fn seed_routes(
+    tonk: &TonkState,
+    session: &dialog_reactor::BranchSession,
+    version: &str,
+) -> Result<std::collections::HashSet<String>, RepositoryError> {
+    use futures_util::StreamExt as _;
+
+    let Some(version) = decode_seed_version(version) else {
+        return Ok(std::collections::HashSet::new());
+    };
+
+    let history = session.handle().history(&tonk.operator).await;
+    let records = history.select(version);
+    tokio::pin!(records);
+
+    let mut routes = std::collections::HashSet::new();
+    while let Some(record) = records.next().await {
+        let (_, record) =
+            record.map_err(|e| RepositoryError::Internal(format!("read seed history: {e}")))?;
+        if !record.is_assertion() {
+            continue;
+        }
+        let claim = record.claim();
+        if claim.the.as_str() == "xyz.tonk.route/path" {
+            routes.insert(claim.of.to_string());
+        }
+    }
+    Ok(routes)
+}
+
+/// Retract everything the seed installed at `version` asserted, as claims
+/// ride the same batch that installs its replacement.
+///
+/// A revision's history is a changelog: every claim it wrote, with its
+/// polarity. Inverting only its ASSERTIONS is load-bearing — a seed
+/// install also carries the retractions of the seed before it, and
+/// replaying those inverted would restore the version before last.
+async fn prior_seed_retractions(
+    tonk: &TonkState,
+    session: &dialog_reactor::BranchSession,
+    version: &str,
+) -> Result<Vec<super::claim::RawClaim>, RepositoryError> {
+    assertions_at_version(tonk, session, version).await
+}
+
+/// Materialize every assertion written by one recorded seed commit.
+async fn assertions_at_version(
+    tonk: &TonkState,
+    session: &dialog_reactor::BranchSession,
+    version: &str,
+) -> Result<Vec<super::claim::RawClaim>, RepositoryError> {
+    use futures_util::StreamExt as _;
+
+    let Some(version) = decode_seed_version(version) else {
+        return Err(RepositoryError::Internal(format!(
+            "seed version '{version}' does not decode"
+        )));
+    };
+
+    let history = session.handle().history(&tonk.operator).await;
+    let records = history.select(version);
+    tokio::pin!(records);
+
+    let mut claims = Vec::new();
+    while let Some(record) = records.next().await {
+        let (_, record) =
+            record.map_err(|e| RepositoryError::Internal(format!("read seed history: {e}")))?;
+        if !record.is_assertion() {
+            continue;
+        }
+        let claim = record.claim();
+        claims.push(super::claim::RawClaim {
+            the: claim.the.clone(),
+            of: claim.of.clone(),
+            is: claim.is.clone(),
+            unique: false,
+        });
+    }
+    Ok(claims)
+}
+
+/// A revision's version, encoded for the record.
+///
+/// The version's KEY BYTES, not its entity: the entity is a blake3 hash
+/// with no way back, while the key bytes round-trip through
+/// `Version::from_key_bytes`. Storing the entity meant hunting the branch
+/// log for a matching revision, which only works while the install is
+/// still recent.
+pub(crate) fn encode_seed_version(version: &dialog_artifacts::history::Version) -> String {
+    use base58::ToBase58 as _;
+
+    version.key_bytes().to_base58()
+}
+
+/// The inverse of [`encode_seed_version`].
+fn decode_seed_version(encoded: &str) -> Option<dialog_artifacts::history::Version> {
+    use base58::FromBase58 as _;
+
+    let bytes = encoded.from_base58().ok()?;
+    dialog_artifacts::history::Version::from_key_bytes(&bytes).ok()
+}
+
+/// The facts recording a seed install: identity and source
+/// (`seed/available`), plus what it replaced and the version it committed
+/// at (`seed/installed`).
+///
+/// Two concepts on ONE entity. `seed/available` says the seed exists and
+/// where its bytes came from — true of a seed a check merely found, which
+/// is why it carries no install fields. `seed/installed` adds them, and
+/// its presence is what "this space is running it" means.
+///
+/// The version is the whole record of WHAT it installed. A revision's
+/// history is a changelog — every claim it wrote, with its polarity — so
+/// an upgrade reads the prior seed's version and inverts its assertions
+/// rather than consulting a per-component tag. Tagging each definition
+/// meant naming heads whose identity is content-derived, which the source
+/// cannot do.
+///
+/// The version names the commit these facts are asserted ALONGSIDE, not
+/// the one they ride in: the library stages first, its minted version is
+/// read off the batch, and this record commits as the next link. One
+/// publish makes both visible, so a reader never sees a library without
+/// its record.
+pub(crate) fn seed_record_facts(
+    seed: &str,
+    url: &str,
+    prior: &str,
+    replaces: &str,
+    version: &str,
+) -> Vec<dialog_artifacts::Instruction> {
+    use dialog_artifacts::Statement as _;
+
+    let (Ok(seed), Ok(prior), Ok(replaces)) = (
+        seed.parse::<dialog_artifacts::Entity>(),
+        prior.parse::<dialog_artifacts::Entity>(),
+        replaces.parse::<dialog_artifacts::Entity>(),
+    ) else {
+        log!("seed record: '{seed}', '{prior}' or '{replaces}' is not an entity");
+        return Vec::new();
+    };
+
+    let mut changes = dialog_artifacts::Changes::new();
+    tonk_schema::SeedAvailable {
+        this: seed.clone(),
+        source: tonk_schema::domain::seed::Source(url.to_owned()),
+        replaces: tonk_schema::domain::seed::Replaces(replaces),
+    }
+    .assert(&mut changes);
+    tonk_schema::SeedInstalled {
+        this: seed,
+        prior: tonk_schema::domain::seed::Prior(prior),
+        version: tonk_schema::domain::seed::Version(version.to_owned()),
+    }
+    .assert(&mut changes);
+    changes.into_instructions()
+}
+
+/// The entity naming a seed version: `seed:{hash}` over the bytes actually
+/// fetched.
+///
+/// The hash IS the identity, so two devices installing the same seed derive
+/// the same entity and converge. It is taken over what was fetched rather
+/// than read from a build manifest, so it cannot disagree with the bytes
+/// that were installed.
+///
+/// The source it came from rides `xyz.tonk.seed/source` alongside, since a
+/// custom seed is a different URL at the same shape.
+fn seed_version(source: &str) -> String {
+    format!("seed:{}", blake3::hash(source.as_bytes()).to_hex())
+}
+
+/// The entity standing for "no seed yet" — what a first install records as
+/// its predecessor, so `prior` is present on every seed rather than absent
+/// on the first.
+const SEED_NONE: &str = "seed:none";
+
 /// Fetch the standard-library notation document from the served
 /// asset, sidestepping the HTTP cache so an edited library is seen
 /// the moment it's re-copied into the dist (rather than a stale
@@ -2831,10 +3783,16 @@ const PROFILE_LIBRARY_URL: &str = "/library/profile.yaml";
 /// client fault: surfaced as an internal error so repository
 /// creation fails loudly rather than seeding an empty repo.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn fetch_standard_library(url: &str) -> Result<String, TonkWorkerError> {
+pub(super) async fn fetch_standard_library(url: &str) -> Result<String, TonkWorkerError> {
     use wasm_bindgen::JsCast;
     use wasm_bindgen_futures::JsFuture;
     use web_sys::{Request, RequestCache, RequestInit, Response};
+
+    if let Some(library) = crate::cache::immutable_asset_text(url).await.map_err(|e| {
+        TonkWorkerError::Internal(format!("read {url} from worker generation: {e:?}"))
+    })? {
+        return Ok(library);
+    }
 
     let init = RequestInit::new();
     init.set_cache(RequestCache::NoStore);
@@ -2865,18 +3823,49 @@ async fn fetch_standard_library(url: &str) -> Result<String, TonkWorkerError> {
         .ok_or_else(|| TonkWorkerError::Internal("library body is not a string".to_owned()))
 }
 
+/// Wasm profile-library tests run in the pooled browser harness rather than the
+/// installed Tonk service-worker scope. Supply the checked-in profile bytes for
+/// this acquisition only, leaving ordinary library fetches to exercise their
+/// existing failure behavior in that harness.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown", test))]
+async fn fetch_profile_library() -> Result<String, TonkWorkerError> {
+    embedded_standard_library(PROFILE_LIBRARY_URL)
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown", test)))]
+async fn fetch_profile_library() -> Result<String, TonkWorkerError> {
+    fetch_standard_library(PROFILE_LIBRARY_URL).await
+}
+
 /// The native sibling of the fetch above: the same documents the
 /// service worker fetches from its served assets are compiled in from
 /// `tonk-core/assets/library/` — the identical files the dist copies,
 /// and the same embedding the CLI uses (`tonk-cli/src/site.rs`).
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-async fn fetch_standard_library(url: &str) -> Result<String, TonkWorkerError> {
+pub(super) async fn fetch_standard_library(url: &str) -> Result<String, TonkWorkerError> {
+    embedded_standard_library(url)
+}
+
+#[cfg(any(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    all(target_arch = "wasm32", target_os = "unknown", test)
+))]
+fn embedded_standard_library(url: &str) -> Result<String, TonkWorkerError> {
     match url {
         STANDARD_LIBRARY_URL => {
             Ok(include_str!("../../../tonk-core/assets/library/core.yaml").to_owned())
         }
         PROFILE_LIBRARY_URL => {
             Ok(include_str!("../../../tonk-core/assets/library/profile.yaml").to_owned())
+        }
+        "/library/onboarding-agent.yaml" => {
+            Ok(include_str!("../../../tonk-core/assets/library/onboarding-agent.yaml").to_owned())
+        }
+        "/library/onboarding-demos.yaml" => {
+            Ok(include_str!("../../../tonk-core/assets/library/onboarding-demos.yaml").to_owned())
+        }
+        "/library/onboarding.yaml" => {
+            Ok(include_str!("../../../tonk-core/assets/library/onboarding.yaml").to_owned())
         }
         other => Err(TonkWorkerError::Internal(format!(
             "no embedded library for '{other}'"
@@ -2889,20 +3878,28 @@ async fn fetch_standard_library(url: &str) -> Result<String, TonkWorkerError> {
 /// the `/evaluate` route, which commits concept claims and `rule!:`
 /// installs alike. A bad library is a deployment fault, surfaced as
 /// an internal error.
-async fn seed_standard_library(
+pub(super) async fn seed_standard_library(
     tonk: &TonkState,
     repo: &str,
     branch: &str,
     library: &str,
 ) -> Result<(), TonkWorkerError> {
-    super::evaluate::evaluate_body(tonk, repo, branch, library.to_owned(), true)
-        .await
-        .map(|_| ())
-        .map_err(|e| {
-            TonkWorkerError::Internal(format!(
-                "failed to seed standard library on branch '{branch}': {e}"
-            ))
-        })
+    // Onboarding composes a scaffold, a named repository, an agent supplement,
+    // and an imported application snapshot. These bytes are not core.yaml and
+    // must not advertise it as an upgrade source. Ordinary space creation uses
+    // seed_and_initialize, which records the actual seed separately.
+    super::evaluate::seed_on_branch(
+        tonk,
+        tonk.reactor.repository(repo).branch(branch),
+        library.to_owned(),
+    )
+    .await
+    .map(|_| ())
+    .map_err(|e| {
+        TonkWorkerError::Internal(format!(
+            "failed to seed standard library on branch '{branch}': {e}"
+        ))
+    })
 }
 
 /// Build the notation document asserting the repository's own
@@ -2910,7 +3907,10 @@ async fn seed_standard_library(
 /// the scaffold seed body (see [`seed_and_initialize`]) so the name lands
 /// in the same commit as the library that defines the `tonk/repository`
 /// concept it instantiates — no separate commit, no "Untitled" flash.
-fn repository_name_body(subject: &Did, display_name: &str) -> Result<String, RepositoryError> {
+pub(super) fn repository_name_body(
+    subject: &Did,
+    display_name: &str,
+) -> Result<String, RepositoryError> {
     // `name` is a JSON string so any character in the user-typed label
     // (quotes, colons, newlines) is carried verbatim rather than
     // breaking the notation.
@@ -3423,6 +4423,7 @@ where
     // makes the schema view of it land atomically.
     let revision = transaction
         .commit()
+        .publish()
         .perform(&tonk.operator)
         .await
         .map_err(|e| {
@@ -3781,7 +4782,7 @@ async fn record_replica_visibility(
 /// same hash `Replica::new` uses — so no read is needed to find it.
 ///
 /// Called from the background seed path, which only runs in the worker.
-async fn set_replica_status(
+pub(super) async fn set_replica_status(
     tonk: &TonkState,
     subject: &Did,
     status: tonk_schema::domain::replica::Status,
@@ -3852,28 +4853,22 @@ pub async fn bootstrap_profile(tonk: &TonkState) -> Result<(), RepositoryError> 
         })?;
     log!("Profile branch bootstrapped");
 
-    // Stamp a durable display name (the deterministic petname) when none is
-    // stored yet, so the FAB's sealed profile-branch `<tonk-display
-    // model="tonk:profile/name">` resolves a name for a never-renamed member.
-    // Rename-safe: a no-op once any `ProfileName` override exists.
-    crate::router::profile_name::ensure_display_name(tonk).await?;
-
-    // Seed the standard library onto the profile meta branch so a
+    // Seed the lean profile library onto the profile meta branch so a
     // `<tonk-display>` reading the profile (the Hub at `/`) can resolve
     // the library's concepts and views — the `space` model and its
     // directory view — there, the same way a named repo's content
-    // branch carries them. Idempotent: re-evaluating the library
-    // de-duplicates rather than minting fresh claims, so it's safe on
-    // every boot. Fetch is only available in the SW scope; native
-    // builds skip it (the Hub is a browser-only surface).
+    // branch carries them. A validated target hash and branch revision
+    // make unchanged boots a true no-op; native builds read the same
+    // source from their embedded assets so lifecycle tests exercise the
+    // same reconciliation policy.
     //
     // Best-effort: this runs again on every boot and profile
     // activation, so a failed fetch (an offline worker restart, a
     // harness that serves no library) costs a degraded Hub until the
     // next attempt — not a worker that refuses to boot or a profile
     // switch that dies half-way.
-    if let Err(error) = seed_profile_library(tonk).await {
-        log!("profile library seed skipped: {error}");
+    if let Err(error) = reconcile_profile_library(tonk).await {
+        log!("profile library reconciliation skipped: {error}");
     }
 
     // Drain the poll the bootstrap commit scheduled.
@@ -3882,18 +4877,573 @@ pub async fn bootstrap_profile(tonk: &TonkState) -> Result<(), RepositoryError> 
     Ok(())
 }
 
-/// Fetch and seed the lean profile library onto the profile branch —
-/// on every target, since the fetch reads the embedded assets natively.
-async fn seed_profile_library(tonk: &TonkState) -> Result<(), RepositoryError> {
-    let library = fetch_standard_library(PROFILE_LIBRARY_URL)
-        .await
-        .map_err(|e| RepositoryError::Internal(format!("fetch profile library: {e}")))?;
-    super::evaluate::evaluate_profile_body(tonk, PROFILE_BRANCH, library, true)
-        .await
-        .map(|_| ())
-        .map_err(|e| {
-            RepositoryError::Internal(format!("seed standard library on profile branch: {e}"))
+/// Fetch and reconcile the lean profile library onto profile `main`.
+///
+/// Acquisition stays outside [`reconcile_profile_library_from`] so tests can
+/// supply historical documents and acquisition failures independently.
+pub(crate) async fn reconcile_profile_library(
+    tonk: &TonkState,
+) -> Result<ProfileLibraryOutcome, RepositoryError> {
+    let prepared = tonk.profile_library.acquire().await?;
+    reconcile_prepared_profile_library(tonk, prepared).await
+}
+
+/// The version of every commit that installed the shipped library on
+/// this branch, in changelog order, retired records included.
+///
+/// Read from the branch's own history: each install records its version
+/// as a fact on the seed's entity, and a retired record's assertion is
+/// still in the changelog even though the fact is gone.
+async fn recorded_library_install_versions(
+    tonk: &TonkState,
+    session: &dialog_reactor::BranchSession,
+) -> Result<Vec<String>, RepositoryError> {
+    use dialog_artifacts::history::HistorySelector;
+    use futures_util::StreamExt as _;
+
+    let history = session.handle().history(&tonk.operator).await;
+    let records = history.select(HistorySelector::All);
+    tokio::pin!(records);
+
+    let mut sources: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut versions: Vec<(String, String)> = Vec::new();
+    while let Some(record) = records.next().await {
+        let (_, record) = record
+            .map_err(|e| RepositoryError::Internal(format!("read library install history: {e}")))?;
+        if !record.is_assertion() {
+            continue;
+        }
+        let claim = record.claim();
+        match (claim.the.as_str(), &claim.is) {
+            ("xyz.tonk.seed/source", dialog_artifacts::Value::String(source)) => {
+                sources.insert(claim.of.to_string(), source.clone());
+            }
+            ("xyz.tonk.seed/version", dialog_artifacts::Value::String(version)) => {
+                versions.push((claim.of.to_string(), version.clone()));
+            }
+            _ => {}
+        }
+    }
+    Ok(versions
+        .into_iter()
+        .filter(|(seed, _)| {
+            sources
+                .get(seed)
+                .is_some_and(|source| source == PROFILE_LIBRARY_URL)
         })
+        .map(|(_, version)| version)
+        .collect())
+}
+
+/// What [`retract_local_profile_library`] withdrew: the installations it
+/// found and the claims it retracted for them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RetractedLibrary {
+    pub(crate) installations: usize,
+    pub(crate) claims: usize,
+}
+
+/// Withdraw this profile's own library installations, before its first
+/// contact with an account that already holds one.
+///
+/// A device installs the shipped library the moment it boots, long
+/// before it knows which account it will join, and the account was
+/// installed the same way by whichever device came first. Left alone, a
+/// first contact replays the device's copy onto the account: the same
+/// claims when the digests match (the merge collapses those, but not
+/// the install record, whose version names this device's own commit),
+/// or a second set of name bindings when they differ, which is the
+/// mixed state the reconcile then has to repair by reading every
+/// installation's changelog over the wire. Retracting the local
+/// installation first, in a local commit, keeps the device's copy out
+/// of the delta the pull replays: the account's library is what this
+/// device runs from then on, and if the account's is older than the
+/// running build the reconcile upgrades it through its normal path,
+/// reading one installation's changelog rather than one per device.
+///
+/// Everything read here is local: the installation records are facts
+/// on this branch, and the installing commit's changelog is this
+/// device's own. The install's assertions and its records go in one
+/// commit. Nothing is pushed; the sweep publishes once the pull is in.
+///
+/// Only for a first contact with an account that has content. A brand
+/// new account has no library to take over, and a device that retracted
+/// its own would join with no UI at all.
+pub(crate) async fn retract_local_profile_library(
+    tonk: &TonkState,
+) -> Result<RetractedLibrary, RepositoryError> {
+    let session = tonk
+        .reactor
+        .profile_repository()
+        .branch(PROFILE_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|error| {
+            RepositoryError::Internal(format!(
+                "open profile branch to retract the library: {error}"
+            ))
+        })?;
+    let installations = profile_library_installations(tonk, &session).await?;
+    if installations.is_empty() {
+        return Ok(RetractedLibrary {
+            installations: 0,
+            claims: 0,
+        });
+    }
+    // Every install this branch ever recorded, not only the live record:
+    // an upgrade's commit carries just what changed, and the claims it
+    // kept were written by the install before it, whose record it
+    // retired. The changelog still lists that record's assertion, so the
+    // whole chain is recoverable locally.
+    let mut claims = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for version in recorded_library_install_versions(tonk, &session).await? {
+        for claim in assertions_at_version(tonk, &session, &version).await? {
+            let identity = (
+                claim.the.to_string(),
+                claim.of.to_string(),
+                format!("{:?}", claim.is),
+            );
+            if seen.insert(identity) {
+                claims.push(claim);
+            }
+        }
+    }
+    for installation in &installations {
+        claims.extend(raw_seed_metadata(installation));
+    }
+    let retracted = RetractedLibrary {
+        installations: installations.len(),
+        claims: claims.len(),
+    };
+    let mut transaction = tonk
+        .reactor
+        .profile_repository()
+        .branch(PROFILE_BRANCH)
+        .transaction();
+    for claim in claims {
+        transaction = transaction.retract(claim);
+    }
+    transaction
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| {
+            RepositoryError::Internal(format!("retract the local profile library: {error}"))
+        })?;
+    Ok(retracted)
+}
+
+/// Parse, analyze, and lower a self-contained profile-library document into
+/// the complete desired assertion set. This happens without a branch source,
+/// so existing facts cannot suppress unchanged definitions from the result.
+/// `Changes` preserves whether each final write used cardinality-one replace
+/// semantics before any repository commit can deduplicate it.
+fn prepare_profile_library(library: String) -> Result<PreparedProfileLibrary, RepositoryError> {
+    use dialog_artifacts::{Changes, Instruction, Statement as _};
+    use dialog_query::{Parameters, Term};
+    use tonk_schema::transact::{Planner as _, Statement};
+
+    let target = seed_version(&library);
+    let parsed = tonk_notation::parse(&library);
+    if let Some(diagnostic) = parsed.diagnostics.first() {
+        return Err(RepositoryError::Internal(format!(
+            "parse profile library: {}",
+            diagnostic.message
+        )));
+    }
+    let syntax = parsed
+        .syntax
+        .ok_or_else(|| RepositoryError::Internal("profile library is empty".to_owned()))?;
+    let analyzed = tonk_analyzer::analyzer::analyze_local(&syntax)
+        .map_err(|error| RepositoryError::Internal(format!("analyze profile library: {error}")))?;
+    let mut bindings = Parameters::new();
+    for (name, entity) in &analyzed.analysis.variables {
+        bindings.insert(
+            name.clone(),
+            Term::Constant(dialog_artifacts::Value::Entity(entity.clone())),
+        );
+    }
+
+    let mut desired = Changes::new();
+    for planned in analyzed.analysis.statements() {
+        match planned.statement {
+            Statement::Assert(application) => {
+                let plan = application.plan(&bindings).map_err(|error| {
+                    RepositoryError::Internal(format!("plan profile library: {error}"))
+                })?;
+                plan.assert(&mut desired);
+            }
+            Statement::Retract(_) => {
+                return Err(RepositoryError::Internal(
+                    "profile library desired manifest contains a retraction".to_owned(),
+                ));
+            }
+        }
+    }
+
+    let assertions = desired
+        .into_instructions()
+        .into_iter()
+        .filter_map(|instruction| match instruction {
+            Instruction::Assert(artifact) => Some(super::claim::RawClaim {
+                the: artifact.the,
+                of: artifact.of,
+                is: artifact.is,
+                unique: false,
+            }),
+            Instruction::Replace(artifact) => Some(super::claim::RawClaim {
+                the: artifact.the,
+                of: artifact.of,
+                is: artifact.is,
+                unique: true,
+            }),
+            Instruction::Retract(_) => None,
+        })
+        .collect();
+    Ok(PreparedProfileLibrary {
+        source: library,
+        target,
+        assertions,
+    })
+}
+
+/// Read every complete installation whose provenance is the exact shipped
+/// profile-library source. Installations from other sources are deliberately
+/// invisible to this operation and are never retired by it.
+async fn profile_library_installations(
+    tonk: &TonkState,
+    session: &dialog_reactor::BranchSession,
+) -> Result<Vec<ProfileInstallation>, RepositoryError> {
+    use dialog_query::{Output as _, Query, Term};
+
+    let installed: Vec<tonk_schema::SeedInstalled> = session
+        .handle()
+        .query()
+        .select(Query::<tonk_schema::SeedInstalled> {
+            this: Term::var("this"),
+            prior: Term::var("prior"),
+            version: Term::var("version"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|error| {
+            RepositoryError::Internal(format!("read profile install records: {error:?}"))
+        })?;
+
+    let mut profile = Vec::new();
+    for record in installed {
+        let available: Vec<tonk_schema::SeedAvailable> = session
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::SeedAvailable> {
+                this: Term::from(record.this.clone()),
+                source: Term::var("source"),
+                replaces: Term::var("replaces"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .map_err(|error| {
+                RepositoryError::Internal(format!(
+                    "read source for profile install {}: {error:?}",
+                    record.this
+                ))
+            })?;
+        profile.extend(
+            available
+                .into_iter()
+                .filter(|available| available.source.0 == PROFILE_LIBRARY_URL)
+                .map(|available| ProfileInstallation {
+                    available,
+                    installed: record.clone(),
+                }),
+        );
+    }
+    Ok(profile)
+}
+
+/// Whether every desired assertion resolves on the current branch. Owned
+/// cardinality-one fields must contain exactly the desired distinct value;
+/// cardinality-many fields may contain additional authored values.
+async fn assertions_are_current(
+    tonk: &TonkState,
+    session: &dialog_reactor::BranchSession,
+    assertions: &[super::claim::RawClaim],
+) -> Result<bool, RepositoryError> {
+    use dialog_artifacts::ArtifactSelector;
+    use futures_util::StreamExt as _;
+
+    let mut grouped: HashMap<
+        (dialog_artifacts::Entity, dialog_artifacts::Attribute),
+        (bool, Vec<dialog_artifacts::Value>),
+    > = HashMap::new();
+    for expected in assertions {
+        let entry = grouped
+            .entry((expected.of.clone(), expected.the.clone()))
+            .or_insert_with(|| (false, Vec::new()));
+        entry.0 |= expected.unique;
+        if !entry.1.contains(&expected.is) {
+            entry.1.push(expected.is.clone());
+        }
+    }
+
+    for ((of, the), (unique, expected)) in grouped {
+        let stream = session
+            .handle()
+            .claims()
+            .select(ArtifactSelector::new().the(the).of(of))
+            .perform(&tonk.operator)
+            .await
+            .map_err(|error| {
+                RepositoryError::Internal(format!("check profile library claim: {error}"))
+            })?;
+        tokio::pin!(stream);
+        let mut found_values = Vec::new();
+        while let Some(found) = stream.next().await {
+            let found = found
+                .map_err(|error| {
+                    RepositoryError::Internal(format!("read profile library claim: {error}"))
+                })?
+                .to_owned()
+                .map_err(|error| {
+                    RepositoryError::Internal(format!(
+                        "materialize profile library claim: {error:?}"
+                    ))
+                })?;
+            if !found_values.contains(&found.is) {
+                found_values.push(found.is);
+            }
+        }
+        let current = if unique {
+            found_values.len() == 1 && expected.len() == 1 && found_values[0] == expected[0]
+        } else {
+            expected.iter().all(|value| found_values.contains(value))
+        };
+        if !current {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Detect an unrecorded legacy profile library by one stable system identity.
+/// A clean profile contains its self/account bookkeeping but no `tonk:space`
+/// definition until the profile library is installed.
+async fn has_legacy_profile_library(
+    tonk: &TonkState,
+    session: &dialog_reactor::BranchSession,
+) -> Result<bool, RepositoryError> {
+    use dialog_artifacts::ArtifactSelector;
+    use futures_util::StreamExt as _;
+
+    let entity = "tonk:space"
+        .parse()
+        .map_err(|error| RepositoryError::Internal(format!("profile identity: {error}")))?;
+    let stream = session
+        .handle()
+        .claims()
+        .select(ArtifactSelector::new().of(entity))
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| RepositoryError::Internal(format!("check legacy profile: {error}")))?;
+    tokio::pin!(stream);
+    Ok(stream.next().await.is_some())
+}
+
+fn raw_seed_metadata(installation: &ProfileInstallation) -> Vec<super::claim::RawClaim> {
+    use dialog_artifacts::Statement as _;
+
+    let mut changes = dialog_artifacts::Changes::new();
+    installation.available.clone().assert(&mut changes);
+    installation.installed.clone().assert(&mut changes);
+    changes
+        .into_instructions()
+        .into_iter()
+        .map(|instruction| {
+            let artifact = match instruction {
+                dialog_artifacts::Instruction::Assert(artifact)
+                | dialog_artifacts::Instruction::Replace(artifact)
+                | dialog_artifacts::Instruction::Retract(artifact) => artifact,
+            };
+            super::claim::RawClaim {
+                the: artifact.the,
+                of: artifact.of,
+                is: artifact.is,
+                unique: false,
+            }
+        })
+        .collect()
+}
+
+async fn current_profile_library_retractions(
+    tonk: &TonkState,
+    complete_provenance: &std::sync::atomic::AtomicBool,
+) -> Result<Vec<super::claim::RawClaim>, RepositoryError> {
+    use std::sync::atomic::Ordering;
+
+    let session = tonk
+        .reactor
+        .profile_repository()
+        .branch(PROFILE_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|error| {
+            RepositoryError::Internal(format!("refresh profile reconciliation plan: {error}"))
+        })?;
+    let installations = profile_library_installations(tonk, &session).await?;
+    let mut retract = Vec::new();
+    for installation in &installations {
+        match assertions_at_version(tonk, &session, &installation.installed.version.0).await {
+            Ok(assertions) => retract.extend(assertions),
+            Err(error) => {
+                complete_provenance.store(false, Ordering::Relaxed);
+                log!(
+                    "profile library {} has unusable provenance: {error}",
+                    installation.installed.this
+                );
+            }
+        }
+        retract.extend(raw_seed_metadata(installation));
+    }
+    Ok(retract)
+}
+
+/// Install the supplied profile library, withdrawing only claims attributable
+/// to earlier installs from the exact profile source.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) async fn reconcile_profile_library_from(
+    tonk: &TonkState,
+    library: String,
+) -> Result<ProfileLibraryOutcome, RepositoryError> {
+    let prepared = prepare_profile_library(library)?;
+    reconcile_prepared_profile_library(tonk, prepared).await
+}
+
+/// Development-only asset update boundary used by hot swap. The supplied
+/// document becomes the worker's acquired input before it is reconciled, so a
+/// later account sweep cannot restore bytes cached before the edit.
+#[wasm_compat]
+pub(super) async fn update_profile_library(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Result<Json<serde_json::Value>, TonkWorkerError> {
+    if !cfg!(debug_assertions) {
+        return Err(TonkWorkerError::NotFound(
+            "profile library development update is unavailable".to_owned(),
+        ));
+    }
+    let library = String::from_utf8(body.to_vec()).map_err(|error| {
+        TonkWorkerError::Router(format!("profile library is not UTF-8: {error}"))
+    })?;
+    let tonk = state.read().await;
+    let prepared = tonk
+        .profile_library
+        .replace_input(library)
+        .await
+        .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
+    let outcome = reconcile_prepared_profile_library(&tonk, prepared)
+        .await
+        .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
+    let (status, deferred_cleanup) = match outcome {
+        ProfileLibraryOutcome::Unchanged => ("unchanged", false),
+        ProfileLibraryOutcome::Installed => ("installed", false),
+        ProfileLibraryOutcome::Repaired { deferred_cleanup } => ("repaired", deferred_cleanup),
+    };
+    Ok(Json(serde_json::json!({
+        "status": status,
+        "deferredCleanup": deferred_cleanup,
+    })))
+}
+
+async fn reconcile_prepared_profile_library(
+    tonk: &TonkState,
+    prepared: PreparedProfileLibrary,
+) -> Result<ProfileLibraryOutcome, RepositoryError> {
+    let PreparedProfileLibrary {
+        source: library,
+        target,
+        assertions,
+    } = prepared;
+    let session = tonk
+        .reactor
+        .profile_repository()
+        .branch(PROFILE_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|error| {
+            RepositoryError::Internal(format!("open profile branch for reconciliation: {error}"))
+        })?;
+    let revision = session.handle().revision();
+    let profile = tonk.profile.did().to_string();
+    if tonk.profile_library.contains(&profile, &target, &revision) {
+        return Ok(ProfileLibraryOutcome::Unchanged);
+    }
+
+    let installations = profile_library_installations(tonk, &session).await?;
+    if installations.len() == 1
+        && installations[0].installed.this.to_string() == target
+        && assertions_are_current(tonk, &session, &assertions).await?
+    {
+        tonk.profile_library.store(profile, target, revision);
+        return Ok(ProfileLibraryOutcome::Unchanged);
+    }
+
+    let legacy = installations.is_empty() && has_legacy_profile_library(tonk, &session).await?;
+    let complete_provenance = std::sync::atomic::AtomicBool::new(true);
+
+    let prior = installations
+        .first()
+        .map(|installation| installation.installed.this.to_string())
+        .unwrap_or_else(|| SEED_NONE.to_owned());
+    let record = |minted: &dialog_artifacts::history::Version| {
+        seed_record_facts(
+            &target,
+            PROFILE_LIBRARY_URL,
+            &prior,
+            &prior,
+            &encode_seed_version(minted),
+        )
+    };
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    let plan = || -> futures_util::future::LocalBoxFuture<'_, _> {
+        Box::pin(async {
+            current_profile_library_retractions(tonk, &complete_provenance)
+                .await
+                .map_err(|error| TonkWorkerError::Internal(error.to_string()))
+        })
+    };
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    let plan = || -> futures_util::future::BoxFuture<'_, _> {
+        Box::pin(async {
+            current_profile_library_retractions(tonk, &complete_provenance)
+                .await
+                .map_err(|error| TonkWorkerError::Internal(error.to_string()))
+        })
+    };
+    let response = super::evaluate::evaluate_profile_with_retraction_plan(
+        tonk,
+        PROFILE_BRANCH,
+        library,
+        &plan,
+        &record,
+    )
+    .await
+    .map_err(|e| {
+        RepositoryError::Internal(format!("reconcile profile library on profile branch: {e}"))
+    })?;
+    tonk.profile_library
+        .store(profile, target, response.revision_after.clone());
+
+    Ok(if installations.is_empty() && !legacy {
+        ProfileLibraryOutcome::Installed
+    } else {
+        ProfileLibraryOutcome::Repaired {
+            deferred_cleanup: legacy
+                || !complete_provenance.load(std::sync::atomic::Ordering::Relaxed),
+        }
+    })
 }
 
 /// Load a repository by name and return its [`RepositoryInfo`].
@@ -3916,7 +5466,10 @@ pub async fn get_repository(
     // The outcome rides the not-found error: a swallowed mount failure
     // turns an explainable miss into a bare 404.
     let mount = match super::adopt::ensure_space_mounted(&tonk, &name).await {
-        Ok(true) => None,
+        Ok(true) => {
+            super::adopt::schedule_seed_upgrade(&tonk, state.clone(), &name).await;
+            None
+        }
         Ok(false) => Some("the account directory holds no mountable record for it".to_string()),
         Err(error) => {
             log!("on-demand mount of '{}' failed: {error}", name);
@@ -3975,7 +5528,7 @@ pub async fn get_profile_repository(
 /// The branch a repository's own `tonk/repository` name is seeded onto.
 /// Spaces have a single content branch (`main`); the seed writes the
 /// name there (see `repository_name_body`).
-const CONTENT_BRANCH: &str = "main";
+pub(super) const CONTENT_BRANCH: &str = "main";
 
 /// Read a repository's display label from its own `tonk/repository`
 /// concept on its content branch, keyed by the subject DID.
@@ -4673,6 +6226,7 @@ where
 
     let revision = transaction
         .commit()
+        .publish()
         .perform(&tonk.operator)
         .await
         .map_err(|e| {
@@ -4932,6 +6486,60 @@ mod remote_from_facts_tests {
             .of(of.clone())
             .is("test".to_string())
             .assert(changes);
+    }
+
+    /// A create that says nothing about opening does NOT navigate.
+    ///
+    /// The default matters more than the flag: every caller that is not
+    /// the Hub's own form — a script, an agent, a future affordance —
+    /// gets a space in the Hub without the page being yanked out from
+    /// under whoever is using it.
+    #[test]
+    fn it_does_not_open_a_space_by_default() {
+        let of: Entity = "did:key:zCreate".parse().expect("entity");
+        let mut changes = Changes::new();
+        name_fact(&mut changes, &of);
+        assert!(
+            !super::open_from_facts(&artifacts(changes)),
+            "a create carrying no `open` field creates only"
+        );
+    }
+
+    /// The Hub's form passes `open` as a hidden input, so it arrives as
+    /// text rather than a boolean.
+    #[test]
+    fn it_opens_a_space_when_the_form_asks() {
+        let of: Entity = "did:key:zCreate".parse().expect("entity");
+        let mut changes = Changes::new();
+        name_fact(&mut changes, &of);
+        the!("xyz.tonk.command.create-space/open")
+            .of(of)
+            .is("true".to_string())
+            .assert(&mut changes);
+        assert!(
+            super::open_from_facts(&artifacts(changes)),
+            "the Hub's hidden `open=true` input navigates"
+        );
+    }
+
+    /// An explicit falsehood is honoured rather than read as "present,
+    /// therefore yes" — a form that binds the field but leaves it off
+    /// must not navigate.
+    #[test]
+    fn it_honours_an_explicit_refusal_to_open() {
+        for text in ["false", "0", "", "  "] {
+            let of: Entity = "did:key:zCreate".parse().expect("entity");
+            let mut changes = Changes::new();
+            name_fact(&mut changes, &of);
+            the!("xyz.tonk.command.create-space/open")
+                .of(of)
+                .is(text.to_string())
+                .assert(&mut changes);
+            assert!(
+                !super::open_from_facts(&artifacts(changes)),
+                "`open={text:?}` must not navigate"
+            );
+        }
     }
 
     #[test]
@@ -5564,9 +7172,15 @@ mod invite_chain_tests {
                 "the minted link is rooted on the space's serving host"
             );
             // The fixture host provides conforming shortening (content
-            // hash + redirect), so the mint shortened; resolve the way a
-            // claimer does before parsing. A long link (a host without
-            // shortening) parses as-is — both arms are live behavior.
+            // hash + redirect), so the mint MUST have delivered a short
+            // link. Asserted rather than tolerated: the url the mint
+            // delivers is the one the share control copies, and a mint
+            // that quietly fell back to the long form is the regression
+            // this pins.
+            assert!(
+                tonk_invite::shortcut::is_shortcut(&link),
+                "the fixture shortens, so the minted link must be a shortcut, not {link}"
+            );
             let resolved = if tonk_invite::shortcut::is_shortcut(&link) {
                 let client = reqwest::Client::builder()
                     .redirect(reqwest::redirect::Policy::none())
@@ -5624,6 +7238,43 @@ mod invite_chain_tests {
 }
 
 #[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod invite_fallback_tests {
+    /// A shortcut host that does not answer leaves the full URL standing.
+    ///
+    /// Shortening is a convenience, so every way it can fail has to end
+    /// with a link the recipient can still open: a 400 for a target over
+    /// the service's size cap, a 404 or 405 from a host serving no
+    /// shortcut route, a 200 from a blob store that stored the bytes
+    /// without understanding them, a probe that never redirects. Port 1
+    /// on loopback refuses immediately, which is the same `Err` arm all
+    /// of those land in.
+    ///
+    /// What this pins is the recovery, the part with no other coverage:
+    /// the fallback yields the url UNCHANGED — not an error that would
+    /// fail the mint, not an empty string, and with the seed fragment
+    /// still attached, since a link that lost its `#seed` would look
+    /// fine and redeem into nothing.
+    #[dialog_common::test]
+    async fn it_falls_back_to_the_full_url_when_the_shortcut_fails() {
+        let full = "http://127.0.0.1:1/join?access=PROOF&tonk_channel=reshare#SEED";
+        assert_eq!(
+            super::shortened_or_full(full.to_owned()).await,
+            full,
+            "a refused shortcut must yield the full URL, verbatim"
+        );
+
+        // A url no shortcut request can even be derived from must fall
+        // back rather than propagate.
+        let unshortenable = "not a url";
+        assert_eq!(
+            super::shortened_or_full(unshortenable.to_owned()).await,
+            unshortenable,
+            "a url the shortcut request cannot be derived from must yield itself"
+        );
+    }
+}
+
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
 mod rename_outcome_tests {
     use super::{RenameOutcome, rename_outcome};
     use crate::RepositoryError;
@@ -5642,6 +7293,738 @@ mod rename_outcome_tests {
     #[dialog_common::test]
     fn it_maps_a_successful_rename_to_renamed() {
         assert_eq!(rename_outcome(Ok(())), RenameOutcome::Renamed);
+    }
+}
+
+#[cfg(test)]
+mod profile_library_tests {
+    use super::*;
+    use dialog_query::{Query, Term};
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    wasm_bindgen_test_configure!(run_in_service_worker);
+
+    const CURRENT: &str = include_str!("../../../tonk-core/assets/library/profile.yaml");
+
+    // Reduced from rust/tonk-core/assets/library/profile.yaml at
+    // eff85b2ab^ (the last revision before the account-model reland removed
+    // the misleading empty-state row). Keeping only the identities involved
+    // in this regression makes the ownership boundary explicit.
+    const HISTORICAL: &str = r#"
+concept!: &space
+  this: tonk:space
+  description: A space on this account.
+  with:
+    subject:
+      description: The repository subject.
+      the: xyz.tonk.space/subject
+      cardinality: one
+      as: entity
+
+view!:
+  this: space
+  show:
+    directory: |
+      <div class="stack"><div class="sempty">no spaces yet</div></div>
+
+concept!: &route
+  this: tonk:route
+  description: A route from a path to a model.
+  with:
+    path:
+      description: The path pattern.
+      the: xyz.tonk.route/path
+      cardinality: one
+      as: text
+    concept:
+      description: The model rendered for the path.
+      the: xyz.tonk.route/concept
+      cardinality: one
+      as: entity
+
+route!: &obsolete-profile-library
+  this: id:obsolete-profile-library
+  path: "/obsolete-profile-library"
+  concept: space
+"#;
+
+    const AUTHORED: &str = r#"
+route!: &authored-profile-route
+  this: id:authored-profile-route
+  path: "/authored-profile"
+  concept: space
+"#;
+
+    const FOREIGN: &str = r#"
+route!: &foreign-profile-route
+  this: id:foreign-profile-route
+  path: "/foreign-profile"
+  concept: space
+"#;
+
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    async fn test_state() -> TonkState {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let name = format!(
+            "profile-library-native-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        );
+        let storage =
+            dialog_storage::provider::storage::Storage::<crate::worker::DefaultSpace>::default();
+        let profile = dialog_operator::Profile::open(&name)
+            .perform(&storage)
+            .await
+            .expect("test profile opens");
+        let session = crate::session::open(&profile, &storage)
+            .await
+            .expect("test session opens");
+        TonkState {
+            seed_upgrades: Default::default(),
+            profile: profile.clone(),
+            operator: session.operator,
+            storage,
+            session_expires_at: session.expires_at,
+            profile_name: name.clone(),
+            reactor: crate::Reactor::new(profile),
+            admission: Default::default(),
+            reject_admission_content_reads: Default::default(),
+            retiring: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            view_bindings: Default::default(),
+            bridges: Default::default(),
+            sync_queue: Default::default(),
+            commands: crate::router::command_providers(),
+            clients: Default::default(),
+            account_keys: Default::default(),
+            profile_library: Default::default(),
+            registry: crate::device::Registry {
+                profile: name,
+                directory: dialog_effects::storage::Directory::Profile,
+            },
+            profile_transition: Default::default(),
+            context_generation: Default::default(),
+        }
+    }
+
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    async fn test_state() -> TonkState {
+        crate::router::tests::test_state_without_root().await
+    }
+
+    async fn install_recorded(tonk: &TonkState, source: &str, library: &str) {
+        let seed = seed_version(library);
+        super::super::evaluate::evaluate_profile_body_recording(
+            tonk,
+            PROFILE_BRANCH,
+            library.to_owned(),
+            &|minted| {
+                seed_record_facts(
+                    &seed,
+                    source,
+                    SEED_NONE,
+                    SEED_NONE,
+                    &encode_seed_version(minted),
+                )
+            },
+        )
+        .await
+        .expect("historical library installs");
+    }
+
+    async fn evaluate_authored(tonk: &TonkState, document: &str) {
+        super::super::evaluate::evaluate_profile_body_recording(
+            tonk,
+            PROFILE_BRANCH,
+            document.to_owned(),
+            &|_| Vec::new(),
+        )
+        .await
+        .expect("authored profile document evaluates");
+    }
+
+    async fn install_sentinels(tonk: &TonkState) -> (tonk_schema::ProfileName, tonk_schema::Space) {
+        let profile_name = tonk_schema::ProfileName::new(
+            tonk.profile.did().this(),
+            "independently authored".to_owned(),
+        );
+        let space = tonk_schema::Space::new(
+            &tonk.profile.did(),
+            tonk_schema::Replica::initialized_status(),
+        );
+        tonk.reactor
+            .profile_repository()
+            .branch(PROFILE_BRANCH)
+            .transaction()
+            .assert(profile_name.clone())
+            .assert(space.clone())
+            .commit()
+            .perform(&tonk.operator)
+            .await
+            .expect("sentinel account and authored profile facts commit");
+        (profile_name, space)
+    }
+
+    async fn view_snapshot(tonk: &TonkState) -> String {
+        let wire = tonk_template::resolve::view_query("tonk:space").expect("view query builds");
+        let query = wire
+            .into_concept_query()
+            .expect("view query is a concept query");
+        let rows = tonk
+            .reactor
+            .profile_repository()
+            .branch(PROFILE_BRANCH)
+            .query(query)
+            .perform(&tonk.operator)
+            .await
+            .expect("view query runs");
+        serde_json::to_string(&rows).expect("view rows serialize")
+    }
+
+    async fn route_paths(tonk: &TonkState) -> Vec<String> {
+        let session = tonk
+            .reactor
+            .profile_repository()
+            .branch(PROFILE_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .expect("profile branch opens");
+        session
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::Route> {
+                this: Term::var("this"),
+                path: Term::var("path"),
+                concept: Term::var("concept"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("routes resolve")
+            .into_iter()
+            .map(|route| route.path.0)
+            .collect()
+    }
+
+    async fn raw_values(tonk: &TonkState, the: &str, of: &str) -> Vec<dialog_artifacts::Value> {
+        use dialog_artifacts::ArtifactSelector;
+        use futures_util::StreamExt as _;
+
+        let session = tonk
+            .reactor
+            .profile_repository()
+            .branch(PROFILE_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .expect("profile branch opens");
+        let stream = session
+            .handle()
+            .claims()
+            .select(
+                ArtifactSelector::new()
+                    .the(the.parse().expect("attribute parses"))
+                    .of(of.parse().expect("entity parses")),
+            )
+            .perform(&tonk.operator)
+            .await
+            .expect("raw claim query starts");
+        tokio::pin!(stream);
+        let mut values = Vec::new();
+        while let Some(claim) = stream.next().await {
+            values.push(
+                claim
+                    .expect("raw claim reads")
+                    .to_owned()
+                    .expect("raw claim materializes")
+                    .is,
+            );
+        }
+        values
+    }
+
+    #[dialog_common::test]
+    async fn profile_library_replaces_recorded_history_and_preserves_authored_content() {
+        let mut tonk = test_state().await;
+        install_recorded(&tonk, PROFILE_LIBRARY_URL, HISTORICAL).await;
+        evaluate_authored(&tonk, AUTHORED).await;
+        install_recorded(&tonk, "/library/foreign.yaml", FOREIGN).await;
+        let (profile_name, space) = install_sentinels(&tonk).await;
+
+        let before = view_snapshot(&tonk).await;
+        assert!(
+            before.contains("no spaces yet"),
+            "historical facet resolves: {before}"
+        );
+
+        let wire = tonk_template::resolve::view_query("tonk:space").expect("view query builds");
+        let query = wire
+            .into_concept_query()
+            .expect("view query is a concept query");
+        let subscribed_session = tonk
+            .reactor
+            .profile_repository()
+            .branch(PROFILE_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .expect("profile branch opens");
+        let mut subscriber = subscribed_session
+            .subscribe(query, None)
+            .expect("view subscription registers");
+        tonk.reactor
+            .schedule_poll(std::sync::Arc::clone(&subscribed_session.state));
+        tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+        while subscriber.receiver.try_recv().is_ok() {}
+
+        tonk.profile_library = Default::default();
+        let outcome = reconcile_profile_library(&tonk)
+            .await
+            .expect("profile library reconciles");
+        assert_eq!(
+            outcome,
+            ProfileLibraryOutcome::Repaired {
+                deferred_cleanup: false
+            }
+        );
+
+        let after = view_snapshot(&tonk).await;
+        assert!(
+            !after.contains("no spaces yet"),
+            "stale facet is gone: {after}"
+        );
+        assert!(
+            after.contains("create new space"),
+            "current facet resolves: {after}"
+        );
+        let mut delivered = Vec::new();
+        while let Ok(bytes) = subscriber.receiver.try_recv() {
+            delivered.extend_from_slice(&bytes);
+        }
+        let delivered: serde_json::Value =
+            serde_json::from_slice(&delivered).expect("subscription delta is JSON");
+        let asserted = serde_json::to_string(&delivered["asserted"]).unwrap();
+        let retracted = serde_json::to_string(&delivered["retracted"]).unwrap();
+        assert!(
+            !asserted.contains("no spaces yet") && asserted.contains("create new space"),
+            "the mounted view subscription receives the repaired facet: {delivered}"
+        );
+        assert!(
+            retracted.contains("no spaces yet"),
+            "the subscription delta withdraws the historical facet: {delivered}"
+        );
+
+        let paths = route_paths(&tonk).await;
+        assert!(!paths.iter().any(|path| path == "/obsolete-profile-library"));
+        assert!(paths.iter().any(|path| path == "/authored-profile"));
+        assert!(paths.iter().any(|path| path == "/foreign-profile"));
+
+        let session = tonk
+            .reactor
+            .profile_repository()
+            .branch(PROFILE_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .expect("profile branch opens");
+        let revision = session.handle().revision();
+        let profile = profile_library_installations(&tonk, &session)
+            .await
+            .expect("profile records resolve");
+        assert_eq!(profile.len(), 1, "only the current profile record remains");
+        assert_eq!(profile[0].installed.this.to_string(), seed_version(CURRENT));
+        let assertions = assertions_at_version(&tonk, &session, &profile[0].installed.version.0)
+            .await
+            .expect("the recorded install revision exists");
+        assert!(!assertions.is_empty());
+        assert!(
+            assertions_are_current(&tonk, &session, &assertions)
+                .await
+                .unwrap()
+        );
+        let names: Vec<tonk_schema::ProfileName> = session
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::ProfileName> {
+                this: Term::from(profile_name.this.clone()),
+                name: Term::var("name"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("profile sentinel resolves");
+        assert_eq!(names, vec![profile_name]);
+        let spaces: Vec<tonk_schema::Space> = session
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::Space> {
+                this: Term::from(space.this.clone()),
+                subject: Term::var("subject"),
+                status: Term::var("status"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("space sentinel resolves");
+        assert_eq!(spaces, vec![space]);
+
+        assert_eq!(
+            reconcile_profile_library(&tonk)
+                .await
+                .expect("second reconciliation succeeds"),
+            ProfileLibraryOutcome::Unchanged
+        );
+        assert_eq!(
+            session.handle().revision(),
+            revision,
+            "a validated unchanged library does not advance profile main"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn profile_library_repairs_a_retained_definition_missing_from_install_history() {
+        let mut tonk = test_state().await;
+        install_recorded(&tonk, PROFILE_LIBRARY_URL, HISTORICAL).await;
+        reconcile_profile_library_from(&tonk, CURRENT.to_owned())
+            .await
+            .expect("current library installs");
+
+        let session = tonk
+            .reactor
+            .profile_repository()
+            .branch(PROFILE_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .expect("profile branch opens");
+        let installation = profile_library_installations(&tonk, &session)
+            .await
+            .expect("profile installation resolves")
+            .pop()
+            .expect("current installation exists");
+        let history = assertions_at_version(&tonk, &session, &installation.installed.version.0)
+            .await
+            .expect("installation history resolves");
+
+        let the: dialog_artifacts::Attribute = "db.meta/description"
+            .parse()
+            .expect("description attribute parses");
+        let of: dialog_artifacts::Entity = "tonk:space".parse().expect("space entity parses");
+        let desired = dialog_artifacts::Value::String("A space on this account.".to_owned());
+        assert!(
+            !history
+                .iter()
+                .any(|claim| claim.the == the && claim.of == of && claim.is == desired),
+            "the unchanged retained definition is deliberately absent from the install delta"
+        );
+
+        session
+            .handle()
+            .transaction()
+            .retract(super::super::claim::RawClaim {
+                the: the.clone(),
+                of: of.clone(),
+                is: desired.clone(),
+                unique: false,
+            })
+            .assert(super::super::claim::RawClaim {
+                the: the.clone(),
+                of: of.clone(),
+                is: dialog_artifacts::Value::String("stale account writer".to_owned()),
+                unique: false,
+            })
+            .commit()
+            .publish()
+            .perform(&tonk.operator)
+            .await
+            .expect("retained definition is damaged");
+
+        tonk.profile_library = Default::default();
+        let outcome = reconcile_profile_library(&tonk)
+            .await
+            .expect("damaged retained definition reconciles");
+        assert!(matches!(outcome, ProfileLibraryOutcome::Repaired { .. }));
+        assert_eq!(
+            raw_values(&tonk, "db.meta/description", "tonk:space").await,
+            vec![desired],
+            "the complete desired manifest repairs definitions absent from the install delta"
+        );
+        let revision = session.handle().revision();
+        assert_eq!(
+            reconcile_profile_library(&tonk)
+                .await
+                .expect("repaired library settles"),
+            ProfileLibraryOutcome::Unchanged
+        );
+        assert_eq!(session.handle().revision(), revision);
+    }
+
+    #[dialog_common::test]
+    async fn profile_library_removes_competing_values_from_owned_singletons() {
+        for stale_first in [false, true] {
+            let tonk = test_state().await;
+            reconcile_profile_library_from(&tonk, CURRENT.to_owned())
+                .await
+                .expect("profile library installs");
+            let expected = prepare_profile_library(CURRENT.to_owned())
+                .expect("profile library prepares")
+                .assertions
+                .into_iter()
+                .find(|claim| {
+                    claim.unique
+                        && claim.of.to_string() == "tonk:space"
+                        && claim.the.to_string() == "xyz.tonk.view/directory"
+                })
+                .expect("directory facet is an owned singleton");
+            let stale = super::super::claim::RawClaim {
+                the: expected.the.clone(),
+                of: expected.of.clone(),
+                is: dialog_artifacts::Value::String(
+                    "<div data-stale-profile-library></div>".to_owned(),
+                ),
+                unique: false,
+            };
+            let session = tonk
+                .reactor
+                .profile_repository()
+                .branch(PROFILE_BRANCH)
+                .acquire(&tonk.operator)
+                .await
+                .expect("profile branch opens");
+            let mut txn = session.handle().transaction();
+            if stale_first {
+                txn = txn.retract(expected.clone()).assert(stale.clone()).assert(
+                    super::super::claim::RawClaim {
+                        unique: false,
+                        ..expected.clone()
+                    },
+                );
+            } else {
+                txn = txn.assert(stale.clone());
+            }
+            txn.commit()
+                .publish()
+                .perform(&tonk.operator)
+                .await
+                .expect("competing singleton values commit");
+            let before =
+                raw_values(&tonk, &expected.the.to_string(), &expected.of.to_string()).await;
+            assert_eq!(before.len(), 2, "both values stand before repair");
+
+            assert!(matches!(
+                reconcile_profile_library_from(&tonk, CURRENT.to_owned())
+                    .await
+                    .expect("competing value repairs"),
+                ProfileLibraryOutcome::Repaired { .. }
+            ));
+            assert_eq!(
+                raw_values(&tonk, &expected.the.to_string(), &expected.of.to_string(),).await,
+                vec![expected.is.clone()],
+                "repair leaves the exact desired singleton for stale_first={stale_first}"
+            );
+            assert!(
+                !view_snapshot(&tonk)
+                    .await
+                    .contains("data-stale-profile-library"),
+                "resolved rendering uses the desired directory facet"
+            );
+        }
+    }
+
+    #[dialog_common::test]
+    async fn profile_library_acquires_once_and_revalidates_profile_only_changes() {
+        let tonk = test_state().await;
+        assert_eq!(tonk.profile_library.acquisition_count(), 0);
+        let (first, concurrent) = futures_util::join!(
+            reconcile_profile_library(&tonk),
+            reconcile_profile_library(&tonk)
+        );
+        first.expect("first acquisition reconciles");
+        concurrent.expect("concurrent acquisition coalesces");
+        assert_eq!(tonk.profile_library.acquisition_count(), 1);
+
+        let session = tonk
+            .reactor
+            .profile_repository()
+            .branch(PROFILE_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .expect("profile branch opens");
+        session
+            .handle()
+            .transaction()
+            .assert(tonk_schema::ProfileName::new(
+                tonk.profile.did().this(),
+                "profile-only change".to_owned(),
+            ))
+            .commit()
+            .publish()
+            .perform(&tonk.operator)
+            .await
+            .expect("profile-only change commits");
+        assert_eq!(
+            reconcile_profile_library(&tonk)
+                .await
+                .expect("profile-only change revalidates"),
+            ProfileLibraryOutcome::Unchanged
+        );
+        assert_eq!(
+            tonk.profile_library.acquisition_count(),
+            1,
+            "profile revision changes reuse the prepared worker input"
+        );
+
+        let mut switched = test_state().await;
+        switched.profile_library = tonk.profile_library.clone();
+        reconcile_profile_library(&switched)
+            .await
+            .expect("a switched profile uses the running worker input");
+        assert_eq!(
+            switched.profile_library.acquisition_count(),
+            1,
+            "profile switching does not reacquire the generation asset"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn profile_library_development_input_replaces_the_worker_cache_atomically() {
+        let tonk = test_state().await;
+        reconcile_profile_library(&tonk)
+            .await
+            .expect("shipped profile library installs");
+        let historical = tonk
+            .profile_library
+            .replace_input(HISTORICAL.to_owned())
+            .await
+            .expect("development input prepares");
+        reconcile_prepared_profile_library(&tonk, historical)
+            .await
+            .expect("development input reconciles");
+        assert!(view_snapshot(&tonk).await.contains("no spaces yet"));
+        assert_eq!(tonk.profile_library.acquisition_count(), 1);
+
+        assert!(
+            tonk.profile_library
+                .replace_input("concept!: [".to_owned())
+                .await
+                .is_err(),
+            "malformed development input is rejected"
+        );
+        let session = tonk
+            .reactor
+            .profile_repository()
+            .branch(PROFILE_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .expect("profile branch opens");
+        session
+            .handle()
+            .transaction()
+            .assert(tonk_schema::ProfileName::new(
+                tonk.profile.did().this(),
+                "invalidate receipt".to_owned(),
+            ))
+            .commit()
+            .publish()
+            .perform(&tonk.operator)
+            .await
+            .expect("profile revision advances");
+        assert_eq!(
+            reconcile_profile_library(&tonk)
+                .await
+                .expect("cached development input revalidates"),
+            ProfileLibraryOutcome::Unchanged
+        );
+        assert!(
+            view_snapshot(&tonk).await.contains("no spaces yet"),
+            "a failed update cannot expose the previously cached shipped input"
+        );
+        assert_eq!(tonk.profile_library.acquisition_count(), 1);
+    }
+
+    #[dialog_common::test]
+    async fn profile_library_retries_a_failed_initial_acquisition() {
+        let tonk = test_state().await;
+        reconcile_profile_library_from(&tonk, CURRENT.to_owned())
+            .await
+            .expect("existing library state installs independently of acquisition cache");
+        let session = tonk
+            .reactor
+            .profile_repository()
+            .branch(PROFILE_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .expect("profile branch opens");
+        let revision_before = session.handle().revision();
+
+        tonk.profile_library.fail_next_acquisition();
+        assert!(
+            reconcile_profile_library(&tonk).await.is_err(),
+            "the injected acquisition failure reaches the production wrapper"
+        );
+        assert_eq!(session.handle().revision(), revision_before);
+        assert_eq!(tonk.profile_library.acquisition_count(), 1);
+
+        assert_eq!(
+            reconcile_profile_library(&tonk)
+                .await
+                .expect("the next sweep retries acquisition"),
+            ProfileLibraryOutcome::Unchanged
+        );
+        assert_eq!(session.handle().revision(), revision_before);
+        assert_eq!(tonk.profile_library.acquisition_count(), 2);
+    }
+
+    #[dialog_common::test]
+    async fn profile_library_repairs_known_legacy_fields_without_claiming_full_cleanup() {
+        let tonk = test_state().await;
+        evaluate_authored(&tonk, HISTORICAL).await;
+
+        assert!(view_snapshot(&tonk).await.contains("no spaces yet"));
+        assert_eq!(
+            reconcile_profile_library_from(&tonk, CURRENT.to_owned())
+                .await
+                .expect("legacy profile library repairs"),
+            ProfileLibraryOutcome::Repaired {
+                deferred_cleanup: true
+            }
+        );
+        assert!(!view_snapshot(&tonk).await.contains("no spaces yet"));
+        assert!(
+            route_paths(&tonk)
+                .await
+                .iter()
+                .any(|path| path == "/obsolete-profile-library"),
+            "an unattributed legacy route is preserved for deferred cleanup"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn profile_library_rejects_malformed_replacements_without_disturbing_the_old_install() {
+        let tonk = test_state().await;
+        install_recorded(&tonk, PROFILE_LIBRARY_URL, HISTORICAL).await;
+        let session = tonk
+            .reactor
+            .profile_repository()
+            .branch(PROFILE_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .expect("profile branch opens");
+        let revision = session.handle().revision();
+
+        assert!(
+            reconcile_profile_library_from(&tonk, "concept!: [".to_owned())
+                .await
+                .is_err(),
+            "malformed replacement input is rejected"
+        );
+        assert_eq!(session.handle().revision(), revision);
+        assert!(view_snapshot(&tonk).await.contains("no spaces yet"));
+        assert!(
+            route_paths(&tonk)
+                .await
+                .iter()
+                .any(|path| path == "/obsolete-profile-library"),
+            "the complete old install remains visible after a parse failure"
+        );
     }
 }
 
@@ -5690,7 +8073,7 @@ mod tests {
     use tower::ServiceExt;
 
     use axum::Router;
-    use dialog_remote_ucan_s3::UcanAddress;
+    use dialog_remote_ucan::UcanAddress;
     use dialog_repository::SiteAddress;
 
     use super::{
@@ -6052,6 +8435,133 @@ mod tests {
         super::remove_space_inner(&state, &subject)
             .await
             .expect("a repeated remove is a no-op, not an error");
+    }
+
+    /// The profile bootstrap installs the library once. A boot whose
+    /// shipped library matches the recorded install writes nothing: the
+    /// branch head does not move. A boot whose library changed upgrades
+    /// in one commit, withdrawing what the recorded install asserted and
+    /// recording the new one. Before this, every boot re-evaluated the
+    /// library and recorded the commit doing so, a new fact each time on
+    /// a commit carrying most of the tree, which after sign-in every
+    /// worker restart pushed into the account.
+    ///
+    /// Drives `reconcile_profile_library_from` directly: `bootstrap_profile`
+    /// fetches the library over the network, which the harness (no
+    /// service-worker registration) cannot serve.
+    #[dialog_common::test]
+    async fn it_installs_the_profile_library_once_and_upgrades_it() {
+        use dialog_query::{Output as _, Query, Term};
+
+        let (_app, state, _key) = fresh_repo("test-seed-once").await;
+        let tonk = state.read().await;
+
+        let library = include_str!("../../../tonk-core/assets/library/profile.yaml");
+        let first = format!(
+            "{library}\nroute!: &probe/kept\n  this: id:probe/kept\n  path: \"/probe/kept\"\n  concept: tonk:settings\n\nroute!: &probe/dropped\n  this: id:probe/dropped\n  path: \"/probe/dropped\"\n  concept: tonk:settings\n"
+        );
+        let second = format!(
+            "{library}\nroute!: &probe/kept\n  this: id:probe/kept\n  path: \"/probe/kept\"\n  concept: tonk:settings\n"
+        );
+
+        let session = tonk
+            .reactor
+            .profile_repository()
+            .branch(super::PROFILE_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .expect("acquire the profile branch");
+        let head = || {
+            session
+                .handle()
+                .revision()
+                .expect("the profile branch has a head")
+                .version()
+        };
+        let installed = || async {
+            super::read_installed_seed(&tonk, &session)
+                .await
+                .expect("read the seed record")
+        };
+        let paths = || async {
+            let routes: Vec<tonk_schema::Route> = session
+                .handle()
+                .query()
+                .select(Query::<tonk_schema::Route> {
+                    this: Term::var("this"),
+                    path: Term::var("path"),
+                    concept: Term::var("concept"),
+                })
+                .perform(&tonk.operator)
+                .try_vec()
+                .await
+                .expect("route query");
+            routes
+                .into_iter()
+                .map(|route| route.path.0)
+                .collect::<Vec<String>>()
+        };
+
+        super::reconcile_profile_library_from(&tonk, first.clone())
+            .await
+            .expect("the first boot installs the library");
+        let record = installed()
+            .await
+            .expect("the first boot records its install");
+        assert_eq!(record.seed.to_string(), super::seed_version(&first));
+        let seeded = head();
+
+        super::reconcile_profile_library_from(&tonk, first.clone())
+            .await
+            .expect("a matching boot succeeds");
+        assert_eq!(
+            head(),
+            seeded,
+            "a boot whose library matches the recorded install must not commit"
+        );
+        assert_eq!(
+            installed().await.expect("the record survives").version,
+            record.version,
+            "a matching boot leaves the install record alone"
+        );
+
+        super::reconcile_profile_library_from(&tonk, second.clone())
+            .await
+            .expect("a changed library upgrades");
+        assert_ne!(head(), seeded, "an upgrade commits");
+        let upgraded = installed().await.expect("the upgrade records itself");
+        assert_eq!(upgraded.seed.to_string(), super::seed_version(&second));
+        assert_eq!(
+            upgraded.prior.to_string(),
+            super::seed_version(&first),
+            "the upgrade records what it replaced"
+        );
+        let running: Vec<tonk_schema::SeedInstalled> = session
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::SeedInstalled> {
+                this: Term::var("this"),
+                prior: Term::var("prior"),
+                version: Term::var("version"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("installed query");
+        assert_eq!(
+            running.len(),
+            1,
+            "an upgrade withdraws the earlier install record: {running:?}"
+        );
+        let paths = paths().await;
+        assert!(
+            paths.iter().any(|path| path == "/probe/kept"),
+            "a definition both libraries carry survives the upgrade: {paths:?}"
+        );
+        assert!(
+            !paths.iter().any(|path| path == "/probe/dropped"),
+            "a definition only the earlier library had is withdrawn: {paths:?}"
+        );
     }
 
     /// The self-replica (subject == profile) is refused: deleting the
@@ -7475,7 +9985,7 @@ block/insert!:
         endpoint: &str,
         relay: Option<&str>,
     ) -> RepositoryInfo {
-        use dialog_remote_ucan_s3::UcanAddress;
+        use dialog_remote_ucan::UcanAddress;
 
         let mut remote = RemoteConfiguration::new(SiteAddress::from(UcanAddress::new(endpoint)));
         if let Some(relay) = relay {
@@ -8213,5 +10723,633 @@ block/insert!:
             !url.contains("name="),
             "the name rides in the chain meta, never as a loose parameter: {url}"
         );
+    }
+}
+
+#[cfg(test)]
+mod seed_tests {
+    /// The attribute names a set of instructions writes — what a record
+    /// test asserts over, since `Instruction` is not `Debug`.
+    #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+    fn attributes_of(facts: &[dialog_artifacts::Instruction]) -> Vec<String> {
+        facts
+            .iter()
+            .map(|instruction| match instruction {
+                dialog_artifacts::Instruction::Assert(artifact)
+                | dialog_artifacts::Instruction::Replace(artifact)
+                | dialog_artifacts::Instruction::Retract(artifact) => artifact.the.to_string(),
+            })
+            .collect()
+    }
+
+    /// A seed's identity is the hash of its bytes, so two devices
+    /// installing the same seed derive the same entity and converge.
+    #[test]
+    fn it_identifies_a_seed_by_its_content() {
+        let one = super::seed_version("concept!: &a\n");
+        let same = super::seed_version("concept!: &a\n");
+        let other = super::seed_version("concept!: &b\n");
+
+        assert_eq!(one, same, "the same bytes give the same identity");
+        assert_ne!(one, other, "different bytes give a different identity");
+        assert!(
+            one.parse::<dialog_artifacts::Entity>().is_ok(),
+            "the identity must be a usable entity: {one}"
+        );
+    }
+
+    /// The record is the seed's identity, where it came from, what it
+    /// replaced, and the commit it landed in — nothing about what it
+    /// installed, which that commit's history already carries.
+    #[test]
+    fn it_records_where_a_seed_came_from_and_where_it_landed() {
+        let facts = super::seed_record_facts(
+            "seed:v",
+            "/library/core.yaml",
+            super::SEED_NONE,
+            super::SEED_NONE,
+            "version-bytes",
+        );
+        let rendered = attributes_of(&facts).join(" ");
+
+        assert!(rendered.contains("seed/version"), "{rendered}");
+        assert!(rendered.contains("seed/prior"), "{rendered}");
+        assert!(rendered.contains("seed/source"), "{rendered}");
+        assert!(
+            !rendered.contains("route"),
+            "routes are read from the commit's history, not recorded: {rendered}"
+        );
+    }
+
+    /// The record is TWO concepts on one entity: what the seed is
+    /// (`seed/available`) and that this space runs it (`seed/installed`).
+    ///
+    /// A seed a check merely found asserts only the first, so a waiting
+    /// update can never be mistaken for an installed one.
+    #[test]
+    fn it_splits_a_seed_record_into_identity_and_install() {
+        let facts = super::seed_record_facts(
+            "seed:v",
+            "/library/core.yaml",
+            super::SEED_NONE,
+            super::SEED_NONE,
+            "version-bytes",
+        );
+
+        let attributes: Vec<String> = facts
+            .iter()
+            .map(|instruction| match instruction {
+                dialog_artifacts::Instruction::Assert(artifact)
+                | dialog_artifacts::Instruction::Replace(artifact)
+                | dialog_artifacts::Instruction::Retract(artifact) => artifact.the.to_string(),
+            })
+            .collect();
+
+        // Identity half: true of any seed, installed or merely fetched.
+        assert!(
+            attributes.iter().any(|the| the.contains("seed/source")),
+            "{attributes:?}"
+        );
+        // Install half: only ever true of a seed a space is running.
+        assert!(
+            attributes.iter().any(|the| the.contains("seed/version")),
+            "{attributes:?}"
+        );
+        assert!(
+            attributes.iter().any(|the| the.contains("seed/prior")),
+            "{attributes:?}"
+        );
+    }
+
+    /// The round-trip a seed record depends on: a version encodes and
+    /// decodes exactly, so an upgrade can find the revision it must
+    /// withdraw. The entity cannot do this — it is a one-way hash.
+    #[test]
+    fn it_round_trips_a_seed_revision() {
+        use dialog_artifacts::history::{Edition, Origin, Version};
+
+        let version = Version::new(Origin::from([7u8; 32]), Edition::new(3));
+
+        let encoded = super::encode_seed_version(&version);
+        let decoded = super::decode_seed_version(&encoded).expect("the encoding round-trips");
+
+        assert_eq!(decoded, version);
+        assert!(
+            super::decode_seed_version("not-a-version").is_none(),
+            "a value that is not a version decodes to nothing rather than a wrong one"
+        );
+    }
+
+    /// An upgrade follows the space's OWN seed source, not the shipped
+    /// one.
+    ///
+    /// A space on a custom seed must not be dragged onto `core.yaml` the
+    /// next time it is opened — comparing against the shipped library
+    /// unconditionally did exactly that.
+    #[test]
+    fn it_records_the_source_it_upgrades_from() {
+        let facts = super::seed_record_facts(
+            "seed:v",
+            "/library/custom.yaml",
+            "seed:prior",
+            "seed:prior",
+            "revision-bytes",
+        );
+        let rendered = attributes_of(&facts).join(" ");
+
+        assert!(
+            !facts.is_empty(),
+            "the record carries the source it came from, so the next upgrade \
+             re-fetches THAT: {rendered}"
+        );
+        assert!(
+            rendered.contains("seed/prior"),
+            "and the seed it replaced, so the chain is walkable: {rendered}"
+        );
+    }
+
+    /// A check reports whether an update is waiting, without installing
+    /// one.
+    ///
+    /// The three answers a view has to tell apart: a space already on the
+    /// shipped seed, one with a newer seed waiting, and one whose seed
+    /// predates the record — which cannot be upgraded at all, since
+    /// nothing names its definitions to withdraw.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[dialog_common::test]
+    async fn it_reports_whether_an_update_is_waiting() {
+        const LIBRARY: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
+
+        let (app, state, _lsp) =
+            crate::router::api_router_with_state(crate::router::tests::test_state().await);
+        let key = crate::router::tests::put_repo(&app, "seed-check").await;
+        let tonk = state.read().await;
+
+        let subject: dialog_varsig::Did = {
+            use dialog_repository::RepositoryExt as _;
+            let repository: dialog_repository::Repository = tonk
+                .profile
+                .repository(&key)
+                .load()
+                .perform(&tonk.operator)
+                .await
+                .expect("repo loads");
+            repository.did()
+        };
+
+        let replica = tonk_schema::Replica::new(tonk.profile.did(), subject.clone())
+            .this()
+            .clone();
+
+        /// Why the last check on this device failed, if it did.
+        async fn failure_of(
+            tonk: &crate::worker::TonkState,
+            replica: &dialog_artifacts::Entity,
+        ) -> Option<String> {
+            use dialog_query::{Output as _, Query, Term};
+
+            let main = tonk
+                .reactor
+                .profile_repository()
+                .branch(super::PROFILE_BRANCH)
+                .acquire(&tonk.operator)
+                .await
+                .expect("profile main acquires");
+            let rows: Vec<tonk_schema::ReplicaCheckFailure> = main
+                .handle()
+                .query()
+                .select(Query::<tonk_schema::ReplicaCheckFailure> {
+                    this: Term::from(replica.clone()),
+                    failure: Term::var("failure"),
+                })
+                .perform(&tonk.operator)
+                .try_vec()
+                .await
+                .expect("check failure query");
+            rows.into_iter().next().map(|row| row.failure.0)
+        }
+
+        /// Whether a check is still marked in flight on this device.
+        async fn checking(
+            tonk: &crate::worker::TonkState,
+            replica: &dialog_artifacts::Entity,
+        ) -> bool {
+            use dialog_query::{Output as _, Query, Term};
+
+            let main = tonk
+                .reactor
+                .profile_repository()
+                .branch(super::PROFILE_BRANCH)
+                .acquire(&tonk.operator)
+                .await
+                .expect("profile main acquires");
+            let rows: Vec<tonk_schema::ReplicaChecking> = main
+                .handle()
+                .query()
+                .select(Query::<tonk_schema::ReplicaChecking> {
+                    this: Term::from(replica.clone()),
+                    checking: Term::var("checking"),
+                })
+                .perform(&tonk.operator)
+                .try_vec()
+                .await
+                .expect("checking query");
+            !rows.is_empty()
+        }
+
+        let check: dialog_artifacts::Entity = "check:one".parse().expect("an entity");
+
+        // No record: the space predates one. That is not a failure —
+        // nothing names its definitions, so there is simply nothing to
+        // offer, and no failure is recorded for it.
+        super::check_seed_update(&tonk, &subject, check.clone())
+            .await
+            .expect("the check runs");
+        assert_eq!(
+            failure_of(&tonk, &replica).await,
+            None,
+            "a space with no seed record is not a failed check"
+        );
+        assert!(
+            !checking(&tonk, &replica).await,
+            "the in-flight marker is retracted once the check settles"
+        );
+
+        // Install the shipped seed, recording it the way creation does.
+        crate::router::evaluate::evaluate_body_recording(
+            &tonk,
+            &key,
+            "main",
+            LIBRARY.to_string(),
+            &|minted| {
+                super::seed_record_facts(
+                    &super::seed_version(LIBRARY),
+                    super::STANDARD_LIBRARY_URL,
+                    super::SEED_NONE,
+                    super::SEED_NONE,
+                    &super::encode_seed_version(minted),
+                )
+            },
+        )
+        .await
+        .expect("the seed installs");
+
+        // With a record but no served library, the check could not look.
+        // That IS a failure, and it is recorded as one — distinct from
+        // being up to date, so a view never claims a space is current
+        // when it simply could not fetch. (The harness serves no assets.)
+        super::check_seed_update(&tonk, &subject, check)
+            .await
+            .expect("the check runs");
+        let failure = failure_of(&tonk, &replica)
+            .await
+            .expect("an unfetchable source records why");
+        assert!(
+            failure.contains("could not fetch"),
+            "the failure says what went wrong rather than a bare case: {failure}"
+        );
+        assert!(
+            !checking(&tonk, &replica).await,
+            "a failed check still clears the in-flight marker"
+        );
+    }
+
+    /// A seed record names the very commit that carries it.
+    ///
+    /// This is what makes an upgrade work: the record names the commit
+    /// that installed the library, and an upgrade reads THAT commit's
+    /// history to know what to withdraw. If the two ever diverged, the
+    /// record would point at a revision that never existed and the next
+    /// upgrade would withdraw nothing.
+    ///
+    /// The version is not predicted. The library's commit stages — minted
+    /// but not published — so the version handed to the record is a fact
+    /// about a commit that has already happened, and a single publish
+    /// makes the library and its record visible together.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[dialog_common::test]
+    async fn it_records_the_commit_that_carries_it() {
+        use dialog_query::{Output as _, Query, Term};
+
+        let (app, state, _lsp) =
+            crate::router::api_router_with_state(crate::router::tests::test_state().await);
+        let key = crate::router::tests::put_repo(&app, "seed-self-named").await;
+        let tonk = state.read().await;
+
+        const LIBRARY: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
+        let seed = super::seed_version(LIBRARY);
+
+        // Install the library with its record chained onto the same batch.
+        crate::router::evaluate::evaluate_body_recording(
+            &tonk,
+            &key,
+            "main",
+            LIBRARY.to_owned(),
+            &|minted| {
+                super::seed_record_facts(
+                    &seed,
+                    super::STANDARD_LIBRARY_URL,
+                    super::SEED_NONE,
+                    super::SEED_NONE,
+                    &super::encode_seed_version(minted),
+                )
+            },
+        )
+        .await
+        .expect("the library seeds");
+
+        // The recorded version must name a commit that really exists, and
+        // whose history carries the library's own claims — that history is
+        // what an upgrade inverts.
+        let session = tonk
+            .reactor
+            .repository(&key)
+            .branch(super::CONTENT_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .expect("the branch acquires");
+        let installed: Vec<tonk_schema::SeedInstalled> = session
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::SeedInstalled> {
+                this: Term::var("this"),
+                prior: Term::var("prior"),
+                version: Term::var("version"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("the install record reads");
+        let record = installed.into_iter().next().expect("the seed is recorded");
+        assert_eq!(
+            record.this.to_string(),
+            seed,
+            "the record is keyed on the hash of the bytes installed"
+        );
+
+        let version =
+            super::decode_seed_version(&record.version.0).expect("the recorded version decodes");
+        let routes = super::seed_routes(&tonk, &session, &record.version.0)
+            .await
+            .expect("the recorded commit has a history");
+        assert!(
+            !routes.is_empty(),
+            "the recorded version names the commit that installed the \
+             library, so its history lists the routes it wrote: {version:?}"
+        );
+    }
+
+    /// An upgrade withdraws what the previous seed asserted and installs
+    /// the new one, in a single commit.
+    ///
+    /// The hazard this pins: the two seeds overlap, and a retract and an
+    /// assert of the SAME fact in one batch must keep it. If the erase won
+    /// instead, every shared definition would vanish. And a fact only the
+    /// old seed had must actually go, or a space accretes definitions
+    /// forever.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[dialog_common::test]
+    async fn it_replaces_the_previous_seed_without_stranding_facts() {
+        use dialog_query::{Output as _, Query, Term};
+
+        let (app, state, _lsp) =
+            crate::router::api_router_with_state(crate::router::tests::test_state().await);
+        let key = crate::router::tests::put_repo(&app, "seed-upgrade").await;
+        let tonk = state.read().await;
+
+        // An "old seed": two routes, one of which the new seed keeps.
+        let old = r#"route!: &probe/kept
+  this: id:probe/kept
+  path: "/kept"
+  concept: tonk:blank
+
+route!: &probe/dropped
+  this: id:probe/dropped
+  path: "/dropped"
+  concept: tonk:blank
+"#;
+        let library = include_str!("../../../tonk-core/assets/library/core.yaml");
+        let seeded = crate::router::evaluate::evaluate_body(
+            &tonk,
+            &key,
+            "main",
+            format!("{library}\n{old}"),
+            true,
+        )
+        .await
+        .expect("the old seed evaluates");
+        let old_revision = super::encode_seed_version(
+            &seeded
+                .revision_after
+                .expect("a committing seed has a revision")
+                .version(),
+        );
+
+        // The "new seed": keeps one route, drops the other.
+        let new = r#"route!: &probe/kept
+  this: id:probe/kept
+  path: "/kept"
+  concept: tonk:blank
+"#;
+        let session = tonk
+            .reactor
+            .repository(&key)
+            .branch("main")
+            .acquire(&tonk.operator)
+            .await
+            .expect("main acquires");
+        let retract = super::prior_seed_retractions(&tonk, &session, &old_revision)
+            .await
+            .expect("the prior seed's assertions are readable");
+        assert!(
+            !retract.is_empty(),
+            "the old seed asserted something to withdraw"
+        );
+
+        crate::router::evaluate::evaluate_with_retractions(
+            &tonk,
+            &key,
+            "main",
+            format!("{library}\n{new}"),
+            retract,
+            &|_minted| Vec::new(),
+        )
+        .await
+        .expect("the upgrade commits");
+
+        let routes: Vec<tonk_schema::Route> = session
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::Route> {
+                this: Term::var("this"),
+                path: Term::var("path"),
+                concept: Term::var("concept"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("route query");
+        let paths: Vec<String> = routes.into_iter().map(|route| route.path.0).collect();
+
+        assert!(
+            paths.iter().any(|path| path == "/kept"),
+            "a definition both seeds carry survives the retract-then-assert: {paths:?}"
+        );
+        assert!(
+            !paths.iter().any(|path| path == "/dropped"),
+            "a definition only the old seed had is withdrawn: {paths:?}"
+        );
+    }
+
+    /// Both shipped libraries must EVALUATE against a real branch, not
+    /// merely analyze.
+    ///
+    /// The shipped-libraries test in tonk-analyzer only analyzes them, and
+    /// analysis passes documents that evaluation rejects — an unbound
+    /// variable in a rule, a field the concept does not declare. Both have
+    /// now shipped broken: a seed that fails takes space creation with it,
+    /// and the creator is left on the Hub with no redirect and no space.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[dialog_common::test]
+    async fn it_evaluates_both_shipped_libraries() {
+        const CORE: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
+        const PROFILE: &str = include_str!("../../../tonk-core/assets/library/profile.yaml");
+
+        let (app, state, _lsp) =
+            crate::router::api_router_with_state(crate::router::tests::test_state().await);
+
+        for (name, library, url) in [
+            ("core", CORE, super::STANDARD_LIBRARY_URL),
+            ("profile", PROFILE, super::PROFILE_LIBRARY_URL),
+        ] {
+            let key = crate::router::tests::put_repo(&app, &format!("eval-{name}")).await;
+            let tonk = state.read().await;
+
+            let outcome = crate::router::evaluate::evaluate_body(
+                &tonk,
+                &key,
+                "main",
+                library.to_owned(),
+                true,
+            )
+            .await;
+            assert!(outcome.is_ok(), "{name}.yaml must evaluate: {outcome:?}");
+
+            let outcome = outcome.expect("evaluated");
+            let version = outcome
+                .revision_after
+                .expect("a committing seed has a revision")
+                .version();
+            let facts = super::seed_record_facts(
+                &super::seed_version(library),
+                url,
+                super::SEED_NONE,
+                super::SEED_NONE,
+                &super::encode_seed_version(&version),
+            );
+            assert!(
+                !facts.is_empty(),
+                "{name}.yaml's seed record must produce facts"
+            );
+        }
+    }
+
+    /// Seed a branch the way creation does and read the components back.
+    ///
+    /// The end-to-end check the unit tests around it kept missing: the
+    /// body can parse, the concept can analyze, the declaration can say
+    /// `cardinality: many` — and a space can still hold ONE component,
+    /// or none of a whole kind. Rules were invisible for exactly that
+    /// reason: they carry no anchor, and a text scan had nothing to name
+    /// them by.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[dialog_common::test]
+    async fn it_records_every_seeded_component_on_the_branch() {
+        use dialog_query::{Output as _, Query, Term};
+
+        const LIBRARY: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
+
+        let (app, state, _lsp) =
+            crate::router::api_router_with_state(crate::router::tests::test_state().await);
+        let key = crate::router::tests::put_repo(&app, "seed-components").await;
+
+        let tonk = state.read().await;
+
+        // The record names the commit that installed the library, which
+        // is what makes the seed's claims findable afterwards. The
+        // library's commit stages, so that version is minted before the
+        // record is written, and one publish makes both visible.
+        crate::router::evaluate::evaluate_body_recording(
+            &tonk,
+            &key,
+            "main",
+            LIBRARY.to_owned(),
+            &|minted| {
+                super::seed_record_facts(
+                    &super::seed_version(LIBRARY),
+                    super::STANDARD_LIBRARY_URL,
+                    super::SEED_NONE,
+                    super::SEED_NONE,
+                    &super::encode_seed_version(minted),
+                )
+            },
+        )
+        .await
+        .expect("the library and its record commit together");
+
+        let session = tonk
+            .reactor
+            .repository(&key)
+            .branch("main")
+            .acquire(&tonk.operator)
+            .await
+            .expect("main acquires");
+
+        let seeds: Vec<tonk_schema::SeedInstalled> = session
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::SeedInstalled> {
+                this: Term::var("this"),
+                prior: Term::var("prior"),
+                version: Term::var("version"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("seed query");
+        let seed = seeds.first().expect("the install is recorded");
+        assert!(
+            super::decode_seed_version(&seed.version.0).is_some(),
+            "the record names a real commit: {}",
+            seed.version.0
+        );
+
+        // The router reads which routes the seed installed from the same
+        // revision, so nothing about them is recorded separately.
+        let seeded = super::seed_routes(&tonk, &session, &seed.version.0.to_string())
+            .await
+            .expect("the seed's routes are readable");
+        assert!(
+            seeded.len() > 1,
+            "the library must install several routes for this to mean anything: {seeded:?}"
+        );
+        let declared: Vec<tonk_schema::Route> = session
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::Route> {
+                this: Term::var("this"),
+                path: Term::var("path"),
+                concept: Term::var("concept"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("route query");
+        for route in &declared {
+            assert!(
+                seeded.contains(&route.this.to_string()),
+                "every route the library installed is attributed to the seed: {route:?}"
+            );
+        }
     }
 }

@@ -221,6 +221,7 @@ mod tests {
                 message.this(),
             ))
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
@@ -270,6 +271,7 @@ mod tests {
             .assert(SecretMessage::new(&mine, vec![2]))
             .assert(SecretMessage::new(&theirs, vec![3]))
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
@@ -308,6 +310,7 @@ mod tests {
             .assert(to_me.clone())
             .assert(to_admin.clone())
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
@@ -392,6 +395,9 @@ where
         + dialog_capability::Provider<dialog_effects::memory::Publish>
         + dialog_capability::Provider<dialog_effects::authority::Identify>
         + dialog_capability::Provider<dialog_effects::authority::Attest>
+        + dialog_capability::Provider<dialog_repository::Hydrate>
+        + dialog_capability::Provider<dialog_artifacts::Preload>
+        + dialog_capability::Provider<dialog_artifacts::Speculation>
         + dialog_capability::Provider<
             dialog_capability::Fork<dialog_repository::RemoteSite, dialog_effects::archive::Get>,
         > + dialog_capability::Provider<

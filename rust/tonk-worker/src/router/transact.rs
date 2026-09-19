@@ -73,6 +73,26 @@ pub async fn transact(
     body: Bytes,
 ) -> Result<Json<TransactResponse>, TonkWorkerError> {
     log!("transact repo={}, branch={}", path.repo, path.branch);
+    // First use of a directory-listed space this device has not
+    // replicated mounts it on demand, as `query` and `GET /api/repository`
+    // do. This route needs it as much: a page's `tonk:load` site stamp
+    // arrives here, and on a space the device had not pulled yet the
+    // stamp found no branch to acquire and gave up silently, while the
+    // guest's first query mounted the space a moment later. Nothing
+    // re-ran the stamp, so the site never resolved its route and the
+    // page sat on its loading placeholder for good.
+    {
+        let tonk_state = state.read().await;
+        match super::adopt::ensure_space_mounted(&tonk_state, &path.repo).await {
+            Ok(true) => {
+                super::adopt::schedule_seed_upgrade(&tonk_state, state.clone(), &path.repo).await;
+            }
+            Ok(false) => {}
+            Err(error) => {
+                log!("on-demand mount of '{}' failed: {error}", path.repo);
+            }
+        }
+    }
     // A read lock on `TonkState` — concurrent transactions and syncs don't
     // serialize on the outer lock. Transactions instead serialize on the
     // per-branch transactor lock (taken inside `transact_on_branch`); sync
@@ -191,10 +211,11 @@ fn announce_local_commit(branch: &str, response: &TransactResponse) {
     }
 }
 
-/// Run [`super::dispatch`] as background work so it never blocks the transact
-/// response. The service worker attaches the dispatch promise to the originating
-/// fetch event; native builds run it inline so tests remain deterministic.
-async fn spawn_dispatch(
+/// Run [`super::dispatch`] as background work so it never blocks the
+/// triggering response (shared by the transact and evaluate routes). The
+/// service worker attaches the dispatch promise to the originating fetch
+/// event; native builds run it inline so tests remain deterministic.
+pub(super) async fn spawn_dispatch(
     state: AppState,
     origin: super::CommandOrigin,
     transients: dialog_artifacts::Changes,

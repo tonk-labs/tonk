@@ -12,11 +12,10 @@
 //! stolen device at most one session lifetime even if the registry is
 //! unreachable.
 //!
-//! Renewal re-mints the delegation under a STABLE audience: the
-//! operator key is derived from a constant context, so it does not move.
-//! Revocation withholds authority by refusing to renew the delegation,
-//! and a chain is revoked by CID, so nothing needs the audience to
-//! change. See [`rotate`] for what moving it used to cost.
+//! Each boot and renewal creates a disposable operator and a matching
+//! bounded grant held only in memory. Membership and invitation authority
+//! belong to accounts and profiles, so replacing this final hop needs no
+//! invitation replay or durable session write.
 //!
 //! Renewal rides the sync drain — the regular beat this worker has —
 //! rather than chasing every presign path. The gap that leaves: a
@@ -25,34 +24,15 @@
 //! drain's rotation heals. Service-worker lifetimes make that window
 //! rare; revisit only if it is ever observed.
 
-use dialog_capability::access::{Prove, Retain};
 use dialog_capability::{Provider, Subject};
 use dialog_operator::{DeriveOperator, Operator, Profile};
 use dialog_storage::provider::space::SpaceProvider;
 use dialog_storage::provider::storage::Storage;
-use dialog_ucan::Ucan;
 use dialog_ucan_core::time::Timestamp;
 use dialog_ucan_core::time::timestamp::{Duration, SystemTime};
-use serde::{Deserialize, Serialize};
-use tonk_common::log;
 
 use crate::TonkWorkerError;
 use crate::worker::DefaultSpace;
-
-/// Credential site on the profile holding the current session's
-/// derivation context and expiry, as JSON. Device-local — credential
-/// sites never ride a branch — so persisting a session shares nothing.
-const SESSION_SITE: &str = "tonk-session-v1";
-
-/// The persisted shape of a session: enough to re-derive the operator
-/// (derivation is a deterministic KDF over the profile seed and the
-/// context) and to know when reuse must stop.
-#[derive(Serialize, Deserialize)]
-struct PersistedSession {
-    version: u8,
-    context: Vec<u8>,
-    expires_at: u64,
-}
 
 /// How long a session delegation is good for.
 ///
@@ -60,15 +40,6 @@ struct PersistedSession {
 /// and a closed laptop, or renewal failure becomes the common path
 /// instead of the exceptional one.
 pub use tonk_identity::session::SESSION_TTL_SECONDS;
-
-/// Derivation context for the device's operator key.
-///
-/// Constant, so the operator DID is stable for the life of the profile:
-/// `derive` is a KDF over (profile seed, context), and renewal re-mints
-/// the delegation rather than the key. Anything addressed to the
-/// operator — notably a guest's invite chain — therefore stays valid
-/// across a renewal.
-const OPERATOR_CONTEXT: &[u8] = b"worker";
 
 /// How long before expiry a session is rotated.
 ///
@@ -99,57 +70,12 @@ where
     S: Provider<dialog_effects::blob::Read>
         + Provider<dialog_effects::blob::Write>
         + Provider<dialog_effects::blob::Import>,
-    S: Provider<Prove<Ucan>> + Provider<Retain<Ucan>>,
 {
-    // Reuse the persisted session while it is still fresh: derivation
-    // is deterministic over (seed, context), so the operator
-    // reconstitutes without minting, and the delegation saved when the
-    // session was first opened still proves. A reused session makes
-    // boot READ-ONLY on the access branch — no commit, no
-    // authorization walk — so a worker restart cannot churn the
-    // shared account root and a partial access branch cannot brick a
-    // boot (offline included). Minting resumes only near expiry, on
-    // the renewal beat that already owns it.
-    let now = Timestamp::now().to_unix();
-    if let Some(persisted) = load_persisted(profile, storage).await
-        && !needs_renewal(persisted.expires_at, now)
-    {
-        match profile
-            .derive(persisted.context.clone())
-            .build(storage.clone())
-            .await
-        {
-            Ok(operator) => {
-                return Ok(Session {
-                    operator,
-                    expires_at: persisted.expires_at,
-                });
-            }
-            Err(error) => {
-                log!("persisted session unusable, minting a fresh one: {error}");
-            }
-        }
-    }
-
     rotate(profile, storage).await
 }
 
-/// Mint a fresh `profile → operator` delegation for the device's
-/// operator key.
-///
-/// The KEY is stable — [`OPERATOR_CONTEXT`] is constant, and derivation
-/// is deterministic over (seed, context) — so renewal replaces the
-/// delegation, not the audience.
-///
-/// It used to derive a new key from a random context every time. That
-/// bought nothing the expiry did not already buy: revocation withholds
-/// authority by refusing to renew the DELEGATION, and a chain is revoked
-/// by CID, so nothing needs the audience to move. What it cost was
-/// substantial — a guest's chain is addressed to the operator, so every
-/// rotation invalidated it, and the only way to re-mint one was to
-/// replay the invite. That is the sole reason a guest's invite URL, a
-/// bearer secret, had to be kept on disk at all, and why a guest nearing
-/// expiry could force a rotation that was not otherwise due.
+/// Create a fresh operator and bounded in-memory profile grant.
+/// Existing session credentials and delegations are left untouched.
 pub async fn rotate<S>(
     profile: &Profile,
     storage: &Storage<S>,
@@ -159,112 +85,28 @@ where
     S: Provider<dialog_effects::blob::Read>
         + Provider<dialog_effects::blob::Write>
         + Provider<dialog_effects::blob::Import>,
-    S: Provider<Prove<Ucan>> + Provider<Retain<Ucan>>,
 {
-    // No `.allow(...)`: that mints an *unexpiring* profile → operator
-    // delegation, which is the thing this module exists to replace. The
-    // bounded equivalent is minted below.
-    let operator = profile
-        .derive(OPERATOR_CONTEXT.to_vec())
-        .build(storage.clone())
-        .await
-        .map_err(|error| {
-            TonkWorkerError::Internal(format!("failed to derive a session operator: {error}"))
-        })?;
-
+    let mut context = [0u8; 32];
+    getrandom::fill(&mut context).map_err(|error| {
+        TonkWorkerError::Internal(format!("failed to generate session entropy: {error}"))
+    })?;
     let expiration = Timestamp::new(SystemTime::now() + Duration::from_secs(SESSION_TTL_SECONDS))
         .map_err(|error| {
         TonkWorkerError::Internal(format!("session expiration out of range: {error}"))
     })?;
-
-    let delegation = profile
-        .access()
-        .claim(Subject::any())
-        .expires(expiration)
-        .delegate(operator.did())
-        .perform(&operator)
+    let operator = profile
+        .derive(context)
+        .allow_until(Subject::any(), expiration)
+        .build(storage.clone())
         .await
         .map_err(|error| {
-            TonkWorkerError::Internal(format!("failed to mint the session delegation: {error}"))
+            TonkWorkerError::Internal(format!("failed to build a session operator: {error}"))
         })?;
-
-    profile
-        .access()
-        .save(delegation)
-        .perform(&operator)
-        .await
-        .map_err(|error| {
-            TonkWorkerError::Internal(format!("failed to save the session delegation: {error}"))
-        })?;
-
-    // Persist AFTER the delegation is durably saved, so a stored
-    // context always has a provable delegation behind it. Best-effort:
-    // a failed persist only costs the next boot a fresh mint.
-    persist_session(
-        profile,
-        storage,
-        &PersistedSession {
-            version: 1,
-            context: OPERATOR_CONTEXT.to_vec(),
-            expires_at: expiration.to_unix(),
-        },
-    )
-    .await;
 
     Ok(Session {
         operator,
         expires_at: expiration.to_unix(),
     })
-}
-
-/// Read the persisted session, if any. Absence and decode failure both
-/// read as "no persisted session".
-async fn load_persisted<S>(profile: &Profile, storage: &Storage<S>) -> Option<PersistedSession>
-where
-    S: SpaceProvider + Clone + 'static,
-{
-    let bytes = match profile
-        .credential()
-        .site(SESSION_SITE)
-        .load::<Vec<u8>>()
-        .perform(storage)
-        .await
-    {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            if !crate::credential::is_missing(&error) {
-                log!("persisted session unreadable: {error}");
-            }
-            return None;
-        }
-    };
-    match serde_json::from_slice::<PersistedSession>(&bytes) {
-        Ok(persisted) if persisted.version == 1 => Some(persisted),
-        Ok(_) => None,
-        Err(error) => {
-            log!("persisted session malformed: {error}");
-            None
-        }
-    }
-}
-
-/// Store the session for reuse by later boots. Best-effort.
-async fn persist_session<S>(profile: &Profile, storage: &Storage<S>, session: &PersistedSession)
-where
-    S: SpaceProvider + Clone + 'static,
-{
-    let Ok(encoded) = serde_json::to_vec(session) else {
-        return;
-    };
-    if let Err(error) = profile
-        .credential()
-        .site(SESSION_SITE)
-        .save(encoded)
-        .perform(storage)
-        .await
-    {
-        log!("failed to persist the session (next boot mints fresh): {error}");
-    }
 }
 
 /// Whether a session expiring at `expires_at` is close enough to lapsing
@@ -326,32 +168,34 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_reuses_a_fresh_session_across_opens() {
+    async fn it_creates_distinct_sessions_across_opens() {
         let (storage, profile) = scratch().await;
 
         let first = open(&profile, &storage).await.unwrap();
         let second = open(&profile, &storage).await.unwrap();
 
-        assert_eq!(
-            first.operator.did(),
-            second.operator.did(),
-            "a still-fresh session reconstitutes: reuse is what keeps a \
-             boot read-only on the access branch"
-        );
-        assert_eq!(first.expires_at, second.expires_at);
+        assert_ne!(first.operator.did(), second.operator.did());
+        assert_eq!(first.operator.profile_did(), profile.did());
+        assert_eq!(second.operator.profile_did(), profile.did());
     }
 
-    /// The one that matters: swapping `.allow(Subject::any())` for a
-    /// bounded claim must still authorize a presign. This walks the same
-    /// BFS the presign path does — operator toward a space subject,
-    /// composing the session hop with a `space -> profile` grant — and
-    /// checks both that it resolves and that the session's expiry is
-    /// what bounds the result.
-    #[dialog_common::test]
-    async fn it_authorizes_a_presign_chain_bounded_by_the_session() {
-        let (storage, profile) = scratch().await;
-        let session = open(&profile, &storage).await.unwrap();
+    async fn access_revision(
+        profile: &Profile,
+        operator: &Operator<DefaultSpace>,
+    ) -> Option<dialog_repository::Revision> {
+        dialog_repository::Repository::from(profile.signer().clone())
+            .branch(dialog_repository::ACCESS_BRANCH)
+            .open()
+            .perform(operator)
+            .await
+            .unwrap()
+            .revision()
+    }
 
+    async fn retain_space(
+        profile: &Profile,
+        operator: &Operator<DefaultSpace>,
+    ) -> dialog_varsig::Did {
         let space = Ed25519Signer::generate().await.unwrap();
         let grant = DelegationBuilder::new()
             .issuer(dialog_credentials::Signer::from(space.clone()))
@@ -364,28 +208,116 @@ mod tests {
         profile
             .access()
             .save(UcanDelegation(DelegationChain::new(grant)))
-            .perform(&session.operator)
+            .perform(operator)
             .await
             .unwrap();
+        space.did()
+    }
 
+    async fn assert_proof(profile: &Profile, session: &Session, space: &dialog_varsig::Did) {
         let proof = profile
             .access()
-            .prove(Subject::from(space.did()))
+            .prove(Subject::from(space.clone()).attenuate(dialog_effects::Use))
             .audience(&session.operator)
             .perform(&session.operator)
             .await
-            .expect("the session operator must still reach the space");
+            .unwrap();
+        assert_eq!(proof.proofs.len(), 2);
+        assert_eq!(proof.proofs[0].0.audience(), proof.proofs[1].0.issuer());
+        assert_eq!(proof.proofs[1].0.audience(), &session.operator.did());
+        assert_eq!(proof.duration.expiration, Some(session.expires_at));
+    }
 
+    #[dialog_common::test]
+    async fn it_authorizes_replacement_sessions_without_committing() {
+        let (storage, profile) = scratch().await;
+        let setup = open(&profile, &storage).await.unwrap();
+        let space = retain_space(&profile, &setup.operator).await;
+        let revision = access_revision(&profile, &setup.operator).await;
+        let first = open(&profile, &storage).await.unwrap();
+        assert_eq!(access_revision(&profile, &first.operator).await, revision);
+        let second = open(&profile, &storage).await.unwrap();
+        assert_eq!(access_revision(&profile, &second.operator).await, revision);
+        assert_ne!(first.operator.did(), second.operator.did());
+        assert_eq!(second.operator.profile_did(), profile.did());
+        for session in [&first, &second] {
+            assert_proof(&profile, session, &space).await;
+            assert_proof(&profile, session, &space).await;
+        }
+    }
+
+    #[dialog_common::test]
+    async fn it_ignores_legacy_sessions_and_reopens_durable_storage() {
+        let name = dialog_operator::helpers::unique_name("session-reopen");
+        let (profile_did, old_operator, space, revision, legacy) = {
+            let storage = Storage::<DefaultSpace>::default();
+            let profile = Profile::open(&name)
+                .at(Directory::Temp)
+                .perform(&storage)
+                .await
+                .unwrap();
+            // Simulate Safari's saved grant naming an audience unrelated
+            // to the operator reconstructed from the legacy context.
+            let old = profile
+                .derive(b"legacy-other-operator")
+                .build(storage.clone())
+                .await
+                .unwrap();
+            let expiration =
+                Timestamp::new(SystemTime::now() + Duration::from_secs(SESSION_TTL_SECONDS))
+                    .unwrap();
+            let grant = profile
+                .access()
+                .claim(Subject::any())
+                .expires(expiration)
+                .delegate(old.did())
+                .perform(&old)
+                .await
+                .unwrap();
+            profile.access().save(grant).perform(&old).await.unwrap();
+            let space = retain_space(&profile, &old).await;
+            let legacy = serde_json::to_vec(&serde_json::json!({
+                "version": 1, "context": b"worker".to_vec(), "expires_at": expiration.to_unix()
+            }))
+            .unwrap();
+            profile
+                .credential()
+                .site("tonk-session-v1")
+                .save(legacy.clone())
+                .perform(&storage)
+                .await
+                .unwrap();
+            (
+                profile.did(),
+                old.did(),
+                space,
+                access_revision(&profile, &old).await,
+                legacy,
+            )
+        };
+        // All prior operators, profiles, branches and the storage pool have
+        // been released. Reopen the same durable profile with a new pool.
+        let storage = Storage::<DefaultSpace>::default();
+        let profile = Profile::open(&name)
+            .at(Directory::Temp)
+            .perform(&storage)
+            .await
+            .unwrap();
+        let session = open(&profile, &storage).await.unwrap();
+        assert_eq!(profile.did(), profile_did);
+        assert_ne!(session.operator.did(), old_operator);
+        assert_eq!(access_revision(&profile, &session.operator).await, revision);
+        assert_proof(&profile, &session, &space).await;
+        let after = profile
+            .credential()
+            .site("tonk-session-v1")
+            .load::<Vec<u8>>()
+            .perform(&storage)
+            .await
+            .unwrap();
         assert_eq!(
-            proof.proofs.len(),
-            2,
-            "the chain is space -> profile -> operator"
-        );
-        assert_eq!(
-            proof.duration.expiration,
-            Some(session.expires_at),
-            "an unexpiring space grant composed with a bounded session \
-             must come out bounded by the session"
+            after, legacy,
+            "legacy session metadata is neither consulted nor replaced"
         );
     }
 

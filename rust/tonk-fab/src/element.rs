@@ -38,6 +38,7 @@ use std::rc::Rc;
 
 use custom_elements::CustomElement;
 use js_sys::{Function, Object, Promise, Reflect};
+use tonk_analytics::product::{Journey, ProductAction, ProductEvent, Stage, Surface, Trigger};
 use tonk_common::log;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
@@ -48,9 +49,9 @@ use web_sys::{
 
 use crate::bar;
 use crate::logic::{
-    DOCK_CLASSES, Dock, Edge, EdgeInsets, EdgeSnap, clamp_position, collapsed_claim_json,
-    collapsed_from_conclusions, dock_claim_json, dock_from_conclusions, nearest_dock,
-    pause_claim_json, repository_endpoint, snap_to_nearest_edge,
+    DEFAULT_DOCK, DOCK_CLASSES, Dock, Edge, EdgeInsets, EdgeSnap, clamp_position,
+    collapsed_claim_json, collapsed_from_conclusions, dock_claim_json, dock_from_conclusions,
+    nearest_dock, pause_claim_json, repository_endpoint, snap_to_nearest_edge,
 };
 use crate::shadow::Bound;
 
@@ -79,11 +80,6 @@ const UNKNOWN_SPACE_ATTR: &str = "data-unknown-space";
 
 /// Marks a local profile that has not created or logged into an account yet.
 const ACCOUNT_REQUIRED_ATTR: &str = "data-account-required";
-
-/// Where the bar sits until it is dragged: bottom-right, under the thumb on
-/// a phone and out of the way of page content on a desktop. A persisted dock
-/// overrides it.
-const DEFAULT_DOCK: Dock = Dock::BottomRight;
 
 /// The class marking a right-anchored bar mid-drag. The `flip` ATTRIBUTE is
 /// the resting truth (it reorders the bookends); this class is what survives
@@ -230,12 +226,12 @@ fn restamp_space(this: &HtmlElement, space: &str) {
     if space.is_empty() {
         return;
     }
-    for (selector, attribute, value) in [
-        ("ui-space-name", "space", space.to_string()),
-        ("ui-member-roster", "space", space.to_string()),
-        ("ui-space-switcher", "current", space.to_string()),
-        ("ui-sync-status", "with", format!("main@{space}")),
-    ] {
+    // The same table `markup::stacks_html` stamps from, so a slot cannot
+    // be authored here and forgotten there: `<tonk-share>` was, and a bar
+    // that came up blank kept a share control bound to no space — silently
+    // dropping every click on "copy link".
+    for &(selector, attribute, prefix) in crate::markup::SPACE_BINDINGS {
+        let value = format!("{prefix}{space}");
         if let Ok(Some(child)) = this.query_selector(selector) {
             // Only when it changes: every one of these targets observes
             // the attribute, and a redundant write still fires its
@@ -681,6 +677,20 @@ fn navigate(path: &str) {
 /// No remote is supplied by the page: the worker resolves where the space
 /// syncs from the account's provider registration.
 fn create_space() {
+    let event = ProductEvent::started(
+        Journey::Space,
+        ProductAction::CreateSpace,
+        Stage::Intent,
+        Surface::Workspace,
+        Trigger::User,
+        tonk_analytics::product::attempt_id(),
+    );
+    if let Ok(properties) = event.validated_properties() {
+        tonk_host::analytics::capture(
+            tonk_analytics::event::PRODUCT,
+            &serde_json::Value::Object(properties),
+        );
+    }
     let claim = crate::logic::create_space_claim_json("Untitled");
     transact(&claim);
 }
@@ -1163,7 +1173,7 @@ fn profile_query(query_body: serde_json::Value, then: impl FnOnce(Option<JsValue
     });
 }
 
-/// Restore the persisted dock, defaulting to bottom-right.
+/// Restore the persisted dock, defaulting to top-right.
 ///
 /// The default is queued for the first microtask so the bar is seated before
 /// first paint without recursively entering its connection callback; the

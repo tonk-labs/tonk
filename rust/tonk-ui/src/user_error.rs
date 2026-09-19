@@ -6,6 +6,7 @@ use tonk_analytics::account::{AccountOutcome, FailureKind, HttpStatusClass, Serv
 const CUSTODY_HANDOFF_TIMEOUT: &str =
     "the service worker did not answer the custody handoff in time";
 const CUSTODY_HANDOFF_RECOVERY: &str = "Your passkey was approved, but this browser did not finish the secure handoff. Reload the page and try again.";
+const PASSKEY_SECURITY_RECOVERY: &str = "Tonk couldn't use a security feature it needs. Make sure your browser, device software, and password manager are up to date, then try again. If it still doesn't work, use a different passkey or device.";
 
 /// One account failure projected into safe presentation and analytics fields.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -130,6 +131,23 @@ fn diagnostic_message(action: AccountAction, detail: &str) -> String {
             | AccountAction::FinishAccountBackup
     );
 
+    // Safari also reports this generic refusal when an older passkey provider
+    // cannot fulfill a PRF assertion. It is not proof of missing PRF support,
+    // so keep the update guidance conditional.
+    if passkey_action
+        && detail.contains("notallowederror")
+        && detail.contains(
+            "the request is not allowed by the user agent or the platform in the current context",
+        )
+    {
+        return if action == AccountAction::DeleteAccount {
+            "Nothing was deleted. Tonk uses technology that may require a newer password manager or browser. Update yours and try again."
+        } else {
+            "Tonk uses technology that may require a newer password manager or browser. Update yours and try again."
+        }
+        .to_owned();
+    }
+
     if passkey_action
         && (detail.contains("notallowederror")
             || detail.contains("aborterror")
@@ -148,8 +166,11 @@ fn diagnostic_message(action: AccountAction, detail: &str) -> String {
             || detail.contains("prf output")
             || detail.contains("cannot unlock custody"))
     {
-        return "This passkey does not support the security feature Tonk needs. Try another passkey or device."
-            .to_owned();
+        return if action == AccountAction::DeleteAccount {
+            format!("Nothing was deleted. {PASSKEY_SECURITY_RECOVERY}")
+        } else {
+            PASSKEY_SECURITY_RECOVERY.to_owned()
+        };
     }
     if passkey_action
         && (detail.contains("identity ceremon")
@@ -415,7 +436,12 @@ mod tests {
             (
                 AccountAction::AddPasskey,
                 "identity ceremony failed: the authenticator returned no PRF outputs",
-                "This passkey does not support the security feature Tonk needs. Try another passkey or device.",
+                "Tonk couldn't use a security feature it needs. Make sure your browser, device software, and password manager are up to date, then try again. If it still doesn't work, use a different passkey or device.",
+            ),
+            (
+                AccountAction::DeleteAccount,
+                "identity ceremony failed: the authenticator returned no PRF outputs",
+                "Nothing was deleted. Tonk couldn't use a security feature it needs. Make sure your browser, device software, and password manager are up to date, then try again. If it still doesn't work, use a different passkey or device.",
             ),
             (
                 AccountAction::DeleteAccount,
@@ -427,6 +453,29 @@ mod tests {
         for (action, detail, expected) in cases {
             assert_eq!(diagnostic(action, detail), expected);
         }
+    }
+
+    #[test]
+    fn safari_context_refusal_suggests_provider_updates_without_diagnosing_prf() {
+        let detail = "NotAllowedError: custody assertion failed: NotAllowedError: The request is not allowed by the user agent or the platform in the current context, possibly because the user denied permission.";
+        for action in [AccountAction::LogIn, AccountAction::AddPasskey] {
+            assert_eq!(
+                diagnostic(action, detail),
+                "Tonk uses technology that may require a newer password manager or browser. Update yours and try again."
+            );
+        }
+        assert_eq!(
+            diagnostic(AccountAction::DeleteAccount, detail),
+            "Nothing was deleted. Tonk uses technology that may require a newer password manager or browser. Update yours and try again."
+        );
+        assert_eq!(
+            diagnostic(
+                AccountAction::LogIn,
+                "AbortError: The operation was aborted"
+            ),
+            "The passkey prompt was cancelled or timed out. Try again and complete the prompt."
+        );
+        assert!(!diagnostic(AccountAction::SaveInitialDisplayName, detail).contains("PRF"));
     }
 
     #[test]

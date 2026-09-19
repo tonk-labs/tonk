@@ -20,6 +20,8 @@ pub enum AccessOperation {
     Authorization,
     /// Customer provisioning gate.
     Provisioning,
+    /// A permitted object operation.
+    Object,
 }
 
 /// Coarse operational outcome.
@@ -72,6 +74,8 @@ pub enum AccessSite {
     Provisioning,
     /// Registration command handler.
     Registration,
+    /// Object operation handler.
+    Object,
 }
 
 /// Exact JSON object written for one failed account request.
@@ -199,6 +203,7 @@ mod tests {
             AccessOperation::CustomerProbe,
             AccessOperation::Authorization,
             AccessOperation::Provisioning,
+            AccessOperation::Object,
         ] {
             let json = AccessFailureLog::new(
                 operation,

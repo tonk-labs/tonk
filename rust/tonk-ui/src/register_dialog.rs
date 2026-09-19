@@ -104,6 +104,11 @@ const NAME_ROW: &str = "#tonk-register-name-row";
 /// to await a confirmation that had arrived.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const CONFIRM_ROW: &str = "#tonk-register-confirm-row";
+/// The row recording that this device's passkey answered. Settled the
+/// moment the ceremony's own work is done, so what follows reads as the
+/// account arriving rather than as the passkey still being in question.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const PASSKEY_ROW: &str = "#tonk-register-passkey-row";
 
 /// `wa-*` throughout, the same vocabulary the rest of the app uses. The
 /// loader on this page auto-registers any `<wa-…>` it finds, so these
@@ -1273,6 +1278,16 @@ const RETURN_TO_SPACE: &str = "return to space";
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const RETURN_TO_HUB: &str = "return to hub";
 
+/// Custody: recovering this device's own credential. The step that can
+/// fail, and the only one the person is told about by name.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const RECOVERING_CREDENTIAL: &str = "recovering account credential";
+
+/// Custody recovered. The account's own content is still arriving, which
+/// is what the remaining phases are reading — but the DEVICE is done.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const DEVICE_LINKED: &str = "device linked";
+
 /// Offer the destination the ceremony actually replaced.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn set_return_action() {
@@ -1366,7 +1381,12 @@ async fn await_invite_link(space: &str) -> Option<String> {
     None
 }
 
-/// Read the invite url off the space's `tonk:invite` row.
+/// Read the invite url off the `tonk:invite` row on PROFILE main.
+///
+/// Keyed by the space but read from the profile branch: the row is this
+/// device's view of a share it performed, and keeping it off the space
+/// is what stops a Hub full of share controls from querying — and so
+/// mounting — every space in the account.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn read_invite_link(space: &str) -> Option<String> {
     let body = serde_json::json!({
@@ -1385,11 +1405,7 @@ async fn read_invite_link(space: &str) -> Option<String> {
             "url": { "?": { "name": "url" } }
         }
     });
-    let endpoint = format!(
-        "{}/api/repository/{}/branch/main/query",
-        crate::api::origin(),
-        space
-    );
+    let endpoint = format!("{}/api/profile/branch/main/query", crate::api::origin());
     let response = reqwest::Client::new()
         .post(endpoint)
         .json(&body)
@@ -1400,6 +1416,53 @@ async fn read_invite_link(space: &str) -> Option<String> {
     rows.as_array()?
         .iter()
         .find_map(|row| row["fields"]["url"].as_str())
+        .map(str::to_owned)
+}
+
+/// The account's CHOSEN name, read once off the profile branch.
+///
+/// A query, not `/api/account/summary`: that route answers by reading
+/// this very attribute on this very branch, so fetching it was asking
+/// the worker for a second copy of what a query returns directly.
+///
+/// The chosen name, not the roster's — the roster falls back to a
+/// petname and so cannot tell a named account from a fresh one.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn account_display_name() -> Option<String> {
+    // Bound to THIS account's subject, the way the worker's own read is
+    // (`Query::<AccountDisplayName> { this: account.this(), .. }`).
+    // Leaving `this` unbound matches any account named on the branch,
+    // and a browser that has held more than one would answer with
+    // whichever row came back first.
+    let root = match crate::api::root_status().await {
+        Ok(tonk_worker_api::RootStatus::Ready { root_did, .. }) => root_did,
+        _ => return None,
+    };
+    let body = serde_json::json!({
+        "predicate": { "with": {
+            "name": {
+                "the": "xyz.tonk.account/display-name",
+                "as": "Text", "cardinality": "one"
+            }
+        } },
+        "terms": {
+            "this": root,
+            "name": { "?": { "name": "name" } }
+        }
+    });
+    let endpoint = format!("{}/api/profile/branch/main/query", crate::api::origin());
+    let response = reqwest::Client::new()
+        .post(endpoint)
+        .json(&body)
+        .send()
+        .await
+        .ok()?;
+    let rows: serde_json::Value = response.json().await.ok()?;
+    rows.as_array()?
+        .iter()
+        .find_map(|row| row["fields"]["name"].as_str())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
         .map(str::to_owned)
 }
 
@@ -2017,8 +2080,16 @@ pub(crate) fn finish_ceremony() {
     {
         if pending_share().is_some() {
             conclude("Your account is ready.");
-        } else if let Some(window) = web_sys::window() {
-            let _ = window.location().assign("/");
+        } else {
+            // A route change, not a document load. `location.assign`
+            // here reloaded the whole app -- wasm bundle, service
+            // worker handshake and all -- to reach a page the router
+            // can already render in place.
+            //
+            // Close FIRST: the reload used to take the dialog down with
+            // the document, and a route change does not. Leaving it up
+            // parks a finished ceremony over the Hub.
+            finish_account_navigation(&host);
         }
         return;
     }
@@ -2029,19 +2100,15 @@ pub(crate) fn finish_ceremony() {
         // back to a petname and so cannot tell a named account from a
         // fresh one. Best-effort: an unreadable summary only means the
         // record row is not shown.
-        let named = crate::api::account_summary()
-            .await
-            .ok()
-            .and_then(|summary| summary.display_name)
-            .map(|name| name.trim().to_owned())
-            .filter(|name| !name.is_empty());
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        let named = account_display_name().await;
+        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+        let named: Option<String> = None;
         if !host.is_connected() {
             return;
         }
         if (signing_in || named.is_some()) && pending_share().is_none() {
-            if let Some(window) = web_sys::window() {
-                let _ = window.location().assign("/");
-            }
+            finish_account_navigation(&host);
             return;
         }
         match named {
@@ -2056,11 +2123,77 @@ pub(crate) fn finish_ceremony() {
                         &name,
                     );
                 }
-                conclude("Your account is ready.");
+                if signing_in {
+                    hand_over_to_the_hub(&host);
+                } else {
+                    conclude("Your account is ready.");
+                }
             }
-            None if signing_in => conclude("You're signed in."),
+            // Signing in: the passkey answered, so the ceremony's own
+            // work is done. What remains is the account arriving, and
+            // that is narrated rather than waited on behind one word.
+            None if signing_in => hand_over_to_the_hub(&host),
             None => ask_for_name(&host),
         }
+    });
+}
+
+/// Walk the post-passkey phases, then leave for the spaces stack.
+///
+/// The ceremony used to end here on "return to hub" — a button offering
+/// a destination the person had already asked for, in front of an
+/// account that had not arrived. It now states what is happening and
+/// leaves on its own once the Hub can actually render:
+///
+///   passkey (settled)         the ceremony's own result
+///   recovering credential     custody, the only step that can fail
+///   device linked             custody recovered; the name is queried
+///   (tab fills in)            the account name lands
+///   (spaces queried)          what the Hub list needs
+///   -> the spaces stack       nothing left to say
+///
+/// Per-space capabilities keep being claimed after the handover, in the
+/// background: they are what lets those spaces open offline, and none of
+/// them gate the screen.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn hand_over_to_the_hub(host: &Element) {
+    // ADD, not settle: no passkey row was ever raised — the ceremony
+    // narrated the wait through the action row instead. `settle_named_row`
+    // silently no-ops on a row that does not exist, so this has to create
+    // it. Guarded, because a second activation frame reaches here too.
+    if host.query_selector(PASSKEY_ROW).ok().flatten().is_none() {
+        add_row(
+            host,
+            PASSKEY_ROW.trim_start_matches('#'),
+            "passkey",
+            "this device",
+        );
+    }
+    set_action(RECOVERING_CREDENTIAL, false);
+    let host = host.clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        // Custody first: it is the step that can fail, and everything
+        // after it is a read that either answers or does not.
+        if !crate::api::await_custody().await {
+            set_status(
+                "Your passkey was approved, but this device could not recover its credential.",
+            );
+            set_return_action();
+            focus_action();
+            return;
+        }
+        set_action(DEVICE_LINKED, false);
+
+        // Custody was the last step with anything to narrate. The Hub
+        // fills itself: its account cell subscribes to
+        // `xyz.tonk.account/display-name` on this same branch and holds
+        // a skeleton until a frame arrives, and its stack subscribes to
+        // the space rows. Waiting here for either would be this dialog
+        // polling a route to watch facts another element is already
+        // subscribed to -- and an account nobody has named never
+        // answers, so the wait could only ever end in a timeout.
+        let _ = host;
+        return_to_previous();
     });
 }
 
@@ -2483,8 +2616,18 @@ pub fn adopt_stashed_share() {
 const SHARE_RETURN: &str = "tonk-share-return";
 
 /// Where the finished ceremony returns to — stamped on the dialog host by
-/// [`adopt_stashed_share`] when the linking screen replaced the space page.
+/// [`adopt_stashed_share`] for a blocked share, or [`describe`] for space login.
 const RETURN_PATH: &str = "data-return-path";
+
+/// Ordinary login returns home; missing-space recovery keeps its destination.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn finish_account_navigation(host: &Element) {
+    let path = host
+        .get_attribute(RETURN_PATH)
+        .unwrap_or_else(|| "/".to_owned());
+    close();
+    tonk_host::navigate_to(&path);
+}
 
 /// Return to the surface the ceremony replaced.
 ///
@@ -2503,9 +2646,14 @@ fn return_to_previous() {
     let anchored = host.is_some_and(|host| host.has_attribute("data-anchored"));
     match path {
         Some(path) => {
-            if let Some(location) = web_sys::window().map(|window| window.location()) {
-                let _ = location.assign(&path);
-            }
+            // A route change: the space page the share left is one the
+            // router renders, and a document load would rebuild the
+            // whole app to get back to it.
+            close();
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            tonk_host::navigate_to(&path);
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+            let _ = &path;
         }
         None if anchored => {
             close();
@@ -2528,6 +2676,28 @@ pub fn describe(payload: &str) {
     let Some(document) = web_sys::window().and_then(|window| window.document()) else {
         return;
     };
+    if request.reason == "space-login" {
+        // Capture only the trusted top-page route, never a guest-provided URL.
+        // Stay on it during the ceremony so a profile-binding reload also
+        // returns to the space without a stale sessionStorage redirect.
+        if let Some(host) = document.get_element_by_id(DIALOG_ID)
+            && let Some(location) = web_sys::window().map(|window| window.location())
+            && let Ok(path) = location.pathname()
+            && path.starts_with("/space/")
+        {
+            let target = format!(
+                "{}{}{}",
+                path,
+                location.search().unwrap_or_default(),
+                location.hash().unwrap_or_default()
+            );
+            let _ = host.set_attribute(RETURN_PATH, &target);
+        }
+        if let Ok(Some(head)) = document.query_selector("#tonk-register-head") {
+            head.set_text_content(Some("sign in to open this space"));
+        }
+        set_status("Use the account you use for this space.");
+    }
     if let Some(anchor) = &request.anchor
         && let Some(host) = document
             .get_element_by_id(DIALOG_ID)
@@ -2565,6 +2735,20 @@ pub fn describe(payload: &str) {
         .flatten()
     {
         head.set_text_content(Some("confirm your email to share"));
+    }
+}
+
+/// A guest's position update: move an open anchored ceremony to the bar's
+/// latest viewport rectangle, and do nothing when none is open.
+///
+/// A position update is never a request for a ceremony. The guest keeps
+/// its linking marker until this page's terminal event reaches it across
+/// the frame boundary, and its bar observer can fire inside that gap: with
+/// the opening reason on that update, Escape closed the cluster and the
+/// next resize opened a fresh one over the bar, taking focus with it.
+pub fn reseat(request: &Request) {
+    if is_open() {
+        reanchor(request);
     }
 }
 
@@ -2771,6 +2955,59 @@ mod tests {
     /// The guest's ask carries why it could not share and what it was
     /// sharing, so the dialog can word the prompt and then finish the
     /// click that raised it.
+    /// A position update while nothing is open opens nothing: the guest
+    /// still had its linking marker when its bar observer fired after
+    /// Escape, and that update used to open a fresh cluster.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[dialog_common::test]
+    fn it_reseats_nothing_when_no_ceremony_is_open() {
+        close();
+        reseat(&parse_request(
+            r#"{"reason":"reseat","space":"","anchor":{"left":90.0,"bottom":184.0,"width":576.0}}"#,
+        ));
+        assert!(!is_open());
+        assert!(
+            web_sys::window()
+                .unwrap()
+                .document()
+                .unwrap()
+                .get_element_by_id(DIALOG_ID)
+                .is_none(),
+            "a position update must not raise a cluster"
+        );
+    }
+
+    /// The same update moves an open anchored cluster to the new seat.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[dialog_common::test]
+    fn it_reseats_an_open_ceremony() {
+        open();
+        describe(
+            r#"{"reason":"needs-account","space":"","anchor":{"left":90.0,"bottom":184.0,"width":576.0}}"#,
+        );
+        let host: HtmlDialogElement = web_sys::window()
+            .unwrap()
+            .document()
+            .unwrap()
+            .get_element_by_id(DIALOG_ID)
+            .expect("the cluster is raised")
+            .dyn_into()
+            .unwrap();
+        // The raise is deferred a task; show it now so the update finds
+        // the cluster open, as it is once a person can see it.
+        host.show();
+        assert!(is_open());
+        reseat(&parse_request(
+            r#"{"reason":"reseat","space":"","anchor":{"left":120.0,"bottom":200.0,"width":500.0}}"#,
+        ));
+        let host: HtmlElement = host.dyn_into().unwrap();
+        let left = host.style().get_property_value("--anchor-left").unwrap();
+        let width = host.style().get_property_value("--anchor-width").unwrap();
+        close();
+        assert_eq!(left, "120px");
+        assert_eq!(width, "500px");
+    }
+
     #[dialog_common::test]
     fn it_reads_the_reason_and_the_interrupted_share() {
         let request = parse_request(r#"{"reason":"needs-account","space":"did:key:z6Mk"}"#);
@@ -2824,5 +3061,73 @@ mod tests {
             "a registration must not carry the lookup's attribute",
         );
         assert_ne!(check, register, "the two commands are distinct transients",);
+    }
+}
+
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+mod space_login_tests {
+    use super::*;
+    use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
+
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    fn host() -> Element {
+        let document = web_sys::window().unwrap().document().unwrap();
+        let host = document.create_element("dialog").unwrap();
+        host.set_id(DIALOG_ID);
+        host.set_inner_html(
+            r#"<h1 id="tonk-register-head"></h1><p id="tonk-register-status"></p>"#,
+        );
+        document.body().unwrap().append_child(&host).unwrap();
+        host
+    }
+
+    #[wasm_bindgen_test]
+    fn space_login_preserves_destination_and_cancel_does_not_leak_it() {
+        let window = web_sys::window().unwrap();
+        let history = window.history().unwrap();
+        let original = window.location().href().unwrap();
+        let target = "/space/did:key:test/page?view=board#item";
+        history
+            .replace_state_with_url(&JsValue::NULL, "", Some(target))
+            .unwrap();
+        let host = host();
+        describe(r#"{"reason":"space-login"}"#);
+        assert_eq!(host.get_attribute(RETURN_PATH).as_deref(), Some(target));
+        assert!(pending_share().is_none());
+        return_to_previous();
+        assert!(!host.is_connected());
+        assert_eq!(
+            window.location().pathname().unwrap(),
+            "/space/did:key:test/page"
+        );
+        let normal = self::host();
+        assert!(
+            !normal.has_attribute(RETURN_PATH),
+            "cancel leaves no stale return destination"
+        );
+        finish_account_navigation(&normal);
+        assert_eq!(window.location().pathname().unwrap(), "/");
+        history
+            .replace_state_with_url(&JsValue::NULL, "", Some(&original))
+            .unwrap();
+    }
+
+    #[wasm_bindgen_test]
+    fn space_login_completion_returns_to_space_not_home() {
+        let window = web_sys::window().unwrap();
+        let history = window.history().unwrap();
+        let original = window.location().href().unwrap();
+        history
+            .replace_state_with_url(&JsValue::NULL, "", Some("/space/did:key:test"))
+            .unwrap();
+        let host = host();
+        describe(r#"{"reason":"space-login","returnPath":"https://example.com"}"#);
+        finish_account_navigation(&host);
+        assert!(!host.is_connected());
+        assert_eq!(window.location().pathname().unwrap(), "/space/did:key:test");
+        history
+            .replace_state_with_url(&JsValue::NULL, "", Some(&original))
+            .unwrap();
     }
 }

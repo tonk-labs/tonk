@@ -259,9 +259,8 @@ Two viable routes, both their own change:
   rung; it comes back with the surface it leads to.
 - The flip mirrors the cells, departing from law 10's fixed content order —
   a deliberate revision, see `bar::apply_flip`.
-- The resting seat defaults to bottom-right on every device; the reference
-  defaults desktop to top-right and only coarse pointers to bottom-right.
-  Pre-existing, and the dock persists after the first drag either way.
+- The resting seat defaults to top-right. A dock selected by dragging still
+  persists and overrides that default on subsequent loads.
 - The disc renders three shapes for eight sync states; the precise one rides
   as `data-sync-status` for the accessible name.
 

@@ -100,13 +100,26 @@ pub(crate) fn watch(this: &HtmlElement) -> Option<ActivationWatch> {
     let active = JSON::parse(&crate::logic::account_active_query_body()).ok()?;
     let watcher: Element = this.clone().into();
     spawn_local(async move {
+        // The guard: a bar that left the document before this microtask
+        // ran has nothing to watch for, and its replacement watches for
+        // itself. A failure on a bar that is still in the document is
+        // the only one worth a line.
+        if !watcher.is_connected() {
+            return;
+        }
         match consumer::subscribe_claimed(&watcher, &query, Some(&SUB_TAG.into())).await {
             Ok(subscription) => OPEN.with(|open| *open.borrow_mut() = Some(subscription)),
-            Err(error) => tonk_common::log!("activation: could not watch: {error:?}"),
+            Err(error) if watcher.is_connected() => {
+                tonk_common::log!("activation: could not watch: {error:?}")
+            }
+            Err(_) => return,
         }
         match consumer::subscribe_claimed(&watcher, &active, Some(&ACTIVE_TAG.into())).await {
             Ok(subscription) => ACTIVE_OPEN.with(|open| *open.borrow_mut() = Some(subscription)),
-            Err(error) => tonk_common::log!("activation: could not watch activation: {error:?}"),
+            Err(error) if watcher.is_connected() => {
+                tonk_common::log!("activation: could not watch activation: {error:?}")
+            }
+            Err(_) => {}
         }
     });
 

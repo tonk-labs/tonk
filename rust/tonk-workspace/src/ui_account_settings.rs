@@ -26,6 +26,8 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{Element, Event, HtmlElement, HtmlInputElement, KeyboardEvent, window};
 
+use tonk_analytics::product::{Journey, ProductAction, ProductResult, Stage, Surface, Trigger};
+
 type EventClosure = Closure<dyn FnMut(Event)>;
 type FrameClosure = Closure<dyn FnMut(JsValue, JsValue)>;
 
@@ -33,7 +35,14 @@ type FrameClosure = Closure<dyn FnMut(JsValue, JsValue)>;
 const PROFILE_WITH: &str = "main@profile:tonk";
 /// The tag the ceremony-status subscription's frames arrive under.
 const CEREMONY_TAG: &str = "ui-account-settings:ceremony";
+/// The email row, read as a fact rather than fetched.
+const ACCOUNT_TAG: &str = "ui-account-settings:account";
+/// The passkey rows, likewise.
+const PASSKEY_TAG: &str = "ui-account-settings:passkeys";
 const DELETE_ACCOUNT_CONFIRMATION: &str = "delete account";
+const ANALYTICS_ATTEMPT: &str = "data-analytics-ceremony-attempt";
+const ANALYTICS_STARTED: &str = "data-analytics-ceremony-started";
+const ANALYTICS_CEREMONY: &str = "data-analytics-ceremony-kind";
 
 fn set_text(this: &HtmlElement, selector: &str, value: &str) {
     if let Ok(Some(element)) = this.query_selector(selector) {
@@ -43,6 +52,11 @@ fn set_text(this: &HtmlElement, selector: &str, value: &str) {
 
 #[derive(Default)]
 struct UiAccountSettings {
+    custody_opened: Option<EventClosure>,
+    custody_closed: Option<EventClosure>,
+    position_change: Option<EventClosure>,
+    position_observer: Option<web_sys::ResizeObserver>,
+    position_callback: Option<FrameClosure>,
     click: Option<EventClosure>,
     change: Option<EventClosure>,
     keydown: Option<EventClosure>,
@@ -50,6 +64,10 @@ struct UiAccountSettings {
     dialog_open: Option<EventClosure>,
     /// The live ceremony-status subscription, held while connected.
     subscription: Rc<RefCell<Option<Subscription>>>,
+    /// The account facts the email row renders.
+    account_subscription: Rc<RefCell<Option<Subscription>>>,
+    /// The passkey rows the panel lists.
+    passkey_subscription: Rc<RefCell<Option<Subscription>>>,
     /// The frame delegates the host calls by name off the element.
     frames: Vec<FrameClosure>,
 }
@@ -120,9 +138,20 @@ impl CustomElement for UiAccountSettings {
                 return;
             }
             spawn_local(async move {
+                let mut attempt = crate::analytics::Attempt::start(
+                    Journey::Account,
+                    ProductAction::SaveDisplayName,
+                    Surface::Settings,
+                    Trigger::User,
+                    Stage::Intent,
+                );
                 let body = serde_json::json!({ "name": name }).to_string();
-                if let Err(error) = tonk_host::post_json("/api/account/display-name", &body).await {
-                    tonk_common::log!("settings: display-name save failed: {error:?}");
+                match tonk_host::post_json("/api/account/display-name", &body).await {
+                    Ok(_) => attempt.finish(Stage::RemoteCommit, ProductResult::Success, None),
+                    Err(error) => {
+                        attempt.finish_error(Stage::RemoteCommit, &error);
+                        tonk_common::log!("settings: display-name save failed: {error:?}");
+                    }
                 }
             });
         }));
@@ -204,22 +233,125 @@ impl CustomElement for UiAccountSettings {
         // calls `reset` (snapshot) and `update` (delta) by name off this
         // element for every frame, so both delegates hang off it.
         let host = this.clone();
-        let reset: FrameClosure = Closure::wrap(Box::new(move |payload: JsValue, _: JsValue| {
-            on_ceremony_snapshot(&host, payload);
-        }));
+        let reset: FrameClosure = Closure::wrap(Box::new(
+            move |payload: JsValue, opts: JsValue| match frame_tag(&opts).as_deref() {
+                Some(ACCOUNT_TAG) => on_account_snapshot(&host, payload),
+                Some(PASSKEY_TAG) => render_passkeys(&host, &js_sys::Array::from(&payload)),
+                _ => on_ceremony_snapshot(&host, payload),
+            },
+        ));
         let _ = Reflect::set(this, &"__tonkReset".into(), reset.as_ref());
         let host = this.clone();
-        let update: FrameClosure = Closure::wrap(Box::new(move |payload: JsValue, _: JsValue| {
-            on_ceremony_delta(&host, payload);
-        }));
+        let update: FrameClosure = Closure::wrap(Box::new(
+            move |payload: JsValue, opts: JsValue| match frame_tag(&opts).as_deref() {
+                Some(ACCOUNT_TAG) => on_account_delta(&host, payload),
+                Some(PASSKEY_TAG) => {
+                    let asserted =
+                        Reflect::get(&payload, &"asserted".into()).unwrap_or(JsValue::UNDEFINED);
+                    render_passkeys(&host, &js_sys::Array::from(&asserted));
+                }
+                _ => on_ceremony_delta(&host, payload),
+            },
+        ));
         let _ = Reflect::set(this, &"__tonkUpdate".into(), update.as_ref());
         self.frames = vec![reset, update];
         subscribe_ceremony(this, self.subscription.clone());
+        subscribe_account(this, self.account_subscription.clone());
+        subscribe_passkeys(this, self.passkey_subscription.clone());
 
         refresh(this);
+        let host = this.clone();
+        let opened: EventClosure = Closure::wrap(Box::new(move |_: Event| {
+            if host.has_attribute("data-passkey-screen") {
+                return;
+            }
+            let _ = host.set_attribute("data-passkey-screen", "");
+            publish_custody_seat(&host);
+        }));
+        if let Some(window) = window() {
+            let _ = window.add_event_listener_with_callback(
+                "tonk:custody-opened",
+                opened.as_ref().unchecked_ref(),
+            );
+        }
+        self.custody_opened = Some(opened);
+        let host = this.clone();
+        let closed: EventClosure = Closure::wrap(Box::new(move |_: Event| {
+            let _ = host.remove_attribute("data-passkey-screen");
+            let _ = host.remove_attribute("data-passkey-requested");
+            // Closing the passkey UI is not a new command result. The worker
+            // may already have published its refusal while this screen hid it.
+            if !matches!(
+                host.get_attribute("data-ceremony-state").as_deref(),
+                Some(ceremony_state::REFUSED | ceremony_state::FAILED | ceremony_state::DONE)
+            ) {
+                show_status(&host, "");
+            }
+        }));
+        if let Some(window) = window() {
+            let _ = window.add_event_listener_with_callback(
+                "tonk:custody-closed",
+                closed.as_ref().unchecked_ref(),
+            );
+        }
+        self.custody_closed = Some(closed);
+        let host = this.clone();
+        let position: EventClosure = Closure::wrap(Box::new(move |_: Event| {
+            publish_custody_seat(&host);
+        }));
+        if let Some(window) = window() {
+            for event in ["scroll", "resize"] {
+                let _ = window.add_event_listener_with_callback_and_bool(
+                    event,
+                    position.as_ref().unchecked_ref(),
+                    true,
+                );
+            }
+        }
+        self.position_change = Some(position);
+        let host = this.clone();
+        let callback: FrameClosure = Closure::wrap(Box::new(move |_, _| {
+            publish_custody_seat(&host);
+        }));
+        if let Ok(observer) = web_sys::ResizeObserver::new(callback.as_ref().unchecked_ref()) {
+            observer.observe(this);
+            self.position_observer = Some(observer);
+            self.position_callback = Some(callback);
+        }
     }
 
     fn disconnected_callback(&mut self, this: &HtmlElement) {
+        if let Some(opened) = self.custody_opened.take()
+            && let Some(window) = window()
+        {
+            let _ = window.remove_event_listener_with_callback(
+                "tonk:custody-opened",
+                opened.as_ref().unchecked_ref(),
+            );
+        }
+        if let Some(closed) = self.custody_closed.take()
+            && let Some(window) = window()
+        {
+            let _ = window.remove_event_listener_with_callback(
+                "tonk:custody-closed",
+                closed.as_ref().unchecked_ref(),
+            );
+        }
+        if let Some(observer) = self.position_observer.take() {
+            observer.disconnect();
+        }
+        self.position_callback.take();
+        if let Some(position) = self.position_change.take()
+            && let Some(window) = window()
+        {
+            for event in ["scroll", "resize"] {
+                let _ = window.remove_event_listener_with_callback_and_bool(
+                    event,
+                    position.as_ref().unchecked_ref(),
+                    true,
+                );
+            }
+        }
         self.subscription.borrow_mut().take();
         self.frames.clear();
         if let Some(click) = self.click.take() {
@@ -304,7 +436,6 @@ pub(crate) fn refresh(this: &HtmlElement) {
         }
     }
     prefill_name(this);
-    load_summary(this);
 }
 
 /// The one space `?delete-space=` names, when this page was opened to
@@ -528,10 +659,30 @@ fn open_delete_dialog(this: &HtmlElement) {
     }
     let host = this.clone();
     spawn_local(async move {
+        let mut attempt = crate::analytics::Attempt::start(
+            Journey::Account,
+            ProductAction::LoadDeletionPlan,
+            Surface::Settings,
+            Trigger::User,
+            Stage::Intent,
+        );
         let plan: Option<tonk_worker_api::AccountDeletionPlan> =
             match tonk_host::get_json("/api/account/deletion/plan").await {
-                Ok(body) => serde_json::from_str(&body).ok(),
-                Err(_) => None,
+                Ok(body) => match serde_json::from_str(&body) {
+                    Ok(plan) => Some(plan),
+                    Err(_) => {
+                        attempt.finish(
+                            Stage::Worker,
+                            ProductResult::TerminalFailure,
+                            Some(tonk_analytics::product::FailureKind::InvalidResponse),
+                        );
+                        None
+                    }
+                },
+                Err(error) => {
+                    attempt.finish_error(Stage::Worker, &error);
+                    None
+                }
             };
         let Some(plan) = plan else {
             set_text(
@@ -541,6 +692,7 @@ fn open_delete_dialog(this: &HtmlElement) {
             );
             return;
         };
+        attempt.finish(Stage::Ready, ProductResult::Success, None);
         let spaces: Vec<_> = plan
             .spaces
             .iter()
@@ -629,16 +781,29 @@ fn submit_delete(this: &HtmlElement) {
         show_status(this, "Deleting the selected space\u{2026}");
         let host = this.clone();
         spawn_local(async move {
+            let mut attempt = crate::analytics::Attempt::start(
+                Journey::Account,
+                ProductAction::DeleteHostedSpace,
+                Surface::Settings,
+                Trigger::User,
+                Stage::Intent,
+            );
             let body = serde_json::json!({ "subject": subject }).to_string();
             match tonk_host::post_json("/api/account/spaces/delete", &body).await {
-                Ok(_) => show_status(
-                    &host,
-                    "Owned space deleted from Tonk services. Your account and other spaces remain.",
-                ),
-                Err(error) => show_status(
-                    &host,
-                    &format!("The space was not deleted: {}", error.message),
-                ),
+                Ok(_) => {
+                    attempt.finish(Stage::RemoteCommit, ProductResult::Success, None);
+                    show_status(
+                        &host,
+                        "Owned space deleted from Tonk services. Your account and other spaces remain.",
+                    );
+                }
+                Err(error) => {
+                    attempt.finish_error(Stage::RemoteCommit, &error);
+                    show_status(
+                        &host,
+                        &format!("The space was not deleted: {}", error.message),
+                    );
+                }
             }
         });
         return;
@@ -648,6 +813,7 @@ fn submit_delete(this: &HtmlElement) {
         return;
     };
     show_status(this, "Waiting for your passkey\u{2026}");
+    start_ceremony_attempt(this, ceremony::DELETE_ACCOUNT, ProductAction::DeleteAccount);
     transact(
         this,
         &claim(
@@ -666,14 +832,27 @@ fn sign_out(this: &HtmlElement) {
     show_status(this, "Signing out\u{2026}");
     let host = this.clone();
     spawn_local(async move {
+        let mut attempt = crate::analytics::Attempt::start(
+            Journey::Account,
+            ProductAction::SignOut,
+            Surface::Settings,
+            Trigger::User,
+            Stage::Intent,
+        );
         match tonk_host::delete_json("/api/account").await {
             // The worker's whole state changed hands; rebuilding the
             // page is what drops the subscriptions the old account owned.
-            Ok(_) => tonk_host::reload_page(),
-            Err(error) => show_status(
-                &host,
-                &format!("This device could not be signed out: {}", error.message),
-            ),
+            Ok(_) => {
+                attempt.finish(Stage::LocalCommit, ProductResult::Success, None);
+                tonk_host::reload_page();
+            }
+            Err(error) => {
+                attempt.finish_error(Stage::LocalCommit, &error);
+                show_status(
+                    &host,
+                    &format!("This device could not be signed out: {}", error.message),
+                );
+            }
         }
     });
 }
@@ -682,6 +861,7 @@ fn sign_out(this: &HtmlElement) {
 /// that holds the account, then for the new one.
 fn add_passkey(this: &HtmlElement) {
     show_status(this, "Waiting for your passkey\u{2026}");
+    start_ceremony_attempt(this, ceremony::ADD_PASSKEY, ProductAction::AddPasskey);
     transact(
         this,
         &claim(
@@ -694,12 +874,33 @@ fn add_passkey(this: &HtmlElement) {
     );
 }
 
+/// The passkey runs in the top document; reserve and publish its seat in
+/// this sealed guest using the same page-effect relay as Hub registration.
+fn publish_custody_seat(this: &HtmlElement) {
+    let Some(seat) = this.query_selector("[data-custody-seat]").ok().flatten() else {
+        return;
+    };
+    let rect = seat.get_bounding_client_rect();
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return;
+    }
+    tonk_host::request_registration(
+        &serde_json::json!({
+            "reason": "custody-anchor",
+            "anchor": { "left": rect.left(), "bottom": rect.top() - 7.0, "width": rect.width() }
+        })
+        .to_string(),
+    );
+}
+
 /// Assert `tonk:authorize-device` for the terminal named in the URL.
 fn approve_link(this: &HtmlElement) {
     let Some(request) = link_request() else {
         return;
     };
+    let _ = this.set_attribute("data-passkey-requested", "");
     show_status(this, "Waiting for your passkey\u{2026}");
+    start_ceremony_attempt(this, ceremony::AUTHORIZE_DEVICE, ProductAction::LinkDevice);
     let mut fields = serde_json::json!({
         "audience": request.audience,
         "callback": bs58::encode(request.callback.as_bytes()).into_string(),
@@ -730,6 +931,15 @@ fn decline_link(this: &HtmlElement) {
         return;
     };
     let redirect = format!("{}/settings", page_location().origin);
+    crate::analytics::instant(
+        Journey::Handoff,
+        ProductAction::LinkDevice,
+        Surface::Settings,
+        Trigger::User,
+        Stage::Complete,
+        ProductResult::Cancelled,
+        Some(tonk_analytics::product::FailureKind::Cancelled),
+    );
     match tonk_worker_api::callback::delivery_url(
         &request.callback,
         &[("deny", "declined in the browser"), ("redirect", &redirect)],
@@ -742,6 +952,7 @@ fn decline_link(this: &HtmlElement) {
 fn show_status(this: &HtmlElement, text: &str) {
     set_text(this, "[data-ceremony-status]", text);
     set_hidden(this, "[data-ceremony-status]", text.is_empty());
+    publish_custody_seat(this);
 }
 
 /// A transient claim for `window.tonk.transact`: the concept inline,
@@ -807,6 +1018,14 @@ fn transact(this: &HtmlElement, request: &serde_json::Value) {
                 .unwrap_or_else(|| format!("{error:?}"));
             tonk_common::log!("ui-account-settings: transact refused: {reason}");
             show_status(&host, &format!("The worker refused the request: {reason}"));
+            if let Some(which) = host.get_attribute(ANALYTICS_CEREMONY) {
+                finish_ceremony_attempt(
+                    &host,
+                    &which,
+                    ProductResult::TerminalFailure,
+                    Some(tonk_analytics::product::FailureKind::LocalState),
+                );
+            }
         }
     });
 }
@@ -847,6 +1066,224 @@ fn subscribe_ceremony(this: &HtmlElement, subscription: Rc<RefCell<Option<Subscr
             Err(error) => tonk_common::log!("ui-account-settings: subscribe failed: {error:?}"),
         }
     });
+}
+
+/// Read a subscription frame's tag, so two subscriptions can share one
+/// pair of delegates.
+fn frame_tag(opts: &JsValue) -> Option<String> {
+    Reflect::get(opts, &"tag".into())
+        .ok()
+        .and_then(|tag| tag.as_string())
+}
+
+/// Watch the account facts the email and passkey rows render.
+///
+/// These were fetched from `/api/account/summary`, whose handler answers
+/// by reading these very attributes off this very branch. A subscription
+/// gets them without the round trip AND follows them: an address
+/// enrolled or a passkey added on another device lands here rather than
+/// waiting for the next mount.
+fn subscribe_account(this: &HtmlElement, subscription: Rc<RefCell<Option<Subscription>>>) {
+    let host = this.clone();
+    spawn_local(async move {
+        if !host.is_connected() || subscription.borrow().is_some() {
+            return;
+        }
+        if host.get_attribute("with").is_none() {
+            let _ = host.set_attribute("with", PROFILE_WITH);
+        }
+        let consumer: Element = host.clone().into();
+        // Directory mode (`this` unbound), like the Hub cell's own name
+        // subscription: this element does not know the account subject,
+        // and asking the worker for it would be another round trip to
+        // learn something the branch is about to tell us anyway.
+        //
+        // A browser that has held more than one account can carry more
+        // than one row, and `render_account` takes the first. That is
+        // the same exposure the Hub cell has had; binding the subject
+        // here means threading it in, which is worth doing once for
+        // both rather than differently in each.
+        let body = r#"{
+          "predicate": { "with": {
+            "email": { "the": "xyz.tonk.account/customer-email", "as": "Text", "cardinality": "one" }
+          } },
+          "terms": {
+            "this": { "?": { "name": "this" } },
+            "email": { "?": { "name": "email" } }
+          }
+        }"#;
+        let Ok(body) = JSON::parse(body) else {
+            return;
+        };
+        let tag = JsValue::from_str(ACCOUNT_TAG);
+        match consumer::subscribe(&consumer, &body, Some(&tag)) {
+            Ok(sub) => *subscription.borrow_mut() = Some(sub),
+            Err(error) => {
+                tonk_common::log!("ui-account-settings: account subscribe failed: {error:?}")
+            }
+        }
+    });
+}
+
+/// Watch the passkey rows the settings panel lists.
+///
+/// `RecoveryPasskey` carries everything shown — the creation label and
+/// its timestamp — so this reads the concept directly.
+///
+/// The worker enumerates an account's passkeys by joining through the
+/// `SecretMessage` whose sender is the account, because the passkey row
+/// deliberately holds no second copy of the account it belongs to. That
+/// join answers "whose passkey is this", which a DISPLAY on this branch
+/// does not have to ask: passkey rows are written to the profile's own
+/// branch beside the account's envelope, and a profile branch carries
+/// one account. Every row here is this account's.
+fn subscribe_passkeys(this: &HtmlElement, subscription: Rc<RefCell<Option<Subscription>>>) {
+    let host = this.clone();
+    spawn_local(async move {
+        if !host.is_connected() || subscription.borrow().is_some() {
+            return;
+        }
+        if host.get_attribute("with").is_none() {
+            let _ = host.set_attribute("with", PROFILE_WITH);
+        }
+        let consumer: Element = host.clone().into();
+        let body = r#"{
+          "predicate": { "with": {
+            "created_on": { "the": "xyz.tonk.recovery/created-on", "as": "Text", "cardinality": "one" },
+            "created_at": { "the": "xyz.tonk.recovery/created-at", "as": "UnsignedInteger", "cardinality": "one" }
+          } },
+          "terms": {
+            "this": { "?": { "name": "this" } },
+            "created_on": { "?": { "name": "created_on" } },
+            "created_at": { "?": { "name": "created_at" } }
+          }
+        }"#;
+        let Ok(body) = JSON::parse(body) else {
+            return;
+        };
+        let tag = JsValue::from_str(PASSKEY_TAG);
+        match consumer::subscribe(&consumer, &body, Some(&tag)) {
+            Ok(sub) => *subscription.borrow_mut() = Some(sub),
+            Err(error) => {
+                tonk_common::log!("ui-account-settings: passkey subscribe failed: {error:?}")
+            }
+        }
+    });
+}
+
+/// List every passkey the account has, newest first.
+///
+/// Rows arrive unordered, so they are sorted here. The panel ships one
+/// row of markup as its template; the rest are cloned from it, and the
+/// whole list is rebuilt on each frame rather than diffed -- a handful
+/// of passkeys is not worth reconciling.
+fn render_passkeys(this: &HtmlElement, rows: &js_sys::Array) {
+    let Some(first) = this
+        .query_selector("[data-settings-passkey-device]")
+        .ok()
+        .flatten()
+        .and_then(|device| device.parent_element())
+    else {
+        return;
+    };
+    let Some(parent) = first.parent_element() else {
+        return;
+    };
+
+    let mut passkeys: Vec<(f64, String)> = Vec::new();
+    for row in rows.iter() {
+        let Ok(fields) = Reflect::get(&row, &"fields".into()) else {
+            continue;
+        };
+        let created_on = Reflect::get(&fields, &"created_on".into())
+            .ok()
+            .and_then(|value| value.as_string());
+        let created_at = Reflect::get(&fields, &"created_at".into())
+            .ok()
+            .and_then(|value| value.as_f64());
+        if let (Some(on), Some(at)) = (created_on, created_at) {
+            passkeys.push((at, on));
+        }
+    }
+    passkeys.sort_by(|a, b| b.0.total_cmp(&a.0));
+
+    // Drop every row this rebuild replaces, keeping the first as the
+    // template to clone from.
+    while let Some(extra) = first.next_element_sibling().filter(|sibling| {
+        sibling
+            .query_selector("[data-settings-passkey-device]")
+            .ok()
+            .flatten()
+            .is_some()
+    }) {
+        let _ = parent.remove_child(&extra);
+    }
+
+    if passkeys.is_empty() {
+        set_text(this, "[data-settings-passkey-device]", "Unavailable");
+        set_text(this, "[data-settings-passkey-created]", "");
+        return;
+    }
+
+    for (index, (created_at, created_on)) in passkeys.iter().enumerate() {
+        let row = if index == 0 {
+            first.clone()
+        } else {
+            let Ok(clone) = first.clone_node_with_deep(true) else {
+                break;
+            };
+            let Ok(clone) = clone.dyn_into::<Element>() else {
+                break;
+            };
+            let _ = parent.insert_before(&clone, first.next_sibling().as_ref());
+            clone
+        };
+        if let Ok(Some(device)) = row.query_selector("[data-settings-passkey-device]") {
+            device.set_text_content(Some(created_on));
+        }
+        if let Ok(Some(created)) = row.query_selector("[data-settings-passkey-created]") {
+            let date = js_sys::Date::new(&JsValue::from_f64(created_at * 1000.0))
+                .to_locale_date_string("default", &JsValue::UNDEFINED);
+            created.set_text_content(Some(&format!("created {}", String::from(date))));
+        }
+    }
+}
+
+/// A snapshot frame carrying the account row.
+fn on_account_snapshot(this: &HtmlElement, payload: JsValue) {
+    let rows = js_sys::Array::from(&payload);
+    render_account(this, &rows.get(0));
+}
+
+/// A delta frame: the newest asserted row carries the current value.
+fn on_account_delta(this: &HtmlElement, payload: JsValue) {
+    let asserted = Reflect::get(&payload, &"asserted".into()).unwrap_or(JsValue::UNDEFINED);
+    let rows = js_sys::Array::from(&asserted);
+    if rows.length() > 0 {
+        render_account(this, &rows.get(rows.length() - 1));
+    }
+}
+
+/// Paint the email row from a subscription row.
+///
+/// An absent value leaves the row alone rather than blanking it: an
+/// empty frame means the fact has not arrived, not that the account has
+/// no address.
+fn render_account(this: &HtmlElement, row: &JsValue) {
+    let email = Reflect::get(row, &"fields".into())
+        .ok()
+        .and_then(|fields| Reflect::get(&fields, &"email".into()).ok())
+        .and_then(|value| value.as_string())
+        .filter(|email| !email.trim().is_empty());
+    // Always writes: the markup ships "loading…" as its placeholder, so
+    // returning early on an empty frame leaves that word on screen for
+    // good. An account with no address recorded reads "Unavailable",
+    // which is what the fetch this replaced said.
+    set_text(
+        this,
+        "[data-settings-email]",
+        email.as_deref().unwrap_or("Unavailable"),
+    );
 }
 
 /// A snapshot frame: the row as it stands, or nothing yet.
@@ -898,11 +1335,90 @@ fn render_ceremony(this: &HtmlElement, row: &JsValue) {
         }
         _ => return,
     };
+    if which == ceremony::AUTHORIZE_DEVICE {
+        if state == ceremony_state::PENDING_CEREMONY || state == ceremony_state::WORKING {
+            let _ = this.set_attribute("data-passkey-requested", "");
+        } else {
+            let _ = this.remove_attribute("data-passkey-requested");
+        }
+    }
     let _ = this.set_attribute("data-ceremony", &which);
     let _ = this.set_attribute("data-ceremony-state", &state);
     show_status(this, &text);
-    if state == ceremony_state::DONE && which == ceremony::ADD_PASSKEY {
-        load_summary(this);
+    match state.as_str() {
+        ceremony_state::DONE => finish_ceremony_attempt(this, &which, ProductResult::Success, None),
+        ceremony_state::REFUSED => finish_ceremony_attempt(
+            this,
+            &which,
+            ProductResult::Blocked,
+            Some(tonk_analytics::product::FailureKind::Unknown),
+        ),
+        ceremony_state::FAILED => finish_ceremony_attempt(
+            this,
+            &which,
+            ProductResult::RetryableFailure,
+            Some(tonk_analytics::product::FailureKind::Unknown),
+        ),
+        _ => {}
+    }
+    // No refresh on ADD_PASSKEY: the passkey rows subscribe to
+    // `RecoveryPasskey`, so a new one lands on its own commit rather
+    // than on a re-read this ceremony has to remember to trigger.
+}
+
+fn start_ceremony_attempt(this: &HtmlElement, which: &str, action: ProductAction) {
+    let attempt = crate::analytics::Attempt::start(
+        if which == ceremony::AUTHORIZE_DEVICE {
+            Journey::Handoff
+        } else {
+            Journey::Account
+        },
+        action,
+        Surface::Settings,
+        Trigger::User,
+        Stage::Intent,
+    );
+    let (id, started_ms) = attempt.token();
+    let _ = this.set_attribute(ANALYTICS_ATTEMPT, id);
+    let _ = this.set_attribute(ANALYTICS_STARTED, &started_ms.to_string());
+    let _ = this.set_attribute(ANALYTICS_CEREMONY, which);
+}
+
+fn finish_ceremony_attempt(
+    this: &HtmlElement,
+    which: &str,
+    result: ProductResult,
+    failure: Option<tonk_analytics::product::FailureKind>,
+) {
+    if this.get_attribute(ANALYTICS_CEREMONY).as_deref() != Some(which) {
+        return;
+    }
+    let Some(id) = this.get_attribute(ANALYTICS_ATTEMPT) else {
+        return;
+    };
+    let started_ms = this
+        .get_attribute(ANALYTICS_STARTED)
+        .and_then(|value| value.parse().ok())
+        .unwrap_or_else(js_sys::Date::now);
+    let (journey, action) = match which {
+        ceremony::DELETE_ACCOUNT => (Journey::Account, ProductAction::DeleteAccount),
+        ceremony::ADD_PASSKEY => (Journey::Account, ProductAction::AddPasskey),
+        ceremony::AUTHORIZE_DEVICE => (Journey::Handoff, ProductAction::LinkDevice),
+        _ => return,
+    };
+    crate::analytics::finish_existing(
+        journey,
+        action,
+        Surface::Settings,
+        Trigger::User,
+        id,
+        started_ms,
+        Stage::RemoteCommit,
+        result,
+        failure,
+    );
+    for attribute in [ANALYTICS_ATTEMPT, ANALYTICS_STARTED, ANALYTICS_CEREMONY] {
+        let _ = this.remove_attribute(attribute);
     }
 }
 
@@ -953,50 +1469,6 @@ fn name_input(this: &HtmlElement) -> Option<HtmlInputElement> {
         .ok()
         .flatten()
         .and_then(|field| field.dyn_into().ok())
-}
-
-fn load_summary(this: &HtmlElement) {
-    let host = this.clone();
-    spawn_local(async move {
-        match tonk_host::get_json("/api/account/summary").await {
-            Ok(body) => {
-                let summary: Option<tonk_worker_api::AccountSummary> =
-                    serde_json::from_str(&body).ok();
-                let summary = summary.unwrap_or(tonk_worker_api::AccountSummary {
-                    email: None,
-                    passkey: None,
-                    display_name: None,
-                });
-                let email = summary
-                    .email
-                    .filter(|email| !email.trim().is_empty())
-                    .unwrap_or_else(|| "Unavailable".to_string());
-                set_text(&host, "[data-settings-email]", &email);
-                match summary.passkey {
-                    Some(passkey) => {
-                        set_text(&host, "[data-settings-passkey-device]", &passkey.created_on);
-                        let date = js_sys::Date::new(&JsValue::from_f64(
-                            passkey.created_at as f64 * 1000.0,
-                        ))
-                        .to_locale_date_string("default", &JsValue::UNDEFINED);
-                        set_text(
-                            &host,
-                            "[data-settings-passkey-created]",
-                            &format!("created {}", String::from(date)),
-                        );
-                    }
-                    None => {
-                        set_text(&host, "[data-settings-passkey-device]", "Unavailable");
-                        set_text(&host, "[data-settings-passkey-created]", "");
-                    }
-                }
-            }
-            Err(_) => {
-                set_text(&host, "[data-settings-email]", "Unavailable");
-                set_text(&host, "[data-settings-passkey-device]", "Unavailable");
-            }
-        }
-    });
 }
 
 /// Register `<ui-account-settings>`. Idempotent.
@@ -1077,6 +1549,107 @@ mod tests {
             "settings has no devices tab or pane"
         );
 
+        host.remove();
+    }
+
+    #[wasm_bindgen_test]
+    fn custody_screen_replaces_approval_and_restores_on_dismiss() {
+        let document = window().unwrap().document().unwrap();
+        let style = document.create_element("style").unwrap();
+        style.set_text_content(Some(include_str!("../../tonk-ui/styles.css")));
+        document.body().unwrap().append_child(&style).unwrap();
+        let host = mount();
+        super::set_pane(&host, "link");
+        host.set_attribute("data-passkey-requested", "").unwrap();
+        super::show_status(&host, "Waiting for your passkey…");
+        let approval = pane(&host, "link");
+        let top = approval.get_bounding_client_rect().top();
+        let window = window().unwrap();
+        window
+            .dispatch_event(&web_sys::Event::new("tonk:custody-opened").unwrap())
+            .unwrap();
+        assert_eq!(
+            window
+                .get_computed_style(&approval)
+                .unwrap()
+                .unwrap()
+                .get_property_value("display")
+                .unwrap(),
+            "none"
+        );
+        let status = host
+            .query_selector("[data-ceremony-status]")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            window
+                .get_computed_style(&status)
+                .unwrap()
+                .unwrap()
+                .get_property_value("display")
+                .unwrap(),
+            "none"
+        );
+        let seat = host.query_selector("[data-custody-seat]").unwrap().unwrap();
+        assert_eq!(seat.get_bounding_client_rect().top(), top);
+        window
+            .dispatch_event(&web_sys::Event::new("tonk:custody-closed").unwrap())
+            .unwrap();
+        assert!(!host.has_attribute("data-passkey-screen"));
+        assert!(!host.has_attribute("data-passkey-requested"));
+        assert_eq!(
+            window
+                .get_computed_style(&approval)
+                .unwrap()
+                .unwrap()
+                .get_property_value("display")
+                .unwrap(),
+            "flex"
+        );
+        host.remove();
+        style.remove();
+    }
+
+    #[wasm_bindgen_test]
+    fn custody_close_preserves_the_handoff_refusal() {
+        let host = mount();
+        super::set_pane(&host, "link");
+        host.set_attribute("data-passkey-screen", "").unwrap();
+        let row = js_sys::JSON::parse(
+            &serde_json::json!({
+                "fields": {
+                    "ceremony": tonk_schema::ceremony::AUTHORIZE_DEVICE,
+                    "state": tonk_schema::ceremony_state::REFUSED,
+                    "detail": "this handoff requires account did:key:expected"
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        super::render_ceremony(&host, &row);
+        let status = host
+            .query_selector("[data-ceremony-status]")
+            .unwrap()
+            .unwrap();
+        assert!(
+            status
+                .text_content()
+                .unwrap()
+                .contains("this handoff requires account")
+        );
+        window()
+            .unwrap()
+            .dispatch_event(&web_sys::Event::new("tonk:custody-closed").unwrap())
+            .unwrap();
+        assert!(
+            status
+                .text_content()
+                .unwrap()
+                .contains("this handoff requires account"),
+            "closing the passkey screen must retain the worker's refusal"
+        );
+        assert!(!status.has_attribute("hidden"));
+        assert!(!host.has_attribute("data-passkey-screen"));
         host.remove();
     }
 

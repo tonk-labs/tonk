@@ -12,6 +12,8 @@
 #![warn(missing_docs)]
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+mod analytics;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod ancestors;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod binder;
@@ -31,6 +33,8 @@ mod origin;
 mod page;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod sheet;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+mod space_login;
 // Declared on every target: the pure sync-state/preference logic is
 // unit-tested natively; the custom elements inside are wasm-gated.
 mod sync;
@@ -55,6 +59,7 @@ mod ui_sync_status;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub fn register() {
     sheet::register();
+    space_login::register();
     binder::register();
     origin::register();
     page::register();

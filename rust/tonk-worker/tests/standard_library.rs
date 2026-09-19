@@ -93,6 +93,20 @@ fn it_lowers_the_profile_library() {
     assert_library_lowers("profile library (profile.yaml)", PROFILE_LIBRARY);
 }
 
+#[test]
+fn it_titles_a_downloading_space_from_the_directory_name() {
+    let downloading = PROFILE_LIBRARY
+        .split("    downloading: |\n")
+        .nth(1)
+        .and_then(|tail| tail.split("\n\n# ===").next())
+        .expect("profile library downloading view");
+
+    assert!(
+        downloading.contains(r#"<tonk-title text="{name} — Tonk"></tonk-title>"#),
+        "the downloading view must use the available directory name for the browser tab",
+    );
+}
+
 /// Form controls expose their submitted value at `.value` (a
 /// `RadioNodeList` included). Nothing else on an `<input>` is a value
 /// slot, so a read path ending anywhere else resolves to `undefined`.
@@ -262,6 +276,38 @@ fn it_hides_space_absence_slots_before_display_initialization() {
 }
 
 #[test]
+fn it_recovers_from_every_absent_space_directory_state() {
+    let directory_probe = PROFILE_LIBRARY
+        .split("<tonk-display with=\"main@profile:tonk\" entity={id} model=space view=downloading>")
+        .nth(1)
+        .and_then(|source| source.split("</tonk-display>").next())
+        .expect("absent-space chrome must consult the profile directory");
+
+    for state in ["no-model", "no-entity"] {
+        assert!(
+            directory_probe.contains(&format!(r#"slot="{state}" hidden"#)),
+            "an absent profile directory row must render recovery for `{state}`"
+        );
+    }
+    assert_eq!(
+        directory_probe
+            .matches("New to this space? Ask someone in it to send you an invite link")
+            .count(),
+        2,
+        "both absence states must explain how to obtain an invite link"
+    );
+    assert_eq!(
+        directory_probe.matches("<tonk-space-login>").count(),
+        2,
+        "both absence states must offer sign-in recovery"
+    );
+    assert!(
+        !directory_probe.contains("you don't have access"),
+        "missing local state is not proof of denied access"
+    );
+}
+
+#[test]
 fn it_styles_the_absent_space_as_tonk_edge_chrome() {
     let absent = PROFILE_LIBRARY
         .split("/* The absent-space state")
@@ -305,20 +351,28 @@ fn it_styles_the_absent_space_as_tonk_edge_chrome() {
     for contract in [
         "class=\"space-unknown-mast\"",
         "class=\"space-unknown-wall\"",
-        "invalid link",
-        "class=\"space-unknown-home\" href=\"/\">go to home",
+        "open this space",
+        "class=\"space-unknown-back\" href=\"/\">go to home",
+        "<tonk-space-login><button type=\"button\"",
     ] {
         assert!(
             PROFILE_LIBRARY.contains(contract),
             "the absent-space markup must preserve `{contract}`"
         );
     }
+    // Downloading has one narrator. Both missing-directory states offer
+    // sign-in and invite guidance. A space that is merely still arriving
+    // must never be sent through either recovery path.
     assert_eq!(
         PROFILE_LIBRARY
             .matches("class=\"space-unknown-narrator\"")
             .count(),
-        1,
-        "the absent-space explanation must render as one card"
+        5,
+        "the absent-space panel must explain downloading, login, and invite recovery"
+    );
+    assert!(
+        PROFILE_LIBRARY.contains("model=space view=downloading"),
+        "the absent-space panel must consult the directory row before accusing the link"
     );
     assert!(
         !PROFILE_LIBRARY.contains("you don't have this spot")
@@ -401,10 +455,15 @@ fn it_builds_one_centered_hub_launcher_with_a_settings_route() {
         !PROFILE_LIBRARY.contains(rejected),
         "the centered Hub launcher must reject `{rejected}`",
     );
+    // The empty stack carries NO words. An account with no spaces and an
+    // account whose spaces are still downloading are indistinguishable
+    // from the stack, so any sentence here is wrong in one of those two
+    // cases. The waiting is stated where it is known — the account cell
+    // holds a skeleton while the link runs.
     assert_eq!(
         PROFILE_LIBRARY.matches("no spaces yet").count(),
-        1,
-        "the empty Hub must state the neutral roster fact exactly once",
+        0,
+        "the empty Hub must not claim a roster fact it cannot tell from a pending download",
     );
     for rejected in ["signed out", "no spaces available"] {
         assert!(
@@ -711,7 +770,7 @@ fn it_sizes_the_join_route_to_the_dynamic_mobile_viewport() {
 fn it_declares_mobile_target_and_input_floors_for_hub_and_join() {
     for contract in [
         ".hubbar, .hcell { height:44px; min-height:44px; }",
-        ".account-menu__row, .sempty, .srow, .snew { min-height:44px; }",
+        ".account-menu__row, .srow, .snew { min-height:44px; }",
     ] {
         assert!(
             HUB_STYLES.contains(contract),

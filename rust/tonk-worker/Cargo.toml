@@ -37,6 +37,7 @@ dialog-effects = { workspace = true }
 dialog-operator = { workspace = true }
 dialog-query = { workspace = true }
 dialog-remote-ucan-s3 = { workspace = true }
+dialog-remote-ucan = { workspace = true }
 dialog-repository = { workspace = true }
 dialog-search-tree = { workspace = true }
 dialog-storage = { workspace = true }

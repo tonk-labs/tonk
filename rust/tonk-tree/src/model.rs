@@ -52,9 +52,38 @@ pub struct TreeNode {
     pub scale: Option<u64>,
     /// Hitchhiker ops buffered on this node (always 0 for a segment).
     pub novelty: Option<u64>,
+    /// Ops the PARENT buffers against this node's span — work headed for
+    /// this subtree that has not been written down into it yet. Known for
+    /// a child row whether or not the child itself is cached; absent on
+    /// the root, which no span points at.
+    pub pending: Option<u64>,
     /// The format manifest the node embeds: the configuration that
     /// produced this shape, as `(label, value)` rows in display order.
     pub manifest: Vec<(String, u64)>,
+}
+
+impl TreeNode {
+    /// Carry the fields a node's own block cannot report over from the row
+    /// its PARENT produced: the outline boundary (`bound` / `bound-parts`)
+    /// and its seam `rank` come from the parent's span separator, and
+    /// `pending` counts what the parent buffers for this subtree.
+    ///
+    /// Re-reading a node after it is fetched (`tree/node`) answers only
+    /// what the block itself says, so without this an expanded row lost its
+    /// decoded separator and fell back to a bare hash fragment, and its
+    /// buffered-op count vanished.
+    pub fn carry_span_from(&mut self, parent_row: &TreeNode) {
+        if parent_row.bound.is_some() {
+            self.bound = parent_row.bound.clone();
+            self.bound_parts = parent_row.bound_parts.clone();
+        }
+        if parent_row.rank.is_some() {
+            self.rank = parent_row.rank;
+        }
+        if parent_row.pending.is_some() {
+            self.pending = parent_row.pending;
+        }
+    }
 }
 
 /// One entry in a segment — the `tree/entry` shape.
@@ -82,9 +111,11 @@ pub struct TreeEntry {
     pub retraction: bool,
     /// A spilled value's block reference, when the value did not inline.
     pub spill: Option<String>,
-    /// For a blob-index row: the referenced hash and its size.
+    /// For a blob-index row: the referenced hash, its size, and the
+    /// encoding version of the record the tree stores about it.
     pub blob: Option<String>,
     pub blob_size: Option<u64>,
+    pub blob_version: Option<u64>,
 }
 
 /// Raw Conclusion row off the wire.
@@ -220,6 +251,7 @@ impl Loader {
             cached: f.get("cached").and_then(|v| v.as_bool()) != Some(false),
             scale: u(f, "scale"),
             novelty: u(f, "novelty"),
+            pending: u(f, "pending"),
             manifest: manifest_rows(f),
         }
     }
@@ -264,6 +296,7 @@ impl Loader {
                     spill: s(f, "spill"),
                     blob: s(f, "blob"),
                     blob_size: u(f, "blob-size"),
+                    blob_version: u(f, "blob-version"),
                 }
             })
             .collect())

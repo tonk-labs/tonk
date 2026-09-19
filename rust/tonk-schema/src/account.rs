@@ -94,6 +94,38 @@ impl AccountRegistered {
     }
 }
 
+/// The account is being LINKED on this device right now — overlay-only.
+///
+/// Asserted when login hands off to background replication and retracted
+/// when that settles. Login finishes as soon as custody is recovered, so
+/// between then and the account branch arriving there is a real window
+/// where the person is signed in but their spaces are not here yet. Until
+/// this fact existed the Hub had nothing to say in that window: it
+/// offered "link an account" (a door already walked through) over an
+/// empty stack (a claim nobody had established).
+///
+/// Overlay rather than durable for the reason the state is temporary: a
+/// worker that dies mid-link leaves nothing to clear, and the next login
+/// starts clean. Presence is the whole signal.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AccountLinking {
+    /// The account subject being linked.
+    pub this: Entity,
+    /// Always `true` while the link runs; the fact's PRESENCE is the
+    /// state, so it is dropped rather than set false.
+    pub linking: crate::domain::account::Linking,
+}
+
+impl AccountLinking {
+    /// A linking marker for `account`.
+    pub fn new(account: Entity) -> Self {
+        Self {
+            this: account,
+            linking: crate::domain::account::Linking(true),
+        }
+    }
+}
+
 /// The account confirmed its address and is served.
 ///
 /// Its PRESENCE is what makes an account active; nothing has to overwrite
@@ -194,7 +226,12 @@ mod tests {
         let (operator, profile) = helpers::test_operator_with_profile().await;
         let repository = helpers::test_repo(&operator, &profile).await;
         let base = repository.branch("base").open().perform(&operator).await?;
-        let base_revision = base.transaction().commit().perform(&operator).await?;
+        let base_revision = base
+            .transaction()
+            .commit()
+            .publish()
+            .perform(&operator)
+            .await?;
         let a = repository
             .branch("replica-a")
             .open()
@@ -214,11 +251,13 @@ mod tests {
         a.transaction()
             .assert(AccountDisplayName::new(account.clone(), "Amber".into()))
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
         b.transaction()
             .assert(AccountDisplayName::new(account.clone(), "Violet".into()))
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
@@ -257,6 +296,7 @@ mod tests {
         b.transaction()
             .assert(AccountDisplayName::new(account.clone(), "Cedar".into()))
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
         a.pull().perform(&operator).await?;
@@ -296,6 +336,7 @@ mod tests {
                 100,
             ))
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
@@ -334,6 +375,7 @@ mod tests {
             .transaction()
             .assert(AccountActive::new(account.clone(), 200))
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
@@ -373,6 +415,7 @@ mod tests {
             .transaction()
             .assert(AccountSuspended::new(account.clone(), "unpaid".into(), 300))
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
@@ -419,6 +462,7 @@ mod tests {
             .transaction()
             .assert(AccountActive::new(account.clone(), 200))
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
         branch
@@ -430,6 +474,7 @@ mod tests {
                 100,
             ))
             .commit()
+            .publish()
             .perform(&operator)
             .await?;
 
@@ -452,14 +497,15 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_converges_divergent_display_names_in_both_orders() -> Result<()> {
-        let a_then_b = converge(true).await?;
-        let b_then_a = converge(false).await?;
-
-        // Order independence is the property that matters, and it is the one
-        // this pins. Which of two concurrent names wins is dialog's
-        // cardinality-one merge to decide, not wall-clock latest-write, so
-        // asserting the specific winner would only pin that internal choice.
-        assert_eq!(a_then_b, b_then_a);
+        // Order independence is the property that matters, and it is the
+        // one this pins: whichever replica pulls first, both end up on
+        // the same name, which `converge` asserts for each order. Which
+        // of two concurrent names wins is dialog's cardinality-one
+        // election to decide; it goes by the revisions that wrote them,
+        // so two runs with freshly minted identities need not agree with
+        // each other, and this does not compare them.
+        converge(true).await?;
+        converge(false).await?;
         Ok(())
     }
 }
