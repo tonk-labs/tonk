@@ -686,7 +686,16 @@ pub async fn merge_bytes<Env: DocumentEnv>(
     bytes: &[u8],
     env: &Env,
 ) -> Result<(), SessionError> {
-    let incoming = Document::load(bytes)?;
+    let mut incoming = Document::load(bytes)?;
+    // The bytes must descend from the ones [`bytes`] hands out. A
+    // document built from nothing has root objects of its own, and
+    // merging it would leave two texts (or two sheet maps) in conflict.
+    let genesis = Document::genesis_heads(incoming.format())?;
+    if !incoming.missing(&genesis)?.is_empty() {
+        return Err(SessionError::Document(DocumentError::WrongShape(
+            "a document that starts from the bytes the host gave",
+        )));
+    }
     let (mut document, format) = open(branch, entity, Some(incoming.format()), env).await?;
     if incoming.format() != format {
         return Err(SessionError::Document(DocumentError::WrongShape(
@@ -1687,6 +1696,21 @@ mod tests {
         assert!(
             merge_bytes(&branch, &doc, &table, &operator).await.is_err(),
             "bytes of another format are refused"
+        );
+
+        // A text document made from nothing, not from the host's bytes.
+        let mut foreign = automerge::AutoCommit::new();
+        automerge::transaction::Transactable::put_object(
+            &mut foreign,
+            automerge::ROOT,
+            "text",
+            automerge::ObjType::Text,
+        )?;
+        assert!(
+            merge_bytes(&branch, &doc, &foreign.save(), &operator)
+                .await
+                .is_err(),
+            "a document with its own root is refused"
         );
         Ok(())
     }
