@@ -493,12 +493,19 @@ check('an unclaimed announcement is re-offered', await page.evaluate(async () =>
 }));
 
 // 21. Built-in and vendor prefixes are left to their own loaders.
-check('tonk- and wa- tags are not claimed', await page.evaluate(async () => {
+check('wa- tags are not claimed, tonk- tags are', await page.evaluate(async () => {
   globalThis.asked = [];
-  document.body.append(document.createElement('tonk-whatever'));
   document.body.append(document.createElement('wa-whatever'));
   await new Promise(r => setTimeout(r, 0));
-  return globalThis.asked.length === 0;
+  const skippedForeign = globalThis.asked.length === 0;
+
+  // `tonk-` is deliberately NOT a reserved prefix: a built-in is
+  // exactly the kind of element that may move to the branch, and
+  // `<tonk-table>`'s shell now lives in `library/table.yaml`. A
+  // `tonk-` tag nothing has registered is announced like any other.
+  document.body.append(document.createElement('tonk-whatever'));
+  await new Promise(r => setTimeout(r, 0));
+  return skippedForeign && globalThis.asked.includes('tonk-whatever');
 }));
 
 // 22. A tag deep in an added subtree is found — a view renders a

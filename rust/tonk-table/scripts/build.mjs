@@ -1,11 +1,10 @@
 #!/usr/bin/env node
 // Bundles the `<tonk-table>` element into `assets/` as three chunks:
 //
-//   assets/tonk-table.js        — shell bundle, registers the element.
-//                                 Contains no engine or grid code.
 //   assets/tonk-table-grid.js   — grid core (DOM grid + IronCalc JS
-//                                 glue), loaded on demand via dynamic
-//                                 import by the first connected element.
+//                                 glue) plus the shell-support surface
+//                                 (`grid/host.ts`). Loaded on demand,
+//                                 by the element's own `connected`.
 //   assets/tonk-table-engine.js — the IronCalc engine wasm, embedded as
 //                                 base64 (`binary` loader) in a pure
 //                                 data leaf the grid pulls in the same
@@ -13,21 +12,24 @@
 //                                 IronCalc version bump — grid-UI edits
 //                                 never rewrite the multi-megabyte file.
 //
-// The shell stays tiny on purpose: pages that ship the bundle but never
-// render a `<tonk-table>` element pay only for the custom element
-// registration. The grid core (and then the engine bytes) are fetched
-// exactly once, the first time an element actually connects.
+// There is no shell chunk. The `<tonk-table>` SHELL — the custom
+// element around the core: what it mounts, what it watches, what it
+// dispatches, what properties it exposes — is branch data, declared as
+// an `element!:` in `tonk-core/assets/library/table.yaml` and resolved
+// by the element registry the first time the tag is rendered. What
+// stays here is what cannot be a fact: a ~4MB wasm engine and the
+// TypeScript program that drives it. Both are fetched exactly once,
+// the first time an element actually connects.
 //
 // No code splitting: each chunk must be ONE self-contained file. They
 // are postMessaged into sealed guests as strings and blob-minted there
 // (tonk-portal), where a cross-file `import "./chunk-….js"` can't
 // resolve — the ONLY cross-chunk seams are the two runtime-variable
-// dynamic imports (shell → grid, grid → engine), which esbuild leaves
-// alone and the guest injector rewrites to blob URLs. Splitting is safe
-// to drop because the chunks share no stateful module: the shell
-// imports only the pure hlc/content/b64 logic, and the engine chunk is
-// pure data (the wasm bytes; the wasm-bindgen module state lives in the
-// grid chunk alone).
+// dynamic imports (the branch-resident shell → grid, grid → engine),
+// which esbuild leaves alone and the guest injector rewrites to blob
+// URLs. Splitting is safe to drop because the chunks share no stateful
+// module: the engine chunk is pure data (the wasm bytes; the
+// wasm-bindgen module state lives in the grid chunk alone).
 //
 // The engine instantiates FROM BYTES (`init({ module_or_path })`), so
 // the glue's own `new URL('wasm_bg.wasm', import.meta.url)` default-
@@ -49,7 +51,6 @@ const outdir = resolve(root, "assets");
 mkdirSync(outdir, { recursive: true });
 
 const entryPoints = {
-  "tonk-table": resolve(root, "src-js/index.ts"),
   "tonk-table-grid": resolve(root, "src-js/grid/index.ts"),
   "tonk-table-engine": resolve(root, "src-js/engine.ts"),
 };

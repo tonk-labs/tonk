@@ -110,6 +110,10 @@ async fn boot() -> Element {
 /// declaration that only works in isolation is not worth passing.
 const STANDARD_LIBRARY: &str = include_str!("../../tonk-core/assets/library/core.yaml");
 
+/// The table library, whose `element!: &tonk-table` is the shell of a
+/// real, shipped component authored as branch data.
+const TABLE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/table.yaml");
+
 /// Seed the branch by evaluating asserted notation, the way `tonk` does.
 async fn evaluate(container: &Element, source: &str) {
     tonk_host::consumer::evaluate(container, source, true)
@@ -378,4 +382,127 @@ async fn it_swaps_a_real_definition_for_live_instances() {
         constructor,
         "the tag must not have been re-registered",
     );
+}
+
+/// `<tonk-table>`'s shell, resolved off a real branch and mounted for
+/// real, against a stand-in grid core.
+///
+/// The point of the port is that the shell — what mounts, what it
+/// watches, what it dispatches, what properties it exposes — is now a
+/// row rather than a bundled class. So this drives it the way a page
+/// does: evaluate `table.yaml`, render the tag, and check the element
+/// actually came up.
+///
+/// The grid CORE stays a built asset (an IronCalc engine and the
+/// TypeScript program that drives it), and this substitutes a stand-in
+/// for it through `globalThis.__tonkTableGrid` — the same override the
+/// portal guest uses to hand the real core across a sealed boundary.
+/// What is under test is the shell; the core has its own suite.
+#[wasm_bindgen_test::wasm_bindgen_test]
+async fn it_mounts_the_table_shell_from_the_table_library() {
+    let container = boot().await;
+    evaluate(&container, STANDARD_LIBRARY).await;
+    evaluate(&container, TABLE_LIBRARY).await;
+    install_stub_grid_core();
+
+    let host = document()
+        .create_element("tonk-table")
+        .expect("create tonk-table");
+    host.set_text_content(Some("a,b\n1,2"));
+    container.append_child(&host).expect("attach");
+
+    // Mounted means: the shell resolved off the branch, built its
+    // shadow root, loaded the core through the override, and handed it
+    // a mount point.
+    settle_until(|| mounted_csv(&host).is_some()).await;
+    assert_eq!(
+        mounted_csv(&host).as_deref(),
+        Some("a,b\n1,2"),
+        "the shell should have read its light-DOM text channel and \
+         passed it to the core as the standalone source",
+    );
+
+    // The shadow root is the shell's, built in `state` rather than in a
+    // constructor it does not have.
+    assert!(host.shadow_root().is_some(), "no shadow root was attached");
+
+    // An accessor declared in notation, answering through the live
+    // definition — `value` reads the mounted grid, not the attribute.
+    let value = js_sys::Reflect::get(&host, &"value".into())
+        .ok()
+        .and_then(|v| v.as_string());
+    assert_eq!(value.as_deref(), Some("a,b\n1,2"), "the `value` getter");
+
+    // `min-rows` / `min-cols` are attribute defaults declared on the
+    // element, so they are on the instance although the markup set
+    // neither.
+    assert_eq!(host.get_attribute("min-rows").as_deref(), Some("100"));
+    assert_eq!(host.get_attribute("min-cols").as_deref(), Some("26"));
+
+    // And the shell reported readiness, which is the contract a page
+    // waits on.
+    assert!(
+        js_sys::Reflect::get(&host, &"grid".into())
+            .map(|grid| !grid.is_null() && !grid.is_undefined())
+            .unwrap_or(false),
+        "the `grid` getter should expose the mounted handle",
+    );
+}
+
+/// The CSV the stand-in core was mounted with, read back off the host.
+fn mounted_csv(host: &Element) -> Option<String> {
+    let grid = js_sys::Reflect::get(host, &"grid".into()).ok()?;
+    if grid.is_null() || grid.is_undefined() {
+        return None;
+    }
+    js_sys::Reflect::get(&grid, &"csv".into()).ok()?.as_string()
+}
+
+/// Install a stand-in for the grid core at `globalThis.__tonkTableGrid`.
+///
+/// A `data:` module URL rather than a served file: the shell imports
+/// whatever URL the override resolves to, and a data URL is the one
+/// form that needs no server, no bundler and no asset copied into the
+/// test fixture. It exports the same surface the real core does —
+/// `createGrid`, `shell`, `hostStyles` — with the helpers the shell
+/// actually calls on this path.
+fn install_stub_grid_core() {
+    let module = r#"
+        export const hostStyles = ":host { display: block; }";
+        export const shell = {
+          Clock: class { tick() { return 1n; } receive(h) { return h; } },
+          formatHlc: (h) => String(h),
+          parseContent: (raw) => ({ hlc: null, contentType: null, value: raw }),
+          formatContent: (c) => c.value,
+          isWorkbookType: () => false,
+          WORKBOOK_TYPE: "application/vnd.ironcalc",
+          base64ToBytes: () => new Uint8Array(),
+          bytesToBase64: () => "",
+          readSheetRows: () => [],
+          readCellRows: () => [],
+          readColumnRows: () => [],
+          readRowSizeRows: () => [],
+          toSource: (content) => ({ kind: "csv", csv: content.value }),
+        };
+        export async function createGrid(parent, options) {
+          const csv = options.mode.kind === "standalone" ? options.mode.source.csv : "";
+          parent.textContent = csv;
+          return {
+            csv,
+            toCsv: () => csv,
+            serialize: () => new Uint8Array(),
+            applyRows: () => {},
+            load: () => {},
+            setReadOnly: () => {},
+            setMinExtent: () => {},
+            focus: () => {},
+            destroy: () => {},
+          };
+        }
+    "#;
+    let url = format!(
+        "data:text/javascript;charset=utf-8,{}",
+        js_sys::encode_uri_component(module)
+    );
+    let _ = js_sys::Reflect::set(&js_sys::global(), &"__tonkTableGrid".into(), &url.into());
 }
