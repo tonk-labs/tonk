@@ -1,17 +1,16 @@
-//! Main-thread navigate provider, installed with the host.
+//! Main-thread navigation, and the worker→page message listener.
 //!
 //! A worker-side command (e.g. `tonk:join` on success) can't perform a
-//! navigation itself: the service worker has no `window`, and a transient
-//! command never lands in a branch a subscription could observe. So the
-//! worker posts a `{ type: "navigate", href }` message to the originating
-//! client, and this listener — installed on `navigator.serviceWorker` at
-//! host install — performs the redirect with `window.location.assign`.
+//! navigation itself: the service worker has no `window`. It asks through
+//! state: the desired location is asserted as the tab's `tonk:site`
+//! `target` in the branch's state layer, the `<tonk-site>` element sees it
+//! on the subscription it holds over its own stamp and calls
+//! [`navigate_to`], and the `tonk:load` that follows re-stamps the site,
+//! clearing the target. This is the page-side half of Elm's `pushUrl`,
+//! routed through branch state rather than a worker→page message.
 //!
-//! This is the page-side half of Elm's `pushUrl`, routed through the
-//! platform's worker→page channel rather than through branch state. It is
-//! the first "main-thread command provider"; when a second page-only effect
-//! appears (clipboard, focus, title), generalize this into a small registry
-//! keyed by message `type`.
+//! The listener installed here on `navigator.serviceWorker` carries what
+//! is not a location: a sync prompt and a profile change.
 
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
@@ -25,7 +24,6 @@ pub(crate) struct NavigateListener {
 
 /// Install a `navigator.serviceWorker` `message` listener that handles
 /// worker→page messages:
-/// - `{ type: "navigate", href }` — assigns `window.location`.
 /// - `{ type: "sync" }` — dispatches `tonk:committed` on `window` so the
 ///   sync controller pushes immediately instead of waiting for the heartbeat.
 /// - `{ type: "profile-changed" }` — reloads the top-level document so it
@@ -45,31 +43,11 @@ pub(crate) fn install() -> Option<NavigateListener> {
 }
 
 fn handle_worker_message(data: &JsValue) {
-    if let Some(href) = navigate_href(data) {
-        navigate_to(&href);
-    } else if is_sync_message(data) {
+    if is_sync_message(data) {
         dispatch_committed();
     } else if is_profile_changed_message(data) {
         reload_page();
     }
-}
-
-/// Read `href` out of a `{ type: "navigate", href }` message, or `None` when
-/// the message isn't a navigate or carries no usable href.
-fn navigate_href(data: &JsValue) -> Option<String> {
-    let kind = js_sys::Reflect::get(data, &JsValue::from_str("type"))
-        .ok()?
-        .as_string()?;
-    if kind != "navigate" {
-        return None;
-    }
-    let href = js_sys::Reflect::get(data, &JsValue::from_str("href"))
-        .ok()?
-        .as_string()?;
-    if href.is_empty() {
-        return None;
-    }
-    Some(href)
 }
 
 /// Return `true` for a `{ type: "sync" }` message.
@@ -228,36 +206,32 @@ mod tests {
         object.into()
     }
 
-    /// `navigate_href` accepts only a `{ type: "navigate", href }` shape with
-    /// a non-empty href; everything else yields `None` (so an unrelated SW
-    /// message never navigates). We assert the parse, not the navigation —
-    /// performing it would tear the test harness out from under us.
+    /// A `{ type: "navigate", href }` message no longer moves the page:
+    /// navigation arrives as the site's `target` fact, so a stray message
+    /// of that shape is ignored like any other.
     #[dialog_common::test]
-    async fn it_reads_href_only_from_a_navigate_message() {
-        assert_eq!(
-            navigate_href(&message("navigate", "/space/abc")),
-            Some("/space/abc".to_owned()),
-            "a navigate message with an href should yield it"
-        );
-        assert_eq!(
-            navigate_href(&message("navigate", "")),
-            None,
-            "an empty href should yield None"
-        );
-        assert_eq!(
-            navigate_href(&message("other", "/space/abc")),
-            None,
-            "a non-navigate message should yield None"
-        );
-        assert_eq!(
-            navigate_href(&JsValue::from_str("not an object")),
-            None,
-            "a non-object payload should yield None"
-        );
+    async fn it_ignores_a_navigate_shaped_worker_message() {
+        let before = window()
+            .expect("a window in the test harness")
+            .location()
+            .href()
+            .expect("a location href");
+        let calls = install_effect_stub("navigate");
+
+        handle_worker_message(&message("navigate", "/space/abc"));
+
+        let after = window()
+            .expect("a window in the test harness")
+            .location()
+            .href()
+            .expect("a location href");
+        clear_tonk();
+        assert_eq!(calls.length(), 0, "nothing is forwarded");
+        assert_eq!(before, after, "the document does not move");
     }
 
-    /// `is_sync_message` accepts only `{ type: "sync" }`; navigate and
-    /// unrelated messages yield `false`.
+    /// `is_sync_message` accepts only `{ type: "sync" }`; unrelated
+    /// messages yield `false`.
     #[dialog_common::test]
     async fn it_recognises_only_a_sync_message() {
         assert!(
@@ -266,7 +240,7 @@ mod tests {
         );
         assert!(
             !is_sync_message(&message("navigate", "/space/abc")),
-            "a navigate message must not be treated as sync"
+            "a navigate-shaped message must not be treated as sync"
         );
         assert!(
             !is_sync_message(&message("other", "")),

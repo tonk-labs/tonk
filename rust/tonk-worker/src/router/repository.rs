@@ -637,13 +637,17 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
     );
 
     // 2. The space is created and seeded — drop the creator into
-    //    it. Same page-capability channel as the join redirect: a
-    //    `{ type: "navigate", href }` posted to the originating
-    //    client. Fired before the remote attach so the navigation
-    //    doesn't wait on the network; the attach continues in the
-    //    worker regardless.
+    //    it. Same channel as the join redirect: the desired location
+    //    asserted on the originating tab's site, which the tab
+    //    observes and follows. Written before the remote attach so
+    //    the navigation doesn't wait on the network; the attach
+    //    continues in the worker regardless.
     let href = format!("/space/{key}");
-    crate::router::navigate::notify_navigate(env.client(), &href);
+    {
+        let tonk = env.state().read().await;
+        crate::router::navigate::request_navigation(&tonk, env.client(), &href).await;
+        tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+    }
 
     // 3. If the form carried a remote, attach it best-effort to
     //    the identity just created. A failure here just leaves it
@@ -1607,7 +1611,10 @@ async fn publish_invite_state(tonk: &TonkState, state: tonk_schema::command::Inv
             return;
         }
     };
-    main.state.assert_overlay(state);
+    if let Err(error) = main.state.write(state, &tonk.operator).await {
+        log!("invite state: write: {error}");
+        return;
+    }
     tonk.reactor
         .schedule_poll(std::sync::Arc::clone(&main.state));
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
@@ -3235,8 +3242,10 @@ impl dialog_capability::Provider<tonk_schema::command::ForgetInvite> for crate::
                 return;
             }
         };
-        main.state
-            .retain_overlay_entities(|overlaid| overlaid != &space);
+        if let Err(error) = main.state.forget(vec![space], &tonk.operator).await {
+            log!("ForgetInvite: forget: {error}");
+            return;
+        }
         tonk.reactor
             .schedule_poll(std::sync::Arc::clone(&main.state));
         tonk.reactor.run_scheduled_polls(&tonk.operator).await;
@@ -7135,9 +7144,10 @@ mod invite_chain_tests {
         }
 
         // The minted link carries the space's display name as the
-        // advisory `name` parameter, read back through the overlay
+        // advisory `name` parameter, read back through the state-layer
         // `Credential` the share view renders — so the recipient's Hub
-        // row is labeled before the space's content syncs.
+        // row is labeled before the space's content syncs. The state
+        // layer is above the branch, so the read goes through the stack.
         {
             use tonk_schema::command::Credential;
             let tonk = state.read().await;
@@ -7149,7 +7159,7 @@ mod invite_chain_tests {
                 .await
                 .expect("content branch opens");
             let credentials: Vec<Credential> = branch
-                .handle()
+                .stack()
                 .query()
                 .select(Query::<Credential> {
                     this: Term::var("this"),

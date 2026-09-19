@@ -261,7 +261,8 @@ fn reactor_to_error(err: ReactorError) -> TonkWorkerError {
         | ReactorError::Commit(_)
         | ReactorError::Pull(_)
         | ReactorError::Download(_)
-        | ReactorError::Push(_) => TonkWorkerError::Internal(err.to_string()),
+        | ReactorError::Push(_)
+        | ReactorError::Stack(_) => TonkWorkerError::Internal(err.to_string()),
     }
 }
 
@@ -354,7 +355,8 @@ mod tests {
                 | ReactorError::Commit(_)
                 | ReactorError::Pull(_)
                 | ReactorError::Download(_)
-                | ReactorError::Push(_) => false,
+                | ReactorError::Push(_)
+                | ReactorError::Stack(_) => false,
             }
         }
         // `is_absence` must agree with that intent for the cases we can

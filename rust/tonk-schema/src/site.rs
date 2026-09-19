@@ -20,8 +20,35 @@ use dialog_query::Concept;
 
 use crate::domain::route::{Concept as RoutePathConcept, Path as RouteTablePath};
 use crate::domain::site::{
-    Anchor, Branch, Concept as SiteConcept, Path, Replica, Route as SiteRoute, Space,
+    Anchor, Branch, Concept as SiteConcept, Path, Replica, Route as SiteRoute, Space, Target,
 };
+
+/// Where a tab has been asked to go, on its site entity.
+///
+/// The desired half of a navigation: a worker command asserts it into
+/// the site's state layer, the tab's `<tonk-site>` observes it through
+/// the subscription it already holds on its own stamp and navigates,
+/// and the `tonk:load` that follows re-stamps the site, which forgets
+/// the entity's facts and so clears the target. The service worker has
+/// no `window`; this is how it asks the page to move without a message
+/// channel to the client that asked.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SiteTarget {
+    /// The per-tab site entity (`site:<uuid>`).
+    pub this: Entity,
+    /// The href the tab is asked to load.
+    pub target: Target,
+}
+
+impl SiteTarget {
+    /// Ask the tab at `site` to go to `href`.
+    pub fn new(site: Entity, href: impl Into<String>) -> Self {
+        Self {
+            this: site,
+            target: Target(href.into()),
+        }
+    }
+}
 
 /// A tab's location and matched route, keyed on the per-tab site entity. The SW
 /// stamps it; the shell reads it. All fields cardinality one, so a navigation

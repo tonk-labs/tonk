@@ -677,10 +677,21 @@ async fn evaluate_on_branch_with<'a>(
             // dispatch runs on — the commit sweeps them from the transaction.
             let matches_before = evaluated.matches;
             let commits = evaluated.commits;
-            let transients = evaluated.transients;
+            let requested = evaluated.transients;
             let t_commit = web_time::Instant::now();
             match stage_and_publish(tonk_state, evaluated.txn, record).await {
                 Ok(revision_after) => {
+                    // What the commit witnessed on the branch's session
+                    // store: the document's own commands plus any a rule
+                    // concluded and the next round consumed. The
+                    // evaluator's mirror is the floor when the witness
+                    // reports nothing (its queue overflowed).
+                    let witnessed = session.state.drain_commands();
+                    let transients = if witnessed.is_empty() {
+                        requested
+                    } else {
+                        witnessed
+                    };
                     break (
                         revision_before,
                         revision_after,

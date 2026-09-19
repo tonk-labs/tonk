@@ -370,8 +370,18 @@ fn install_self_heal(this: &HtmlElement, slot: Rc<RefCell<Option<Subscription>>>
         let host_for_frame = host.clone();
         let reset: Closure<dyn FnMut(JsValue, JsValue)> =
             Closure::wrap(Box::new(move |payload: JsValue, _opts: JsValue| {
-                if js_sys::Array::from(&payload).length() == 0 {
+                let rows = js_sys::Array::from(&payload);
+                if rows.length() == 0 {
                     heal_claim(&host_for_frame);
+                    return;
+                }
+                // The worker asks this tab to move by asserting `target`
+                // on its site: the desired location, beside the stamped
+                // `path` that is the observed one. Follow it; the
+                // `tonk:load` the navigation fires re-stamps the site
+                // and clears the target.
+                if let Some(target) = stamped_target(&rows) {
+                    tonk_host::navigate_to(&target);
                 }
             }));
         let _ = js_sys::Reflect::set(&probe, &"reset".into(), reset.as_ref());
@@ -421,12 +431,26 @@ fn heal_claim(host: &Element) {
 }
 
 /// The heal subscription's body: the site entity's stamped `path` — one
-/// cardinality-one field, so an empty frame is exactly "no stamp".
+/// required cardinality-one field, so an empty frame is exactly "no stamp"
+/// — and its optional `target`, the location the worker has asked this tab
+/// to go to, absent until a command sets it.
 fn heal_query(site: &str) -> Option<JsValue> {
     let body = format!(
-        r#"{{"predicate":{{"with":{{"path":{{"the":"xyz.tonk.site/path","as":"Text","cardinality":"one"}}}}}},"terms":{{"this":{site:?},"path":{{"?":{{"name":"path"}}}}}}}}"#
+        r#"{{"predicate":{{"with":{{"path":{{"the":"xyz.tonk.site/path","as":"Text","cardinality":"one"}},"target":{{"the":"xyz.tonk.site/target","as":"Text","cardinality":"one","optional":true}}}}}},"terms":{{"this":{site:?},"path":{{"?":{{"name":"path"}}}},"target":{{"?":{{"name":"target"}}}}}}}}"#
     );
     js_sys::JSON::parse(&body).ok()
+}
+
+/// The `target` the site's rows carry, if any row has a non-empty one.
+/// Rows are wire conclusions: `{ this, fields: { path, target? } }`.
+fn stamped_target(rows: &js_sys::Array) -> Option<String> {
+    rows.iter().find_map(|row| {
+        let fields = js_sys::Reflect::get(&row, &JsValue::from_str("fields")).ok()?;
+        let target = js_sys::Reflect::get(&fields, &JsValue::from_str("target"))
+            .ok()?
+            .as_string()?;
+        (!target.is_empty()).then_some(target)
+    })
 }
 
 /// This element's site entity (`site:<uuid>`), minted once and stored on the

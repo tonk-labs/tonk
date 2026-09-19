@@ -18,15 +18,55 @@ use dialog_effects::authority::{Attest, Identify};
 use dialog_effects::blob::{Import as BlobImport, Read as BlobRead};
 use dialog_effects::memory::{Publish, Resolve};
 use dialog_effects::space::Load;
-use dialog_repository::{Hydrate, RemoteSite};
+use dialog_repository::{CreateEphemeral, Hydrate, OpenEphemeral, RemoteSite};
 
 /// Bound needed to load a repository via the profile.
 pub trait LoadProvider: Provider<Load> + ConditionalSync + 'static {}
 impl<T> LoadProvider for T where T: Provider<Load> + ConditionalSync + 'static {}
 
-/// Bound needed to open a branch on a repository.
-pub trait BranchOpenProvider: Provider<Resolve> + ConditionalSync + 'static {}
-impl<T> BranchOpenProvider for T where T: Provider<Resolve> + ConditionalSync + 'static {}
+/// Bound needed to open a branch on a repository: the branch itself
+/// resolves its head, and its stack — the process's state layer and
+/// wiring above it — is created through the environment and its
+/// wiring committed, so the commit bounds and the ephemeral commands
+/// come along.
+pub trait BranchOpenProvider:
+    Provider<Resolve>
+    + Provider<Get>
+    + Provider<Put>
+    + Provider<Import>
+    + Provider<Publish>
+    + Provider<Identify>
+    + Provider<Attest>
+    + Provider<Hydrate>
+    + Provider<Preload>
+    + Provider<Speculation>
+    + Provider<Fork<RemoteSite, Get>>
+    + Provider<Fork<RemoteSite, Resolve>>
+    + Provider<CreateEphemeral>
+    + Provider<OpenEphemeral>
+    + ConditionalSync
+    + 'static
+{
+}
+impl<T> BranchOpenProvider for T where
+    T: Provider<Resolve>
+        + Provider<Get>
+        + Provider<Put>
+        + Provider<Import>
+        + Provider<Publish>
+        + Provider<Identify>
+        + Provider<Attest>
+        + Provider<Hydrate>
+        + Provider<Preload>
+        + Provider<Speculation>
+        + Provider<Fork<RemoteSite, Get>>
+        + Provider<Fork<RemoteSite, Resolve>>
+        + Provider<CreateEphemeral>
+        + Provider<OpenEphemeral>
+        + ConditionalSync
+        + 'static
+{
+}
 
 /// Bound needed for raw content-addressed block access — a
 /// `LocalIndex` over the branch archive, reading tree nodes by
