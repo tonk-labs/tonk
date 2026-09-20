@@ -62,6 +62,7 @@ tonk-account = { workspace = true }
 tonk-analytics = { workspace = true }
 tonk-analyzer = { workspace = true }
 tonk-common = { workspace = true }
+tonk-document = { workspace = true }
 tonk-evaluator = { workspace = true }
 tonk-identity = { workspace = true }
 getrandom = { workspace = true }

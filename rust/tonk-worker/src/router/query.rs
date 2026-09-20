@@ -124,6 +124,10 @@ async fn query_on_branch<'a>(
     let wire: Query = serde_json::from_slice(&bytes)
         .map_err(|e| TonkWorkerError::Router(format!("invalid query body: {e}")))?;
 
+    if wire.formula().is_none() {
+        super::document::prepare_mirrors(tonk, branch).await;
+    }
+
     let want_stream = headers
         .get(header::ACCEPT)
         .and_then(|v| v.to_str().ok())
@@ -144,10 +148,18 @@ async fn query_on_branch<'a>(
                 .acquire(&tonk.operator)
                 .await
                 .map_err(reactor_to_error)?;
-            let conclusions =
+            // `document/*` formulas are history reads, resolved by the
+            // host-neutral `tonk-document` crate so the CLI answers them
+            // the same way; everything else is the reactor's `tree/*`.
+            let conclusions = if wire.formula().is_some_and(tonk_document::formula::handles) {
+                tonk_document::formula::resolve(session.handle(), &tonk.operator, &wire)
+                    .await
+                    .map_err(|e| TonkWorkerError::Router(e.to_string()))?
+            } else {
                 crate::reactor::resolve_formula(session.handle(), &tonk.operator, &wire)
                     .await
-                    .map_err(|e| TonkWorkerError::Router(e.to_string()))?;
+                    .map_err(|e| TonkWorkerError::Router(e.to_string()))?
+            };
             return Ok(Json(conclusions).into_response());
         }
     };

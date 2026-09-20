@@ -643,6 +643,14 @@ pub async fn sync_repository(state: &AppState, repo: &str) -> Result<(), String>
                 failed = true;
             }
         }
+        // The branch's documents, after the branch itself: a pull may
+        // have brought in heads claims whose bytes the document pass
+        // now fetches. Only dirty documents and documents an element
+        // asked for lately are touched, so an idle space costs nothing.
+        if let Err(e) = super::document::sync_documents(state, repo, &branch).await {
+            log!("{e}");
+            failed = true;
+        }
     }
 
     if failed {

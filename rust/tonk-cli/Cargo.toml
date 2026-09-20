@@ -47,6 +47,10 @@ name = "notation"
 path = "tests/notation.rs"
 
 [[test]]
+name = "document"
+path = "tests/document.rs"
+
+[[test]]
 name = "sync"
 path = "tests/sync.rs"
 
@@ -197,6 +201,7 @@ zeroize = { workspace = true }
 tonk-invite = { workspace = true }
 tonk-notation = { workspace = true }
 tonk-render = { workspace = true }
+tonk-document = { workspace = true }
 tonk-schema = { workspace = true }
 tonk-template = { workspace = true }
 tonk-worker-api = { workspace = true }
@@ -216,3 +221,7 @@ tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
 tonk-access-service = { workspace = true, features = ["helpers"] }
 unicode-width = { workspace = true }
 wasm-bindgen-test = { workspace = true }
+
+[[test]]
+name = "review_document"
+path = "tests/review_document.rs"

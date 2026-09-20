@@ -1,0 +1,47 @@
+[package]
+name = "tonk-document"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Automerge documents in tonk: the document engine, command handlers, mirror, history formulas and sync pass, shared by the worker and the CLI."
+
+[dependencies]
+async-trait = { workspace = true }
+automerge = { workspace = true }
+base64 = { workspace = true }
+blake3 = { workspace = true }
+bs58 = { workspace = true }
+dialog-artifacts = { workspace = true }
+dialog-capability = { workspace = true }
+dialog-common = { workspace = true }
+dialog-effects = { workspace = true }
+dialog-query = { workspace = true }
+dialog-reactor = { workspace = true }
+dialog-repository = { workspace = true }
+futures-util = { workspace = true }
+hex = { workspace = true }
+ipld-core = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tonk-schema = { workspace = true }
+
+# automerge draws its actor ids from getrandom, which has no default
+# backend on wasm32-unknown-unknown.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { workspace = true }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+dialog-common = { workspace = true, features = ["helpers"] }
+dialog-operator = { workspace = true, features = ["helpers"] }
+tokio = { workspace = true, features = ["macros", "rt"] }
+wasm-bindgen-test = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(dialog_test_native_integration)',
+    'cfg(dialog_test_wasm_integration)',
+    'cfg(feature, values("web-integration-tests"))',
+] }

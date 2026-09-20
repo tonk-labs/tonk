@@ -26,8 +26,8 @@ const assets = resolve(root, "assets");
 
 const CHROME =
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-const PORT = 8899;
-const DEBUG_PORT = 9222;
+const PORT = Number(process.env.REVIEW_HTTP_PORT ?? 8899);
+const DEBUG_PORT = Number(process.env.REVIEW_DEBUG_PORT ?? 9222);
 
 const MIME = { ".js": "text/javascript", ".html": "text/html", ".map": "application/json" };
 
@@ -153,6 +153,29 @@ async function runTests(evalJs) {
   `);
 
   // 1. Initial content from the text child (the <textarea>-style channel).
+  {
+    const result = await evalJs(`
+      let writes = 0;
+      const host = (event) => {
+        if (event.detail.entity !== 'id:review/disconnect') return;
+        event.preventDefault();
+        if (event.detail.write) writes++;
+        event.detail.result = Promise.resolve({ format: 'automerge/text@1', heads: ['base'], text: 'original' });
+      };
+      document.addEventListener('tonk-document', host);
+      const { el, editor } = await window.__boot(el => el.setAttribute('subject', 'id:review/disconnect'));
+      for (let i = 0; i < 100 && editor.getMarkdown() !== 'original'; i++) await window.__wait(10);
+      const opened = editor.getMarkdown();
+      editor.view.dispatch(editor.view.state.tr.insertText('unsaved ', 1));
+      const beforeRemoval = editor.getMarkdown();
+      el.remove();
+      await window.__wait(600);
+      document.removeEventListener('tonk-document', host);
+      return { writes, opened, beforeRemoval };
+    `);
+    check('review: removing document element flushes its final keystrokes to the host', result.opened === 'original' && result.beforeRemoval.includes('unsaved') && result.writes === 1, JSON.stringify(result));
+  }
+
   {
     const doc = await evalJs(`
       const { el, editor } = await window.__boot((el) => {

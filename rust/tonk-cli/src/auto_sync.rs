@@ -179,7 +179,10 @@ pub async fn around_commit<T, E>(
 /// warning — the command proceeds either way.
 async fn pull_before(site: &TonkSite) {
     match sync::pull(site).await {
-        Ok(_) | Err(SyncError::UpstreamNotConfigured { .. }) => {}
+        // The branch first, then its documents: the pull may have brought
+        // heads claims whose bytes the document pass now fetches.
+        Ok(_) => crate::document::sync_all(site).await,
+        Err(SyncError::UpstreamNotConfigured { .. }) => {}
         Err(err) => warn("pull", &err),
     }
 }
@@ -189,7 +192,11 @@ async fn pull_before(site: &TonkSite) {
 /// local write is already committed.
 async fn push_after(site: &TonkSite) -> Option<SyncError> {
     match sync::push(site).await {
-        Ok(_) | Err(SyncError::UpstreamNotConfigured { .. }) => None,
+        Ok(_) => {
+            crate::document::sync_all(site).await;
+            None
+        }
+        Err(SyncError::UpstreamNotConfigured { .. }) => None,
         Err(error) => Some(error),
     }
 }

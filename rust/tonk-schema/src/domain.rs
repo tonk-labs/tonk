@@ -929,6 +929,138 @@ pub mod command {
         pub struct Sealed(pub String);
     }
 
+    /// Attributes of `document/replace`: replace the one occurrence of a quoted passage. Declared in
+    /// `tonk-core/assets/library/document.yaml`; handled by `tonk-document`.
+    pub mod document_replace {
+        use super::super::Entity;
+        use super::Attribute;
+
+        /// The document entity. Derived attribute: `xyz.tonk.document.replace/document`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.document.replace")]
+        pub struct Document(pub Entity);
+
+        /// The passage to replace; it must occur exactly once. Derived attribute: `xyz.tonk.document.replace/find`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.document.replace")]
+        pub struct Find(pub String);
+
+        /// The replacement text. Derived attribute: `xyz.tonk.document.replace/with`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.document.replace")]
+        pub struct With(pub String);
+    }
+
+    /// Attributes of `document/insert`: insert text after the one occurrence of a quoted passage. Declared in
+    /// `tonk-core/assets/library/document.yaml`; handled by `tonk-document`.
+    pub mod document_insert {
+        use super::super::Entity;
+        use super::Attribute;
+
+        /// The document entity. Derived attribute: `xyz.tonk.document.insert/document`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.document.insert")]
+        pub struct Document(pub Entity);
+
+        /// The passage to insert after; it must occur exactly once. Derived attribute: `xyz.tonk.document.insert/after`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.document.insert")]
+        pub struct After(pub String);
+
+        /// The text to insert. Derived attribute: `xyz.tonk.document.insert/text`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.document.insert")]
+        pub struct Text(pub String);
+    }
+
+    /// Attributes of `document/splice`: exact range edit, read at `heads`. Declared in
+    /// `tonk-core/assets/library/document.yaml`; handled by `tonk-document`.
+    pub mod document_splice {
+        use super::super::Entity;
+        use super::Attribute;
+
+        /// The document entity. Derived attribute: `xyz.tonk.document.splice/document`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.document.splice")]
+        pub struct Document(pub Entity);
+
+        /// The heads the range was computed against, hex hashes separated by spaces. Derived attribute: `xyz.tonk.document.splice/heads`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.document.splice")]
+        pub struct Heads(pub String);
+
+        /// Start of the range, UTF-16 units. Derived attribute: `xyz.tonk.document.splice/at`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.document.splice")]
+        pub struct At(pub u64);
+
+        /// Units to delete. Derived attribute: `xyz.tonk.document.splice/delete`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.document.splice")]
+        pub struct Delete(pub u64);
+
+        /// The text to insert. Derived attribute: `xyz.tonk.document.splice/text`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.document.splice")]
+        pub struct Text(pub String);
+    }
+
+    /// Attributes of `document/put`: write one value of a table document. Declared in
+    /// `tonk-core/assets/library/document.yaml`; handled by `tonk-document`.
+    pub mod document_put {
+        use super::super::Entity;
+        use super::Attribute;
+
+        /// The document entity. Derived attribute: `xyz.tonk.document.put/document`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.document.put")]
+        pub struct Document(pub Entity);
+
+        /// Slash-separated path, e.g. `sheets/<id>/cells/B2`. Derived attribute: `xyz.tonk.document.put/path`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.document.put")]
+        pub struct Path(pub String);
+
+        /// The value as text; widths and heights are parsed as numbers. Derived attribute: `xyz.tonk.document.put/value`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.document.put")]
+        pub struct Value(pub String);
+    }
+
+    /// Attributes of `document/remove`: remove one value of a table document, or a whole sheet. Declared in
+    /// `tonk-core/assets/library/document.yaml`; handled by `tonk-document`.
+    pub mod document_remove {
+        use super::super::Entity;
+        use super::Attribute;
+
+        /// The document entity. Derived attribute: `xyz.tonk.document.remove/document`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.document.remove")]
+        pub struct Document(pub Entity);
+
+        /// Slash-separated path. Derived attribute: `xyz.tonk.document.remove/path`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.document.remove")]
+        pub struct Path(pub String);
+    }
+
+    /// Attributes of `document/restore`: make the content equal to a past version. Declared in
+    /// `tonk-core/assets/library/document.yaml`; handled by `tonk-document`.
+    pub mod document_restore {
+        use super::super::Entity;
+        use super::Attribute;
+
+        /// The document entity. Derived attribute: `xyz.tonk.document.restore/document`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.document.restore")]
+        pub struct Document(pub Entity);
+
+        /// The past version's heads, hex hashes separated by spaces. Derived attribute: `xyz.tonk.document.restore/heads`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.document.restore")]
+        pub struct Heads(pub String);
+    }
+
     /// Attributes of the `account/resend-activation` command, dispatched
     /// by the account panel's resend button while activation is pending.
     pub mod resend {

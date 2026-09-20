@@ -1,11 +1,16 @@
 # ===========================================================================
-# prose — a <tonk-prose> markdown document, edited live and persisted.
+# prose — a <tonk-prose> markdown document that merges.
 # ===========================================================================
-# The editor fires a debounced `change` event on every idle edit; a command
-# reads the new content off the event and a rule writes it back onto the
-# document entity. Reading the versioned `content` envelope (markdown + HLC)
-# rather than the bare value lets the element recognize its own round-tripped
-# edit by version and drop it, so the store echo never disturbs the caret.
+# The body is an automerge document, not a claim. It lives in a memory
+# cell named after this entity (see document.yaml); the branch holds only
+# a pointer, `document/heads`. `<tonk-prose subject={this}>` is all a view
+# needs: the element reads and edits the document through the host, with
+# no command binding and no rule, and two people typing at once keep both
+# edits. Editing writes nothing into the body of branch history.
+#
+# Agents edit a prose document with the `document/*` commands
+# (`document/replace`, `document/insert`, …) and read it through the
+# `document/content` mirror or the `document/*` history formulas.
 # ===========================================================================
 
 # ---------------------------------------------------------------------------
@@ -14,10 +19,11 @@
 
 attribute!: &prose/content
   description: |
-    The document's content as the <tonk-prose> `content` envelope: a
-    versioned wrapper (Tonk-Prose-Version header + HLC ETag) around the
-    markdown body. Stored verbatim and fed back into the editor's `content`
-    attribute, so the element drops its own echo by the version.
+    The body BEFORE the document exists: a seed, or a document written
+    when prose bodies were claims (the <tonk-prose> `content` envelope,
+    or bare markdown). The first open turns it into the automerge
+    document and retracts it, the same way on every replica, so the text
+    is imported once. Never written by the editor.
   the: io.gozala.prose/content
   as: text
 
@@ -27,64 +33,54 @@ attribute!: &prose/content
 
 concept!: &prose
   this: tonk:prose
-  description: A prose document edited with <tonk-prose>.
+  description: A prose document edited with <tonk-prose>; its body is an automerge document.
   with:
+    format:
+      description: |
+        The text-family format, mirrored by the shared document engine.
+        A workbook must not match the prose concept.
+      the: io.gozala.prose/format
+      as: text
+  maybe:
     content:
-      description: The document content (the versioned `content` envelope).
+      description: The body before the document exists (seed or claims-era); see above.
       the: io.gozala.prose/content
       as: text
 
-# ---------------------------------------------------------------------------
-# Command — one per idle edit.
-# The <tonk-prose> `change` event carries the versioned envelope on
-# `event.detail.content`; `subject` carries the document's identity off the
-# element's `data-subject` so the rule knows which document to write.
-# ---------------------------------------------------------------------------
-
-# How `<tonk-prose>`'s change event fills the command. The element's
-# own payload key is `content`; the subject needs no `data-*` attribute
-# because `{this}` is the entity the view is rendering.
-event!: &on/prose-change
-  type: "change"
-  where:
-    subject: "{this}"
-    content: ".detail.content"
-
-command!: &prose/edit
-  description: Edit a prose document.
+# A seed has durable source facts. The shared mirror projects the format
+# only for text documents (including newer read-only text formats), so
+# workbooks cannot match prose and existing documents need no migration.
+concept!: &prose/seed
+  description: A prose document's durable format and claims-era seed body.
   with:
-    subject:
-      description: The document being edited.
-      the: xyz.tonk.prose.edit/subject
-      as: entity
-    content:
-      description: The new content envelope.
-      the: xyz.tonk.prose.edit/content
+    format:
+      description: The durable document format used to open the seed.
+      the: xyz.tonk.document/format
+      as: text
+    content: prose/content
+
+# Preserve `prose!: {format: ...}` as a creation interface. This only
+# declares the durable format; the body remains in the document cell.
+concept!: &prose/document
+  description: The durable document format declared when creating prose.
+  with:
+    format:
+      description: The durable document format used by the shared engine.
+      the: xyz.tonk.document/format
       as: text
 
-# ---------------------------------------------------------------------------
-# Rule — persist the edit onto the document named by the command's subject.
-# Binding `subject` to `?this` writes the (cardinality-one) content in place
-# on that document entity, so each edit overwrites rather than accumulating.
-# ---------------------------------------------------------------------------
-
 rule!:
-  description: Persist a prose edit onto its document.
-  assert!: prose
+  assert!: prose/document
   when:
-    - assert: prose/edit
+    - assert: prose
       where:
-        subject: ?this
-        content: ?content
+        this: ?this
+        format: ?format
 
 # ---------------------------------------------------------------------------
-# View — render the document as an editor. The content is bound as the
-# element's TEXT (between the tags), the way a <textarea> carries its value:
-# the store's `content` envelope is written via set_text_content, which is
-# newline- and markup-safe (an attribute value can be normalized in transit,
-# corrupting the multi-line envelope). `on:prose-change=prose/edit` fires the
-# command on each idle edit; identity comes from the declaration's `{this}`,
-# so the editor needs no `data-subject` to stash and read back.
+# View — render the document as an editor. `subject={this}` selects the
+# element's document mode: it asks the host for this entity's document at
+# this branch's heads and sends its edits back with the heads it last saw.
 # ---------------------------------------------------------------------------
 
 view!:
@@ -92,11 +88,11 @@ view!:
   show:
     ui: |
       <tonk-prose
-        on:prose-change=prose/edit
+        subject={this}
         placeholder="Write something…"
         auto-focus
         style="display: block; min-height: 12rem;"
-      >{content}</tonk-prose>
+      ></tonk-prose>
 
 # ---------------------------------------------------------------------------
 # A directory view so `tonk render prose` (list of documents) resolves. One
@@ -112,14 +108,15 @@ view!:
       </div>
 
 # ---------------------------------------------------------------------------
-# Seed one document so the model resolves on first render. The seed stores a
-# BARE markdown body (no envelope): the editor accepts a bare value as an
-# always-adopt initial document, then stamps versions on subsequent edits.
-# Re-assert this id to reset the document.
+# Seed one document so the model resolves on first render. The seed body is
+# a `content` claim; the first open imports it into the automerge document
+# and retracts it. Re-assert this id to reset the seed (an existing
+# document keeps its own body).
 # ---------------------------------------------------------------------------
 
-prose!:
+prose/seed!:
   this: id:prose/doc
+  format: "automerge/text@1"
   content: |
     # Hello
 

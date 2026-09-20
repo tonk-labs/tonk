@@ -18,6 +18,8 @@ mod tests {
 
     use crate::helpers::{TestEnvironment, driver_with_prf, driver_with_prf_authenticator, goto};
 
+    include!("automerge_review_tests.rs");
+
     // Storybook UI-01: first-root onboarding, playground prompt, and returning Hub.
     #[dialog_common::test]
     async fn it_opens_the_welcome_space_once_then_the_hub(env: TestEnvironment) -> Result<()> {

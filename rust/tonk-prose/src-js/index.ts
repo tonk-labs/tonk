@@ -27,6 +27,10 @@
 //                 text channel; the text child takes precedence when both
 //                 are present.
 //   readonly    — boolean attribute. Presence locks the editor.
+//   at          — document mode only: the heads (space-separated change
+//                 hashes) of a past version to show. The element is then
+//                 read-only and follows nothing; remove `at` to return
+//                 to the branch's live version.
 //   placeholder — ghost text shown while the document is empty.
 //   auto-focus  — boolean attribute. Focus the editor once mounted.
 //
@@ -59,8 +63,17 @@
 import type { ProseEditor, EditorModule } from "./editor/api";
 import { Clock, formatHlc } from "./editor/hlc";
 import { parseContent, formatContent } from "./editor/content";
+import {
+  DocumentSession,
+  eventTransport,
+  parseHeads,
+  textEditor,
+  type TextEdit,
+} from "./document";
 
 const OBSERVED = [
+  "subject",
+  "at",
   "content",
   "value",
   "readonly",
@@ -70,6 +83,13 @@ const OBSERVED = [
   "caret",
 ] as const;
 type ObservedAttr = (typeof OBSERVED)[number];
+
+/** Format of the automerge document a `subject` element edits. */
+const TEXT_FORMAT = "automerge/text@1";
+
+/** How often a document-mode element looks for changes made elsewhere.
+ *  The request is answered on this device, so it costs no network. */
+const DOCUMENT_POLL_MS = 1500;
 
 /** Idle gap before a burst of edits dispatches one `change`. Long
  *  enough to coalesce fast typing, short enough that a store commit
@@ -206,6 +226,17 @@ class TonkProseElement extends HTMLElement {
    *  adopted. */
   #lastKnownHlc = 0n;
 
+  /** Document mode (`subject` present): the body is an automerge
+   *  document the host owns, not this element's light-DOM text. The
+   *  session sends edits with the heads it last saw and takes merged
+   *  content back; see `./document.ts`. Null in standalone mode. */
+  #session: DocumentSession<string, TextEdit> | null = null;
+
+  /** Interval handle for the document-mode poll. */
+  #pollTimer: ReturnType<typeof setInterval> | null = null;
+  /** Why the document last failed to open; "" once it is open. */
+  #documentError = "";
+
   /** Pending teardown scheduled by `disconnectedCallback`. Reactive
    *  frameworks (Leptos, mostly) detach and re-attach DOM nodes
    *  during rerenders; deferring the teardown one macrotask lets a
@@ -262,6 +293,99 @@ class TonkProseElement extends HTMLElement {
     this.#adopt(this.#lightContent());
   }
 
+  /** Whether this element edits an automerge document (`subject`)
+   *  rather than its own light-DOM content. */
+  #documentMode(): boolean {
+    return (this.getAttribute("subject") ?? "") !== "";
+  }
+
+  /** Open the subject's document and keep it in step: load the
+   *  branch's version, then poll for changes made elsewhere. Edits
+   *  leave through `#flushChange`. */
+  #startDocument(): void {
+    this.#stopDocument();
+    const subject = this.getAttribute("subject") ?? "";
+    const editor = this.#editor;
+    if (subject === "" || !editor) return;
+    const at = parseHeads(this.getAttribute("at"));
+    const pinned = at.length > 0;
+    const session = new DocumentSession<string, TextEdit>(
+      eventTransport(this, subject, TEXT_FORMAT, (body) => String(body.text ?? ""), at),
+      textEditor(
+        () => editor.getMarkdown(),
+        // `setMarkdown` replaces only the span that differs and keeps
+        // the caret, so a remote edit does not disturb typing.
+        (text) => editor.setMarkdown(text),
+      ),
+      {
+        pinned,
+        onLarge: () => {
+          console.warn("[tonk-prose] the document is large; it stops taking edits at 8 MiB");
+          this.dispatchEvent(new CustomEvent("documentlarge", { bubbles: true, composed: true }));
+        },
+        onOpen: () => {
+          this.#documentError = "";
+          this.#applyReadOnly();
+          if (session.readonly && !session.pinned) {
+            this.#reportDocumentError(
+              new Error("this document is in a newer format; update the app to edit it"),
+            );
+          }
+        },
+      },
+    );
+    this.#session = session;
+    // Locked until the document is open: text typed before that would
+    // be replaced by the document's. It stays locked when the open keeps
+    // failing — a format this build does not know (the app needs an
+    // update), or heads whose bytes have not arrived yet.
+    this.#applyReadOnly();
+    void session.open().catch((err) => this.#reportDocumentError(err));
+    this.#pollTimer = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      // Before the open worked a poll retries it; a failed poll is
+      // retried by the next tick. Edits a failed save left behind go
+      // first — a poll never runs over unsent text.
+      const step = session.opened && session.dirty ? session.flush() : session.poll();
+      void step.catch((err) => {
+        if (!session.opened) this.#reportDocumentError(err);
+      });
+    }, DOCUMENT_POLL_MS);
+  }
+
+  /** The editor is read-only when the page says so, and whenever the
+   *  document cannot take an edit: not open yet, or a past version. */
+  #applyReadOnly(): void {
+    const session = this.#session;
+    const locked = session !== null && (session.readonly || !session.opened);
+    this.#editor?.setReadOnly(locked || this.hasAttribute("readonly"));
+  }
+
+  /** Tell the page why the document did not open, or why an edit was
+   *  not saved — once per reason, not once per retry. */
+  #reportDocumentError(err: unknown): void {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message === this.#documentError) return;
+    this.#documentError = message;
+    console.warn("[tonk-prose] document:", err);
+    this.dispatchEvent(
+      new CustomEvent("documenterror", {
+        detail: { message },
+        bubbles: true,
+        composed: true,
+      }),
+    );
+  }
+
+  #stopDocument(): void {
+    if (this.#pollTimer !== null) {
+      clearInterval(this.#pollTimer);
+      this.#pollTimer = null;
+    }
+    void this.#session?.finish().catch((err) => this.#reportDocumentError(err));
+    this.#session = null;
+  }
+
   async #mountEditor(token: number): Promise<void> {
     let mod: EditorModule;
     try {
@@ -284,7 +408,7 @@ class TonkProseElement extends HTMLElement {
     // Each is parsed through the envelope so an initial versioned
     // content seeds `#lastKnownHlc` — a later echo of that same version
     // is then correctly recognized and dropped.
-    let raw: string | null = this.#pendingValue;
+    let raw: string | null = this.#documentMode() ? "" : this.#pendingValue;
     if (raw === null) {
       const light = this.#lightContent();
       raw = light !== "" ? light : (this.getAttribute("content") ?? this.getAttribute("value"));
@@ -324,6 +448,7 @@ class TonkProseElement extends HTMLElement {
     });
     this.#pendingValue = null;
     this.#editor = editor;
+    if (this.#documentMode()) this.#startDocument();
 
     this.dispatchEvent(
       new CustomEvent<ReadyDetail>("ready", {
@@ -386,6 +511,29 @@ class TonkProseElement extends HTMLElement {
     const value = this.#pendingChange;
     this.#pendingChange = null;
     if (value === null) return;
+    if (this.#session) {
+      // Document mode: the edit goes to the automerge document. `change`
+      // still fires for observers, with the bare markdown — there is no
+      // envelope, because nothing round-trips through a store.
+      void this.#session
+        .flush()
+        .then(() => {
+          this.#documentError = "";
+        })
+        .catch((err) => {
+          // Offline, or past the size limit: the editor keeps the text and
+          // the next flush sends it again. The page is told why.
+          this.#reportDocumentError(err);
+        });
+      this.dispatchEvent(
+        new CustomEvent<ChangeDetail>("change", {
+          detail: { value, content: value },
+          bubbles: true,
+          composed: true,
+        }),
+      );
+      return;
+    }
     const hlc = this.#clock.tick();
     this.#lastKnownHlc = hlc;
     const content = formatContent({ hlc, value });
@@ -413,6 +561,7 @@ class TonkProseElement extends HTMLElement {
         clearTimeout(this.#changeTimer);
         this.#flushChange();
       }
+      this.#stopDocument();
       this.#textObserver?.disconnect();
       this.#textObserver = null;
       this.#mountToken++;
@@ -427,6 +576,13 @@ class TonkProseElement extends HTMLElement {
     next: string | null,
   ): void {
     switch (name) {
+      case "subject":
+      case "at":
+        // A different subject is a different document, a different `at`
+        // a different version of it: reopen. Before the editor exists
+        // the mount starts it.
+        if (this.#editor && this.#documentMode()) this.#startDocument();
+        break;
       case "content":
         this.#adopt(next ?? "");
         break;
@@ -439,7 +595,7 @@ class TonkProseElement extends HTMLElement {
         }
         break;
       case "readonly":
-        this.#editor?.setReadOnly(next !== null);
+        this.#applyReadOnly();
         break;
       case "placeholder":
         this.#editor?.setPlaceholder(next ?? "");
@@ -459,6 +615,10 @@ class TonkProseElement extends HTMLElement {
    *  disturb the caret; a genuinely newer write advances our clock and
    *  patches the document. */
   #adopt(raw: string): void {
+    // Document mode has no content channel: the body is the subject's
+    // automerge document, and light-DOM text or a `content` attribute
+    // must not overwrite it.
+    if (this.#documentMode()) return;
     const { hlc, value } = parseContent(raw);
     if (hlc !== null) {
       if (hlc <= this.#lastKnownHlc) return; // our echo, or not newer

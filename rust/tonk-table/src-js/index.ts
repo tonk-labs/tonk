@@ -61,6 +61,10 @@
 //                 channel); the text child takes precedence.
 //   value       — legacy/convenience standalone content source.
 //   readonly    — boolean attribute. Presence locks the grid.
+//   at          — document mode only: the heads (space-separated change
+//                 hashes) of a past version to show. The grid is then
+//                 read-only and follows nothing; remove `at` to return
+//                 to the branch's live version.
 //   auto-focus  — boolean attribute. Focus the grid once mounted.
 //   min-rows,
 //   min-cols    — minimum rendered grid extent (defaults 100×26); small
@@ -129,9 +133,27 @@ import {
   parseContent,
 } from "./content";
 import { base64ToBytes, bytesToBase64 } from "./b64";
+import {
+  TableSession,
+  conflictsOf,
+  editsOf,
+  eventTransport,
+  parseHeads,
+  rowsOf,
+  type TableSnapshot,
+} from "./document";
+
+/** Format of the automerge document a `document` element edits. */
+const TABLE_FORMAT = "automerge/table@1";
+
+/** How often a document-mode element looks for changes made elsewhere.
+ *  The request is answered on this device, so it costs no network. */
+const DOCUMENT_POLL_MS = 1500;
 
 const OBSERVED = [
   "subject",
+  "document",
+  "at",
   "content",
   "value",
   "readonly",
@@ -279,6 +301,20 @@ class TonkTableElement extends HTMLElement {
   /** Debounce timer for claims-mode row re-reads. */
   #rowsTimer: ReturnType<typeof setTimeout> | null = null;
 
+  /** Document mode (`subject` + `document`): the workbook is one
+   *  automerge document the host owns. The grid still runs its claims
+   *  dialect — rows in, typed events out — and this session translates
+   *  both; see `./document.ts`. Null in the other modes. */
+  #session: TableSession | null = null;
+
+  /** Interval handle for the document-mode poll. */
+  #pollTimer: ReturnType<typeof setInterval> | null = null;
+  /** Why the document last failed to open; "" once it is open. */
+  #documentError = "";
+
+  /** Microtask flag: edits of one gesture leave as one write. */
+  #flushQueued = false;
+
   /** Debounce timer for the outward `change` event. Coalesces a burst
    *  of edits into one dispatch after an idle gap, so a consumer that
    *  commits each `change` to a store isn't hit per-commit. */
@@ -383,6 +419,135 @@ class TonkTableElement extends HTMLElement {
     return this.hasAttribute("subject");
   }
 
+  /** Whether the workbook is an automerge document (`subject` plus the
+   *  `document` flag) rather than individuated claims. Explicit, so a
+   *  claims-mode view keeps working until it is changed. */
+  #documentMode(): boolean {
+    return this.#claimsMode() && this.hasAttribute("document");
+  }
+
+  /** Open the subject's workbook document and keep it in step. */
+  #startDocument(): void {
+    this.#stopDocument();
+    const subject = this.getAttribute("subject");
+    const grid = this.#grid;
+    if (subject === null || subject === "" || !grid) return;
+    const at = parseHeads(this.getAttribute("at"));
+    const pinned = at.length > 0;
+    const session = new TableSession(
+      eventTransport(this, subject, TABLE_FORMAT, at),
+      (table: TableSnapshot) => {
+        const rows = rowsOf(subject, table);
+        grid.applyRows(rows.sheets, rows.cells, rows.columns, rows.rowSizes);
+        const conflicts = conflictsOf(table);
+        // `::part(cell conflict)`; cleared when the conflict is resolved.
+        grid.setConflicts(conflicts);
+        if (conflicts.length > 0) {
+          // Two people wrote one cell: both replicas show one value, and
+          // the page is told which cells hold another.
+          this.dispatchEvent(
+            new CustomEvent("cellconflict", {
+              bubbles: true,
+              composed: true,
+              detail: { cells: conflicts },
+            }),
+          );
+        }
+      },
+      {
+        pinned,
+        onLarge: () => {
+          console.warn("[tonk-table] the workbook is large; it stops taking edits at 8 MiB");
+          this.dispatchEvent(new CustomEvent("documentlarge", { bubbles: true, composed: true }));
+        },
+        onOpen: () => {
+          this.#documentError = "";
+          this.#applyReadOnly();
+          if (session.readonly && !session.pinned) {
+            this.#reportDocumentError(
+              new Error("this workbook is in a newer format; update the app to edit it"),
+            );
+          }
+        },
+      },
+    );
+    this.#session = session;
+    // Locked until the workbook is open, and for as long as the open
+    // keeps failing — a format this build does not know (the app needs
+    // an update), or heads whose bytes have not arrived yet.
+    this.#applyReadOnly();
+    void session.open().catch((err) => this.#reportDocumentError(err));
+    this.#pollTimer = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      // Before the open worked a poll retries it; a failed poll is
+      // retried by the next tick. Edits a failed save left queued go
+      // first.
+      const step = session.opened && session.pending > 0 ? session.flush() : session.poll();
+      void step.catch((err) => {
+        if (!session.opened) this.#reportDocumentError(err);
+      });
+    }, DOCUMENT_POLL_MS);
+  }
+
+  /** The grid is read-only when the page says so, and whenever the
+   *  document cannot take an edit: not open yet, or a past version. */
+  #applyReadOnly(): void {
+    const session = this.#session;
+    const locked = session !== null && (session.readonly || !session.opened);
+    this.#grid?.setReadOnly(locked || this.hasAttribute("readonly"));
+  }
+
+  /** Tell the page why the document did not open, or why an edit was
+   *  not saved — once per reason, not once per retry. */
+  #reportDocumentError(err: unknown): void {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message === this.#documentError) return;
+    this.#documentError = message;
+    console.warn("[tonk-table] document:", err);
+    this.dispatchEvent(
+      new CustomEvent("documenterror", {
+        detail: { message },
+        bubbles: true,
+        composed: true,
+      }),
+    );
+  }
+
+  #stopDocument(): void {
+    if (this.#pollTimer !== null) {
+      clearInterval(this.#pollTimer);
+      this.#pollTimer = null;
+    }
+    void this.#session?.finish().catch((err) => this.#reportDocumentError(err));
+    this.#session = null;
+  }
+
+  /** Turn one grid mutation event into document edits. The flush is
+   *  queued as a microtask, so every event of one gesture — a paste, a
+   *  row insert — leaves as ONE write and lands as one automerge change. */
+  #documentEdit(type: string, detail: Record<string, unknown>): void {
+    const session = this.#session;
+    if (!session) return;
+    const edits = editsOf(type, detail, () => crypto.randomUUID().replace(/-/g, ""));
+    if (edits.length === 0) return;
+    session.push(edits);
+    if (this.#flushQueued) return;
+    this.#flushQueued = true;
+    queueMicrotask(() => {
+      this.#flushQueued = false;
+      void session
+        .flush()
+        .then(() => {
+          this.#documentError = "";
+        })
+        .catch((err) => {
+          // Offline, or past the size limit: the edits stay queued and the
+          // next flush sends them again. The page is told why.
+          this.#reportDocumentError(err);
+        });
+    });
+  }
+
   /** Debounced claims-mode row re-read: parse the light-DOM data rows
    *  and hand them to the grid to reconcile. */
   #scheduleRows(): void {
@@ -394,6 +559,8 @@ class TonkTableElement extends HTMLElement {
   }
 
   #applyRowsNow(): void {
+    // Document mode feeds the grid from the document, not the light DOM.
+    if (this.#documentMode()) return;
     const grid = this.#grid;
     const subject = this.getAttribute("subject");
     if (!grid || subject === null) return;
@@ -500,6 +667,10 @@ class TonkTableElement extends HTMLElement {
         // — re-dispatches from the host element, where a tonk view
         // binds types to commands and any other host just listens.
         emit: (type, detail) => {
+          // Document mode: a mutation event edits the document. It is
+          // still dispatched, for observers — but a document-mode view
+          // binds no commands to it.
+          this.#documentEdit(type, detail);
           this.dispatchEvent(
             new CustomEvent(type, { bubbles: true, composed: true, detail }),
           );
@@ -526,7 +697,9 @@ class TonkTableElement extends HTMLElement {
     }
     this.#grid = grid;
 
-    if (mode.kind === "claims") {
+    if (this.#documentMode()) {
+      this.#startDocument();
+    } else if (mode.kind === "claims") {
       // Feed the grid whatever claim rows the view has already
       // rendered; later row mutations arrive via the observer.
       this.#applyRowsNow();
@@ -612,6 +785,7 @@ class TonkTableElement extends HTMLElement {
         clearTimeout(this.#rowsTimer);
         this.#rowsTimer = null;
       }
+      this.#stopDocument();
       this.#textObserver?.disconnect();
       this.#textObserver = null;
       this.#mountToken++;
@@ -647,8 +821,13 @@ class TonkTableElement extends HTMLElement {
           this.#adopt(next ?? "");
         }
         break;
+      case "at":
+        // A different version of the same document: reopen the session;
+        // the grid reconciles to the rows it brings.
+        if (_old !== next && this.#grid && this.#documentMode()) this.#startDocument();
+        break;
       case "readonly":
-        this.#grid?.setReadOnly(next !== null);
+        this.#applyReadOnly();
         break;
       case "min-rows":
       case "min-cols":

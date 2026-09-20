@@ -49,6 +49,11 @@ pub mod events {
     pub const EVALUATE: &str = "tonk-evaluate";
     /// Close a previously-opened subscription.
     pub const UNSUBSCRIBE: &str = "tonk-unsubscribe";
+    /// Read or edit the automerge document of an entity. Data plane: a
+    /// document-mode element moves its content and the heads it last
+    /// saw. Edits that are user intent go through `tonk-claim` and the
+    /// `document/*` commands instead.
+    pub const DOCUMENT: &str = "tonk-document";
     /// An undefined custom element rendered and needs registering.
     ///
     /// Unlike the four operations, this one is dispatched by the

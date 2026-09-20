@@ -146,6 +146,9 @@ pub use host::{ClientId, ViewBinding, ViewBindings};
 
 mod blob;
 
+// Automerge documents: the element route, command providers, sync hook.
+mod document;
+
 mod migration;
 
 mod navigate;
@@ -434,6 +437,18 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .route(
             "/api/repository/{repo}/branch/{branch}/blob/{entity}",
             get(blob::serve),
+        )
+        // Automerge documents. Raw data plane, like blob: an element moves
+        // its content and the heads it last saw, with no user intent to
+        // carry as a fact. Fixed to one entity's document cell, so a page
+        // can never reach a branch pointer through it.
+        .route(
+            "/api/repository/{repo}/branch/{branch}/document/{entity}",
+            get(document::read)
+                .post(document::write)
+                .layer(DefaultBodyLimit::max(
+                    tonk_document::session::SIZE_LIMIT * 2,
+                )),
         )
         // Inspect operations
         .route(

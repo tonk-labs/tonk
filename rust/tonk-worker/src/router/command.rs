@@ -215,6 +215,14 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         .command::<super::repository::EnableSyncRequest>()
         .command::<tonk_schema::command::Load>()
         .command::<tonk_schema::command::PromoteMember>()
+        // Document edits from agents and pages. The behaviour is the
+        // host-neutral `tonk-document` crate; see `router/document.rs`.
+        .command::<tonk_schema::command::DocumentReplace>()
+        .command::<tonk_schema::command::DocumentInsert>()
+        .command::<tonk_schema::command::DocumentSplice>()
+        .command::<tonk_schema::command::DocumentPut>()
+        .command::<tonk_schema::command::DocumentRemove>()
+        .command::<tonk_schema::command::DocumentRestore>()
         .command::<tonk_schema::command::EnrollCustomer>()
         .command::<tonk_schema::command::ResendActivation>()
         .command::<tonk_schema::command::DeleteAccount>()
@@ -240,6 +248,14 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
 /// of the three is here and nothing else is.
 fn space_commands() -> CommandRegistry<CommandEnv> {
     CommandRegistry::new()
+        // Document edits from agents and pages. The behaviour is the
+        // host-neutral `tonk-document` crate; see `router/document.rs`.
+        .command::<tonk_schema::command::DocumentReplace>()
+        .command::<tonk_schema::command::DocumentInsert>()
+        .command::<tonk_schema::command::DocumentSplice>()
+        .command::<tonk_schema::command::DocumentPut>()
+        .command::<tonk_schema::command::DocumentRemove>()
+        .command::<tonk_schema::command::DocumentRestore>()
         .command::<tonk_schema::command::Load>()
         // A space may request an invite FOR ITSELF: the space view's
         // blank-canvas share (and the seeded `tonk:invite` descriptor)

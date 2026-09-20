@@ -59,6 +59,10 @@ const ROUTES: &[&str] = &[
     "/api/repository/{repo}/branch/{branch}/claim/assert/{entity}/{attr_ns}/{attr_name}",
     "/api/repository/{repo}/branch/{branch}/claim/retract/{entity}/{attr_ns}/{attr_name}",
     "/api/repository/{repo}/branch/{branch}/claim/select",
+    // Raw data plane: an element moves a document's content and the heads
+    // it last saw. No user intent to carry as a fact — edits from agents
+    // and pages that ARE intent go through the `document/*` commands.
+    "/api/repository/{repo}/branch/{branch}/document/{entity}",
     "/api/repository/{repo}/branch/{branch}/evaluate",
     "/api/repository/{repo}/branch/{branch}/export",
     "/api/repository/{repo}/branch/{branch}/host/{host}/{entity}",

@@ -113,9 +113,22 @@ async fn export_session(
     // Buffer in memory: the dialog exporter wants an `AsyncWrite`,
     // and we want a byte count + a single flush to the real sink.
     let mut buf: Vec<u8> = Vec::new();
+    // A document's bytes live in a memory cell, not in the tree the
+    // export walks: carry them along, each as the branch sees it.
+    let (documents, missing) = tonk_document::transfer::documents(session.handle(), &site.operator)
+        .await
+        .map_err(|e| std::io::Error::other(format!("read documents: {e}")))?;
+    for entity in &missing {
+        eprintln!(
+            "warning: the document {entity} is not on this device; its content is not in the export"
+        );
+    }
     session
         .handle()
-        .export(CsvExporter::from(&mut buf))
+        .export(tonk_document::transfer::WithDocuments::new(
+            CsvExporter::from(&mut buf),
+            documents,
+        ))
         .perform(&site.operator)
         .await
         .map_err(TransferError::Export)?;
@@ -150,9 +163,25 @@ pub async fn import_branch(
         .named_branch(branch)
         .await
         .map_err(|e| std::io::Error::other(format!("acquire branch {branch:?}: {e}")))?;
+    import_session(&session, site, CsvImporter::from(file)).await
+}
+
+/// Import onto one already-acquired branch. Document bytes are restored
+/// to their cells first and never become claims; the rest is committed
+/// as one transaction.
+async fn import_session(
+    session: &dialog_reactor::BranchSession,
+    site: &TonkSite,
+    importer: CsvImporter,
+) -> Result<Revision, TransferError> {
+    let rows = importer.collect::<Vec<_>>().await;
+    let (rest, documents) = tonk_document::transfer::take_documents(rows);
+    tonk_document::transfer::restore(session.handle(), &documents, &site.operator)
+        .await
+        .map_err(|e| std::io::Error::other(format!("restore documents: {e}")))?;
     session
         .handle()
-        .import(CsvImporter::from(file))
+        .import(futures_util::stream::iter(rest))
         .perform(&site.operator)
         .await
         .map_err(TransferError::Import)
@@ -167,10 +196,5 @@ pub async fn import(site: &TonkSite, path: &PathBuf) -> Result<Revision, Transfe
         .branch()
         .await
         .map_err(|e| std::io::Error::other(format!("acquire branch: {e}")))?;
-    session
-        .handle()
-        .import(importer)
-        .perform(&site.operator)
-        .await
-        .map_err(TransferError::Import)
+    import_session(&session, site, importer).await
 }
