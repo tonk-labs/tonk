@@ -573,7 +573,11 @@ view!:
             <button class="hcell hc-acct account-trigger" type="button" data-tab="account"
               data-account-trigger aria-haspopup="menu" aria-expanded="false"
               aria-controls="hub-account-menu">
-              <span data-account-label><tonk-display model="tonk:account/name"></tonk-display></span>
+              <!-- Directory mode (no `entity=`), where an absent row is
+                   `empty`; `no-entity` never shows without an entity to be
+                   absent. The label is the offer: this cell links an account. -->
+              <span data-account-label><tonk-display model="tonk:account/name"
+                ><span slot="empty">add an account</span></tonk-display></span>
             </button>
             <button class="hcell hc-view" type="button" data-tab="spaces" aria-current="page">
               spaces
@@ -1693,7 +1697,11 @@ view!:
             <nav class="hubbar chrome" aria-label="hub">
               <button class="hcell hc-acct account-trigger" type="button" data-tab="account"
                 aria-current="page">
-                <span data-account-label><tonk-display model="tonk:account/name"></tonk-display></span>
+                <!-- Directory mode (no `entity=`), where an absent row is
+                     `empty`; `no-entity` never shows without an entity to be
+                     absent. The label is the offer: this cell links an account. -->
+                <span data-account-label><tonk-display model="tonk:account/name"
+                  ><span slot="empty">add an account</span></tonk-display></span>
               </button>
               <a class="hcell hc-view" href="/">spaces</a>
             </nav>

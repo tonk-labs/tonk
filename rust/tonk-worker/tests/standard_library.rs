@@ -112,6 +112,43 @@ fn it_switches_profiles_by_handle_not_by_label() {
     );
 }
 
+/// The account cell offers to link one when no account is linked.
+///
+/// A fact-backed label renders nothing when its fact is absent, and an
+/// empty account cell is unusable: that cell IS how an account gets
+/// linked, so a person with none would have nothing to click.
+///
+/// The slot is `empty`, not `no-entity`. The display runs in directory
+/// mode here — no `entity=` — where an absent row is "empty"; the
+/// `no-entity` slot never shows without an entity to be absent. Both
+/// spellings look right and only one renders, which is why this pins
+/// the one that does.
+#[test]
+fn it_offers_to_link_an_account_when_none_is() {
+    // The label mounts, not every account-name display: the settings
+    // pane renders the same fact through the `editable` facet, which is
+    // a field to type in rather than a cell to click, and offering to
+    // link an account there would be a second, worse door.
+    let mounts: Vec<&str> = PROFILE_LIBRARY
+        .match_indices("<span data-account-label>")
+        .map(|(at, _)| {
+            let rest = &PROFILE_LIBRARY[at..];
+            rest.split("</tonk-display>").next().unwrap_or(rest)
+        })
+        .collect();
+    assert_eq!(
+        mounts.len(),
+        2,
+        "the hub and the settings route both carry the account label",
+    );
+    for mount in mounts {
+        assert!(
+            mount.contains(r#"<span slot="empty">add an account</span>"#),
+            "an unlinked account must still offer the link; got {mount}",
+        );
+    }
+}
+
 /// The account menu's behaviour is branch data, not Rust.
 ///
 /// Roving focus, Escape and focus restoration are DOM work with no fact
