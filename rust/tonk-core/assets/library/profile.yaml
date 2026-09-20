@@ -1633,6 +1633,18 @@ element!: &hub-bar
           if (cell.dataset.tab === 'account') menu.open();
           else menu.close(false);
         });
+
+        // Adding an account is the same ceremony as linking the first
+        // one, run for a profile that has none. The command rotates
+        // onto that profile; raising the ceremony is this element's
+        // half, because only a guest can reach `window.tonk.register`
+        // and the worker cannot.
+        self.addEventListener('click', (event) => {
+          if (!event.target.closest('[data-add-profile]')) return;
+          const menu = self.querySelector('hub-menu');
+          if (menu) menu.close(false);
+          self.link();
+        });
         // Re-seat on anything that can move the bar. The top page
         // ignores the update when no ceremony is open, so this is free
         // when nothing is up.
