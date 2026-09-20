@@ -18,8 +18,8 @@ let
   # that the same dependencies can be used across all derivations that
   # need them. Crane expects the full git URL as the key.
   cargoGitDependencies = {
-    "git+https://github.com/goblinoats/dialog-db.git?rev=08e5916d51072e293df6743dc3e75537cb885dbb#08e5916d51072e293df6743dc3e75537cb885dbb" =
-      "sha256-AYLUoXOtVcptvB3O2ebiYTdLsC3Ji5cXoxUadcziBJE=";
+    "git+https://github.com/goblinoats/dialog-db.git?rev=3ec2182f22d586e15c8272f90066412f57e5a91a#3ec2182f22d586e15c8272f90066412f57e5a91a" =
+      "sha256-ROUE/tW0YkFwNoOTSrTC4s0bd7pVu1B8xIK0DvA5r+I=";
   };
 
   # Filter source to only Rust-relevant files
