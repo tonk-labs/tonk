@@ -49,34 +49,9 @@ fn handle_worker_message(data: &JsValue) {
         navigate_to(&href);
     } else if is_sync_message(data) {
         dispatch_committed();
-    } else if let Some(reason) = register_reason(data) {
-        // The ceremony is a top-page dialog with a passkey prompt, which
-        // the worker cannot raise. It forwards the same `register`
-        // payload a guest posts over the portal bridge, so the page's
-        // existing handler serves both callers.
-        //
-        // No anchor: the guest measures its own bar and sends that as a
-        // separate `reseat` update. Opening unanchored and being reseated
-        // is the path a profile transition already takes.
-        request_registration(&format!(r#"{{"reason":"{reason}","space":""}}"#));
     } else if is_profile_changed_message(data) {
         reload_page();
     }
-}
-
-/// Read `reason` out of a `{ type: "register", reason }` message, or
-/// `None` when the message is not a register request.
-fn register_reason(data: &JsValue) -> Option<String> {
-    let kind = js_sys::Reflect::get(data, &JsValue::from_str("type"))
-        .ok()
-        .and_then(|value| value.as_string())?;
-    if kind != "register" {
-        return None;
-    }
-    js_sys::Reflect::get(data, &JsValue::from_str("reason"))
-        .ok()
-        .and_then(|value| value.as_string())
-        .filter(|reason| !reason.is_empty())
 }
 
 /// Read `href` out of a `{ type: "navigate", href }` message, or `None` when

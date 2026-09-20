@@ -384,10 +384,15 @@ impl dialog_capability::Provider<tonk_schema::command::AddProfile> for crate::ro
             log!("AddProfile failed: {error}");
             return;
         }
-        // The rotation already told every OTHER window to reload. This
-        // one is asked to open the ceremony instead, which is why the
-        // client is passed here and withheld there.
-        super::navigate::notify_register(self.client(), "profile-transition");
+        // The ceremony is NOT raised from here. It is a top-page passkey
+        // dialog whose handler lives behind the portal bridge, reachable
+        // only from a guest calling `window.tonk.register`; a worker
+        // message routed through `tonk-host` reaches the top page, where
+        // there is no `window.tonk` to forward to, and intercepting that
+        // path stopped the real handler from ever seeing the request.
+        //
+        // So the rotation is all this command does, and the view raises
+        // the ceremony from the guest as it always has.
 
         // Report the ask, so the hub can render "a signup is up" from a
         // fact rather than from element state. The element carried this
