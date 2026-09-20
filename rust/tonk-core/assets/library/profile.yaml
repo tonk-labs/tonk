@@ -579,13 +579,13 @@ view!:
               <span data-account-label><tonk-display model="tonk:account/name"
                 ><span slot="empty">add an account</span></tonk-display></span>
             </button>
-            <button class="hcell hc-view" type="button" data-tab="spaces" aria-current="page">
+            <button class="hcell hc-view" type="button" data-tab="spaces" data-return-spaces aria-current="page">
               spaces
             </button>
           </nav>
 
-          <hub-menu id="hub-account-menu" class="account-menu chrome" role="menu">
-            <a class="account-menu__row" href="/settings" role="menuitem">
+          <hub-menu id="hub-account-menu" class="account-menu chrome" data-account-menu role="menu">
+            <a class="account-menu__row" href="/settings" data-open-settings role="menuitem">
               settings
               <svg class="settings-icon" viewBox="0 0 9 9" aria-hidden="true">
                 <g stroke="currentColor" stroke-width="1.2">
@@ -597,8 +597,11 @@ view!:
               </svg>
             </a>
             <tonk-display model="tonk:profile/row"></tonk-display>
+            <!-- `data-add-profile` names the control for anything that
+                 has to find it from outside the view — the e2e suite
+                 drives the whole signup through this button. -->
             <button class="account-menu__row account-menu__row--ink" type="button"
-              on:add-profile=tonk:add-profile role="menuitem">
+              data-add-profile on:add-profile=tonk:add-profile role="menuitem">
               add account<span class="g" aria-hidden="true">+</span>
             </button>
           </hub-menu>
@@ -1502,7 +1505,7 @@ view!:
             <tonk-display model="tonk:account/name" view="editable"></tonk-display>
           </span>
         </div>
-        <div class="srowd"><span>account email</span><b>{email}</b></div>
+        <div class="srowd"><span>account email</span><b data-settings-email>{email}</b></div>
         <div class="sect">passkeys</div>
         <tonk-display model="tonk:account/passkey"></tonk-display>
         <p class="expl">
@@ -1517,7 +1520,7 @@ view!:
   this: tonk:account/name
   show:
     editable: |
-      <tonk-editable class="sname" value={name} aria-label="display name"
+      <tonk-editable class="sname" data-settings-name value={name} aria-label="display name"
         on:profile-rename=profile/rename></tonk-editable>
 
 view!:
@@ -1525,8 +1528,8 @@ view!:
   show:
     directory: |
       <div class="srowd" data-id={this}>
-        <b class="lft">{created-on}</b>
-        <b>{created-at}</b>
+        <b class="lft" data-settings-passkey-device>{created-on}</b>
+        <b data-settings-passkey-created>{created-at}</b>
       </div>
 
 # The hub bar's tab and ceremony behaviour, as branch data.
@@ -1721,7 +1724,7 @@ view!:
                 <span data-account-label><tonk-display model="tonk:account/name"
                   ><span slot="empty">add an account</span></tonk-display></span>
               </button>
-              <a class="hcell hc-view" href="/">spaces</a>
+              <a class="hcell hc-view" href="/" data-return-spaces>spaces</a>
             </nav>
             <section class="settings chrome">
               <ui-account-settings></ui-account-settings>

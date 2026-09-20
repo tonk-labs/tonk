@@ -149,6 +149,43 @@ fn it_offers_to_link_an_account_when_none_is() {
     }
 }
 
+/// The hub keeps the handles its e2e suite drives it by.
+///
+/// These are `data-*` attributes with no styling or behaviour attached:
+/// their whole job is to be findable from outside the view. Rewriting
+/// the bar's markup dropped four of them at once, and each one only
+/// surfaced as a separate e2e failure a full run apart.
+///
+/// Listed here rather than left to the browser suite because a unit
+/// test says which handle vanished in seconds, where the e2e says only
+/// that something timed out after half a minute.
+#[test]
+fn it_keeps_the_handles_the_suite_drives_the_hub_by() {
+    for handle in [
+        "data-account-trigger",
+        "data-account-label",
+        "data-account-menu",
+        "data-add-profile",
+        "data-open-settings",
+        "data-return-spaces",
+        "data-settings-name",
+        "data-settings-email",
+        "data-settings-passkey-device",
+    ] {
+        // Matched as a real attribute, not anywhere in the text: a
+        // comment naming the handle would otherwise satisfy this, which
+        // is exactly how the first version of this test passed while
+        // the attribute was gone.
+        let attribute = format!("{handle} ");
+        let attribute_last = format!("{handle}>");
+        assert!(
+            PROFILE_LIBRARY.contains(&attribute) || PROFILE_LIBRARY.contains(&attribute_last),
+            "`{handle}` is how the suite finds this control; without it the \
+             test times out rather than saying what moved",
+        );
+    }
+}
+
 /// With no account, the account cell raises the signup rather than
 /// switching tabs.
 ///
