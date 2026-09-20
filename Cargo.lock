@@ -4944,6 +4944,7 @@ dependencies = [
  "tonk-notation",
  "tonk-render",
  "tonk-schema",
+ "tonk-template",
  "tonk-worker-api",
  "tracing-log",
  "tracing-subscriber",
@@ -5000,6 +5001,7 @@ dependencies = [
 name = "tonk-display"
 version = "0.6.15"
 dependencies = [
+ "axum",
  "custom-elements",
  "dialog-common",
  "indexmap",
@@ -5015,6 +5017,8 @@ dependencies = [
  "tonk-notation",
  "tonk-schema",
  "tonk-template",
+ "tonk-worker",
+ "tower",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",

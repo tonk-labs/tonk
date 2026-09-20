@@ -54,6 +54,14 @@ pub mod events {
     /// saw. Edits that are user intent go through `tonk-claim` and the
     /// `document/*` commands instead.
     pub const DOCUMENT: &str = "tonk-document";
+    /// An undefined custom element rendered and needs registering.
+    ///
+    /// Unlike the four operations, this one is dispatched by the
+    /// element runtime rather than by a consumer, and carries
+    /// `detail: { tag }`. It bubbles from the element that needs the
+    /// definition so a handler can read routing context off its
+    /// ancestors; whoever services it is installed once at bootstrap.
+    pub const ELEMENT_NEEDED: &str = "tonk-element-needed";
 
     /// All four operation event names. Consumer crates install the
     /// depth annotator on this set.
