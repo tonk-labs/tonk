@@ -49,7 +49,12 @@ export interface Reply<T> {
 /** How the session reaches the host. */
 export interface Transport<T, E> {
   read(): Promise<Reply<T>>;
-  write(heads: string[], edits: E[]): Promise<Reply<T>>;
+  write(heads: string[], edits: E[], request?: EditRequest): Promise<Reply<T>>;
+}
+
+export interface EditRequest { id: string; time: number }
+function requestIdentity(): EditRequest {
+  return { id: crypto.randomUUID(), time: Math.floor(Date.now() / 1000) };
 }
 
 /** What the session needs from its editor. */
@@ -74,6 +79,9 @@ export class DocumentSession<T, E> {
    *  against, and the only state remote content may replace. */
   #accounted: T | null = null;
   #inFlight = false;
+  #flight: Promise<void> | null = null;
+  #pending: { heads: string[]; edits: E[]; content: T; request: EditRequest } | null = null;
+  #final: { content: T } | null = null;
   #again = false;
   #closed = false;
   /** Pinned to a past version: opened once, then neither written nor
@@ -120,7 +128,7 @@ export class DocumentSession<T, E> {
   /** Load the branch's version into the editor. */
   async open(): Promise<void> {
     const reply = await this.#transport.read();
-    if (this.#closed) return;
+    if (this.#closed || this.opened) return;
     this.#known = reply.heads;
     this.#accounted = reply.content;
     this.#newer = reply.readonly === true;
@@ -131,37 +139,49 @@ export class DocumentSession<T, E> {
   /** Whether the editor holds edits the host has not accounted for. */
   get dirty(): boolean {
     return (
-      this.#accounted !== null &&
-      !this.#editor.same(this.#editor.current(), this.#accounted)
+      this.#pending !== null || (this.#accounted !== null &&
+      !this.#editor.same(this.#current(), this.#accounted))
     );
   }
 
   /** Send the editor's unsent edits. Safe to call at any time and any
    *  number of times; concurrent calls coalesce. */
-  async flush(): Promise<void> {
+  flush(): Promise<void> {
+    if (this.#flight) { this.#again = true; return this.#flight; }
+    this.#flight = this.#flush().finally(() => { this.#flight = null; });
+    return this.#flight;
+  }
+
+  #current(): T { return this.#final ? this.#final.content : this.#editor.current(); }
+
+  async #flush(): Promise<void> {
     if (this.#closed || this.readonly || this.#accounted === null) return;
     if (this.#inFlight) {
       this.#again = true;
       return;
     }
-    const sent = this.#editor.current();
-    if (this.#editor.same(sent, this.#accounted)) return;
+    const current = this.#current();
+    if (!this.#pending && this.#editor.same(current, this.#accounted)) return;
+    const pending = this.#pending ??= { heads: [...this.#known], content: current,
+      edits: this.#editor.edits(this.#accounted, current), request: requestIdentity() };
+    const sent = pending.content;
 
     this.#inFlight = true;
     try {
-      const edits = this.#editor.edits(this.#accounted, sent);
-      const reply = await this.#transport.write(this.#known, edits);
+      const reply = await this.#transport.write(pending.heads, pending.edits, pending.request);
       if (this.#closed) return;
+      this.#pending = null;
       if (reply.large === true && !this.#large) {
         // Said once: automerge keeps every edit, so it only gets larger.
         this.#large = true;
         this.#onLarge?.();
       }
-      if (this.#editor.same(this.#editor.current(), sent)) {
+      if (this.#editor.same(this.#current(), sent)) {
         // Nothing typed meanwhile: take the merged branch state.
         this.#known = reply.heads;
         this.#accounted = reply.content;
-        if (!this.#editor.same(reply.content, sent)) {
+        if (this.#final) this.#final.content = reply.content;
+        if (!this.#final && !this.#editor.same(reply.content, sent)) {
           this.#editor.apply(reply.content);
         }
       } else {
@@ -177,7 +197,7 @@ export class DocumentSession<T, E> {
     }
     if (this.#again) {
       this.#again = false;
-      await this.flush();
+      await this.#flush();
     }
   }
 
@@ -191,8 +211,9 @@ export class DocumentSession<T, E> {
     if (this.#accounted === null) return this.open();
     if (this.#pinned) return;
     if (this.#inFlight || this.dirty) return;
+    const known = this.#known;
     const reply = await this.#transport.read();
-    if (this.#closed || this.#inFlight || this.dirty) return;
+    if (this.#closed || this.#inFlight || this.dirty || this.#known !== known) return;
     if (sameHeads(reply.heads, this.#known)) return;
     this.#known = reply.heads;
     this.#accounted = reply.content;
@@ -201,6 +222,14 @@ export class DocumentSession<T, E> {
 
   close(): void {
     this.#closed = true;
+  }
+
+  /** Snapshot final text before the editor is destroyed; drain a write
+   * already in flight AND the keystrokes made since that write. */
+  async finish(): Promise<void> {
+    this.#final = { content: this.#editor.current() };
+    await this.flush();
+    this.close();
   }
 }
 
@@ -245,8 +274,9 @@ export function eventTransport<T>(
   content: (body: Record<string, unknown>) => T,
   at: string[] = [],
 ): Transport<T, unknown> {
-  const call = async (write?: { heads: string[]; edits: unknown[] }): Promise<Reply<T>> => {
-    const detail: Record<string, unknown> = { entity, format };
+  let route: Record<string, unknown> = {};
+  const call = async (write?: { heads: string[]; edits: unknown[]; request?: EditRequest }): Promise<Reply<T>> => {
+    const detail: Record<string, unknown> = { ...(element.isConnected ? {} : route), entity, format };
     if (write) detail.write = { ...write, format };
     // A past version: the host reads at these heads instead of the branch's.
     else if (at.length > 0) detail.heads = at;
@@ -256,10 +286,11 @@ export function eventTransport<T>(
       composed: true,
       cancelable: true,
     });
-    element.dispatchEvent(event);
+    (element.isConnected ? element : element.ownerDocument).dispatchEvent(event);
     if (!event.defaultPrevented || !(detail.result instanceof Promise)) {
       throw new Error("tonk-document: no host answered");
     }
+    route = { space: detail.space, branch: detail.branch, profile: detail.profile };
     const body = (await detail.result) as Record<string, unknown>;
     return {
       heads: (body.heads as string[]) ?? [],
@@ -271,6 +302,6 @@ export function eventTransport<T>(
   };
   return {
     read: () => call(),
-    write: (heads, edits) => call({ heads, edits }),
+    write: (heads, edits, request) => call({ heads, edits, request }),
   };
 }

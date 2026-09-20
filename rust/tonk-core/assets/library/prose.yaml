@@ -37,16 +37,45 @@ concept!: &prose
   with:
     format:
       description: |
-        The document format, "automerge/text@1". The same attribute
-        document.yaml declares: its presence is what makes this entity a
-        document.
-      the: xyz.tonk.document/format
+        The text-family format, mirrored by the shared document engine.
+        A workbook must not match the prose concept.
+      the: io.gozala.prose/format
       as: text
   maybe:
     content:
       description: The body before the document exists (seed or claims-era); see above.
       the: io.gozala.prose/content
       as: text
+
+# A seed has durable source facts. The shared mirror projects the format
+# only for text documents (including newer read-only text formats), so
+# workbooks cannot match prose and existing documents need no migration.
+concept!: &prose/seed
+  description: A prose document's durable format and claims-era seed body.
+  with:
+    format:
+      description: The durable document format used to open the seed.
+      the: xyz.tonk.document/format
+      as: text
+    content: prose/content
+
+# Preserve `prose!: {format: ...}` as a creation interface. This only
+# declares the durable format; the body remains in the document cell.
+concept!: &prose/document
+  description: The durable document format declared when creating prose.
+  with:
+    format:
+      description: The durable document format used by the shared engine.
+      the: xyz.tonk.document/format
+      as: text
+
+rule!:
+  assert!: prose/document
+  when:
+    - assert: prose
+      where:
+        this: ?this
+        format: ?format
 
 # ---------------------------------------------------------------------------
 # View — render the document as an editor. `subject={this}` selects the
@@ -85,7 +114,7 @@ view!:
 # document keeps its own body).
 # ---------------------------------------------------------------------------
 
-prose!:
+prose/seed!:
   this: id:prose/doc
   format: "automerge/text@1"
   content: |

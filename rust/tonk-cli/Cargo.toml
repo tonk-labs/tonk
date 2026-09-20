@@ -220,3 +220,7 @@ tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
 tonk-access-service = { workspace = true, features = ["helpers"] }
 unicode-width = { workspace = true }
 wasm-bindgen-test = { workspace = true }
+
+[[test]]
+name = "review_document"
+path = "tests/review_document.rs"

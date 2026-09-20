@@ -369,6 +369,30 @@ fn handle_document(ev: &CustomEvent) {
         Ok(route) => route,
         Err(error) => return install_rejected_promise(&detail, error),
     };
+    // Let the element retain its resolved route for the final flush
+    // after DOM removal. It can then dispatch on its ownerDocument;
+    // a detached element has no `with` ancestry and cannot bubble here.
+    let _ = Reflect::set(
+        &detail,
+        &JsValue::from_str("space"),
+        &space
+            .as_deref()
+            .map(JsValue::from_str)
+            .unwrap_or(JsValue::UNDEFINED),
+    );
+    let _ = Reflect::set(
+        &detail,
+        &JsValue::from_str("branch"),
+        &branch
+            .as_deref()
+            .map(JsValue::from_str)
+            .unwrap_or(JsValue::UNDEFINED),
+    );
+    let _ = Reflect::set(
+        &detail,
+        &JsValue::from_str("profile"),
+        &JsValue::from_bool(profile),
+    );
     let Some(entity) = get_string(&detail, "entity") else {
         return install_rejected_promise(
             &detail,

@@ -518,7 +518,7 @@ class TonkTableElement extends HTMLElement {
       clearInterval(this.#pollTimer);
       this.#pollTimer = null;
     }
-    this.#session?.close();
+    void this.#session?.finish().catch((err) => this.#reportDocumentError(err));
     this.#session = null;
   }
 
@@ -785,7 +785,6 @@ class TonkTableElement extends HTMLElement {
         clearTimeout(this.#rowsTimer);
         this.#rowsTimer = null;
       }
-      void this.#session?.flush().catch(() => {});
       this.#stopDocument();
       this.#textObserver?.disconnect();
       this.#textObserver = null;

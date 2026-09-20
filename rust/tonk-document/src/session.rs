@@ -32,7 +32,9 @@ use futures_util::StreamExt as _;
 use thiserror::Error;
 
 use crate::cell::{self, CellError, LocalCell, RETRY_LIMIT, RemoteCell, Transport as _};
-use crate::engine::{Content, Document, DocumentError, Edit, Format, Sheet, Stamp, Table};
+use crate::engine::{
+    Content, Document, DocumentError, Edit, EditRequest, Format, Sheet, Stamp, Table,
+};
 use crate::sync::{Marker, Outcome, sync_pass};
 
 /// `xyz.tonk.document/format`
@@ -464,7 +466,11 @@ pub async fn open<Env: DocumentEnv>(
 ) -> Result<(Document, Format), SessionError> {
     let claimed = claimed_format(branch, entity, env).await?;
     let local = LocalCell::new(&branch.subject(), entity, env);
-    if let Some((document, _)) = cell::load(&local).await? {
+    let mut existing = cell::load(&local).await?;
+    // A shared cell does not imply this branch has been converted. Only
+    // its own heads identify an imported/edited body.
+    if !claimed_heads(branch, entity, env).await?.is_empty() && existing.is_some() {
+        let (document, _) = existing.take().expect("checked above");
         let format = document.format();
         if claimed.is_none() {
             declare(branch, entity, format, &[], Vec::new(), env).await?;
@@ -481,6 +487,7 @@ pub async fn open<Env: DocumentEnv>(
     // with the next sync pass and merge onto it.
     let format = claimed
         .or(create)
+        .or_else(|| existing.as_ref().map(|(document, _)| document.format()))
         .ok_or_else(|| SessionError::NotADocument(entity.to_string()))?;
     let Converted {
         mut document,
@@ -489,13 +496,30 @@ pub async fn open<Env: DocumentEnv>(
         Format::Text => convert_prose(branch, entity, env).await?,
         Format::Table => convert_table(branch, entity, env).await?,
     };
-    cell::save(&local, &mut document, None).await?;
+    // Capture THIS branch's import before merging the other branches.
     let heads = document.store_heads();
     let imported = if heads == Document::genesis_heads(format)? {
         Vec::new()
     } else {
         heads
     };
+    let version = match existing {
+        Some((mut stored, version)) => {
+            if stored.format() != format {
+                return Err(DocumentError::WrongShape(format.name()).into());
+            }
+            if imported.is_empty() && retract.is_empty() {
+                if claimed.is_none() {
+                    declare(branch, entity, format, &[], Vec::new(), env).await?;
+                }
+                return Ok((stored, format));
+            }
+            document.merge(&stored.save())?;
+            Some(version)
+        }
+        None => None,
+    };
+    cell::save(&local, &mut document, version).await?;
     if claimed.is_none() || !retract.is_empty() || !imported.is_empty() {
         declare(branch, entity, format, &imported, retract, env).await?;
     }
@@ -524,8 +548,7 @@ pub async fn adopt_legacy<Env: DocumentEnv>(
     found.dedup_by(|a, b| a.0 == b.0);
     let mut converted = 0;
     for (entity, format) in found {
-        let local = LocalCell::new(&branch.subject(), &entity, env);
-        if cell::load(&local).await?.is_some() {
+        if !claimed_heads(branch, &entity, env).await?.is_empty() {
             continue;
         }
         open(branch, &entity, Some(format), env).await?;
@@ -696,20 +719,21 @@ pub async fn merge_bytes<Env: DocumentEnv>(
             "a document that starts from the bytes the host gave",
         )));
     }
-    let (mut document, format) = open(branch, entity, Some(incoming.format()), env).await?;
+    let (_, format) = open(branch, entity, Some(incoming.format()), env).await?;
     if incoming.format() != format {
         return Err(SessionError::Document(DocumentError::WrongShape(
             format.name(),
         )));
     }
+    let local = LocalCell::new(&branch.subject(), entity, env);
+    // The bytes and CAS token must come from the same resolve.
+    let (mut document, version) = cell::load(&local).await?.ok_or(CellError::Contended)?;
     document.merge(bytes)?;
     let size = document.save().len();
     if size > SIZE_LIMIT {
         return Err(SessionError::TooLarge { size });
     }
-    let local = LocalCell::new(&branch.subject(), entity, env);
-    let version = cell::load(&local).await?.map(|(_, version)| version);
-    cell::save(&local, &mut document, version).await?;
+    cell::save(&local, &mut document, Some(version)).await?;
     Ok(())
 }
 
@@ -801,7 +825,36 @@ pub async fn write<Env: DocumentEnv>(
     stamp: &Stamp,
     env: &Env,
 ) -> Result<Written, SessionError> {
-    write_within(branch, entity, create, base, edits, stamp, SIZE_LIMIT, env).await
+    write_within(
+        branch, entity, create, base, edits, stamp, SIZE_LIMIT, None, env,
+    )
+    .await
+}
+
+/// An element write whose gesture identity is stable across retries.
+#[allow(clippy::too_many_arguments)]
+pub async fn write_request<Env: DocumentEnv>(
+    branch: &Branch,
+    entity: &Entity,
+    create: Option<Format>,
+    base: &[String],
+    edits: &[Edit],
+    stamp: &Stamp,
+    request: &EditRequest,
+    env: &Env,
+) -> Result<Written, SessionError> {
+    write_within(
+        branch,
+        entity,
+        create,
+        Some(base),
+        edits,
+        stamp,
+        SIZE_LIMIT,
+        Some(request),
+        env,
+    )
+    .await
 }
 
 /// [`write`] with the size limit as a parameter, so a test can reach it
@@ -815,6 +868,7 @@ async fn write_within<Env: DocumentEnv>(
     edits: &[Edit],
     stamp: &Stamp,
     limit: usize,
+    request: Option<&EditRequest>,
     env: &Env,
 ) -> Result<Written, SessionError> {
     let (_, format) = open(branch, entity, create, env).await?;
@@ -835,7 +889,10 @@ async fn write_within<Env: DocumentEnv>(
             Some(applied) => applied.clone(),
             None => {
                 let at = base.map_or_else(|| effective.clone(), <[String]>::to_vec);
-                let line = document.edit_all(&at, stamp, edits)?;
+                let line = match request {
+                    Some(request) => document.edit_request(&at, stamp, edits, request)?,
+                    None => document.edit_all(&at, stamp, edits)?,
+                };
                 let size = document.save().len();
                 if size > limit {
                     return Err(SessionError::TooLarge { size });
@@ -960,10 +1017,18 @@ pub async fn mirror<Env: DocumentEnv>(
     match &snapshot.content {
         Content::Text(text) => {
             // The text sits on the document entity itself, so a query
-            // joins it with the entity's other claims. Only this one
-            // attribute is ever overlaid there.
+            // joins it with the entity's other claims. The text-family
+            // format projection lets prose exclude workbook documents.
             overlay.retain_entities(|overlaid| overlaid != entity);
             overlay.assert(Fact::one(TEXT, entity, text.clone())?);
+            overlay.assert(Fact::one(
+                "io.gozala.prose/format",
+                entity,
+                snapshot
+                    .newer
+                    .clone()
+                    .unwrap_or_else(|| snapshot.format.name().to_string()),
+            )?);
         }
         Content::Table(table) => {
             overlay.retain_entities(|overlaid| !overlaid.to_string().starts_with(&prefix));
@@ -1639,6 +1704,7 @@ mod tests {
             &set(&noise),
             &stamp(),
             4096,
+            None,
             &operator,
         )
         .await;

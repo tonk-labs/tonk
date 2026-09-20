@@ -382,7 +382,7 @@ class TonkProseElement extends HTMLElement {
       clearInterval(this.#pollTimer);
       this.#pollTimer = null;
     }
-    this.#session?.close();
+    void this.#session?.finish().catch((err) => this.#reportDocumentError(err));
     this.#session = null;
   }
 
@@ -561,7 +561,6 @@ class TonkProseElement extends HTMLElement {
         clearTimeout(this.#changeTimer);
         this.#flushChange();
       }
-      void this.#session?.flush().catch(() => {});
       this.#stopDocument();
       this.#textObserver?.disconnect();
       this.#textObserver = null;

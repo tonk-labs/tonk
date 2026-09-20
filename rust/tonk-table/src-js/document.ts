@@ -189,8 +189,10 @@ export interface Reply {
 
 export interface Transport {
   read(): Promise<Reply>;
-  write(heads: string[], edits: TableEdit[]): Promise<Reply>;
+  write(heads: string[], edits: TableEdit[], request?: EditRequest): Promise<Reply>;
 }
+
+export interface EditRequest { id: string; time: number }
 
 /** Keeps a workbook element and its document in step. Edits queue and
  *  leave as ONE write, so one gesture — a paste, a fill, a row insert —
@@ -204,6 +206,9 @@ export class TableSession {
   #known: string[] = [];
   #queue: TableEdit[] = [];
   #inFlight = false;
+  #flight: Promise<void> | null = null;
+  #retry: { heads: string[]; edits: TableEdit[]; request: EditRequest } | null = null;
+  #finishing = false;
   #opened = false;
   #closed = false;
   /** Pinned to a past version: opened once, then neither written nor
@@ -247,7 +252,7 @@ export class TableSession {
 
   async open(): Promise<void> {
     const reply = await this.#transport.read();
-    if (this.#closed) return;
+    if (this.#closed || this.#opened) return;
     this.#known = reply.heads;
     this.#opened = true;
     this.#newer = reply.readonly === true;
@@ -264,32 +269,42 @@ export class TableSession {
   }
 
   get pending(): number {
-    return this.#queue.length;
+    return this.#queue.length + (this.#retry?.edits.length ?? 0);
   }
 
-  async flush(): Promise<void> {
-    if (this.#closed || !this.#opened || this.#inFlight || this.#queue.length === 0) return;
-    const edits = this.#queue;
-    this.#queue = [];
+  flush(): Promise<void> {
+    if (this.#flight) return this.#flight;
+    this.#flight = this.#flush().finally(() => { this.#flight = null; });
+    return this.#flight;
+  }
+
+  async #flush(): Promise<void> {
+    if (this.#closed || this.readonly || !this.#opened || this.#inFlight || this.pending === 0) return;
+    if (!this.#retry) {
+      this.#retry = { heads: [...this.#known], edits: this.#queue,
+        request: { id: crypto.randomUUID(), time: Math.floor(Date.now() / 1000) } };
+      this.#queue = [];
+    }
+    const pending = this.#retry;
     this.#inFlight = true;
     try {
-      const reply = await this.#transport.write(this.#known, edits);
+      const reply = await this.#transport.write(pending.heads, pending.edits, pending.request);
       if (this.#closed) return;
+      this.#retry = null;
       if (reply.large === true && !this.#large) {
         // Said once: automerge keeps every edit, so it only gets larger.
         this.#large = true;
         this.#onLarge?.();
       }
       this.#known = reply.heads;
-      this.#apply(reply.table);
+      if (!this.#finishing) this.#apply(reply.table);
     } catch (error) {
-      // Keep the edits: the next flush retries them, in order.
-      this.#queue = [...edits, ...this.#queue];
+      // Retain the exact request, separately from subsequent gestures.
       throw error;
     } finally {
       this.#inFlight = false;
     }
-    if (this.#queue.length > 0) await this.flush();
+    if (this.#queue.length > 0) await this.#flush();
   }
 
   /** Look for changes made elsewhere. */
@@ -299,9 +314,10 @@ export class TableSession {
     // Try again; until it works the grid shows nothing and takes no edits.
     if (!this.#opened) return this.open();
     if (this.#pinned) return;
-    if (this.#closed || !this.#opened || this.#inFlight || this.#queue.length > 0) return;
+    if (this.#closed || !this.#opened || this.#inFlight || this.pending > 0) return;
+    const known = this.#known;
     const reply = await this.#transport.read();
-    if (this.#closed || this.#inFlight || this.#queue.length > 0) return;
+    if (this.#closed || this.#inFlight || this.pending > 0 || this.#known !== known) return;
     if (sameHeads(reply.heads, this.#known)) return;
     this.#known = reply.heads;
     this.#apply(reply.table);
@@ -309,6 +325,12 @@ export class TableSession {
 
   close(): void {
     this.#closed = true;
+  }
+
+  async finish(): Promise<void> {
+    this.#finishing = true;
+    await this.flush();
+    this.close();
   }
 }
 
@@ -333,8 +355,9 @@ export function eventTransport(
   format: string,
   at: string[] = [],
 ): Transport {
-  const call = async (write?: { heads: string[]; edits: TableEdit[] }): Promise<Reply> => {
-    const detail: Record<string, unknown> = { entity, format };
+  let route: Record<string, unknown> = {};
+  const call = async (write?: { heads: string[]; edits: TableEdit[]; request?: EditRequest }): Promise<Reply> => {
+    const detail: Record<string, unknown> = { ...(element.isConnected ? {} : route), entity, format };
     if (write) detail.write = { ...write, format };
     // A past version: the host reads at these heads instead of the branch's.
     else if (at.length > 0) detail.heads = at;
@@ -344,10 +367,11 @@ export function eventTransport(
       composed: true,
       cancelable: true,
     });
-    element.dispatchEvent(event);
+    (element.isConnected ? element : element.ownerDocument).dispatchEvent(event);
     if (!event.defaultPrevented || !(detail.result instanceof Promise)) {
       throw new Error("tonk-document: no host answered");
     }
+    route = { space: detail.space, branch: detail.branch, profile: detail.profile };
     const body = (await detail.result) as Record<string, unknown>;
     return {
       heads: (body.heads as string[]) ?? [],
@@ -359,6 +383,6 @@ export function eventTransport(
   };
   return {
     read: () => call(),
-    write: (heads, edits) => call({ heads, edits }),
+    write: (heads, edits, request) => call({ heads, edits, request }),
   };
 }

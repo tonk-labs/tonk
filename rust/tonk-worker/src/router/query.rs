@@ -124,6 +124,10 @@ async fn query_on_branch<'a>(
     let wire: Query = serde_json::from_slice(&bytes)
         .map_err(|e| TonkWorkerError::Router(format!("invalid query body: {e}")))?;
 
+    if wire.formula().is_none() {
+        super::document::prepare_mirrors(tonk, branch).await;
+    }
+
     let want_stream = headers
         .get(header::ACCEPT)
         .and_then(|v| v.to_str().ok())

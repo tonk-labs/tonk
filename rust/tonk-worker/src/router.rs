@@ -444,7 +444,11 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         // can never reach a branch pointer through it.
         .route(
             "/api/repository/{repo}/branch/{branch}/document/{entity}",
-            get(document::read).post(document::write),
+            get(document::read)
+                .post(document::write)
+                .layer(DefaultBodyLimit::max(
+                    tonk_document::session::SIZE_LIMIT * 2,
+                )),
         )
         // Inspect operations
         .route(

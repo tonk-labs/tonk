@@ -138,6 +138,16 @@ pub struct Stamp {
     pub time: i64,
 }
 
+/// Stable identity of one element gesture, retained unchanged on retry.
+/// Time is advisory, like the rest of the Automerge change metadata.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EditRequest {
+    /// A client-generated unique id (normally a UUID).
+    pub id: String,
+    /// Unix seconds when the gesture was first sent, not when retried.
+    pub time: i64,
+}
+
 /// One edit, applied on top of given heads. On the wire:
 /// `{ "edit": "replace", "find": "...", "with": "..." }`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -630,6 +640,40 @@ impl Document {
         outcome
     }
 
+    /// Apply an identified gesture deterministically. Replaying it,
+    /// even concurrently on two replicas, produces identical changes.
+    /// No separate receipt store or growing map of request ids is needed.
+    pub fn edit_request(
+        &mut self,
+        heads: &[String],
+        stamp: &Stamp,
+        edits: &[Edit],
+        request: &EditRequest,
+    ) -> Result<Vec<String>, DocumentError> {
+        let base = self.normalize(heads)?;
+        let stamp = Stamp {
+            author: stamp.author.clone(),
+            time: request.time,
+        };
+        let identity = serde_json::to_vec(&(
+            "tonk-document/request/v1",
+            &request.id,
+            &base,
+            &stamp,
+            edits,
+        ))
+        .expect("document edits and stamps serialize");
+        let mut fork = Self {
+            doc: self.doc.fork_at(&parse_heads(&base)?)?,
+            format: self.format,
+        };
+        fork.doc
+            .set_actor(ActorId::from(blake3::hash(&identity).as_bytes().as_slice()));
+        let line = fork.edit_all(&base, &stamp, edits)?;
+        self.doc.merge(&mut fork.doc)?;
+        Ok(line)
+    }
+
     fn apply(&mut self, at: &[ChangeHash], edit: &Edit) -> Result<(), DocumentError> {
         match (self.format, edit) {
             (Format::Text, Edit::Replace { find, with }) => {
@@ -809,14 +853,25 @@ impl Document {
             }
             Format::Text => {
                 let mut out = Vec::new();
+                // Text patches are ordered in the evolving text. Undo
+                // preceding length changes to expose from-version offsets.
+                let mut shift: i128 = 0;
                 for patch in self.doc.diff(&from, &to) {
                     match patch.action {
-                        PatchAction::SpliceText { index, value, .. } => out.push(DiffOp::Insert {
-                            at: index,
-                            text: value.make_string(),
-                        }),
+                        PatchAction::SpliceText { index, value, .. } => {
+                            let text = value.make_string();
+                            out.push(DiffOp::Insert {
+                                at: (index as i128 - shift) as usize,
+                                text: text.clone(),
+                            });
+                            shift += text.encode_utf16().count() as i128;
+                        }
                         PatchAction::DeleteSeq { index, length } => {
-                            out.push(DiffOp::Delete { at: index, length })
+                            out.push(DiffOp::Delete {
+                                at: (index as i128 - shift) as usize,
+                                length,
+                            });
+                            shift -= length as i128;
                         }
                         _ => {}
                     }
@@ -1030,6 +1085,50 @@ fn diff_numbers(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[dialog_common::test]
+    fn it_replays_identified_edits_and_diffs_in_original_coordinates() {
+        let mut doc = Document::from_text("🙂b").unwrap();
+        let base = doc.store_heads();
+        let request = EditRequest {
+            id: "portable-gesture".into(),
+            time: 123,
+        };
+        let edits = [Edit::SetText {
+            text: "X🙂bY".into(),
+        }];
+        let first = doc
+            .edit_request(&base, &Stamp::default(), &edits, &request)
+            .unwrap();
+        let size = doc.save().len();
+        let replay = doc
+            .edit_request(
+                &base,
+                &Stamp {
+                    author: None,
+                    time: 456,
+                },
+                &edits,
+                &request,
+            )
+            .unwrap();
+        assert_eq!(replay, first);
+        assert_eq!(doc.save().len(), size);
+        assert_eq!(doc.text(&replay).unwrap(), "X🙂bY");
+        assert_eq!(
+            doc.diff(&base, &replay).unwrap(),
+            vec![
+                DiffOp::Insert {
+                    at: 0,
+                    text: "X".into()
+                },
+                DiffOp::Insert {
+                    at: 3,
+                    text: "Y".into()
+                },
+            ]
+        );
+    }
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     #[cfg(target_arch = "wasm32")]

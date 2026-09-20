@@ -9,7 +9,7 @@
 //!
 //! | formula | terms | rows |
 //! |---|---|---|
-//! | `document/versions` | `document`, `limit?` | `{ heads, author, issuer, revision }`, newest first |
+//! | `document/versions` | `document`, `limit?` | `{ heads, author, issuer, revision, time: null }`, newest first |
 //! | `document/changes` | `document`, `since?`, `limit?` | `{ change, author, time, parents }` |
 //! | `document/content` | `document`, `heads?` | text: `{ text, heads }`; table: `{ sheet, name, at, content, style }` |
 //! | `document/diff` | `document`, `from`, `to` | `{ op, at, text, length }` or `{ op, path, value }` |
@@ -19,8 +19,9 @@
 //! is an automerge shape, so a page that reads history keeps working
 //! when the app moves to a new automerge.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashSet};
 
+use dialog_artifacts::history::History as _;
 use dialog_artifacts::{Entity, Value};
 use dialog_query::Term;
 use dialog_reactor::{Conclusion, Query};
@@ -265,45 +266,128 @@ async fn versions<Env: DocumentEnv>(
     let failed = |error: &dyn std::fmt::Display| {
         FormulaError::Session(SessionError::Branch(error.to_string()))
     };
-    let heads_attribute = HEADS;
-    // Revisions that did not touch the document are skipped, so scan a
-    // generous window of the log for `limit` hits.
-    let log = branch
-        .log(env, limit.saturating_mul(20))
-        .await
-        .map_err(|error| failed(&error))?;
+    let Some(revision) = branch.revision() else {
+        return Ok(Vec::new());
+    };
     let history = branch.history(env).await;
+    // Walk until `limit` DOCUMENT versions, not `limit * N` unrelated
+    // branch revisions. Reverse topological order matches dialog's log.
+    let mut frontier = BinaryHeap::from([revision.version()]);
+    let mut visited = HashSet::new();
+    let mut entries = BTreeMap::new();
+    let mut snapshots = BTreeMap::new();
     let mut rows = Vec::new();
-    for (version, record) in log {
+    while let Some(version) = frontier.pop() {
         if rows.len() >= limit {
             break;
         }
-        let mut asserted = Vec::new();
-        {
-            let stream = history.select(version);
-            futures_util::pin_mut!(stream);
-            while let Some(next) = stream.next().await {
-                let (_, entry) = next.map_err(|error| failed(&error))?;
-                if let dialog_artifacts::history::Record::Assert(claim) = entry
-                    && &claim.of == entity
-                    && claim.the.to_string() == heads_attribute
-                    && let Ok(head) = String::try_from(claim.is)
-                {
-                    asserted.push(head);
-                }
-            }
-        }
-        if asserted.is_empty() {
+        if !visited.insert(version) {
             continue;
         }
-        asserted.sort();
+        let Some(record) = history
+            .revision_record(&version)
+            .await
+            .map_err(|e| failed(&e))?
+        else {
+            continue;
+        };
+        frontier.extend(record.parents.iter().copied());
+
+        // Reconstruct the observed-remove set at this revision, not just
+        // the values it asserted. Retractions cover only named claim
+        // versions, so concurrent surviving heads remain in the result.
+        let mut targets = vec![version];
+        if record.parents.len() > 1 {
+            targets.extend(record.parents.iter().copied());
+        }
+        for root in targets {
+            if snapshots.contains_key(&root) {
+                continue;
+            }
+            let mut ancestors = vec![root];
+            let mut seen = HashSet::new();
+            let mut asserted = BTreeSet::new();
+            let mut covered = BTreeSet::new();
+            while let Some(at) = ancestors.pop() {
+                if !seen.insert(at) {
+                    continue;
+                }
+                let Some(parent) = history.revision_record(&at).await.map_err(|e| failed(&e))?
+                else {
+                    continue;
+                };
+                ancestors.extend(parent.parents.iter().copied());
+                if !entries.contains_key(&at) {
+                    let mut claims = Vec::new();
+                    let stream = history.select(at);
+                    futures_util::pin_mut!(stream);
+                    while let Some(next) = stream.next().await {
+                        let (_, entry) = next.map_err(|error| failed(&error))?;
+                        if &entry.claim().of == entity && entry.claim().the.to_string() == HEADS {
+                            claims.push(entry);
+                        }
+                    }
+                    entries.insert(at, claims);
+                }
+                let claims = &entries[&at];
+                if at == version && root == version && claims.is_empty() && record.parents.len() < 2
+                {
+                    break;
+                }
+                for entry in claims {
+                    let claim = entry.claim();
+                    let Ok(head) = String::try_from(claim.is.clone()) else {
+                        continue;
+                    };
+                    for prior in claim.cause.versions() {
+                        covered.insert((head.clone(), *prior));
+                    }
+                    if entry.is_assertion() {
+                        asserted.insert((head, at));
+                    }
+                }
+            }
+            let heads = asserted
+                .difference(&covered)
+                .map(|(head, _)| head.clone())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+            // A skipped linear revision was not reconstructed; don't
+            // cache an empty snapshot which a later merge may need.
+            if root != version
+                || record.parents.len() > 1
+                || entries.get(&root).is_some_and(|claims| !claims.is_empty())
+            {
+                snapshots.insert(root, heads);
+            }
+        }
+        let touched = entries
+            .get(&version)
+            .is_some_and(|claims| !claims.is_empty());
+        let Some(heads) = snapshots.get(&version) else {
+            continue;
+        };
+        if !touched
+            && (record.parents.len() < 2
+                || record
+                    .parents
+                    .iter()
+                    .all(|parent| snapshots.get(parent) == Some(heads)))
+        {
+            continue;
+        }
         rows.push(row(
-            format!("{document}#version/{}", rows.len()),
+            format!("{document}#version/{version:?}"),
             [
-                ("heads", text(format_heads(&asserted))),
+                ("heads", text(format_heads(heads))),
                 ("author", text(record.authority.clone())),
                 ("issuer", text(record.issuer.clone())),
                 ("revision", text(format!("{version:?}"))),
+                // This dialog pin signs causal order, not wall-clock
+                // timestamps. Do not present an advisory edit time as
+                // a signed revision time.
+                ("time", Ipld::Null),
             ],
         ));
     }

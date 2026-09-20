@@ -124,7 +124,9 @@ where
         }
         let settled = published.or(remote_version);
         if let Some(version) = settled {
-            let next = Marker::at(&version, document.store_heads());
+            // `save(local)` may have merged a racing local edit AFTER
+            // our remote publication. Only `ours` was on the remote.
+            let next = Marker::at(&version, ours);
             if next != known {
                 // Best effort: a lost marker only costs one extra merge.
                 let bytes = serde_json::to_vec(&next).unwrap_or_default();

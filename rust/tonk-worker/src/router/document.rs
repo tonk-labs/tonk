@@ -37,7 +37,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
-use tonk_document::engine::{Content, Edit, Format, Stamp, Table};
+use tonk_document::engine::{Content, Edit, EditRequest, Format, Stamp, Table};
 use tonk_document::session::{self, Snapshot};
 
 use super::{AppState, CommandEnv};
@@ -79,6 +79,10 @@ const AUTOMERGE_BYTES: &str = "application/vnd.automerge";
 /// The body of a write.
 #[derive(Debug, Deserialize)]
 pub struct WriteRequest {
+    /// Stable gesture identity. Legacy callers may omit it, but cannot
+    /// safely replay a write whose reply was lost.
+    #[serde(default)]
+    pub request: Option<EditRequest>,
     /// The heads the writer last saw. Absent = the branch's own.
     #[serde(default)]
     pub heads: Option<Vec<String>>,
@@ -337,8 +341,9 @@ pub async fn read(
         note_dirty(&path.repo, &path.branch, &entity);
         tonk.sync_queue
             .mark_dirty(&path.repo, super::sync::now_millis());
-        refresh_mirror(&tonk, &session, &entity).await;
     }
+
+    refresh_mirror(&tonk, &session, &entity).await;
 
     let body = DocumentResponse::new(snapshot, None);
     let etag = body.etag();
@@ -374,16 +379,38 @@ pub async fn write(
     let session = acquire(&tonk, &path.repo, &path.branch).await?;
     note_requested(&path.repo, &path.branch, &entity);
 
-    let written = session::write(
-        session.handle(),
-        &entity,
-        create,
-        request.heads.as_deref(),
-        &request.edits,
-        &stamp(&tonk),
-        &tonk.operator,
-    )
-    .await;
+    let written = if let Some(identity) = &request.request {
+        let heads = request.heads.as_deref().ok_or_else(|| {
+            TonkWorkerError::Router("identified document writes require heads".into())
+        })?;
+        if identity.id.is_empty() || identity.id.len() > 128 {
+            return Err(TonkWorkerError::Router(
+                "invalid document request id".into(),
+            ));
+        }
+        session::write_request(
+            session.handle(),
+            &entity,
+            create,
+            heads,
+            &request.edits,
+            &stamp(&tonk),
+            identity,
+            &tonk.operator,
+        )
+        .await
+    } else {
+        session::write(
+            session.handle(),
+            &entity,
+            create,
+            request.heads.as_deref(),
+            &request.edits,
+            &stamp(&tonk),
+            &tonk.operator,
+        )
+        .await
+    };
     let written = match written {
         Err(error @ session::SessionError::TooLarge { .. }) => return Ok(too_large(&error)),
         other => other.map_err(session_error)?,
@@ -506,6 +533,22 @@ document_provider!(tonk_schema::command::DocumentRestore);
 /// asked for lately. Called after the branch itself reconciled, so the
 /// heads claims a pull brought in can be shown as soon as their bytes
 /// land.
+pub(crate) async fn prepare_mirrors(tonk: &TonkState, branch: crate::reactor::BranchReference<'_>) {
+    let Ok(session) = branch.acquire(&tonk.operator).await else {
+        return;
+    };
+    let Ok(documents) = session::documents(session.handle(), &tonk.operator).await else {
+        return;
+    };
+    // User-defined concepts/rules may join any document mirror. Prepare
+    // on query, not startup; schema-dependency narrowing can be added
+    // later without changing the mirror contract.
+    for (entity, _) in documents {
+        note_requested(branch.repository.name(), branch.name, &entity);
+        refresh_mirror(tonk, &session, &entity).await;
+    }
+}
+
 pub(crate) async fn sync_documents(
     state: &AppState,
     repo: &str,
@@ -553,7 +596,7 @@ pub(crate) async fn sync_documents(
             Err(error) => log!("document conversion in {repo}/{branch} failed: {error}"),
         }
         // After a restart the dirty set is gone but the cells are not:
-        // find unpublished work once, and fill the mirror while here.
+        // find unpublished work once. Mirrors are built on open/query.
         match session::documents(handle, &tonk.operator).await {
             Ok(documents) => {
                 for (entity, _) in documents {
@@ -563,7 +606,6 @@ pub(crate) async fn sync_documents(
                     {
                         candidates.insert(entity.to_string());
                     }
-                    refresh_mirror(&tonk, &session, &entity).await;
                 }
             }
             Err(error) => log!("document scan of {repo}/{branch} failed: {error}"),
@@ -577,12 +619,20 @@ pub(crate) async fn sync_documents(
         };
         match session::sync(handle, &entity, &tonk.operator).await {
             Ok(outcome) => {
+                let dirty = session::is_dirty(handle, &entity, &tonk.operator)
+                    .await
+                    .unwrap_or(true);
                 if let Ok(mut tracker) = tracker().lock() {
-                    tracker.dirty.remove(&key(repo, branch, &entity));
+                    if dirty {
+                        tracker.dirty.insert(key(repo, branch, &entity));
+                    } else {
+                        tracker.dirty.remove(&key(repo, branch, &entity));
+                    }
                 }
-                if outcome.pulled {
-                    refresh_mirror(&tonk, &session, &entity).await;
-                }
+                // A branch pull can move heads using bytes already in
+                // the cell; that also changes the mirror.
+                let _ = outcome;
+                refresh_mirror(&tonk, &session, &entity).await;
             }
             Err(error) => {
                 log!("document sync of {entity} in {repo}/{branch} failed: {error}");
@@ -674,6 +724,153 @@ mod tests {
 
     fn heads(value: &serde_json::Value, field: &str) -> Vec<String> {
         serde_json::from_value(value[field].clone()).unwrap()
+    }
+
+    #[dialog_common::test]
+    async fn it_replays_a_document_request_after_a_lost_reply() {
+        let state = test_state().await;
+        let repo = space(&state).await;
+        let initial = post(
+            &state,
+            &repo,
+            serde_json::json!({"format":"automerge/text@1", "edits":[]}),
+        )
+        .await;
+        let request = serde_json::json!({"heads":initial["heads"], "request":{"id":"one-gesture", "time":123}, "edits":[{"edit":"set-text", "text":"hello"}]});
+        let first = post(&state, &repo, request.clone()).await;
+        let retry = post(&state, &repo, request).await;
+        assert_eq!(retry["text"], "hello");
+        assert_eq!(retry["local"], first["local"]);
+        assert_eq!(retry["size"], first["size"]);
+    }
+
+    #[dialog_common::test]
+    async fn review_document_route_accepts_json_below_document_size_limit() {
+        use axum::{body::Body, http::Request};
+        use tower::ServiceExt;
+        let state = test_state().await;
+        let repo = space(&state).await;
+        let (router, _) = crate::router::api_router_from_state(state);
+        let body = serde_json::json!({"format":"automerge/text@1", "edits":[{"edit":"set-text","text":"x".repeat(2 * 1024 * 1024)}]}).to_string();
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!(
+                        "/api/repository/{repo}/branch/main/document/id%3Areview%2Flarge"
+                    ))
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "a 2 MiB text is below the advertised 8 MiB document limit"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn review_opening_an_existing_document_rebuilds_its_mirror() {
+        use dialog_query::{DynamicAttributeQuery, The};
+        let state = test_state().await;
+        let repo = space(&state).await;
+        post(&state, &repo, serde_json::json!({"format":"automerge/text@1", "edits":[{"edit":"set-text","text":"mirror me"}]})).await;
+        {
+            let tonk = state.read().await;
+            let session = acquire(&tonk, &repo, "main").await.unwrap();
+            session.handle().overlay().retain_entities(|_| false);
+        }
+        let opened = json(
+            read(
+                State(state.clone()),
+                path(&repo),
+                Query(ReadParams::default()),
+                HeaderMap::new(),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(opened["text"], "mirror me");
+        let tonk = state.read().await;
+        let session = acquire(&tonk, &repo, "main").await.unwrap();
+        let query = DynamicAttributeQuery::new(
+            Term::from(session::TEXT.parse::<The>().unwrap()),
+            Term::var("of"),
+            Term::var("is"),
+            Term::var("cause"),
+            None,
+        );
+        let rows = session
+            .handle()
+            .query()
+            .select(query)
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        assert_eq!(
+            rows.len(),
+            1,
+            "opening a stored document must fill the query mirror after a fresh session"
+        );
+
+        // A query without any preceding element GET must prepare it too.
+        session.handle().overlay().clear();
+        prepare_mirrors(&tonk, tonk.reactor.repository(&repo).branch("main")).await;
+        let mirror_query = || {
+            DynamicAttributeQuery::new(
+                Term::from(session::TEXT.parse::<The>().unwrap()),
+                Term::var("of"),
+                Term::var("is"),
+                Term::var("cause"),
+                None,
+            )
+        };
+        assert_eq!(
+            session
+                .handle()
+                .query()
+                .select(mirror_query())
+                .perform(&tonk.operator)
+                .try_vec()
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // Simulate a branch update whose bytes are already local. A
+        // sync with no pulled bytes still has to refresh its mirror.
+        session::write(
+            session.handle(),
+            &"id:prose/doc".parse().unwrap(),
+            None,
+            None,
+            &[Edit::SetText {
+                text: "changed elsewhere".into(),
+            }],
+            &Stamp::default(),
+            &tonk.operator,
+        )
+        .await
+        .unwrap();
+        drop(tonk);
+        sync_documents(&state, &repo, "main").await.unwrap();
+        let tonk = state.read().await;
+        let rows = session
+            .handle()
+            .query()
+            .select(mirror_query())
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        let values = format!("{rows:?}");
+        assert!(values.contains("changed elsewhere") && !values.contains("mirror me"));
     }
 
     #[dialog_common::test]
