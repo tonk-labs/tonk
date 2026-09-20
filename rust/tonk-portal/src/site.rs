@@ -737,7 +737,12 @@ mod tests {
             .expect("update prop")
             .dyn_into()
             .expect("update fn");
-        let original_url = window().unwrap().location().href().unwrap();
+        // Other portal tests install guest-bridge stubs on this shared
+        // window. Exercise actual page navigation, then restore the context.
+        let win = window().unwrap();
+        let prior_bridge = Reflect::get(&win, &"tonk".into()).unwrap();
+        Reflect::set(&win, &"tonk".into(), &JsValue::UNDEFINED).unwrap();
+        let original_url = win.location().href().unwrap();
         let target = format!(
             "{}#site-target-regression",
             original_url.split('#').next().unwrap()
@@ -752,10 +757,9 @@ mod tests {
         Reflect::set(&delta, &"retracted".into(), &full).unwrap();
         update.call2(&probe, &delta, &JsValue::UNDEFINED).unwrap();
         flush().await;
-        let navigated = window().unwrap().location().href().unwrap();
-        window()
-            .unwrap()
-            .history()
+        let navigated = win.location().href().unwrap();
+        Reflect::set(&win, &"tonk".into(), &prior_bridge).unwrap();
+        win.history()
             .unwrap()
             .replace_state_with_url(&JsValue::NULL, "", Some(&original_url))
             .unwrap();
