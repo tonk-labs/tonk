@@ -181,8 +181,8 @@ impl Commit<'_> {
     /// request's own dispatched commands, and also a command a rule
     /// concluded during induction and a later round consumed, which
     /// never appears in the pre-commit bucket. A caller that dispatches
-    /// commands uses this; [`perform`](Self::perform) leaves what it
-    /// witnessed queued on the branch for the next dispatching commit.
+    /// commands uses this; [`perform`](Self::perform) discards the
+    /// witnessed commands after the commit.
     pub async fn perform_witnessed<Env>(
         self,
         env: &Env,
@@ -231,6 +231,9 @@ impl Commit<'_> {
         };
         let mut attempt = 0;
         let revision = loop {
+            // Only this attempt may contribute commands. A failed publish
+            // can already have witnessed induction rounds.
+            cached.state.drain_commands();
             let branch = cached.handle();
             let before = branch.revision();
             // Durable changes are asserted; transients are dispatched

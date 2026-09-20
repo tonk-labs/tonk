@@ -321,9 +321,8 @@ async fn transact_on_branch<'a>(
     // request's own transients as the stack minted them, plus any command
     // a rule concluded during induction and a later round consumed — that
     // one never appears in the pre-commit bucket, which is why the bucket
-    // alone lost it. The bucket stays as the floor: a witness whose queue
-    // overflowed reports nothing, and the request's own commands must
-    // still run.
+    // alone lost it. The bucket stays as the floor even if just one
+    // observer overflows: the request's own commands must still run.
     let requested = builder.transients.clone();
 
     // The per-branch transactor lock that serializes commits is taken INSIDE
@@ -335,11 +334,10 @@ async fn transact_on_branch<'a>(
         .perform_witnessed(&tonk_state.operator)
         .await
         .map_err(reactor_to_error)?;
-    let transients = if witnessed.is_empty() {
-        requested
-    } else {
-        witnessed
-    };
+    let mut transients = witnessed;
+    // One observer can overflow while the other still returns commands.
+    // Keep every requested command even when the witness is only partial.
+    dialog_artifacts::Statement::assert(requested, &mut transients);
     let to_dispatch = (!transients.is_empty()).then_some(transients);
 
     Ok((

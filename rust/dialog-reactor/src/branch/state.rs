@@ -143,6 +143,7 @@ impl BranchState {
     where
         Env: BranchOpenProvider,
     {
+        let _transacting = self.transactor.lock().await;
         let mut transaction = self.stack.transaction();
         if !entities.is_empty() {
             transaction = transaction.forget(scope(STATE_SCOPE), entities);
@@ -161,6 +162,7 @@ impl BranchState {
     where
         Env: BranchOpenProvider,
     {
+        let _transacting = self.transactor.lock().await;
         self.stack
             .transaction()
             .retract_from(scope(STATE_SCOPE), claim)
@@ -177,6 +179,7 @@ impl BranchState {
     where
         Env: BranchOpenProvider,
     {
+        let _transacting = self.transactor.lock().await;
         self.stack
             .transaction()
             .clear(scope(STATE_SCOPE))
@@ -194,6 +197,7 @@ impl BranchState {
     where
         Env: BranchOpenProvider,
     {
+        let _transacting = self.transactor.lock().await;
         if entities.is_empty() {
             return Ok(());
         }
@@ -220,6 +224,9 @@ impl BranchState {
                 continue;
             };
             for instant in instants {
+                if !instant.transient {
+                    continue;
+                }
                 for fact in instant.asserted {
                     changes.associate(fact.the, fact.of, fact.is);
                 }
@@ -332,6 +339,7 @@ impl BranchState {
     where
         Env: BranchOpenProvider,
     {
+        let _transacting = self.transactor.lock().await;
         if self.stack.behind() {
             self.stack.advance(env).await?;
         }
