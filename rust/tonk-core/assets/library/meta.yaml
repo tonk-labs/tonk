@@ -1,0 +1,119 @@
+# Tonk meta library — the data model of a repository's `meta` branch.
+#
+# Every repository has two branches: a CONTENT branch that replicates,
+# and `meta`, which never does. `meta` is the device's own bookkeeping
+# about that repository — git's `.git/config` and `HEAD` together — and
+# the content branch is the repository itself.
+#
+# Nothing here is seeded. These concepts describe rows the WORKER
+# writes: `put_repository` when a repository is mounted,
+# `record_space_mount` when its remotes change, `ensure_profile_meta_branch`
+# for the profile's own. The file exists so the shape is legible without
+# reading `tonk-worker/src/router/repository.rs`, and so a view or a rule
+# can name what is already there.
+#
+# The attributes are dialog's where dialog models the thing — a branch,
+# a replica, a revision are repository concepts, not tonk ones. Tonk adds
+# only what dialog does not model, and says so in the namespace.
+
+# This device's view of a repository.
+#
+# Derived from `(profile, subject)`, so the same pair always names the
+# same replica and two devices holding the same repository have
+# different ones. The replica is what branches belong to: a branch's
+# `dialog.branch/replica` points here.
+concept!: &replica
+  description: This device's view of a repository.
+  with:
+    subject:
+      description: The repository this replica is a view of.
+      the: dialog.replica/subject
+      cardinality: one
+      as: entity
+    profile:
+      description: The profile that owns this replica.
+      the: dialog.replica/profile
+      cardinality: one
+      as: entity
+
+# A branch of a repository, as this device knows it.
+#
+# Derived from `(replica, name)`. The enumeration: asking which branches
+# a replica has means asking for these rows. `meta` enumerates ITSELF
+# too — it is a real branch of the replica, so it belongs in the list
+# like any other.
+#
+# `revision`, `tree` and `edition` are where the branch currently is —
+# git's lowercase "head", the commit a branch points at. Distinct from
+# which branch is ACTIVE, which is a property of the replica below.
+concept!: &branch
+  description: A branch of a repository on this device.
+  with:
+    name:
+      description: The branch's name on this replica.
+      the: dialog.branch/name
+      cardinality: one
+      as: text
+    replica:
+      description: The replica this branch lives on.
+      the: dialog.branch/replica
+      cardinality: one
+      as: entity
+    revision:
+      description: The current revision's entity — where this branch is now.
+      the: dialog.branch/revision
+      cardinality: one
+      as: entity
+    edition:
+      description: Causal depth of the current revision, a Lamport timestamp.
+      the: dialog.branch/edition
+      cardinality: one
+      as: unsigned-integer
+
+# Where a replica syncs through.
+#
+# Derived from `(replica, name)`, so `origin` on one replica and
+# `origin` on another are different rows. `subject` is the repository on
+# the REMOTE side, which for an account remote is the account's own DID.
+concept!: &remote
+  description: A remote a replica syncs through.
+  with:
+    name:
+      description: The remote's local name on this replica, e.g. `origin`.
+      the: xyz.tonk.remote/name
+      cardinality: one
+      as: text
+    origin:
+      description: The replica that owns this remote.
+      the: xyz.tonk.remote/origin
+      cardinality: one
+      as: entity
+    subject:
+      description: The repository on the remote side.
+      the: xyz.tonk.remote/subject
+      cardinality: one
+      as: entity
+
+# What a local branch tracks.
+#
+# An attribute on the LOCAL branch — the local side owns the
+# relationship, so retracting the branch retracts its tracking. The
+# upstream is another branch entity, one derived from a remote rather
+# than from a replica, which is what makes `Branch` take either as its
+# origin.
+#
+# This is the hop that answers "what does this branch sync with", and
+# for an account branch, the remote's `subject` is the account.
+concept!: &tracking
+  description: The upstream a local branch follows.
+  with:
+    upstream:
+      description: The remote branch this one tracks.
+      the: xyz.tonk.branch/upstream
+      cardinality: one
+      as: entity
+    origin:
+      description: The replica that owns the tracking relationship.
+      the: xyz.tonk.branch/origin
+      cardinality: one
+      as: entity

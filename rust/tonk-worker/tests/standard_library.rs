@@ -38,6 +38,7 @@ const TABLE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/table.y
 const NOTEBOOK_LIBRARY: &str = include_str!("../../tonk-core/assets/library/notebook.yaml");
 const PROSE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/prose.yaml");
 const ISSUE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/issue.yaml");
+const META_LIBRARY: &str = include_str!("../../tonk-core/assets/library/meta.yaml");
 
 /// Light-DOM markup mounted by the account-settings element. The profile
 /// library supplies its geometry, so their visual contract is checked here
@@ -81,6 +82,16 @@ fn css_rule<'a>(document: &'a str, selector: &str) -> &'a str {
 #[test]
 fn it_lowers_the_standard_library() {
     assert_library_lowers("standard library (core.yaml)", STANDARD_LIBRARY);
+}
+
+/// The meta library describes a real shape, not an aspirational one.
+///
+/// It is documentation that has to stay true: every attribute it names
+/// is one the worker actually writes to a `meta` branch, so lowering it
+/// is what keeps the description from drifting from the rows.
+#[test]
+fn it_lowers_the_meta_library() {
+    assert_library_lowers("meta library (meta.yaml)", META_LIBRARY);
 }
 
 #[test]
