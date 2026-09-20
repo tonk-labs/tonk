@@ -271,6 +271,8 @@ forward!(dialog_effects::memory::Resolve);
 forward!(dialog_effects::memory::Publish);
 forward!(dialog_effects::memory::Retract);
 forward!(dialog_repository::Hydrate);
+forward!(dialog_repository::CreateEphemeral);
+forward!(dialog_repository::OpenEphemeral);
 forward!(dialog_artifacts::Preload);
 forward!(dialog_artifacts::Speculation);
 forward!(dialog_effects::space::Load);
