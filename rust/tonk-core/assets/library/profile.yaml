@@ -578,6 +578,12 @@ view!:
                    absent. The label is the offer: this cell links an account. -->
               <span data-account-label><tonk-display model="tonk:account/name"
                 ><span slot="empty">add an account</span></tonk-display></span>
+              <!-- Presence of a registration, not of a NAME: the account
+                   name waits on activation, so a linked-but-unactivated
+                   account has a provider and no name. The old element
+                   keyed on the provider for exactly this reason. -->
+              <tonk-display model="tonk:account/registered" view="linked"
+                ><span slot="empty"></span></tonk-display>
             </button>
             <button class="hcell hc-view" type="button" data-tab="spaces" data-return-spaces aria-current="page">
               spaces
@@ -1516,6 +1522,14 @@ view!:
 
 # The name, editable in place. Its own view because it is its own
 # concept, and because the FAB edits the same fact the same way.
+# A marker, not a rendering: the bar asks whether a registration exists
+# and this is how it answers. Empty text so it adds nothing visible.
+view!:
+  this: tonk:account/registered
+  show:
+    linked: |
+      <span data-account-linked hidden></span>
+
 view!:
   this: tonk:account/name
   show:
@@ -1602,15 +1616,12 @@ element!: &hub-bar
         self.setAttribute('linking', 'false');
         self.select('spaces');
       }
-    # Whether this browser has an account yet. The label renders from
-    # `tonk:account/name`, whose row is absent until one is linked, so
-    # the rendered offer IS the signal — no second fact to disagree
-    # with the first.
+    # Whether this browser has an account yet. Keyed on the REGISTRATION,
+    # not the name: the name waits on activation, so a linked account
+    # that has not confirmed its email has no name and would read as
+    # unlinked, sending someone who just signed in back to signup.
     unlinked: |
-      (self) => {
-        const label = self.querySelector('[data-account-label]');
-        return !!label && label.textContent.trim() === 'add an account';
-      }
+      (self) => !self.querySelector('[data-account-linked]')
     connected: |
       (self) => {
         self.addEventListener('click', (event) => {

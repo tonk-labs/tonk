@@ -4777,7 +4777,15 @@ mod tests {
                         r##"
                         const bar = document.querySelector("tonk-fab");
                         const row = bar && bar.querySelector("[data-share-account]");
+                        const hub = document.querySelector("hub-bar");
+                        const menu = hub && hub.querySelector("hub-menu");
                         return {
+                            hubBar: !!hub,
+                            hubDefined: !!customElements.get("hub-bar"),
+                            hubUnlinked: hub && typeof hub.unlinked === "function" ? hub.unlinked() : null,
+                            hubTab: hub ? hub.getAttribute("tab") : null,
+                            menuOpen: menu ? menu.getAttribute("open") : null,
+                            addRow: !!document.querySelector("[data-add-profile]"),
                             bar: !!bar,
                             row: !!row,
                             rowHidden: row ? row.hasAttribute("hidden") : null,
