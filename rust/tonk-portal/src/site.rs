@@ -371,21 +371,33 @@ fn install_self_heal(this: &HtmlElement, slot: Rc<RefCell<Option<Subscription>>>
         let reset: Closure<dyn FnMut(JsValue, JsValue)> =
             Closure::wrap(Box::new(move |payload: JsValue, _opts: JsValue| {
                 let rows = js_sys::Array::from(&payload);
-                if rows.length() == 0 {
-                    heal_claim(&host_for_frame);
-                    return;
-                }
-                // The worker asks this tab to move by asserting `target`
-                // on its site: the desired location, beside the stamped
-                // `path` that is the observed one. Follow it; the
-                // `tonk:load` the navigation fires re-stamps the site
-                // and clears the target.
-                if let Some(target) = stamped_target(&rows) {
-                    tonk_host::navigate_to(&target);
-                }
+                apply_site_frame(&host_for_frame, &rows);
             }));
         let _ = js_sys::Reflect::set(&probe, &"reset".into(), reset.as_ref());
         reset.forget();
+
+        // After the first snapshot the host delivers deltas. This query
+        // has one site and cardinality-one fields, so an asserted row is
+        // its complete new stamp; a retraction alone means it vanished.
+        let host_for_delta = host.clone();
+        let update: Closure<dyn FnMut(JsValue, JsValue)> =
+            Closure::wrap(Box::new(move |payload: JsValue, _opts: JsValue| {
+                let asserted = js_sys::Reflect::get(&payload, &"asserted".into())
+                    .ok()
+                    .filter(js_sys::Array::is_array)
+                    .map(|rows| js_sys::Array::from(&rows))
+                    .unwrap_or_default();
+                let retracted = js_sys::Reflect::get(&payload, &"retracted".into())
+                    .ok()
+                    .filter(js_sys::Array::is_array)
+                    .map(|rows| js_sys::Array::from(&rows))
+                    .unwrap_or_default();
+                if asserted.length() > 0 || retracted.length() > 0 {
+                    apply_site_frame(&host_for_delta, &asserted);
+                }
+            }));
+        let _ = js_sys::Reflect::set(&probe, &"update".into(), update.as_ref());
+        update.forget();
 
         let body = match heal_query(&site) {
             Some(body) => body,
@@ -399,6 +411,16 @@ fn install_self_heal(this: &HtmlElement, slot: Rc<RefCell<Option<Subscription>>>
             }
         }
     });
+}
+
+/// A vanished stamp reclaims the site. A target on a live stamp asks
+/// this tab to navigate; the resulting load re-stamps and clears it.
+fn apply_site_frame(host: &HtmlElement, rows: &js_sys::Array) {
+    if rows.length() == 0 {
+        heal_claim(host);
+    } else if let Some(target) = stamped_target(rows) {
+        tonk_host::navigate_to(&target);
+    }
 }
 
 /// Re-assert the `tonk:load` claim for the site's CURRENT path — the heal
@@ -710,6 +732,47 @@ mod tests {
             fake.claim_body.borrow().is_none(),
             "a live stamp must not re-claim"
         );
+
+        let update: Function = Reflect::get(&probe, &"update".into())
+            .expect("update prop")
+            .dyn_into()
+            .expect("update fn");
+        let original_url = window().unwrap().location().href().unwrap();
+        let target = format!(
+            "{}#site-target-regression",
+            original_url.split('#').next().unwrap()
+        );
+        let row = Object::new();
+        let fields = Object::new();
+        Reflect::set(&fields, &"path".into(), &"/space/x".into()).unwrap();
+        Reflect::set(&fields, &"target".into(), &target.clone().into()).unwrap();
+        Reflect::set(&row, &"fields".into(), &fields).unwrap();
+        let delta = Object::new();
+        Reflect::set(&delta, &"asserted".into(), &Array::of1(&row)).unwrap();
+        Reflect::set(&delta, &"retracted".into(), &full).unwrap();
+        update.call2(&probe, &delta, &JsValue::UNDEFINED).unwrap();
+        flush().await;
+        let navigated = window().unwrap().location().href().unwrap();
+        window()
+            .unwrap()
+            .history()
+            .unwrap()
+            .replace_state_with_url(&JsValue::NULL, "", Some(&original_url))
+            .unwrap();
+        assert_eq!(navigated, target, "a target arriving in a delta navigates");
+        assert!(
+            fake.claim_body.borrow().is_none(),
+            "replacing a stamp does not heal"
+        );
+
+        Reflect::set(&delta, &"asserted".into(), &Array::new()).unwrap();
+        update.call2(&probe, &delta, &JsValue::UNDEFINED).unwrap();
+        flush().await;
+        assert!(
+            fake.claim_body.borrow().is_some(),
+            "a removal delta reclaims the site"
+        );
+        fake.claim_body.borrow_mut().take();
 
         // An empty frame is a vanished stamp: re-claim the current path.
         let _ = reset.call2(&probe, &Array::new().into(), &JsValue::UNDEFINED);

@@ -8825,7 +8825,7 @@ mod tests {
         let entity: dialog_artifacts::Entity =
             tonk_schema::Replica::SELF_STATE_HERE.parse().unwrap();
         let rows: Vec<tonk_schema::ProfileIdentity> = session
-            .handle()
+            .stack()
             .query()
             .select(Query::<tonk_schema::ProfileIdentity> {
                 this: Term::from(entity),
@@ -9862,7 +9862,7 @@ block/insert!:
         let entity: dialog_artifacts::Entity =
             tonk_schema::Replica::SELF_STATE_HERE.parse().unwrap();
         let rows: Vec<tonk_schema::ProfileIdentity> = session
-            .handle()
+            .stack()
             .query()
             .select(Query::<tonk_schema::ProfileIdentity> {
                 this: Term::from(entity),
@@ -10130,7 +10130,7 @@ block/insert!:
             .await
             .expect("content branch opens");
         let rows: Vec<ShareBlocked> = branch
-            .handle()
+            .stack()
             .query()
             .select(dialog_query::Query::<ShareBlocked> {
                 this: Term::var("this"),

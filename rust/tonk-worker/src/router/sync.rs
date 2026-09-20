@@ -1742,7 +1742,7 @@ mod overlay_tests {
         let entity: dialog_artifacts::Entity =
             tonk_schema::Replica::SELF_STATE_HERE.parse().unwrap();
         let rows: Vec<tonk_schema::ProfileIdentity> = session
-            .handle()
+            .stack()
             .query()
             .select(Query::<tonk_schema::ProfileIdentity> {
                 this: Term::from(entity),
