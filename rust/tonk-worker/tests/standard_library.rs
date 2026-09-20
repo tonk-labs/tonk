@@ -149,6 +149,30 @@ fn it_offers_to_link_an_account_when_none_is() {
     }
 }
 
+/// With no account, the account cell raises the signup rather than
+/// switching tabs.
+///
+/// The cell is the only door to linking one, so a version that merely
+/// opened an empty menu would strand a new browser with nothing to
+/// click. The old element branched on this and the bar must too — it is
+/// the difference between a tab bar and a way in.
+#[test]
+fn it_raises_the_signup_from_an_unlinked_account_cell() {
+    let bar = PROFILE_LIBRARY
+        .split("element!: &hub-bar")
+        .nth(1)
+        .and_then(|rest| rest.split("\nview!:").next())
+        .expect("the hub-bar definition");
+    assert!(
+        bar.contains("    unlinked: |"),
+        "the bar must be able to tell whether an account is linked",
+    );
+    assert!(
+        bar.contains("self.link();"),
+        "and raise the ceremony when none is, rather than switching tabs",
+    );
+}
+
 /// The account menu's behaviour is branch data, not Rust.
 ///
 /// Roving focus, Escape and focus restoration are DOM work with no fact

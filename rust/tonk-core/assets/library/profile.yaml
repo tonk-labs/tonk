@@ -1599,11 +1599,29 @@ element!: &hub-bar
         self.setAttribute('linking', 'false');
         self.select('spaces');
       }
+    # Whether this browser has an account yet. The label renders from
+    # `tonk:account/name`, whose row is absent until one is linked, so
+    # the rendered offer IS the signal — no second fact to disagree
+    # with the first.
+    unlinked: |
+      (self) => {
+        const label = self.querySelector('[data-account-label]');
+        return !!label && label.textContent.trim() === 'add an account';
+      }
     connected: |
       (self) => {
         self.addEventListener('click', (event) => {
           const cell = event.target.closest('[data-tab]');
-          if (cell) self.select(cell.dataset.tab);
+          if (!cell) return;
+          // With no account, the account cell is not a tab — it is the
+          // door. WebAuthn needs a `window` and a user gesture, which
+          // this opaque realm has neither of, so the top page raises
+          // the ceremony and this asks it to.
+          if (cell.dataset.tab === 'account' && self.unlinked()) {
+            self.link();
+            return;
+          }
+          self.select(cell.dataset.tab);
         });
         // Re-seat on anything that can move the bar. The top page
         // ignores the update when no ceremony is open, so this is free
