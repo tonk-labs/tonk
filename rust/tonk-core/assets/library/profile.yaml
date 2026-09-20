@@ -1625,6 +1625,13 @@ element!: &hub-bar
             return;
           }
           self.select(cell.dataset.tab);
+          // The account tab IS the menu: selecting it has to open the
+          // menu, or the tab shows nothing and its rows stay
+          // unclickable. Any other tab closes it.
+          const menu = self.querySelector('hub-menu');
+          if (!menu) return;
+          if (cell.dataset.tab === 'account') menu.open();
+          else menu.close(false);
         });
         // Re-seat on anything that can move the bar. The top page
         // ignores the update when no ceremony is open, so this is free
