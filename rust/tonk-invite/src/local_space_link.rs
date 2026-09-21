@@ -163,6 +163,13 @@ async fn validate_chain(
         .last()
         .context("local_space_link_invalid_chain")?;
     for hop in chain.proofs() {
+        // Structural chain validation does not enforce attenuation. These
+        // consent commands carry no policy arguments, so a restricted ancestor
+        // cannot authorize their unrestricted leaf.
+        ensure!(
+            leaf.command().starts_with(hop.command()) && hop.policy().is_empty(),
+            "local_space_link_scope_mismatch"
+        );
         hop.verify_signature(&DidKeyResolver)
             .await
             .context("local_space_link_invalid_signature")?;
@@ -850,6 +857,68 @@ mod local_space_link_tests {
 
         assert_eq!(completion.account, account.did());
         assert_eq!(completion.space, request.space);
+    }
+
+    #[tokio::test]
+    async fn local_space_link_rejects_restricted_ancestor_consent() {
+        let (_, _, account, _, _, request) = fixture().await;
+        let device = Ed25519Signer::generate().await.unwrap();
+        let valid_approval = LocalSpaceLinkApproval::issue(&request, &account, at(1_000_002))
+            .await
+            .unwrap()
+            .validate(&request, Some(&account.did()), at(1_000_003))
+            .await
+            .unwrap();
+        for (ancestor_command, restricted_policy, accepted) in [
+            (vec!["read".to_owned()], false, false),
+            (vec!["link".to_owned()], true, false),
+            (vec!["link".to_owned()], false, true),
+        ] {
+            let scope = dialog_ucan::Scope {
+                subject: Subject::Any,
+                command: Command(ancestor_command.clone()),
+                parameters: dialog_ucan::Parameters(if restricted_policy {
+                    BTreeMap::from([("space".into(), Ipld::String("other-space".into()))])
+                } else {
+                    BTreeMap::new()
+                }),
+            };
+            let parent = DelegationBuilder::new()
+                .issuer(Signer::from(account.clone()))
+                .audience(&device.did())
+                .subject(Subject::Any)
+                .command(ancestor_command)
+                .policy(scope.policy())
+                .expiration(at(1_001_000))
+                .try_build()
+                .await
+                .unwrap();
+            let chain = DelegationChain::new(parent);
+            let signer = Signer::from(device.clone());
+            let approval = LocalSpaceLinkApproval::issue_from_device(
+                &request,
+                chain.clone(),
+                &signer,
+                at(1_000_002),
+            )
+            .await
+            .unwrap();
+            let result = approval
+                .validate(&request, Some(&account.did()), at(1_000_003))
+                .await;
+            assert_eq!(result.is_ok(), accepted, "approval: {result:?}");
+            let completion = LocalSpaceLinkCompletion::issue_from_device(
+                &valid_approval,
+                chain,
+                &signer,
+                "directory-revision-1".into(),
+                at(1_000_004),
+            )
+            .await
+            .unwrap();
+            let result = completion.validate(&valid_approval, at(1_000_005)).await;
+            assert_eq!(result.is_ok(), accepted, "completion: {result:?}");
+        }
     }
 
     #[tokio::test]
