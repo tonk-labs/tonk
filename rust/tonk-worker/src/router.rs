@@ -75,6 +75,7 @@ pub(crate) mod account_devices;
 mod create_invite;
 pub use create_invite::{CreateInviteRequest, CreateInviteResponse};
 
+pub(crate) mod agent_connections;
 mod revoke_invite;
 
 /// Space membership management: admins and removals, as commands.
@@ -328,6 +329,11 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             post(revoke_invite::revoke),
         )
         .route("/api/repository/{repo}/invites", get(revoke_invite::list))
+        .route("/api/account/connections", get(agent_connections::list))
+        .route(
+            "/api/account/connections/{id}/revoke",
+            post(agent_connections::revoke),
+        )
         // Opt-in remote attach — wires a remote (and branch upstream)
         // onto an existing repo, idempotently. See
         // `router/repository.rs::attach_remote`.
