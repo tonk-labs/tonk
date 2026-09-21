@@ -45,7 +45,7 @@ pub fn description(name: &str) -> Option<&'static str> {
         "notation" => Some("Notation syntax, queries, assertions, names, and joins"),
         "spaces" => Some("Space selection, directory bindings, and resolution order"),
         "tutorial" => Some("The discover, define, write, view, and share loop"),
-        "sync" => Some("Upstreams, remotes, automatic sync, invites, and joins"),
+        "sync" => Some("Upstreams, remotes, automatic sync, and scoped connections"),
         "views" => Some("Templates, view resolution, and web components"),
         "events" => Some("Effects, rules, transient concepts, and DOM events"),
         "tonk-display" => Some("Render an entity through a view"),

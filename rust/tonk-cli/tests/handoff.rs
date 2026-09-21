@@ -325,6 +325,76 @@ async fn connection_uses_the_space_name_and_avoids_local_collisions() -> anyhow:
         displayed.stdout.contains("Test Garden"),
         "choosing a local alias must not rename the synced space"
     );
+
+    // Model an already connected older CLI replica, including its directory
+    // binding and a colliding unrelated alias. Naming must preserve its data.
+    let store = &test.config.account_store;
+    let binding = tonk_cli::connections::ConnectionBinding {
+        version: 1,
+        id: "a".repeat(64),
+        subject: test.site.repository.did().to_string(),
+        recipient: "test-recipient".into(),
+        grant_cids: vec![],
+    };
+    store.save(&registry)?;
+    let temporary = "agent-aaaaaaaaaaaa";
+    tonk_cli::space::register_connection_bound(
+        store,
+        temporary,
+        &test.site.root,
+        Some(&test.parent),
+        binding.clone(),
+    )?;
+    let chosen = tonk_cli::handoff::resolve_connection_name(
+        &test.site,
+        store,
+        &test.site.root,
+        temporary,
+        &binding,
+    )
+    .await?;
+    assert_eq!(chosen, "test-garden-2");
+    let saved = store.load()?;
+    assert!(!saved.spaces.contains_key(temporary));
+    assert_eq!(saved.spaces[&chosen].site, test.site.root);
+    assert_eq!(saved.spaces[&chosen].connection.as_ref(), Some(&binding));
+    assert_eq!(saved.bindings[&test.parent], chosen);
+    assert!(saved.spaces.contains_key("test-garden"));
+    assert_eq!(
+        tonk_cli::handoff::resolve_connection_name(
+            &test.site,
+            store,
+            &test.site.root,
+            &chosen,
+            &binding,
+        )
+        .await?,
+        chosen
+    );
+    assert_eq!(store.load()?, saved);
+    assert_eq!(
+        tonk_cli::handoff::resolve_connection_name(
+            &test.site,
+            store,
+            &test.site.root,
+            "my-alias",
+            &binding,
+        )
+        .await?,
+        "my-alias"
+    );
+    tonk_cli::handoff::remember_connection_name(&test.site.root, temporary)?;
+    assert_eq!(
+        tonk_cli::handoff::resolve_connection_name(
+            &test.site,
+            store,
+            &test.site.root,
+            temporary,
+            &binding,
+        )
+        .await?,
+        temporary
+    );
     Ok(())
 }
 
@@ -333,28 +403,32 @@ async fn connect_rejects_open_invite_before_mutation() -> anyhow::Result<()> {
     let issuer = common::TestSite::new().await?;
     let invite =
         tonk_cli::invite::mint(&issuer.site, Some("https://example.test/join"), None).await?;
-    let home = tempfile::tempdir()?;
     let binary = std::env::var_os("NEXTEST_BIN_EXE_tonk")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| env!("CARGO_BIN_EXE_tonk").into());
-    let output = std::process::Command::new(binary)
-        .args(["connect", &invite.url, "--no-open"])
-        .current_dir(home.path())
-        .env("HOME", home.path())
-        .env("XDG_DATA_HOME", home.path().join("data"))
-        .env("TONK_SPACES_STATE", home.path().join("spaces"))
-        .env("TONK_TELEMETRY_STATE", home.path().join("telemetry"))
-        .env("TONK_UPDATE_STATE", home.path().join("update"))
-        .env("TONK_NO_UPDATE_CHECK", "1")
-        .env("DO_NOT_TRACK", "1")
-        .env_remove("TONK_SPACE")
-        .output()?;
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("account-scoped"));
-    assert!(
-        !home.path().join("spaces").exists(),
-        "legacy open invite must fail before local account/space writes"
-    );
+    {
+        let home = tempfile::tempdir()?;
+        let output = std::process::Command::new(&binary)
+            .arg("join")
+            .arg(&invite.url)
+            .current_dir(home.path())
+            .env("HOME", home.path())
+            .env("XDG_DATA_HOME", home.path().join("data"))
+            .env("TONK_SPACES_STATE", home.path().join("spaces"))
+            .env("TONK_TELEMETRY_STATE", home.path().join("telemetry"))
+            .env("TONK_UPDATE_STATE", home.path().join("update"))
+            .env("TONK_NO_UPDATE_CHECK", "1")
+            .env("DO_NOT_TRACK", "1")
+            .env_remove("TONK_SPACE")
+            .output()?;
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("unsupported_agent_invitation"));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("copy a new space invitation"));
+        assert!(
+            !home.path().join("spaces").exists(),
+            "legacy open invite must fail before local account/space writes"
+        );
+    }
     Ok(())
 }
 
