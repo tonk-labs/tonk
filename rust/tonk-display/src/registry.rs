@@ -1288,9 +1288,16 @@ mod tests {
             .expect("dispatch");
     }
 
-    fn fire(host: &Element, name: &str) {
-        let event = web_sys::Event::new(name).expect("event");
-        host.dispatch_event(&event).expect("dispatch");
+    /// A bubbling event, as the events a page raises are.
+    fn fire(target: &web_sys::EventTarget, name: &str) {
+        let make = js_sys::Function::new_with_args(
+            "name",
+            "return new Event(name, { bubbles: true, cancelable: true });",
+        );
+        let event = make.call1(&JsValue::NULL, &name.into()).expect("event");
+        target
+            .dispatch_event(event.unchecked_ref())
+            .expect("dispatch");
     }
 
     #[wasm_bindgen_test::wasm_bindgen_test]
@@ -1602,5 +1609,176 @@ mod tests {
             "the copy names the space",
         );
         assert_eq!(text_of(&host, "[data-space-remove-submit]"), "leave space");
+    }
+
+    fn drag_frame() -> Element {
+        install_fake_host();
+        install();
+        let host = document().create_element("drag-frame").expect("frame");
+        let _ = host.set_attribute(
+            "style",
+            "position:fixed;width:40px;height:40px;left:200px;top:150px;",
+        );
+        document()
+            .body()
+            .expect("body")
+            .append_child(&host)
+            .expect("attach");
+        host
+    }
+
+    /// A synthetic pointer event, dispatched on `target`.
+    fn pointer(target: &web_sys::EventTarget, kind: &str, x: f64, y: f64, buttons: i32) {
+        let make = js_sys::Function::new_with_args(
+            "kind, x, y, buttons",
+            "return new PointerEvent(kind, { clientX: x, clientY: y, buttons, button: 0, pointerId: 1, pointerType: 'mouse', bubbles: true, cancelable: true });",
+        );
+        let event = make
+            .call4(
+                &JsValue::NULL,
+                &kind.into(),
+                &x.into(),
+                &y.into(),
+                &buttons.into(),
+            )
+            .expect("pointer event");
+        target
+            .dispatch_event(event.unchecked_ref())
+            .expect("dispatch");
+    }
+
+    fn px(host: &Element, property: &str) -> f64 {
+        let style: web_sys::CssStyleDeclaration =
+            host.unchecked_ref::<web_sys::HtmlElement>().style();
+        style
+            .get_property_value(property)
+            .ok()
+            .and_then(|value| value.trim_end_matches("px").parse().ok())
+            .unwrap_or(f64::NAN)
+    }
+
+    fn viewport() -> (f64, f64) {
+        let win = window().expect("window");
+        let read =
+            |value: Result<JsValue, JsValue>| value.ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
+        (read(win.inner_width()), read(win.inner_height()))
+    }
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_drags_a_frame_and_docks_it_to_the_nearest_edge_from_the_library() {
+        define_from_library(CORE_LIBRARY, "drag-frame");
+        let host = drag_frame();
+        settle_until(|| host.has_attribute("inset")).await;
+        let ends = js_sys::Array::new();
+        let recorded = ends.clone();
+        let on_end = Closure::<dyn FnMut(CustomEvent)>::new(move |event: CustomEvent| {
+            recorded.push(&event.detail());
+        });
+        let _ = host.add_event_listener_with_callback("drag-end", on_end.as_ref().unchecked_ref());
+        on_end.forget();
+        let win = window().expect("window");
+        let (_, vh) = viewport();
+        let target_y = (vh / 2.0).floor();
+
+        let clicks = js_sys::Array::new();
+        let recorded = clicks.clone();
+        let on_click = Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
+            recorded.push(&JsValue::TRUE);
+        });
+        let _ =
+            document().add_event_listener_with_callback("click", on_click.as_ref().unchecked_ref());
+        on_click.forget();
+        pointer(&host, "pointerdown", 220.0, 170.0, 1);
+        pointer(&win, "pointermove", 80.0, target_y, 1);
+        assert!(
+            host.has_attribute("dragging"),
+            "past the dead zone the press is a drag"
+        );
+        pointer(&win, "pointerup", 80.0, target_y, 0);
+        // The click a browser raises right after the release is not a click.
+        fire(&host, "click");
+        assert_eq!(
+            clicks.length(),
+            0,
+            "the click that ends a drag is swallowed"
+        );
+        settle_until(|| ends.length() >= 1).await;
+        fire(&host, "click");
+        assert_eq!(clicks.length(), 1, "a later click reaches the page again");
+
+        assert!(!host.has_attribute("dragging"));
+        assert_eq!(
+            host.get_attribute("docked").as_deref(),
+            Some("left"),
+            "release docks to the nearest edge"
+        );
+        assert_eq!(px(&host, "left"), 16.0, "the docked edge sits at the inset");
+        let expected_top = 150.0 + (target_y - 170.0);
+        assert!(
+            (px(&host, "top") - expected_top).abs() < 1.0,
+            "docking keeps the coordinate along the edge, got {} for {expected_top}",
+            px(&host, "top"),
+        );
+        let edge = Reflect::get(&ends.get(0), &"edge".into())
+            .ok()
+            .and_then(|value| value.as_string());
+        assert_eq!(edge.as_deref(), Some("left"), "drag-end names the edge");
+    }
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_treats_a_press_within_the_dead_zone_as_a_tap_from_the_library() {
+        define_from_library(CORE_LIBRARY, "drag-frame");
+        let host = drag_frame();
+        settle_until(|| host.has_attribute("inset")).await;
+        let clicks = js_sys::Array::new();
+        let recorded = clicks.clone();
+        let on_click = Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
+            recorded.push(&JsValue::TRUE);
+        });
+        let _ =
+            document().add_event_listener_with_callback("click", on_click.as_ref().unchecked_ref());
+        on_click.forget();
+        let win = window().expect("window");
+
+        pointer(&host, "pointerdown", 220.0, 170.0, 1);
+        pointer(&win, "pointermove", 222.0, 171.0, 1);
+        assert!(!host.has_attribute("dragging"), "two pixels is still a tap");
+        pointer(&win, "pointerup", 222.0, 171.0, 0);
+        settle_briefly().await;
+
+        assert_eq!(
+            px(&host, "left"),
+            200.0,
+            "a tap leaves the frame where it was"
+        );
+        assert!(!host.has_attribute("docked"), "a tap does not dock");
+        fire(&host, "click");
+        settle_briefly().await;
+        assert_eq!(
+            clicks.length(),
+            1,
+            "the tap's click reaches the content and the page"
+        );
+    }
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_keeps_the_frame_inside_the_viewport_on_resize_from_the_library() {
+        define_from_library(CORE_LIBRARY, "drag-frame");
+        let host = drag_frame();
+        settle_until(|| host.has_attribute("inset")).await;
+        let (vw, _) = viewport();
+        let style: web_sys::CssStyleDeclaration =
+            host.unchecked_ref::<web_sys::HtmlElement>().style();
+        let _ = style.set_property("left", "5000px");
+
+        fire(&window().expect("window"), "resize");
+        settle_briefly().await;
+
+        assert_eq!(host.get_attribute("docked").as_deref(), Some("right"));
+        assert_eq!(
+            px(&host, "left"),
+            vw - 40.0 - 16.0,
+            "the frame is pulled back to the right edge"
+        );
     }
 }

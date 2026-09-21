@@ -2426,3 +2426,163 @@ element!: &inline-editable
           self.dispatchEvent(new Event('change', { bubbles: true }));
         });
       }
+
+# A frame that can be dragged around the viewport. It does not care what
+# it holds: the content is whatever the view puts inside, and the frame
+# only moves it. A press on the handle (the frame itself unless `handle`
+# names a part) that travels past the dead zone becomes a drag; the frame
+# tracks the pointer 1:1, stays inside the viewport, and on release docks
+# to the nearest edge at `inset` pixels, keeping its coordinate along
+# that edge, or merely clamps when `dock="none"`. A tap is left alone,
+# so whatever the content does on click still happens; the click that
+# ends a drag is swallowed, since it was not a click. A resize keeps a
+# docked frame on its edge and any frame inside the viewport.
+#
+# It reflects what it knows as attributes — `dragging` while a drag is
+# on, `docked` with the edge it rests on, `left`/`top` in pixels once
+# placed — and announces `drag-start` and `drag-end` (detail: `left`,
+# `top`, `edge`) so a view can persist or react.
+element!: &drag-frame
+  description: Drags its contents around the viewport and docks them to an edge.
+  attribute:
+    inset: "16"
+    dead-zone: "4"
+    dock: "edges"
+    handle: ""
+  method:
+    options: |
+      (self) => {
+        const number = (name, fallback) => {
+          const value = parseFloat(self.getAttribute(name));
+          return Number.isFinite(value) ? value : fallback;
+        };
+        return {
+          inset: number('inset', 16),
+          deadZone: number('dead-zone', 4),
+          dock: (self.getAttribute('dock') || 'edges') !== 'none',
+          handle: self.getAttribute('handle') || '',
+        };
+      }
+    handleOf: |
+      (self, target) => {
+        const selector = self.options().handle;
+        if (!selector) return self;
+        const part = target?.closest?.(selector);
+        return part && self.contains(part) ? part : null;
+      }
+    place: |
+      (self, left, top) => {
+        self.style.left = `${left}px`;
+        self.style.top = `${top}px`;
+      }
+    snap: |
+      (self, left, top, edge) => {
+        const { inset, dock } = self.options();
+        const rect = self.getBoundingClientRect();
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        let x = Math.max(inset, Math.min(left, vw - rect.width - inset));
+        let y = Math.max(inset, Math.min(top, vh - rect.height - inset));
+        if (!dock) return { left: x, top: y, edge: null };
+        if (!edge) {
+          const distances = [
+            ['left', x], ['right', vw - (x + rect.width)],
+            ['top', y], ['bottom', vh - (y + rect.height)],
+          ];
+          let nearest = distances[0];
+          for (const candidate of distances) if (candidate[1] < nearest[1]) nearest = candidate;
+          edge = nearest[0];
+        }
+        if (edge === 'left') x = inset;
+        else if (edge === 'right') x = vw - rect.width - inset;
+        else if (edge === 'top') y = inset;
+        else if (edge === 'bottom') y = vh - rect.height - inset;
+        return { left: Math.max(inset, x), top: Math.max(inset, y), edge };
+      }
+    settle: |
+      (self, left, top, edge) => {
+        const at = self.snap(left, top, edge);
+        self.place(at.left, at.top);
+        if (at.edge) self.setAttribute('docked', at.edge);
+        else self.removeAttribute('docked');
+        self.setAttribute('left', String(Math.round(at.left)));
+        self.setAttribute('top', String(Math.round(at.top)));
+        return at;
+      }
+    connected: |
+      (self) => {
+        if (getComputedStyle(self).position === 'static') self.style.position = 'fixed';
+        if (!self.style.touchAction) self.style.touchAction = 'none';
+        if (self.__wired) return;
+        self.__wired = true;
+        let press = null;
+        const finish = () => {
+          if (!press) return;
+          const { moved, touch, pointerId, handle } = press;
+          press = null;
+          window.removeEventListener('pointermove', move);
+          window.removeEventListener('pointerup', finish);
+          window.removeEventListener('pointercancel', finish);
+          try { (touch ? handle : self).releasePointerCapture(pointerId); } catch {}
+          if (!moved) return;
+          self.removeAttribute('dragging');
+          self.__justDragged = true;
+          setTimeout(() => { self.__justDragged = false; }, 0);
+          const rect = self.getBoundingClientRect();
+          const at = self.settle(rect.left, rect.top);
+          self.dispatchEvent(new CustomEvent('drag-end', { bubbles: true, detail: at }));
+        };
+        const move = (event) => {
+          if (!press) return;
+          if (event.buttons === 0) { finish(); return; }
+          const dx = event.clientX - press.x;
+          const dy = event.clientY - press.y;
+          if (!press.moved) {
+            const { deadZone } = self.options();
+            const zone = press.touch ? Math.max(deadZone, 9) : deadZone;
+            if (Math.hypot(dx, dy) < zone) return;
+            press.moved = true;
+            if (!press.touch) { try { self.setPointerCapture(press.pointerId); } catch {} }
+            self.removeAttribute('docked');
+            self.setAttribute('dragging', '');
+            self.dispatchEvent(new CustomEvent('drag-start', {
+              bubbles: true, detail: { left: press.left, top: press.top, edge: null },
+            }));
+          }
+          const rect = self.getBoundingClientRect();
+          const left = Math.max(0, Math.min(press.left + dx, window.innerWidth - rect.width));
+          const top = Math.max(0, Math.min(press.top + dy, window.innerHeight - rect.height));
+          self.place(left, top);
+        };
+        self.addEventListener('pointerdown', (event) => {
+          if (event.button !== 0 || press) return;
+          const handle = self.handleOf(event.target);
+          if (!handle) return;
+          const rect = self.getBoundingClientRect();
+          press = {
+            x: event.clientX, y: event.clientY, left: rect.left, top: rect.top,
+            pointerId: event.pointerId, touch: event.pointerType === 'touch',
+            moved: false, handle,
+          };
+          if (press.touch) { try { handle.setPointerCapture(event.pointerId); } catch {} }
+          window.addEventListener('pointermove', move);
+          window.addEventListener('pointerup', finish);
+          window.addEventListener('pointercancel', finish);
+        });
+        self.addEventListener('click', (event) => {
+          if (!self.__justDragged) return;
+          self.__justDragged = false;
+          event.stopPropagation();
+          event.preventDefault();
+        }, true);
+        self.__resize = () => {
+          if (press) return;
+          const rect = self.getBoundingClientRect();
+          self.settle(rect.left, rect.top, self.getAttribute('docked') || undefined);
+        };
+        window.addEventListener('resize', self.__resize);
+      }
+    disconnected: |
+      (self) => {
+        window.removeEventListener('resize', self.__resize);
+      }
