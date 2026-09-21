@@ -601,8 +601,19 @@ pub(crate) async fn join_invite(tonk: &TonkState, url: &str) -> Result<JoinOutco
 pub(crate) async fn join_for_local_space_link(
     tonk: &TonkState,
     url: &str,
+    approved_subject: &Did,
 ) -> Result<JoinOutcome, TonkWorkerError> {
-    join_invite(tonk, url).await.map_err(Into::into)
+    let invite = parse_invite(url).await?;
+    // Check consent before preparation can mint an account, and before the
+    // join can save authority, membership, or a replica. Use this same parsed
+    // invitation throughout so validation and mutation cannot name two spaces.
+    if invite.subject() != approved_subject {
+        return Err(TonkWorkerError::Forbidden(
+            "local-space link invite names another space".into(),
+        ));
+    }
+    let prepared = prepare_parsed_join(tonk, invite).await?;
+    perform_join(tonk, prepared).await.map_err(Into::into)
 }
 
 /// Replace a browser-approved local-space join's invite authority with its
@@ -622,10 +633,19 @@ pub(crate) async fn save_local_space_root_authority(
 /// the candidate chain. Reads only, except that a device joining before
 /// it has any account mints its onboarding account here.
 async fn prepare_join(tonk: &TonkState, url: &str) -> Result<PreparedJoin, JoinFailure> {
-    let invite = Invite::parse_url(url)
-        .await
-        .map_err(|error| JoinFailure::malformed(format!("invite did not parse: {error}")))?;
+    prepare_parsed_join(tonk, parse_invite(url).await?).await
+}
 
+async fn parse_invite(url: &str) -> Result<Invite, JoinFailure> {
+    Invite::parse_url(url)
+        .await
+        .map_err(|error| JoinFailure::malformed(format!("invite did not parse: {error}")))
+}
+
+async fn prepare_parsed_join(
+    tonk: &TonkState,
+    invite: Invite,
+) -> Result<PreparedJoin, JoinFailure> {
     // Derived from the chain as parsed — a claim pushes a redelegation
     // and changes the leaf. Guaranteed `Some` by the `Invite` invariant
     // (the chain has a specific subject).
@@ -1888,6 +1908,36 @@ mod invite_name_tests {
     }
 
     #[dialog_common::test]
+    async fn local_space_link_rejects_another_subject_before_joining() {
+        let state = crate::router::command::tests::native::test_state().await;
+        let (invite, key) = named_invite_url(60, 61, "Unapproved space").await;
+        let subject: Did = key.parse().unwrap();
+        let approved = Ed25519Signer::generate().await.unwrap().did();
+        let tonk = state.read().await;
+        let result = join_for_local_space_link(&tonk, &invite, &approved).await;
+        assert!(matches!(result, Err(TonkWorkerError::Forbidden(_))));
+        assert!(!find_replica_for_subject(&tonk, &subject).await.unwrap());
+        assert!(
+            tonk.profile
+                .access()
+                .prove(
+                    dialog_capability::Subject::from(subject.clone())
+                        .attenuate(dialog_effects::Use)
+                )
+                .audience(&tonk.operator)
+                .perform(&tonk.operator)
+                .await
+                .is_err()
+        );
+        join_for_local_space_link(&tonk, &invite, &subject)
+            .await
+            .expect("the approved invitation still joins normally");
+        assert!(find_replica_for_subject(&tonk, &subject).await.unwrap());
+        drop(tonk);
+        assert_eq!(directory_name(&state, &key).await, vec!["Unapproved space"]);
+    }
+
+    #[dialog_common::test]
     async fn it_seeds_the_directory_name_from_the_invite_and_lets_the_record_catch_up() {
         let state = crate::router::command::tests::native::test_state().await;
         let (url, key) = named_invite_url(0xA1, 0xA2, "Garden Plans").await;
@@ -2688,6 +2738,24 @@ pub(crate) mod tests {
             root_did.to_string(),
             "self row resolves against the account root, not the device did",
         );
+    }
+
+    #[dialog_common::test]
+    async fn local_space_link_rejects_another_subject_before_joining() {
+        let (_, state, _lsp) = api_router_with_state(test_state().await);
+        let (invite, key) = handcrafted_invite_url(60, 61).await;
+        let approved = Ed25519Signer::generate().await.unwrap().did();
+        let before = snapshot(&state, &key).await;
+        let result =
+            super::join_for_local_space_link(&*state.read().await, &invite, &approved).await;
+        assert!(matches!(result, Err(crate::TonkWorkerError::Forbidden(_))));
+        assert_eq!(snapshot(&state, &key).await, before);
+
+        let subject = key.parse().unwrap();
+        super::join_for_local_space_link(&*state.read().await, &invite, &subject)
+            .await
+            .expect("the approved invitation still joins normally");
+        assert_ne!(snapshot(&state, &key).await, before);
     }
 
     // ----- a failed join leaves nothing behind -----

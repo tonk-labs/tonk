@@ -158,12 +158,8 @@ pub(crate) async fn complete(
             "local-space provisioning receipt has the wrong stage".into(),
         ));
     }
-    let outcome = super::join::join_for_local_space_link(&tonk, &body.invite).await?;
-    if outcome.subject != request.space {
-        return Err(TonkWorkerError::Forbidden(
-            "local-space link invite names another space".into(),
-        ));
-    }
+    let outcome =
+        super::join::join_for_local_space_link(&tonk, &body.invite, &request.space).await?;
     let device = tonk.profile.signer().signer().clone();
     let completion = local_space_link::LocalSpaceLinkCompletion::issue_from_device(
         &approval,
