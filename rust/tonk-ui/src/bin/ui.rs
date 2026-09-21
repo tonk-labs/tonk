@@ -154,11 +154,6 @@ async fn main() {
         return;
     }
     tonk_ui::analytics::startup_checkpoint(tonk_analytics::product::Stage::Welcome);
-    // Which branch this profile is on, before anything speaks for it: a
-    // ceremony parked across a branch rotation reopens below and sends
-    // its work to `profile_with()`, which would still name `main` while
-    // the mount's own resolution was in flight.
-    tonk_host::bridge::resolve_profile_with().await;
     mount_root();
     if web_sys::window().is_some_and(|window| {
         matches!(
@@ -173,9 +168,16 @@ async fn main() {
         );
     }
     if let Some(request) = tonk_ui::register_dialog::take_reopen() {
-        tonk_ui::register_dialog::open();
-        tonk_ui::register_dialog::describe(&request);
-        tonk_ui::register_dialog::adopt_stashed_share();
+        // A ceremony parked across a branch rotation sends its work to
+        // `profile_with()`, which still names `main` until the branch is
+        // resolved; wait for that here, and only here, so an ordinary
+        // boot (a worker upgrade among them) mounts as early as it did.
+        wasm_bindgen_futures::spawn_local(async move {
+            tonk_host::bridge::resolve_profile_with().await;
+            tonk_ui::register_dialog::open();
+            tonk_ui::register_dialog::describe(&request);
+            tonk_ui::register_dialog::adopt_stashed_share();
+        });
     }
 }
 
