@@ -18,6 +18,25 @@ mod tests {
 
     use crate::helpers::{TestEnvironment, driver_with_prf, driver_with_prf_authenticator, goto};
 
+    fn assert_prompt_command(prompt: &str, origin: &url::Url, invite: &str) -> Result<()> {
+        let loopback = matches!(origin.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+        let command = if loopback {
+            format!(
+                "TONK_CONNECTION_ORIGIN=\"{}\" tonk join '{invite}'",
+                origin.origin().ascii_serialization()
+            )
+        } else {
+            format!("npx --yes @tonk/cli join '{invite}'")
+        };
+        anyhow::ensure!(prompt.contains(&command), "rendered agent prompt: {prompt}");
+        if loopback {
+            anyhow::ensure!(!prompt.contains("npx --yes @tonk/cli"));
+        } else {
+            anyhow::ensure!(!prompt.contains("TONK_CONNECTION_ORIGIN="));
+        }
+        Ok(())
+    }
+
     // Storybook UI-01: first-root onboarding, playground prompt, and returning Hub.
     #[dialog_common::test]
     async fn it_opens_the_welcome_space_once_then_the_hub(env: TestEnvironment) -> Result<()> {
@@ -124,8 +143,10 @@ mod tests {
             .context("reloading a bundled page route must preserve its focus")?;
         // Supply a prompt fixture to test the page's actual copy value.
         // Account authorization and CLI confirmation have their own full-flow tests.
+        let mut playground_invite = env.tonk_web.join("playground-invite")?;
+        playground_invite.set_fragment(Some("tonk-agent-v1=fixture"));
         let body = format!(
-            "onboarding/agent-invite!:\n  this: {repo}\n  name: \"Welcome to Tonk\"\n  link: \"https://example.test/playground-invite\"\n  account: {repo}\n"
+            "onboarding/agent-invite!:\n  this: {repo}\n  name: \"Welcome to Tonk\"\n  link: \"{playground_invite}\"\n  account: {repo}\n"
         );
         let reply = post_yaml(
             &driver,
@@ -139,13 +160,10 @@ mod tests {
         watch_clipboard(&driver).await?;
         click(&driver, ".playground-agent .agent-prompt__copy").await?;
         let prompt = copied_text(&driver).await?;
-        anyhow::ensure!(
-            prompt.contains("npx --yes @tonk/cli connect 'https://example.test/playground-invite'"),
-            "rendered playground prompt: {prompt}"
-        );
-        anyhow::ensure!(prompt.contains("--switch-account"));
+        assert_prompt_command(&prompt, &env.tonk_web, playground_invite.as_str())?;
+        anyhow::ensure!(!prompt.contains("--switch-account"));
         anyhow::ensure!(prompt.contains("Scope all work to the existing Agent playground page"));
-        anyhow::ensure!(!prompt.contains("@tonk/cli space home"));
+        anyhow::ensure!(!prompt.contains("tonk space home"));
         anyhow::ensure!(
             driver
                 .find_all(By::Css(".pg-onboard__pre"))
@@ -221,11 +239,26 @@ mod tests {
         for page in pages.json().as_array().context("page directory")? {
             let entity = page.as_str().context("page identity")?;
             driver.execute("const tree=document.querySelector('vault-tree'); globalThis.__vaultLib.emit(tree, 'navigate', {open:arguments[0], deviceOpen:arguments[0]});", vec![serde_json::json!(entity)]).await?;
-            wait_for_displayed(
+            if let Err(error) = wait_for_displayed(
                 &driver,
                 &format!("vault-active > tonk-display[entity=\"{entity}\"] > tonk-view"),
             )
-            .await?;
+            .await
+            {
+                // Diagnostic only: keep the original assertion failure while
+                // establishing whether focused navigation replaced its frame.
+                driver.enter_default_frame().await?;
+                let route = driver.current_url().await?.path().to_owned();
+                enter_space_view(&driver).await?;
+                let state = driver.execute(r#"const display=document.querySelector('vault-active > tonk-display');
+                    return { active:display?.getAttribute('entity'), model:display?.getAttribute('model'),
+                        views:display?.querySelectorAll(':scope > tonk-view').length,
+                        visible:!!display?.querySelector(':scope > tonk-view')?.getClientRects().length };"#, vec![]).await?;
+                return Err(error).context(format!(
+                    "offline navigation after reacquiring frame: route={route}, state={}",
+                    state.json()
+                ));
+            }
         }
         devtools.execute_cdp_with_params("Network.emulateNetworkConditions", serde_json::json!({
             "offline": false, "latency": 0, "downloadThroughput": -1, "uploadThroughput": -1,
