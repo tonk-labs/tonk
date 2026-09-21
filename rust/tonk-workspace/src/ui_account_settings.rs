@@ -101,7 +101,11 @@ impl CustomElement for UiAccountSettings {
                 return;
             };
             let hit = |selector: &str| target.closest(selector).ok().flatten().is_some();
-            if hit("[data-delete-account-open]") {
+            if hit("[data-connections-refresh]") {
+                crate::agent_connections::refresh(&host);
+            } else if let Ok(Some(button)) = target.closest("[data-connection-revoke]") {
+                crate::agent_connections::revoke(&host, &button);
+            } else if hit("[data-delete-account-open]") {
                 open_delete_dialog(&host);
             } else if hit("[data-delete-account-submit]") {
                 submit_delete(&host);
@@ -111,6 +115,10 @@ impl CustomElement for UiAccountSettings {
                 sign_out(&host);
             } else if hit("[data-add-passkey]") {
                 add_passkey(&host);
+            } else if hit("[data-local-link-approve]") {
+                approve_local_space_link(&host);
+            } else if hit("[data-local-link-decline]") {
+                decline_local_space_link(&host);
             } else if hit("[data-link-approve]") {
                 approve_link(&host);
             } else if hit("[data-link-decline]") {
@@ -409,6 +417,34 @@ fn set_pane(this: &HtmlElement, pane: &str) {
 /// The rows load AFTER the panel appears — a view that shows instantly and
 /// fills in beats one that waits on a fetch.
 pub(crate) fn refresh(this: &HtmlElement) {
+    if let Some(request) = local_space_link_request() {
+        set_text(this, "[data-local-link-name]", request.request.name());
+        set_text(
+            this,
+            "[data-local-link-did]",
+            request
+                .request
+                .subject_hint()
+                .map(ToString::to_string)
+                .as_deref()
+                .unwrap_or("unreadable request"),
+        );
+        set_pane(this, "local-link");
+        if request.approval.is_some()
+            && request.invite.is_some()
+            && !this.has_attribute("data-local-link-finishing")
+        {
+            let _ = this.set_attribute("data-local-link-finishing", "");
+            if request.provisioned.is_some() {
+                finish_local_space_link(this, request);
+            } else if request.consent.is_some() {
+                provision_local_space_link(this, request);
+            }
+        }
+        prefill_name(this);
+        crate::agent_connections::refresh(this);
+        return;
+    }
     // `/settings/link?audience=&callback=&name=` is a terminal asking
     // for access. Every other settings URL lands on the account pane.
     match link_request() {
@@ -428,14 +464,14 @@ pub(crate) fn refresh(this: &HtmlElement) {
         None => {
             let location = page_location();
             set_pane(this, "account");
-            // `tonk account delete` and `tonk account spots delete` open
-            // this page with the review already asked for.
+            // Retain the existing deep link into account-deletion review.
             if location.hash == "#delete-account" {
                 open_delete_dialog(this);
             }
         }
     }
     prefill_name(this);
+    crate::agent_connections::refresh(this);
 }
 
 /// The one space `?delete-space=` names, when this page was opened to
@@ -496,6 +532,37 @@ struct LinkRequest {
     audience: String,
     callback: String,
     name: String,
+}
+
+struct LocalSpaceLinkRequest {
+    encoded: String,
+    request: tonk_invite::local_space_link::LocalSpaceLinkRequest,
+    approval: Option<String>,
+    consent: Option<String>,
+    invite: Option<String>,
+    provisioned: Option<String>,
+}
+
+fn local_space_link_request() -> Option<LocalSpaceLinkRequest> {
+    let location = page_location();
+    if location.path != "/settings/link" {
+        return None;
+    }
+    let params = web_sys::UrlSearchParams::new_with_str(&location.search).ok()?;
+    if params.get("intent").as_deref() != Some("local-space-link") {
+        return None;
+    }
+    let encoded = params.get("request")?;
+    let bytes = tonk_invite::local_space_link::decode_transport(&encoded).ok()?;
+    let request = tonk_invite::local_space_link::LocalSpaceLinkRequest::from_bytes(&bytes).ok()?;
+    Some(LocalSpaceLinkRequest {
+        encoded,
+        request,
+        approval: params.get("approval"),
+        consent: params.get("consent"),
+        invite: params.get("invite"),
+        provisioned: params.get("provisioned"),
+    })
 }
 
 fn link_request() -> Option<LinkRequest> {
@@ -925,6 +992,155 @@ fn approve_link(this: &HtmlElement) {
     );
 }
 
+fn approve_local_space_link(this: &HtmlElement) {
+    let Some(request) = local_space_link_request() else {
+        return;
+    };
+    show_status(this, "Approving this local space\u{2026}");
+    let host = this.clone();
+    spawn_local(async move {
+        let body = serde_json::json!({ "request": request.encoded }).to_string();
+        let response = match tonk_host::post_json("/api/local-space-link/approve", &body).await {
+            Ok(response) => response,
+            Err(error) => {
+                show_status(
+                    &host,
+                    &format!("Could not approve this space: {}", error.message),
+                );
+                return;
+            }
+        };
+        let approval = match serde_json::from_str::<serde_json::Value>(&response)
+            .ok()
+            .and_then(|value| value["approval"].as_str().map(str::to_owned))
+        {
+            Some(approval) => approval,
+            None => {
+                show_status(&host, "The approval response was not readable.");
+                return;
+            }
+        };
+        match tonk_worker_api::callback::delivery_url(
+            request.request.callback().as_str(),
+            &[
+                ("approve", approval.as_str()),
+                ("correlation", request.request.correlation()),
+            ],
+        ) {
+            Ok(target) => tonk_host::navigate_to(&target),
+            Err(error) => show_status(&host, &error),
+        }
+    });
+}
+
+fn decline_local_space_link(this: &HtmlElement) {
+    let Some(request) = local_space_link_request() else {
+        return;
+    };
+    match tonk_worker_api::callback::delivery_url(
+        request.request.callback().as_str(),
+        &[
+            ("deny", "declined in the browser"),
+            ("correlation", request.request.correlation()),
+        ],
+    ) {
+        Ok(target) => tonk_host::navigate_to(&target),
+        Err(error) => show_status(this, &error),
+    }
+}
+
+fn provision_local_space_link(this: &HtmlElement, request: LocalSpaceLinkRequest) {
+    show_status(this, "Preparing this space for publication…");
+    let host = this.clone();
+    spawn_local(async move {
+        let body = serde_json::json!({
+            "request": request.encoded,
+            "approval": request.approval,
+            "consent": request.consent,
+        })
+        .to_string();
+        let response = match tonk_host::post_json("/api/local-space-link/provision", &body).await {
+            Ok(response) => response,
+            Err(error) => {
+                let _ = host.remove_attribute("data-local-link-finishing");
+                show_status(
+                    &host,
+                    &format!("Publication stopped: {}. Reload to retry.", error.message),
+                );
+                return;
+            }
+        };
+        let provisioned = match serde_json::from_str::<serde_json::Value>(&response)
+            .ok()
+            .and_then(|value| value["provisioned"].as_str().map(str::to_owned))
+        {
+            Some(provisioned) => provisioned,
+            None => {
+                show_status(&host, "The provisioning receipt was not readable.");
+                return;
+            }
+        };
+        match tonk_worker_api::callback::delivery_url(
+            request.request.callback().as_str(),
+            &[
+                ("provisioned", provisioned.as_str()),
+                ("correlation", request.request.correlation()),
+            ],
+        ) {
+            Ok(target) => tonk_host::navigate_to(&target),
+            Err(error) => show_status(&host, &error),
+        }
+    });
+}
+
+fn finish_local_space_link(this: &HtmlElement, request: LocalSpaceLinkRequest) {
+    show_status(this, "Publishing this space to your account\u{2026}");
+    let host = this.clone();
+    spawn_local(async move {
+        let body = serde_json::json!({
+            "request": request.encoded,
+            "approval": request.approval,
+            "invite": request.invite,
+            "provisioned": request.provisioned,
+        })
+        .to_string();
+        let response = match tonk_host::post_json("/api/local-space-link/complete", &body).await {
+            Ok(response) => response,
+            Err(error) => {
+                let _ = host.remove_attribute("data-local-link-finishing");
+                show_status(
+                    &host,
+                    &format!("Publication stopped: {}. Reload to retry.", error.message),
+                );
+                return;
+            }
+        };
+        let completion = match serde_json::from_str::<serde_json::Value>(&response)
+            .ok()
+            .and_then(|value| value["completion"].as_str().map(str::to_owned))
+        {
+            Some(completion) => completion,
+            None => {
+                show_status(
+                    &host,
+                    "The publication receipt was not readable. Reload to retry.",
+                );
+                return;
+            }
+        };
+        match tonk_worker_api::callback::delivery_url(
+            request.request.callback().as_str(),
+            &[
+                ("complete", completion.as_str()),
+                ("correlation", request.request.correlation()),
+            ],
+        ) {
+            Ok(target) => tonk_host::navigate_to(&target),
+            Err(error) => show_status(&host, &error),
+        }
+    });
+}
+
 /// Tell the waiting terminal no, and come back here.
 fn decline_link(this: &HtmlElement) {
     let Some(request) = link_request() else {
@@ -1270,6 +1486,7 @@ fn on_account_delta(this: &HtmlElement, payload: JsValue) {
 /// empty frame means the fact has not arrived, not that the account has
 /// no address.
 fn render_account(this: &HtmlElement, row: &JsValue) {
+    crate::agent_connections::refresh(this);
     let email = Reflect::get(row, &"fields".into())
         .ok()
         .and_then(|fields| Reflect::get(&fields, &"email".into()).ok())
