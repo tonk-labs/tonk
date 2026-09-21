@@ -333,6 +333,76 @@ async fn failed_hosted_join_retains_alias_offline_edits_and_resume_state() -> Re
 }
 
 #[dialog_common::test]
+async fn ordinary_join_resumes_after_registry_publication_is_interrupted() -> Result<()> {
+    let issuer = common::TestSite::new().await?;
+    let invite = tonk_cli::invite::mint(
+        &issuer.site,
+        Some("https://carrier.example.test/join"),
+        None,
+    )
+    .await?;
+    let temp = tempfile::tempdir()?;
+    let home = temp.path().join("home");
+    let project = temp.path().join("project");
+    std::fs::create_dir_all(&home)?;
+    std::fs::create_dir_all(&project)?;
+    let store = tonk_cli::space::SpaceStore::at(home.join("state"));
+    let guard = store.write_guard()?;
+
+    let mut command = cli(&home, &project);
+    command
+        .args(["join", &invite.url, "--name", "interrupted"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = command.spawn()?;
+    let root = store.canonical_site("interrupted");
+    let journal = root.join("ordinary-join.json");
+    let ready = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            let phase = std::fs::read(&journal)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+            if phase
+                .as_ref()
+                .is_some_and(|value| value["phase"] == "ready")
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    let _ = child.kill();
+    let interrupted = tokio::task::spawn_blocking(move || child.wait_with_output()).await??;
+    drop(guard);
+    assert!(
+        ready.is_ok(),
+        "ordinary import never reached publication barrier: {}",
+        String::from_utf8_lossy(&interrupted.stderr)
+    );
+    assert!(!store.load()?.spaces.contains_key("interrupted"));
+    assert!(!String::from_utf8_lossy(&interrupted.stdout).contains("Joined space"));
+
+    let mut resume = cli(&home, &home);
+    resume.args(["--space", "interrupted", "join"]);
+    let resumed = run(resume).await?;
+    assert!(
+        resumed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&resumed.stderr)
+    );
+    assert!(String::from_utf8_lossy(&resumed.stdout).contains("Joined space 'interrupted'"));
+    let registry = store.load()?;
+    assert_eq!(registry.spaces.len(), 1);
+    assert_eq!(
+        registry.bindings.get(&project.canonicalize()?),
+        Some(&"interrupted".to_owned())
+    );
+    assert!(!registry.bindings.contains_key(&home.canonicalize()?));
+    Ok(())
+}
+
+#[dialog_common::test]
 async fn ordinary_advisory_names_get_collision_safe_local_aliases() -> Result<()> {
     async fn named_invite() -> Result<tonk_cli::invite::InviteOutcome> {
         let issuer = common::TestSite::new().await?;

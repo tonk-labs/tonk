@@ -2,6 +2,7 @@
 mod common;
 
 use anyhow::Result;
+use dialog_common::helpers::Provider as _;
 use dialog_credentials::{Ed25519Signer, Signer};
 use dialog_query::the;
 use dialog_ucan_core::{
@@ -773,5 +774,47 @@ async fn ordinary_command_pulls_content_uses_synced_name_and_has_no_agent_receip
         String::from_utf8_lossy(&replayed.stderr)
     );
     assert_eq!(store.load()?.spaces.len(), 1);
+
+    let document = "attribute!: &pending-publication-note\n  description: Pending publication note\n  the: test.ordinary/pending-publication-note\n  as: text\n  cardinality: one\n";
+    let mut edit = cli(&home, &project);
+    edit.args([
+        "--space",
+        "shared-garden",
+        "eval",
+        "-c",
+        document,
+        "--no-sync",
+    ]);
+    let edited = run(edit).await?;
+    assert!(
+        edited.status.success(),
+        "{}",
+        String::from_utf8_lossy(&edited.stderr)
+    );
+
+    let root = store.load()?.spaces["shared-garden"].site.clone();
+    let mut pending = tonk_cli::join::OrdinaryState::read(&root)?
+        .expect("ordinary join must retain its recovery journal");
+    pending.phase = tonk_cli::join::OrdinaryPhase::PublicationPending;
+    pending.save(&root)?;
+    server.stop().await?;
+
+    let mut resume = cli(&home, &project);
+    resume.args(["--space", "shared-garden", "join"]);
+    let resumed = run(resume).await?;
+    assert!(!resumed.status.success());
+    assert!(!String::from_utf8_lossy(&resumed.stdout).contains("Joined space"));
+    let stderr = String::from_utf8_lossy(&resumed.stderr);
+    assert!(
+        stderr.contains("Resume with `tonk --space shared-garden join`"),
+        "{stderr}"
+    );
+    assert_eq!(store.load()?.spaces.len(), 1);
+    assert_eq!(
+        tonk_cli::join::OrdinaryState::read(&root)?
+            .expect("failed publication must retain recovery state")
+            .phase,
+        tonk_cli::join::OrdinaryPhase::PublicationPending
+    );
     Ok(())
 }
