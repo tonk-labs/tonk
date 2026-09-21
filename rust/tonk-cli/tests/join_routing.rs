@@ -319,6 +319,12 @@ async fn failed_hosted_join_retains_alias_offline_edits_and_resume_state() -> Re
     resume.args(["--space", "pending", "join"]);
     let resumed = run(resume).await?;
     assert!(!resumed.status.success());
+    let retry_error = String::from_utf8_lossy(&resumed.stderr);
+    assert!(!retry_error.contains("account login"), "{retry_error}");
+    assert!(
+        retry_error.contains("127.0.0.1:9"),
+        "retry must reach the invitation remote: {retry_error}"
+    );
     assert!(!String::from_utf8_lossy(&resumed.stdout).contains("Joined space"));
     assert_eq!(store.load()?.spaces.len(), 1);
     let mut show = cli(&home, &project);

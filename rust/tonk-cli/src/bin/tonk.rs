@@ -2821,10 +2821,13 @@ async fn finish_ordinary_join(
     mut state: tonk_cli::join::OrdinaryState,
     initial_failure: Option<String>,
 ) -> ExitCode {
-    let config = match site::default_config() {
+    let mut config = match site::default_config() {
         Ok(config) => config,
         Err(error) => return print_failure(error),
     };
+    // An ordinary invitation retains its own authority. Reopening must use
+    // the same mode as the initial claim, including after a remote failure.
+    config.require_account = false;
     let site = match site::TonkSite::open_with(root, config).await {
         Ok(site) => site,
         Err(error) => return print_failure(error),
