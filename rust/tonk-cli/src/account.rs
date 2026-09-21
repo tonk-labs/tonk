@@ -2071,9 +2071,7 @@ mod tests {
             let mut registry = fixture.store.load().unwrap();
             registry.spaces.insert(
                 "retained".to_owned(),
-                crate::space::SpaceEntry {
-                    site: fixture.store.canonical_site("retained"),
-                },
+                crate::space::SpaceEntry::at(fixture.store.canonical_site("retained")),
             );
             fixture.store.save(&registry).unwrap();
             replace_account_with_checkpoint(

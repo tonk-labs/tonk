@@ -43,6 +43,14 @@ name = "handoff"
 path = "tests/handoff.rs"
 
 [[test]]
+name = "connections"
+path = "tests/connections.rs"
+
+[[test]]
+name = "connection_compatibility"
+path = "tests/connection_compatibility.rs"
+
+[[test]]
 name = "notation"
 path = "tests/notation.rs"
 

@@ -50,7 +50,7 @@ pub struct HandoffMetadata {
 pub async fn preflight_connect(url: &str) -> anyhow::Result<ConnectInvite> {
     let invite = crate::invite::preflight(url).await?;
     let expected_root = invite.expected_root.ok_or_else(|| anyhow::anyhow!(
-        "this is an older open invitation; copy a new account-scoped agent handoff from Tonk (refresh the space's standard library if needed). Ordinary `tonk join` still accepts this invitation"
+        "agent setup requires an account-scoped invitation; copy a fresh agent prompt from Tonk. To join this invitation as your current account, run `tonk join URL --name NAME` without --agent"
     ))?;
     Ok(ConnectInvite {
         metadata: HandoffMetadata {
@@ -168,7 +168,107 @@ pub async fn confirm_connection(site: &TonkSite) -> anyhow::Result<()> {
     record_connection(site).await?;
     crate::sync::push(site)
         .await
-        .context("connection receipt is local; retry connect on this space to publish it")?;
+        .context("connection receipt is local; retry join --agent on this space to publish it")?;
+    Ok(())
+}
+
+/// Public local state needed to finish a directory binding after a crash.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct ScopedDirectory {
+    version: u8,
+    connection_id: String,
+    directory: std::path::PathBuf,
+}
+
+/// Remember only the requested directory and public grant-set identity.
+pub fn remember_scoped_directory(
+    root: &std::path::Path,
+    connection_id: &str,
+    directory: &std::path::Path,
+) -> anyhow::Result<()> {
+    use std::io::Write as _;
+    scoped_connection_entity(connection_id)?;
+    let record = ScopedDirectory {
+        version: 1,
+        connection_id: connection_id.to_owned(),
+        directory: directory.canonicalize()?,
+    };
+    let temporary = tempfile::NamedTempFile::new_in(root)?;
+    temporary
+        .as_file()
+        .write_all(&serde_json::to_vec(&record)?)?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(root.join("agent-directory.json"))?;
+    std::fs::File::open(root)?.sync_all()?;
+    Ok(())
+}
+
+/// Recover the original final binding without consulting TONK_SPACE or cwd.
+pub fn pending_scoped_directory(
+    root: &std::path::Path,
+    connection_id: &str,
+) -> anyhow::Result<Option<std::path::PathBuf>> {
+    let bytes = match std::fs::read(root.join("agent-directory.json")) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let record: ScopedDirectory = serde_json::from_slice(&bytes)?;
+    anyhow::ensure!(
+        record.version == 1
+            && record.connection_id == connection_id
+            && record.directory.is_absolute(),
+        "connection_directory_record_mismatch"
+    );
+    Ok(Some(record.directory))
+}
+
+/// Public confirmation entity for an exact invitation grant set.
+/// Multiple holders of the same invitation acknowledge the same grant identity;
+/// this record is neither exclusive process presence nor an authorization gate.
+pub fn scoped_connection_entity(connection_id: &str) -> anyhow::Result<dialog_artifacts::Entity> {
+    anyhow::ensure!(
+        connection_id.len() == 64 && connection_id.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "connection_invalid_identity"
+    );
+    Ok(format!("id:tonk:agent-connection:{connection_id}").parse()?)
+}
+
+/// Retain a setup acknowledgement as ordinary main-branch data.
+/// Use the stable attribute directly so an otherwise valid empty space does not
+/// need to install a UI model just to receive a confirmation.
+pub async fn record_scoped_connection(site: &TonkSite, connection_id: &str) -> anyhow::Result<()> {
+    use dialog_query::the;
+    let entity = scoped_connection_entity(connection_id)?;
+    site.branch()
+        .await?
+        .handle()
+        .transaction()
+        .assert(
+            the!("xyz.tonk.agent-connection/status")
+                .of(entity)
+                .is("Agent connection confirmed".to_owned()),
+        )
+        .commit()
+        .publish()
+        .perform(&site.operator)
+        .await?;
+    Ok(())
+}
+
+/// Pull the scoped main branch and receive an acknowledged receipt push.
+/// Callers must not report success when either remote operation fails.
+pub async fn confirm_scoped_connection(site: &TonkSite, connection_id: &str) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+    scoped_connection_entity(connection_id)?;
+    crate::sync::pull(site)
+        .await
+        .context("connection retained; pull failed before confirmation")?;
+    record_scoped_connection(site, connection_id).await?;
+    crate::sync::push(site)
+        .await
+        .context("connection receipt is local; remote confirmation is still pending")?;
     Ok(())
 }
 
@@ -202,6 +302,53 @@ pub async fn synced_name(
 /// [`crate::space::derive_name`] against a registry's claimed names. A
 /// claim's storage directory is `connection-<nanos>`, not the name, so
 /// an occupied canonical site cannot collide with the alias chosen here.
+
+/// Retain an explicit alias, including one that resembles an automatic alias.
+pub fn remember_connection_name(root: &std::path::Path, name: &str) -> anyhow::Result<()> {
+    crate::space::validate_name(name)?;
+    crate::connections::atomic_public(root, "connection-local-name", name.as_bytes())
+}
+
+/// Replace the import's temporary alias with the synced repository name.
+/// Storage stays in place; registry aliases and all directory bindings move together.
+pub async fn resolve_connection_name(
+    site: &TonkSite,
+    store: &crate::space::SpaceStore,
+    root: &std::path::Path,
+    name: &str,
+    binding: &crate::connections::ConnectionBinding,
+) -> anyhow::Result<String> {
+    if name != format!("agent-{}", &binding.id[..12]) {
+        return Ok(name.to_owned());
+    }
+    match std::fs::read_to_string(root.join("connection-local-name")) {
+        Ok(_) => return Ok(name.to_owned()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    let stem = synced_name(site, &crate::space::Registry::default()).await?;
+    let guard = store.write_guard()?;
+    let mut registry = guard.load()?;
+    let entry = registry
+        .spaces
+        .get(name)
+        .ok_or_else(|| anyhow::anyhow!("connection alias changed during naming"))?;
+    anyhow::ensure!(
+        entry.site == root.canonicalize()? && entry.connection.as_ref() == Some(binding),
+        "connection_binding_mismatch"
+    );
+    let entry = registry.spaces.remove(name).expect("checked above");
+    let chosen = available_name(&stem, &registry);
+    registry.spaces.insert(chosen.clone(), entry);
+    for alias in registry.bindings.values_mut() {
+        if alias == name {
+            *alias = chosen.clone();
+        }
+    }
+    guard.save(&registry)?;
+    Ok(chosen)
+}
+
 fn available_name(display_name: &str, registry: &crate::space::Registry) -> String {
     crate::space::derive_name(display_name, |name| registry.spaces.contains_key(name))
 }
