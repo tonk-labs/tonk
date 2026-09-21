@@ -325,6 +325,76 @@ async fn connection_uses_the_space_name_and_avoids_local_collisions() -> anyhow:
         displayed.stdout.contains("Test Garden"),
         "choosing a local alias must not rename the synced space"
     );
+
+    // Model an already connected older CLI replica, including its directory
+    // binding and a colliding unrelated alias. Naming must preserve its data.
+    let store = &test.config.account_store;
+    let binding = tonk_cli::connections::ConnectionBinding {
+        version: 1,
+        id: "a".repeat(64),
+        subject: test.site.repository.did().to_string(),
+        recipient: "test-recipient".into(),
+        grant_cids: vec![],
+    };
+    store.save(&registry)?;
+    let temporary = "agent-aaaaaaaaaaaa";
+    tonk_cli::space::register_connection_bound(
+        store,
+        temporary,
+        &test.site.root,
+        Some(&test.parent),
+        binding.clone(),
+    )?;
+    let chosen = tonk_cli::handoff::resolve_connection_name(
+        &test.site,
+        store,
+        &test.site.root,
+        temporary,
+        &binding,
+    )
+    .await?;
+    assert_eq!(chosen, "test-garden-2");
+    let saved = store.load()?;
+    assert!(!saved.spaces.contains_key(temporary));
+    assert_eq!(saved.spaces[&chosen].site, test.site.root);
+    assert_eq!(saved.spaces[&chosen].connection.as_ref(), Some(&binding));
+    assert_eq!(saved.bindings[&test.parent], chosen);
+    assert!(saved.spaces.contains_key("test-garden"));
+    assert_eq!(
+        tonk_cli::handoff::resolve_connection_name(
+            &test.site,
+            store,
+            &test.site.root,
+            &chosen,
+            &binding,
+        )
+        .await?,
+        chosen
+    );
+    assert_eq!(store.load()?, saved);
+    assert_eq!(
+        tonk_cli::handoff::resolve_connection_name(
+            &test.site,
+            store,
+            &test.site.root,
+            "my-alias",
+            &binding,
+        )
+        .await?,
+        "my-alias"
+    );
+    tonk_cli::handoff::remember_connection_name(&test.site.root, temporary)?;
+    assert_eq!(
+        tonk_cli::handoff::resolve_connection_name(
+            &test.site,
+            store,
+            &test.site.root,
+            temporary,
+            &binding,
+        )
+        .await?,
+        temporary
+    );
     Ok(())
 }
 

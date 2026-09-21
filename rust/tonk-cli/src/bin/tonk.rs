@@ -2710,6 +2710,9 @@ async fn connect_scoped_agent(link: &str, requested_name: Option<&str>) -> ExitC
             );
         }
         let installed = tonk_cli::connections::import_at(&root, &validated, store.clone()).await?;
+        if let Some(name) = requested_name {
+            tonk_cli::handoff::remember_connection_name(&root, name)?;
+        }
         tonk_cli::space::register_connection_bound(&store, &name, &root, None, installed.clone())?;
         Ok((store, name, root, installed, cwd))
     }
@@ -2750,12 +2753,21 @@ async fn finish_scoped_connection(
         eprintln!("Resume with `tonk --space {name} join`.");
         return print_failure(error);
     }
+    let name =
+        match tonk_cli::handoff::resolve_connection_name(&site, store, root, name, binding).await {
+            Ok(name) => name,
+            Err(error) => {
+                eprintln!("Resume with `tonk --space {name} join`.");
+                return print_failure(error);
+            }
+        };
     if let Err(error) =
-        tonk_cli::space::register_connection_bound(store, name, root, directory, binding.clone())
+        tonk_cli::space::register_connection_bound(store, &name, root, directory, binding.clone())
     {
         return print_failure(error);
     }
     println!("Agent connection confirmed");
+    println!("space: {name}");
     println!("next: tonk --space {name} status");
     ExitCode::Success
 }

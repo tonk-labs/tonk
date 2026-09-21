@@ -240,6 +240,7 @@ fn connection_directory_resume_record_is_public_and_exact() -> Result<()> {
 
 #[tokio::test]
 async fn connection_command_imports_bearer_restarts_and_keeps_account_state() -> Result<()> {
+    use tonk_schema::prelude::DidExt as _;
     let s3 =
         dialog_remote_s3::helpers::LocalS3::start_with_auth("test", "test", &["commands"]).await?;
     let server = tonk_access_service::helpers::AccessServer::start(
@@ -303,6 +304,10 @@ async fn connection_command_imports_bearer_restarts_and_keeps_account_state() ->
         .await?
         .handle()
         .transaction()
+        .assert(tonk_schema::RepositoryName {
+            this: producer.repository.did().this(),
+            name: tonk_schema::domain::repo::Name("Shared Garden".into()),
+        })
         .assert(
             the!("test.connection/value")
                 .of(entity)
@@ -393,6 +398,36 @@ async fn connection_command_imports_bearer_restarts_and_keeps_account_state() ->
         assert!(!text.contains(&link));
         assert!(!text.contains(&hex::encode(seed)));
     }
+    // A default import reads the hub's name and survives a fresh-process retry.
+    let default_home = temp.path().join("default-home");
+    std::fs::create_dir(&default_home)?;
+    for _ in 0..2 {
+        let mut command = cli(&default_home, &default_home);
+        command
+            .args(["join", &link])
+            .env("TONK_CONNECTION_ORIGIN", &server.endpoint);
+        let output = run(command).await?;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("space: shared-garden"), "{stdout}");
+        assert!(stdout.contains("Agent connection confirmed"), "{stdout}");
+    }
+    let default_store = tonk_cli::space::SpaceStore::at(default_home.join("state"));
+    let default_registry = default_store.load()?;
+    assert_eq!(default_registry.spaces.len(), 1);
+    assert_eq!(
+        default_registry.spaces["shared-garden"].connection.as_ref(),
+        Some(&binding)
+    );
+    assert_eq!(
+        default_registry.bindings[&default_home.canonicalize()?],
+        "shared-garden"
+    );
+
     // Kill a real import after it persisted Ready but before registry publication.
     // The held write guard is an explicit barrier, not an assumed delay.
     let interrupted_directory = temp.path().join("interrupted-project");

@@ -302,6 +302,53 @@ pub async fn synced_name(
 /// [`crate::space::derive_name`] against a registry's claimed names. A
 /// claim's storage directory is `connection-<nanos>`, not the name, so
 /// an occupied canonical site cannot collide with the alias chosen here.
+
+/// Retain an explicit alias, including one that resembles an automatic alias.
+pub fn remember_connection_name(root: &std::path::Path, name: &str) -> anyhow::Result<()> {
+    crate::space::validate_name(name)?;
+    crate::connections::atomic_public(root, "connection-local-name", name.as_bytes())
+}
+
+/// Replace the import's temporary alias with the synced repository name.
+/// Storage stays in place; registry aliases and all directory bindings move together.
+pub async fn resolve_connection_name(
+    site: &TonkSite,
+    store: &crate::space::SpaceStore,
+    root: &std::path::Path,
+    name: &str,
+    binding: &crate::connections::ConnectionBinding,
+) -> anyhow::Result<String> {
+    if name != format!("agent-{}", &binding.id[..12]) {
+        return Ok(name.to_owned());
+    }
+    match std::fs::read_to_string(root.join("connection-local-name")) {
+        Ok(_) => return Ok(name.to_owned()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    let stem = synced_name(site, &crate::space::Registry::default()).await?;
+    let guard = store.write_guard()?;
+    let mut registry = guard.load()?;
+    let entry = registry
+        .spaces
+        .get(name)
+        .ok_or_else(|| anyhow::anyhow!("connection alias changed during naming"))?;
+    anyhow::ensure!(
+        entry.site == root.canonicalize()? && entry.connection.as_ref() == Some(binding),
+        "connection_binding_mismatch"
+    );
+    let entry = registry.spaces.remove(name).expect("checked above");
+    let chosen = available_name(&stem, &registry);
+    registry.spaces.insert(chosen.clone(), entry);
+    for alias in registry.bindings.values_mut() {
+        if alias == name {
+            *alias = chosen.clone();
+        }
+    }
+    guard.save(&registry)?;
+    Ok(chosen)
+}
+
 fn available_name(display_name: &str, registry: &crate::space::Registry) -> String {
     crate::space::derive_name(display_name, |name| registry.spaces.contains_key(name))
 }
