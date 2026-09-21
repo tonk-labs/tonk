@@ -30,6 +30,10 @@ name = "join_profile"
 path = "tests/join_profile.rs"
 
 [[test]]
+name = "join_routing"
+path = "tests/join_routing.rs"
+
+[[test]]
 name = "invite_revocation"
 path = "tests/invite_revocation.rs"
 
@@ -47,12 +51,12 @@ name = "connections"
 path = "tests/connections.rs"
 
 [[test]]
-name = "connection_compatibility"
-path = "tests/connection_compatibility.rs"
-
-[[test]]
 name = "connection_commands"
 path = "tests/connection_commands.rs"
+
+[[test]]
+name = "connection_compatibility"
+path = "tests/connection_compatibility.rs"
 
 [[test]]
 name = "notation"

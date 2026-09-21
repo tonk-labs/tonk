@@ -58,6 +58,7 @@ pub mod handoff;
 pub mod identity;
 pub mod inventory;
 pub mod invite;
+pub mod join;
 pub mod listing;
 pub mod migrate;
 pub mod onboarding;
