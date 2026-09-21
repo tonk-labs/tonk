@@ -1444,10 +1444,14 @@ async fn agent_invitations_unavailable(
     let subject = repository.did();
     require_real_space(&tonk, &subject).await?;
     publish_agent_handoff(
-        &tonk, repo, &subject, &tonk.profile.did(),
-        "Agent invitations are not enabled on this deployment yet. To access your own spaces from the terminal, use tonk link on a deployment with terminal linking enabled.".into(),
+        &tonk,
+        repo,
+        &subject,
+        &tonk.profile.did(),
+        "Agent invitations are not enabled on this deployment yet.".into(),
         String::new(),
-    ).await
+    )
+    .await
 }
 
 impl dialog_capability::Command for EnableSyncRequest {
