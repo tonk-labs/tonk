@@ -372,21 +372,79 @@ impl SpaceStatus {
     }
 }
 
-/// The auto-sync *preference* of a replica as a standalone fact: just
-/// `this` and `enabled`.
+/// Where a peer is reachable.
 ///
-/// The DURABLE half of `tonk/sync` — a boolean (`true` syncing, `false`
-/// paused), committed to the profile meta branch and keyed on the replica
-/// entity, so the service worker's background-sync loop reads it and skips a
-/// paused replica, and so it survives a worker restart. Private — replica
-/// records never replicate, so pausing on this device doesn't pause sync for
-/// other members. Stamped onto the replica entity (cardinality one, a later
-/// assert supersedes) without re-asserting the whole [`Replica`].
+/// Keyed on the PEER entity — the one `dialog.replica/profile` names.
+/// A peer and a profile are the same entity in two roles: this device
+/// in the local role, a serving service in the remote one, so there is
+/// no peer to identify apart from the profile.
 ///
-/// Separate from [`ReplicaSyncStatus`] (the transient observation) so each
-/// resolves independently: the durable preference is always present, the
-/// live status may lag — a single two-field concept would only resolve
-/// once both existed (the join-status lesson).
+/// Zero or more addresses: a peer may be reachable several ways.
+///
+/// One fact per peer on the profile's `meta` branch, so a changed
+/// address is a single update however many repositories that peer
+/// serves. Supersedes `xyz.tonk.remote/address`, which hangs the
+/// address off a `Remote` entity standing between a branch and the
+/// peer holding it, restating it once per repository.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PeerAddress {
+    /// The peer.
+    pub this: Entity,
+    /// A serialized `SiteAddress` it is reachable at.
+    pub address: crate::domain::peer::Address,
+}
+
+impl PeerAddress {
+    /// Record that `peer` is reachable at `address`.
+    pub fn new(peer: &dialog_varsig::Did, address: &dialog_repository::SiteAddress) -> Self {
+        use crate::prelude::DidExt as _;
+        Self {
+            this: peer.this(),
+            address: crate::domain::peer::Address::encode(address),
+        }
+    }
+
+    /// Record an address for the peer the address itself names.
+    ///
+    /// The serving peer has no DID of its own on the wire yet, but a
+    /// `did:web` follows from where it answers: `https://tonk.network/ucan`
+    /// is served by `did:web:tonk.network`. Deriving it means one peer
+    /// entity per service rather than one per account, so a service
+    /// serving several accounts has ONE address fact.
+    ///
+    /// Returns `None` for an address with no host to name — the caller
+    /// keys on what it does know instead.
+    pub fn served_by(address: &dialog_repository::SiteAddress) -> Option<Self> {
+        Some(Self {
+            this: peer_did(address)?.parse().ok()?,
+            address: crate::domain::peer::Address::encode(address),
+        })
+    }
+}
+
+/// The `did:web` of whoever answers at `address`.
+///
+/// `did:web` separates path segments with `:`, so a host carrying a
+/// port percent-encodes it — left raw, `did:web:localhost:8090` reads
+/// `8090` as a path segment and resolves to `https://localhost/8090/`.
+///
+/// Only the authority is used. The path says which service endpoint to
+/// call, not who answers, so `https://tonk.network/ucan` and
+/// `https://tonk.network/sync` are one peer.
+fn peer_did(address: &dialog_repository::SiteAddress) -> Option<String> {
+    let endpoint = match address {
+        dialog_repository::SiteAddress::Ucan(ucan) => ucan.endpoint(),
+        _ => return None,
+    };
+    let authority = url::Url::parse(endpoint).ok()?;
+    let host = authority.host_str()?;
+    let authority = match authority.port() {
+        Some(port) => format!("{host}%3A{port}"),
+        None => host.to_string(),
+    };
+    Some(format!("did:web:{authority}"))
+}
+
 /// What a branch follows.
 ///
 /// Keyed on the LOCAL branch, so retracting the branch retracts its
@@ -446,6 +504,21 @@ impl ReplicaActiveBranch {
     }
 }
 
+/// The auto-sync *preference* of a replica as a standalone fact: just
+/// `this` and `enabled`.
+///
+/// The DURABLE half of `tonk/sync` — a boolean (`true` syncing, `false`
+/// paused), committed to the profile meta branch and keyed on the replica
+/// entity, so the service worker's background-sync loop reads it and skips a
+/// paused replica, and so it survives a worker restart. Private — replica
+/// records never replicate, so pausing on this device doesn't pause sync for
+/// other members. Stamped onto the replica entity (cardinality one, a later
+/// assert supersedes) without re-asserting the whole [`Replica`].
+///
+/// Separate from [`ReplicaSyncStatus`] (the transient observation) so each
+/// resolves independently: the durable preference is always present, the
+/// live status may lag — a single two-field concept would only resolve
+/// once both existed (the join-status lesson).
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ReplicaSyncEnabled {
     /// The replica entity being stamped.

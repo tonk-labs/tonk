@@ -79,7 +79,7 @@ fn css_rule<'a>(document: &'a str, selector: &str) -> &'a str {
         .unwrap_or_else(|| panic!("profile library must contain the `{selector}` rule"))
 }
 
-#[test]
+#[dialog_common::test]
 fn it_lowers_the_standard_library() {
     assert_library_lowers("standard library (core.yaml)", STANDARD_LIBRARY);
 }
@@ -89,12 +89,12 @@ fn it_lowers_the_standard_library() {
 /// It is documentation that has to stay true: every attribute it names
 /// is one the worker actually writes to a `meta` branch, so lowering it
 /// is what keeps the description from drifting from the rows.
-#[test]
+#[dialog_common::test]
 fn it_lowers_the_meta_library() {
     assert_library_lowers("meta library (meta.yaml)", META_LIBRARY);
 }
 
-#[test]
+#[dialog_common::test]
 fn it_lowers_the_profile_library() {
     assert_library_lowers("profile library (profile.yaml)", PROFILE_LIBRARY);
 }
@@ -106,7 +106,7 @@ fn it_lowers_the_profile_library() {
 /// the label instead would look identical on screen and fail at the
 /// worker, which validates the handle against the roster — so this pins
 /// which field the button carries, not merely that it carries one.
-#[test]
+#[dialog_common::test]
 fn it_switches_profiles_by_handle_not_by_label() {
     let row = PROFILE_LIBRARY
         .split("data-handle=")
@@ -134,7 +134,7 @@ fn it_switches_profiles_by_handle_not_by_label() {
 /// `no-entity` slot never shows without an entity to be absent. Both
 /// spellings look right and only one renders, which is why this pins
 /// the one that does.
-#[test]
+#[dialog_common::test]
 fn it_offers_to_link_an_account_when_none_is() {
     // The label mounts, not every account-name display: the settings
     // pane renders the same fact through the `editable` facet, which is
@@ -170,7 +170,7 @@ fn it_offers_to_link_an_account_when_none_is() {
 /// Listed here rather than left to the browser suite because a unit
 /// test says which handle vanished in seconds, where the e2e says only
 /// that something timed out after half a minute.
-#[test]
+#[dialog_common::test]
 fn it_keeps_the_handles_the_suite_drives_the_hub_by() {
     for handle in [
         "data-account-trigger",
@@ -204,7 +204,7 @@ fn it_keeps_the_handles_the_suite_drives_the_hub_by() {
 /// opened an empty menu would strand a new browser with nothing to
 /// click. The old element branched on this and the bar must too — it is
 /// the difference between a tab bar and a way in.
-#[test]
+#[dialog_common::test]
 fn it_raises_the_signup_from_an_unlinked_account_cell() {
     let bar = PROFILE_LIBRARY
         .split("element!: &hub-bar")
@@ -233,7 +233,7 @@ fn it_raises_the_signup_from_an_unlinked_account_cell() {
 /// querying THIS branch, so one that lives only in core.yaml cannot be
 /// reached. This asserts the copy is here, because without it the tag
 /// renders inert and the menu silently stops responding to keys.
-#[test]
+#[dialog_common::test]
 fn it_carries_the_menu_element_on_the_branch_that_renders_it() {
     assert!(
         PROFILE_LIBRARY.contains("concept!: &element"),
@@ -254,7 +254,7 @@ fn it_carries_the_menu_element_on_the_branch_that_renders_it() {
 /// One word meaning a dictionary of templates in one half of the file
 /// and "reveal the menu" in the other is a trap for whoever reads it
 /// next.
-#[test]
+#[dialog_common::test]
 fn it_names_the_menu_methods_open_and_close() {
     let menu = PROFILE_LIBRARY
         .split("element!: &hub-menu")
@@ -277,7 +277,7 @@ fn it_names_the_menu_methods_open_and_close() {
 /// re-renders whenever profile facts land, replacing the element
 /// mid-ceremony. Rendering from facts is what removes that problem
 /// rather than working around it.
-#[test]
+#[dialog_common::test]
 fn it_renders_the_account_bar_from_facts() {
     for model in ["tonk:account/name", "tonk:profile/row"] {
         assert!(
@@ -297,7 +297,7 @@ fn it_renders_the_account_bar_from_facts() {
 /// cannot raise, so the command's handler asks the page to open it. What
 /// this pins is the dispatch: if the row went back to calling
 /// `/api/profiles/add` directly, the element would be back with it.
-#[test]
+#[dialog_common::test]
 fn it_adds_an_account_through_a_command() {
     assert!(
         PROFILE_LIBRARY.contains("on:add-profile=tonk:add-profile"),
@@ -311,7 +311,7 @@ fn it_adds_an_account_through_a_command() {
 
 /// The overlay fields the switcher renders are declared as its concept's
 /// fields, so a missing one is a compile-time error rather than a blank row.
-#[test]
+#[dialog_common::test]
 fn it_declares_every_field_the_switcher_renders() {
     for attribute in [
         "xyz.tonk.roster/name",
@@ -326,7 +326,7 @@ fn it_declares_every_field_the_switcher_renders() {
     }
 }
 
-#[test]
+#[dialog_common::test]
 fn it_titles_a_downloading_space_from_the_directory_name() {
     let downloading = PROFILE_LIBRARY
         .split("    downloading: |\n")
@@ -398,13 +398,13 @@ fn kebab_to_camel(segment: &str) -> String {
     camel
 }
 
-#[test]
+#[dialog_common::test]
 fn it_reads_form_controls_at_properties_they_have() {
     assert_form_reads_resolve("standard library (core.yaml)", STANDARD_LIBRARY);
     assert_form_reads_resolve("profile library (profile.yaml)", PROFILE_LIBRARY);
 }
 
-#[test]
+#[dialog_common::test]
 fn it_leaves_network_bearing_space_bindings_unquoted() {
     assert!(
         PROFILE_LIBRARY.contains("space={id}"),
@@ -416,7 +416,7 @@ fn it_leaves_network_bearing_space_bindings_unquoted() {
     );
 }
 
-#[test]
+#[dialog_common::test]
 fn it_defaults_the_space_alias_to_blank_in_core() {
     assert!(
         STANDARD_LIBRARY.contains("entity: tonk:blank"),
@@ -424,7 +424,7 @@ fn it_defaults_the_space_alias_to_blank_in_core() {
     );
 }
 
-#[test]
+#[dialog_common::test]
 fn it_distinguishes_leaving_from_deleting_a_space() {
     let rendered_words = PROFILE_LIBRARY
         .split_whitespace()
@@ -450,7 +450,7 @@ fn it_distinguishes_leaving_from_deleting_a_space() {
     );
 }
 
-#[test]
+#[dialog_common::test]
 fn it_uses_the_shared_native_dialog_for_hub_space_removal() {
     for contract in [
         "<ui-space-remove>",
@@ -478,7 +478,7 @@ fn it_uses_the_shared_native_dialog_for_hub_space_removal() {
     }
 }
 
-#[test]
+#[dialog_common::test]
 fn it_keeps_keyboard_focus_visible_on_inverted_hub_controls() {
     assert!(
         PROFILE_LIBRARY
@@ -487,7 +487,7 @@ fn it_keeps_keyboard_focus_visible_on_inverted_hub_controls() {
     );
 }
 
-#[test]
+#[dialog_common::test]
 fn it_hides_space_absence_slots_before_display_initialization() {
     let chrome = PROFILE_LIBRARY
         .split("<tonk-display with={id} entity={id} model=tonk:repository view=title>")
@@ -508,7 +508,7 @@ fn it_hides_space_absence_slots_before_display_initialization() {
     }
 }
 
-#[test]
+#[dialog_common::test]
 fn it_recovers_from_every_absent_space_directory_state() {
     let directory_probe = PROFILE_LIBRARY
         .split("<tonk-display with=\"main@profile:tonk\" entity={id} model=space view=downloading>")
@@ -540,7 +540,7 @@ fn it_recovers_from_every_absent_space_directory_state() {
     );
 }
 
-#[test]
+#[dialog_common::test]
 fn it_styles_the_absent_space_as_tonk_edge_chrome() {
     let absent = PROFILE_LIBRARY
         .split("/* The absent-space state")
@@ -618,7 +618,7 @@ fn it_styles_the_absent_space_as_tonk_edge_chrome() {
     );
 }
 
-#[test]
+#[dialog_common::test]
 fn it_keeps_the_hub_on_the_shared_theme_tokens() {
     // Colors live in ONE place — the token block at the top of the hub's
     // own `style: ui`, which travels with the view. The hub must CONSUME
@@ -658,7 +658,7 @@ fn it_keeps_the_hub_on_the_shared_theme_tokens() {
     }
 }
 
-#[test]
+#[dialog_common::test]
 fn it_builds_one_centered_hub_launcher_with_a_settings_route() {
     for contract in [
         ".hubcol",
@@ -728,7 +728,7 @@ fn it_builds_one_centered_hub_launcher_with_a_settings_route() {
     }
 }
 
-#[test]
+#[dialog_common::test]
 fn it_mints_an_invite_when_copying_a_hub_space_link() {
     assert!(
         PROFILE_LIBRARY.contains("<ui-copy-link space={subject}"),
@@ -754,7 +754,7 @@ fn it_mints_an_invite_when_copying_a_hub_space_link() {
     }
 }
 
-#[test]
+#[dialog_common::test]
 fn it_aligns_the_hub_space_actions_in_one_flex_context() {
     assert!(
         css_rule(PROFILE_LIBRARY, ".verbs ui-copy-link,").contains("display:contents"),
@@ -766,7 +766,7 @@ fn it_aligns_the_hub_space_actions_in_one_flex_context() {
     );
 }
 
-#[test]
+#[dialog_common::test]
 fn it_separates_the_account_roster_into_independent_blocks() {
     let menu = css_rule(PROFILE_LIBRARY, ".account-menu {");
     for contract in ["display:flex", "flex-direction:column", "gap:7px"] {
@@ -791,7 +791,7 @@ fn it_separates_the_account_roster_into_independent_blocks() {
     );
 }
 
-#[test]
+#[dialog_common::test]
 fn it_serves_settings_as_a_routed_page_of_the_hub() {
     // `/settings` is a real route: the hub chrome with the account tab
     // already open, reached by href from the account menu and the FAB
@@ -865,7 +865,7 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
     );
 }
 
-#[test]
+#[dialog_common::test]
 fn it_keeps_machine_instructions_in_the_production_copy_prompt() {
     for library in [
         STANDARD_LIBRARY,
@@ -943,7 +943,7 @@ fn it_keeps_ready_agent_invites_to_one_primary_action() {
     }
 }
 
-#[test]
+#[dialog_common::test]
 fn it_renders_join_refusals_as_neutral_edge_walls() {
     let failure = PROFILE_LIBRARY
         .split("view!:\n  this: tonk:join/failure")
@@ -977,7 +977,7 @@ fn it_renders_join_refusals_as_neutral_edge_walls() {
     assert_eq!(failure.matches("class=\"ebtn solid\"").count(), 1);
 }
 
-#[test]
+#[dialog_common::test]
 fn it_keeps_join_failure_chrome_and_actions_visually_consistent() {
     let route = PROFILE_LIBRARY
         .split("view!:\n  this: tonk:join/route")
@@ -1029,7 +1029,7 @@ fn it_keeps_join_failure_chrome_and_actions_visually_consistent() {
     }
 }
 
-#[test]
+#[dialog_common::test]
 fn it_sizes_the_join_route_to_the_dynamic_mobile_viewport() {
     let route = PROFILE_LIBRARY
         .split("view!:\n  this: tonk:join/route")
@@ -1060,7 +1060,7 @@ fn it_sizes_the_join_route_to_the_dynamic_mobile_viewport() {
     }
 }
 
-#[test]
+#[dialog_common::test]
 fn it_declares_mobile_target_and_input_floors_for_hub_and_join() {
     for contract in [
         ".hubbar, .hcell { height:44px; min-height:44px; }",

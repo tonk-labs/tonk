@@ -20,7 +20,7 @@ use dialog_query::Concept;
 
 use crate::domain::route::{Concept as RoutePathConcept, Path as RouteTablePath};
 use crate::domain::site::{
-    Anchor, Branch, Concept as SiteConcept, Path, Replica, Route as SiteRoute, Space,
+    Anchor, Branch, BranchEntity, Concept as SiteConcept, Path, Replica, Route as SiteRoute, Space,
 };
 
 /// A tab's location and matched route, keyed on the per-tab site entity. The SW
@@ -38,6 +38,8 @@ pub struct Site {
     pub space: Space,
     /// The active branch the tab is on (defaults to `"main"`).
     pub branch: Branch,
+    /// The same branch as an entity, so a view can traverse from it.
+    pub branch_entity: BranchEntity,
     /// This tab's active replica entity.
     pub replica: Replica,
     /// The matched route entity (the route-table entry).
@@ -59,12 +61,17 @@ impl Site {
         route: Entity,
         concept: Entity,
     ) -> Self {
+        // Derived here rather than taken as an argument: the branch
+        // entity is a function of the replica and the name already
+        // passed, so deriving it is what keeps the pair consistent.
+        let branch_entity = crate::Branch::new(&replica, branch.as_str()).this;
         Self {
             this,
             path: Path(path),
             anchor: Anchor(anchor),
             space: Space(space),
             branch: Branch(branch),
+            branch_entity: BranchEntity(branch_entity),
             replica: Replica(replica),
             route: SiteRoute(route),
             concept: SiteConcept(concept),
@@ -108,6 +115,64 @@ mod tests {
             "concept:y".parse().unwrap(),
         );
         assert_eq!(site.branch.0, "feature");
+    }
+
+    /// The stamped branch entity is the one `meta` records.
+    ///
+    /// The point of carrying the entity beside the name: a view walks
+    /// from where a tab is to what that branch follows, and it can only
+    /// arrive if this is the SAME entity the worker asserts
+    /// `branch/upstream` against. Built here the way `meta` builds it,
+    /// so a change to either derivation fails rather than silently
+    /// stamping an entity nothing else names.
+    #[dialog_common::test]
+    async fn it_stamps_the_branch_entity_meta_records() {
+        let replica: Entity = "replica:r".parse().unwrap();
+        let site = Site::new(
+            "site:test".parse().unwrap(),
+            "/space/feature@home".to_owned(),
+            String::new(),
+            "home".to_owned(),
+            "feature".to_owned(),
+            replica.clone(),
+            "route:x".parse().unwrap(),
+            "concept:y".parse().unwrap(),
+        );
+
+        assert_eq!(
+            site.branch_entity.0,
+            crate::Branch::new(&replica, "feature").this,
+            "a tab's branch entity is the branch of its replica by that name",
+        );
+    }
+
+    /// Two branches of one replica are two entities.
+    ///
+    /// Guards the derivation against ignoring the name — an entity
+    /// derived from the replica alone would satisfy the test above.
+    #[dialog_common::test]
+    async fn it_gives_each_branch_of_a_replica_its_own_entity() {
+        let replica: Entity = "replica:r".parse().unwrap();
+        let stamp = |branch: &str| {
+            Site::new(
+                "site:test".parse().unwrap(),
+                "/space/home".to_owned(),
+                String::new(),
+                "home".to_owned(),
+                branch.to_owned(),
+                replica.clone(),
+                "route:x".parse().unwrap(),
+                "concept:y".parse().unwrap(),
+            )
+            .branch_entity
+            .0
+        };
+
+        assert_ne!(
+            stamp("main"),
+            stamp("feature"),
+            "the branch name has to reach the entity, not just sit beside it",
+        );
     }
 }
 

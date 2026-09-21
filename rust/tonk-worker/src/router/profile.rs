@@ -123,78 +123,6 @@ pub(crate) async fn active_branch(tonk: &crate::worker::TonkState) -> Option<Ent
     rows.into_iter().next().map(|row| row.active_branch.0)
 }
 
-/// The account this profile is signed in as, or `None` when it is not.
-///
-/// Derived, never stored. The active branch's upstream is a branch on
-/// a replica held by another peer, and that replica's subject is the
-/// account:
-///
-/// ```text
-/// active branch -> upstream -> branch/replica -> replica/subject
-/// ```
-///
-/// Signed out is the active branch having no upstream — a branch that
-/// follows nothing. No flag, no null value, no account-shaped absence.
-///
-/// This replaces asking which replicas have kind `tonk:account`, which
-/// answered with every account the device had ever linked: nothing in
-/// those rows said which was current.
-pub(crate) async fn active_account(tonk: &crate::worker::TonkState) -> Option<Entity> {
-    use tonk_schema::Branch as MetaBranch;
-    use tonk_schema::{BranchUpstream, Replica as ReplicaConcept};
-
-    let active = active_branch(tonk).await?;
-    let session = tonk
-        .reactor
-        .profile_repository()
-        .branch(super::repository::META_BRANCH)
-        .acquire(&tonk.operator)
-        .await
-        .ok()?;
-    let handle = session.handle();
-
-    // What the active branch follows. Absent means signed out.
-    let upstream: Vec<BranchUpstream> = handle
-        .query()
-        .select(Query::<BranchUpstream> {
-            this: Term::from(active),
-            upstream: Term::var("upstream"),
-        })
-        .perform(&tonk.operator)
-        .try_vec()
-        .await
-        .ok()?;
-    let upstream = upstream.into_iter().next()?.upstream.0;
-
-    // The upstream branch's replica, and that replica's subject.
-    let branches: Vec<MetaBranch> = handle
-        .query()
-        .select(Query::<MetaBranch> {
-            this: Term::from(upstream),
-            name: Term::var("name"),
-            origin: Term::var("origin"),
-        })
-        .perform(&tonk.operator)
-        .try_vec()
-        .await
-        .ok()?;
-    let replica = branches.into_iter().next()?.origin.0;
-
-    let replicas: Vec<ReplicaConcept> = handle
-        .query()
-        .select(Query::<ReplicaConcept> {
-            this: Term::from(replica),
-            subject: Term::var("subject"),
-            profile: Term::var("profile"),
-            kind: Term::var("kind"),
-        })
-        .perform(&tonk.operator)
-        .try_vec()
-        .await
-        .ok()?;
-    replicas.into_iter().next().map(|row| row.subject.0)
-}
-
 /// Leave the account: move to a branch that follows nothing.
 ///
 /// Signing out is not a flag and not a return to `main`. It is a branch
@@ -441,7 +369,7 @@ pub async fn get_profile(
 }
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[cfg(target_arch = "wasm32")]
@@ -455,6 +383,84 @@ mod tests {
 
     use crate::api_router;
     use crate::router::tests::test_state;
+
+    /// The account this profile is signed in as, or `None` when it
+    /// is not. A TEST HELPER: the worker never asks this.
+    ///
+    /// The derivation is declared as a rule in `meta.yaml`, where it
+    /// documents how tonk reads an account off branch bookkeeping. It
+    /// lives here too so these tests can check that the facts sign-in
+    /// and sign-out write actually compose into that answer.
+    ///
+    /// Derived, never stored. The active branch's upstream is a branch on
+    /// a replica held by another peer, and that replica's subject is the
+    /// account:
+    ///
+    /// ```text
+    /// active branch -> upstream -> branch/replica -> replica/subject
+    /// ```
+    ///
+    /// Signed out is the active branch having no upstream — a branch that
+    /// follows nothing. No flag, no null value, no account-shaped absence.
+    ///
+    /// This replaces asking which replicas have kind `tonk:account`, which
+    /// answered with every account the device had ever linked: nothing in
+    /// those rows said which was current.
+    pub(crate) async fn active_account(tonk: &crate::worker::TonkState) -> Option<Entity> {
+        use tonk_schema::Branch as MetaBranch;
+        use tonk_schema::{BranchUpstream, Replica as ReplicaConcept};
+
+        let active = active_branch(tonk).await?;
+        let session = tonk
+            .reactor
+            .profile_repository()
+            .branch(super::super::repository::META_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .ok()?;
+        let handle = session.handle();
+
+        // What the active branch follows. Absent means signed out.
+        let upstream: Vec<BranchUpstream> = handle
+            .query()
+            .select(Query::<BranchUpstream> {
+                this: Term::from(active),
+                upstream: Term::var("upstream"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .ok()?;
+        let upstream = upstream.into_iter().next()?.upstream.0;
+
+        // The upstream branch's replica, and that replica's subject.
+        let branches: Vec<MetaBranch> = handle
+            .query()
+            .select(Query::<MetaBranch> {
+                this: Term::from(upstream),
+                name: Term::var("name"),
+                origin: Term::var("origin"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .ok()?;
+        let replica = branches.into_iter().next()?.origin.0;
+
+        let replicas: Vec<ReplicaConcept> = handle
+            .query()
+            .select(Query::<ReplicaConcept> {
+                this: Term::from(replica),
+                subject: Term::var("subject"),
+                profile: Term::var("profile"),
+                kind: Term::var("kind"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .ok()?;
+        replicas.into_iter().next().map(|row| row.subject.0)
+    }
 
     /// The account is the subject of the active branch's upstream.
     ///

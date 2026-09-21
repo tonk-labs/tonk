@@ -76,6 +76,53 @@ pub mod replica {
     pub struct ActiveBranch(pub Entity);
 }
 
+/// Attributes tonk adds to dialog's peer model.
+///
+/// A peer and a profile are one entity in two roles:
+/// `dialog.replica/profile` names the peer holding a replica — this
+/// device in the local role, the serving service in the remote one.
+/// So an address is an attribute on that entity, not a concept of its
+/// own: there is no peer to identify separately from the profile.
+pub mod peer {
+    use super::{Attribute, SiteAddress};
+
+    /// Serialized [`SiteAddress`] bytes — the opaque payload used to
+    /// locate a peer.
+    ///
+    /// Zero or more: a peer may be reachable several ways, including
+    /// locally (`idb:` in a browser, `file:///` natively), so "here"
+    /// is not the one peer that has to be a special case.
+    ///
+    /// Keyed on the peer, and a profile's branch bookkeeping all lives
+    /// on one `meta` branch, so a peer's address is ONE fact there
+    /// however many repositories it serves — a changed address is a
+    /// single update. The same encoding as `xyz.tonk.remote/address`,
+    /// which this supersedes: that one hangs the address off a
+    /// `Remote` entity standing between a branch and the peer holding
+    /// it, and so restates it once per repository served.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("tonk.dialog.peer")]
+    pub struct Address(pub Vec<u8>);
+
+    impl Address {
+        /// Encode a [`SiteAddress`] as dag-cbor bytes.
+        pub fn encode(address: &SiteAddress) -> Self {
+            let bytes = serde_ipld_dagcbor::to_vec(address)
+                .expect("SiteAddress is serde-serializable and dag-cbor-compatible");
+            Self(bytes)
+        }
+
+        /// Decode the stored dag-cbor bytes back into a
+        /// [`SiteAddress`].
+        pub fn decode(
+            &self,
+        ) -> Result<SiteAddress, serde_ipld_dagcbor::DecodeError<std::convert::Infallible>>
+        {
+            serde_ipld_dagcbor::from_slice(&self.0)
+        }
+    }
+}
+
 /// Attributes tonk adds to dialog's branch model.
 pub mod tonk_branch {
     use super::{Attribute, Entity};
@@ -378,6 +425,27 @@ pub mod site {
     #[domain("xyz.tonk.site")]
     #[cardinality(one)]
     pub struct Replica(pub Entity);
+
+    /// The branch the tab is on, as an ENTITY.
+    ///
+    /// The twin of [`Branch`], which is the branch's NAME: the name is
+    /// the `{branch}` half of a `{branch}@{repo}` location token, which
+    /// is how a display scopes its queries, and a branch entity there
+    /// would name no branch. This is the same branch as a node in the
+    /// graph, so a view can walk from where a tab is to what that
+    /// branch follows:
+    ///
+    /// ```text
+    /// site -> branch-entity -> branch/upstream -> branch/replica
+    ///                                          -> replica/subject
+    /// ```
+    ///
+    /// Derived from `(replica, name)` at stamp time, so it cannot
+    /// disagree with the name beside it.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.site")]
+    #[cardinality(one)]
+    pub struct BranchEntity(pub Entity);
 
     /// The matched route entity (the route-table entry that matched the path).
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]

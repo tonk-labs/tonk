@@ -1040,6 +1040,16 @@ concept!: &site
       the: xyz.tonk.site/branch
       cardinality: one
       as: text
+    branch-entity:
+      description: >
+        The same branch as an entity, so a view can walk from where the
+        tab is to what that branch follows: `branch-entity` ->
+        `tonk.dialog.branch/upstream` -> that branch's replica ->
+        its subject. The name beside it is a location token; this is
+        the graph node.
+      the: xyz.tonk.site/branch-entity
+      cardinality: one
+      as: entity
     replica:
       description: Currently active replica on this site.
       the: xyz.tonk.site/replica

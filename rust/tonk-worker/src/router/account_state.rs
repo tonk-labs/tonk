@@ -465,7 +465,7 @@ async fn record_account_replica(
     tonk.account_keys.invalidate();
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 
-    record_account_branch(tonk, subject).await;
+    record_account_branch(tonk, subject, address).await;
     Ok(())
 }
 
@@ -482,25 +482,27 @@ async fn record_account_replica(
 ///
 /// Best-effort. The account is linked either way; what fails here is
 /// the branch bookkeeping a view reads, not the link itself.
-async fn record_account_branch(tonk: &TonkState, account: &dialog_varsig::Did) {
+async fn record_account_branch(
+    tonk: &TonkState,
+    account: &dialog_varsig::Did,
+    address: &SiteAddress,
+) {
     use tonk_schema::prelude::DidExt as _;
-    use tonk_schema::{Branch as MetaBranch, BranchUpstream, ReplicaActiveBranch};
+    use tonk_schema::{Branch as MetaBranch, BranchUpstream, PeerAddress, ReplicaActiveBranch};
 
     let profile_did = tonk.profile.did();
     let replica = Replica::new(profile_did.clone(), profile_did);
 
     // The branch this profile keeps for the account. Named with the
     // full DID, following `repo_key`'s one-identifier rule.
-    let local = MetaBranch::new(&replica, &format!("account/{}", account.repo_key()));
+    let local = MetaBranch::new(&replica, format!("account/{}", account.repo_key()));
 
     // The peer serving the account holds its own replica of it; the
-    // branch we follow is that replica's main. Deriving both rather
-    // than storing an address here is what keeps "which peer" and
-    // "where to reach it" one traversal away instead of two copies.
+    // branch we follow is that replica's main.
     let served = Replica::new(account.clone(), account.clone());
     let upstream = MetaBranch::new(&served, tonk_account::MAIN_BRANCH);
 
-    if let Err(error) = tonk
+    let mut transaction = tonk
         .reactor
         .profile_repository()
         .branch(crate::router::repository::META_BRANCH)
@@ -509,11 +511,18 @@ async fn record_account_branch(tonk: &TonkState, account: &dialog_varsig::Did) {
         .assert(upstream.clone())
         .assert(local.clone())
         .assert(BranchUpstream::new(&local, &upstream))
-        .assert(ReplicaActiveBranch::new(&replica, &local))
-        .commit()
-        .perform(&tonk.operator)
-        .await
-    {
+        .assert(ReplicaActiveBranch::new(&replica, &local));
+
+    // Where the serving peer answers, keyed by the `did:web` its
+    // endpoint names rather than by this account: a service serving
+    // several accounts is then one peer with one address, and changing
+    // it is one write. An address naming no host records nothing —
+    // there is no peer to attribute it to.
+    if let Some(reachable) = PeerAddress::served_by(address) {
+        transaction = transaction.assert(reachable);
+    }
+
+    if let Err(error) = transaction.commit().perform(&tonk.operator).await {
         log!("account branch not recorded: {error}");
     }
 }
@@ -1824,15 +1833,120 @@ pub(crate) mod tests {
         let state = crate::router::tests::test_state().await;
         let account = Ed25519Signer::import(&[94; 32]).await.unwrap().did();
 
-        super::record_account_branch(&state, &account).await;
+        super::record_account_branch(&state, &account, &probe_address()).await;
 
-        let resolved = crate::router::profile::active_account(&state)
+        let resolved = crate::router::profile::tests::active_account(&state)
             .await
             .expect("an account");
         assert_eq!(
             resolved,
             account.this(),
             "linking makes the account's branch the active one",
+        );
+    }
+
+    /// An address a test can recognize when it reads it back.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    fn probe_address() -> dialog_repository::SiteAddress {
+        dialog_repository::SiteAddress::from(UcanAddress::new("https://probe.example/sync"))
+    }
+
+    /// Linking records where the serving peer is reachable, keyed by
+    /// the `did:web` its endpoint names.
+    ///
+    /// The address is what turns "which peer" into a peer something can
+    /// dial, so the branch rows are only half a link without it. Keyed
+    /// on the SERVICE rather than the account: the query below asks for
+    /// `did:web:probe.example` without ever naming the account, which
+    /// is what makes a second account on the same service share the row
+    /// instead of writing another.
+    ///
+    /// Read back through `decode` rather than compared as bytes — what
+    /// has to survive the round trip is the `SiteAddress`.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[dialog_common::test]
+    async fn it_records_where_the_serving_peer_is_reachable() {
+        use dialog_query::{Query, Term};
+        use dialog_varsig::Principal as _;
+        use tonk_schema::PeerAddress;
+
+        let state = crate::router::tests::test_state().await;
+        let account = Ed25519Signer::import(&[95; 32]).await.unwrap().did();
+
+        super::record_account_branch(&state, &account, &probe_address()).await;
+
+        let peer: dialog_artifacts::Entity = "did:web:probe.example"
+            .parse()
+            .expect("the derived peer DID is an entity");
+        let session = state
+            .reactor
+            .profile_repository()
+            .branch(crate::router::repository::META_BRANCH)
+            .acquire(&state.operator)
+            .await
+            .expect("the meta branch");
+        let rows: Vec<PeerAddress> = session
+            .handle()
+            .query()
+            .select(Query::<PeerAddress> {
+                this: Term::from(peer),
+                address: Term::var("address"),
+            })
+            .perform(&state.operator)
+            .try_vec()
+            .await
+            .expect("the query runs");
+
+        let recorded = rows.first().expect("the serving peer has an address");
+        assert_eq!(
+            recorded.address.decode().expect("the address decodes"),
+            probe_address(),
+            "the address a link was made through is the one recorded for the peer",
+        );
+    }
+
+    /// Two accounts on one service share that service's address row.
+    ///
+    /// The reason to derive the peer from the endpoint rather than key
+    /// on the account: a changed service address is then one update,
+    /// not one per account linked through it.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[dialog_common::test]
+    async fn it_keeps_one_address_for_a_service_serving_two_accounts() {
+        use dialog_query::{Query, Term};
+        use dialog_varsig::Principal as _;
+        use tonk_schema::PeerAddress;
+
+        let state = crate::router::tests::test_state().await;
+        let first = Ed25519Signer::import(&[96; 32]).await.unwrap().did();
+        let second = Ed25519Signer::import(&[97; 32]).await.unwrap().did();
+
+        super::record_account_branch(&state, &first, &probe_address()).await;
+        super::record_account_branch(&state, &second, &probe_address()).await;
+
+        let session = state
+            .reactor
+            .profile_repository()
+            .branch(crate::router::repository::META_BRANCH)
+            .acquire(&state.operator)
+            .await
+            .expect("the meta branch");
+        let rows: Vec<PeerAddress> = session
+            .handle()
+            .query()
+            .select(Query::<PeerAddress> {
+                this: Term::var("peer"),
+                address: Term::var("address"),
+            })
+            .perform(&state.operator)
+            .try_vec()
+            .await
+            .expect("the query runs");
+
+        assert_eq!(
+            rows.len(),
+            1,
+            "one service is one peer however many accounts it serves",
         );
     }
     use dialog_credentials::Ed25519Signer;

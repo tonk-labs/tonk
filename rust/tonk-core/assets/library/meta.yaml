@@ -1,62 +1,51 @@
 # The `meta` branch — what branches exist and what they track.
 #
 # Every repository has a content branch that replicates and a `meta`
-# branch that never does. `meta` is this device's bookkeeping about the
-# repository: which branches it has, what each one tracks, and which one
-# is currently active.
+# branch that does not. `meta` is this device's bookkeeping about the
+# repository: which branches it has, what each one tracks, and which
+# one is active.
 #
-# Nothing here is seeded. These concepts name rows the WORKER writes, so
-# a view or a rule can read them without going through the worker's API.
+# The vocabulary is dialog's wherever dialog has one. Which branch is
+# active and what a branch tracks are tonk's, under `tonk.dialog.*`
+# until dialog adopts them.
 #
-# The vocabulary is dialog's wherever dialog has one. A branch, a
-# replica and a revision are repository concepts, not tonk ones, and
-# restating them under `xyz.tonk.*` was how the two drifted apart. Only
-# two things here are tonk's, and both are things dialog does not model
-# as facts: which branch is active, and what a branch tracks.
-#
-# Accounts do not appear. `meta` tracks branches; that a particular
-# upstream happens to be an account is a semantic tonk reads off this,
-# not something `meta` knows.
+# Nothing here is seeded. These declarations name rows the worker
+# writes to a `meta` branch.
 
-# A peer that holds replicas — this device, or any other.
+# Where a peer is reachable.
 #
-# The service that serves a repository is a peer like any other: it
-# holds a replica, reachable at an address. Nothing about it is special
-# in the model, which is what lets both ends of a tracking relationship
-# be described the same way.
+# A peer and a profile are one entity in two roles:
+# `dialog.replica/profile` names the peer holding a replica — this
+# device locally, a serving service remotely — so the address is an
+# attribute on that entity rather than a concept of its own.
 #
-# `profile` is the role a peer plays locally, not what it is. Dialog
-# names the attribute `dialog.replica/profile`, so that is what a
-# replica's holder is called below; the concept here is the peer.
+# A serialized dialog `SiteAddress`: dag-cbor bytes the capability
+# layer dials directly. Zero or more, since a peer may be reachable
+# several ways — including locally, `idb:` in a browser and `file:///`
+# natively.
 #
-# An address is a serialized dialog `SiteAddress` — dag-cbor bytes the
-# capability layer dials directly. Not a URI: the typed form already
-# carries what a scheme would have said, and a URI would be a lossy
-# re-encoding something has to parse back before it can be used.
-#
-# Several are allowed, since a peer may be reachable more than one way.
-# The LOCAL peer has one too, in a local variant — `idb:` in a browser,
-# `file:///` natively — so "here" is not the one peer that has to be a
-# special case. `NetworkAddress` is already a composite enum with a
-# variant per site kind, which is the shape that admits them.
-concept!: &peer
-  description: A peer that holds replicas.
-  with:
-    address:
-      description: >
-        A serialized `SiteAddress` this peer is reachable at — the
-        opaque payload used to locate it. Zero or more.
-      the: tonk.dialog.peer/address
-      as: bytes
+# Keyed on the peer and held on this one `meta` branch, so a peer's
+# address is a single fact however many repositories or accounts it
+# serves. A serving peer has no DID on the wire yet, so one follows
+# from where it answers: `https://tonk.network/ucan` is served by
+# `did:web:tonk.network`.
+attribute!: &peer/address
+  description: >
+    A serialized `SiteAddress` a peer is reachable at — the opaque
+    payload used to locate it. Zero or more, on the entity that
+    `dialog.replica/profile` names.
+  the: tonk.dialog.peer/address
+  as: bytes
 
 # A replica — a peer's copy of a repository.
 #
-# Derived from `(profile, subject)`. The same pair always names the same
-# replica, and two peers holding one repository have different ones,
-# which is what makes a remote branch describable in the same terms as
-# a local one: it is a branch on a replica held by another peer.
+# Derived from `(profile, subject)`: the same pair always names the
+# same replica, and two peers holding one repository have different
+# ones.
 concept!: &replica
-  description: A peer's copy of a repository.
+  description: >
+    A peer's copy of a repository — `this` is the replica, derived
+    from its profile and subject.
   with:
     subject:
       description: The repository this replica is a view of.
@@ -66,22 +55,22 @@ concept!: &replica
     profile:
       description: >
         The peer holding it. Named `profile` because that is dialog's
-        attribute; the local peer is a profile, a serving peer is not.
+        attribute.
       the: dialog.replica/profile
       cardinality: one
       as: entity
 
 # A branch of a repository on this device.
 #
-# Derived from `(replica, name)`. The enumeration: asking which branches
-# a replica has means asking for these. `meta` enumerates itself too —
-# it is a real branch of the replica.
+# Derived from `(replica, name)`. Asking which branches a replica has
+# means asking for these; `meta` enumerates itself among them.
 #
-# `revision`, `tree` and `edition` say where the branch currently is,
-# which is git's lowercase "head": the commit a branch points at.
-# Distinct from which branch is ACTIVE, below.
+# `revision` is where the branch currently points — git's lowercase
+# "head", distinct from which branch is active.
 concept!: &branch
-  description: A branch of a repository on this device.
+  description: >
+    A branch of a repository on this device — `this` is the branch,
+    derived from its replica and name.
   with:
     name:
       description: The branch's name on this replica.
@@ -102,28 +91,21 @@ concept!: &branch
 # What a local branch tracks.
 #
 # One attribute, entity to entity: this branch follows that one. Both
-# are ordinary branches on ordinary replicas — the difference is only
-# which peer holds them — so there is no separate "remote branch" to
-# model, and no remote to indirect through.
+# are ordinary branches on ordinary replicas, differing only in which
+# peer holds them.
 #
-# Dialog holds the same relationship in a CELL (its `Upstream` enum: a
-# remote name, a branch name, and the tree at the last sync point), so
-# there is no `dialog.*` vocabulary to reuse; this is that relationship
-# as a fact a rule can traverse.
-#
-# Everything else about the upstream is a traversal rather than a
-# second attribute that could disagree:
+# Everything else about the upstream is a traversal:
 #
 #   upstream -> branch/replica -> replica/subject   which repository
 #                              -> replica/profile   which peer
-#                              -> peer/address      where to reach it
+#                                 -> peer/address   where to reach it
 #
-# Tonk reads its own meaning off that path: on the PROFILE repository, a
-# branch tracking a replica held by another peer means that peer serves
-# an account and this branch is signed in as it. The inference is
-# tonk's; `meta` only records what follows what.
-concept!: &tracking
-  description: The upstream a local branch follows.
+# Dialog holds this relationship in a cell rather than as facts, so
+# there is no `dialog.*` attribute to reuse.
+concept!: &branch/upstream
+  description: >
+    The upstream a local branch follows — `this` is the local branch
+    doing the following.
   with:
     upstream:
       description: The branch this one tracks.
@@ -133,22 +115,14 @@ concept!: &tracking
 
 # Which branch this replica is on.
 #
-# The one thing here with no counterpart in dialog and no analogue in a
-# branch's own state. Dialog models where each branch IS; nothing models
-# which one you are looking at.
+# Named `active` after Mercurial's active bookmark; git's `HEAD` means
+# two things, and `dialog.branch/revision` is already the other one.
 #
-# Named `active` after Mercurial's active bookmark rather than git's
-# `HEAD`, which means two things — `dialog.branch/revision` is already
-# the other one.
-#
-# Cardinality-one is the point: a second assert supersedes, so "one
-# active branch" is a property of the data rather than an invariant
-# something has to maintain.
-#
-# The `tonk.dialog.*` namespace says this extends dialog's model and is
-# tonk's only until dialog adopts it; migrating is then a rename.
-concept!: &active
-  description: The branch this replica is currently on.
+# Cardinality-one makes "one active branch" a property of the data: a
+# second assert supersedes the first.
+concept!: &replica/active-branch
+  description: >
+    The branch a replica is currently on — `this` is the replica.
   with:
     branch:
       description: The active branch.
