@@ -1336,11 +1336,10 @@ pub async fn revoke_in_observed(
         }
         Err(_) => bail!("no device {did} under this account"),
     };
-    if !listed {
-        // The grant is retained but its rows are gone — a prior
-        // revocation already took them.
-        return Ok(RevokeOutcome::AlreadyRevoked);
-    }
+    // A missing catalogue row does not prove the remote withdrawal was
+    // effective. In particular older services acknowledged sibling-device
+    // withdrawals under the wrong index authority. An explicit retry with a
+    // retained exact target must republish; the service receipt is idempotent.
     let mut certificates = proof.proofs.into_iter();
     let first = certificates
         .next()
