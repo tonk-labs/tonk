@@ -143,18 +143,54 @@ mod when_one_account_is_signed_in {
     }
 
     #[dialog_common::test]
-    fn account_ownership_adoption_is_not_a_cli_command() {
+    fn invalid_browser_link_handoff_preserves_the_local_space() {
         let state = tempfile::tempdir().expect("tempdir");
         space_and_account(state.path(), "garden", None);
+        let before = std::fs::read(state.path().join("spaces.json")).expect("registry before");
+        let status_before = run(
+            state.path(),
+            &["--space", "garden", "status", "--json"],
+            &[],
+        );
+        assert!(
+            status_before.status.success(),
+            "{}",
+            stderr_of(&status_before)
+        );
 
-        let output = run(state.path(), &["space", "link", "garden"], &[]);
+        let output = run(
+            state.path(),
+            &[
+                "space",
+                "link",
+                "garden",
+                "--via",
+                "file:///invalid/settings/link",
+            ],
+            &[],
+        );
 
         assert!(!output.status.success());
         assert!(
-            stderr_of(&output).contains("unrecognized subcommand"),
+            stderr_of(&output).contains("account approval page must use HTTP or HTTPS"),
             "{}",
             stderr_of(&output)
         );
+        assert_eq!(
+            std::fs::read(state.path().join("spaces.json")).expect("registry after"),
+            before
+        );
+        let status_after = run(
+            state.path(),
+            &["--space", "garden", "status", "--json"],
+            &[],
+        );
+        assert!(
+            status_after.status.success(),
+            "{}",
+            stderr_of(&status_after)
+        );
+        assert_eq!(status_after.stdout, status_before.stdout);
     }
 
     #[dialog_common::test]
@@ -1149,7 +1185,9 @@ fn status_reports_when_a_configured_remote_cannot_be_fetched() {
         started.elapsed()
     );
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).expect("status JSON");
-    assert_eq!(value["schemaVersion"], "tonk.status.v2");
+    assert_eq!(value["schemaVersion"], "tonk.status.v3");
+    assert!(value.get("account").is_none(), "{value}");
+    assert!(value.get("signedIn").is_none(), "{value}");
     assert_eq!(value["sync"]["state"], "not-fetched");
     assert_eq!(value["sync"]["fetched"], false);
 }

@@ -124,8 +124,10 @@ mod tests {
             .context("reloading a bundled page route must preserve its focus")?;
         // Supply a prompt fixture to test the page's actual copy value.
         // Account authorization and CLI confirmation have their own full-flow tests.
+        let mut playground_invite = env.tonk_web.join("playground-invite")?;
+        playground_invite.set_fragment(Some("tonk-agent-v1=fixture"));
         let body = format!(
-            "onboarding/agent-invite!:\n  this: {repo}\n  name: \"Welcome to Tonk\"\n  link: \"https://example.test/playground-invite\"\n  account: {repo}\n"
+            "onboarding/agent-invite!:\n  this: {repo}\n  name: \"Welcome to Tonk\"\n  link: \"{playground_invite}\"\n  account: {repo}\n"
         );
         let reply = post_yaml(
             &driver,
@@ -139,13 +141,17 @@ mod tests {
         watch_clipboard(&driver).await?;
         click(&driver, ".playground-agent .agent-prompt__copy").await?;
         let prompt = copied_text(&driver).await?;
+        let local_origin = env.tonk_web.origin().ascii_serialization();
         anyhow::ensure!(
-            prompt.contains("npx --yes @tonk/cli join 'https://example.test/playground-invite'"),
+            prompt.contains(&format!(
+                "TONK_CONNECTION_ORIGIN=\"{local_origin}\" tonk join '{playground_invite}'"
+            )),
             "rendered playground prompt: {prompt}"
         );
-        anyhow::ensure!(prompt.contains("--switch-account"));
+        anyhow::ensure!(!prompt.contains("npx --yes @tonk/cli"));
+        anyhow::ensure!(!prompt.contains("--switch-account"));
         anyhow::ensure!(prompt.contains("Scope all work to the existing Agent playground page"));
-        anyhow::ensure!(!prompt.contains("@tonk/cli space home"));
+        anyhow::ensure!(!prompt.contains("tonk space home"));
         anyhow::ensure!(
             driver
                 .find_all(By::Css(".pg-onboard__pre"))
@@ -321,7 +327,8 @@ mod tests {
     fn retryable_element_read_error(error: &thirtyfour::error::WebDriverErrorInner) -> bool {
         matches!(
             error,
-            thirtyfour::error::WebDriverErrorInner::StaleElementReference(_)
+            thirtyfour::error::WebDriverErrorInner::NoSuchElement(_)
+                | thirtyfour::error::WebDriverErrorInner::StaleElementReference(_)
         )
     }
 
@@ -346,6 +353,9 @@ mod tests {
         ));
         assert!(retryable_element_read_error(
             &WebDriverErrorInner::StaleElementReference(info("stale element reference"))
+        ));
+        assert!(retryable_element_read_error(
+            &WebDriverErrorInner::NoSuchElement(info("no such element"))
         ));
         assert!(!retryable_element_read_error(
             &WebDriverErrorInner::ElementClickIntercepted(info("element click intercepted"))
@@ -6460,10 +6470,39 @@ mod tests {
         enter_space_view(&browser).await?;
         let copy = "[data-agent-mode=scoped] .agent-prompt__copy";
         wait_for_displayed(&browser, copy).await?;
+        let layout = browser
+            .execute(
+                r#"const copy=document.querySelector('[data-agent-mode=scoped] .agent-prompt__copy');
+                    const action=copy.closest('.agent-prompt__action');
+                    const card=copy.closest('.agent-prompt');
+                    const button=copy.shadowRoot?.querySelector('[part~=button]');
+                    return {actions:action.querySelectorAll('button,wa-copy-button,a[href]').length,
+                        competing:!!action.querySelector('.agent-prompt__new'),
+                        card:card.getBoundingClientRect().toJSON(),
+                        copy:copy.getBoundingClientRect().toJSON(),
+                        button:button?.getBoundingClientRect().toJSON()};"#,
+                vec![],
+            )
+            .await?;
+        let layout = layout.json();
+        assert_eq!(layout["actions"], serde_json::json!(1));
+        assert_eq!(layout["competing"], serde_json::json!(false));
+        assert!(layout["button"]["height"].as_f64().unwrap_or_default() >= 44.0);
+        assert!(
+            layout["copy"]["right"].as_f64().unwrap_or(f64::INFINITY)
+                <= layout["card"]["right"].as_f64().unwrap_or_default()
+        );
         watch_clipboard(&browser).await?;
         click(&browser, copy).await?;
         let prompt = copied_text(&browser).await?;
-        assert!(prompt.contains("npx --yes @tonk/cli join '"));
+        let local_origin = env.tonk_web.origin().ascii_serialization();
+        assert!(
+            prompt.contains(&format!(
+                "TONK_CONNECTION_ORIGIN=\"{local_origin}\" tonk join '"
+            )),
+            "unexpected local agent prompt: {prompt}"
+        );
+        assert!(!prompt.contains("npx --yes @tonk/cli"));
         assert!(!prompt.contains("--switch-account"));
         let invite = prompt
             .split("join '")
@@ -6471,7 +6510,7 @@ mod tests {
             .and_then(|part| part.split('\'').next())
             .context("scoped prompt has no connection URL")?
             .to_owned();
-        assert!(invite.contains("#tonk-agent-v1="));
+        assert!(invite.contains("#tonk-agent-v2="));
         browser.enter_default_frame().await?;
         let groups = get_json(&browser, "/api/account/connections").await?;
         let groups = successful_body("list issued connection", &groups);
@@ -6481,7 +6520,7 @@ mod tests {
         );
         assert_eq!(groups[0]["confirmed"], false);
         assert_eq!(groups[0]["targets"].as_array().unwrap().len(), 6);
-        assert!(!serde_json::to_string(groups)?.contains("tonk-agent-v1"));
+        assert!(!serde_json::to_string(groups)?.contains("tonk-agent-v"));
         let group_id = groups[0]["id"]
             .as_str()
             .context("missing grant group id")?
@@ -6512,7 +6551,7 @@ mod tests {
         let stdout = String::from_utf8(output.stdout)?;
         let stderr = String::from_utf8(output.stderr)?;
         assert!(!stdout.contains(&invite) && !stderr.contains(&invite));
-        assert!(!stdout.contains("tonk-agent-v1=") && !stderr.contains("tonk-agent-v1="));
+        assert!(!stdout.contains("tonk-agent-v") && !stderr.contains("tonk-agent-v"));
         assert!(output.status.success(), "scoped import failed: {stderr}");
         assert!(stdout.contains("Agent connection confirmed"));
         assert!(!stdout.contains("Open this URL"));
@@ -6541,7 +6580,7 @@ mod tests {
         let resumed = run_cli(
             &env,
             &profile,
-            &["--space".into(), "ordinary-agent".into(), "connect".into()],
+            &["--space".into(), "ordinary-agent".into(), "join".into()],
         )
         .await?;
         assert!(resumed.status.success(), "{}", resumed.stderr);
@@ -6598,7 +6637,7 @@ mod tests {
         let denied = run_cli(
             &env,
             &profile,
-            &["--space".into(), "ordinary-agent".into(), "connect".into()],
+            &["--space".into(), "ordinary-agent".into(), "join".into()],
         )
         .await?;
         assert!(!denied.status.success());
@@ -6724,7 +6763,7 @@ mod tests {
             .await?;
         anyhow::ensure!(logs["value"].is_array(), "browser log capture unavailable");
         anyhow::ensure!(
-            !serde_json::to_string(&logs)?.contains("tonk-agent-v1="),
+            !serde_json::to_string(&logs)?.contains("tonk-agent-v"),
             "browser logs disclosed an agent invitation"
         );
         Ok(())
@@ -6773,7 +6812,7 @@ mod tests {
             .and_then(|part| part.split('\'').next())
             .context("scoped prompt has no connection URL")?;
         anyhow::ensure!(
-            link.contains("#tonk-agent-v1="),
+            link.contains("#tonk-agent-v2="),
             "copy did not contain a scoped bearer"
         );
         anyhow::ensure!(
@@ -6828,8 +6867,8 @@ mod tests {
         anyhow::ensure!(
             !stdout.contains(link)
                 && !stderr.contains(link)
-                && !stdout.contains("tonk-agent-v1=")
-                && !stderr.contains("tonk-agent-v1="),
+                && !stdout.contains("tonk-agent-v")
+                && !stderr.contains("tonk-agent-v"),
             "CLI disclosed an invitation in its output"
         );
         anyhow::ensure!(output.status.success(), "scoped import failed: {stderr}");
@@ -7146,7 +7185,7 @@ mod tests {
             let denied = run_cli(
                 &env,
                 holder,
-                &["--space".into(), "holder".into(), "connect".into()],
+                &["--space".into(), "holder".into(), "join".into()],
             )
             .await?;
             anyhow::ensure!(
@@ -7162,7 +7201,7 @@ mod tests {
         let survives = run_cli(
             &env,
             &retained_profile,
-            &["--space".into(), "sibling".into(), "connect".into()],
+            &["--space".into(), "sibling".into(), "join".into()],
         )
         .await?;
         anyhow::ensure!(
@@ -7223,6 +7262,598 @@ mod tests {
             }),
             "the linked terminal must be the row marked as this device: {}",
             devices.stdout
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn local_space_link_preserves_identity_data_and_uses_the_browser_account(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        sign_up(&driver, &env, "local-space-link@example.com").await?;
+        let account = get_json(&driver, "/api/account").await?;
+        let account_root = successful_body("selected browser account", &account)["rootDid"]
+            .as_str()
+            .context("account response omitted rootDid")?
+            .to_owned();
+
+        let profile = tempfile::tempdir()?;
+        let created = run_cli(
+            &env,
+            &profile,
+            &["space".into(), "new".into(), "garden".into()],
+        )
+        .await?;
+        anyhow::ensure!(
+            created.status.success(),
+            "space new failed: {}",
+            created.stderr
+        );
+        let subject = created
+            .stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("DID: "))
+            .context("space new omitted its DID")?
+            .to_owned();
+        let key = subject.clone();
+        let marker = r#"attribute!: &local-space-link-proof
+  the:         xyz.tonk.e2e/local-space-link-proof
+  as:          text
+  cardinality: one
+  description: local space link e2e marker
+"#;
+        let wrote = run_cli(
+            &env,
+            &profile,
+            &[
+                "--space".into(),
+                "garden".into(),
+                "eval".into(),
+                "-c".into(),
+                marker.into(),
+                "--no-sync".into(),
+            ],
+        )
+        .await?;
+        anyhow::ensure!(
+            wrote.status.success(),
+            "local write failed: {}",
+            wrote.stderr
+        );
+
+        // A retained pre-upgrade account is deliberately unrelated. The
+        // browser, not ambient CLI state, must choose the owner.
+        let registry_file = profile.path().join("spaces/spaces.json");
+        let mut registry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&registry_file)?)?;
+        let unrelated = "did:key:z6MkgMn9hDxTd2saBSAouyTpPLWUmzrVTXfS1N5yB4TjJ3qL";
+        registry["account"] = serde_json::json!({ "root": unrelated });
+        std::fs::write(&registry_file, serde_json::to_vec_pretty(&registry)?)?;
+
+        // Fail the first browser completion request. The settings page must
+        // retain the exact request and retry it on reload while the terminal
+        // continues waiting on the same callback.
+        ChromeDevTools::new(driver.handle.clone())
+            .execute_cdp_with_params(
+                "Page.addScriptToEvaluateOnNewDocument",
+                serde_json::json!({"source": r#"
+                    (() => {
+                      const patchFetch = target => {
+                        if (!target || target.__tonkFailLocalLinkOnce) return;
+                        target.__tonkFailLocalLinkOnce = true;
+                        const nativeFetch = target.fetch.bind(target);
+                        target.fetch = (input, init) => {
+                          const url = typeof input === 'string' ? input : input.url;
+                          const storage = target.top.localStorage;
+                          if (url.endsWith('/api/local-space-link/complete') &&
+                              storage.getItem('tonk:test:fail-local-link-once') !== 'done') {
+                            storage.setItem('tonk:test:fail-local-link-once', 'done');
+                            return Promise.resolve(new target.Response('injected retry', {status: 503}));
+                          }
+                          return nativeFetch(input, init);
+                        };
+                      };
+                      const patchFrames = () => {
+                        patchFetch(window);
+                        document.querySelectorAll('iframe').forEach(frame => {
+                          try { patchFetch(frame.contentWindow); } catch (_) {}
+                        });
+                      };
+                      patchFrames();
+                      new MutationObserver(patchFrames).observe(document, {
+                        childList: true,
+                        subtree: true,
+                      });
+                      addEventListener('DOMContentLoaded', patchFrames);
+                    })();
+                "#}),
+            )
+            .await?;
+
+        let mut command = tonk_command_in(&env, &profile);
+        command.args([
+            "space",
+            "link",
+            "garden",
+            "--no-open",
+            "--via",
+            env.tonk_web.join("settings/link")?.as_str(),
+        ]);
+        command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let mut child = command.spawn()?;
+        let mut stdout = BufReader::new(child.stdout.take().context("CLI stdout was not piped")?);
+        let mut stderr = child.stderr.take().context("CLI stderr was not piped")?;
+        let mut heading = String::new();
+        let mut url_line = String::new();
+        tokio::time::timeout(Duration::from_secs(20), async {
+            stdout.read_line(&mut heading).await?;
+            stdout.read_line(&mut url_line).await?;
+            Ok::<(), std::io::Error>(())
+        })
+        .await
+        .context("timed out waiting for local-space approval URL")??;
+        if heading.is_empty() {
+            let status = child.wait().await?;
+            let mut stderr_text = String::new();
+            use tokio::io::AsyncReadExt as _;
+            stderr.read_to_string(&mut stderr_text).await?;
+            return Err(anyhow!(
+                "the CLI exited before printing the local-space approval URL ({status}); its stderr: {stderr_text}"
+            ));
+        }
+        assert_eq!(heading.trim_end(), "Approve this space in Tonk:");
+        let approval_url = url::Url::parse(url_line.trim())?;
+        assert_eq!(approval_url.path(), "/settings/link");
+        assert_eq!(
+            approval_url
+                .query_pairs()
+                .find(|(key, _)| key == "intent")
+                .map(|(_, value)| value.into_owned())
+                .as_deref(),
+            Some("local-space-link")
+        );
+
+        goto(&driver, approval_url.as_str()).await?;
+        enter_guest(&driver).await?;
+        wait_for_displayed(&driver, "ui-account-settings [data-pane=\"local-link\"]").await?;
+        wait_for_text(&driver, "[data-local-link-name]", "garden").await?;
+        assert_eq!(
+            element(&driver, "[data-local-link-did]")
+                .await?
+                .text()
+                .await?,
+            subject
+        );
+        click(&driver, "[data-local-link-approve]").await?;
+        // Approval visits the loopback callback and redirects the top page
+        // back to Tonk with the signed approval and targeted invitation.
+        // Wait for that round trip before entering the replacement guest;
+        // otherwise Chrome can reset us to the top context after we enter the
+        // old frame but before the continuation page finishes navigating.
+        driver.enter_default_frame().await?;
+        let redirect_deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            let current = driver.current_url().await?;
+            let returned = current.path() == "/settings/link"
+                && current
+                    .query_pairs()
+                    .any(|(key, value)| key == "approval" && !value.is_empty())
+                && current
+                    .query_pairs()
+                    .any(|(key, value)| key == "invite" && !value.is_empty());
+            if returned {
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < redirect_deadline,
+                "browser did not return from local-space approval; current URL was {current}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        enter_guest(&driver).await?;
+        // Provisioning returns through the same loopback bridge. The CLI
+        // publishes the local branch while that callback waits, then redirects
+        // the top page to the signed `provisioned` continuation. Re-enter the
+        // replacement guest instead of observing the first continuation's
+        // iframe after its top-level navigation has been superseded.
+        driver.enter_default_frame().await?;
+        let provisioned_deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            let current = driver.current_url().await?;
+            if current.path() == "/settings/link"
+                && current
+                    .query_pairs()
+                    .any(|(key, value)| key == "provisioned" && !value.is_empty())
+            {
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < provisioned_deadline,
+                "browser did not return after local-space provisioning; current URL was {current}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        enter_guest(&driver).await?;
+        let continuation = tokio::time::timeout(
+            Duration::from_secs(5),
+            wait_for_text_containing(&driver, "[data-ceremony-status]", "Reload to retry"),
+        )
+        .await;
+        if !matches!(continuation, Ok(Ok(()))) {
+            let current = driver.current_url().await?;
+            let workspace = driver
+                .execute(
+                    r#"const status=document.querySelector('[data-ceremony-status]');
+                    return {
+                      statusText: status?.textContent,
+                      statusHidden: status?.hidden,
+                      fetchPatched: window.__tonkFailLocalLinkOnce === true,
+                      failedOnce: localStorage.getItem('tonk:test:fail-local-link-once'),
+                      readyState: document.readyState,
+                    };"#,
+                    vec![],
+                )
+                .await
+                .map(|value| value.json().clone());
+            let source = driver.source().await.unwrap_or_default();
+            return Err(anyhow!(
+                "local-space continuation stopped at {current}; result={continuation:?}; workspace={workspace:?}; page={}",
+                source.chars().take(1_000).collect::<String>()
+            ));
+        }
+        driver.enter_default_frame().await?;
+        driver.refresh().await?;
+
+        let completion_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            if child.try_wait()?.is_some() {
+                break;
+            }
+            if tokio::time::Instant::now() >= completion_deadline {
+                let current = driver.current_url().await?;
+                let workspace = if current.path() == "/settings/link" {
+                    driver.enter_default_frame().await?;
+                    match driver.find(By::Css("tonk-site > iframe")).await {
+                        Ok(frame) => {
+                            frame.enter_frame().await?;
+                            driver
+                                .execute(
+                                    r#"const status=document.querySelector('[data-ceremony-status]');
+                            return {
+                              statusText: status?.textContent,
+                              statusHidden: status?.hidden,
+                              finishing: document.querySelector('ui-account-settings')
+                                ?.hasAttribute('data-local-link-finishing'),
+                            };"#,
+                                    vec![],
+                                )
+                                .await
+                                .map(|value| value.json().clone())
+                        }
+                        Err(error) => Ok(serde_json::json!({
+                            "guestUnavailable": error.to_string()
+                        })),
+                    }
+                } else {
+                    Ok(serde_json::json!({ "notSettings": true }))
+                };
+                return Err(anyhow!(
+                    "browser did not deliver local-space completion; current={current}; workspace={workspace:?}"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        let prefix = format!("{heading}{url_line}");
+        let linked = finish_link(&mut child, &mut stdout, &mut stderr, prefix).await?;
+        anyhow::ensure!(
+            linked.status.success(),
+            "space link failed: {}",
+            linked.stderr
+        );
+        anyhow::ensure!(linked.stdout.contains(&format!("DID: {subject}")));
+        anyhow::ensure!(
+            linked
+                .stdout
+                .contains(&format!("Linked space 'garden' to {account_root}"))
+        );
+
+        // The same browser account can pull the CLI's published content, and
+        // the identifiable local fact is present on that exact repository.
+        driver.enter_default_frame().await?;
+        goto(&driver, env.tonk_web.join("settings")?.as_str()).await?;
+        wait_for_service_worker(&driver).await?;
+        // Completion records the space in the account directory. A fresh
+        // worker mounts directory-listed replicas lazily before branch routes
+        // can address their IndexedDB database.
+        let mut mounted = get_json(&driver, &format!("/api/repository/{key}")).await?;
+        let first_mount = mounted.clone();
+        for _ in 0..30 {
+            if mounted["status"]
+                .as_u64()
+                .is_some_and(|status| status == 200)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            mounted = get_json(&driver, &format!("/api/repository/{key}")).await?;
+        }
+        anyhow::ensure!(
+            mounted["status"]
+                .as_u64()
+                .is_some_and(|status| (200..300).contains(&status)),
+            "mount linked local space failed; first={first_mount}; final={mounted}"
+        );
+        let pulled = post_json(
+            &driver,
+            &format!("/api/repository/{key}/branch/main/sync/pull"),
+            serde_json::json!({}),
+        )
+        .await?;
+        successful_body("pull linked local space", &pulled);
+        anyhow::ensure!(
+            owner_sees(&driver, &key, "local-space-link-proof").await?,
+            "the browser account did not receive the original local fact"
+        );
+
+        // A fresh CLI process uses the retained space authority directly;
+        // the unrelated legacy account remains untouched and is not exposed
+        // by status.
+        let pulled = run_cli(
+            &env,
+            &profile,
+            &["--space".into(), "garden".into(), "pull".into()],
+        )
+        .await?;
+        anyhow::ensure!(
+            pulled.status.success(),
+            "CLI pull failed: {}",
+            pulled.stderr
+        );
+        let status = run_cli(
+            &env,
+            &profile,
+            &[
+                "--space".into(),
+                "garden".into(),
+                "status".into(),
+                "--json".into(),
+            ],
+        )
+        .await?;
+        anyhow::ensure!(
+            status.status.success(),
+            "CLI status failed: {}",
+            status.stderr
+        );
+        let status: serde_json::Value = serde_json::from_str(&status.stdout)?;
+        assert_eq!(status["schemaVersion"], "tonk.status.v3");
+        assert!(status.get("account").is_none());
+        let registry: serde_json::Value = serde_json::from_slice(&std::fs::read(&registry_file)?)?;
+        assert_eq!(registry["account"]["root"], unrelated);
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn local_space_link_decline_preserves_the_local_space(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        sign_up(&driver, &env, "local-space-link-decline@example.com").await?;
+        let profile = tempfile::tempdir()?;
+        let created = run_cli(
+            &env,
+            &profile,
+            &["space".into(), "new".into(), "garden".into()],
+        )
+        .await?;
+        anyhow::ensure!(
+            created.status.success(),
+            "space new failed: {}",
+            created.stderr
+        );
+        let subject = created
+            .stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("DID: "))
+            .context("space new omitted its DID")?
+            .to_owned();
+        let registry_file = profile.path().join("spaces/spaces.json");
+        let registry_before = std::fs::read(&registry_file)?;
+
+        let mut command = tonk_command_in(&env, &profile);
+        command.args([
+            "space",
+            "link",
+            "garden",
+            "--no-open",
+            "--via",
+            env.tonk_web.join("settings/link")?.as_str(),
+        ]);
+        command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let mut child = command.spawn()?;
+        let mut stdout = BufReader::new(child.stdout.take().context("CLI stdout was not piped")?);
+        let mut stderr = child.stderr.take().context("CLI stderr was not piped")?;
+        let mut heading = String::new();
+        let mut url_line = String::new();
+        tokio::time::timeout(Duration::from_secs(20), async {
+            stdout.read_line(&mut heading).await?;
+            stdout.read_line(&mut url_line).await?;
+            Ok::<(), std::io::Error>(())
+        })
+        .await
+        .context("timed out waiting for local-space approval URL")??;
+
+        goto(&driver, url_line.trim()).await?;
+        enter_guest(&driver).await?;
+        wait_for_displayed(&driver, "ui-account-settings [data-pane=\"local-link\"]").await?;
+        assert_eq!(
+            element(&driver, "[data-local-link-did]")
+                .await?
+                .text()
+                .await?,
+            subject
+        );
+        click(&driver, "[data-local-link-decline]").await?;
+
+        let declined = finish_link(
+            &mut child,
+            &mut stdout,
+            &mut stderr,
+            format!("{heading}{url_line}"),
+        )
+        .await?;
+        anyhow::ensure!(
+            !declined.status.success(),
+            "declined link unexpectedly succeeded"
+        );
+        anyhow::ensure!(
+            declined.stderr.contains("space link declined"),
+            "decline did not reach the waiting CLI: {}",
+            declined.stderr
+        );
+        assert_eq!(std::fs::read(&registry_file)?, registry_before);
+        let status = run_cli(
+            &env,
+            &profile,
+            &[
+                "--space".into(),
+                "garden".into(),
+                "status".into(),
+                "--json".into(),
+            ],
+        )
+        .await?;
+        anyhow::ensure!(
+            status.status.success(),
+            "local space became unusable: {}",
+            status.stderr
+        );
+        let status: serde_json::Value = serde_json::from_str(&status.stdout)?;
+        assert_eq!(status["space"]["name"], "garden");
+        assert!(status.get("account").is_none());
+        let listed = run_cli(&env, &profile, &["space".into(), "--json".into()]).await?;
+        anyhow::ensure!(
+            listed.status.success(),
+            "space listing failed: {}",
+            listed.stderr
+        );
+        let listed: serde_json::Value = serde_json::from_str(&listed.stdout)?;
+        assert!(
+            listed["rows"].as_array().is_some_and(|spaces| spaces
+                .iter()
+                .any(|space| { space["name"] == "garden" && space["subject"] == subject })),
+            "decline changed the local space identity: {listed}"
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn local_space_link_survives_fresh_account_creation(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        let profile = tempfile::tempdir()?;
+        let created = run_cli(
+            &env,
+            &profile,
+            &["space".into(), "new".into(), "garden".into()],
+        )
+        .await?;
+        anyhow::ensure!(
+            created.status.success(),
+            "space new failed: {}",
+            created.stderr
+        );
+        let subject = created
+            .stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("DID: "))
+            .context("space new omitted its DID")?
+            .to_owned();
+
+        let mut command = tonk_command_in(&env, &profile);
+        command.args([
+            "space",
+            "link",
+            "garden",
+            "--no-open",
+            "--via",
+            env.tonk_web.join("settings/link")?.as_str(),
+        ]);
+        command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let mut child = command.spawn()?;
+        let mut stdout = BufReader::new(child.stdout.take().context("CLI stdout was not piped")?);
+        let mut stderr = child.stderr.take().context("CLI stderr was not piped")?;
+        let mut heading = String::new();
+        let mut url_line = String::new();
+        tokio::time::timeout(Duration::from_secs(20), async {
+            stdout.read_line(&mut heading).await?;
+            stdout.read_line(&mut url_line).await?;
+            Ok::<(), std::io::Error>(())
+        })
+        .await
+        .context("timed out waiting for local-space approval URL")??;
+
+        goto(&driver, url_line.trim()).await?;
+        driver.enter_default_frame().await?;
+        await_register_dialog(&driver).await?;
+        let email = "local-space-link-fresh-account@example.com";
+        run_cluster_ceremony(&driver, email).await?;
+        activate_in_another_tab(&driver, &env, email).await?;
+
+        let continuation_deadline = tokio::time::Instant::now() + Duration::from_secs(45);
+        loop {
+            let current = driver.current_url().await?;
+            let dialog_gone = driver.find_all(By::Css("#tonk-register")).await?.is_empty();
+            if current.path() == "/settings/link" && dialog_gone {
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < continuation_deadline,
+                "account creation lost the local-space continuation; current URL was {current}"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        wait_for_service_worker(&driver).await?;
+        enter_guest(&driver).await?;
+        wait_for_displayed(&driver, "ui-account-settings [data-pane=\"local-link\"]").await?;
+        assert_eq!(
+            element(&driver, "[data-local-link-did]")
+                .await?
+                .text()
+                .await?,
+            subject
+        );
+
+        // End the test without publishing; cancellation is already the
+        // independently verified terminal path and keeps this case focused on
+        // preservation across account creation.
+        click(&driver, "[data-local-link-decline]").await?;
+        let declined = finish_link(
+            &mut child,
+            &mut stdout,
+            &mut stderr,
+            format!("{heading}{url_line}"),
+        )
+        .await?;
+        anyhow::ensure!(
+            !declined.status.success(),
+            "declined link unexpectedly succeeded"
         );
 
         driver.quit().await?;

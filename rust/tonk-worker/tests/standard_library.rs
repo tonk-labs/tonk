@@ -651,6 +651,42 @@ fn it_keeps_machine_instructions_in_the_production_copy_prompt() {
             copied.contains("If access expires or is revoked, ask me for a fresh invite."),
             "the prompt must request fresh authority after expiry or revocation",
         );
+        assert!(
+            library.contains("TONK_CONNECTION_ORIGIN=${JSON.stringify(page.origin)}"),
+            "loopback prompts must trust the exact local dev deployment",
+        );
+        assert!(
+            library.contains("page = new URL(this.getAttribute(\"link\"))"),
+            "sandboxed space views must derive loopback from the invitation origin",
+        );
+        assert!(
+            library.contains(".replaceAll(\"npx --yes @tonk/cli\", \"tonk\")"),
+            "loopback prompts must use the locally built CLI",
+        );
+    }
+}
+
+#[test]
+fn it_keeps_ready_agent_invites_to_one_primary_action() {
+    for library in [
+        STANDARD_LIBRARY,
+        include_str!("../../tonk-core/assets/library/onboarding-agent.yaml"),
+    ] {
+        let ready = library
+            .split("<div data-agent-mode=\"scoped\" hidden>")
+            .nth(1)
+            .and_then(|tail| tail.split("</tonk-agent-prompt>").next())
+            .expect("the ready agent prompt");
+        assert!(ready.contains("class=\"agent-prompt__copy\""));
+        assert!(
+            !ready.contains("<button"),
+            "a ready reusable invite needs no competing regeneration action",
+        );
+        assert!(!ready.contains("creating a new invite"));
+        assert!(
+            library.contains("data-invite-action=\"new\""),
+            "lost and historical invitations must retain their recovery action",
+        );
     }
 }
 
@@ -1222,7 +1258,7 @@ fn it_offers_only_scoped_agent_prompts_without_account_approval() {
         STANDARD_LIBRARY,
         include_str!("../../tonk-core/assets/library/onboarding-agent.yaml"),
     ] {
-        assert!(library.contains("hash.startsWith(\"#tonk-agent-v1=\")"));
+        assert!(library.contains("/^#tonk-agent-v[12]=/.test(hash)"));
         assert!(!library.contains("data-agent-mode=\"legacy\""));
         assert!(!library.contains("--switch-account"));
         let unsupported = library

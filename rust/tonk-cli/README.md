@@ -16,13 +16,15 @@ drive the same code paths as the binary.
 ```sh
 # Create a local space and bind this directory to it.
 tonk space new garden
+# Attach that exact local space to the account selected in Tonk.
+tonk space link garden
 # Use an existing space in another project directory:
 tonk space use garden
 
 # Every local replica, with the owner each space names.
 tonk space
 
-# Join a browser space, for a person or an agent.
+# Import scoped delegated access to an existing space (no ownership transfer).
 tonk join 'INVITE_LINK'
 
 # Sharing never changes ownership: the invitee joins as a member.
@@ -175,6 +177,10 @@ CLI space creation and transplant stay local and do not provision account hostin
 `push` / `pull` are fast-forward sync over `Branch::push()` / `Branch::pull()`,
 with errors that name the upstream-not-configured and non-fast-forward cases.
 `status` classifies the local branch against its upstream without merging.
+Its `tonk.status.v3` JSON describes only the selected space, sync state, access
+kind, and any space-scoped authority. Version three deliberately removes the
+cached CLI account/session section: unrelated legacy account state neither
+authorizes nor changes the selected space.
 
 Remotes are UCAN-S3 access services registered on the repository's meta branch.
 A revocation is an ordinary `ucan/revoke` invocation, so it goes to the access

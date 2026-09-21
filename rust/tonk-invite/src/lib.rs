@@ -42,6 +42,7 @@
 //! [`Subject::Any`]: dialog_ucan_core::subject::Subject::Any
 
 pub mod connection;
+pub mod local_space_link;
 pub mod shortcut;
 
 use anyhow::{Context, Result};

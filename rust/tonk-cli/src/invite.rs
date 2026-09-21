@@ -168,7 +168,7 @@ pub async fn mint(
     base_url: Option<&str>,
     remote_url: Option<&str>,
 ) -> Result<InviteOutcome, InviteError> {
-    mint_for(site, base_url, remote_url, None, None).await
+    mint_for(site, base_url, remote_url, None, None, true).await
 }
 
 /// Mint an audience-open invite with an explicit revocation relay.
@@ -178,7 +178,7 @@ pub async fn mint_with_relay(
     remote_url: Option<&str>,
     revocation_url: Option<&str>,
 ) -> Result<InviteOutcome, InviteError> {
-    mint_for(site, base_url, remote_url, revocation_url, None).await
+    mint_for(site, base_url, remote_url, revocation_url, None, true).await
 }
 
 /// Mint a seed-free invite targeted to an exact recipient root DID.
@@ -188,7 +188,27 @@ pub async fn mint_targeted(
     remote_url: Option<&str>,
     recipient_root: &str,
 ) -> Result<InviteOutcome, InviteError> {
-    mint_for(site, base_url, remote_url, None, Some(recipient_root)).await
+    mint_for(site, base_url, remote_url, None, Some(recipient_root), true).await
+}
+
+/// Mint a seed-free targeted invite without publishing its local invitation
+/// record yet. Local-space linking persists recovery state first, then records
+/// the invitation as an idempotent publication stage.
+pub(crate) async fn mint_targeted_unrecorded(
+    site: &TonkSite,
+    base_url: Option<&str>,
+    remote_url: Option<&str>,
+    recipient_root: &str,
+) -> Result<InviteOutcome, InviteError> {
+    mint_for(
+        site,
+        base_url,
+        remote_url,
+        None,
+        Some(recipient_root),
+        false,
+    )
+    .await
 }
 
 /// Mint a root-targeted invite with an explicit revocation relay.
@@ -205,6 +225,7 @@ pub async fn mint_targeted_with_relay(
         remote_url,
         revocation_url,
         Some(recipient_root),
+        true,
     )
     .await
 }
@@ -215,6 +236,7 @@ async fn mint_for(
     remote_url: Option<&str>,
     revocation_url: Option<&str>,
     recipient_root: Option<&str>,
+    record: bool,
 ) -> Result<InviteOutcome, InviteError> {
     // Push local state to the upstream before minting, so a joiner
     // receives current repo state — including the stdlib seed that
@@ -310,11 +332,28 @@ async fn mint_for(
 
     // Record the invitation on the repo's meta branch — the durable,
     // secret-free half of the invite (the seed stays in the URL).
-    let invitation = Invitation::from_chain(&invite.chain)
-        .expect("Invite invariant: chain has a specific subject");
+    if record {
+        record_invitation(site, &invite.chain, &invite.audience).await?;
+    }
+
+    Ok(InviteOutcome {
+        url,
+        subject: site.repository.did(),
+        audience,
+    })
+}
+
+/// Record a previously minted invitation after its recovery state is durable.
+pub(crate) async fn record_invitation(
+    site: &TonkSite,
+    chain: &dialog_ucan_core::DelegationChain,
+    audience: &InviteAudience,
+) -> Result<(), InviteError> {
+    let invitation =
+        Invitation::from_chain(chain).expect("Invite invariant: chain has a specific subject");
     let execution = InvitationExecution::new(
         &invitation,
-        if matches!(&invite.audience, InviteAudience::Open { .. }) {
+        if matches!(audience, InviteAudience::Open { .. }) {
             "open"
         } else {
             "scoped"
@@ -335,12 +374,7 @@ async fn mint_for(
         .perform(&site.operator)
         .await
         .map_err(|e| InviteError::Io(format!("failed to record invitation: {e}")))?;
-
-    Ok(InviteOutcome {
-        url,
-        subject: site.repository.did(),
-        audience,
-    })
+    Ok(())
 }
 
 /// Derive the invite base URL from a remote's endpoint — the CLI's
@@ -394,7 +428,7 @@ pub async fn claim(
         return Err(InviteError::SiteAlreadyExists(root.to_path_buf()));
     }
 
-    let invite_url = resolve_invite_url(invite_url).await?;
+    let invite_url = resolve_url(invite_url).await?;
     let invite = parse_invite_url(&invite_url).await?;
     let invitation = Invitation::from_chain(&invite.chain)
         .expect("Invite invariant: chain has a specific subject");
@@ -784,7 +818,7 @@ async fn resolve_shortcut(short_url: &str) -> Result<String, InviteError> {
 /// the later claim can reuse the result instead of making a second request.
 /// No local state is created and no authority is changed.
 pub async fn preflight(invite_url: &str) -> Result<InvitePreflight, InviteError> {
-    let invite_url = resolve_invite_url(invite_url).await?;
+    let invite_url = resolve_url(invite_url).await?;
     let invite = parse_invite_url(&invite_url).await?;
     let invitation = Invitation::from_chain(&invite.chain)
         .expect("Invite invariant: chain has a specific subject");
@@ -798,7 +832,9 @@ pub async fn preflight(invite_url: &str) -> Result<InvitePreflight, InviteError>
     })
 }
 
-async fn resolve_invite_url(invite_url: &str) -> Result<String, InviteError> {
+/// Resolve an invite shortcut to its complete URL, preserving its secret
+/// fragment. Full invite URLs pass through unchanged.
+pub async fn resolve_url(invite_url: &str) -> Result<String, InviteError> {
     if is_shortcut(invite_url) {
         resolve_shortcut(invite_url).await
     } else {

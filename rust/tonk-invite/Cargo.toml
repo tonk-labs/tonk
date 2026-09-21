@@ -15,6 +15,7 @@ dialog-credentials = { workspace = true }
 dialog-ucan = { workspace = true }
 dialog-ucan-core = { workspace = true }
 dialog-varsig = { workspace = true }
+flate2 = { workspace = true }
 ipld-core = { workspace = true }
 serde = { workspace = true }
 serde_bytes = { workspace = true }

@@ -165,10 +165,24 @@ view!:
                 let mode = "";
                 try {
                   const hash = new URL(this.getAttribute("link")).hash;
-                  mode = hash.startsWith("#tonk-agent-v1=") ? "scoped" : "unsupported";
+                  mode = /^#tonk-agent-v[12]=/.test(hash) ? "scoped" : "unsupported";
                 } catch (_) {}
                 for (const block of this.querySelectorAll("[data-agent-mode]")) {
                   block.hidden = block.dataset.agentMode !== mode;
+                }
+                let page;
+                try { page = new URL(this.getAttribute("link")); } catch (_) {}
+                const local = page && ["localhost", "127.0.0.1", "[::1]"].includes(page.hostname);
+                const copy = this.querySelector(".agent-prompt__copy");
+                const prompt = copy?.getAttribute("value") || "";
+                if (local && prompt.includes("npx --yes @tonk/cli")) {
+                  const localPrompt = prompt
+                    .replaceAll("npx --yes @tonk/cli", "tonk")
+                    .replace(
+                      "tonk join '",
+                      `TONK_CONNECTION_ORIGIN=${JSON.stringify(page.origin)} tonk join '`,
+                    );
+                  copy.setAttribute("value", localPrompt);
                 }
               }
             });
@@ -181,12 +195,16 @@ view!:
           tonk-agent-prompt [data-agent-mode] { display: flex; flex-direction: column; gap: var(--wa-space-m); }
           .agent-prompt { padding: var(--wa-space-l); border-radius: var(--wa-border-radius-l); background: var(--wa-color-surface-lowered); display: flex; flex-direction: column; gap: var(--wa-space-m); }
           .agent-prompt p { margin: 0; line-height: var(--wa-line-height-normal); text-wrap: pretty; }
-          .agent-prompt__action { display: flex; flex-wrap: wrap; gap: var(--wa-space-s); align-items: center; }
+          .agent-prompt__action { display: flex; align-items: stretch; }
           .agent-prompt__copy {
+            display: inline-flex;
+            align-self: flex-start;
+            max-inline-size: 100%;
             --agent-copy-ink: var(--wa-color-neutral-on-loud);
             --agent-copy-surface: var(--wa-color-text-normal);
           }
           .agent-prompt__copy::part(button) {
+            display: inline-flex;
             box-sizing: border-box;
             min-width: 144px;
             min-height: 44px;
@@ -264,9 +282,7 @@ view!:
             <span slot="success-icon" aria-hidden="true">prompt copied</span>
             <span slot="error-icon" aria-hidden="true">could not copy</span>
           </wa-copy-button>
-          <button class="agent-prompt__new" on:new-agent-invite=tonk:new-agent-invite aria-label="create another agent invite">new invite</button>
         </div>
-        <p class="agent-prompt__note">creating a new invite does not cancel earlier ones.</p>
         </div>
       </div>
       </tonk-agent-prompt>

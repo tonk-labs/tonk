@@ -56,6 +56,20 @@
       <button class="m-go" type="button" data-link-approve>approve with passkey</button>
     </div>
   </div>
+  <div class="pane" data-pane="local-link" hidden data-local-link-approval>
+    <div class="sect">attach a local space to this account</div>
+    <div class="srowd"><span>space</span><b data-local-link-name></b></div>
+    <div class="srowd"><span>space ID</span><b class="lft" data-local-link-did></b></div>
+    <p class="expl">
+      approving preserves this exact local space and publishes it to the
+      account selected in this browser. it does not sign the terminal into
+      your account or grant access to any other space.
+    </p>
+    <div class="link-foot">
+      <button class="m-cancel" type="button" data-local-link-decline>decline</button>
+      <button class="m-go" type="button" data-local-link-approve>approve this space</button>
+    </div>
+  </div>
   <p class="expl" data-ceremony-status role="status" aria-live="polite" hidden></p>
   <div data-custody-seat aria-hidden="true"></div>
 </div>

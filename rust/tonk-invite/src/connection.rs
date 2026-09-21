@@ -12,8 +12,10 @@ use dialog_ucan_core::{
     time::Timestamp,
 };
 use dialog_varsig::{Did, Principal};
+use flate2::{Compression, read::ZlibDecoder, write::ZlibEncoder};
 use ipld_core::ipld::Ipld;
 use std::collections::BTreeMap;
+use std::io::{Read, Write};
 use url::Url;
 
 /// Default requested grant duration for both invitation and CLI-owned identities.
@@ -21,7 +23,9 @@ use url::Url;
 pub const DEFAULT_GRANT_TTL_SECONDS: u64 = 90 * 24 * 60 * 60;
 /// Maximum accepted encoded invitation size, before allocating decoded storage.
 pub const MAX_ENVELOPE_LENGTH: usize = 1024 * 1024;
-const PREFIX: &str = "tonk-agent-v1=";
+const LEGACY_PREFIX: &str = "tonk-agent-v1=";
+const PREFIX: &str = "tonk-agent-v2=";
+const GRANTS_PARAMETER: &str = "agent";
 
 // HTTPS is required except for explicit loopback development endpoints. Syntax
 // checks prevent unsafe carrier URLs; independent service trust remains required.
@@ -257,7 +261,10 @@ impl AgentInvite {
         &self.seed
     }
 
-    /// Encode all bearer data in a fragment, which HTTP does not transmit.
+    /// Encode public grants in the query and the bearer seed alone in the fragment.
+    ///
+    /// Keeping the grants out of the fragment lets the ordinary shortcut service
+    /// store them while the private seed remains client-side across its redirect.
     pub fn to_url(&self, base: &str) -> Result<String> {
         let mut url = Url::parse(base).context("connection_invalid_url")?;
         validate_endpoint(&url)?;
@@ -268,16 +275,22 @@ impl AgentInvite {
             .map(|chain| chain.to_bytes().map(Ipld::Bytes))
             .collect::<std::result::Result<Vec<_>, _>>()?;
         let data = Ipld::Map(BTreeMap::from([
-            ("version".into(), Ipld::Integer(1)),
-            ("seed".into(), Ipld::Bytes(self.seed.to_vec())),
+            ("version".into(), Ipld::Integer(2)),
             ("grants".into(), Ipld::List(chains)),
         ]));
         let bytes = serde_ipld_dagcbor::to_vec(&data)?;
-        let fragment = format!("{PREFIX}{}", bs58::encode(bytes).into_string());
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+        encoder
+            .write_all(&bytes)
+            .context("connection_invalid_envelope")?;
+        let grants =
+            bs58::encode(encoder.finish().context("connection_invalid_envelope")?).into_string();
         ensure!(
-            fragment.len() <= MAX_ENVELOPE_LENGTH,
+            grants.len() <= MAX_ENVELOPE_LENGTH,
             "connection_envelope_too_large"
         );
+        url.query_pairs_mut().append_pair(GRANTS_PARAMETER, &grants);
+        let fragment = format!("{PREFIX}{}", bs58::encode(self.seed).into_string());
         url.set_fragment(Some(&fragment));
         Ok(url.into())
     }
@@ -332,6 +345,7 @@ impl AgentInvite {
         );
         let url = Url::parse(value).context("connection_invalid_url")?;
         let mut base = url.clone();
+        base.set_query(None);
         base.set_fragment(None);
         validate_endpoint(&base)?;
         let fragment = url.fragment().context("connection_missing_key")?;
@@ -339,9 +353,64 @@ impl AgentInvite {
             fragment.len() <= MAX_ENVELOPE_LENGTH,
             "connection_envelope_too_large"
         );
-        let encoded = fragment
+        if let Some(encoded) = fragment.strip_prefix(LEGACY_PREFIX) {
+            ensure!(url.query().is_none(), "connection_invalid_url");
+            return Self::decode_legacy(encoded);
+        }
+        let encoded_seed = fragment
             .strip_prefix(PREFIX)
             .context("connection_unsupported_version")?;
+        let seed = bs58::decode(encoded_seed)
+            .into_vec()
+            .context("connection_invalid_key")?;
+        let seed: [u8; 32] = seed
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("connection_invalid_key"))?;
+        let mut grants = url
+            .query_pairs()
+            .filter(|(key, _)| key == GRANTS_PARAMETER)
+            .map(|(_, value)| value.into_owned());
+        let encoded_grants = grants.next().context("connection_invalid_envelope")?;
+        ensure!(
+            grants.next().is_none() && encoded_grants.len() <= MAX_ENVELOPE_LENGTH,
+            "connection_invalid_envelope"
+        );
+        let bytes = bs58::decode(encoded_grants)
+            .into_vec()
+            .context("connection_invalid_envelope")?;
+        let mut envelope = Self::decode_v2_envelope(&bytes)?;
+        ensure!(
+            envelope.remove("version") == Some(Ipld::Integer(2)),
+            "connection_unsupported_version"
+        );
+        let chains = Self::decode_grants(&mut envelope)?;
+        Ok((seed, chains))
+    }
+
+    fn decode_v2_envelope(bytes: &[u8]) -> Result<BTreeMap<String, Ipld>> {
+        // Accept the uncompressed v2 form emitted during development so a link
+        // copied before compression was added remains usable.
+        if let Ok(Ipld::Map(envelope)) = serde_ipld_dagcbor::from_slice(bytes) {
+            return Ok(envelope);
+        }
+        let mut decoded = Vec::new();
+        ZlibDecoder::new(bytes)
+            .take((MAX_ENVELOPE_LENGTH + 1) as u64)
+            .read_to_end(&mut decoded)
+            .context("connection_invalid_envelope")?;
+        ensure!(
+            decoded.len() <= MAX_ENVELOPE_LENGTH,
+            "connection_envelope_too_large"
+        );
+        let Ipld::Map(envelope) =
+            serde_ipld_dagcbor::from_slice(&decoded).context("connection_invalid_envelope")?
+        else {
+            anyhow::bail!("connection_invalid_envelope")
+        };
+        Ok(envelope)
+    }
+
+    fn decode_legacy(encoded: &str) -> Result<([u8; 32], Vec<DelegationChain>)> {
         let bytes = bs58::decode(encoded)
             .into_vec()
             .context("connection_invalid_envelope")?;
@@ -360,6 +429,11 @@ impl AgentInvite {
         let seed: [u8; 32] = seed
             .try_into()
             .map_err(|_| anyhow::anyhow!("connection_invalid_key"))?;
+        let chains = Self::decode_grants(&mut envelope)?;
+        Ok((seed, chains))
+    }
+
+    fn decode_grants(envelope: &mut BTreeMap<String, Ipld>) -> Result<Vec<DelegationChain>> {
         let Some(Ipld::List(grants)) = envelope.remove("grants") else {
             anyhow::bail!("connection_invalid_envelope")
         };
@@ -367,7 +441,7 @@ impl AgentInvite {
             envelope.is_empty() && !grants.is_empty() && grants.len() <= 64,
             "connection_invalid_envelope"
         );
-        let chains = grants
+        grants
             .into_iter()
             .map(|grant| {
                 let Ipld::Bytes(bytes) = grant else {
@@ -375,8 +449,7 @@ impl AgentInvite {
                 };
                 DelegationChain::try_from(bytes.as_slice()).context("connection_invalid_chain")
             })
-            .collect::<Result<Vec<_>>>()?;
-        Ok((seed, chains))
+            .collect::<Result<Vec<_>>>()
     }
 }
 

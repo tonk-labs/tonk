@@ -119,7 +119,16 @@ async fn removed_workflows_preserve_existing_local_state() -> Result<()> {
         (vec!["account", "delete"], "unrecognized subcommand"),
         (vec!["account", "devices"], "unrecognized subcommand"),
         (vec!["account", "space"], "unrecognized subcommand"),
-        (vec!["space", "link", "retained"], "unrecognized subcommand"),
+        (
+            vec![
+                "space",
+                "link",
+                "retained",
+                "--via",
+                "file:///invalid/settings/link",
+            ],
+            "account approval page must use HTTP or HTTPS",
+        ),
         (vec!["migrate", "account"], "unrecognized subcommand"),
         (
             vec!["join", "https://example.test/join#never-print-secret"],
@@ -371,6 +380,9 @@ async fn connection_command_imports_bearer_restarts_and_keeps_account_state() ->
         recipient.did().to_string()
     );
     assert_eq!(status["authority"]["kind"], "invitation");
+    assert_eq!(status["schemaVersion"], "tonk.status.v3");
+    assert!(status.get("account").is_none(), "{status}");
+    assert!(status.get("signedIn").is_none(), "{status}");
     assert_eq!(store.account()?, Some(unrelated));
     assert!(
         !home.join("data").exists(),

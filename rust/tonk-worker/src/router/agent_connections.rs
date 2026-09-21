@@ -898,7 +898,7 @@ mod tests {
                 .collect::<Result<_, _>>()?,
         };
         let public = serde_json::to_string(&group)?;
-        assert!(!public.contains("tonk-agent-v1"));
+        assert!(!public.contains("tonk-agent-v"));
         assert!(!public.contains(&hex::encode(invite.secret_seed())));
         tonk.reactor
             .profile_repository()

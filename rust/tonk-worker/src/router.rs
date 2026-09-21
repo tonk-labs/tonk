@@ -69,6 +69,7 @@ pub(crate) mod rotation;
 
 mod join;
 pub use join::{JoinRequest, JoinResponse};
+mod local_space_link;
 
 pub(crate) mod account_devices;
 
@@ -308,6 +309,18 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         // Join an invite — creates a fresh replica or refreshes
         // access on an existing one. See `router/join.rs`.
         .route("/api/profile/join", post(join::join))
+        .route(
+            "/api/local-space-link/approve",
+            post(local_space_link::approve),
+        )
+        .route(
+            "/api/local-space-link/provision",
+            post(local_space_link::provision),
+        )
+        .route(
+            "/api/local-space-link/complete",
+            post(local_space_link::complete),
+        )
         .route(
             "/api/migrate/repo-vs-profile",
             get(migration::repo_vs_profile),

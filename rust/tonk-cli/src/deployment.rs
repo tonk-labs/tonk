@@ -18,6 +18,10 @@ pub struct DeploymentDefaults {
     /// standalone revocation registry was deleted, and nothing here records
     /// one.
     pub access_remote: Url,
+    /// Access-service signing identity advertised by the same deployment.
+    /// Older deployments may omit it; callers that require service-bound
+    /// authorization must reject that absence themselves.
+    pub service_did: Option<String>,
 }
 
 /// Discover content defaults from the exact deployment used for account
@@ -46,13 +50,14 @@ pub async fn discover(account_url: &str) -> Result<DeploymentDefaults> {
         .json::<DeploymentConfig>()
         .await
         .context("deployment discovery returned malformed configuration")?;
-    let _ = config;
+    let service_did = config.service_did.filter(|did| !did.trim().is_empty());
     let access_remote = ceremony_origin
         .join("/ucan/")
         .context("failed to form deployment access URL")?;
     Ok(DeploymentDefaults {
         ceremony_origin,
         access_remote,
+        service_did,
     })
 }
 

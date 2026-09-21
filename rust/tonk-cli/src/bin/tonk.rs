@@ -29,7 +29,7 @@ use tonk_cli::render::{self, RenderRoute};
 use tonk_cli::sync::{self, SyncOutcome};
 use tonk_cli::transfer;
 use tonk_cli::views;
-use tonk_cli::{ExitCode, account, agents, context, guide, identity, schema, site};
+use tonk_cli::{ExitCode, agents, context, guide, identity, schema, site};
 
 const CLI_INDEX: &str = "\
 usage: tonk [--space <name>] [-v] <command> [<args>]
@@ -44,7 +44,7 @@ start a space (see also: tonk help spaces)
    join       Import a one-way agent invitation without browser approval
 
 examine state
-   status     Where you are: space, branch, sync, account
+   status     Where you are: space, branch, sync, authority
    show       Describe the schema, a concept, an entity, or a view
    query      Read the instances of a concept
    render     Render a view to HTML
@@ -565,6 +565,22 @@ enum SpaceCommand {
         name: String,
     },
 
+    /// Attach one local-only space to an account selected in Tonk
+    #[command(
+        after_help = "Example:\n  tonk space link garden\n  tonk space link garden --no-open"
+    )]
+    Link {
+        /// Registered local-only space name.
+        #[arg(value_name = "NAME")]
+        name: String,
+        /// Print the approval URL without opening a browser.
+        #[arg(long)]
+        no_open: bool,
+        /// Use an explicit Tonk approval page (for staging or local development).
+        #[arg(long, value_name = "URL")]
+        via: Option<String>,
+    },
+
     /// Pin one or more concepts' directories on the space home
     Home {
         /// Concept name(s) to surface, in order.
@@ -994,6 +1010,7 @@ fn descriptor(command: &Command) -> (&'static str, Option<&'static str>) {
                 None => "list",
                 Some(SpaceCommand::New { .. }) => "new",
                 Some(SpaceCommand::Use { .. }) => "use",
+                Some(SpaceCommand::Link { .. }) => "link",
                 Some(SpaceCommand::Transplant { .. }) => "transplant",
                 Some(SpaceCommand::Rm { .. }) => "rm",
                 Some(SpaceCommand::Unbind { .. }) => "unbind",
@@ -1287,59 +1304,6 @@ async fn identity(reset: bool) -> ExitCode {
     }
 }
 
-/// The account section of the context report, from a read the caller
-/// already performed.
-///
-/// One function so `tonk account status` and `tonk status` cannot report
-/// the same device differently.
-fn account_context(status: &account::AccountStatus) -> context::AccountContext {
-    match status {
-        account::AccountStatus::MissingRoot { device_did } => context::AccountContext {
-            signed_in: false,
-            account: None,
-            account_service: None,
-            device: Some(device_did.clone()),
-            state: None,
-        },
-        account::AccountStatus::Unregistered {
-            root_did,
-            device_did,
-        } => context::AccountContext {
-            signed_in: false,
-            account: Some(root_did.clone()),
-            account_service: None,
-            device: Some(device_did.clone()),
-            state: None,
-        },
-        account::AccountStatus::Registered {
-            root_did,
-            device_did,
-            provider,
-            account_state,
-        } => context::AccountContext {
-            signed_in: true,
-            account: Some(root_did.clone()),
-            account_service: Some(provider.clone()),
-            device: Some(device_did.clone()),
-            state: Some(account_state_label(*account_state).to_string()),
-        },
-    }
-}
-
-/// The account section when the profile itself cannot be read.
-///
-/// `tonk status` reports orientation and must not fail because the
-/// account is unreadable; the space it is describing works signed out.
-fn account_context_unavailable() -> context::AccountContext {
-    context::AccountContext {
-        signed_in: false,
-        account: None,
-        account_service: None,
-        device: None,
-        state: None,
-    }
-}
-
 /// The sync section, fetching the upstream head to classify against it.
 fn sync_context(status: sync::SyncStatus) -> context::SyncContext {
     context::SyncContext::fetched(status.state, status.hash.map(|hash| hash.to_string()))
@@ -1414,15 +1378,6 @@ async fn agents_op(command: Option<AgentsCommand>, space: Option<&str>) -> ExitC
                 Err(err) => print_error(format!("could not assert AGENTS.md claim: {err:#}")),
             }
         }
-    }
-}
-
-/// How `tonk account` prints the account repository's lifecycle state.
-fn account_state_label(status: tonk_account::AccountStateStatus) -> &'static str {
-    match status {
-        tonk_account::AccountStateStatus::Unconfigured => "not set up yet",
-        tonk_account::AccountStateStatus::Unhydrated => "waiting for first sync",
-        tonk_account::AccountStateStatus::Ready => "synced",
     }
 }
 
@@ -1556,6 +1511,27 @@ async fn space_op(command: Option<SpaceCommand>, json: bool, flag: Option<&str>)
             }
             print_orphaned_sites(&store.orphaned_sites(&registry));
             ExitCode::Success
+        }
+        Some(SpaceCommand::Link { name, no_open, via }) => {
+            match tonk_cli::space_link::execute_browser(
+                &store,
+                &config,
+                &name,
+                &tonk_cli::space_link::BrowserLinkOptions {
+                    open_browser: !no_open,
+                    via,
+                },
+            )
+            .await
+            {
+                Ok(outcome) => {
+                    println!("Linked space '{}' to {}", outcome.name, outcome.account);
+                    println!("DID: {}", outcome.subject);
+                    println!("site: {}", outcome.site.display());
+                    ExitCode::Success
+                }
+                Err(error) => print_failure(error),
+            }
         }
         Some(SpaceCommand::Transplant { name, in_place }) => {
             let mut transplant_config = config.clone();
@@ -2094,39 +2070,6 @@ async fn status_op(json: bool, space: Option<&str>) -> ExitCode {
     } else {
         None
     };
-    let account = if site.is_scoped() {
-        let cached = match site.account_store.account() {
-            Ok(cached) => cached,
-            Err(error) => return print_failure(error),
-        };
-        context::AccountContext {
-            signed_in: cached.is_some(),
-            account: cached.as_ref().map(|record| record.root.clone()),
-            account_service: cached.and_then(|record| record.access_remote),
-            device: None,
-            state: Some("cached registry; not checked or used for this scoped connection".into()),
-        }
-    } else {
-        match identity::open().await {
-            Ok(profile) => match tonk_cli::space::SpaceStore::open() {
-                Ok(store) => match account::status_in(&profile, &store).await {
-                    Ok(status) => account_context(&status),
-                    Err(error) => {
-                        eprintln!("warning: account status unavailable: {error:#}");
-                        account_context_unavailable()
-                    }
-                },
-                Err(error) => {
-                    eprintln!("warning: account status unavailable: {error:#}");
-                    account_context_unavailable()
-                }
-            },
-            Err(error) => {
-                eprintln!("warning: account status unavailable: {error:#}");
-                account_context_unavailable()
-            }
-        }
-    };
     let access_kind = match &authority {
         Some(authority) if authority.kind == "invitation" => "invite-backed",
         Some(authority) => authority.kind,
@@ -2141,7 +2084,6 @@ async fn status_op(json: bool, space: Option<&str>) -> ExitCode {
             schema_version: STATUS_SCHEMA_VERSION,
             space,
             sync,
-            account,
             authority,
             access_kind,
         });
@@ -2153,11 +2095,11 @@ async fn status_op(json: bool, space: Option<&str>) -> ExitCode {
             authority.kind, authority.subject, authority.recipient
         );
     }
-    print!("{}{}{}", space.render(), sync.render(), account.render());
+    print!("{}{}", space.render(), sync.render());
     ExitCode::Success
 }
 
-/// `tonk status --json` combines the selected space, sync, and account.
+/// `tonk status --json` combines selected-space, sync, and authority state.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct StatusReport {
@@ -2165,7 +2107,6 @@ struct StatusReport {
     access_kind: &'static str,
     space: SpaceContext,
     sync: context::SyncContext,
-    account: context::AccountContext,
     #[serde(skip_serializing_if = "Option::is_none")]
     authority: Option<ScopedAuthorityReport>,
 }
@@ -2179,7 +2120,7 @@ struct ScopedAuthorityReport {
     grant_ids: Vec<String>,
 }
 
-const STATUS_SCHEMA_VERSION: &str = "tonk.status.v2";
+const STATUS_SCHEMA_VERSION: &str = "tonk.status.v3";
 
 /// Write `value` to stdout as the pretty JSON every `--json` read prints.
 fn print_json<T: serde::Serialize>(value: &T) -> ExitCode {
@@ -2719,12 +2660,13 @@ async fn connect_scoped_agent(link: &str, requested_name: Option<&str>) -> ExitC
         if let Some(name) = requested_name {
             tonk_cli::space::validate_name(name)?;
         }
-        let hint = tonk_cli::connections::inspect_link(link).await?;
+        let link = tonk_cli::invite::resolve_url(link).await?;
+        let hint = tonk_cli::connections::inspect_link(&link).await?;
         let remote = tonk_cli::deployment::discover_connection_remote(&hint.remote).await?;
         let cwd = working_directory()
             .ok_or_else(|| anyhow::anyhow!("could not read the current directory"))?
             .canonicalize()?;
-        let validated = tonk_cli::connections::validate_link(link, &remote)
+        let validated = tonk_cli::connections::validate_link(&link, &remote)
             .await?
             .with_directory(&cwd)?;
         let binding = validated.binding().clone();
@@ -3638,10 +3580,25 @@ async fn open_selected(
             .map(|site| (resolved, site))
             .map_err(print_failure);
     }
-    let config = match site::default_config() {
+    let mut config = match site::default_config() {
         Ok(config) => config,
         Err(err) => return Err(print_failure(err)),
     };
+    match tonk_cli::space_link::uses_local_authority(&resolved.site) {
+        Ok(true) => {
+            // Browser linking transfers ownership without handing this CLI an
+            // account-wide grant. The original local signer remains the
+            // narrow authority for this one space's remote operations.
+            config.require_account = false;
+            config.provision_account_spaces = false;
+        }
+        Ok(false) => {}
+        Err(error) => {
+            return Err(print_error(format!(
+                "could not read local-space link state: {error:#}"
+            )));
+        }
+    }
     match site::TonkSite::open_with(&resolved.site, config).await {
         Ok(site) => Ok((resolved, site)),
         Err(err) => Err(print_error(format!(
@@ -3653,7 +3610,7 @@ async fn open_selected(
 #[cfg(test)]
 mod account_spaces_parser_tests {
     #[test]
-    fn account_management_and_browser_linking_are_not_cli_commands() {
+    fn account_management_and_root_linking_are_not_cli_commands() {
         for args in [
             vec!["tonk", "account"],
             vec!["tonk", "account", "login"],
@@ -3661,13 +3618,26 @@ mod account_spaces_parser_tests {
             vec!["tonk", "account", "delete"],
             vec!["tonk", "account", "devices"],
             vec!["tonk", "account", "space"],
-            vec!["tonk", "space", "link", "garden"],
             vec!["tonk", "migrate", "account"],
             vec!["tonk", "link"],
         ] {
             assert!(Cli::try_parse_from(&args).is_err(), "{args:?}");
         }
         assert!(Cli::try_parse_from(["tonk", "migrate", "carry"]).is_ok());
+        for args in [
+            vec!["tonk", "space", "link", "garden"],
+            vec!["tonk", "space", "link", "garden", "--no-open"],
+            vec![
+                "tonk",
+                "space",
+                "link",
+                "garden",
+                "--via",
+                "http://127.0.0.1:8080/settings/link",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(args).is_ok());
+        }
     }
 
     #[test]
@@ -3699,6 +3669,19 @@ mod account_spaces_parser_tests {
     }
 
     #[test]
+    fn join_recognizes_legacy_and_short_agent_bearers() {
+        assert!(is_scoped_agent_link(
+            "https://example.test/join#tonk-agent-v1=legacy"
+        ));
+        assert!(is_scoped_agent_link(
+            "https://example.test/@/hash#tonk-agent-v2=seed"
+        ));
+        assert!(!is_scoped_agent_link(
+            "https://example.test/join?access=proof#seed"
+        ));
+    }
+
+    #[test]
     fn join_defaults_to_the_synced_space_name() {
         let cli =
             Cli::try_parse_from(["tonk", "join", "https://example.test/join#secret"]).unwrap();
@@ -3716,14 +3699,6 @@ mod account_spaces_parser_tests {
     }
 
     use super::*;
-
-    #[test]
-    fn unavailable_account_context_does_not_invent_a_device_identifier() {
-        let account = account_context_unavailable();
-        let json = serde_json::to_value(&account).expect("account context JSON");
-        assert!(json["device"].is_null(), "{json}");
-        assert!(account.render().contains("device: unavailable"));
-    }
 
     #[test]
     fn every_data_write_parser_accepts_the_shared_switches() {
@@ -3855,7 +3830,7 @@ mod account_spaces_parser_tests {
                 "retired form parsed: {args:?}"
             );
         }
-        assert_eq!(STATUS_SCHEMA_VERSION, "tonk.status.v2");
+        assert_eq!(STATUS_SCHEMA_VERSION, "tonk.status.v3");
     }
 
     #[test]

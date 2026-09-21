@@ -5134,6 +5134,7 @@ dependencies = [
  "dialog-ucan",
  "dialog-ucan-core",
  "dialog-varsig",
+ "flate2",
  "ipld-core",
  "serde",
  "serde_bytes",

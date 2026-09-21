@@ -181,6 +181,10 @@ fn open_with_return(guest_restore: Option<Box<dyn FnOnce()>>) {
     host.set_class_name("tonk-ceremony tonk-cluster");
     let _ = host.set_attribute("aria-labelledby", "tonk-register-head");
     let _ = host.set_attribute("aria-describedby", "tonk-register-status");
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    if let Some(path) = current_local_space_link_path() {
+        let _ = host.set_attribute(RETURN_PATH, &path);
+    }
     host.set_inner_html(DIALOG_HTML);
     let _ = body.append_child(&host);
 
@@ -2631,8 +2635,38 @@ fn finish_account_navigation(host: &Element) {
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 fn account_completion_destination(saved: Option<&str>) -> &str {
     saved
-        .filter(|value| value.starts_with("/space/"))
+        .filter(|value| value.starts_with("/space/") || is_local_space_link_destination(value))
         .unwrap_or("/")
+}
+
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+fn is_local_space_link_destination(value: &str) -> bool {
+    let Ok(url) = url::Url::parse(&format!("https://tonk.local{value}")) else {
+        return false;
+    };
+    value.starts_with('/')
+        && !value.starts_with("//")
+        && url.origin().ascii_serialization() == "https://tonk.local"
+        && url.path() == "/settings/link"
+        && url.fragment().is_none()
+        && url
+            .query_pairs()
+            .any(|(key, value)| key == "intent" && value == "local-space-link")
+        && url
+            .query_pairs()
+            .any(|(key, value)| key == "request" && !value.is_empty())
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn current_local_space_link_path() -> Option<String> {
+    let location = web_sys::window()?.location();
+    let candidate = format!(
+        "{}{}{}",
+        location.pathname().ok()?,
+        location.search().ok()?,
+        location.hash().ok()?
+    );
+    is_local_space_link_destination(&candidate).then_some(candidate)
 }
 
 /// Return to the surface the ceremony replaced.
@@ -2881,11 +2915,18 @@ mod tests {
             super::account_completion_destination(Some("/space/example")),
             "/space/example"
         );
+        let local_link = "/settings/link?intent=local-space-link&request=bound-request";
+        assert_eq!(
+            super::account_completion_destination(Some(local_link)),
+            local_link
+        );
         for destination in [
             None,
             Some("https://elsewhere.test/space/example"),
             Some("//elsewhere.test/space/example"),
             Some("/settings/link#tonk-terminal-v1=x"),
+            Some("/settings/link?intent=local-space-link"),
+            Some("/settings/link?request=bound-request"),
         ] {
             assert_eq!(super::account_completion_destination(destination), "/");
         }

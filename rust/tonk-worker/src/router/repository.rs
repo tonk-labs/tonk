@@ -1342,6 +1342,13 @@ async fn run_connection_invite(
     )
     .map_err(|_| TonkWorkerError::Internal("invalid connection origin".into()))?;
     let minted = super::agent_connections::mint(env.state().clone(), repo.clone(), origin).await;
+    let minted = match minted {
+        Ok(mut response) => {
+            response.url = shortened_or_full(response.url).await;
+            Ok(response)
+        }
+        Err(error) => Err(error),
+    };
     let tonk = env.state().read().await;
     match minted {
         Ok(response) => {
@@ -12005,7 +12012,7 @@ mod connection_invite_overlay_tests {
         let ready = response(&state, &repo).await;
         assert_eq!(ready.status.0, "ready");
         assert_eq!(response_mode(&state, &repo).await, "scoped");
-        assert!(ready.link.0.contains("#tonk-agent-v1="));
+        assert!(ready.link.0.contains("#tonk-agent-v2="));
         let tonk = state.read().await;
         assert_eq!(
             tonk.profile
