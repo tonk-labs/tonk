@@ -3084,7 +3084,7 @@ async fn sync_op(op: SyncOp, space: Option<&str>) -> ExitCode {
         // gave, verbatim, wrapped in a fix read from the roster the replica
         // already holds.
         Err(err @ sync::SyncError::Rejected { .. }) => {
-            let sync::SyncError::Rejected { reason } = &err else {
+            let sync::SyncError::Rejected { reason, .. } = &err else {
                 unreachable!("matched one line above")
             };
             eprintln!(
