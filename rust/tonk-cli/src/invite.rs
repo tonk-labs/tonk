@@ -110,7 +110,6 @@ pub struct ClaimOutcome {
 }
 
 /// Validated invite information safe to use before changing local authority.
-#[derive(Debug)]
 pub struct InvitePreflight {
     /// Resolved long-form invite URL. Short links are expanded exactly once.
     pub url: String,
@@ -118,6 +117,17 @@ pub struct InvitePreflight {
     pub invitation: Invitation,
     /// Validated audience of a scoped invitation, absent for open invitations.
     pub expected_root: Option<Did>,
+}
+
+impl std::fmt::Debug for InvitePreflight {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("InvitePreflight")
+            .field("invitation", &self.invitation)
+            .field("expected_root", &self.expected_root)
+            .field("url", &"[REDACTED]")
+            .finish()
+    }
 }
 
 /// Failure modes for [`mint`] / [`claim`].
@@ -819,6 +829,12 @@ async fn resolve_shortcut(short_url: &str) -> Result<String, InviteError> {
 /// No local state is created and no authority is changed.
 pub async fn preflight(invite_url: &str) -> Result<InvitePreflight, InviteError> {
     let invite_url = resolve_url(invite_url).await?;
+    preflight_resolved(invite_url).await
+}
+
+/// Validate an already-resolved ordinary invitation without another shortcut
+/// request. Callers must obtain the URL from [`resolve_url`].
+pub(crate) async fn preflight_resolved(invite_url: String) -> Result<InvitePreflight, InviteError> {
     let invite = parse_invite_url(&invite_url).await?;
     let invitation = Invitation::from_chain(&invite.chain)
         .expect("Invite invariant: chain has a specific subject");
