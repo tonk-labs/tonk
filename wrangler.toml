@@ -186,6 +186,10 @@ EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 workers_dev = true
 routes = []
 
+# Wrangler rebuilds before upload, so it must select the preview artifact too.
+[env.preview.build]
+command = "nix build --accept-flake-config .#tonk-cloudflare-preview-artifacts"
+
 [env.preview.observability]
 enabled = true
 head_sampling_rate = 1
