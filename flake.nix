@@ -600,7 +600,7 @@
             '';
           };
 
-          # Preview the opt-in invitation flow without changing release builds.
+          # Enable invitations in PR previews and staging deployments.
           # Select features per binary; the guest crate has no such feature.
           tonk-ui-preview = tonk-ui.overrideAttrs (old: {
             pname = "tonk-ui-preview";
