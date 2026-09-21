@@ -337,10 +337,13 @@ mod tests {
     }
 
     fn retryable_element_read_error(error: &thirtyfour::error::WebDriverErrorInner) -> bool {
+        // Not interactable is a race too: a menu row before its menu has
+        // opened, a control before the display it waits on has resolved.
         matches!(
             error,
             thirtyfour::error::WebDriverErrorInner::NoSuchElement(_)
                 | thirtyfour::error::WebDriverErrorInner::StaleElementReference(_)
+                | thirtyfour::error::WebDriverErrorInner::ElementNotInteractable(_)
         )
     }
 
@@ -368,6 +371,9 @@ mod tests {
         ));
         assert!(retryable_element_read_error(
             &WebDriverErrorInner::NoSuchElement(info("no such element"))
+        ));
+        assert!(retryable_element_read_error(
+            &WebDriverErrorInner::ElementNotInteractable(info("element not interactable"))
         ));
         assert!(!retryable_element_read_error(
             &WebDriverErrorInner::ElementClickIntercepted(info("element click intercepted"))
