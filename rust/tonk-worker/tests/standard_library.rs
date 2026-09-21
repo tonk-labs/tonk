@@ -511,7 +511,7 @@ fn it_hides_space_absence_slots_before_display_initialization() {
 #[dialog_common::test]
 fn it_recovers_from_every_absent_space_directory_state() {
     let directory_probe = PROFILE_LIBRARY
-        .split("<tonk-display with=\"main@profile:tonk\" entity={id} model=space view=downloading>")
+        .split("<tonk-display with=\"{profile-branch}@profile:tonk\" entity={id} model=space view=downloading>")
         .nth(1)
         .and_then(|source| source.split("</tonk-display>").next())
         .expect("absent-space chrome must consult the profile directory");

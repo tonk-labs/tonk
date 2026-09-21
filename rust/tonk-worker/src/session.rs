@@ -71,7 +71,28 @@ where
         + Provider<dialog_effects::blob::Write>
         + Provider<dialog_effects::blob::Import>,
 {
-    rotate(profile, storage).await
+    rotate(profile, storage, crate::router::repository::PROFILE_BRANCH).await
+}
+
+/// Open a signing session whose operator proves from, and retains
+/// delegations into, `access_branch` of the profile repository.
+///
+/// The profile keeps one branch per account, and the branch it is on
+/// carries that account's authority: the operator has to prove with the
+/// grants of the account the profile is signed in as, not with whatever
+/// `main` happens to hold.
+pub async fn open_on<S>(
+    profile: &Profile,
+    storage: &Storage<S>,
+    access_branch: &str,
+) -> Result<Session<S>, TonkWorkerError>
+where
+    S: SpaceProvider + Clone + 'static,
+    S: Provider<dialog_effects::blob::Read>
+        + Provider<dialog_effects::blob::Write>
+        + Provider<dialog_effects::blob::Import>,
+{
+    rotate(profile, storage, access_branch).await
 }
 
 /// Create a fresh operator and bounded in-memory profile grant.
@@ -79,6 +100,7 @@ where
 pub async fn rotate<S>(
     profile: &Profile,
     storage: &Storage<S>,
+    access_branch: &str,
 ) -> Result<Session<S>, TonkWorkerError>
 where
     S: SpaceProvider + Clone + 'static,
@@ -97,6 +119,7 @@ where
     let operator = profile
         .derive(context)
         .allow_until(Subject::any(), expiration)
+        .access_branch(access_branch)
         .build(storage.clone())
         .await
         .map_err(|error| {

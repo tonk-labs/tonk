@@ -214,7 +214,7 @@ async fn account_replicas(tonk: &TonkState) -> Result<Vec<Replica>, TonkWorkerEr
     let meta = tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(|error| {
@@ -253,35 +253,6 @@ pub(crate) async fn linked_account(
         .await?
         .into_iter()
         .find_map(|row| row.subject.0.to_string().parse::<dialog_varsig::Did>().ok()))
-}
-
-/// Retract every account replica row from the profile index: the unlink
-/// half of the linked-state signal. The mounted repository and its
-/// remote configuration stay on disk — dialog remotes are create-only —
-/// but nothing tracks them any more, so neither sync nor the linked
-/// signal sees them, and re-linking re-records the same replica.
-pub(crate) async fn retract_account_replicas(tonk: &TonkState) -> Result<(), TonkWorkerError> {
-    let rows = account_replicas(tonk).await?;
-    if rows.is_empty() {
-        return Ok(());
-    }
-    let mut transaction = tonk
-        .reactor
-        .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
-        .transaction();
-    for row in rows {
-        transaction = transaction.retract(row);
-    }
-    transaction
-        .commit()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|error| {
-            TonkWorkerError::Internal(format!("failed to retract account replicas: {error}"))
-        })?;
-    tonk.account_keys.invalidate();
-    Ok(())
 }
 
 /// Republish a stored remote's address cell so it matches the current
@@ -384,7 +355,7 @@ async fn configure_account_upstream(
     let session = tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(|error| {
@@ -442,7 +413,7 @@ async fn record_account_replica(
 
     tonk.reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .transaction()
         .assert(replica.clone())
         .assert(replica.branch(tonk_account::MAIN_BRANCH))
@@ -482,24 +453,27 @@ async fn record_account_replica(
 ///
 /// Best-effort. The account is linked either way; what fails here is
 /// the branch bookkeeping a view reads, not the link itself.
-async fn record_account_branch(
+pub(crate) async fn record_account_branch(
     tonk: &TonkState,
     account: &dialog_varsig::Did,
     address: &SiteAddress,
 ) {
-    use tonk_schema::prelude::DidExt as _;
     use tonk_schema::{Branch as MetaBranch, BranchUpstream, PeerAddress, ReplicaActiveBranch};
 
     let profile_did = tonk.profile.did();
     let replica = Replica::new(profile_did.clone(), profile_did);
 
-    // The branch this profile keeps for the account. Named with the
-    // full DID, following `repo_key`'s one-identifier rule.
-    let local = MetaBranch::new(&replica, format!("account/{}", account.repo_key()));
+    // The branch this profile is on takes the account: `main` on a fresh
+    // device, or the upstream-less branch a sign-out landed on.
+    let local = MetaBranch::new(&replica, tonk.active_branch.as_str());
 
-    // The peer serving the account holds its own replica of it; the
-    // branch we follow is that replica's main.
-    let served = Replica::new(account.clone(), account.clone());
+    // The peer serving the account holds its own replica of it, keyed by
+    // the `did:web` its address names so that peer's address is one fact
+    // however many accounts it serves; the branch we follow is that
+    // replica's main. An address naming no host keys the replica on the
+    // account itself, and records no address.
+    let peer = tonk_schema::peer_of(address).unwrap_or_else(|| account.clone());
+    let served = Replica::new(peer, account.clone());
     let upstream = MetaBranch::new(&served, tonk_account::MAIN_BRANCH);
 
     let mut transaction = tonk
@@ -550,7 +524,7 @@ async fn hydrate_untrusted(tonk: &TonkState) -> Result<(), TonkWorkerError> {
     let session = tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
@@ -596,7 +570,7 @@ async fn hydrate_untrusted(tonk: &TonkState) -> Result<(), TonkWorkerError> {
         Ok(RemotePresence::Absent) => {
             tonk.reactor
                 .profile_repository()
-                .branch(tonk_account::MAIN_BRANCH)
+                .branch(&tonk.active_branch)
                 .transaction()
                 .commit()
                 .perform(&tonk.operator)
@@ -662,7 +636,7 @@ pub(crate) async fn push_account_main(tonk: &TonkState) -> Result<(), String> {
     let session = tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(|error| format!("account branch unavailable: {error}"))?;
@@ -826,7 +800,7 @@ async fn sync_ready(tonk: &TonkState, _key: &str, publish: Publish) -> Result<()
     let session = tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(|error| format!("account branch unavailable: {error}"))?;
@@ -1050,7 +1024,7 @@ pub(crate) async fn require_ready_account_state(
     let key = subject.repo_key().to_owned();
     tonk.reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
@@ -1072,7 +1046,7 @@ async fn read_passkeys(
     let branch = tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(|error| TonkWorkerError::Internal(format!("open ready account state: {error}")))?;
@@ -1273,7 +1247,7 @@ pub(crate) async fn retain_space_delegation(tonk: &TonkState, chain: &Delegation
     let branch = match tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
     {
@@ -1347,7 +1321,7 @@ pub(crate) async fn published_sealed_inbox(
     let branch = tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(|error| TonkWorkerError::Internal(format!("open profile main: {error}")))?;
@@ -1405,7 +1379,7 @@ pub(crate) async fn seed_sealed_inbox(tonk: &TonkState) -> bool {
     if let Err(error) = tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .transaction()
         .assert(AccountSealedInbox::new(
             ready.subject.this(),
@@ -1463,7 +1437,7 @@ pub(crate) async fn custody_seed(
     if let Err(error) = tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .transaction()
         // Two rows: the envelope, and the principal whose seed it carries.
         // Asserted together — a principal naming a message that was never
@@ -1515,7 +1489,7 @@ async fn custody_recipient(
             };
             tonk.reactor
                 .profile_repository()
-                .branch(tonk_account::MAIN_BRANCH)
+                .branch(&tonk.active_branch)
                 .transaction()
                 .assert(AccountSealedInbox::new(
                     root.root_did.this(),
@@ -1540,7 +1514,7 @@ async fn custody_recipient(
             if published_sealed_inbox(tonk, &account).await?.is_none() {
                 tonk.reactor
                     .profile_repository()
-                    .branch(tonk_account::MAIN_BRANCH)
+                    .branch(&tonk.active_branch)
                     .transaction()
                     .assert(AccountSealedInbox::new(account.this(), recipient.this()))
                     .commit()
@@ -1575,7 +1549,7 @@ pub(crate) async fn converge_account_state(tonk: &TonkState) -> Result<(), TonkW
     let account = tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(|error| TonkWorkerError::Internal(format!("open ready account state: {error}")))?;
@@ -1597,7 +1571,7 @@ pub(crate) async fn converge_account_state(tonk: &TonkState) -> Result<(), TonkW
         let profile = tonk
             .reactor
             .profile_repository()
-            .branch(tonk_account::MAIN_BRANCH)
+            .branch(&tonk.active_branch)
             .acquire(&tonk.operator)
             .await
             .map_err(|error| {
@@ -1618,7 +1592,7 @@ pub(crate) async fn converge_account_state(tonk: &TonkState) -> Result<(), TonkW
         if profile_changed {
             tonk.reactor
                 .profile_repository()
-                .branch(tonk_account::MAIN_BRANCH)
+                .branch(&tonk.active_branch)
                 .transaction()
                 .assert(ProfileName::new(profile_entity, name.clone()))
                 .commit()
@@ -1693,7 +1667,7 @@ async fn adopt_account_display_name(
         .map_err(|_| account_state_unavailable())?;
     tonk.reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .transaction()
         .assert(AccountDisplayName::new(
             ready.subject.this(),
@@ -1731,7 +1705,7 @@ pub(crate) async fn initialize_display_name(
     let branch = tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(|error| TonkWorkerError::Internal(format!("open ready account state: {error}")))?;
@@ -1786,7 +1760,7 @@ pub(crate) async fn rename_display_name(
     let profile_entity = tonk.profile.did().this();
     tonk.reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .transaction()
         .assert(ProfileName::new(profile_entity, name.to_string()))
         .commit()
@@ -1835,7 +1809,7 @@ pub(crate) mod tests {
 
         super::record_account_branch(&state, &account, &probe_address()).await;
 
-        let resolved = crate::router::profile::tests::active_account(&state)
+        let resolved = crate::router::profile::active_account(&state)
             .await
             .expect("an account");
         assert_eq!(
@@ -1935,7 +1909,11 @@ pub(crate) mod tests {
             .handle()
             .query()
             .select(Query::<PeerAddress> {
-                this: Term::var("peer"),
+                this: Term::from(
+                    "did:web:probe.example"
+                        .parse::<dialog_artifacts::Entity>()
+                        .expect("the derived peer DID is an entity"),
+                ),
                 address: Term::var("address"),
             })
             .perform(&state.operator)
@@ -1947,6 +1925,10 @@ pub(crate) mod tests {
             rows.len(),
             1,
             "one service is one peer however many accounts it serves",
+        );
+        assert_eq!(
+            rows[0].address.decode().expect("the address decodes"),
+            probe_address(),
         );
     }
     use dialog_credentials::Ed25519Signer;
@@ -1995,7 +1977,7 @@ pub(crate) mod tests {
             state
                 .reactor
                 .profile_repository()
-                .branch("main")
+                .branch(&state.active_branch)
                 .transaction()
                 .assert(tonk_schema::ProfileName::new(
                     profile_entity,
@@ -2034,7 +2016,7 @@ pub(crate) mod tests {
                 .unwrap();
             tonk.reactor
                 .profile_repository()
-                .branch(tonk_account::MAIN_BRANCH)
+                .branch(&tonk.active_branch)
                 .transaction()
                 .assert(Replica::new(tonk.profile.did(), missing.clone()))
                 .commit()
@@ -2224,6 +2206,7 @@ pub(crate) mod tests {
             storage,
             session_expires_at: session.expires_at,
             profile_name: name.clone(),
+            active_branch: crate::router::repository::PROFILE_BRANCH.to_owned(),
             reactor,
             admission: Default::default(),
             reject_admission_content_reads: Default::default(),
@@ -2376,7 +2359,7 @@ pub(crate) mod tests {
         let branch = state
             .reactor
             .profile_repository()
-            .branch(tonk_account::MAIN_BRANCH)
+            .branch(&state.active_branch)
             .acquire(&state.operator)
             .await
             .unwrap();
@@ -2531,7 +2514,7 @@ pub(crate) mod tests {
             let branch = state
                 .reactor
                 .profile_repository()
-                .branch(tonk_account::MAIN_BRANCH)
+                .branch(&state.active_branch)
                 .acquire(&state.operator)
                 .await
                 .unwrap();
@@ -2613,7 +2596,7 @@ pub(crate) mod tests {
         let branch = state
             .reactor
             .profile_repository()
-            .branch(tonk_account::MAIN_BRANCH)
+            .branch(&state.active_branch)
             .acquire(&state.operator)
             .await
             .unwrap();
@@ -2716,7 +2699,7 @@ pub(crate) mod tests {
         let branch = state
             .reactor
             .profile_repository()
-            .branch(tonk_account::MAIN_BRANCH)
+            .branch(&state.active_branch)
             .acquire(&state.operator)
             .await
             .unwrap();
@@ -2820,7 +2803,7 @@ pub(crate) mod tests {
         let branch = state
             .reactor
             .profile_repository()
-            .branch(tonk_account::MAIN_BRANCH)
+            .branch(&state.active_branch)
             .acquire(&state.operator)
             .await
             .unwrap();
@@ -2990,7 +2973,7 @@ pub(crate) mod tests {
         let branch = state
             .reactor
             .profile_repository()
-            .branch(tonk_account::MAIN_BRANCH)
+            .branch(&state.active_branch)
             .acquire(&state.operator)
             .await
             .unwrap();
@@ -3049,7 +3032,7 @@ pub(crate) mod tests {
         let branch = state
             .reactor
             .profile_repository()
-            .branch(tonk_account::MAIN_BRANCH)
+            .branch(&state.active_branch)
             .acquire(&state.operator)
             .await
             .expect("account branch opens");
@@ -3137,7 +3120,7 @@ pub(crate) mod tests {
         let branch = state
             .reactor
             .profile_repository()
-            .branch(tonk_account::MAIN_BRANCH)
+            .branch(&state.active_branch)
             .acquire(&state.operator)
             .await
             .unwrap();
@@ -3216,7 +3199,7 @@ pub(crate) mod tests {
         let branch = state
             .reactor
             .profile_repository()
-            .branch(tonk_account::MAIN_BRANCH)
+            .branch(&state.active_branch)
             .acquire(&state.operator)
             .await
             .unwrap();
@@ -3303,7 +3286,7 @@ pub(crate) mod tests {
         let account = state
             .reactor
             .profile_repository()
-            .branch(tonk_account::MAIN_BRANCH)
+            .branch(&state.active_branch)
             .acquire(&state.operator)
             .await
             .unwrap();
@@ -3449,7 +3432,7 @@ pub(crate) mod tests {
         let branch = state
             .reactor
             .profile_repository()
-            .branch(tonk_account::MAIN_BRANCH)
+            .branch(&state.active_branch)
             .acquire(&state.operator)
             .await
             .unwrap();

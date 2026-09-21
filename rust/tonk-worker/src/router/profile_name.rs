@@ -96,7 +96,7 @@ pub(crate) async fn real_space_keys(tonk: &TonkState) -> Vec<String> {
     let session = match tonk
         .reactor
         .profile_repository()
-        .branch(PROFILE_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
     {
@@ -253,6 +253,7 @@ mod tests {
             storage,
             session_expires_at: session.expires_at,
             profile_name: name.to_string(),
+            active_branch: crate::router::repository::PROFILE_BRANCH.to_owned(),
             reactor,
             admission: Default::default(),
             reject_admission_content_reads: Default::default(),
@@ -286,7 +287,7 @@ mod tests {
         let profile_entity = tonk.profile.did().this();
         tonk.reactor
             .profile_repository()
-            .branch(PROFILE_BRANCH)
+            .branch(&tonk.active_branch)
             .transaction()
             .assert(ProfileName::new(profile_entity, "brave-lynx".into()))
             .commit()

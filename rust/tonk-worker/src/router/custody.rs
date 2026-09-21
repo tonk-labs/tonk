@@ -662,7 +662,7 @@ async fn stamp_account_linking(
     let main = match tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
     {
@@ -722,7 +722,7 @@ async fn recorded_account(
     let Ok(branch) = tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
     else {
@@ -959,7 +959,7 @@ async fn create(
     if let Some(name) = display_name {
         tonk.reactor
             .profile_repository()
-            .branch(tonk_account::MAIN_BRANCH)
+            .branch(&tonk.active_branch)
             .transaction()
             .assert(AccountDisplayName::new(account_did.this(), name.to_owned()))
             .commit()
@@ -1331,7 +1331,7 @@ mod tests {
         let branch = tonk
             .reactor
             .profile_repository()
-            .branch(tonk_account::MAIN_BRANCH)
+            .branch(&tonk.active_branch)
             .acquire(&tonk.operator)
             .await
             .expect("profile main acquires");
@@ -1426,7 +1426,7 @@ mod tests {
             .expect("the fixture published one");
         tonk.reactor
             .profile_repository()
-            .branch(tonk_account::MAIN_BRANCH)
+            .branch(&tonk.active_branch)
             .transaction()
             .retract(tonk_schema::AccountSealedInbox::new(
                 root.root_did.this(),

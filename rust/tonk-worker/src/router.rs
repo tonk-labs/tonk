@@ -85,7 +85,7 @@ mod members;
 pub mod inspect;
 pub use inspect::{BranchStatusResponse, RemoteBranchStatusResponse, RemoteStatusResponse};
 
-mod repository;
+pub(crate) mod repository;
 pub(crate) use repository::ProfileLibraryCache;
 pub use repository::{
     BranchConfiguration, MemberInfo, RemoteConfiguration, RepositoryConfiguration, RepositoryInfo,
@@ -114,7 +114,7 @@ pub use lsp::LspHub;
 mod lsp_env;
 
 mod onboarding_space;
-mod profile;
+pub(crate) mod profile;
 pub use profile::{ProfileInfo, SpaceEntry};
 
 pub(crate) mod profiles;

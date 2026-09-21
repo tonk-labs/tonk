@@ -415,14 +415,16 @@ impl PeerAddress {
     /// Returns `None` for an address with no host to name — the caller
     /// keys on what it does know instead.
     pub fn served_by(address: &dialog_repository::SiteAddress) -> Option<Self> {
+        use crate::prelude::DidExt as _;
         Some(Self {
-            this: peer_did(address)?.parse().ok()?,
+            this: peer_of(address)?.this(),
             address: crate::domain::peer::Address::encode(address),
         })
     }
 }
 
-/// The `did:web` of whoever answers at `address`.
+/// The peer that answers at `address`, as the `did:web` its endpoint
+/// implies.
 ///
 /// `did:web` separates path segments with `:`, so a host carrying a
 /// port percent-encodes it — left raw, `did:web:localhost:8090` reads
@@ -430,8 +432,9 @@ impl PeerAddress {
 ///
 /// Only the authority is used. The path says which service endpoint to
 /// call, not who answers, so `https://tonk.network/ucan` and
-/// `https://tonk.network/sync` are one peer.
-fn peer_did(address: &dialog_repository::SiteAddress) -> Option<String> {
+/// `https://tonk.network/sync` are one peer. `None` for an address that
+/// names no host.
+pub fn peer_of(address: &dialog_repository::SiteAddress) -> Option<dialog_varsig::Did> {
     let endpoint = match address {
         dialog_repository::SiteAddress::Ucan(ucan) => ucan.endpoint(),
         _ => return None,
@@ -442,7 +445,7 @@ fn peer_did(address: &dialog_repository::SiteAddress) -> Option<String> {
         Some(port) => format!("{host}%3A{port}"),
         None => host.to_string(),
     };
-    Some(format!("did:web:{authority}"))
+    format!("did:web:{authority}").parse().ok()
 }
 
 /// What a branch follows.

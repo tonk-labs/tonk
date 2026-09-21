@@ -100,13 +100,26 @@ pub(crate) async fn ensure_profile_meta_branch(tonk: &crate::worker::TonkState) 
 /// Reads `meta`, which never replicates: which branch this device is
 /// looking at is nobody else's business.
 pub(crate) async fn active_branch(tonk: &crate::worker::TonkState) -> Option<Entity> {
+    active_branch_entity(&tonk.reactor, &tonk.operator).await
+}
+
+/// The active branch's entity, from `meta`.
+///
+/// Takes the reactor and an operator rather than a [`TonkState`] because
+/// boot needs the answer before there is a state: the operator it builds
+/// has to prove with the active branch's authority.
+///
+/// [`TonkState`]: crate::worker::TonkState
+async fn active_branch_entity(
+    reactor: &crate::Reactor,
+    operator: &crate::worker::DefaultOperator,
+) -> Option<Entity> {
     use tonk_schema::ReplicaActiveBranch;
 
-    let session = tonk
-        .reactor
+    let session = reactor
         .profile_repository()
         .branch(super::repository::META_BRANCH)
-        .acquire(&tonk.operator)
+        .acquire(operator)
         .await
         .ok()?;
     let rows: Vec<ReplicaActiveBranch> = session
@@ -116,11 +129,260 @@ pub(crate) async fn active_branch(tonk: &crate::worker::TonkState) -> Option<Ent
             this: Term::var("this"),
             active_branch: Term::var("active_branch"),
         })
-        .perform(&tonk.operator)
+        .perform(operator)
         .try_vec()
         .await
         .ok()?;
     rows.into_iter().next().map(|row| row.active_branch.0)
+}
+
+/// The active branch's NAME, from `meta` — what a session opens and a
+/// location token names. `None` when nothing has recorded one, which a
+/// caller reads as `main`.
+pub(crate) async fn active_branch_name(
+    reactor: &crate::Reactor,
+    operator: &crate::worker::DefaultOperator,
+) -> Option<String> {
+    use tonk_schema::Branch as MetaBranch;
+
+    let entity = active_branch_entity(reactor, operator).await?;
+    let session = reactor
+        .profile_repository()
+        .branch(super::repository::META_BRANCH)
+        .acquire(operator)
+        .await
+        .ok()?;
+    let rows: Vec<MetaBranch> = session
+        .handle()
+        .query()
+        .select(Query::<MetaBranch> {
+            this: Term::from(entity),
+            name: Term::var("name"),
+            origin: Term::var("origin"),
+        })
+        .perform(operator)
+        .try_vec()
+        .await
+        .ok()?;
+    rows.into_iter().next().map(|row| row.name.0)
+}
+
+/// The account this profile is signed in as, or `None` when it is not.
+///
+/// Derived, never stored: the active branch's upstream is a branch on a
+/// replica held by another peer, and that replica's subject is the
+/// account. A branch that follows nothing is signed out, so absence is
+/// the signal rather than a flag free to disagree with the branch.
+pub(crate) async fn active_account(tonk: &crate::worker::TonkState) -> Option<Entity> {
+    let active = active_branch(tonk).await?;
+    account_followed_by(tonk, &active).await
+}
+
+/// The account `branch` follows, or `None` for a branch following nothing.
+///
+/// The traversal `meta.yaml` declares as the `account` rule, walked here
+/// because the worker needs the answer on `meta`, where no rule runs.
+async fn account_followed_by(tonk: &crate::worker::TonkState, branch: &Entity) -> Option<Entity> {
+    upstream_replica(tonk, branch)
+        .await
+        .map(|served| served.subject.0)
+}
+
+/// The account a branch follows, as a DID.
+pub(crate) async fn account_of_branch(
+    tonk: &crate::worker::TonkState,
+    branch: &Entity,
+) -> Option<Did> {
+    account_followed_by(tonk, branch)
+        .await
+        .and_then(|entity| entity.to_string().parse().ok())
+}
+
+/// Where the account a branch follows is served from: the address of the
+/// peer holding the upstream's replica, as the endpoint a UCAN remote
+/// dials. `None` for a branch following nothing, or one whose peer
+/// recorded no address.
+pub(crate) async fn provider_of_branch(
+    tonk: &crate::worker::TonkState,
+    branch: &Entity,
+) -> Option<String> {
+    use dialog_repository::SiteAddress;
+    use tonk_schema::PeerAddress;
+
+    let peer = upstream_replica(tonk, branch).await?.profile.0;
+    let session = tonk
+        .reactor
+        .profile_repository()
+        .branch(super::repository::META_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .ok()?;
+    let addresses: Vec<PeerAddress> = session
+        .handle()
+        .query()
+        .select(Query::<PeerAddress> {
+            this: Term::from(peer),
+            address: Term::var("address"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .ok()?;
+    addresses
+        .into_iter()
+        .filter_map(|row| row.address.decode().ok())
+        .find_map(|address| match address {
+            SiteAddress::Ucan(ucan) => Some(ucan.endpoint().to_owned()),
+            _ => None,
+        })
+}
+
+/// The replica a branch's upstream lives on: `branch -> upstream ->
+/// branch/replica`, read off `meta`. `None` for a branch following nothing.
+async fn upstream_replica(
+    tonk: &crate::worker::TonkState,
+    branch: &Entity,
+) -> Option<tonk_schema::Replica> {
+    use tonk_schema::Branch as MetaBranch;
+    use tonk_schema::{BranchUpstream, Replica as ReplicaConcept};
+
+    let session = tonk
+        .reactor
+        .profile_repository()
+        .branch(super::repository::META_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .ok()?;
+    let handle = session.handle();
+
+    let upstream: Vec<BranchUpstream> = handle
+        .query()
+        .select(Query::<BranchUpstream> {
+            this: Term::from(branch.clone()),
+            upstream: Term::var("upstream"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .ok()?;
+    let upstream = upstream.into_iter().next()?.upstream.0;
+
+    let branches: Vec<MetaBranch> = handle
+        .query()
+        .select(Query::<MetaBranch> {
+            this: Term::from(upstream),
+            name: Term::var("name"),
+            origin: Term::var("origin"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .ok()?;
+    let replica = branches.into_iter().next()?.origin.0;
+
+    let replicas: Vec<ReplicaConcept> = handle
+        .query()
+        .select(Query::<ReplicaConcept> {
+            this: Term::from(replica),
+            subject: Term::var("subject"),
+            profile: Term::var("profile"),
+            kind: Term::var("kind"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .ok()?;
+    replicas.into_iter().next()
+}
+
+/// Every branch of this profile's replica but `meta`, as `(name, entity)`.
+pub(crate) async fn local_branches(tonk: &crate::worker::TonkState) -> Vec<(String, Entity)> {
+    use tonk_schema::Branch as MetaBranch;
+
+    let profile_did = tonk.profile.did();
+    let replica = Replica::new(profile_did.clone(), profile_did);
+    let Ok(session) = tonk
+        .reactor
+        .profile_repository()
+        .branch(super::repository::META_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+    else {
+        return Vec::new();
+    };
+    let branches: Vec<MetaBranch> = session
+        .handle()
+        .query()
+        .select(Query::<MetaBranch> {
+            this: Term::var("this"),
+            name: Term::var("name"),
+            origin: Term::from(replica.this.clone()),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .unwrap_or_default();
+    let mut branches: Vec<(String, Entity)> = branches
+        .into_iter()
+        .filter(|branch| branch.name.0 != super::repository::META_BRANCH)
+        .map(|branch| (branch.name.0, branch.this))
+        .collect();
+    branches.sort();
+    branches
+}
+
+/// The name of this profile's branch that follows `account`, if one does.
+///
+/// Signing back in returns to the branch that was signed in to that
+/// account before, spaces and all, rather than attaching a second one.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn branch_following(
+    tonk: &crate::worker::TonkState,
+    account: &Did,
+) -> Option<String> {
+    use tonk_schema::prelude::DidExt as _;
+
+    let wanted = account.this();
+    for (name, entity) in local_branches(tonk).await {
+        if account_followed_by(tonk, &entity).await.as_ref() == Some(&wanted) {
+            return Some(name);
+        }
+    }
+    None
+}
+
+/// Make `name` the profile's active branch.
+///
+/// Only a branch `meta` enumerates: activating a name nothing recorded
+/// would boot the next state onto a branch with no bookkeeping.
+pub(crate) async fn set_active_branch(
+    tonk: &crate::worker::TonkState,
+    name: &str,
+) -> Result<(), TonkWorkerError> {
+    use tonk_schema::{Branch as MetaBranch, ReplicaActiveBranch};
+
+    if !local_branches(tonk)
+        .await
+        .iter()
+        .any(|(known, _)| known == name)
+    {
+        return Err(TonkWorkerError::NotFound(format!(
+            "no branch '{name}' on this profile"
+        )));
+    }
+    let profile_did = tonk.profile.did();
+    let replica = Replica::new(profile_did.clone(), profile_did);
+    let target = MetaBranch::new(&replica, name);
+    tonk.reactor
+        .profile_repository()
+        .branch(super::repository::META_BRANCH)
+        .transaction()
+        .assert(ReplicaActiveBranch::new(&replica, &target))
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map(|_| ())
+        .map_err(|error| TonkWorkerError::Internal(format!("active branch not recorded: {error}")))
 }
 
 /// Leave the account: move to a branch that follows nothing.
@@ -305,7 +567,7 @@ pub async fn get_profile(
     let session = tonk
         .reactor
         .profile_repository()
-        .branch(PROFILE_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(|e| {
@@ -384,84 +646,6 @@ pub(crate) mod tests {
     use crate::api_router;
     use crate::router::tests::test_state;
 
-    /// The account this profile is signed in as, or `None` when it
-    /// is not. A TEST HELPER: the worker never asks this.
-    ///
-    /// The derivation is declared as a rule in `meta.yaml`, where it
-    /// documents how tonk reads an account off branch bookkeeping. It
-    /// lives here too so these tests can check that the facts sign-in
-    /// and sign-out write actually compose into that answer.
-    ///
-    /// Derived, never stored. The active branch's upstream is a branch on
-    /// a replica held by another peer, and that replica's subject is the
-    /// account:
-    ///
-    /// ```text
-    /// active branch -> upstream -> branch/replica -> replica/subject
-    /// ```
-    ///
-    /// Signed out is the active branch having no upstream — a branch that
-    /// follows nothing. No flag, no null value, no account-shaped absence.
-    ///
-    /// This replaces asking which replicas have kind `tonk:account`, which
-    /// answered with every account the device had ever linked: nothing in
-    /// those rows said which was current.
-    pub(crate) async fn active_account(tonk: &crate::worker::TonkState) -> Option<Entity> {
-        use tonk_schema::Branch as MetaBranch;
-        use tonk_schema::{BranchUpstream, Replica as ReplicaConcept};
-
-        let active = active_branch(tonk).await?;
-        let session = tonk
-            .reactor
-            .profile_repository()
-            .branch(super::super::repository::META_BRANCH)
-            .acquire(&tonk.operator)
-            .await
-            .ok()?;
-        let handle = session.handle();
-
-        // What the active branch follows. Absent means signed out.
-        let upstream: Vec<BranchUpstream> = handle
-            .query()
-            .select(Query::<BranchUpstream> {
-                this: Term::from(active),
-                upstream: Term::var("upstream"),
-            })
-            .perform(&tonk.operator)
-            .try_vec()
-            .await
-            .ok()?;
-        let upstream = upstream.into_iter().next()?.upstream.0;
-
-        // The upstream branch's replica, and that replica's subject.
-        let branches: Vec<MetaBranch> = handle
-            .query()
-            .select(Query::<MetaBranch> {
-                this: Term::from(upstream),
-                name: Term::var("name"),
-                origin: Term::var("origin"),
-            })
-            .perform(&tonk.operator)
-            .try_vec()
-            .await
-            .ok()?;
-        let replica = branches.into_iter().next()?.origin.0;
-
-        let replicas: Vec<ReplicaConcept> = handle
-            .query()
-            .select(Query::<ReplicaConcept> {
-                this: Term::from(replica),
-                subject: Term::var("subject"),
-                profile: Term::var("profile"),
-                kind: Term::var("kind"),
-            })
-            .perform(&tonk.operator)
-            .try_vec()
-            .await
-            .ok()?;
-        replicas.into_iter().next().map(|row| row.subject.0)
-    }
-
     /// The account is the subject of the active branch's upstream.
     ///
     /// Built end to end rather than asserted piecemeal: a peer's
@@ -522,7 +706,7 @@ pub(crate) mod tests {
         use dialog_varsig::Principal as _;
         use tonk_schema::{Branch as MetaBranch, BranchUpstream, ReplicaActiveBranch};
 
-        let state = test_state().await;
+        let state = crate::router::tests::test_state_without_account().await;
         ensure_profile_meta_branch(&state).await;
         let profile_did = state.profile.did();
         let replica = Replica::new(profile_did.clone(), profile_did.clone());
@@ -574,12 +758,12 @@ pub(crate) mod tests {
     /// state, the same way a local-only git branch has no remote.
     #[dialog_common::test]
     async fn it_reads_no_account_from_a_branch_with_no_upstream() {
-        let state = test_state().await;
+        let state = crate::router::tests::test_state_without_account().await;
         ensure_profile_meta_branch(&state).await;
 
         assert!(
             active_account(&state).await.is_none(),
-            "a fresh profile follows nothing, so it is signed out",
+            "a branch following nothing is signed out",
         );
     }
 
@@ -833,7 +1017,7 @@ pub(crate) mod tests {
             let tonk = state.read().await;
             tonk.reactor
                 .profile_repository()
-                .branch(PROFILE_BRANCH)
+                .branch(&tonk.active_branch)
                 .transaction()
                 .assert(Replica::account(tonk.profile.did(), account.clone()))
                 .commit()

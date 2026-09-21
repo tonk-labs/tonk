@@ -447,6 +447,16 @@ pub mod site {
     #[cardinality(one)]
     pub struct BranchEntity(pub Entity);
 
+    /// The branch the PROFILE is on, whichever repository the tab is
+    /// on: the account's branch when signed in, an upstream-less one
+    /// when not. What a view interpolates into `{profile-branch}@profile:tonk`
+    /// to reach the profile from a space, in place of a `main` that was
+    /// only ever right while the profile had one branch.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.site")]
+    #[cardinality(one)]
+    pub struct ProfileBranch(pub String);
+
     /// The matched route entity (the route-table entry that matched the path).
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.site")]

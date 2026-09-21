@@ -294,17 +294,34 @@ fn render_root(shell: &web_sys::Element) {
         return;
     }
 
-    shell.set_inner_html("");
-    let Some(document) = shell.owner_document() else {
+    // The site mounts on the branch the profile is on, which only the
+    // worker knows: read it off `meta` first. A navigation while that
+    // read is in flight must not mount a second site.
+    if shell.has_attribute("data-mounting") {
         return;
-    };
-    let Ok(site) = document.create_element("tonk-site") else {
-        return;
-    };
-    let _ = site.set_attribute("with", "main@profile:tonk");
-    let _ = site.set_attribute("allow", "*");
-    let _ = site.set_attribute("path", &path);
-    let _ = shell.append_child(&site);
+    }
+    let _ = shell.set_attribute("data-mounting", "");
+    let shell = shell.clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        let with = tonk_host::bridge::resolve_profile_with().await;
+        let _ = shell.remove_attribute("data-mounting");
+        shell.set_inner_html("");
+        let Some(document) = shell.owner_document() else {
+            return;
+        };
+        let Ok(site) = document.create_element("tonk-site") else {
+            return;
+        };
+        let _ = site.set_attribute("with", &with);
+        let _ = site.set_attribute("allow", "*");
+        // The path may have moved while the branch was being read.
+        let path = web_sys::window()
+            .and_then(|window| window.location().pathname().ok())
+            .filter(|path| !path.is_empty())
+            .unwrap_or_else(|| "/".to_owned());
+        let _ = site.set_attribute("path", &path);
+        let _ = shell.append_child(&site);
+    });
 }
 
 /// Keep the top-document root in sync with client-side navigation.

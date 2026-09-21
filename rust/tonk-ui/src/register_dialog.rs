@@ -954,12 +954,11 @@ pub(crate) fn answer_query_body() -> String {
 ///
 /// The host is installed on this page (`tonk_host::install()` in
 /// `bin/ui.rs`), so a plain `consumer::subscribe` works. The routing
-/// context is the fixed profile branch — the overlay row is written to
-/// `main@profile:tonk` — rather than anything derived from an
-/// attribute.
+/// context is the branch the profile is on — the overlay row is written
+/// there — rather than anything derived from an attribute.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn watch_answers(host: &Element) {
-    let _ = host.set_attribute("with", "main@profile:tonk");
+    let _ = host.set_attribute("with", &tonk_host::bridge::profile_with());
     REGISTRATION_WATCH.with(|held| {
         *held.borrow_mut() = Some(crate::account_observability::WebAccountAttempt::start(
             AccountAction::LoadRegistration,

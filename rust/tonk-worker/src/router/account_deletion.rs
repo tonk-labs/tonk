@@ -44,7 +44,7 @@ async fn load_plan(state: &TonkState) -> Result<AccountDeletionPlan, TonkWorkerE
     let main = state
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&state.active_branch)
         .acquire(&state.operator)
         .await
         .map_err(|error| {

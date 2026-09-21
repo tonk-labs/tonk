@@ -204,7 +204,7 @@ pub(crate) async fn record(tonk: &crate::worker::TonkState, email: &str, answer:
     if let Err(error) = tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .overlay()
         .assert(EmailStatus::new(this, email.to_owned(), answer))
         .write()

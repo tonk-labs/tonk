@@ -39,7 +39,7 @@ async fn local_devices(
     let branch = state
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&state.active_branch)
         .acquire(&state.operator)
         .await
         .map_err(|error| {
@@ -216,36 +216,33 @@ pub(crate) async fn account_summary(state: &TonkState) -> Result<AccountSummary,
     Ok(summary)
 }
 
-/// The account name for an explicit profile, read without booting it.
+/// The display name of `account`, read off `branch` of this profile.
 ///
-/// The switcher lists other profiles on this device; each names its own
-/// account, so the lookup has to run against that profile's repository
-/// rather than the active one's.
-pub(crate) async fn account_display_name_for(
-    profile: &dialog_operator::Profile,
-    operator: &crate::worker::DefaultOperator,
+/// Each account branch carries its own account's name, so the switcher
+/// names every account on the profile without opening another store.
+pub(crate) async fn account_display_name_on(
+    tonk: &TonkState,
+    branch: &str,
+    account: &dialog_varsig::Did,
 ) -> Option<String> {
     use dialog_query::{Output as _, Query, Term};
-    use dialog_repository::Repository;
     use tonk_schema::{AccountDisplayName, prelude::DidExt as _};
 
-    let account = super::identity::historical_root_did(profile, operator)
-        .await
-        .ok()
-        .flatten()?;
-    let branch = Repository::from(profile)
-        .branch(tonk_account::MAIN_BRANCH)
-        .open()
-        .perform(operator)
+    let session = tonk
+        .reactor
+        .profile_repository()
+        .branch(branch)
+        .acquire(&tonk.operator)
         .await
         .ok()?;
-    let names: Vec<AccountDisplayName> = branch
+    let names: Vec<AccountDisplayName> = session
+        .handle()
         .query()
         .select(Query::<AccountDisplayName> {
             this: Term::from(account.this()),
             name: Term::var("name"),
         })
-        .perform(operator)
+        .perform(&tonk.operator)
         .try_vec()
         .await
         .ok()?;
@@ -272,7 +269,7 @@ pub(crate) async fn account_display_name(state: &TonkState) -> Option<String> {
     let branch = state
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&state.active_branch)
         .acquire(&state.operator)
         .await
         .ok()?;
@@ -318,7 +315,7 @@ async fn delegated_revocation(
     let branch = state
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&state.active_branch)
         .acquire(&state.operator)
         .await
         .map_err(|error| {
@@ -393,7 +390,7 @@ async fn retract_device_links(state: &TonkState, target: &str) -> Result<(), Ton
     let mut transaction = state
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&state.active_branch)
         .transaction();
     let mut retracting = false;
     for (link, did) in links {
@@ -413,6 +410,72 @@ async fn retract_device_links(state: &TonkState, target: &str) -> Result<(), Ton
         .map_err(|error| {
             TonkWorkerError::Internal(format!("retract the revoked device's rows: {error}"))
         })
+}
+
+/// Withdraw this device's own authority over the account it is on, on
+/// the way out of it.
+///
+/// Signing out is not a flag: it is the grant being gone. It is held in
+/// three places, withdrawn in the order that keeps each step reachable.
+/// The device rows and the chain are retracted and pushed first, while
+/// the operator can still push; the revocation is published next, so
+/// every access service stops honouring the grant; the local root record
+/// is forgotten last, so signing back in has to reopen the passkey.
+///
+/// Best-effort throughout. A step that fails is logged and the rest run,
+/// because a device left with a stale row is better off than one left
+/// with a live grant — and a publication that fails offline leaves the
+/// grant honoured remotely until it lands, which is worth saying loudly.
+pub(crate) async fn withdraw_own_authority(state: &TonkState) {
+    if let Some(link) = super::account::account_link(state).await {
+        revoke_own_grant(state, &link).await;
+    }
+    // Forgotten whether or not a link was live: a root record with no
+    // provider attached is still a grant this device holds.
+    if let Err(error) = super::identity::forget_root(state).await {
+        log!("sign-out kept the local root record: {error}");
+    }
+}
+
+/// Retract, push and publish this device's own grant.
+async fn revoke_own_grant(state: &TonkState, link: &DelegationChain) {
+    let own = state.profile.did().to_string();
+    let artifact = match self_revocation(state, link).await {
+        Ok((revocation, _)) => hex::decode(&revocation).ok(),
+        Err(error) => {
+            log!("sign-out could not mint its revocation: {error}");
+            None
+        }
+    };
+
+    if let Err(error) = retract_device_links(state, &own).await {
+        log!("sign-out keeps its device rows: {error}");
+    }
+    if let Err(error) = retract_own_delegation(state, link).await {
+        log!("sign-out keeps its delegation on the branch: {error}");
+    }
+    if let Err(error) = super::account_state::push_account_main(state).await {
+        log!("sign-out did not push its retractions: {error}");
+    }
+    if let Some(artifact) = artifact
+        && let Err(error) = publish_revocation(state, &artifact).await
+    {
+        log!(
+            "sign-out revocation not published; the grant stays honoured remotely until it is: {error}"
+        );
+    }
+}
+
+/// Retract this device's grant from the branch that retained it.
+async fn retract_own_delegation(state: &TonkState, link: &DelegationChain) -> Result<(), String> {
+    let branch = state
+        .reactor
+        .profile_repository()
+        .branch(&state.active_branch)
+        .acquire(&state.operator)
+        .await
+        .map_err(|error| format!("open the account branch: {error}"))?;
+    crate::onboarding::retract_device_delegation(state, &branch, link).await
 }
 
 /// Publish the revocation everywhere it could still be honoured.
@@ -451,7 +514,7 @@ pub(super) async fn publish_revocation(
     match state
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&state.active_branch)
         .acquire(&state.operator)
         .await
     {

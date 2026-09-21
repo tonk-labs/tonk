@@ -701,6 +701,7 @@ pub(crate) mod tests {
                 storage,
                 session_expires_at: session.expires_at,
                 profile_name: name.clone(),
+                active_branch: crate::router::repository::PROFILE_BRANCH.to_owned(),
                 reactor,
                 admission: Default::default(),
                 reject_admission_content_reads: Default::default(),
@@ -734,7 +735,7 @@ pub(crate) mod tests {
             let meta = tonk
                 .reactor
                 .profile_repository()
-                .branch("main")
+                .branch(&tonk.active_branch)
                 .acquire(&tonk.operator)
                 .await
                 .unwrap();

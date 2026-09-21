@@ -20,7 +20,8 @@ use dialog_query::Concept;
 
 use crate::domain::route::{Concept as RoutePathConcept, Path as RouteTablePath};
 use crate::domain::site::{
-    Anchor, Branch, BranchEntity, Concept as SiteConcept, Path, Replica, Route as SiteRoute, Space,
+    Anchor, Branch, BranchEntity, Concept as SiteConcept, Path, ProfileBranch, Replica,
+    Route as SiteRoute, Space,
 };
 
 /// A tab's location and matched route, keyed on the per-tab site entity. The SW
@@ -46,6 +47,10 @@ pub struct Site {
     pub route: SiteRoute,
     /// The matched route's concept — the model the shell mounts.
     pub concept: SiteConcept,
+    /// The branch the profile is on, for reaching the profile from any
+    /// tab: an account's branch when signed in, an upstream-less one
+    /// when not.
+    pub profile_branch: ProfileBranch,
 }
 
 impl Site {
@@ -60,6 +65,7 @@ impl Site {
         replica: Entity,
         route: Entity,
         concept: Entity,
+        profile_branch: String,
     ) -> Self {
         // Derived here rather than taken as an argument: the branch
         // entity is a function of the replica and the name already
@@ -75,6 +81,7 @@ impl Site {
             replica: Replica(replica),
             route: SiteRoute(route),
             concept: SiteConcept(concept),
+            profile_branch: ProfileBranch(profile_branch),
         }
     }
 }
@@ -98,6 +105,7 @@ mod tests {
             "replica:r".parse().unwrap(),
             "route:x".parse().unwrap(),
             "concept:y".parse().unwrap(),
+            "main".to_owned(),
         );
         assert_eq!(site.space.0, "home");
     }
@@ -113,6 +121,7 @@ mod tests {
             "replica:r".parse().unwrap(),
             "route:x".parse().unwrap(),
             "concept:y".parse().unwrap(),
+            "main".to_owned(),
         );
         assert_eq!(site.branch.0, "feature");
     }
@@ -137,6 +146,7 @@ mod tests {
             replica.clone(),
             "route:x".parse().unwrap(),
             "concept:y".parse().unwrap(),
+            "main".to_owned(),
         );
 
         assert_eq!(
@@ -163,6 +173,7 @@ mod tests {
                 replica.clone(),
                 "route:x".parse().unwrap(),
                 "concept:y".parse().unwrap(),
+                "main".to_owned(),
             )
             .branch_entity
             .0

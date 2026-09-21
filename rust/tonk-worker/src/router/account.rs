@@ -107,26 +107,6 @@ pub(crate) async fn provider(state: &crate::worker::TonkState) -> Option<String>
         .map(|record| record.address().to_owned())
 }
 
-/// Attached provider base URL for an explicit, inactive profile.
-///
-/// Profile roster reads use this without booting every candidate. A profile
-/// with no valid historical root, a cleared provider tombstone, or unreadable
-/// credentials is provider-free.
-pub(crate) async fn provider_from(profile: &Profile, operator: &DefaultOperator) -> Option<String> {
-    super::identity::historical_root_did(profile, operator)
-        .await
-        .ok()
-        .flatten()?;
-    match load_provider_from(profile, operator).await {
-        Ok(Some(record)) => Some(record.address().to_owned()),
-        Ok(None) => None,
-        Err(error) => {
-            log!("inactive account provider attachment unusable: {error}");
-            None
-        }
-    }
-}
-
 /// The stable local root grant, available to provider operations only when attached.
 pub(crate) async fn account_link(
     state: &crate::worker::TonkState,
@@ -208,29 +188,6 @@ pub(crate) async fn attach_test_account(
 ) -> Result<(), TonkWorkerError> {
     let record = AccountProviderRecord::attach(TEST_ACCOUNT_REMOTE, 0).map_err(provider_error)?;
     save_provider(state, &record).await
-}
-
-/// Whether this profile carries ANY account-attachment history: a
-/// stored provider record (configured or not) or the sign-out
-/// tombstone. Only a profile with no history at all — a creation
-/// ceremony whose registration never completed — may have its root
-/// replaced by a retry; a signed-out profile keeps refusing a
-/// different root, because its spaces still hang off the stored one.
-pub(crate) async fn has_attachment_history(state: &crate::worker::TonkState) -> bool {
-    match state
-        .profile
-        .credential()
-        .site(ACCOUNT_PROVIDER_SITE)
-        .load::<Vec<u8>>()
-        .perform(&state.operator)
-        .await
-    {
-        Ok(_) => true,
-        Err(error) if crate::credential::is_missing(&error) => false,
-        // An unreadable record still counts as history: refusing a
-        // replacement is recoverable, silently rebinding is not.
-        Err(_) => true,
-    }
 }
 
 /// The provider both test fixtures name. See [`attach_test_account`].
@@ -443,10 +400,11 @@ pub(crate) async fn finish_link(
 pub(crate) async fn disconnect(
     state: &crate::worker::TonkState,
 ) -> Result<AccountStatus, TonkWorkerError> {
-    // The replica retraction is the unlink: it clears the linked-state
-    // signal sync and status read. It goes first so a failure leaves the
-    // device consistently linked rather than half signed out.
-    super::account_state::retract_account_replicas(state).await?;
+    // The account branch keeps its replica rows: they are that branch's
+    // bookkeeping, and signing back in returns to it. What clears the
+    // linked-state signal is leaving the branch, which the caller does
+    // after this. Here only the provider goes, so nothing routes to the
+    // account meanwhile.
     state
         .profile
         .credential()
@@ -639,21 +597,24 @@ mod tests {
         );
     }
 
+    /// Unlink drops the provider and leaves the branch; the branch keeps
+    /// its replica rows for signing back in, but with no provider nothing
+    /// reads them as a link.
     #[dialog_common::test]
-    async fn it_retracts_the_replica_signal_on_unlink() {
+    async fn it_keeps_the_account_branch_rows_but_drops_the_provider_on_unlink() {
         let state = Arc::new(RwLock::new(test_state_without_account().await));
         let request = {
             let state = state.read().await;
             matching_request(&state).await
         };
         let _ = link(State(state.clone()), Json(request)).await.unwrap();
-        let signed_out_profile = state.read().await.profile_name.clone();
+        let account_branch = state.read().await.active_branch.clone();
         let _ = unlink(State(state.clone()), None).await.unwrap();
         let _ = super::super::profiles::activate(
             State(state.clone()),
             None,
             Json(tonk_worker_api::ActivateProfileRequest {
-                profile: signed_out_profile,
+                profile: account_branch,
             }),
         )
         .await
@@ -664,25 +625,23 @@ mod tests {
             super::super::account_state::linked_account(&tonk)
                 .await
                 .unwrap()
-                .is_none(),
-            "unlink retracts the account replica"
+                .is_some(),
+            "the account branch keeps its replica rows"
         );
-        assert!(!linked(&tonk).await);
+        assert!(provider(&tonk).await.is_none(), "unlink drops the provider");
     }
 
+    /// Signing out leaves the account's branch and forgets the grant. The
+    /// branch keeps its spaces, out of view until it is returned to.
     #[dialog_common::test]
-    async fn it_signs_out_without_deleting_the_root_or_local_spaces() {
+    async fn it_signs_out_by_leaving_the_branch_and_forgetting_the_root() {
         use axum::extract::Path;
         use tonk_schema::prelude::DidExt as _;
 
         let (app, state, _lsp) = crate::api_router_with_state(test_state().await);
         let key = put_repo(&app, "retained-local-space").await;
-        let (root_before, profile_name, profile_did, root_key) = {
+        let (account_branch, profile_did, root_key) = {
             let tonk = state.read().await;
-            let root = super::super::identity::load_record(&tonk)
-                .await
-                .unwrap()
-                .expect("the fixture has a local root");
             let root_key = super::super::identity::local_root(&tonk)
                 .await
                 .unwrap()
@@ -693,31 +652,39 @@ mod tests {
                 super::super::account_state::is_account_key(&tonk, &root_key).await,
                 "the linked account key is hidden from generic repository routing"
             );
-            (
-                root,
-                tonk.profile_name.clone(),
-                tonk.profile.did(),
-                root_key,
-            )
+            (tonk.active_branch.clone(), tonk.profile.did(), root_key)
         };
 
         let Json(status) = unlink(State(state.clone()), None).await.unwrap();
-        assert!(matches!(status, AccountStatus::Unregistered { .. }));
+        assert!(
+            matches!(status, AccountStatus::RootMissing { .. }),
+            "the grant is forgotten, so there is no root to report"
+        );
 
         let tonk = state.read().await;
-        assert_ne!(tonk.profile_name, profile_name);
+        assert_eq!(tonk.profile.did(), profile_did, "the device keeps its key");
+        assert_ne!(
+            tonk.active_branch, account_branch,
+            "sign-out leaves the branch"
+        );
         assert!(
             super::super::identity::load_record(&tonk)
                 .await
                 .unwrap()
-                .is_none()
+                .is_none(),
+            "the grant is forgotten"
+        );
+        assert!(provider(&tonk).await.is_none());
+        assert!(
+            !super::super::account_state::is_account_key(&tonk, &root_key).await,
+            "sign-out releases hidden account-key routing"
         );
         drop(tonk);
-        let Json(local_profile) = super::super::profile::get_profile(State(state.clone()))
+        let Json(signed_out) = super::super::profile::get_profile(State(state.clone()))
             .await
             .unwrap();
         assert!(
-            !local_profile.space.iter().any(|space| space.key == key),
+            !signed_out.space.iter().any(|space| space.key == key),
             "the post-sign-out hub must not render the signed-out account's spaces"
         );
 
@@ -725,65 +692,79 @@ mod tests {
             State(state.clone()),
             None,
             Json(tonk_worker_api::ActivateProfileRequest {
-                profile: profile_name.clone(),
+                profile: account_branch.clone(),
             }),
         )
         .await
         .unwrap();
         let tonk = state.read().await;
-        assert!(provider(&tonk).await.is_none());
+        assert_eq!(tonk.active_branch, account_branch);
         assert!(
-            super::super::account_state::linked_account(&tonk)
+            provider(&tonk).await.is_none(),
+            "returning to the branch is not signing in"
+        );
+        assert!(
+            super::super::identity::load_record(&tonk)
                 .await
                 .unwrap()
                 .is_none(),
-            "sign-out retracts the account replicas"
+            "returning does not restore the grant"
         );
-        assert!(
-            !super::super::account_state::is_account_key(&tonk, &root_key).await,
-            "sign-out releases hidden account-key routing"
-        );
-        assert_eq!(
-            super::super::identity::load_record(&tonk).await.unwrap(),
-            Some(root_before),
-            "the root record remains byte-for-byte unchanged"
-        );
-        assert_eq!(tonk.profile.did(), profile_did);
         drop(tonk);
 
         let Json(profile) = super::super::profile::get_profile(State(state.clone()))
             .await
             .unwrap();
-        assert!(profile.space.iter().any(|space| space.key == key));
+        assert!(
+            profile.space.iter().any(|space| space.key == key),
+            "the branch kept its spaces"
+        );
         let Json(repository) = super::super::repository::get_repository(State(state), Path(key))
             .await
-            .expect("the retained local space remains loadable");
+            .expect("the retained space remains loadable");
         assert!(repository.remote.is_empty());
     }
 
+    /// Unlink withdraws the grant without rotating the device: the key
+    /// stays, the authority goes.
     #[dialog_common::test]
-    async fn it_detaches_a_provider_without_revoking_or_rotating_the_device() {
+    async fn it_withdraws_the_grant_without_rotating_the_device() {
         let state = Arc::new(RwLock::new(test_state_without_account().await));
-        let (profile_name, before) = {
-            let tonk = state.read().await;
-            (tonk.profile_name.clone(), tonk.profile.did())
-        };
+        let before = state.read().await.profile.did();
         let request = {
             let state = state.read().await;
             matching_request(&state).await
         };
         let _ = link(State(state.clone()), Json(request)).await.unwrap();
+        let account_branch = state.read().await.active_branch.clone();
+        assert!(account_link(&*state.read().await).await.is_some());
+
         let Json(status) = unlink(State(state.clone()), None).await.unwrap();
-        assert!(matches!(status, AccountStatus::Unregistered { .. }));
+        assert!(
+            matches!(status, AccountStatus::RootMissing { .. }),
+            "the grant is forgotten, so there is no root to report"
+        );
+
         let _ = super::super::profiles::activate(
             State(state.clone()),
             None,
             Json(tonk_worker_api::ActivateProfileRequest {
-                profile: profile_name,
+                profile: account_branch,
             }),
         )
         .await
         .unwrap();
-        assert_eq!(state.read().await.profile.did(), before);
+        let tonk = state.read().await;
+        assert_eq!(tonk.profile.did(), before, "the device keeps its key");
+        assert!(
+            account_link(&tonk).await.is_none(),
+            "the grant is withdrawn, so nothing links the device to the account"
+        );
+        assert!(
+            super::super::identity::load_record(&tonk)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 }

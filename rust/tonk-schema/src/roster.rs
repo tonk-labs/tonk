@@ -82,10 +82,13 @@ impl DeviceProfile {
 /// and discarded with the session, so there is nothing to invalidate.
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ProfileRow {
-    /// The profile's DID — the same entity [`DeviceProfile`] uses, so a
-    /// query joins the durable handle to these transient fields.
+    /// The branch this row is for: the local branch entity `meta`
+    /// enumerates, so a switch can name it and a second read supersedes
+    /// the same row.
     pub this: Entity,
-    /// The account name to show, read from that profile's account branch.
+    /// The branch's name — what a switch activates.
+    pub name: Name,
+    /// The account name to show, read from that branch.
     pub label: crate::domain::roster::Label,
     /// The access service the account is attached to. A local workspace
     /// has none.
@@ -95,15 +98,22 @@ pub struct ProfileRow {
 }
 
 impl ProfileRow {
-    /// The row for `profile`.
+    /// The row for the branch `this`, named `name`.
     ///
     /// `label` and `provider` fall back to the empty string rather than
     /// being omitted: every field of a concept must be present for the row
-    /// to match, and a switcher that drops unnamed or unlinked profiles
+    /// to match, and a switcher that drops unnamed or unlinked branches
     /// would hide exactly the local workspace a person is trying to find.
-    pub fn new(profile: &Did, label: Option<&str>, provider: Option<&str>, active: bool) -> Self {
+    pub fn new(
+        this: Entity,
+        name: impl Into<String>,
+        label: Option<&str>,
+        provider: Option<&str>,
+        active: bool,
+    ) -> Self {
         Self {
-            this: profile.this(),
+            this,
+            name: Name(name.into()),
             label: crate::domain::roster::Label(label.unwrap_or_default().to_owned()),
             provider: crate::domain::roster::Provider(provider.unwrap_or_default().to_owned()),
             active: crate::domain::roster::Active(active),

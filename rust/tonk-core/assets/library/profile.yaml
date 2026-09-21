@@ -1050,6 +1050,13 @@ concept!: &site
       the: xyz.tonk.site/branch-entity
       cardinality: one
       as: entity
+    profile-branch:
+      description: >
+        The branch the profile is on, whichever repository this tab is
+        on: what reaches the profile as `{profile-branch}@profile:tonk`.
+      the: xyz.tonk.site/profile-branch
+      cardinality: one
+      as: text
     replica:
       description: Currently active replica on this site.
       the: xyz.tonk.site/replica
@@ -1137,11 +1144,12 @@ route!: &route/home
 
 # One row of the account switcher.
 #
-# The handle is durable (`device:profile`); the label, provider and
-# active flag are OVERLAY facts the worker republishes each time it reads
-# the roster. They have to be: they describe OTHER profiles, whose own
-# branches a sealed guest cannot reach. The worker can open every
-# profile, so it stamps what it finds where the guest is looking.
+# One row per branch of the profile: the account it follows, named off
+# that branch, and where the account is served from. OVERLAY facts the
+# worker republishes each time it reads the roster. They have to be:
+# they describe OTHER branches, which a sealed guest cannot reach. The
+# worker can read every branch, so it stamps what it finds where the
+# guest is looking.
 #
 # Overlay rather than a durable mirror is what keeps them honest. A
 # committed copy would be a second home for a name owned elsewhere, free
@@ -1149,10 +1157,10 @@ route!: &route/home
 # invalidate it. These are rebuilt from source on every roster read.
 concept!: &profile/row
   this: tonk:profile/row
-  description: A profile this browser can switch to.
+  description: A branch of this profile to switch to.
   with:
     name:
-      description: The storage handle the profile opens under.
+      description: The branch's name — what a switch activates.
       the: xyz.tonk.roster/name
       cardinality: one
       as: text
@@ -1201,10 +1209,10 @@ command!: &profile/add
 
 command!: &profile/switch
   this: tonk:switch-profile
-  description: Make another profile on this browser the active one.
+  description: Make another branch of this profile the active one.
   with:
     handle:
-      description: The storage handle of the profile to open.
+      description: The name of the branch to switch to.
       the: xyz.tonk.command.switch-profile/handle
       as: text
     time:
@@ -1741,6 +1749,13 @@ concept!: &settings-route
       the: xyz.tonk.site/path
       cardinality: one
       as: text
+    profile-branch:
+      description: >
+        The branch the profile is on, picked off the site: the pane's
+        displays read the account off it.
+      the: xyz.tonk.site/profile-branch
+      cardinality: one
+      as: text
 
 view!:
   this: tonk:settings
@@ -1767,7 +1782,7 @@ view!:
               <a class="hcell hc-view" href="/" data-return-spaces>spaces</a>
             </nav>
             <section class="settings chrome">
-              <ui-account-settings></ui-account-settings>
+              <ui-account-settings with="{profile-branch}@profile:tonk"></ui-account-settings>
             </section>
           </hub-bar>
         </main>
@@ -2002,6 +2017,14 @@ concept!: &space-chrome
       the: xyz.tonk.site/id
       cardinality: one
       as: text
+    profile-branch:
+      description: >
+        The branch the profile is on, picked off the site entity: the
+        FAB and the access guidance talk to the profile, and the profile
+        is on its account's branch, not on `main`.
+      the: xyz.tonk.site/profile-branch
+      cardinality: one
+      as: text
   maybe:
     rest:
       description: The sub-path within the space, picked off the site entity.
@@ -2090,7 +2113,7 @@ view!:
         tonk-view:has(> tonk-display[data-state="no-model"]) > tonk-fab { display: none; }
       </style>
       <tonk-site with="main@{id}" allow="main@{id}" path={rest}></tonk-site>
-      <tonk-fab with="main@profile:tonk" space={id}></tonk-fab>
+      <tonk-fab with="{profile-branch}@profile:tonk" space={id}></tonk-fab>
       <tonk-display with={id} entity={id} model=tonk:repository view=title>
         <!-- `no-model` is now the absent-space panel below, which sets its
              own title; a second `no-model` child would render alongside it
@@ -2122,7 +2145,7 @@ view!:
         <!-- Light-DOM slots must be hidden in the template too: before the
              display initializes they otherwise paint as ordinary content. -->
         <div slot="no-model" hidden class="space-unknown">
-          <tonk-display with="main@profile:tonk" entity={id} model=space view=downloading>
+          <tonk-display with="{profile-branch}@profile:tonk" entity={id} model=space view=downloading>
             <!-- The account has this space: it is arriving, not missing.
                  When it lands, the OUTER display's standing subscription
                  delivers a real frame and this whole panel is replaced. -->

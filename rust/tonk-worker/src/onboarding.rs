@@ -322,7 +322,7 @@ async fn existing_grant(state: &TonkState, account: &Did) -> Option<DelegationCh
     let branch = state
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&state.active_branch)
         .acquire(&state.operator)
         .await
         .ok()?;
@@ -403,7 +403,7 @@ pub(crate) async fn describe_device_link(
     let branch = state
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&state.active_branch)
         .acquire(&state.operator)
         .await
         .map_err(|error| format!("open profile branch: {error}"))?;
@@ -420,7 +420,7 @@ pub(crate) async fn describe_device_link(
     let mut transaction = state
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&state.active_branch)
         .transaction();
     let mut asserting = false;
     for entity in entities {
@@ -452,6 +452,51 @@ pub(crate) async fn describe_device_link(
         .await
         .map(|_| ())
         .map_err(|error| format!("commit: {error}"))
+}
+
+/// Retract a device powerline from the branch it was retained into.
+///
+/// The inverse of [`retain_device_delegation`], under the same writer
+/// coordination and for the same reason: a concurrent sweep can advance
+/// the branch between the retract's snapshot and its publish. Retracting
+/// is what makes the prover stop: it resolves proofs from the branch's
+/// `dialog.ucan/*` facts and consults no revocation, so a published
+/// revocation alone would leave this device proving with a grant every
+/// access service refuses.
+pub(crate) async fn retract_device_delegation(
+    state: &TonkState,
+    branch: &dialog_reactor::BranchSession,
+    chain: &DelegationChain,
+) -> Result<(), String> {
+    const RETRY_LIMIT: usize = 4;
+
+    let _transacting = branch.transactor().lock().await;
+    let mut attempt = 0;
+    loop {
+        match branch
+            .handle()
+            .delegations()
+            .retract(UcanDelegation(chain.clone()))
+            .perform(&state.operator)
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(error)
+                if error.to_string().contains("Version mismatch") && attempt < RETRY_LIMIT =>
+            {
+                attempt += 1;
+                log!("device-link retract raced (attempt {attempt}); refreshing and retrying");
+                branch
+                    .handle()
+                    .refresh(&state.operator)
+                    .await
+                    .map_err(|refresh_error| {
+                        format!("retract raced, then branch refresh failed: {refresh_error}")
+                    })?;
+            }
+            Err(error) => return Err(format!("retract: {error}")),
+        }
+    }
 }
 
 /// Retain a device powerline through profile main's writer coordination.
@@ -772,7 +817,7 @@ mod tests {
         let branch = tonk
             .reactor
             .profile_repository()
-            .branch(tonk_account::MAIN_BRANCH)
+            .branch(&tonk.active_branch)
             .acquire(&tonk.operator)
             .await
             .expect("profile branch opens");
@@ -821,7 +866,7 @@ mod tests {
         let branch = tonk
             .reactor
             .profile_repository()
-            .branch(tonk_account::MAIN_BRANCH)
+            .branch(&tonk.active_branch)
             .acquire(&tonk.operator)
             .await
             .expect("profile branch opens");

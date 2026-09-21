@@ -1750,6 +1750,21 @@ concept!: &site
       the: xyz.tonk.site/replica
       cardinality: one
       as: entity
+    branch-entity:
+      description: >
+        The same branch as an entity, so a view can walk from where the
+        tab is to what that branch follows. The name beside it is a
+        location token; this is the graph node.
+      the: xyz.tonk.site/branch-entity
+      cardinality: one
+      as: entity
+    profile-branch:
+      description: >
+        The branch the profile is on, whichever repository this tab is
+        on: what reaches the profile as `{profile-branch}@profile:tonk`.
+      the: xyz.tonk.site/profile-branch
+      cardinality: one
+      as: text
     route:
       description: Matched route of this site.
       the: xyz.tonk.site/route

@@ -32,7 +32,6 @@ type EventClosure = Closure<dyn FnMut(Event)>;
 type FrameClosure = Closure<dyn FnMut(JsValue, JsValue)>;
 
 /// The routing context the ceremony status lives in: the profile branch.
-const PROFILE_WITH: &str = "main@profile:tonk";
 /// The tag the ceremony-status subscription's frames arrive under.
 const CEREMONY_TAG: &str = "ui-account-settings:ceremony";
 /// The email row, read as a fact rather than fetched.
@@ -1168,7 +1167,7 @@ fn subscribe_ceremony(this: &HtmlElement, subscription: Rc<RefCell<Option<Subscr
             return;
         }
         if host.get_attribute("with").is_none() {
-            let _ = host.set_attribute("with", PROFILE_WITH);
+            let _ = host.set_attribute("with", &tonk_host::bridge::profile_with());
         }
         let consumer: Element = host.clone().into();
         let body = r#"{
@@ -1220,7 +1219,7 @@ fn subscribe_account(this: &HtmlElement, subscription: Rc<RefCell<Option<Subscri
             return;
         }
         if host.get_attribute("with").is_none() {
-            let _ = host.set_attribute("with", PROFILE_WITH);
+            let _ = host.set_attribute("with", &tonk_host::bridge::profile_with());
         }
         let consumer: Element = host.clone().into();
         // Directory mode (`this` unbound), like the Hub cell's own name

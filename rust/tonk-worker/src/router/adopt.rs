@@ -546,7 +546,7 @@ pub(crate) async fn reconcile_account_spaces(tonk: &TonkState) {
     let directory_names: Option<HashMap<String, String>> = match tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
     {
@@ -679,7 +679,7 @@ mod tests {
         let main = tonk
             .reactor
             .profile_repository()
-            .branch(tonk_account::MAIN_BRANCH)
+            .branch(&tonk.active_branch)
             .acquire(&tonk.operator)
             .await
             .expect("profile main acquires");
@@ -1500,7 +1500,7 @@ pub(crate) async fn stamp_space_locality(tonk: &TonkState, subject: &dialog_vars
     let main = match tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
     {
@@ -1531,7 +1531,7 @@ pub(crate) async fn stamp_space_replicating(
     let main = match tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
     {
@@ -1596,7 +1596,7 @@ async fn directory_configuration_strict(
     let main = tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(|e| crate::TonkWorkerError::Internal(format!("open directory: {e}")))?;

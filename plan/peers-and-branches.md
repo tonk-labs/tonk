@@ -188,3 +188,29 @@ ARE. They should compose: a peer, a branch and an upstream are durable
 facts on meta whatever layer machinery reads them. Worth confirming
 before step 5, since binding a branch per connection is close to what a
 stack does.
+
+## Status, 2026-09-21
+
+Items 1–5 are in. Accounts are branches of one profile: the branch the
+profile is on takes the upstream at login, sign-out withdraws the
+device's grant (rows and chain retracted and pushed, revocation
+published, root record forgotten) and moves to a branch that follows
+nothing, and signing back in returns to the branch that followed the
+account. Switching branches signs out of the account being left, since
+the profile holds one grant. The switcher enumerates `meta`'s branches
+and publishes one overlay row per branch; every site stamp carries the
+profile's active branch as `xyz.tonk.site/profile-branch`, and the top
+page reads it off `meta` before mounting.
+
+Branches are named as they were created: `main` first, then the
+`main-N` a sign-out lands on. Nothing finds a branch by name; the
+account a branch follows is a traversal.
+
+This depends on dialog letting an operator name its access branch
+(`OperatorBuilder::access_branch`), since the operator proves from a
+fixed branch otherwise. Until that lands under a date tag, the dialog
+crates are pinned by `rev`.
+
+Item 6 (retiring `xyz.tonk.remote/*` and the profile-`main` mirror
+`record_account_replica` writes) is still open, and so is the question
+of `Replica.kind`.
