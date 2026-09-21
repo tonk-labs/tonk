@@ -1801,6 +1801,10 @@ mod tests {
             .append_child(&host)
             .expect("attach");
         settle_until(|| defined("hub-bar")).await;
+        assert!(
+            defined("hub-bar"),
+            "the library definition of <hub-bar> was never installed"
+        );
         settle_briefly().await;
         let trigger = host
             .query_selector("[data-account-trigger]")
@@ -1850,11 +1854,13 @@ mod tests {
     /// them apart, so the reason is what this checks.
     #[dialog_common::test]
     async fn it_asks_the_top_page_with_the_reason_that_fits_the_click() {
+        install_fake_host();
+        install();
         let calls = record_bridge_calls("register");
         define_from_library(PROFILE_LIBRARY, "hub-bar");
         let host = document().create_element("hub-bar").expect("host");
         host.set_inner_html(
-            r#"<nav class="hubbar"><button type="button" data-tab="account" data-account-trigger>add an account</button></nav><button type="button" data-add-profile>add account</button>"#,
+            r#"<nav class="hubbar"><button type="button" data-tab="account" data-account-trigger>add an account<span data-account-registration data-state="empty"></span></button></nav><button type="button" data-add-profile>add account</button>"#,
         );
         document()
             .body()
@@ -1862,6 +1868,10 @@ mod tests {
             .append_child(&host)
             .expect("attach");
         settle_until(|| defined("hub-bar")).await;
+        assert!(
+            defined("hub-bar"),
+            "the library definition of <hub-bar> was never installed"
+        );
         settle_briefly().await;
 
         let trigger = host
@@ -1895,5 +1905,106 @@ mod tests {
             second["reason"], "profile-transition",
             "adding an account parks the ceremony for the reload"
         );
+    }
+
+    /// A click before the registration display has resolved neither
+    /// opens a menu nor raises the ceremony: it waits, and acts once the
+    /// display says which. A slower page (CI) clicked before the display
+    /// resolved and got a signup where the menu was meant.
+    #[dialog_common::test]
+    async fn it_waits_for_the_registration_before_acting_on_the_account_cell() {
+        install_fake_host();
+        install();
+        let calls = record_bridge_calls("register");
+        define_from_library(PROFILE_LIBRARY, "hub-bar");
+        let host = document().create_element("hub-bar").expect("host");
+        host.set_inner_html(
+            r#"<nav class="hubbar"><button type="button" data-tab="account" data-account-trigger><span data-registered></span><span data-account-registration data-state="loading"></span></button></nav>"#,
+        );
+        document()
+            .body()
+            .expect("body")
+            .append_child(&host)
+            .expect("attach");
+        settle_until(|| defined("hub-bar")).await;
+        assert!(
+            defined("hub-bar"),
+            "the library definition of <hub-bar> was never installed"
+        );
+        settle_briefly().await;
+        let before = calls.length();
+
+        let trigger = host
+            .query_selector("[data-account-trigger]")
+            .expect("query")
+            .expect("the trigger");
+        fire(&trigger, "click");
+        settle_briefly().await;
+        assert_eq!(
+            calls.length(),
+            before,
+            "an unresolved registration asks for nothing yet"
+        );
+        assert!(host.has_attribute("deciding"), "the click is remembered");
+
+        let registration = host
+            .query_selector("[data-account-registration]")
+            .expect("query")
+            .expect("the registration display");
+        let _ = registration.set_attribute("data-state", "empty");
+        settle_until(|| calls.length() > before).await;
+        let asked: serde_json::Value =
+            serde_json::from_str(&calls.get(before).as_string().expect("a payload")).expect("json");
+        assert_eq!(
+            asked["reason"], "needs-account",
+            "resolved empty, the click links"
+        );
+        assert!(!host.has_attribute("deciding"));
+
+        // The top page tearing the ceremony down returns the bar to spaces.
+        assert_eq!(host.get_attribute("tab").as_deref(), Some("account"));
+        fire(&window().expect("window"), "tonk:registration-closed");
+        settle_briefly().await;
+        assert_eq!(host.get_attribute("linking").as_deref(), Some("false"));
+        assert_eq!(host.get_attribute("tab").as_deref(), Some("spaces"));
+    }
+
+    /// A settings page opened by a browser with no account raises the
+    /// ceremony itself once the registration resolves empty: that page
+    /// is the door, and there is no cell to press.
+    #[dialog_common::test]
+    async fn it_raises_the_ceremony_on_an_unlinked_settings_page() {
+        install_fake_host();
+        install();
+        let calls = record_bridge_calls("register");
+        define_from_library(PROFILE_LIBRARY, "hub-bar");
+        let host = document().create_element("hub-bar").expect("host");
+        let _ = host.set_attribute("tab", "account");
+        host.set_inner_html(
+            r#"<nav class="hubbar"><button type="button" data-tab="account"><span data-account-registration data-state="loading"></span></button></nav>"#,
+        );
+        document()
+            .body()
+            .expect("body")
+            .append_child(&host)
+            .expect("attach");
+        settle_until(|| defined("hub-bar")).await;
+        assert!(
+            defined("hub-bar"),
+            "the library definition of <hub-bar> was never installed"
+        );
+        settle_briefly().await;
+        let before = calls.length();
+
+        let registration = host
+            .query_selector("[data-account-registration]")
+            .expect("query")
+            .expect("the registration display");
+        let _ = registration.set_attribute("data-state", "empty");
+        settle_until(|| calls.length() > before).await;
+        let asked: serde_json::Value =
+            serde_json::from_str(&calls.get(before).as_string().expect("a payload")).expect("json");
+        assert_eq!(asked["reason"], "needs-account");
+        assert_eq!(host.get_attribute("linking").as_deref(), Some("true"));
     }
 }

@@ -594,7 +594,7 @@ view!:
                    name waits on activation, so a linked-but-unactivated
                    account has a provider and no name. The old element
                    keyed on the provider for exactly this reason. -->
-              <tonk-display model="tonk:account/registered" view="linked"
+              <tonk-display model="tonk:account/registered" view="linked" data-account-registration
                 ><span slot="empty"></span></tonk-display>
             </button>
             <button class="hcell hc-view" type="button" data-tab="spaces" data-return-spaces aria-current="page">
@@ -1627,7 +1627,11 @@ element!: &hub-bar
     place: |
       (self, reason) => {
         const anchor = self.seat();
-        if (!anchor && reason !== 'profile-transition') return;
+        // Only a move needs a seat: an opening or a park must reach the
+        // top page even when the bar has no rectangle yet (a settings
+        // page still laying out, a narrow window), and an unseated
+        // ceremony opens where the top page puts it.
+        if (!anchor && reason === 'reseat') return;
         window.tonk?.register?.(JSON.stringify(
           anchor ? { reason, space: '', anchor } : { reason, space: '' }));
       }
@@ -1658,12 +1662,36 @@ element!: &hub-bar
         self.setAttribute('linking', 'false');
         self.select('spaces');
       }
-    # Whether this browser has an account yet. Keyed on the REGISTRATION,
+    # Whether this browser has an account. Keyed on the REGISTRATION,
     # not the name: the name waits on activation, so a linked account
     # that has not confirmed its email has no name and would read as
     # unlinked, sending someone who just signed in back to signup.
+    linked: |
+      (self) => !!self.querySelector('[data-account-linked]')
+    # Whether it is KNOWN to have none: the registration display has
+    # resolved to zero rows. Before it resolves, neither holds, and a
+    # click waits on it (see `decide`) rather than guessing.
     unlinked: |
-      (self) => !self.querySelector('[data-account-linked]')
+      (self) => !self.linked()
+        && self.querySelector('[data-account-registration]')?.dataset.state === 'empty'
+    # Act on a click the registration had not resolved for, and raise
+    # the ceremony on a settings page that has no account: that page is
+    # the door for a browser with none.
+    decide: |
+      (self) => {
+        if (self.linked()) {
+          if (self.hasAttribute('deciding')) {
+            self.removeAttribute('deciding');
+            self.querySelector('hub-menu')?.open?.();
+          }
+          return;
+        }
+        if (!self.unlinked()) return;
+        self.removeAttribute('deciding');
+        if (self.getAttribute('tab') === 'account' && self.getAttribute('linking') !== 'true') {
+          self.link('needs-account');
+        }
+      }
     # The account cell is a menu button only while an account is linked.
     # Unlinked, one press is one action (add an account), so the
     # dropdown ARIA comes off; linked, it goes back on so the menu can
@@ -1674,7 +1702,7 @@ element!: &hub-bar
       (self) => {
         const trigger = self.querySelector('[data-account-trigger]');
         if (!trigger) return;
-        if (self.unlinked()) {
+        if (!self.linked()) {
           for (const name of ['aria-haspopup', 'aria-expanded', 'aria-controls']) {
             trigger.removeAttribute(name);
           }
@@ -1689,9 +1717,15 @@ element!: &hub-bar
     connected: |
       (self) => {
         self.dress();
-        const dressing = new MutationObserver(() => self.dress());
-        dressing.observe(self, { childList: true, subtree: true });
+        self.decide();
+        const dressing = new MutationObserver(() => { self.dress(); self.decide(); });
+        dressing.observe(self, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-state'] });
         self._dressing = dressing;
+        // The top page tears the ceremony down, finished or dismissed;
+        // either way the bar returns to the spaces tab.
+        const closed = () => { if (self.getAttribute('linking') === 'true') self.unlink(); };
+        window.addEventListener('tonk:registration-closed', closed);
+        self._closed = closed;
         self.addEventListener('click', (event) => {
           const cell = event.target.closest('[data-tab]');
           if (!cell) return;
@@ -1699,8 +1733,13 @@ element!: &hub-bar
           // door. WebAuthn needs a `window` and a user gesture, which
           // this opaque realm has neither of, so the top page raises
           // the ceremony and this asks it to.
-          if (cell.dataset.tab === 'account' && self.unlinked()) {
-            self.link('needs-account');
+          if (cell.dataset.tab === 'account' && !self.linked()) {
+            if (self.unlinked()) {
+              self.link('needs-account');
+            } else {
+              self.select('account');
+              self.setAttribute('deciding', '');
+            }
             return;
           }
           self.select(cell.dataset.tab);
@@ -1739,6 +1778,7 @@ element!: &hub-bar
     disconnected: |
       (self) => {
         self._dressing?.disconnect();
+        if (self._closed) window.removeEventListener('tonk:registration-closed', self._closed);
         if (!self._reseat) return;
         window.removeEventListener('resize', self._reseat);
         window.removeEventListener('scroll', self._reseat, true);
@@ -1831,6 +1871,11 @@ view!:
                      absent. The label is the offer: this cell links an account. -->
                 <span data-account-label><tonk-display model="tonk:account/name"
                   ><span slot="empty">add an account</span></tonk-display></span>
+                <!-- The registration marker, so the bar knows whether this
+                     browser has an account; without one, the settings page
+                     is the door and the bar raises the ceremony itself. -->
+                <tonk-display model="tonk:account/registered" view="linked" data-account-registration
+                  ><span slot="empty"></span></tonk-display>
               </button>
               <a class="hcell hc-view" href="/" data-return-spaces>spaces</a>
             </nav>

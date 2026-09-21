@@ -154,6 +154,11 @@ async fn main() {
         return;
     }
     tonk_ui::analytics::startup_checkpoint(tonk_analytics::product::Stage::Welcome);
+    // Which branch this profile is on, before anything speaks for it: a
+    // ceremony parked across a branch rotation reopens below and sends
+    // its work to `profile_with()`, which would still name `main` while
+    // the mount's own resolution was in flight.
+    tonk_host::bridge::resolve_profile_with().await;
     mount_root();
     if web_sys::window().is_some_and(|window| {
         matches!(
