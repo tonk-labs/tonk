@@ -20,9 +20,9 @@ link carries a reusable invitation key and scoped grants, so keep it private.
 Import works after the browser closes, without CLI account login. Resume an
 interrupted import with `tonk --space <name> join`.
 
-The ACCESS column distinguishes local-only, invite-backed, terminal-linked and
-legacy bindings. Cached access details do not prove that remote access is still
-valid. Removing access keeps aliases, downloaded data and unsynced edits.
+The space listing reports local roster facts only. Remote authority is checked
+when a sync operation uses it; removing or losing access keeps aliases,
+downloaded data and unsynced edits.
 
 Account management belongs in the Tonk UI. Existing replicas and credentials
 remain on disk; importing an invitation does not sign into an account, move

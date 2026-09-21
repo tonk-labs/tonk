@@ -41,7 +41,7 @@ instances. Reads and writes are notation, evaluated against the space
 
 start a space (see also: tonk help spaces)
    space      List spaces, create one, or bind this directory to one
-   join       Import a one-way agent invitation without browser approval
+   join       Import an ordinary or agent invitation
 
 examine state
    status     Where you are: space, branch, sync, authority
@@ -326,9 +326,9 @@ enum Command {
         no_shorten: bool,
     },
 
-    /// Import a one-way agent invitation without browser approval or account login.
+    /// Import an ordinary or agent invitation without browser approval.
     Join {
-        /// Agent invitation copied from Tonk. Omit with --space to resume its import.
+        /// Invitation copied from Tonk. Omit with --space to resume its import.
         url: Option<String>,
         /// Override the local name (defaults to the pulled space's synced name).
         #[arg(long)]
@@ -2515,34 +2515,32 @@ fn print_invite_outcome(outcome: &InviteOutcome) {
     eprintln!("audience: {} (ephemeral)", outcome.audience);
 }
 
-fn is_scoped_agent_link(value: &str) -> bool {
-    url::Url::parse(value)
-        .ok()
-        .and_then(|url| url.fragment().map(str::to_owned))
-        .is_some_and(|fragment| fragment.starts_with("tonk-agent-"))
-}
-
 async fn join_command(
     url: Option<String>,
     name: Option<String>,
     selected: Option<&str>,
 ) -> ExitCode {
     match url {
-        Some(url) if is_scoped_agent_link(&url) => {
+        Some(url) => {
             if selected.is_some() {
                 return print_error(
                     "join with an invitation and --name, or omit the link and use --space to resume",
                 );
             }
-            connect_scoped_agent(&url, name.as_deref()).await
+            match tonk_cli::join::prepare(&url).await {
+                Ok(tonk_cli::join::PreparedInvitation::Agent(prepared)) => {
+                    connect_scoped_agent(prepared, name.as_deref()).await
+                }
+                Ok(tonk_cli::join::PreparedInvitation::Ordinary(prepared)) => {
+                    join_ordinary(*prepared, name.as_deref()).await
+                }
+                Err(error) => print_failure(error),
+            }
         }
-        Some(_) => print_error(
-            "unsupported_agent_invitation: copy a new space invitation from an updated Tonk browser. Older sharing and account-approval links cannot be imported by `tonk join`",
-        ),
         None => {
             let Some(selected) = selected else {
                 return print_error(
-                    "provide an agent link, or use `tonk --space NAME join` to resume",
+                    "provide an invitation link, or use `tonk --space NAME join` to resume",
                 );
             };
             let store = match tonk_cli::space::SpaceStore::open() {
@@ -2562,8 +2560,8 @@ async fn join_command(
                     }
                     let root = store.canonical_site(selected);
                     let binding = match tonk_cli::connections::binding_at(&root) {
-                        Ok(Some(binding)) => binding,
-                        Ok(None) => return print_failure(error),
+                        Ok(Some(binding)) => Some(binding),
+                        Ok(None) => None,
                         Err(error) => return print_failure(error),
                     };
                     if name.is_some() {
@@ -2571,19 +2569,35 @@ async fn join_command(
                             "--name applies to a new invitation import; resume with --space only",
                         );
                     }
-                    let directory =
-                        match tonk_cli::handoff::pending_scoped_directory(&root, &binding.id) {
-                            Ok(directory) => directory,
-                            Err(error) => return print_failure(error),
-                        };
-                    return finish_scoped_connection(
+                    if let Some(binding) = binding {
+                        let directory =
+                            match tonk_cli::handoff::pending_scoped_directory(&root, &binding.id) {
+                                Ok(directory) => directory,
+                                Err(error) => return print_failure(error),
+                            };
+                        return finish_scoped_connection(
+                            &store,
+                            selected,
+                            &root,
+                            &binding,
+                            directory.as_deref(),
+                        )
+                        .await;
+                    }
+                    let state = match tonk_cli::join::OrdinaryState::read(&root) {
+                        Ok(Some(state)) => state,
+                        Ok(None) => return print_failure(error),
+                        Err(error) => return print_failure(error),
+                    };
+                    if let Err(error) = tonk_cli::space::register_existing_bound(
                         &store,
                         selected,
                         &root,
-                        &binding,
-                        directory.as_deref(),
-                    )
-                    .await;
+                        &state.directory,
+                    ) {
+                        return print_failure(error);
+                    }
+                    return finish_ordinary_join(&store, selected, &root, state, None).await;
                 }
                 Err(error) => return print_failure(error),
             };
@@ -2613,9 +2627,20 @@ async fn join_command(
                 )
                 .await
             } else {
-                print_error(
-                    "unsupported_connection_resume: this space has no scoped connection to resume. Import a new space invitation with `tonk join`. Existing local data is unchanged",
-                )
+                match tonk_cli::join::OrdinaryState::read(&resolved.site) {
+                    Ok(Some(state)) => {
+                        if name.is_some() {
+                            return print_error(
+                                "--name applies to a new invitation import; resume with --space only",
+                            );
+                        }
+                        finish_ordinary_join(&store, selected, &resolved.site, state, None).await
+                    }
+                    Ok(None) => print_error(
+                        "unsupported_connection_resume: this space has no invitation import to resume. Import a new invitation with `tonk join`. Existing local data is unchanged",
+                    ),
+                    Err(error) => print_failure(error),
+                }
             }
         }
     }
@@ -2646,9 +2671,234 @@ fn selected_connection_binding(
     Ok(marker)
 }
 
-async fn connect_scoped_agent(link: &str, requested_name: Option<&str>) -> ExitCode {
+async fn join_ordinary(
+    prepared: tonk_cli::join::PreparedOrdinary,
+    requested_name: Option<&str>,
+) -> ExitCode {
+    if let Some(name) = requested_name
+        && let Err(error) = tonk_cli::space::validate_name(name)
+    {
+        return print_failure(error);
+    }
+    let store = match tonk_cli::space::SpaceStore::open() {
+        Ok(store) => store,
+        Err(error) => return print_failure(error),
+    };
+    let config = match site::default_config() {
+        Ok(config) => config,
+        Err(error) => return print_failure(error),
+    };
+    if let Err(error) = tonk_cli::join::ensure_ordinary_recipient(&prepared, &config).await {
+        return print_failure(error);
+    }
+    let cwd = match working_directory().and_then(|directory| directory.canonicalize().ok()) {
+        Some(directory) => directory,
+        None => return print_error("could not read the current directory"),
+    };
+    let registry = match store.load() {
+        Ok(registry) => registry,
+        Err(error) => return print_failure(error),
+    };
+    let matching =
+        tonk_cli::handoff::matching_invitation(&registry, &config, prepared.invitation()).await;
+    for diagnostic in matching.diagnostics {
+        eprintln!("warning: {diagnostic}");
+    }
+    if let Some(existing) = matching.name {
+        if requested_name.is_some_and(|requested| requested != existing) {
+            return print_error(format!(
+                "this invitation is already imported as '{existing}'; resume with `tonk --space {existing} join`"
+            ));
+        }
+        let root = registry.spaces[&existing].site.clone();
+        let state = match tonk_cli::join::OrdinaryState::read(&root) {
+            Ok(Some(state)) => state,
+            Ok(None) => match tonk_cli::join::OrdinaryState::new(
+                &prepared,
+                &cwd,
+                true,
+                prepared.has_remote(),
+                if prepared.has_remote() {
+                    tonk_cli::join::OrdinaryPhase::PullPending
+                } else {
+                    tonk_cli::join::OrdinaryPhase::Ready
+                },
+            ) {
+                Ok(state) => state,
+                Err(error) => return print_failure(error),
+            },
+            Err(error) => return print_failure(error),
+        };
+        if let Err(error) = state.save(&root) {
+            return print_failure(error);
+        }
+        return finish_ordinary_join(&store, &existing, &root, state, None).await;
+    }
+
+    let invitation_id = prepared.invitation().this.to_string();
+    let temporary = requested_name.map(str::to_owned).unwrap_or_else(|| {
+        format!(
+            "invite-{}",
+            &blake3::hash(invitation_id.as_bytes()).to_hex()[..12]
+        )
+    });
+    if registry.spaces.contains_key(&temporary) {
+        return print_failure(tonk_cli::space::SpaceError::Exists(temporary));
+    }
+    let root = store.canonical_site(&temporary);
+    if root.exists() {
+        let state = match tonk_cli::join::OrdinaryState::read(&root) {
+            Ok(Some(state))
+                if state.invitation == invitation_id
+                    && state.subject == prepared.invitation().subject.0.to_string() =>
+            {
+                state
+            }
+            Ok(_) => {
+                return print_error(format!(
+                    "unregistered data already exists at {}; it does not match this invitation",
+                    root.display()
+                ));
+            }
+            Err(error) => return print_failure(error),
+        };
+        if let Err(error) =
+            tonk_cli::space::register_existing_bound(&store, &temporary, &root, &state.directory)
+        {
+            return print_failure(error);
+        }
+        return finish_ordinary_join(&store, &temporary, &root, state, None).await;
+    }
+
+    let mut state = match tonk_cli::join::OrdinaryState::new(
+        &prepared,
+        &cwd,
+        requested_name.is_some(),
+        prepared.has_remote(),
+        if prepared.has_remote() {
+            tonk_cli::join::OrdinaryPhase::PullPending
+        } else {
+            tonk_cli::join::OrdinaryPhase::Ready
+        },
+    ) {
+        Ok(state) => state,
+        Err(error) => return print_failure(error),
+    };
+    let outcome =
+        match tonk_cli::invite::claim_prepared(&root, prepared.into_preflight(), config).await {
+            Ok(outcome) => outcome,
+            Err(error) => return print_coded(error),
+        };
+    let initial_failure = match outcome.completion {
+        tonk_cli::invite::ClaimCompletion::LocalOnly
+        | tonk_cli::invite::ClaimCompletion::Complete => {
+            state.phase = tonk_cli::join::OrdinaryPhase::Ready;
+            None
+        }
+        tonk_cli::invite::ClaimCompletion::PullPending { reason } => {
+            state.phase = tonk_cli::join::OrdinaryPhase::PullPending;
+            Some(reason)
+        }
+        tonk_cli::invite::ClaimCompletion::PublicationPending { reason } => {
+            state.phase = tonk_cli::join::OrdinaryPhase::PublicationPending;
+            Some(reason)
+        }
+    };
+    if let Err(error) = state.save(&root) {
+        return print_failure(error);
+    }
+    if let Err(error) = tonk_cli::space::register_existing_bound(&store, &temporary, &root, &cwd) {
+        eprintln!("Resume with `tonk --space {temporary} join`.");
+        return print_failure(error);
+    }
+    finish_ordinary_join(&store, &temporary, &root, state, initial_failure).await
+}
+
+async fn finish_ordinary_join(
+    store: &tonk_cli::space::SpaceStore,
+    name: &str,
+    root: &std::path::Path,
+    mut state: tonk_cli::join::OrdinaryState,
+    initial_failure: Option<String>,
+) -> ExitCode {
+    let mut config = match site::default_config() {
+        Ok(config) => config,
+        Err(error) => return print_failure(error),
+    };
+    // An ordinary invitation retains its own authority. Reopening must use
+    // the same mode as the initial claim, including after a remote failure.
+    config.require_account = false;
+    let site = match site::TonkSite::open_with(root, config).await {
+        Ok(site) => site,
+        Err(error) => return print_failure(error),
+    };
+    let claimed = std::fs::read_to_string(root.join("claimed-invitation"));
+    if site.repository.did().to_string() != state.subject
+        || !matches!(claimed.as_deref(), Ok(claimed) if claimed == state.invitation)
+    {
+        return print_error("ordinary_join_binding_mismatch");
+    }
+    if let Some(reason) = initial_failure {
+        let chosen = match tonk_cli::handoff::resolve_ordinary_name(
+            &site, store, root, name, &state,
+        )
+        .await
+        {
+            Ok(chosen) => chosen,
+            Err(error) => return print_failure(error),
+        };
+        eprintln!("join is retained but remote completion is pending: {reason}");
+        eprintln!("space: {chosen}");
+        eprintln!("Resume with `tonk --space {chosen} join`.");
+        return ExitCode::IoError;
+    }
+    if state.phase == tonk_cli::join::OrdinaryPhase::PullPending {
+        println!("Pulling joined space '{name}'...");
+        if let Err(error) = tonk_cli::sync::pull(&site).await {
+            eprintln!("Resume with `tonk --space {name} join`.");
+            return print_failure(error);
+        }
+        state.phase = tonk_cli::join::OrdinaryPhase::PublicationPending;
+        if let Err(error) = state.save(root) {
+            return print_failure(error);
+        }
+    }
+    if state.phase == tonk_cli::join::OrdinaryPhase::PublicationPending {
+        if let Err(error) = tonk_cli::sync::push(&site).await {
+            eprintln!("Resume with `tonk --space {name} join`.");
+            return print_failure(error);
+        }
+        state.phase = tonk_cli::join::OrdinaryPhase::Ready;
+        if let Err(error) = state.save(root) {
+            return print_failure(error);
+        }
+    }
+    let name =
+        match tonk_cli::handoff::resolve_ordinary_name(&site, store, root, name, &state).await {
+            Ok(name) => name,
+            Err(error) => {
+                eprintln!("Resume with `tonk --space {name} join`.");
+                return print_failure(error);
+            }
+        };
+    println!("Joined space '{name}'");
+    println!("space: {name}");
+    if state.has_remote {
+        println!("sync: initial pull and membership publication complete");
+    } else {
+        println!("sync: no sync remote; local import is ready");
+    }
+    println!("binding: {}", state.directory.display());
+    println!("next: tonk --space {name} status");
+    ExitCode::Success
+}
+
+async fn connect_scoped_agent(
+    prepared: tonk_cli::join::PreparedAgent,
+    requested_name: Option<&str>,
+) -> ExitCode {
     async fn import(
-        link: &str,
+        prepared: &tonk_cli::join::PreparedAgent,
         requested_name: Option<&str>,
     ) -> anyhow::Result<(
         tonk_cli::space::SpaceStore,
@@ -2660,13 +2910,12 @@ async fn connect_scoped_agent(link: &str, requested_name: Option<&str>) -> ExitC
         if let Some(name) = requested_name {
             tonk_cli::space::validate_name(name)?;
         }
-        let link = tonk_cli::invite::resolve_url(link).await?;
-        let hint = tonk_cli::connections::inspect_link(&link).await?;
-        let remote = tonk_cli::deployment::discover_connection_remote(&hint.remote).await?;
+        let remote =
+            tonk_cli::deployment::discover_connection_remote(&prepared.hint().remote).await?;
         let cwd = working_directory()
             .ok_or_else(|| anyhow::anyhow!("could not read the current directory"))?
             .canonicalize()?;
-        let validated = tonk_cli::connections::validate_link(&link, &remote)
+        let validated = tonk_cli::connections::validate_link(prepared.url(), &remote)
             .await?
             .with_directory(&cwd)?;
         let binding = validated.binding().clone();
@@ -2716,7 +2965,7 @@ async fn connect_scoped_agent(link: &str, requested_name: Option<&str>) -> ExitC
         tonk_cli::space::register_connection_bound(&store, &name, &root, None, installed.clone())?;
         Ok((store, name, root, installed, cwd))
     }
-    let (store, name, root, binding, cwd) = match import(link, requested_name).await {
+    let (store, name, root, binding, cwd) = match import(&prepared, requested_name).await {
         Ok(imported) => imported,
         Err(error) => return print_failure(error),
     };
@@ -3678,19 +3927,6 @@ mod account_spaces_parser_tests {
             matches!(cli.command, Some(Command::Join { url: Some(url), name })
             if url == invite && name.as_deref() == Some("my-agent"))
         );
-    }
-
-    #[test]
-    fn join_recognizes_legacy_and_short_agent_bearers() {
-        assert!(is_scoped_agent_link(
-            "https://example.test/join#tonk-agent-v1=legacy"
-        ));
-        assert!(is_scoped_agent_link(
-            "https://example.test/@/hash#tonk-agent-v2=seed"
-        ));
-        assert!(!is_scoped_agent_link(
-            "https://example.test/join?access=proof#seed"
-        ));
     }
 
     #[test]

@@ -399,7 +399,7 @@ async fn connection_uses_the_space_name_and_avoids_local_collisions() -> anyhow:
 }
 
 #[dialog_common::test]
-async fn connect_rejects_open_invite_before_mutation() -> anyhow::Result<()> {
+async fn join_accepts_an_open_invite_without_agent_credentials() -> anyhow::Result<()> {
     let issuer = common::TestSite::new().await?;
     let invite =
         tonk_cli::invite::mint(&issuer.site, Some("https://example.test/join"), None).await?;
@@ -421,13 +421,17 @@ async fn connect_rejects_open_invite_before_mutation() -> anyhow::Result<()> {
             .env("DO_NOT_TRACK", "1")
             .env_remove("TONK_SPACE")
             .output()?;
-        assert!(!output.status.success());
-        assert!(String::from_utf8_lossy(&output.stderr).contains("unsupported_agent_invitation"));
-        assert!(String::from_utf8_lossy(&output.stderr).contains("copy a new space invitation"));
         assert!(
-            !home.path().join("spaces").exists(),
-            "legacy open invite must fail before local account/space writes"
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
         );
+        let store = tonk_cli::space::SpaceStore::at(home.path().join("spaces"));
+        let registry = store.load()?;
+        assert_eq!(registry.spaces.len(), 1);
+        let entry = registry.spaces.values().next().unwrap();
+        assert!(entry.connection.is_none());
+        assert!(!entry.site.join(tonk_cli::connections::MARKER_FILE).exists());
     }
     Ok(())
 }
