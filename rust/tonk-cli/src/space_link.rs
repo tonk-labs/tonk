@@ -771,23 +771,15 @@ pub async fn execute_browser(
                             dialog_ucan_core::time::Timestamp::now(),
                         )
                         .await?;
-                    anyhow::ensure!(
-                        approval.validated.account == completion.account,
-                        "account changed before publication"
-                    );
-                    anyhow::ensure!(
-                        completion.space == request.space,
-                        "space changed before publication"
-                    );
-                    let mut state = recovery
-                        .clone()
-                        .context("approved link recovery was not saved")?;
-                    anyhow::ensure!(
-                        state.invite.as_deref() == Some(approval.invite.as_str()),
-                        "approved invite changed before publication"
-                    );
-                    state.browser_published = true;
-                    save_browser_link_state(&candidate.site.root, &state)?;
+                    let state = save_browser_completion(
+                        &candidate.site.root,
+                        recovery
+                            .as_ref()
+                            .context("approved link recovery was not saved")?,
+                        &approval.validated,
+                        &approval.invite,
+                        &completion,
+                    )?;
                     recovery = Some(state.clone());
                     break finish_browser_publication(store, config, name, &service, &state).await;
                 }
@@ -809,6 +801,35 @@ pub async fn execute_browser(
     })?;
     server.abort();
     outcome
+}
+
+fn save_browser_completion(
+    root: &std::path::Path,
+    recovery: &BrowserLinkState,
+    approval: &tonk_invite::local_space_link::ValidatedLocalSpaceLinkApproval,
+    invite: &str,
+    completion: &tonk_invite::local_space_link::ValidatedLocalSpaceLinkCompletion,
+) -> Result<BrowserLinkState> {
+    anyhow::ensure!(
+        approval.account == completion.account,
+        "account changed before publication"
+    );
+    anyhow::ensure!(
+        completion.space == approval.request.space,
+        "space changed before publication"
+    );
+    anyhow::ensure!(
+        recovery.invite.as_deref() == Some(invite),
+        "approved invite changed before publication"
+    );
+    anyhow::ensure!(
+        completion.publication == format!("{}:{}", completion.space.repo_key(), completion.space),
+        "browser returned the wrong publication stage"
+    );
+    let mut state = recovery.clone();
+    state.browser_published = true;
+    save_browser_link_state(root, &state)?;
+    Ok(state)
 }
 
 async fn finish_browser_publication(
@@ -1440,6 +1461,54 @@ mod local_space_link_tests {
         let approval = approval
             .validate(&request, Some(&account.did()), Timestamp::now())
             .await?;
+        let state = BrowserLinkState {
+            version: BROWSER_LINK_STATE_VERSION,
+            name: "garden".into(),
+            space: request.space.to_string(),
+            account: account.did().to_string(),
+            service_did: service.did.to_string(),
+            service_url: service.url.to_string(),
+            consent: None,
+            invite: Some("approved-invite".into()),
+            browser_published: false,
+        };
+        save_browser_link_state(&candidate.site.root, &state)?;
+        let state_path = candidate.site.root.join(BROWSER_LINK_STATE_FILE);
+        let before = std::fs::read(&state_path)?;
+        for publication in [
+            "provisioned".to_owned(),
+            "arbitrary-revision".to_owned(),
+            format!("{}:{}", request.space.repo_key(), request.space),
+        ] {
+            let receipt = tonk_invite::local_space_link::LocalSpaceLinkCompletion::issue(
+                &approval,
+                &account,
+                publication.clone(),
+                Timestamp::now(),
+            )
+            .await?
+            .validate(&approval, Timestamp::now())
+            .await?;
+            let result = save_browser_completion(
+                &candidate.site.root,
+                &state,
+                &approval,
+                "approved-invite",
+                &receipt,
+            );
+            if publication == "provisioned" || publication == "arbitrary-revision" {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("wrong publication stage")
+                );
+                assert_eq!(std::fs::read(&state_path)?, before);
+            } else {
+                assert!(result?.browser_published);
+                assert_ne!(std::fs::read(&state_path)?, before);
+            }
+        }
         let mut replay = tonk_invite::local_space_link::LocalSpaceLinkReplayGuard::default();
         replay.consume(&approval)?;
         assert!(replay.consume(&approval).is_err());
