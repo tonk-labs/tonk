@@ -1,5 +1,24 @@
 # The browser/CLI account handoff
 
+## Current CLI access workflows
+
+People and agents use `tonk join INVITE_LINK` for both ordinary share links and
+isolated agent links copied from the Tonk UI. The CLI validates the resolved
+link and selects its parser automatically; `--agent` is not part of the command.
+Both paths pull one space without browser approval. Ordinary links claim to an
+eligible local identity and publish membership/provenance. Agent links retain a
+separate scoped DID and publish the grant-specific setup receipt.
+
+CLI account management, ownership adoption, account migration and `tonk link`
+are removed. Local creation/transplant remain local; existing replicas and
+credentials are preserved. `tonk --space NAME join` resumes either import from
+its verified retained kind. Account-approval links remain outside this command.
+
+The current journey is `ACCT-C14` / `HANDOFF-21`. Browser-initiated terminal
+linking is deferred. Account-command descriptions below are historical evidence,
+not supported CLI entry points. Earlier browser results do not verify the narrowed
+implementation; see the [verification record](../verification/accounts.md).
+
 ## Summary
 
 The handoff authorizes a native CLI profile through an account passkey in a
@@ -259,22 +278,32 @@ Onboarding-account addendum pinned to Tonk commit `b564e83b1`.
 
 ## Agent handoff
 
+**Historical, retired by Plan 002.** The account-approval agent command described
+in this section has been removed; use the current scoped flow below.
+
 A fresh empty space says “Build this space with an agent”. It explains that the
 person should copy the prompt, give it to their preferred agent, and describe
 what to build. Machine instructions are hidden in the copy button value.
 
-The release CLI invocation `tonk connect INVITE` reuses an
-active CLI account, or runs the browser approval described above. It then joins
-and pulls the invite's exact space and pushes a receipt. “Agent connection
+The CLI invocation `tonk join --agent INVITE` reuses the active CLI account
+when it matches the invitation, or runs browser approval when unlinked.
+A different active account requires explicit `--switch-account DID` consent
+and browser approval. It then joins and pulls the invite's exact space and
+pushes a receipt. “Agent connection
 confirmed” appears through the space subscription, including in the workspace
 shell after the agent changes the home view. The receipt confirms a completed
 round trip; it does not indicate that the agent is still online.
 
-Product boundaries: an existing CLI account is printed and reused, so use an
-unlinked CLI and the source browser for the same-account walkthrough. There is
+Ordinary `tonk join INVITE --name NAME` joins as the current identity without
+agent approval or confirmation. The explicit `--agent` flag selects the full
+agent flow; the link does not implicitly select it. `connect` remains hidden
+from help as a compatibility command for older prompts.
+
+Product boundaries: an existing matching CLI account is printed and reused. There is
 no OTP exchange, expiring presence, or automatic account switch. The invite is
-still a reusable space capability. An explicitly requested occupied local name fails before linking. Without
-`--name`, connect reads the pulled space’s RepositoryName, makes a CLI-safe local
+still a reusable space capability. An explicitly requested occupied local name
+is refused instead of overwritten. Without
+`--name`, agent setup reads the pulled space’s RepositoryName, makes a CLI-safe local
 alias, and adds a numeric suffix only when needed to avoid a local collision.
 If the first pull cannot supply the name, a stable DID-derived fallback keeps
 the joined site registered and resumable. Join or sync failures retain local
@@ -304,12 +333,50 @@ The agent path now skips the ordinary join's account-directory refresh, keeping
 that unrelated account push out of the acknowledgement path. Ordinary `join`
 continues to update the account directory.
 
-After an interruption, run `tonk --space NAME connect` against the already joined
-space. It pulls and publishes the receipt without another invite, account login,
-or new local space. Only “Agent connection confirmed” is a success signal;
+After an interruption, run `tonk --space NAME join --agent` against the already
+joined space. It repeats the account check, requesting consent and approval if
+needed, then pulls and publishes the receipt without another invite or new local
+space. Only “Agent connection confirmed” is a success signal;
 `status: synced` alone is insufficient. The hidden prompt teaches this distinction.
 
 The copied prompt no longer assumes `agent-space`. Commands can use the working
 folder binding made by `connect`; outside it, use the local name printed by the
 command. The local alias does not overwrite the shared display name. Existing
 local aliases are retained; subsequent shared renames do not rekey local bindings.
+
+## Scoped agent invitation
+
+`ACCT-C14` describes the opt-in `connection-invites` build. The account handoff
+above remains the legacy flow. New browser issuance is not enabled by default
+until a compatible CLI is published and verified.
+
+A browser account with authority to a hosted space can copy a prompt containing
+`tonk join AGENT_LINK`. The reusable link carries a fresh invitation identity
+and grants to build that space's data and views. The CLI imports that identity
+without account login or browser approval; the issuing browser can already be
+closed. An unrelated CLI account remains attached to its own authority.
+
+The requested lifetime is 90 days. The browser refuses an upstream authority
+that cannot support it and shows the actual expiry in Settings. Reopening the
+view reuses its transient link while available. Once that link is lost, “new
+invite” creates a separate grant group explicitly. The browser retains public
+grant records, not a recoverable invitation secret.
+
+The CLI retains the invitation credentials and a separate local replica. Only
+after pulling and pushing its grant-specific setup receipt does it report
+“Agent connection confirmed”. Later `tonk --space NAME join` resumes from
+those retained credentials. A receipt records completed setup, not exclusive
+ownership of the invite or live agent presence; several holders may use it.
+
+Settings lists the space, recipient, scope, expiry, setup confirmation and
+revocation acknowledgements. Tab moves between settings controls without
+dismissing the panel; Tab still dismisses the account menu itself. Revoking an
+invite withdraws its six grants for
+all holders and descendants. Partial delivery stays visible and retryable.
+Acknowledgement does not promise immediate global enforcement. Downloaded data
+and offline edits remain; revoked or expired remote access requires new
+authorization and never falls back to a CLI account.
+
+Source: PR #963 at `199e9a599`. Fresh native checks passed; browser, Safari,
+deployed compatibility and global revocation propagation remain unverified
+for the narrowed implementation. See `HANDOFF-21`.

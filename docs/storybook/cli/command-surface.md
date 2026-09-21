@@ -1,5 +1,14 @@
 # The CLI command surface
 
+Current scope (Plan 005): `join INVITE_LINK` accepts ordinary share links and
+isolated agent links as the sole CLI import workflow for browser spaces. It
+validates the link format automatically; there is no `--agent` selector.
+Account commands, `space link`, `migrate account`, `connect`,
+and top-level `link` are absent. The account entries below preserve the earlier
+source audit and are retired; account administration now belongs in the UI.
+CLI space creation and transplant are local-only. Existing replicas and keys
+are retained. See `ACCT-C14` / `HANDOFF-21` for the supported invitation journey.
+
 ## Summary
 
 `tonk` exposes setup, account, collaboration, authoring, data, rendering,
@@ -55,7 +64,7 @@ remote-required mutation. A rerun inspects current state and is safe.
 | Entry | Journey IDs | Variants that require coverage |
 | --- | --- | --- |
 | `invite` | `COLLAB-01`, `COLLAB-02` | Default/base URL, remote/no-remote, recipient root, shorten/no-shorten/env, zero/one/many remotes. |
-| `join URL --name NAME` | `COLLAB-03`, `COLLAB-05` | Open/restricted, remote/no remote, malformed/expired/revoked/already claimed, name/site collision. |
+| `join URL [--name NAME]`, `--space NAME join` | `COLLAB-03`, `COLLAB-05`, `ACCT-C14` | Ordinary/agent, full/short, open/restricted, remote/no remote, malformed/mixed/expired/revoked/already claimed, resume, name/site collision. |
 | `push` | `SYNC-02` | `R0`–`R6`, timeout/lost response/concurrent push, account/invite authority. |
 | `pull` | `SYNC-03` | `R0`–`R6`, divergence, concurrent local/remote change, restart before ref update. |
 | `remote`, `remote --json` | `CLI-03` | Empty/many, stable JSON, malformed registry. |

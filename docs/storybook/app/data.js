@@ -332,12 +332,20 @@ window.STORYBOOK_DATA = {
       "variants": "Browser opens/fails; --no-open; signed out; stale subject."
     },
     {
-      "evidence": "Invite preflight, trusted approval routing, exact-invitation retry, receipt publication/isolation, naming fallback, parser, standard-library prompt, and browser authorization integration tests.",
-      "gaps": "Whole published-npm-to-browser-space run, remote-offline command test, process interruption at each post-claim boundary, duplicate original-invite process retry.",
+      "evidence": "Historical lower-layer evidence retained; new CLI refuses these entry points without mutation.",
+      "gaps": "People and agents now use ACCT-C14.",
       "group": "Accounts: CLI and browser handoff",
       "id": "ACCT-C13",
-      "title": "Copy an empty-space prompt and run tonk connect to link, join, pull, and acknowledge that space.",
-      "variants": "Active/unlinked CLI account; long/short/malformed invite; default/explicit approval page; synced name absent/colliding; interrupted before receipt."
+      "title": "Retired: account-bound agent setup through join or browser-mediated connect.",
+      "variants": "Old sharing/account handoffs and legacy resume metadata."
+    },
+    {
+      "evidence": "Local CLI import/recovery, exact-authority service tests, persisted KV/D1 revocation restart, checks. Earlier browser results precede this narrowed implementation; fresh browser execution is pending.",
+      "gaps": "Published CLI/browser matrix; staging, Safari and global revocation propagation.",
+      "group": "Accounts: CLI and browser handoff",
+      "id": "ACCT-C14",
+      "title": "Copy a scoped invitation for a person or agent, run one-way tonk join without browser/account approval, and revoke its grant group from Settings.",
+      "variants": "Empty or unrelated-account CLI; repeated bearer holders; independent invites; closed issuing browser; restart; offline or revoked authority."
     },
     {
       "evidence": "Whole browser revoke-CLI flow; DOM list tests; presenter tests require response uncertainty to lead to refresh before retry.",
@@ -808,6 +816,7 @@ window.STORYBOOK_DATA = {
       "id": "WEB-03",
       "journey_ids": [
         "ACCT-C13",
+        "ACCT-C14",
         "SPACE-09",
         "DATA-02",
         "DATA-09",
@@ -1706,7 +1715,7 @@ window.STORYBOOK_DATA = {
     },
     {
       "claim": "Empty-space prompt connects an agent CLI to the exact originating space (Agent handoff).",
-      "device": "hybrid + second-client",
+      "device": "historical / retired + second-client",
       "file": "verification/accounts.md",
       "id": "HANDOFF-19",
       "priority": "P1",
@@ -1714,11 +1723,19 @@ window.STORYBOOK_DATA = {
     },
     {
       "claim": "Agent connection validates before authority and retains a named recovery path after interruption (Interrupted agent connection).",
-      "device": "hybrid + offline + restart",
+      "device": "historical / retired",
       "file": "verification/accounts.md",
       "id": "HANDOFF-20",
       "priority": "P1",
       "result": "Automated preflight/approval/fallback/exact-invitation/spoof-rejection/receipt coverage; revoked-authority reclaim, command interruption, remote-offline recovery, and whole-process original-invite retry remain unrun."
+    },
+    {
+      "claim": "Scoped invitation imports without an account and revokes all holders (Scoped agent invitation).",
+      "device": "hybrid + restart + two-actor",
+      "file": "verification/accounts.md",
+      "id": "HANDOFF-21",
+      "priority": "P1",
+      "result": "Native protocol, CLI import/recovery and issuer/revocation checks passed at 199e9a599. Fresh browser execution remains unverified."
     },
     {
       "claim": "Device list identifies self separately from shared rows (Resolve).",
@@ -2284,7 +2301,7 @@ window.STORYBOOK_DATA = {
   "verificationResults": {
     "blocked": 0,
     "fail": 0,
-    "other": 7,
+    "other": 8,
     "pass": 2,
     "unrun": 110
   },
