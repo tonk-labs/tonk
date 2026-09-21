@@ -1145,4 +1145,331 @@ mod tests {
         let bare = CustomEvent::new(ELEMENT_NEEDED).expect("event");
         assert_eq!(tag_of(&bare), None);
     }
+
+    // ── Library elements ──────────────────────────────────────────
+    //
+    // The elements the libraries define replaced Rust elements that only
+    // ever needed the DOM. Their JS is read off the library text here,
+    // so what runs under test is what a guest runs, not a restatement.
+
+    const CORE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/core.yaml");
+    const PROFILE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/profile.yaml");
+
+    /// The dictionaries `element!: &{tag}` declares in `source`, as the
+    /// registry receives them: `(dictionary, [(name, source)])`.
+    fn library_element(source: &str, tag: &str) -> Vec<(String, Vec<(String, String)>)> {
+        let heading = format!("element!: &{tag}");
+        let mut lines = source
+            .lines()
+            .skip_while(|line| line.trim_end() != heading)
+            .skip(1)
+            .peekable();
+        let mut out: Vec<(String, Vec<(String, String)>)> = Vec::new();
+        let mut current: Option<usize> = None;
+        while let Some(line) = lines.next() {
+            if !line.is_empty() && !line.starts_with(' ') {
+                break;
+            }
+            if line.trim().is_empty() || line.trim_start().starts_with('#') {
+                continue;
+            }
+            if let Some(name) = line
+                .strip_prefix("  ")
+                .filter(|rest| !rest.starts_with(' '))
+                .and_then(|rest| rest.strip_suffix(':'))
+            {
+                current = if matches!(name, "method" | "getter" | "setter" | "attribute") {
+                    out.push((name.to_owned(), Vec::new()));
+                    Some(out.len() - 1)
+                } else {
+                    None
+                };
+                continue;
+            }
+            let Some(index) = current else {
+                continue;
+            };
+            let Some(entry) = line
+                .strip_prefix("    ")
+                .filter(|rest| !rest.starts_with(' '))
+            else {
+                continue;
+            };
+            if let Some(name) = entry.strip_suffix(": |") {
+                let mut body = String::new();
+                while let Some(next) = lines.peek() {
+                    if next.trim().is_empty() {
+                        body.push('\n');
+                        lines.next();
+                        continue;
+                    }
+                    let Some(rest) = next.strip_prefix("      ") else {
+                        break;
+                    };
+                    body.push_str(rest);
+                    body.push('\n');
+                    lines.next();
+                }
+                out[index].1.push((name.to_owned(), body));
+            } else if let Some((name, value)) = entry.split_once(": ") {
+                out[index]
+                    .1
+                    .push((name.to_owned(), value.trim().trim_matches('"').to_owned()));
+            }
+        }
+        assert!(!out.is_empty(), "no `element!: &{tag}` in the library");
+        out
+    }
+
+    fn define_from_library(source: &str, tag: &str) {
+        let dictionaries = library_element(source, tag);
+        let borrowed: Vec<(&str, Vec<(&str, &str)>)> = dictionaries
+            .iter()
+            .map(|(name, entries)| {
+                (
+                    name.as_str(),
+                    entries
+                        .iter()
+                        .map(|(key, value)| (key.as_str(), value.as_str()))
+                        .collect(),
+                )
+            })
+            .collect();
+        let maps: Vec<(&str, &[(&str, &str)])> = borrowed
+            .iter()
+            .map(|(name, entries)| (*name, entries.as_slice()))
+            .collect();
+        let entity = format!("did:key:zLibrary{}", tag.replace('-', ""));
+        define_dictionaries(tag, &entity, &maps);
+    }
+
+    /// `window.tonk`, the host's bridge into this realm, created if the
+    /// page has none yet.
+    fn host_bridge() -> js_sys::Object {
+        let win = window().expect("window");
+        match Reflect::get(&win, &"tonk".into())
+            .ok()
+            .filter(|value| value.is_object())
+        {
+            Some(bridge) => bridge.into(),
+            None => {
+                let bridge = js_sys::Object::new();
+                let _ = Reflect::set(&win, &"tonk".into(), &bridge);
+                bridge
+            }
+        }
+    }
+
+    /// A host function on the bridge that records what it is called with.
+    fn record_bridge_calls(name: &str) -> js_sys::Array {
+        let calls = js_sys::Array::new();
+        let recorded = calls.clone();
+        let function = Closure::<dyn FnMut(JsValue)>::new(move |payload| {
+            recorded.push(&payload);
+        });
+        let _ = Reflect::set(
+            &host_bridge(),
+            &name.into(),
+            function.as_ref().unchecked_ref::<js_sys::Function>(),
+        );
+        function.forget();
+        calls
+    }
+
+    fn keydown(host: &Element, key: &str) {
+        let make = js_sys::Function::new_with_args(
+            "key",
+            "return new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });",
+        );
+        let event = make
+            .call1(&JsValue::NULL, &key.into())
+            .expect("keyboard event");
+        host.dispatch_event(event.unchecked_ref())
+            .expect("dispatch");
+    }
+
+    fn fire(host: &Element, name: &str) {
+        let event = web_sys::Event::new(name).expect("event");
+        host.dispatch_event(&event).expect("dispatch");
+    }
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_names_the_tab_through_the_host_from_the_library() {
+        let titles = record_bridge_calls("setTitle");
+        define_from_library(CORE_LIBRARY, "tab-title");
+        let host = render("tab-title").await;
+        settle_until(|| defined("tab-title")).await;
+        assert!(
+            defined("tab-title"),
+            "the library definition of <tab-title> was never installed"
+        );
+
+        let _ = host.set_attribute("text", "welcome");
+        settle_until(|| titles.length() >= 1).await;
+        assert_eq!(
+            titles.get(0).as_string().as_deref(),
+            Some("welcome"),
+            "a text is pushed to the host, which owns the title",
+        );
+
+        let _ = host.set_attribute("hidden", "");
+        let _ = host.set_attribute("text", "unseen");
+        settle_briefly().await;
+        assert_eq!(titles.length(), 1, "nothing is pushed while hidden");
+
+        let _ = host.remove_attribute("hidden");
+        settle_until(|| titles.length() >= 2).await;
+        assert_eq!(
+            titles.get(1).as_string().as_deref(),
+            Some("unseen"),
+            "unhiding pushes the title it was keeping",
+        );
+        let _ = host.set_attribute("text", "");
+        settle_briefly().await;
+        assert_eq!(titles.length(), 2, "an empty text is not a title");
+    }
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_mounts_the_location_once_the_display_is_bound() {
+        define_from_library(CORE_LIBRARY, "page-mount");
+        install_fake_host();
+        install();
+        let display = document().create_element("tonk-display").expect("display");
+        let page = document().create_element("page-mount").expect("page");
+        display.append_child(&page).expect("nest");
+        let mounts = js_sys::Array::new();
+        let recorded = mounts.clone();
+        let on_mount = Closure::<dyn FnMut(CustomEvent)>::new(move |event: CustomEvent| {
+            recorded.push(&event.detail());
+        });
+        let _ =
+            display.add_event_listener_with_callback("mount", on_mount.as_ref().unchecked_ref());
+        on_mount.forget();
+        document()
+            .body()
+            .expect("body")
+            .append_child(&display)
+            .expect("attach");
+        settle_until(|| defined("page-mount")).await;
+        assert!(
+            defined("page-mount"),
+            "the library definition of <page-mount> was never installed"
+        );
+        settle_briefly().await;
+        assert_eq!(
+            mounts.length(),
+            0,
+            "no mount before the enclosing display is bound"
+        );
+
+        let _ = display.set_attribute("data-bound", "");
+        settle_until(|| mounts.length() >= 1).await;
+        let detail = mounts.get(0);
+        let pathname = Reflect::get(&detail, &"pathname".into())
+            .ok()
+            .and_then(|value| value.as_string());
+        assert!(
+            pathname
+                .as_deref()
+                .is_some_and(|path| path.starts_with('/')),
+            "the detail is the parsed location, got {pathname:?}",
+        );
+        assert!(
+            Reflect::get(&detail, &"searchParams".into()).is_ok_and(|value| value.is_object()),
+            "search params ride as a plain object",
+        );
+
+        fire(&page, "tonk:join-retry");
+        settle_until(|| mounts.length() >= 2).await;
+        assert_eq!(mounts.length(), 2, "a join retry mounts again");
+    }
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_commits_on_enter_and_restores_on_escape_from_the_library() {
+        define_from_library(CORE_LIBRARY, "inline-editable");
+        let host = render("inline-editable").await;
+        settle_until(|| host.get_attribute("role").as_deref() == Some("textbox")).await;
+        assert!(
+            defined("inline-editable"),
+            "the library definition of <inline-editable> was never installed"
+        );
+        assert_eq!(
+            host.get_attribute("role").as_deref(),
+            Some("textbox"),
+            "connected ran"
+        );
+        host.set_text_content(Some("before"));
+        let changes = js_sys::Array::new();
+        let recorded = changes.clone();
+        let on_change = Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
+            recorded.push(&JsValue::TRUE);
+        });
+        let _ = host.add_event_listener_with_callback("change", on_change.as_ref().unchecked_ref());
+        on_change.forget();
+
+        fire(&host, "dblclick");
+        settle_briefly().await;
+        assert_eq!(
+            host.get_attribute("contenteditable").as_deref(),
+            Some("plaintext-only"),
+            "a double-click opens the edit",
+        );
+        host.set_text_content(Some("after"));
+        keydown(&host, "Enter");
+        settle_briefly().await;
+        assert_eq!(
+            host.get_attribute("contenteditable").as_deref(),
+            Some("false"),
+            "Enter ends the edit",
+        );
+        assert_eq!(changes.length(), 1, "a changed text fires change on commit");
+
+        fire(&host, "dblclick");
+        settle_briefly().await;
+        host.set_text_content(Some("half-typed"));
+        keydown(&host, "Escape");
+        settle_briefly().await;
+        assert_eq!(
+            host.text_content().as_deref(),
+            Some("after"),
+            "Escape restores the text the edit began with",
+        );
+        assert_eq!(changes.length(), 1, "a cancelled edit fires no change");
+
+        assert_eq!(
+            Reflect::get(&host, &"value".into())
+                .ok()
+                .and_then(|value| value.as_string())
+                .as_deref(),
+            Some("after"),
+            "value reads the text",
+        );
+        let _ = Reflect::set(&host, &"value".into(), &"set".into());
+        assert_eq!(
+            host.text_content().as_deref(),
+            Some("set"),
+            "setting value writes the text",
+        );
+    }
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_asks_the_host_to_open_recovery_on_click_from_the_library() {
+        let calls = record_bridge_calls("register");
+        define_from_library(PROFILE_LIBRARY, "space-login");
+        let host = render("space-login").await;
+        settle_until(|| defined("space-login")).await;
+        assert!(
+            defined("space-login"),
+            "the library definition of <space-login> was never installed"
+        );
+        settle_briefly().await;
+
+        fire(&host, "click");
+        settle_until(|| calls.length() >= 1).await;
+        assert_eq!(
+            calls.get(0).as_string().as_deref(),
+            Some(r#"{"reason":"space-login"}"#),
+            "a click asks the host to open account recovery",
+        );
+    }
 }

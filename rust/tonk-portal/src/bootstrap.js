@@ -81,7 +81,7 @@
       ready.then(function(){port.postMessage({v:1,type:"reload"});});
     },
     // Retitle the HOST page's tab: the opaque guest can't touch
-    // parent.document.title. `<tonk-title>` posts its text here and the
+    // parent.document.title. `<tab-title>` posts its text here and the
     // parent performs the real assignment. Fire-and-forget (no response).
     setTitle:function(text){
       ready.then(function(){port.postMessage({v:1,type:"title",text:text});});

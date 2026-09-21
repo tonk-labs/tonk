@@ -591,7 +591,7 @@ tonk-display > .site-pending:not([hidden]) {
 .workspace__title {
     font-weight: var(--wa-font-weight-semibold);
 }
-/* The repository-name banner is a `<tonk-editable>` (contenteditable)
+/* The repository-name banner is a `<inline-editable>` (contenteditable)
    styled to read as plain title text until focused. Borderless and
    transparent so it sits in the topbar like the old static title; on
    focus it reveals a subtle field affordance so the rename is

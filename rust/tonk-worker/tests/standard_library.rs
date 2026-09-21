@@ -335,7 +335,7 @@ fn it_titles_a_downloading_space_from_the_directory_name() {
         .expect("profile library downloading view");
 
     assert!(
-        downloading.contains(r#"<tonk-title text="{name} — Tonk"></tonk-title>"#),
+        downloading.contains(r#"<tab-title text="{name} — Tonk"></tab-title>"#),
         "the downloading view must use the available directory name for the browser tab",
     );
 }
@@ -530,7 +530,7 @@ fn it_recovers_from_every_absent_space_directory_state() {
         "both absence states must explain how to obtain an invite link"
     );
     assert_eq!(
-        directory_probe.matches("<tonk-space-login>").count(),
+        directory_probe.matches("<space-login>").count(),
         2,
         "both absence states must offer sign-in recovery"
     );
@@ -586,7 +586,7 @@ fn it_styles_the_absent_space_as_tonk_edge_chrome() {
         "class=\"space-unknown-wall\"",
         "open this space",
         "class=\"space-unknown-back\" href=\"/\">go to home",
-        "<tonk-space-login><button type=\"button\"",
+        "<space-login><button type=\"button\"",
     ] {
         assert!(
             PROFILE_LIBRARY.contains(contract),
@@ -973,7 +973,7 @@ fn it_renders_join_refusals_as_neutral_edge_walls() {
     assert!(!route.contains("<form"));
     assert!(!route.contains("<input"));
     assert!(!route.contains("tonk-invite-link"));
-    assert!(route.contains("<tonk-page on:join=tonk:join>"));
+    assert!(route.contains("<page-mount on:join=tonk:join>"));
     assert_eq!(failure.matches("class=\"ebtn solid\"").count(), 1);
 }
 

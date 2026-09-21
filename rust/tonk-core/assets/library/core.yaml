@@ -198,7 +198,7 @@ view!:
           }
         </style>
         <section class="blank-canvas__deeplink">
-          <tonk-page on:invite=tonk:agent-handoff></tonk-page>
+          <page-mount on:invite=tonk:agent-handoff></page-mount>
           <tonk-display
             entity={subject}
             model=tonk:agent-invite
@@ -254,7 +254,7 @@ command!: &space/enable-sync
 # (never replicated). The repository is not a field here — the handler
 # reads it from the command's origin (the branch the commit landed in).
 #
-# How the share affordance's mount fills it. `<tonk-page>` raises `mount`
+# How the share affordance's mount fills it. `<page-mount>` raises `mount`
 # as a CustomEvent, so its `timeStamp` is what makes each dispatch
 # distinct.
 event!: &on/invite
@@ -1232,13 +1232,13 @@ view!:
   this: tonk:repository
   show:
     ui: |
-      <tonk-editable
+      <inline-editable
         class="workspace__title-input"
         value={name}
         data-subject={this}
         on:repository-rename=tonk/rename-repository
         aria-label="Space name"
-      ></tonk-editable>
+      ></inline-editable>
 
 # ============================================================
 # SELF-IDENTITY CHIP
@@ -1288,7 +1288,7 @@ command!: &profile/rename
 # `tonk/repository`, the cross-device source of truth) rather than an
 # editable banner. `title` — the browser tab's title: the space
 # chrome mounts `view=title` inside a per-space `with={id}` routing
-# context; `<tonk-title>` renders nothing — it pushes the text to the
+# context; `<tab-title>` renders nothing — it pushes the text to the
 # host page, which owns `document.title`. Distinct facets, so the
 # editable banner, the plain text, and the title never collide under
 # the default `ui` resolution.
@@ -1302,7 +1302,7 @@ view!:
   this: tonk:repository
   show:
     title: |
-      <tonk-title text="{name} — Tonk"></tonk-title>
+      <tab-title text="{name} — Tonk"></tab-title>
 
 concept!: &inspector
   description: An inspector tile body — renders <tonk-inspector source="…">
@@ -2286,3 +2286,143 @@ view!:
         </tonk-component>
         <tonk-blob-media entity={this} content-type={content-type} name={name} with={dom.host/with}></tonk-blob-media>
       </div>
+
+# ── Elements ────────────────────────────────────────────────────────
+#
+# Custom elements carried as branch data. Each replaced a Rust element
+# that only ever needed the DOM: a method is a JS function of `self`,
+# `connected` and `disconnected` are its lifecycle, and a `getter` or
+# `setter` is a property.
+
+# A headless element that names the browser tab. It renders nothing:
+# its only job is to push its `text` to the host page, which owns
+# `document.title` — a sealed guest cannot set it. Nothing while
+# `hidden`, so a title a view keeps for a state it is not showing does
+# not win.
+element!: &tab-title
+  description: Names the browser tab from its `text` attribute, through the host page.
+  method:
+    push: |
+      (self) => {
+        if (self.hasAttribute('hidden')) return;
+        const text = self.getAttribute('text');
+        if (!text) return;
+        window.tonk?.setTitle?.(text);
+      }
+    connected: |
+      (self) => self.push()
+    attribute-changed: |
+      (self, name) => {
+        if (name === 'text' || name === 'hidden') self.push();
+      }
+
+# Surfaces the current location as a bubbling `mount` CustomEvent whose
+# `detail` is the parsed URL — `href`, `origin`, `pathname`, `search`,
+# `hash`, and `searchParams` as a plain object — so a view binds a
+# command to it (`on:join=tonk:join`) and the handler gets the URL as
+# data rather than reaching for a global. Inside a sealed guest the
+# location is the host's, relayed as `window.tonk.context`.
+#
+# It fires once the enclosing display is bound (`data-bound`), because
+# the binding that listens is installed with it, and again on every
+# `tonk:join-retry`.
+element!: &page-mount
+  description: Dispatches the parsed current location as a bubbling `mount` event.
+  method:
+    location: |
+      (self) => {
+        const context = window.tonk?.context;
+        const href = context?.origin
+          ? `${context.origin}${context.path ?? ''}${context.search ?? ''}${context.hash ?? ''}`
+          : window.location.href;
+        try {
+          const url = new URL(href);
+          return {
+            href: url.href, origin: url.origin, pathname: url.pathname,
+            search: url.search, hash: url.hash,
+            searchParams: Object.fromEntries(url.searchParams),
+          };
+        } catch {
+          return {};
+        }
+      }
+    mount: |
+      (self) => {
+        self.dispatchEvent(new CustomEvent('mount', { bubbles: true, detail: self.location() }));
+      }
+    ready: |
+      (self) => self.closest('tonk-display')?.hasAttribute('data-bound') === true
+    connected: |
+      (self) => {
+        if (!self.__retry) {
+          self.__retry = () => self.mount();
+          self.addEventListener('tonk:join-retry', self.__retry);
+        }
+        let fired = false;
+        const fire = () => {
+          if (fired || !self.ready()) return;
+          fired = true;
+          self.mount();
+        };
+        fire();
+        if (fired) return;
+        const display = self.closest('tonk-display');
+        if (!display) return;
+        self.__bound?.disconnect();
+        self.__bound = new MutationObserver(fire);
+        self.__bound.observe(display, { attributes: true, attributeFilter: ['data-bound'] });
+      }
+    disconnected: |
+      (self) => {
+        self.__bound?.disconnect();
+        self.__bound = null;
+      }
+
+# An inline-editable line of text, driven like a native input: its
+# `value` property is its text, a double-click makes it editable, Enter
+# commits — a blur, which fires `change` when the text changed — and
+# Escape restores the text the edit began with, so no `change` with a
+# new value is emitted. It holds no policy: the commit rides on the
+# consuming view's `onchange` binding.
+element!: &inline-editable
+  description: A contenteditable line of text with input-like `value` and `change`.
+  getter:
+    value: |
+      (self) => self.textContent ?? ''
+  setter:
+    value: |
+      (self, value) => {
+        if (self !== self.ownerDocument?.activeElement) self.textContent = value ?? '';
+      }
+  method:
+    connected: |
+      (self) => {
+        self.setAttribute('contenteditable', 'false');
+        self.setAttribute('role', 'textbox');
+        if (self.__wired) return;
+        self.__wired = true;
+        let before = '';
+        self.addEventListener('dblclick', () => {
+          self.setAttribute('contenteditable', 'plaintext-only');
+          self.focus();
+        });
+        self.addEventListener('focus', () => {
+          before = self.textContent ?? '';
+        });
+        self.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            self.blur();
+          } else if (event.key === 'Escape') {
+            event.preventDefault();
+            self.textContent = before;
+            self.blur();
+          }
+        });
+        self.addEventListener('blur', () => {
+          const current = self.textContent ?? '';
+          self.setAttribute('contenteditable', 'false');
+          if (current === before) return;
+          self.dispatchEvent(new Event('change', { bubbles: true }));
+        });
+      }

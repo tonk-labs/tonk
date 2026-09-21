@@ -261,7 +261,7 @@ pub struct RenameRepository {
 
 /// Request to rename the current profile (set the member display name).
 ///
-/// Asserted transiently when the topbar identity chip's `<tonk-editable>`
+/// Asserted transiently when the topbar identity chip's `<inline-editable>`
 /// commits. Carries the new `name` (read from `currentTarget.value`) and
 /// a `marker` (`data-rename`) that distinguishes it from the declarative
 /// `tonk/rename-repository` transient, which shares the `current-target/
@@ -320,8 +320,8 @@ pub struct ExpelMember {
 
 /// Request to redeem an invite URL and join its space.
 ///
-/// Asserted transiently when `<tonk-page>` fires its `mount` event on the
-/// `/join` view (`<tonk-page onmount=tonk/join>`). The element reads the
+/// Asserted transiently when `<page-mount>` fires its `mount` event on the
+/// `/join` view (`<page-mount onmount=tonk/join>`). The element reads the
 /// complete page URL, including the fragment the service worker cannot see,
 /// and delivers it as `detail.href`.
 ///

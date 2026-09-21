@@ -516,7 +516,7 @@ impl Command for RenameRepository {
 /// Rename the signed-in member (set their display name).
 ///
 /// Asserted transiently when the topbar identity chip's
-/// `<tonk-editable>` commits. The handler persists the override to the
+/// `<inline-editable>` commits. The handler persists the override to the
 /// profile meta branch and re-stamps `MemberName` on the origin space.
 ///
 /// See [`RenameRepository`] for the marker these two used to need.

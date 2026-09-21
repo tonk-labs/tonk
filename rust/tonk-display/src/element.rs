@@ -1702,13 +1702,13 @@ fn mount_portal_slide(host: &Element, inner: &Inner, display: &str) -> Option<Sl
 
 /// Marker attribute stamped on a `<tonk-display>` host once its event
 /// delegate is installed — the persistent, queryable twin of the one-shot
-/// `tonk-display:bound` event. A `<tonk-page onmount=…>` whose command is
+/// `tonk-display:bound` event. A `<page-mount onmount=…>` whose command is
 /// handled by this display's delegate reads it to learn the delegate is
 /// listening, so it can fire `mount` even if it connected (or reconnected
 /// across a view reconcile) *after* the announcement and missed the event.
 /// Cleared while a fresh delegate refresh is pending, so it never reads
 /// ready during the async descriptor-resolve window. This is a DOM contract
-/// shared with `<tonk-page>` in the `tonk-workspace` crate — keep the string
+/// shared with `<page-mount>` in the `tonk-workspace` crate — keep the string
 /// in sync there.
 const BOUND_ATTR: &str = "data-bound";
 
@@ -1734,7 +1734,7 @@ fn schedule_delegate_refresh(host: &Element, state: &Rc<RefCell<Inner>>) {
     };
     // A fresh delegate is about to be (re)built asynchronously; until the
     // install completes the host is not ready to handle events. Drop the
-    // readiness marker now (synchronously) so a `<tonk-page>` reading it
+    // readiness marker now (synchronously) so a `<page-mount>` reading it
     // during the resolve window does not fire into a half-installed
     // delegate. The settling refresh re-stamps it on install.
     let _ = host.remove_attribute(BOUND_ATTR);
@@ -2078,13 +2078,13 @@ async fn refresh_delegate(host: &Element, state: &Rc<RefCell<Inner>>, delegate_g
     drop(s);
 
     // Persist readiness as a queryable marker *before* announcing it, so a
-    // `<tonk-page>` that connects — or reconnects across a view reconcile —
+    // `<page-mount>` that connects — or reconnects across a view reconcile —
     // after this point can detect the delegate is installed without having
     // caught the transient event below. See [`BOUND_ATTR`].
     let _ = host.set_attribute(BOUND_ATTR, "");
 
     // The delegate's listeners are now attached. Announce it so any
-    // mount-triggered element (e.g. `<tonk-page onmount=…>`) that
+    // mount-triggered element (e.g. `<page-mount onmount=…>`) that
     // connected *before* this point — its `mount` event would have fired
     // into the void, since the delegate installs asynchronously after the
     // template renders — can now fire knowing a listener exists. Carries

@@ -929,7 +929,7 @@ pub mod command {
         use super::super::Entity;
         use super::Attribute;
 
-        /// The new repository name, read from the chip's `<tonk-editable>` on
+        /// The new repository name, read from the chip's `<inline-editable>` on
         /// commit. The derived attribute is
         /// `dom.event.current-target/value`.
         #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -964,7 +964,7 @@ pub mod command {
     }
 
     /// Attributes the `profile/rename` command reads from the identity
-    /// chip's `<tonk-editable>` commit event.
+    /// chip's `<inline-editable>` commit event.
     pub mod rename {
         use super::super::Entity;
         use super::Attribute;
@@ -1115,7 +1115,7 @@ pub mod command {
         pub struct Expel(pub Entity);
     }
 
-    /// Attributes the `tonk:join` command reads from `<tonk-page>`'s
+    /// Attributes the `tonk:join` command reads from `<page-mount>`'s
     /// `mount` event. The page delivers the complete URL because the
     /// service worker cannot observe its fragment.
     pub mod join {

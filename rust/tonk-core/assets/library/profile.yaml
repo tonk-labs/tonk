@@ -676,7 +676,7 @@ view!:
     # that has not replicated a space can still label it.
     downloading: |
       <div class="space-unknown">
-        <tonk-title text="{name} — Tonk"></tonk-title>
+        <tab-title text="{name} — Tonk"></tab-title>
         <a class="space-unknown-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
         <div class="space-unknown-wall">
           <h1 class="space-unknown-statement">downloading {name}</h1>
@@ -893,7 +893,7 @@ concept!: &fab/dock
 # JOIN — redeem an invite at /join (runs on the profile meta branch)
 # ============================================================
 
-# Redeem an invite URL. Fired by `<tonk-page on:join=tonk:join>` on the
+# Redeem an invite URL. Fired by `<page-mount on:join=tonk:join>` on the
 # /join view: the element reads the page location (the service worker can't
 # see the `#fragment`, where an open invite's seed rides) and delivers it in
 # the mount event's `detail` (a flat, URL-shaped record). The worker's
@@ -958,7 +958,7 @@ concept!: &join/failure
 # The /join view — a directory view for `tonk:join/status`, mounted by a
 # no-entity `<tonk-display model=tonk:join/status>` (see the Leptos /join
 # route). Directory chrome renders even with zero instances, so the
-# `<tonk-page>` trigger mounts and fires `tonk:join` on load before any
+# `<page-mount>` trigger mounts and fires `tonk:join` on load before any
 # status exists. The per-instance repeat shows the shared pulse while pending and
 # the failure callout (`model=tonk:join/failure`) once a join fails. On
 # success there is no status to show: the worker posts a navigate message
@@ -1552,8 +1552,8 @@ view!:
   this: tonk:account/name
   show:
     editable: |
-      <tonk-editable class="sname" data-settings-name value={name} aria-label="display name"
-        on:profile-rename=profile/rename></tonk-editable>
+      <inline-editable class="sname" data-settings-name value={name} aria-label="display name"
+        on:profile-rename=profile/rename></inline-editable>
 
 view!:
   this: tonk:account/passkey
@@ -1719,7 +1719,7 @@ view!:
   show:
     ui: |
       <div class="display-view-slot">
-        <tonk-title text="Tonk"></tonk-title>
+        <tab-title text="Tonk"></tab-title>
         <tonk-display model="space"></tonk-display>
       </div>
 
@@ -1763,7 +1763,7 @@ view!:
     ui: |
       <div class="hub-page">
         <link rel="stylesheet" with:src="ui@space">
-        <tonk-title text="settings — Tonk"></tonk-title>
+        <tab-title text="settings — Tonk"></tab-title>
         <div class="hub-logo" role="img" aria-label="tonk"><svg viewBox="0 0 1024 343" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M337.41 169.57C337.41 136.215 363.983 109.171 396.764 109.171C429.539 109.171 456.112 136.215 456.112 169.57C456.112 202.932 429.539 229.975 396.764 229.975C363.983 229.975 337.41 202.932 337.41 169.57ZM643.51 54C614.396 54 589.91 61.6682 572.703 77.2353C563.913 85.1861 557.227 94.8795 552.759 105.986C552.206 97.3086 549.67 85.1977 540.937 75.1754C530.712 63.4453 515.039 55.8233 494.461 56.2041C488.76 56.3253 484.229 61.045 484.345 66.7514C484.46 72.3886 489.06 76.8833 494.668 76.8833C494.737 76.8833 494.812 76.8833 494.881 76.8833C509.044 76.6006 519.252 81.8339 525.282 88.6654C534.084 98.6415 532.072 113.834 532.02 114.197C531.167 119.817 535.012 125.079 540.626 125.962C541.168 126.048 545.537 126.602 547.612 124.565C546.673 130.203 546.171 136.076 546.171 142.192C546.171 183.349 531.225 224.038 507.39 247.764C488.403 266.66 465.219 275.805 434.911 279.382C479.549 263.671 511.569 221.038 511.569 170.874C511.569 107.365 460.262 55.8868 396.966 55.8868C333.675 55.8868 282.368 107.365 282.368 170.874C282.368 234.383 333.675 285.868 396.966 285.868C399.121 285.868 401.254 285.793 403.375 285.677C451.126 285.1 484.569 276.722 510.508 250.902C535.196 226.328 550.592 184.555 550.592 142.192C550.592 90.1771 586.197 57.8658 643.51 57.8658C737.703 57.8658 741.576 107.169 741.657 113.96C731.477 116.378 708.795 127.093 708.795 147.247V284.702H742.314C745.744 284.702 746.107 282.556 746.107 281.333V114.209C746.107 107.983 743.208 54 643.51 54Z" fill="currentColor"/><path d="M144.171 58.5683L129.662 58.5856C106.081 58.6318 91.4574 69.3695 83.3356 77.9031C72.9486 88.8081 67 103.873 67 119.221C67 148.151 86.5636 179.285 133.299 179.285V155.658C100.513 155.658 90.6043 136.029 90.6043 119.221C90.6043 104.029 99.7116 81.7516 130.135 81.7516L144.171 81.7458V261.448C131.691 261.448 124.786 248.968 124.786 238.08L104.974 238.092C104.974 267.316 130.095 284.383 143.98 284.706H170.432C195.829 284.706 215.053 259.717 215.053 196.924V107.306H225.924V155.658H274.164V58.5683H144.171Z" fill="currentColor"/><path d="M926.713 197.694L895.344 197.463C903.656 193.101 910.337 187.937 915.461 183.073C941.844 158.049 955.222 116.16 955.222 58.5828H938.99C938.99 111.527 927.318 149.447 904.302 171.286C893.817 181.227 875.475 192.721 847.444 191.544V58.5828H776.988V211.663C776.988 244.701 754.468 249.9 754.468 249.9C754.474 249.9 754.468 284.715 754.468 284.715H847.444V216.815C847.444 211.703 856.764 211.721 856.764 216.815C856.764 225.54 856.741 239.803 856.741 248.977C856.741 275.98 879.85 289.735 907.633 289.735C932.039 289.735 955.43 274.601 956.098 248.977C956.536 232.186 960.612 197.694 926.713 197.694Z" fill="currentColor"/></svg></div>
         <main class="hubcol">
           <!-- The account tab, open. `tab` is an attribute, so the route
@@ -1794,7 +1794,7 @@ view!:
 # missing"). Mirrors the Hub: `/join` → `tonk:join/route`, whose entity view
 # (on the site entity) mounts the no-entity `<tonk-display
 # model="tonk:join/status">` directory. That directory's chrome carries the
-# `<tonk-page on:join=tonk:join>` trigger, which reads the page location
+# `<page-mount on:join=tonk:join>` trigger, which reads the page location
 # (the SW can't see the `#fragment` seed) and fires `tonk:join`.
 route!: &route/join
   this: id:tonk:route/join
@@ -1819,7 +1819,7 @@ view!:
   show:
     ui: |
       <div class="display-view-slot">
-        <tonk-title text="Tonk"></tonk-title>
+        <tab-title text="Tonk"></tab-title>
         <main class="join-view">
           <style>
             .join-view {
@@ -1884,7 +1884,7 @@ view!:
             }
           </style>
           <a class="edge-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
-          <tonk-page on:join=tonk:join></tonk-page>
+          <page-mount on:join=tonk:join></page-mount>
           <!-- Invite URLs are opened directly in the browser. Bare /join
                visits return home through the join handler. -->
           <tonk-display class="join-status-slot" model="tonk:join/status">
@@ -1941,7 +1941,7 @@ view!:
   show:
     ui: |
       <div class="display-view-slot">
-        <tonk-title text="Tonk"></tonk-title>
+        <tab-title text="Tonk"></tab-title>
         <tonk-inspector with="{branch}@{repo}"></tonk-inspector>
       </div>
 
@@ -1975,7 +1975,7 @@ view!:
   show:
     ui: |
       <div class="display-view-slot">
-        <tonk-title text="Tonk"></tonk-title>
+        <tab-title text="Tonk"></tab-title>
         <tonk-tree with="{branch}@{repo}"></tonk-tree>
       </div>
 
@@ -2077,7 +2077,7 @@ view!:
           font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:13px;
           font-weight:400; line-height:1.55; text-wrap:pretty; }
         .space-unknown-run { display:flex; }
-        .space-unknown-run tonk-space-login { display:block; width:100%; }
+        .space-unknown-run space-login { display:block; width:100%; }
         .space-unknown-back { align-self:flex-start; min-height:44px;
           display:flex; align-items:center; color:var(--edge-ink);
           text-underline-offset:3px; }
@@ -2121,7 +2121,7 @@ view!:
              EVERY matching child, not the first). `no-entity` keeps the
              quiet placeholder: the concept resolved, the row just is not
              here yet. -->
-        <tonk-title slot="no-entity" hidden text="Untitled — Tonk"></tonk-title>
+        <tab-title slot="no-entity" hidden text="Untitled — Tonk"></tab-title>
         <!-- The absent-space case. A repository this device has not
              replicated answers every query with the EMPTY SET, so
              `tonk:repository` resolves to nothing and this display lands
@@ -2154,28 +2154,28 @@ view!:
                  `no-model` as the same recovery for an older profile whose
                  directory concept has not arrived yet. -->
             <div slot="no-model" hidden>
-              <tonk-title text="Open this space — Tonk"></tonk-title>
+              <tab-title text="Open this space — Tonk"></tab-title>
               <a class="space-unknown-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
               <div class="space-unknown-wall">
                 <h1 class="space-unknown-statement">open this space</h1>
                 <p class="space-unknown-narrator">Already use this space? Sign in with your account. If you added Tonk to your Home Screen, you may need to sign in again here.</p>
                 <!-- The recovery control opens the top-page account ceremony. -->
                 <div class="space-unknown-run">
-                  <tonk-space-login><button type="button" class="space-unknown-home">sign in<span aria-hidden="true">&#9656;</span></button></tonk-space-login>
+                  <space-login><button type="button" class="space-unknown-home">sign in<span aria-hidden="true">&#9656;</span></button></space-login>
                 </div>
                 <p class="space-unknown-narrator">New to this space? Ask someone in it to send you an invite link from <strong>share</strong>.</p>
                 <a class="space-unknown-back" href="/">go to home</a>
               </div>
             </div>
             <div slot="no-entity" hidden>
-              <tonk-title text="Open this space — Tonk"></tonk-title>
+              <tab-title text="Open this space — Tonk"></tab-title>
               <a class="space-unknown-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
               <div class="space-unknown-wall">
                 <h1 class="space-unknown-statement">open this space</h1>
                 <p class="space-unknown-narrator">Already use this space? Sign in with your account. If you added Tonk to your Home Screen, you may need to sign in again here.</p>
                 <!-- The recovery control opens the top-page account ceremony. -->
                 <div class="space-unknown-run">
-                  <tonk-space-login><button type="button" class="space-unknown-home">sign in<span aria-hidden="true">&#9656;</span></button></tonk-space-login>
+                  <space-login><button type="button" class="space-unknown-home">sign in<span aria-hidden="true">&#9656;</span></button></space-login>
                 </div>
                 <p class="space-unknown-narrator">New to this space? Ask someone in it to send you an invite link from <strong>share</strong>.</p>
                 <a class="space-unknown-back" href="/">go to home</a>
@@ -2237,7 +2237,7 @@ view!:
                       color: var(--wa-color-text-normal); }
           .nf__home { margin-top: 8px; text-decoration: none; }
         </style>
-        <tonk-title text="Tonk"></tonk-title>
+        <tab-title text="Tonk"></tab-title>
         <div class="nf">
           <div class="nf__code">404</div>
           <div class="nf__msg">No page at <span class="nf__path">{path}</span></div>
@@ -3049,3 +3049,158 @@ concept!: &device/profile
       the: xyz.tonk.roster/name
       cardinality: one
       as: text
+
+# ── Elements ────────────────────────────────────────────────────────
+#
+# Custom elements carried as branch data. Each replaced a Rust element
+# that only ever needed the DOM: a method is a JS function of `self`,
+# `connected` and `disconnected` are its lifecycle, and a `getter` or
+# `setter` is a property.
+
+# A headless element that names the browser tab. It renders nothing:
+# its only job is to push its `text` to the host page, which owns
+# `document.title` — a sealed guest cannot set it. Nothing while
+# `hidden`, so a title a view keeps for a state it is not showing does
+# not win.
+element!: &tab-title
+  description: Names the browser tab from its `text` attribute, through the host page.
+  method:
+    push: |
+      (self) => {
+        if (self.hasAttribute('hidden')) return;
+        const text = self.getAttribute('text');
+        if (!text) return;
+        window.tonk?.setTitle?.(text);
+      }
+    connected: |
+      (self) => self.push()
+    attribute-changed: |
+      (self, name) => {
+        if (name === 'text' || name === 'hidden') self.push();
+      }
+
+# Surfaces the current location as a bubbling `mount` CustomEvent whose
+# `detail` is the parsed URL — `href`, `origin`, `pathname`, `search`,
+# `hash`, and `searchParams` as a plain object — so a view binds a
+# command to it (`on:join=tonk:join`) and the handler gets the URL as
+# data rather than reaching for a global. Inside a sealed guest the
+# location is the host's, relayed as `window.tonk.context`.
+#
+# It fires once the enclosing display is bound (`data-bound`), because
+# the binding that listens is installed with it, and again on every
+# `tonk:join-retry`.
+element!: &page-mount
+  description: Dispatches the parsed current location as a bubbling `mount` event.
+  method:
+    location: |
+      (self) => {
+        const context = window.tonk?.context;
+        const href = context?.origin
+          ? `${context.origin}${context.path ?? ''}${context.search ?? ''}${context.hash ?? ''}`
+          : window.location.href;
+        try {
+          const url = new URL(href);
+          return {
+            href: url.href, origin: url.origin, pathname: url.pathname,
+            search: url.search, hash: url.hash,
+            searchParams: Object.fromEntries(url.searchParams),
+          };
+        } catch {
+          return {};
+        }
+      }
+    mount: |
+      (self) => {
+        self.dispatchEvent(new CustomEvent('mount', { bubbles: true, detail: self.location() }));
+      }
+    ready: |
+      (self) => self.closest('tonk-display')?.hasAttribute('data-bound') === true
+    connected: |
+      (self) => {
+        if (!self.__retry) {
+          self.__retry = () => self.mount();
+          self.addEventListener('tonk:join-retry', self.__retry);
+        }
+        let fired = false;
+        const fire = () => {
+          if (fired || !self.ready()) return;
+          fired = true;
+          self.mount();
+        };
+        fire();
+        if (fired) return;
+        const display = self.closest('tonk-display');
+        if (!display) return;
+        self.__bound?.disconnect();
+        self.__bound = new MutationObserver(fire);
+        self.__bound.observe(display, { attributes: true, attributeFilter: ['data-bound'] });
+      }
+    disconnected: |
+      (self) => {
+        self.__bound?.disconnect();
+        self.__bound = null;
+      }
+
+# An inline-editable line of text, driven like a native input: its
+# `value` property is its text, a double-click makes it editable, Enter
+# commits — a blur, which fires `change` when the text changed — and
+# Escape restores the text the edit began with, so no `change` with a
+# new value is emitted. It holds no policy: the commit rides on the
+# consuming view's `onchange` binding.
+element!: &inline-editable
+  description: A contenteditable line of text with input-like `value` and `change`.
+  getter:
+    value: |
+      (self) => self.textContent ?? ''
+  setter:
+    value: |
+      (self, value) => {
+        if (self !== self.ownerDocument?.activeElement) self.textContent = value ?? '';
+      }
+  method:
+    connected: |
+      (self) => {
+        self.setAttribute('contenteditable', 'false');
+        self.setAttribute('role', 'textbox');
+        if (self.__wired) return;
+        self.__wired = true;
+        let before = '';
+        self.addEventListener('dblclick', () => {
+          self.setAttribute('contenteditable', 'plaintext-only');
+          self.focus();
+        });
+        self.addEventListener('focus', () => {
+          before = self.textContent ?? '';
+        });
+        self.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            self.blur();
+          } else if (event.key === 'Escape') {
+            event.preventDefault();
+            self.textContent = before;
+            self.blur();
+          }
+        });
+        self.addEventListener('blur', () => {
+          const current = self.textContent ?? '';
+          self.setAttribute('contenteditable', 'false');
+          if (current === before) return;
+          self.dispatchEvent(new Event('change', { bubbles: true }));
+        });
+      }
+
+# Opens account recovery over the missing-space screen: a click asks the
+# top page to raise the passkey ceremony, which needs a `window` and a
+# user gesture this opaque realm has neither of.
+element!: &space-login
+  description: A click asks the top page to open account recovery.
+  method:
+    connected: |
+      (self) => {
+        if (self.__wired) return;
+        self.__wired = true;
+        self.addEventListener('click', () => {
+          window.tonk?.register?.('{"reason":"space-login"}');
+        });
+      }

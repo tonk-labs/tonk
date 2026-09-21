@@ -2243,7 +2243,7 @@ impl dialog_capability::Provider<tonk_schema::command::PauseSync> for crate::rou
 
 /// Run the [`ProfileRename`] command.
 ///
-/// Fired when the topbar identity chip's `<tonk-editable>` commits a
+/// Fired when the topbar identity chip's `<inline-editable>` commits a
 /// transient [`ProfileRename`]. It persists the new display name as a
 /// durable [`ProfileName`] override on the profile's meta branch, then
 /// re-stamps the self member's [`MemberName`] on every space the profile
@@ -9206,7 +9206,7 @@ mod tests {
     }
 
     /// Build a one-entity transient `ProfileRename{this, name, marker}`
-    /// batch — the facts the identity chip's `<tonk-editable>` commit
+    /// batch — the facts the identity chip's `<inline-editable>` commit
     /// asserts. Mirrors how `command::tests::ping_transient` hand-builds a
     /// command transient via `the!`, carrying both the `name`
     /// (`current-target/value`) and the `marker`
