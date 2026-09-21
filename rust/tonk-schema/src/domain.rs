@@ -76,6 +76,39 @@ pub mod replica {
     pub struct ActiveBranch(pub Entity);
 }
 
+/// Attributes tonk adds to dialog's branch model.
+pub mod tonk_branch {
+    use super::{Attribute, Entity};
+
+    /// The branch this one follows.
+    ///
+    /// One attribute, entity to entity. Both ends are ordinary branches
+    /// on ordinary replicas — the difference is only which peer holds
+    /// them — so there is no separate "remote branch" to model and no
+    /// remote to indirect through.
+    ///
+    /// Dialog holds the same relationship in a CELL (its `Upstream`
+    /// enum: a remote name, a branch name and the tree at the last sync
+    /// point), so there is no `dialog.*` vocabulary to reuse; this is
+    /// that relationship as a fact a rule can traverse.
+    ///
+    /// Everything else about the upstream is a traversal rather than a
+    /// field that could disagree with it:
+    ///
+    /// ```text
+    /// upstream -> branch/replica -> replica/subject   which repository
+    ///                            -> replica/profile   which peer
+    /// ```
+    ///
+    /// Absence is meaningful: a branch with no upstream follows
+    /// nothing, which on the profile repository is what signed out
+    /// means.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("tonk.dialog.branch")]
+    #[cardinality(one)]
+    pub struct Upstream(pub Entity);
+}
+
 /// Attributes for the account-level space directory — one entry per
 /// space, shared by every device on the account.
 ///

@@ -123,6 +123,78 @@ pub(crate) async fn active_branch(tonk: &crate::worker::TonkState) -> Option<Ent
     rows.into_iter().next().map(|row| row.active_branch.0)
 }
 
+/// The account this profile is signed in as, or `None` when it is not.
+///
+/// Derived, never stored. The active branch's upstream is a branch on
+/// a replica held by another peer, and that replica's subject is the
+/// account:
+///
+/// ```text
+/// active branch -> upstream -> branch/replica -> replica/subject
+/// ```
+///
+/// Signed out is the active branch having no upstream — a branch that
+/// follows nothing. No flag, no null value, no account-shaped absence.
+///
+/// This replaces asking which replicas have kind `tonk:account`, which
+/// answered with every account the device had ever linked: nothing in
+/// those rows said which was current.
+pub(crate) async fn active_account(tonk: &crate::worker::TonkState) -> Option<Entity> {
+    use tonk_schema::Branch as MetaBranch;
+    use tonk_schema::{BranchUpstream, Replica as ReplicaConcept};
+
+    let active = active_branch(tonk).await?;
+    let session = tonk
+        .reactor
+        .profile_repository()
+        .branch(super::repository::META_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .ok()?;
+    let handle = session.handle();
+
+    // What the active branch follows. Absent means signed out.
+    let upstream: Vec<BranchUpstream> = handle
+        .query()
+        .select(Query::<BranchUpstream> {
+            this: Term::from(active),
+            upstream: Term::var("upstream"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .ok()?;
+    let upstream = upstream.into_iter().next()?.upstream.0;
+
+    // The upstream branch's replica, and that replica's subject.
+    let branches: Vec<MetaBranch> = handle
+        .query()
+        .select(Query::<MetaBranch> {
+            this: Term::from(upstream),
+            name: Term::var("name"),
+            origin: Term::var("origin"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .ok()?;
+    let replica = branches.into_iter().next()?.origin.0;
+
+    let replicas: Vec<ReplicaConcept> = handle
+        .query()
+        .select(Query::<ReplicaConcept> {
+            this: Term::from(replica),
+            subject: Term::var("subject"),
+            profile: Term::var("profile"),
+            kind: Term::var("kind"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .ok()?;
+    replicas.into_iter().next().map(|row| row.subject.0)
+}
+
 /// One space the profile owns, as listed by `GET /api/profile`.
 ///
 /// A repository's identity is its credential's `did:key` (`subject`);
@@ -292,6 +364,97 @@ mod tests {
 
     use crate::api_router;
     use crate::router::tests::test_state;
+
+    /// The account is the subject of the active branch's upstream.
+    ///
+    /// Built end to end rather than asserted piecemeal: a peer's
+    /// replica of the account repository, a branch on it, and a local
+    /// branch following that. If the traversal is right, the account
+    /// falls out; if any hop is wrong, nothing does.
+    #[dialog_common::test]
+    async fn it_reads_the_account_off_the_active_branch() {
+        use dialog_credentials::Ed25519Signer;
+        use dialog_varsig::Principal as _;
+        use tonk_schema::{Branch as MetaBranch, BranchUpstream, ReplicaActiveBranch};
+
+        let state = test_state().await;
+        let profile_did = state.profile.did();
+        let replica = Replica::new(profile_did.clone(), profile_did.clone());
+
+        // The account, and the peer that serves it.
+        let account = Ed25519Signer::import(&[91; 32]).await.unwrap().did();
+        let service = Ed25519Signer::import(&[92; 32]).await.unwrap().did();
+        let served = Replica::new(service, account.clone());
+        let upstream = MetaBranch::new(&served, "main");
+
+        // The local branch that follows it.
+        let local = MetaBranch::new(&replica, &format!("account/{}", account.repo_key()));
+
+        state
+            .reactor
+            .profile_repository()
+            .branch(super::super::repository::META_BRANCH)
+            .transaction()
+            .assert(served.clone())
+            .assert(upstream.clone())
+            .assert(local.clone())
+            .assert(BranchUpstream::new(&local, &upstream))
+            .assert(ReplicaActiveBranch::new(&replica, &local))
+            .commit()
+            .perform(&state.operator)
+            .await
+            .expect("the link commits");
+
+        let resolved = active_account(&state).await.expect("an account");
+        assert_eq!(
+            resolved,
+            account.this(),
+            "the account is the subject of the upstream's replica",
+        );
+    }
+
+    /// A branch that follows nothing means signed out.
+    ///
+    /// Not a flag and not a null: the absence of an upstream IS the
+    /// state, the same way a local-only git branch has no remote.
+    #[dialog_common::test]
+    async fn it_reads_no_account_from_a_branch_with_no_upstream() {
+        let state = test_state().await;
+        ensure_profile_meta_branch(&state).await;
+
+        assert!(
+            active_account(&state).await.is_none(),
+            "a fresh profile follows nothing, so it is signed out",
+        );
+    }
+
+    /// A branch name may carry a DID, colons and all.
+    ///
+    /// Account branches are named `account/<did>`, following
+    /// `repo_key`'s "one identifier, no suffix-stripping". Dialog does
+    /// not validate branch names — they are cell paths — but that is
+    /// worth pinning rather than assuming, since the whole naming
+    /// scheme rests on it.
+    #[dialog_common::test]
+    async fn it_opens_a_branch_named_for_a_did() {
+        use tonk_schema::Branch as MetaBranch;
+
+        let state = test_state().await;
+        let name = "account/did:key:z6MkTestAccountBranchName";
+        state
+            .reactor
+            .profile_repository()
+            .branch(name)
+            .transaction()
+            .assert(MetaBranch::new(
+                &Replica::new(state.profile.did(), state.profile.did()),
+                name,
+            ))
+            .commit()
+            .perform(&state.operator)
+            .await
+            .expect("a branch named for a DID commits");
+    }
 
     /// A fresh profile starts on a branch with no upstream.
     ///

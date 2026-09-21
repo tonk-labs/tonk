@@ -387,6 +387,33 @@ impl SpaceStatus {
 /// resolves independently: the durable preference is always present, the
 /// live status may lag — a single two-field concept would only resolve
 /// once both existed (the join-status lesson).
+/// What a branch follows.
+///
+/// Keyed on the LOCAL branch, so retracting the branch retracts its
+/// tracking. The value is another branch entity — one on a replica held
+/// by a different peer, which is all "remote" ever meant.
+///
+/// Lives on `meta` beside the branch enumeration. Dialog keeps the same
+/// relationship in a cell; this is it as a fact, so a rule can walk
+/// from a branch to what it follows and on to the peer serving it.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct BranchUpstream {
+    /// The local branch.
+    pub this: Entity,
+    /// The branch it follows.
+    pub upstream: crate::domain::tonk_branch::Upstream,
+}
+
+impl BranchUpstream {
+    /// Record that `local` follows `upstream`.
+    pub fn new(local: &Branch, upstream: &Branch) -> Self {
+        Self {
+            this: local.this.clone(),
+            upstream: crate::domain::tonk_branch::Upstream(upstream.this.clone()),
+        }
+    }
+}
+
 /// Which branch a replica is currently on.
 ///
 /// The one piece of branch bookkeeping dialog does not model: it says
