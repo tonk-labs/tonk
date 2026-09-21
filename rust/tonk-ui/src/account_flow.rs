@@ -6132,19 +6132,31 @@ mod tests {
         click(&driver, "[data-sign-out-submit]").await?;
         wait_for_top_reload(&driver, &before_sign_out, "sign-out").await?;
 
+        // Signing out lands on a branch that follows no account, minted
+        // for it: the other account is not switched onto, since nothing
+        // on it was asked for, but it stays listed for the switcher.
         let profiles = get_json(&driver, "/api/profiles").await?;
         let profiles = successful_body("profiles after first sign-out", &profiles);
-        assert_eq!(
-            profiles["active"], second_profile,
-            "signing out must switch directly to the next signed-in account"
+        let landing = profiles["active"]
+            .as_str()
+            .context("profiles omitted the active profile")?
+            .to_owned();
+        assert_ne!(
+            landing, first_profile,
+            "sign-out leaves the account's branch"
         );
+        assert_ne!(
+            landing, second_profile,
+            "sign-out does not switch onto another account unasked"
+        );
+        let signed_out_count = profiles["profiles"]
+            .as_array()
+            .context("profile roster is not an array")?
+            .len();
         assert_eq!(
-            profiles["profiles"]
-                .as_array()
-                .context("profile roster is not an array")?
-                .len(),
-            profile_count,
-            "sign-out to an existing account must not create another profile"
+            signed_out_count,
+            profile_count + 1,
+            "sign-out lands on a branch of its own, beside both accounts'"
         );
 
         // The signed-out profile remains explicitly reachable for its local
@@ -6195,8 +6207,8 @@ mod tests {
                 .as_array()
                 .context("profile roster is not an array")?
                 .len(),
-            profile_count,
-            "routing to an existing account must not create a third profile"
+            signed_out_count,
+            "routing to an existing account must not create another branch"
         );
         let summary = account_summary(&driver).await?;
         assert_eq!(

@@ -1846,6 +1846,16 @@ mod tests {
             "unlinking strips the menu-button ARIA again"
         );
         assert_eq!(trigger.get_attribute("aria-expanded"), None);
+
+        // The name arrives on its own subscription and proves the link
+        // just as well; the affordance must not wait for the other row.
+        registered.set_inner_html(r#"<span data-account-name>Hub Owner</span>"#);
+        settle_until(|| trigger.has_attribute("aria-haspopup")).await;
+        assert_eq!(
+            trigger.get_attribute("aria-haspopup").as_deref(),
+            Some("menu"),
+            "a rendered name dresses the cell as the menu button"
+        );
     }
 
     /// The first link opens the ceremony in place; adding an account

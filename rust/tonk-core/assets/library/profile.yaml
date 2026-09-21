@@ -1794,8 +1794,12 @@ element!: &hub-bar
     # not the name: the name waits on activation, so a linked account
     # that has not confirmed its email has no name and would read as
     # unlinked, sending someone who just signed in back to signup.
+    # The registration row or the name: a rendered name proves an
+    # account as surely as the registration does, and the two arrive on
+    # separate subscriptions, so the menu affordance lands with either
+    # rather than a beat after the label.
     linked: |
-      (self) => !!self.querySelector('[data-account-linked]')
+      (self) => !!self.querySelector('[data-account-linked], [data-account-name]')
     # Whether it is KNOWN to have none: the registration display has
     # resolved to zero rows. Before it resolves, neither holds, and a
     # click waits on it (see `decide`) rather than guessing.
@@ -3764,13 +3768,16 @@ view!:
 # What deleting the account deletes: every space this account provides,
 # named through the space's own row.
 view!:
-  this: tonk:space/owned
+  this: space/owned
   show:
     deletion: |
       <span data-owned-space data-of={this}><tonk-display model="tonk:space" entity={this} view="name"></tonk-display></span>
 
+# Named by its alias, as the hub's own views of it are: a view naming
+# the URI is checked against the concept stored on the branch, which on
+# a profile still carrying an older library has no `name` yet.
 view!:
-  this: tonk:space
+  this: space
   show:
     name: |
       <span data-space-name>{name}</span>
