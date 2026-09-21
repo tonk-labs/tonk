@@ -5252,7 +5252,7 @@ mod tests {
             .to_string();
         creator.quit().await?;
 
-        let claimer = driver_with_prf(&env).await?;
+        let (claimer, authenticator) = driver_with_prf_authenticator(&env).await?;
         sign_up(&claimer, &env, "claimer@example.com").await?;
         let visited = post_json(
             &claimer,
@@ -5262,38 +5262,26 @@ mod tests {
         .await?;
         successful_body("join shared space", &visited);
 
-        // Publish the claimer's directory before replacing its local browser
-        // storage. Re-authentication below must restore the claimed space from
-        // the account backup without relying on retired CLI account commands.
-        let synced = post_json(&claimer, "/api/sync", serde_json::json!({})).await?;
-        successful_body("publish claimed-space directory", &synced);
-
-        let devtools = ChromeDevTools::new(claimer.handle.clone());
-        devtools
-            .execute_cdp_with_params(
-                "Storage.clearDataForOrigin",
-                serde_json::json!({
-                    "origin": env.tonk_web.origin().ascii_serialization(),
-                    "storageTypes": "all",
-                }),
-            )
-            .await?;
-        goto(&claimer, env.tonk_web.as_str()).await?;
-        wait_for_service_worker(&claimer).await?;
-        raise_cluster_from_hub(&claimer, &env).await?;
-        run_cluster_login(&claimer, "claimer@example.com").await?;
+        // A sync poke schedules work; it is not a publication barrier. Keep
+        // the source browser alive until an independent device has recovered
+        // the account directory, exactly as a second-device sign-in does.
+        let (recovered, _) =
+            second_device_with_same_passkey(&env, &claimer, &authenticator).await?;
+        wait_for_service_worker(&recovered).await?;
+        raise_cluster_from_hub(&recovered, &env).await?;
+        run_cluster_login(&recovered, "claimer@example.com").await?;
         // The trigger wearing the account's name is the sign-in; the
         // address is a fact this second device only holds once the
         // account has synced, so it is not what proves the link.
         let signed_in = async {
-            enter_hub(&claimer).await?;
-            wait_for_text_without(&claimer, "[data-account-trigger]", "add an account").await?;
-            claimer.enter_default_frame().await?;
+            enter_hub(&recovered).await?;
+            wait_for_text_without(&recovered, "[data-account-trigger]", "add an account").await?;
+            recovered.enter_default_frame().await?;
             Ok::<(), anyhow::Error>(())
         };
         if let Err(wait_error) = signed_in.await {
-            claimer.enter_default_frame().await?;
-            let status = get_json(&claimer, "/api/account").await?;
+            recovered.enter_default_frame().await?;
+            let status = get_json(&recovered, "/api/account").await?;
             return Err(wait_error).context(format!(
                 "second-device sign-in never showed the account: {status}"
             ));
@@ -5304,31 +5292,34 @@ mod tests {
         // those rows. The Hub renders from a live subscription, so
         // arrival is eventually consistent by design; poll the load
         // the same way a page would re-render.
-        let mut restored = get_json(&claimer, &format!("/api/repository/{key}")).await?;
+        let mut restored = get_json(&recovered, &format!("/api/repository/{key}")).await?;
         for _ in 0..30 {
             if restored["status"].as_u64().is_some_and(|s| s == 200) {
                 break;
             }
+            let _ = post_json(&claimer, "/api/sync", serde_json::json!({})).await;
+            let _ = post_json(&recovered, "/api/sync", serde_json::json!({})).await;
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            restored = get_json(&claimer, &format!("/api/repository/{key}")).await?;
+            restored = get_json(&recovered, &format!("/api/repository/{key}")).await?;
         }
         let restored = successful_body("load claimed space on second device", &restored);
         assert_eq!(restored["subject"], key);
+        claimer.quit().await?;
 
         let pulled = post_json(
-            &claimer,
+            &recovered,
             &format!("/api/repository/{key}/branch/main/sync/pull"),
             serde_json::json!({}),
         )
         .await?;
         successful_body("pull claimed space on second device", &pulled);
-        let hydrated = get_json(&claimer, &format!("/api/repository/{key}")).await?;
+        let hydrated = get_json(&recovered, &format!("/api/repository/{key}")).await?;
         assert_eq!(
             successful_body("load pulled space on second device", &hydrated)["label"],
             "Shared Garden"
         );
 
-        claimer.quit().await?;
+        recovered.quit().await?;
         Ok(())
     }
 
