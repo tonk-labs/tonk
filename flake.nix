@@ -600,6 +600,18 @@
             '';
           };
 
+          # Preview the opt-in invitation flow without changing release builds.
+          # Select features per binary; the guest crate has no such feature.
+          tonk-ui-preview = tonk-ui.overrideAttrs (old: {
+            pname = "tonk-ui-preview";
+            preBuild = old.preBuild + ''
+              sed -i \
+                -e 's/data-bin="ui"/data-bin="ui" data-cargo-features="connection-invites"/' \
+                -e 's/data-bin="worker"/data-bin="worker" data-cargo-features="connection-invites"/' \
+                index.html
+            '';
+          });
+
           tonk-access-service = buildWasmCrate {
             pname = "tonk-access-service";
 
@@ -627,6 +639,15 @@
               cp -r ./build/* $out/
             '';
           };
+
+          tonk-cloudflare-preview-artifacts = tonk-cloudflare-artifacts.overrideAttrs (_: {
+            pname = "tonk-cloudflare-preview-assets";
+            buildPhase = ''
+              mkdir -p ./build
+              cp -r ${tonk-access-service} ./build/tonk-access-service
+              cp -r ${tonk-ui-preview} ./build/tonk-ui
+            '';
+          });
 
           # This package is used by integration tests to run a web server
           # over a local deployment of tonk-ui with Caddy as reverse proxy
