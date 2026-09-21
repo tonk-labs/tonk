@@ -71,6 +71,11 @@ impl std::error::Error for IndexError {}
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait RevocationIndex {
+    /// Complete set of revoked target CIDs, or `None` when this backend cannot
+    /// establish completeness within the bound. Never return a partial set.
+    async fn targets(&self, _limit: usize) -> Result<Option<BTreeSet<String>>, IndexError> {
+        Ok(None)
+    }
     /// Record that `subject` withdrew `target`. Idempotent: re-recording
     /// the same fact answers `false` rather than failing, since the
     /// revocation is one fact however many times it arrives.
@@ -82,6 +87,21 @@ pub trait RevocationIndex {
     /// in advance. On the presign path they are, and
     /// [`revoked_by_any`](Self::revoked_by_any) is the cheaper question.
     async fn subjects(&self, target: &str) -> Result<BTreeSet<String>, IndexError>;
+
+    /// Which of the supplied candidates withdrew this delegation.
+    /// Backends can answer with bounded point reads, without enumerating others.
+    async fn matching(
+        &self,
+        target: &str,
+        candidates: &BTreeSet<String>,
+    ) -> Result<BTreeSet<String>, IndexError> {
+        Ok(self
+            .subjects(target)
+            .await?
+            .intersection(candidates)
+            .cloned()
+            .collect())
+    }
 
     /// Whether any of `subjects` withdrew `target`.
     ///
@@ -111,12 +131,23 @@ pub trait RevocationIndex {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl<I: RevocationIndex + dialog_common::ConditionalSync> RevocationIndex for &I {
+    async fn targets(&self, limit: usize) -> Result<Option<BTreeSet<String>>, IndexError> {
+        (*self).targets(limit).await
+    }
     async fn record(&self, target: &str, subject: &str) -> Result<bool, IndexError> {
         (*self).record(target, subject).await
     }
 
     async fn subjects(&self, target: &str) -> Result<BTreeSet<String>, IndexError> {
         (*self).subjects(target).await
+    }
+
+    async fn matching(
+        &self,
+        target: &str,
+        candidates: &BTreeSet<String>,
+    ) -> Result<BTreeSet<String>, IndexError> {
+        (*self).matching(target, candidates).await
     }
 
     async fn revoked_by_any(
@@ -137,12 +168,23 @@ impl<I: RevocationIndex + dialog_common::ConditionalSync> RevocationIndex for &I
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl<I: RevocationIndex + dialog_common::ConditionalSync> RevocationIndex for std::sync::Arc<I> {
+    async fn targets(&self, limit: usize) -> Result<Option<BTreeSet<String>>, IndexError> {
+        self.as_ref().targets(limit).await
+    }
     async fn record(&self, target: &str, subject: &str) -> Result<bool, IndexError> {
         self.as_ref().record(target, subject).await
     }
 
     async fn subjects(&self, target: &str) -> Result<BTreeSet<String>, IndexError> {
         self.as_ref().subjects(target).await
+    }
+
+    async fn matching(
+        &self,
+        target: &str,
+        candidates: &BTreeSet<String>,
+    ) -> Result<BTreeSet<String>, IndexError> {
+        self.as_ref().matching(target, candidates).await
     }
 
     async fn revoked_by_any(
@@ -163,6 +205,25 @@ pub struct MemoryRevocationIndex(std::sync::Mutex<BTreeSet<String>>);
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl RevocationIndex for MemoryRevocationIndex {
+    async fn targets(&self, limit: usize) -> Result<Option<BTreeSet<String>>, IndexError> {
+        let keys = self
+            .0
+            .lock()
+            .map_err(|_| IndexError("revocation index lock poisoned".into()))?;
+        let mut targets = BTreeSet::new();
+        for key in keys.iter() {
+            let target = key
+                .strip_prefix(REVOKED_PREFIX)
+                .and_then(|key| key.split_once('/'))
+                .ok_or_else(|| IndexError("malformed revocation key".into()))?
+                .0;
+            targets.insert(target.to_owned());
+            if targets.len() > limit {
+                return Ok(None);
+            }
+        }
+        Ok(Some(targets))
+    }
     async fn record(&self, target: &str, subject: &str) -> Result<bool, IndexError> {
         let mut keys = self
             .0

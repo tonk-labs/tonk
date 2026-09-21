@@ -614,6 +614,8 @@ async fn promote(
         let mut active = state.write().await;
         *active = new_state;
         active.context_generation.fetch_add(1, Ordering::AcqRel);
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        active.reach.bind_context(&active);
     }
     super::navigate::notify_profile_changed(source);
 

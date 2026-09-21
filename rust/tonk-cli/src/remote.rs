@@ -102,7 +102,7 @@ impl crate::Coded for RemoteError {
     }
 }
 
-/// Register a UCAN-S3 access-service remote against the local
+/// Register an access-service or peer remote against the local
 /// site and write the meta-branch records the browser-side
 /// worker also reads.
 ///
@@ -299,7 +299,7 @@ pub async fn set_upstream(
     // record.
     let meta = open_meta(site).await?;
     let replica = local_replica(site);
-    let address = SiteAddress::from(UcanAddress::new(&remote_record.endpoint));
+    let address = site_address(&remote_record.endpoint)?;
     let remote_concept = replica.remote(remote_name, remote_record.subject.clone(), &address);
     let tracked = remote_concept.branch(site::BRANCH_NAME);
     let tracking = replica.branch(site::BRANCH_NAME).set_upstream(&tracked);
@@ -327,7 +327,7 @@ pub async fn set_upstream(
 /// into a `SiteAddress` so the endpoint URL is human-readable.
 ///
 /// Rows tonk cannot act on are dropped silently: an address that
-/// isn't a UCAN endpoint (legacy shapes, future variants), or a
+/// isn't a supported UCAN or peer endpoint (legacy shapes, future variants), or a
 /// subject that isn't a parseable DID. This is not just a display
 /// filter — [`resolve`] counts what survives, so a repo with two
 /// registered remotes where one fails to decode resolves the other
@@ -366,10 +366,7 @@ pub async fn list(site: &TonkSite) -> Result<Vec<RemoteRecord>, RemoteError> {
     for row in rows {
         let endpoint = match decode_endpoint(&row.address) {
             Some(url) => url,
-            // Skip non-UCAN addresses — tonk only knows how to
-            // talk to access-service endpoints, and surfacing
-            // an entry the user can't push/pull through would
-            // be misleading.
+            // Unsupported/corrupt stored address shapes cannot be acted on.
             None => continue,
         };
         let subject = match row.subject.0.to_string().parse::<Did>() {
@@ -467,12 +464,12 @@ fn local_replica(site: &TonkSite) -> Replica {
 }
 
 /// Decode a stored `tonk_schema::domain::remote::Address` back
-/// into a UCAN endpoint URL, returning `None` for non-UCAN
-/// site shapes.
+/// into its typed endpoint URI, preserving peer route hints.
 fn decode_endpoint(address: &remote_dom::Address) -> Option<String> {
     let site = remote_dom::Address::decode(address).ok()?;
     match site {
         SiteAddress::Ucan(ucan) => Some(ucan.endpoint().to_owned()),
+        SiteAddress::Iroh(peer) => Some(peer.to_uri()),
         _ => None,
     }
 }
@@ -513,6 +510,58 @@ mod peer_address_tests {
     /// The address chooses the transport, so the two forms must not be
     /// confusable — and a malformed one has to be refused rather than
     /// quietly filed as the other kind.
+    #[test]
+    fn peer_metadata_round_trip_preserves_its_address_type() {
+        let uri = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+        let address = site_address(uri).unwrap();
+        let stored = remote_dom::Address::encode(&address);
+        let endpoint = decode_endpoint(&stored).expect("peer must remain enumerable");
+        assert!(matches!(
+            site_address(&endpoint).unwrap(),
+            SiteAddress::Iroh(_)
+        ));
+        assert_eq!(endpoint, uri);
+    }
+
+    #[tokio::test]
+    async fn configuring_a_peer_upstream_preserves_cloud_remote_and_reload_type()
+    -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let config = crate::site::SiteConfig {
+            profile_name: "peer-upstream-test".into(),
+            profile_directory: dialog_effects::storage::Directory::At(
+                directory
+                    .path()
+                    .join("profile")
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            require_account: false,
+            provision_account_spaces: false,
+            account_store: crate::space::SpaceStore::at(directory.path().join("state")),
+        };
+        std::fs::create_dir_all(config.account_store.root())?;
+        let site = TonkSite::init_with(directory.path(), config).await?;
+        add(&site, "cloud", "https://cloud.example/ucan/", None).await?;
+        let peer = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+        add(&site, "local-cli", peer, None).await?;
+        set_upstream(&site, "local-cli").await?;
+        assert_eq!(upstream_remote(&site).await?.as_deref(), Some("local-cli"));
+        assert_eq!(
+            find(&site, "cloud").await?.unwrap().endpoint,
+            "https://cloud.example/ucan/"
+        );
+        assert_eq!(find(&site, "local-cli").await?.unwrap().endpoint, peer);
+        let remote = site
+            .repository
+            .remote("local-cli")
+            .load()
+            .perform(&site.operator)
+            .await?;
+        assert!(matches!(remote.address().address, SiteAddress::Iroh(_)));
+        Ok(())
+    }
+
     #[test]
     fn an_address_says_which_kind_of_remote_it_is() {
         let peer = site_address("did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK")

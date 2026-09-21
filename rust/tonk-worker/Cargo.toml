@@ -133,11 +133,16 @@ dialog-common = { workspace = true, features = ["helpers"] }
 dialog-operator = { workspace = true, features = ["helpers"] }
 dialog-repository = { workspace = true, features = ["helpers"] }
 rand = { workspace = true }
-tonk-access-service = { workspace = true, features = ["helpers"] }
 tonk-fab = { path = "../tonk-fab" }
 tonk-inspector = { workspace = true }
 tower = { workspace = true }
 wasm-bindgen-test = { workspace = true }
+
+# Only the native account-state fixture embeds the access-service server.
+# Linking its Cloudflare runtime into browser tests brings wasm-streams 0.6
+# alongside iroh's 0.5, whose version-free wasm-bindgen exports collide.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tonk-access-service = { workspace = true, features = ["helpers"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [

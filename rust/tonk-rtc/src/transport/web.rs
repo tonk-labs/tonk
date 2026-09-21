@@ -40,7 +40,10 @@ pub fn attach(transport: &Arc<WebRtcTransport>, peer: CustomAddr, channel: RtcDa
     let Port {
         mut outbound,
         inbound,
-    } = transport.attach(peer.clone());
+    } = transport.attach(peer);
+
+    let closing = inbound.clone();
+    let pumping = inbound.clone();
 
     channel.set_binary_type(RtcDataChannelType::Arraybuffer);
 
@@ -52,16 +55,10 @@ pub fn attach(transport: &Arc<WebRtcTransport>, peer: CustomAddr, channel: RtcDa
         }
     });
     channel.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
-    // The closure must outlive this call; the channel owns it from here.
-    on_message.forget();
-
-    let transport_for_close = transport.clone();
-    let peer_for_close = peer.clone();
     let on_close = Closure::<dyn FnMut()>::new(move || {
-        transport_for_close.detach(&peer_for_close);
+        closing.detach();
     });
     channel.set_onclose(Some(on_close.as_ref().unchecked_ref()));
-    on_close.forget();
 
     // A pump, because `poll_send` is synchronous and this send may
     // throw when the channel's buffer is full. `spawn_local` because
@@ -69,13 +66,19 @@ pub fn attach(transport: &Arc<WebRtcTransport>, peer: CustomAddr, channel: RtcDa
     let sending = channel.clone();
     wasm_bindgen_futures::spawn_local(async move {
         while let Some(datagram) = outbound.recv().await {
-            if sending.ready_state() != web_sys::RtcDataChannelState::Open {
+            if !pumping.is_current() || sending.ready_state() != web_sys::RtcDataChannelState::Open
+            {
                 break;
             }
             // A throw here means the send buffer is full: drop the
             // datagram, as a socket would, and let QUIC notice.
             let _ = sending.send_with_u8_array(&datagram);
         }
+        pumping.detach();
+        sending.set_onmessage(None);
+        sending.set_onclose(None);
+        sending.close();
+        drop((on_message, on_close));
     });
 }
 

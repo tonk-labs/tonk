@@ -1,22 +1,20 @@
-//! `tonk rtc connect` — a WebRTC data channel to a browser tab.
+//! WebRTC carriers between the CLI and a browser tab.
 //!
-//! A proof of concept, and scoped like one: what crosses the channel is
-//! lines of text. The point is the channel, not the payload — the
-//! intent is that it eventually carries dialog's remote effects so the
-//! CLI can serve as a sync remote for a browser that has no other way
-//! to reach it.
+//! `serve` exposes the profile's registered spaces through signed Dialog
+//! effects over iroh/QUIC datagrams. Connecting discloses the mounted names
+//! and IDs, not authority to read or write their contents. The listener is
+//! loopback-only. `connect` and `listen` retain the text-channel diagnostics.
 //!
 //! # Why WebRTC rather than the loopback server the CLI already has
 //!
-//! Because Safari will not let a page on `https://tonk.network` open a
-//! `fetch` or a WebSocket to `http://127.0.0.1` — that is mixed content,
-//! and now a Local Network Access prompt besides. A *navigation* to
-//! loopback is still allowed, which is why the account-login ceremony
-//! works, but a navigation is one shot and kills the page. There is no
-//! portable way for a live browser page to hold a connection to a local
-//! process except WebRTC.
+//! WebRTC provides a datagram path without making the page use loopback
+//! HTTP fetches or WebSockets. Those face mixed-content and local-network
+//! policies that differ by browser. A navigation can carry a one-shot
+//! account-login response but cannot carry a live repository stream.
+//! WebRTC still has browser-specific ICE and permission constraints; it is
+//! not a promise to bypass the browser's network policy.
 //!
-//! # The ceremony
+//! # The text diagnostic's offer/answer ceremony
 //!
 //! Deliberately the same shape as account login:
 //!
@@ -109,6 +107,16 @@ pub struct ListenOptions {
 /// Beside the other local state the CLI keeps. It contains a private
 /// key, so it is written with the same care as the rest.
 fn identity_path() -> Result<std::path::PathBuf> {
+    // An explicitly isolated installation must never share the default
+    // installation's certificate, including in product tests.
+    match std::env::var("TONK_PROFILE_DIRECTORY") {
+        Ok(path) if !path.is_empty() => {
+            return Ok(std::path::PathBuf::from(path).join("rtc-identity.pem"));
+        }
+        Ok(_) => bail!("TONK_PROFILE_DIRECTORY must not be empty"),
+        Err(std::env::VarError::NotPresent) => {}
+        Err(error) => return Err(error).context("invalid TONK_PROFILE_DIRECTORY"),
+    }
     let data = dirs::data_dir().context("could not determine platform data directory")?;
     Ok(data.join("tonk").join("rtc-identity.pem"))
 }
@@ -129,44 +137,57 @@ fn rtc_identity() -> Result<tonk_rtc::Identity> {
         return tonk_rtc::Identity::rendezvous()
             .context("the rendezvous certificate would not derive");
     }
-    let path = identity_path()?;
-    if let Ok(pem) = std::fs::read_to_string(&path)
-        && let Ok(identity) = tonk_rtc::Identity::from_pem(&pem)
-    {
-        return Ok(identity);
-    }
+    private_identity(&identity_path()?)
+}
 
+/// A saved private route must keep its certificate as well as its endpoint
+/// key. Serialize first use and never turn corrupt/unreadable state into a
+/// different fingerprint. This lock protects only short local filesystem work.
+fn private_identity(path: &std::path::Path) -> Result<tonk_rtc::Identity> {
+    let parent = path.parent().context("certificate path has no parent")?;
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("could not create {}", parent.display()))?;
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path.with_extension("pem.lock"))
+        .context("could not open the WebRTC certificate lock")?;
+    lock.lock()
+        .context("could not lock the WebRTC certificate")?;
+    match std::fs::read_to_string(path) {
+        Ok(pem) => {
+            return tonk_rtc::Identity::from_pem(&pem)
+                .context("stored WebRTC certificate is corrupt; refusing to replace it");
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error)
+                .context("could not read the WebRTC certificate; refusing to replace it");
+        }
+    }
     let identity = tonk_rtc::Identity::generate().context("could not mint a WebRTC certificate")?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("could not create {}", parent.display()))?;
-    }
-    // A failure to persist is not a failure to listen — this run still
-    // works, its address just will not outlive the process.
-    if let Err(error) = write_private(&path, &identity.to_pem()) {
-        eprintln!(
-            "warning: could not save the WebRTC certificate ({error}); this listener's address will not survive a restart"
-        );
-    }
+    write_private(path, &identity.to_pem())
+        .context("could not persist the WebRTC certificate; refusing an ephemeral private route")?;
     Ok(identity)
 }
 
-/// Write key material readable only by its owner.
+/// Atomically create owner-only key material; never truncate an existing file.
 fn write_private(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("no certificate parent"))?;
+    // NamedTempFile creates the file with owner-only permissions on Unix.
+    let mut file = tempfile::NamedTempFile::new_in(parent)?;
+    file.write_all(contents.as_bytes())?;
+    file.flush()?;
+    file.as_file().sync_all()?;
+    file.persist_noclobber(path).map_err(|error| error.error)?;
     #[cfg(unix)]
-    {
-        use std::io::Write as _;
-        use std::os::unix::fs::OpenOptionsExt as _;
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)?;
-        file.write_all(contents.as_bytes())
-    }
-    #[cfg(not(unix))]
-    std::fs::write(path, contents)
+    std::fs::File::open(parent)?.sync_all()?;
+    Ok(())
 }
 
 /// Publish an address and wait to be dialed.
@@ -327,6 +348,59 @@ mod tests {
     use super::*;
 
     #[test]
+    fn concurrent_private_certificate_creation_and_reopen_keep_one_fingerprint() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("rtc-identity.pem");
+        let barrier = std::sync::Barrier::new(4);
+        let fingerprints = std::thread::scope(|scope| {
+            let tasks: Vec<_> = (0..4)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        private_identity(&path).unwrap().fingerprint()
+                    })
+                })
+                .collect();
+            tasks
+                .into_iter()
+                .map(|task| task.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        let fingerprint = private_identity(&path)?.fingerprint();
+        assert!(fingerprints.iter().all(|found| found == &fingerprint));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&path)?.permissions().mode() & 0o077, 0);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn corrupt_and_unreadable_private_certificates_are_not_replaced() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("rtc-identity.pem");
+        std::fs::write(&path, "invalid certificate")?;
+        assert!(
+            private_identity(&path)
+                .unwrap_err()
+                .to_string()
+                .contains("corrupt")
+        );
+        assert_eq!(std::fs::read_to_string(&path)?, "invalid certificate");
+        let unreadable = directory.path().join("is-a-directory.pem");
+        std::fs::create_dir(&unreadable)?;
+        assert!(
+            private_identity(&unreadable)
+                .unwrap_err()
+                .to_string()
+                .contains("could not read")
+        );
+        assert!(unreadable.is_dir());
+        Ok(())
+    }
+
+    #[test]
     fn the_default_page_is_used_when_none_is_given() {
         assert_eq!(answering_page(None).unwrap().as_str(), DEFAULT_RTC_PAGE);
     }
@@ -375,6 +449,46 @@ mod tests {
 mod serving {
     use super::*;
 
+    /// Profile-wide serving state, deliberately without a selected repository.
+    /// The operator's base is installation state; only explicit registry mounts
+    /// are offered to peers. Opening this context never creates a user space.
+    struct RegistryContext {
+        profile: dialog_operator::Profile,
+        operator: dialog_operator::Operator<dialog_storage::provider::storage::NativeSpace>,
+        storage: dialog_storage::provider::storage::Storage<
+            dialog_storage::provider::storage::NativeSpace,
+        >,
+        account_store: crate::space::SpaceStore,
+    }
+
+    impl RegistryContext {
+        async fn open(config: crate::site::SiteConfig) -> Result<Self> {
+            std::fs::create_dir_all(config.account_store.root())
+                .context("could not open serving profile state")?;
+            let (profile, operator, storage) =
+                crate::site::build_profile_and_operator(config.account_store.root(), &config)
+                    .await?;
+            Ok(Self {
+                profile,
+                operator,
+                storage,
+                account_store: config.account_store,
+            })
+        }
+    }
+
+    #[cfg(test)]
+    impl From<&crate::site::TonkSite> for RegistryContext {
+        fn from(site: &crate::site::TonkSite) -> Self {
+            Self {
+                profile: site.profile.clone(),
+                operator: site.operator.inner().clone(),
+                storage: site.storage.clone(),
+                account_store: site.account_store.clone(),
+            }
+        }
+    }
+
     /// Every space this machine holds, served as one peer.
     ///
     /// `tonk rtc serve` used to serve the *selected* space: one
@@ -396,28 +510,23 @@ mod serving {
     /// answer is nameless for that reason; `spaces.json` is where a
     /// space is called `notes`, and a browser listing spaces it has
     /// never opened has nowhere else to read a label from.
-    #[derive(dialog_capability::Provider)]
     pub struct Served {
         /// Everything but the inventory. The operator routes each
         /// invocation to the space its subject names, over the storage
         /// every mount landed in.
-        #[provide(
-            dialog_effects::archive::Get,
-            dialog_effects::archive::Put,
-            dialog_effects::archive::Import,
-            dialog_effects::blob::Read,
-            dialog_effects::blob::Write,
-            dialog_effects::blob::Import,
-            dialog_effects::memory::Resolve,
-            dialog_effects::memory::Publish,
-            dialog_effects::memory::Retract,
-            dialog_effects::peer::Hello
-        )]
         operator: dialog_operator::Operator<dialog_storage::provider::storage::NativeSpace>,
+        gate: std::sync::Arc<AccountGate>,
 
         /// What the registry calls each space that mounted, in the order
         /// the registry lists them.
         offers: Vec<dialog_effects::peer::Offer>,
+    }
+
+    struct AccountGate {
+        operator: dialog_operator::Operator<dialog_storage::provider::storage::NativeSpace>,
+        profile: dialog_operator::Profile,
+        store: crate::space::SpaceStore,
+        account: Option<crate::account_session::ActiveAccount>,
     }
 
     /// Mount every registered space into `site`'s environment.
@@ -426,7 +535,11 @@ mod serving {
     /// failing the serve: one unreadable directory should not take the
     /// other spaces offline, and a peer that silently omitted it would
     /// leave the operator staring at a space the CLI still lists.
-    pub async fn mount_registry(site: &crate::site::TonkSite) -> Result<Served> {
+    async fn mount_registry(site: &RegistryContext) -> Result<Served> {
+        let account =
+            crate::account_session::snapshot(&site.profile, &site.operator, &site.account_store)
+                .await?
+                .active;
         let registry = site
             .account_store
             .load()
@@ -446,9 +559,44 @@ mod serving {
         }
 
         Ok(Served {
-            operator: site.operator.inner().clone(),
+            operator: site.operator.clone(),
+            gate: std::sync::Arc::new(AccountGate {
+                operator: site.operator.clone(),
+                profile: site.profile.clone(),
+                store: site.account_store.clone(),
+                account,
+            }),
             offers,
         })
+    }
+
+    impl AccountGate {
+        /// A server is bound to the account attachment it mounted. Hold the
+        /// same cross-process guard used by normal remote dispatch until the
+        /// operation finishes; a replacement must restart with fresh mounts.
+        async fn guard(
+            &self,
+        ) -> Result<
+            crate::account_session::AccountSessionReadGuard,
+            dialog_capability::access::AuthorizeError,
+        > {
+            use dialog_capability::access::AuthorizeError;
+            let unavailable = |error: anyhow::Error| AuthorizeError::Unavailable {
+                detail: error.to_string(),
+            };
+            let guard =
+                crate::account_session::shared_remote_guard(&self.store).map_err(unavailable)?;
+            let active =
+                crate::account_session::active_guarded(&self.profile, &self.operator, &guard)
+                    .await
+                    .map_err(unavailable)?;
+            if active != self.account {
+                return Err(AuthorizeError::Unavailable {
+                    detail: "the serving account changed; restart `tonk rtc serve`".into(),
+                });
+            }
+            Ok(guard)
+        }
     }
 
     impl Served {
@@ -458,6 +606,85 @@ mod serving {
         }
     }
 
+    macro_rules! serve_guarded {
+        ($($command:ty),+ $(,)?) => {$(
+            #[async_trait::async_trait]
+            impl dialog_capability::Provider<$command> for Served {
+                async fn execute(
+                    &self,
+                    input: <$command as dialog_capability::Command>::Input,
+                ) -> <$command as dialog_capability::Command>::Output {
+                    let _guard = self.gate.guard().await?;
+                    dialog_capability::Provider::<$command>::execute(&self.operator, input).await
+                }
+            }
+        )+};
+    }
+    serve_guarded!(
+        dialog_effects::archive::Get,
+        dialog_effects::archive::Put,
+        dialog_effects::archive::Import,
+        dialog_effects::memory::Resolve,
+        dialog_effects::memory::Publish,
+        dialog_effects::memory::Retract,
+        dialog_effects::peer::Hello,
+    );
+
+    // Streams outlive the dispatch that creates them. Check each chunk and
+    // the final commit under the same account lock, without retaining that
+    // lock while waiting for an untrusted peer to supply the next chunk.
+    struct AccountReader {
+        inner: dialog_effects::blob::BlobReader,
+        gate: std::sync::Arc<AccountGate>,
+    }
+    #[async_trait::async_trait]
+    impl dialog_effects::blob::BlobSource for AccountReader {
+        async fn next(&mut self) -> Result<Option<Vec<u8>>, dialog_effects::blob::BlobError> {
+            let _guard = self.gate.guard().await?;
+            self.inner.next().await
+        }
+    }
+    struct AccountWriter {
+        inner: dialog_effects::blob::BlobWriter,
+        gate: std::sync::Arc<AccountGate>,
+    }
+    #[async_trait::async_trait]
+    impl dialog_effects::blob::BlobSink for AccountWriter {
+        async fn write_all(&mut self, bytes: &[u8]) -> Result<(), dialog_effects::blob::BlobError> {
+            let _guard = self.gate.guard().await?;
+            self.inner.write_all(bytes).await
+        }
+        async fn finish(
+            self: Box<Self>,
+        ) -> Result<dialog_common::Blake3Hash, dialog_effects::blob::BlobError> {
+            let _guard = self.gate.guard().await?;
+            self.inner.finish().await
+        }
+    }
+    macro_rules! serve_stream {
+        ($command:ty, $wrapper:ident) => {
+            #[async_trait::async_trait]
+            impl dialog_capability::Provider<$command> for Served {
+                async fn execute(
+                    &self,
+                    input: <$command as dialog_capability::Command>::Input,
+                ) -> <$command as dialog_capability::Command>::Output {
+                    let _guard = self.gate.guard().await?;
+                    let inner =
+                        dialog_capability::Provider::<$command>::execute(&self.operator, input)
+                            .await?;
+                    Ok(Box::new($wrapper {
+                        inner,
+                        gate: self.gate.clone(),
+                    }))
+                }
+            }
+        };
+    }
+    serve_stream!(dialog_effects::blob::Read, AccountReader);
+    serve_stream!(dialog_effects::blob::Write, AccountWriter);
+    serve_stream!(dialog_effects::blob::Import, AccountWriter);
+
     /// The registry, as the peer offers it.
     #[async_trait::async_trait]
     impl dialog_capability::Provider<dialog_effects::peer::Spaces> for Served {
@@ -465,19 +692,9 @@ mod serving {
             &self,
             _input: dialog_capability::Capability<dialog_effects::peer::Spaces>,
         ) -> Result<Vec<dialog_effects::peer::Offer>, dialog_effects::peer::PeerError> {
+            let _guard = self.gate.guard().await?;
             Ok(self.offers.clone())
         }
-    }
-
-    /// Where this machine's iroh identity lives.
-    ///
-    /// Separate from the WebRTC certificate because they name different
-    /// things: that certificate authenticates a data channel and is shared
-    /// by every tonk, while this key is *this peer* and is what a remote
-    /// points at.
-    fn endpoint_key_path() -> Result<std::path::PathBuf> {
-        let data = dirs::data_dir().context("could not determine platform data directory")?;
-        Ok(data.join("tonk").join("rtc-endpoint.key"))
     }
 
     /// The credential-store key this profile's peer seed is held under.
@@ -499,9 +716,27 @@ mod serving {
     /// identity with its own lifecycle, which is what made a peer
     /// something you had to copy a `did:key` for rather than something
     /// a profile simply *is*.
-    async fn endpoint_key(site: &crate::site::TonkSite) -> Result<iroh::SecretKey> {
+    async fn endpoint_key(site: &RegistryContext) -> Result<iroh::SecretKey> {
         use dialog_capability::SiteId;
         use dialog_effects::credential::Secret;
+
+        // Serialize first use across concurrent CLI processes in the same
+        // installation. Hold the lock through credential persistence, not
+        // just random generation. A dropped process releases the OS lock.
+        let lock_path = site.account_store.root().join("rtc-peer-key.lock");
+        let _lock = tokio::task::spawn_blocking(move || -> Result<std::fs::File> {
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&lock_path)
+                .context("could not open peer identity lock")?;
+            file.lock().context("could not lock peer identity")?;
+            Ok(file)
+        })
+        .await
+        .context("peer identity lock task failed")??;
 
         let handle = || {
             site.profile
@@ -509,10 +744,16 @@ mod serving {
                 .site(SiteId::from(PEER_SEED_SITE.to_owned()))
         };
 
-        if let Ok(secret) = handle().load::<Secret>().perform(&site.operator).await
-            && let Ok(seed) = <[u8; 32]>::try_from(secret.as_bytes())
-        {
-            return Ok(iroh::SecretKey::from_bytes(&seed));
+        match handle().load::<Secret>().perform(&site.operator).await {
+            Ok(secret) => {
+                let seed = <[u8; 32]>::try_from(secret.as_bytes())
+                    .context("stored peer identity is corrupt; refusing to replace it")?;
+                return Ok(iroh::SecretKey::from_bytes(&seed));
+            }
+            Err(error) if crate::account_state::credential_is_missing(&error) => {}
+            Err(error) => {
+                return Err(error).context("could not read peer identity; refusing to replace it");
+            }
         }
 
         // iroh's own generator rather than a fresh entropy dependency:
@@ -531,14 +772,27 @@ mod serving {
     ///
     /// The address printed is the whole point: a peer's `did:key`, stable
     /// across restarts because the key is persisted, and a `?route=` hint
-    /// holding the local-dial record. A browser on this machine needs
-    /// neither — it derives the port and the fingerprint from the
-    /// rendezvous phrase — but a peer elsewhere does.
-    pub async fn serve(site: &crate::site::TonkSite, options: ListenOptions) -> Result<()> {
-        // Before the listener binds: a peer that cannot mount anything
-        // should say so at startup rather than accept dials and refuse
-        // every invocation.
-        let served = mount_registry(site).await?;
+    /// holding the local-dial record. Paste the complete URI into the
+    /// browser's network page: it pins both the identity and exact route.
+    pub async fn serve(config: crate::site::SiteConfig, options: ListenOptions) -> Result<()> {
+        let site = RegistryContext::open(config).await?;
+        // Mount failures are reported before binding. An empty registry is a
+        // useful discovery result, not an excuse to create an arbitrary space.
+        let served = mount_registry(&site).await?;
+        let revocations = crate::revocations::Cached::for_registry(
+            &site.profile,
+            &site.operator,
+            &site.account_store,
+            served.offers(),
+        )
+        .await?;
+        let resolver =
+            crate::resolution::Cached::new(site.account_store.root().join("did-evidence"))?;
+        if !revocations.has_sources() {
+            eprintln!(
+                "warning: no configured revocation service; delegated content requests will be refused until one is configured and the server restarted"
+            );
+        }
 
         // A span, not a port: several `tonk`s on one machine each take
         // their own slot and stay findable, because a dialer that knows
@@ -564,7 +818,7 @@ mod serving {
         let transport = tonk_rtc::transport::WebRtcTransport::new(listener.address().encode());
         let route = transport.local_addr();
 
-        let key = endpoint_key(site).await?;
+        let key = endpoint_key(&site).await?;
         let id = key.public();
         let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Empty)
             .crypto_provider(iroh::tls::default_provider())
@@ -597,6 +851,11 @@ mod serving {
             }
         }
         println!("  tonk remote add <name> '{}'\n", peer.to_uri());
+        println!("PEER {}", peer.to_uri());
+        println!(
+            "local discovery reveals the listed names and IDs; content still requires authority."
+        );
+        println!("registry snapshot: restart to include newly registered spaces.");
         println!("listening on port {port}; ctrl-c to stop.\n");
 
         // Every accepted datagram channel becomes a route iroh can answer
@@ -617,14 +876,211 @@ mod serving {
 
         // The registry, not the selected space: a peer is this machine,
         // and an invocation naming any space it holds has to route.
-        let responder = std::sync::Arc::new(dialog_iroh_remote::serve::Responder::new(
-            served,
-            dialog_did_web::CachingResolver::new(dialog_did_web::WebResolver::new()),
-        ));
-        dialog_iroh_remote::transport::accept(endpoint, responder).await;
+        let responder = std::sync::Arc::new(
+            dialog_iroh_remote::serve::Responder::new(served, resolver)
+                .with_revocations(revocations),
+        );
+        let serving_endpoint = endpoint.clone();
+        tokio::select! {
+            _ = dialog_iroh_remote::transport::accept(serving_endpoint, responder) => {}
+            result = tokio::signal::ctrl_c() => { result.context("could not wait for shutdown")?; }
+        }
 
         pumping.abort();
+        let _ = pumping.await;
+        endpoint.close().await;
         Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn config(root: &std::path::Path) -> crate::site::SiteConfig {
+            crate::site::SiteConfig {
+                profile_name: "rtc-identity-test".into(),
+                profile_directory: dialog_effects::storage::Directory::At(
+                    root.join("profile").to_string_lossy().into_owned(),
+                ),
+                require_account: false,
+                provision_account_spaces: false,
+                account_store: crate::space::SpaceStore::at(root.join("state")),
+            }
+        }
+
+        async fn fixture() -> Result<(tempfile::TempDir, crate::site::TonkSite)> {
+            let tmp = tempfile::tempdir()?;
+            let config = config(tmp.path());
+            std::fs::create_dir_all(config.account_store.root())?;
+            let site = crate::site::TonkSite::init_with(tmp.path(), config).await?;
+            Ok((tmp, site))
+        }
+
+        #[tokio::test]
+        async fn empty_registry_needs_no_selected_space_or_account() -> Result<()> {
+            let tmp = tempfile::tempdir()?;
+            let mut config = config(tmp.path());
+            config.require_account = true;
+            let context = RegistryContext::open(config.clone()).await?;
+            assert!(mount_registry(&context).await?.offers().is_empty());
+            let key = endpoint_key(&context).await?.public();
+            drop(context);
+            let reopened = RegistryContext::open(config.clone()).await?;
+            assert_eq!(key, endpoint_key(&reopened).await?.public());
+            assert!(mount_registry(&reopened).await?.offers().is_empty());
+            assert!(config.account_store.load()?.spaces.is_empty());
+            assert!(!crate::site::has_site_data(config.account_store.root()));
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn registry_mounts_are_a_snapshot_and_bad_entries_do_not_hide_good_ones() -> Result<()>
+        {
+            let (tmp, site) = fixture().await?;
+            let config = config(tmp.path());
+            let context = RegistryContext::open(config.clone()).await?;
+            let before = mount_registry(&context).await?;
+            let mut registry = config.account_store.load()?;
+            registry
+                .spaces
+                .insert("good".into(), crate::space::SpaceEntry::at(&site.root));
+            registry.spaces.insert(
+                "missing".into(),
+                crate::space::SpaceEntry::at(tmp.path().join("missing")),
+            );
+            config.account_store.save(&registry)?;
+            assert!(
+                before.offers().is_empty(),
+                "existing server must not change its registry snapshot"
+            );
+            let after = mount_registry(&context).await?;
+            assert_eq!(after.offers().len(), 1);
+            assert_eq!(after.offers()[0].subject, site.repository.did());
+            assert_eq!(after.offers()[0].name.as_deref(), Some("good"));
+            // Use the new profile-wide operator, not the selected site's
+            // already-mounted environment, to prove the registry mounted it.
+            use dialog_capability::Subject;
+            use dialog_repository::RepositoryMemoryExt;
+            Subject::from(site.repository.did())
+                .branch("main")
+                .open()
+                .perform(&context.operator)
+                .await?;
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn account_transition_stops_existing_server_and_open_blob_commit() -> Result<()> {
+            use dialog_capability::Subject;
+            use dialog_effects::{Use, archive, blob, peer};
+            let (_tmp, site) = fixture().await?;
+            let mut account = crate::account_session::ActiveAccount {
+                credential_id: "test".into(),
+                root_did: site.profile.did().to_string(),
+                delegation_cid: "test-state-only".into(),
+                delegation_hex: "00".into(),
+                remote: None,
+                attachment_id: "first".into(),
+                attached_at: 1,
+            };
+            let staged = crate::account_session::stage_activation(
+                &site.profile,
+                site.operator.inner(),
+                &site.account_store,
+                account.clone(),
+            )
+            .await?;
+            crate::account_session::finalize_activation(
+                &site.profile,
+                site.operator.inner(),
+                staged,
+                &account,
+            )
+            .await?;
+            let context = RegistryContext::from(&site);
+            let served = mount_registry(&context).await?;
+            let ask = Subject::from(site.profile.did())
+                .attenuate(Use)
+                .attenuate(peer::Peer)
+                .attenuate(peer::Spaces);
+            ask.clone().perform(&served).await?;
+            let mut writer = Subject::from(site.profile.did())
+                .attenuate(Use)
+                .attenuate(archive::Archive)
+                .attenuate(blob::Blob)
+                .invoke(blob::Write)
+                .perform(&served)
+                .await?;
+            writer.write_all(b"must not commit after logout").await?;
+            crate::account_session::logout_transition_for_store(
+                &site.profile,
+                site.operator.inner(),
+                &site.account_store,
+            )
+            .await?;
+            assert!(ask.clone().perform(&served).await.is_err());
+            assert!(
+                writer.finish().await.is_err(),
+                "an already-open stream must not commit after logout"
+            );
+            account.attachment_id = "replacement".into();
+            let staged = crate::account_session::stage_activation(
+                &site.profile,
+                site.operator.inner(),
+                &site.account_store,
+                account.clone(),
+            )
+            .await?;
+            crate::account_session::finalize_activation(
+                &site.profile,
+                site.operator.inner(),
+                staged,
+                &account,
+            )
+            .await?;
+            assert!(
+                ask.clone().perform(&served).await.is_err(),
+                "new attachment must not revive old mounts"
+            );
+            ask.perform(&mount_registry(&context).await?).await?;
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn concurrent_first_use_and_reload_keep_one_peer_identity() -> Result<()> {
+            let (_tmp, site) = fixture().await?;
+            let site = RegistryContext::from(&site);
+            let (left, right) = tokio::join!(endpoint_key(&site), endpoint_key(&site));
+            let key = left?.public();
+            assert_eq!(key, right?.public());
+            assert_eq!(key, endpoint_key(&site).await?.public());
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn a_corrupt_peer_seed_is_not_silently_replaced() -> Result<()> {
+            use dialog_effects::credential::Secret;
+            let (_tmp, site) = fixture().await?;
+            site.profile
+                .credential()
+                .site(dialog_capability::SiteId::from(PEER_SEED_SITE.to_owned()))
+                .save(Secret::from(vec![42; 3]))
+                .perform(&site.operator)
+                .await?;
+            let error = endpoint_key(&RegistryContext::from(&site))
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("corrupt"));
+            let stored = site
+                .profile
+                .credential()
+                .site(dialog_capability::SiteId::from(PEER_SEED_SITE.to_owned()))
+                .load::<Secret>()
+                .perform(&site.operator)
+                .await?;
+            assert_eq!(stored.as_bytes(), &[42; 3]);
+            Ok(())
+        }
     }
 }
 

@@ -15,6 +15,7 @@
 
 pub mod checker;
 pub mod index;
+pub mod lookup;
 
 #[cfg(all(test, feature = "helpers", not(target_arch = "wasm32")))]
 mod tests {

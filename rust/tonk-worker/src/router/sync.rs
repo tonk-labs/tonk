@@ -502,12 +502,65 @@ pub fn branches_to_sync(branches: &HashMap<String, BranchConfiguration>) -> Vec<
     names
 }
 
-/// Stamp `sync:offline` at `state:here` on every open repository's upstream
-/// branches, WITHOUT touching the network. The per-fetch drain calls this
-/// instead of sweeping while the browser reports offline, so the chip/disc
-/// reflect the disconnect — skipping silently left them frozen on the last
-/// online status. Overlay-only and idempotent: a re-stamp of the same value
-/// changes nothing, so subscribers see exactly one `offline` frame.
+/// Offline is a property of the selected transport, not of every repository.
+/// Only the approved loopback WebRTC route is exempt from the internet gate;
+/// finding another configured peer must never silently change the upstream.
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+fn local_peer_site(site: &dialog_repository::SiteAddress) -> bool {
+    matches!(site, dialog_repository::SiteAddress::Iroh(peer)
+        if super::cli::peer_route(&peer.to_uri()).is_ok())
+}
+
+/// Inspect local reference cells only, without fetching a remote branch or its
+/// archive. Missing/malformed configuration fails closed while offline.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn offline_sync_allowed(
+    tonk: &crate::worker::TonkState,
+    repo: &str,
+    branch: &str,
+) -> bool {
+    use dialog_repository::{RepositoryExt, Upstream};
+    let Ok(repository) = tonk
+        .profile
+        .repository(repo)
+        .load()
+        .perform(&tonk.operator)
+        .await
+    else {
+        return false;
+    };
+    let upstream = repository.branch(branch).upstream();
+    if upstream.resolve().perform(&tonk.operator).await.is_err() {
+        return false;
+    }
+    match upstream
+        .content()
+        .and_then(|entries| entries.default_upstream().cloned())
+    {
+        Some(Upstream::Local { .. }) => true,
+        Some(Upstream::Remote { remote, .. }) => repository
+            .remote(remote)
+            .load()
+            .perform(&tonk.operator)
+            .await
+            .is_ok_and(|remote| local_peer_site(remote.address().site())),
+        None => false,
+    }
+}
+
+fn internet_available() -> bool {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        !crate::worker::offline()
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    {
+        true
+    }
+}
+
+/// Stamp internet-dependent upstreams offline without changing local peer
+/// status. Overlay-only and idempotent; the drain can still run local work.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub async fn mark_offline(state: &AppState) {
     let open: Vec<String> = {
@@ -523,6 +576,9 @@ pub async fn mark_offline(state: &AppState) {
         };
         let tonk = state.read().await;
         for branch in branches_to_sync(&info.branch) {
+            if offline_sync_allowed(&tonk, &repo, &branch).await {
+                continue;
+            }
             publish_sync_status_attr(
                 &tonk,
                 &repo,
@@ -550,6 +606,9 @@ pub async fn sync_repository(state: &AppState, repo: &str) -> Result<(), String>
         super::account_state::is_account_key(&tonk, repo).await
     };
     if account {
+        if !internet_available() {
+            return Err("account sync is waiting for internet connectivity".into());
+        }
         // The account repository's sweep is `ensure_account_state_swept` and
         // stops there: it mounts, hydrates when it must, then pulls, projects
         // and pushes. Falling through to the generic per-branch route below
@@ -609,6 +668,9 @@ pub async fn sync_repository(state: &AppState, repo: &str) -> Result<(), String>
         // HTTP success now means reconciliation completed or was deliberately
         // skipped; operational failures are typed route errors.
         match sync(State(state.clone()), Path(params)).await {
+            Ok(Json(response)) if matches!(response.disposition, SyncDisposition::Offline) => {
+                failed = true; // Retain pending edits for the next online drain.
+            }
             Ok(_) => {}
             Err(e) => {
                 log!("background sync of {repo}/{branch} failed: {e}");
@@ -938,16 +1000,12 @@ pub async fn sync(
         params.branch
     );
 
-    // Don't touch the network while offline. This is the single chokepoint every
-    // sync path flows through (the per-fetch drain, the self-scheduled loop,
-    // `POST /api/sync`, an SSE reconnect), so gating here stops ALL of them from
-    // hammering an unreachable upstream — an offline branch would otherwise
-    // retry `handle.fetch()` on every tick, re-queue on failure, and retry
-    // again. Stamp `offline` so the chip reflects the disconnect and report
-    // success (nothing to reconcile until connectivity returns; any traffic or
-    // the page's `online` event restarts real syncing).
+    // Cloud sync waits for connectivity. Local branch and loopback peer sync
+    // continue through the exact saved upstream, without cloud fallback.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    if crate::worker::offline() {
+    if crate::worker::offline()
+        && !offline_sync_allowed(&*state.read().await, &params.repo, &params.branch).await
+    {
         // Read lock — the overlay stamp goes through the reactor (its own
         // locks); a write lock here would block concurrent reads, same as
         // `mark_offline`, which stamps the identical status under `read()`.
@@ -1368,7 +1426,7 @@ pub async fn drain_sync(state: &AppState) {
         }
         swept
     };
-    if !account_already_swept {
+    if !account_already_swept && internet_available() {
         let tonk = state.read().await;
         let (status, swept) = super::account_state::ensure_account_state_swept(&tonk).await;
         if status != tonk_account::AccountStateStatus::Unconfigured
@@ -1500,6 +1558,102 @@ mod tests {
             upstream: None,
             revision: None,
         }
+    }
+
+    fn peer_site(host: &str) -> dialog_repository::SiteAddress {
+        let address = tonk_rtc::Address {
+            version: 1,
+            candidates: vec![tonk_rtc::Candidate {
+                host: host.into(),
+                port: 40123,
+            }],
+            fingerprint: format!("sha-256 {}", ["AB"; 32].join(":")),
+        };
+        let transport = tonk_rtc::transport::WebRtcTransport::new(address.encode());
+        dialog_repository::SiteAddress::Iroh(dialog_iroh_remote::site::IrohAddress::new(
+            iroh::EndpointAddr {
+                id: iroh::SecretKey::from_bytes(&[12; 32]).public(),
+                addrs: [iroh::TransportAddr::Custom(transport.local_addr())]
+                    .into_iter()
+                    .collect(),
+            },
+        ))
+    }
+
+    #[dialog_common::test]
+    fn offline_exemption_requires_an_explicit_loopback_peer_route() {
+        use dialog_repository::SiteAddress;
+        assert!(local_peer_site(&peer_site("127.0.0.1")));
+        assert!(!local_peer_site(&peer_site("192.0.2.1")));
+        assert!(!local_peer_site(&SiteAddress::from(
+            dialog_remote_ucan_s3::UcanAddress::new("http://127.0.0.1/ucan/")
+        )));
+        assert!(!local_peer_site(&SiteAddress::Iroh(
+            dialog_iroh_remote::site::IrohAddress::new(iroh::EndpointAddr::new(
+                iroh::SecretKey::from_bytes(&[12; 32]).public()
+            ))
+        )));
+    }
+
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[dialog_common::test]
+    async fn offline_selection_reads_the_chosen_upstream_without_cloud_fallback() {
+        use crate::router::repository::{
+            RemoteConfiguration, RepositoryConfiguration, ensure_remote_config,
+        };
+        use dialog_repository::RepositoryExt;
+        let (app, state, _lsp) =
+            crate::router::api_router_with_state(crate::router::tests::test_state().await);
+        let key = crate::router::tests::put_repo(&app, "transport-selection").await;
+        let tonk = state.read().await;
+        let repository = tonk
+            .profile
+            .repository(&key)
+            .load()
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        let cloud = dialog_repository::SiteAddress::from(dialog_remote_ucan_s3::UcanAddress::new(
+            "https://offline.invalid/ucan/",
+        ));
+        let configuration = RepositoryConfiguration::default()
+            .remote("cloud", RemoteConfiguration::new(cloud.clone()))
+            .remote("peer", RemoteConfiguration::new(peer_site("127.0.0.1")))
+            .branch(
+                "main",
+                BranchConfiguration::default().upstream("cloud", "main"),
+            )
+            .branch(
+                "meta",
+                BranchConfiguration::default().upstream("peer", "meta"),
+            );
+        ensure_remote_config(&tonk, &repository, &key, &configuration)
+            .await
+            .unwrap();
+        assert!(!offline_sync_allowed(&tonk, &key, "main").await);
+        assert!(offline_sync_allowed(&tonk, &key, "meta").await);
+        assert!(!offline_sync_allowed(&tonk, &key, "unconfigured").await);
+        let selected = RepositoryConfiguration::default()
+            .remote("peer", RemoteConfiguration::new(peer_site("127.0.0.1")))
+            .branch(
+                "main",
+                BranchConfiguration::default().upstream("peer", "main"),
+            );
+        ensure_remote_config(&tonk, &repository, &key, &selected)
+            .await
+            .unwrap();
+        assert!(offline_sync_allowed(&tonk, &key, "main").await);
+        assert_eq!(
+            repository
+                .remote("cloud")
+                .load()
+                .perform(&tonk.operator)
+                .await
+                .unwrap()
+                .address()
+                .site(),
+            &cloud
+        );
     }
 
     #[dialog_common::test]
@@ -1808,7 +1962,12 @@ mod renewal_tests {
         let winner = async {
             renew_session_with(&state, |profile, storage| async move {
                 ready_rx.await.unwrap();
-                crate::session::rotate(&profile, &storage).await
+                crate::session::rotate(
+                    &profile,
+                    &storage,
+                    &dialog_iroh_remote::site::Iroh::default(),
+                )
+                .await
             })
             .await
             .unwrap();
@@ -1817,7 +1976,13 @@ mod renewal_tests {
             installed
         };
         let loser = renew_session_with(&state, |profile, storage| async move {
-            let candidate = crate::session::rotate(&profile, &storage).await.unwrap();
+            let candidate = crate::session::rotate(
+                &profile,
+                &storage,
+                &dialog_iroh_remote::site::Iroh::default(),
+            )
+            .await
+            .unwrap();
             ready_tx.send(()).unwrap();
             let installed = installed_rx.await.unwrap();
             assert_ne!(candidate.operator.did().to_string(), installed);

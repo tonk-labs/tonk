@@ -97,6 +97,8 @@ async fn main(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .get_async("/health", handlers::health::handle)
         // UCAN authorization CORS preflight; POST is served above.
         .options_async("/ucan/", handlers::ucan::handle_options)
+        .options_async("/ucan/revocations", handlers::ucan::handle_options)
+        .post_async("/ucan/revocations", handlers::revocation_lookup::handle)
         // Shortcut service: permissionless same-origin link shortening
         .options_async("/@", handlers::shortcut::handle_options)
         .put_async("/@", handlers::shortcut::handle_put)

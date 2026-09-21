@@ -94,6 +94,28 @@ fn it_lowers_the_profile_library() {
 }
 
 #[test]
+fn peer_connect_reads_a_numeric_event_timestamp_not_a_javascript_expression() {
+    use tonk_template::event::{Source, parse_source};
+
+    let event = PROFILE_LIBRARY
+        .split("event!: &on/reach-peer\n")
+        .nth(1)
+        .and_then(|tail| tail.split("\ncommand!:").next())
+        .expect("peer connect event declaration");
+    let time = event
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("time: "))
+        .expect("peer connect timestamp source")
+        .trim_matches('"');
+    assert_eq!(
+        parse_source(time),
+        Source::Property(vec!["timeStamp".into()]),
+        "the event binder reads properties; Date.now() is a literal that cannot fill a float"
+    );
+    assert!(event.contains(".currentTarget.elements.peer.value"));
+}
+
+#[test]
 fn it_titles_a_downloading_space_from_the_directory_name() {
     let downloading = PROFILE_LIBRARY
         .split("    downloading: |\n")
@@ -1016,6 +1038,10 @@ fn every_handled_command_matches_attributes_its_declaration_carries() {
     // two unrelated things. The FAB's claim is pinned against the struct
     // in `fab_drift.rs` instead, which is where that pairing lives.
     let handled: Vec<(&str, Vec<String>)> = vec![
+        (
+            "tonk/attach-peer",
+            tonk_schema::command::AttachPeer::trigger_attributes(),
+        ),
         (
             "space/create",
             tonk_schema::command::CreateSpace::trigger_attributes(),

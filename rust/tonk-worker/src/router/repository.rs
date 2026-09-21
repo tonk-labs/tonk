@@ -4345,6 +4345,19 @@ pub(crate) async fn record_space_mount(
     configuration: &RepositoryConfiguration,
     display_name: Option<&str>,
 ) {
+    if let Err(error) = try_record_space_mount(tonk, subject, configuration, display_name).await {
+        log!("record space mount for '{subject}': {error}");
+    }
+}
+
+/// Fallible variant for explicit upstream selection. A failed directory write
+/// must not be reported as success: adoption would restore the old upstream.
+pub(crate) async fn try_record_space_mount(
+    tonk: &TonkState,
+    subject: &Did,
+    configuration: &RepositoryConfiguration,
+    display_name: Option<&str>,
+) -> Result<(), TonkWorkerError> {
     use tonk_schema::domain::remote::Address as RemoteAddress;
 
     let anchor_entity = subject.this();
@@ -4398,9 +4411,14 @@ pub(crate) async fn record_space_mount(
                 transaction.assert(tonk_schema::SpaceHomeAddress::new(subject, ucan.endpoint()));
         }
     }
-    if let Err(error) = transaction.commit().perform(&tonk.operator).await {
-        log!("record space mount for '{subject}': {error}");
-    }
+    transaction
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("record space mount for '{subject}': {error}"))
+        })?;
+    Ok(())
 }
 
 /// Expose a fully prepared replica and its initialized status in one profile

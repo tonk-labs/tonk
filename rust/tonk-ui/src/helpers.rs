@@ -24,6 +24,11 @@ pub struct TestEnvironment {
     pub service_worker_script: std::path::PathBuf,
     /// Parent directory for every Chrome profile created by this harness.
     pub browser_profile_root: std::path::PathBuf,
+    /// Native-only ownership handle for taking this fixture's HTTPS origin
+    /// offline. Never serialized into a browser or a subprocess environment.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[serde(skip)]
+    pub web_server: Option<WebServerControl>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -95,6 +100,7 @@ mod native {
     }
 
     /// Reaps a spawned test dependency on every success and failure path.
+    #[derive(Debug)]
     struct ManagedChild(Option<Child>);
 
     impl ManagedChild {
@@ -121,6 +127,21 @@ mod native {
     impl Drop for ManagedChild {
         fn drop(&mut self) {
             let _ = self.terminate();
+        }
+    }
+
+    /// A clonable handle to this fixture's web server, not an arbitrary PID.
+    /// The fixture still owns cleanup; tests can stop only their own origin.
+    #[derive(Clone, Debug)]
+    pub struct WebServerControl(std::sync::Arc<std::sync::Mutex<ManagedChild>>);
+
+    impl WebServerControl {
+        /// Stop and reap the owned HTTPS server. Idempotent with fixture cleanup.
+        pub fn terminate(&self) -> std::io::Result<()> {
+            self.0
+                .lock()
+                .map_err(|_| std::io::Error::other("web server ownership lock poisoned"))?
+                .terminate()
         }
     }
 
@@ -468,7 +489,7 @@ mod native {
 
     /// Manages test server processes for integration testing.
     pub struct TestServers {
-        web_server: ManagedChild,
+        web_server: WebServerControl,
         chromedriver: Option<ManagedChild>,
         access_service:
             Option<Service<AccessServiceAddress, tonk_access_service::helpers::AccessServer>>,
@@ -724,9 +745,11 @@ mod native {
                 started.elapsed().as_millis()
             ));
 
+            let web_server =
+                WebServerControl(std::sync::Arc::new(std::sync::Mutex::new(web_server)));
             Ok((
                 Self {
-                    web_server,
+                    web_server: web_server.clone(),
                     chromedriver,
                     access_service: Some(access_service),
                     workspace: Some(workspace),
@@ -739,6 +762,7 @@ mod native {
                     deployment_root,
                     service_worker_script,
                     browser_profile_root,
+                    web_server: Some(web_server),
                 },
             ))
         }
@@ -864,6 +888,7 @@ mod native {
                 deployment_root: workspace.directory("deployments")?,
                 service_worker_script: workspace.path().join("service_worker.js"),
                 browser_profile_root: browser_profile_root.clone(),
+                web_server: None,
             };
 
             let profile_from = |caps: ChromeCapabilities| -> anyhow::Result<std::path::PathBuf> {

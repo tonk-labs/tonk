@@ -1,12 +1,11 @@
 // The browser half of `tonk rtc connect`.
 //
 // This route deliberately has no Wasm, custom-element, or service-worker
-// dependency — the same premise as `doctor.mjs`. That is not only about
-// iteration speed: `RTCPeerConnection` is `[Exposed=Window]` and does
-// NOT exist in a service worker, so the peer connection has to live in
-// the page no matter how this grows. When these channels eventually
-// carry dialog's remote effects, the worker will have to reach them
-// through a page<->worker MessagePort rather than owning them.
+// dependency — the same premise as `doctor.mjs`. `RTCPeerConnection`
+// is `[Exposed=Window]` and does NOT exist in a service worker, so the
+// peer connection lives in a page. The ordinary app uses these same
+// dial/relay primitives through rtc-carrier.mjs: Dialog's signed effects
+// and iroh remain in the worker, connected by a private MessagePort.
 //
 // The ceremony:
 //
@@ -147,13 +146,35 @@ function gathered(connection) {
 
 /** Read the address record the CLI published. */
 export function decodeAddress(encoded) {
+    if (typeof encoded !== "string" || encoded.length > 16384) throw new Error("invalid or oversized WebRTC address");
     const padded = encoded.replaceAll("-", "+").replaceAll("_", "/")
         .padEnd(encoded.length + ((4 - (encoded.length % 4)) % 4), "=");
     const address = JSON.parse(decoder.decode(
         Uint8Array.from(atob(padded), (c) => c.charCodeAt(0)),
     ));
-    if (!address.fingerprint || !address.candidates?.length) {
+    return validateAddress(address);
+}
+
+/** Validate at the SDP boundary as well as when reading encoded addresses. */
+export function validateAddress(address) {
+    if (!address?.fingerprint || !address.candidates?.length) {
         throw new Error("the address is missing candidates or a fingerprint");
+    }
+    if ((address.version ?? 1) !== 1) throw new Error(`unsupported WebRTC address version ${address.version}`);
+    if (!/^sha-256 (?:[0-9a-f]{2}:){31}[0-9a-f]{2}$/i.test(address.fingerprint)) {
+        throw new Error("invalid SHA-256 certificate fingerprint");
+    }
+    if (!Array.isArray(address.candidates) || address.candidates.length > 16) throw new Error("expected 1–16 candidates");
+    for (const { host, port } of address.candidates) {
+        const ipv4 = typeof host === "string" && /^(?:0|[1-9][0-9]{0,2})(?:\.(?:0|[1-9][0-9]{0,2})){3}$/.test(host)
+            && host.split(".").every((part) => Number(part) <= 255);
+        let ipv6 = false;
+        if (typeof host === "string" && /^[0-9a-f:.]+$/i.test(host) && host.includes(":")) {
+            try { ipv6 = new URL(`http://[${host}]/`).hostname.startsWith("["); } catch { /* invalid literal */ }
+        }
+        if ((!ipv4 && !ipv6) || !Number.isInteger(port) || port < 1 || port > 65535) {
+            throw new Error("candidate requires an IP literal and a nonzero UDP port");
+        }
     }
     return address;
 }
@@ -275,24 +296,33 @@ export function freshCredential() {
     const bytes = crypto.getRandomValues(new Uint8Array(24));
     let binary = "";
     for (const byte of bytes) binary += String.fromCharCode(byte);
-    return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+    // ICE uses the base64 alphabet, not base64url. Twenty-four bytes yield
+    // exactly 32 characters with no padding (192 bits of entropy).
+    return btoa(binary);
 }
 
 /** Build the CLI's side of the handshake from its published address. */
 export function synthesizeAnswer(address, credential) {
+    validateAddress(address);
+    if (!/^[A-Za-z0-9_+/-]{4,256}$/.test(credential)) throw new Error("invalid ICE credential");
+    // Firefox's SDP parser requires uppercase fingerprint octets. Native
+    // certificates may advertise lowercase; normalize only the SDP spelling,
+    // not the saved route record or the certificate bytes it authenticates.
+    const fingerprint = `sha-256 ${address.fingerprint.slice(8).toUpperCase()}`;
     const [first] = address.candidates;
+    const family = first.host.includes(":") ? "IP6" : "IP4";
     const candidates = address.candidates
         .map((c, index) => `a=candidate:${index + 1} 1 udp 2130706431 ${c.host} ${c.port} typ host`)
         .join("\r\n");
     // `a=setup:active` is hard-coded because the CLI pins its answering
     // DTLS role, so it does not have to travel in the address.
     return `v=0\r\n`
-        + `o=- 0 0 IN IP4 ${first.host}\r\n`
+        + `o=- 0 0 IN ${family} ${first.host}\r\n`
         + `s=-\r\nt=0 0\r\n`
-        + `a=fingerprint:${address.fingerprint}\r\n`
+        + `a=fingerprint:${fingerprint}\r\n`
         + `a=group:BUNDLE 0\r\n`
         + `m=application ${first.port} UDP/DTLS/SCTP webrtc-datachannel\r\n`
-        + `c=IN IP4 ${first.host}\r\n`
+        + `c=IN ${family} ${first.host}\r\n`
         + `a=setup:active\r\na=mid:0\r\na=sendrecv\r\n`
         + `a=sctp-port:5000\r\na=max-message-size:65536\r\n`
         + `a=ice-ufrag:${credential}\r\n`
@@ -310,34 +340,60 @@ export function mungeOffer(sdp, credential) {
 /**
  * Dial the CLI. Resolves with the open data channel.
  *
- * No signalling channel is involved, so there is nothing to wait for
- * and nothing to time out except ICE itself.
+ * The deadline covers offer creation and SDP setup as well as ICE. Every
+ * failure closes the peer connection; cancellation also releases listeners.
  */
-export async function dial(address, credential = freshCredential(), channelInit = {}) {
-    const connection = new RTCPeerConnection({ iceServers: [] });
+export async function dial(address, credential = freshCredential(), channelInit = {}, {
+    signal, timeoutMs = 15000, PeerConnection = globalThis.RTCPeerConnection,
+} = {}) {
+    validateAddress(address);
+    signal?.throwIfAborted();
+    const connection = new PeerConnection({ iceServers: [] });
     const { label = CHANNEL_LABEL, ...init } = channelInit;
-    const channel = connection.createDataChannel(label, init);
-
-    const offer = await connection.createOffer();
-    await connection.setLocalDescription({
-        type: "offer",
-        sdp: mungeOffer(offer.sdp, credential),
-    });
-    await connection.setRemoteDescription({
-        type: "answer",
-        sdp: synthesizeAnswer(address, credential),
-    });
-
-    await new Promise((resolve, reject) => {
-        if (channel.readyState === "open") return resolve();
-        channel.addEventListener("open", resolve, { once: true });
-        connection.addEventListener("connectionstatechange", () => {
-            if (["failed", "closed"].includes(connection.connectionState)) {
-                reject(new Error(`the connection went to "${connection.connectionState}"`));
-            }
+    let channel;
+    try {
+        channel = connection.createDataChannel(label, init);
+        await new Promise((resolve, reject) => {
+            let finished = false;
+            const done = (error) => {
+                if (finished) return;
+                finished = true;
+                clearTimeout(timer);
+                channel.removeEventListener("open", opened);
+                channel.removeEventListener("close", closed);
+                connection.removeEventListener("connectionstatechange", changed);
+                signal?.removeEventListener("abort", aborted);
+                error ? reject(error) : resolve();
+            };
+            const opened = () => done();
+            const closed = () => done(new Error("the data channel closed before opening"));
+            const aborted = () => done(signal.reason ?? new Error("dial cancelled"));
+            const changed = () => {
+                if (["failed", "closed"].includes(connection.connectionState)) {
+                    done(new Error(`the connection went to "${connection.connectionState}"`));
+                }
+            };
+            const timer = setTimeout(() => done(new Error("the CLI did not answer within the dial deadline")), timeoutMs);
+            channel.addEventListener("open", opened);
+            channel.addEventListener("close", closed);
+            connection.addEventListener("connectionstatechange", changed);
+            signal?.addEventListener("abort", aborted, { once: true });
+            if (signal?.aborted) { aborted(); return; }
+            (async () => {
+                const offer = await connection.createOffer();
+                if (finished) return;
+                await connection.setLocalDescription({ type: "offer", sdp: mungeOffer(offer.sdp, credential) });
+                if (finished) return;
+                await connection.setRemoteDescription({ type: "answer", sdp: synthesizeAnswer(address, credential) });
+                if (!finished && channel.readyState === "open") opened();
+            })().catch(done);
         });
-    });
-    return { connection, channel };
+        return { connection, channel };
+    } catch (error) {
+        channel?.close();
+        connection.close();
+        throw error;
+    }
 }
 
 // The palette restated as literals, the way the CLI's own callback
@@ -625,12 +681,6 @@ async function negotiate(offer, ui) {
 }
 
 /**
- * The envelope a page posts to the service worker when it has a carrier
- * open. Mirrors `tonk_worker::router::bridge`'s dispatch.
- */
-export const CARRIER_ENVELOPE = "tonk-rtc-carrier";
-
-/**
  * Relay a data channel to a `MessagePort`, and back.
  *
  * The page half of the worker boundary. `RTCPeerConnection` is
@@ -647,42 +697,136 @@ export const CARRIER_ENVELOPE = "tonk-rtc-carrier";
  * port fires no event and the worker would otherwise hold a route to
  * nowhere.
  */
-export function relay(channel, port) {
+export function relay(channel, port, { heartbeatMs = 5000, leaseMs = 15000, now = Date.now } = {}) {
     channel.binaryType = "arraybuffer";
-
-    channel.addEventListener("message", (event) => {
-        if (event.data instanceof ArrayBuffer) port.postMessage(event.data, [event.data]);
-    });
-    port.addEventListener("message", (event) => {
-        // A send can fail while the channel is closing, which is
-        // ordinary: QUIC treats a lost datagram as loss and retransmits.
-        if (event.data instanceof ArrayBuffer) {
-            try { channel.send(event.data); } catch { /* closing */ }
+    let closed = false;
+    let outstanding = 0;
+    let lastPong = now();
+    const post = (data, transfer = []) => {
+        try { port.postMessage(data, transfer); } catch { close(); }
+    };
+    const incoming = (event) => {
+        if (event.data instanceof ArrayBuffer && outstanding < 64) {
+            outstanding += 1;
+            post(event.data, [event.data]);
         }
-    });
+    };
+    const outgoing = (event) => {
+        if (event.data === null) { close(); return; }
+        if (event.data === "ack") { outstanding = Math.max(0, outstanding - 1); return; }
+        if (event.data === "ping") { post("pong"); return; }
+        if (event.data === "pong") { lastPong = now(); return; }
+        if (event.data instanceof ArrayBuffer) {
+            // Bound both the MessagePort flight window and the SCTP send
+            // buffer. Congestion is datagram loss, never a growing queue.
+            post("ack");
+            if (channel.readyState === "open" && channel.bufferedAmount < 256 * 1024) {
+                try { channel.send(event.data); } catch { /* packet loss */ }
+            }
+        }
+    };
+    const close = () => {
+        if (closed) return;
+        closed = true;
+        clearInterval(heartbeat);
+        channel.removeEventListener("message", incoming);
+        channel.removeEventListener("close", close);
+        channel.removeEventListener("error", close);
+        port.removeEventListener("message", outgoing);
+        try { port.postMessage(null); } catch { /* already gone */ }
+        port.close();
+        channel.close();
+    };
+    const heartbeat = setInterval(() => {
+        if (now() - lastPong >= leaseMs) close();
+        else post("ping");
+    }, heartbeatMs);
+    channel.addEventListener("message", incoming);
+    channel.addEventListener("close", close);
+    channel.addEventListener("error", close);
+    port.addEventListener("message", outgoing);
     port.start();
-
-    channel.addEventListener("close", () => port.postMessage(null));
+    return close;
 }
 
-/**
- * Dial a local `tonk` and hand the carrier to `worker`.
- *
- * Nothing is exchanged with the CLI to get here: the port and the
- * certificate fingerprint both come from the rendezvous phrase, and the
- * candidate is loopback. Resolves once the channel is open and the
- * worker has been given its end.
+/** Normal app integration: only the controlling worker may request a dial.
+ * Each request has its own reply port, so registration and its acknowledgment
+ * cannot be confused with another tab, attempt, or worker generation.
  */
-export async function attachCarrier(worker, address) {
-    const { connection, channel } = await dial(
-        address ?? (await localAddress()),
-        freshCredential(),
-        datagramChannel(),
-    );
-
-    const { port1, port2 } = new MessageChannel();
-    relay(channel, port1);
-    worker.postMessage({ v: 1, type: CARRIER_ENVELOPE }, [port2]);
-
-    return { connection, channel };
+export function serveCarrierRequests(workers = navigator.serviceWorker, page = globalThis, {
+    dialPeer = dial, Channels = MessageChannel,
+} = {}) {
+    const active = new Map();
+    const stop = () => {
+        for (const carrier of active.values()) carrier.close();
+        active.clear();
+    };
+    const message = async (event) => {
+        const request = event.data;
+        if (event.source !== workers.controller || request?.v !== 1 || request.type !== "tonk-rtc-dial") return;
+        const reply = event.ports?.[0];
+        if (!reply) return;
+        active.get(request.peer)?.close();
+        if (active.size >= 4) {
+            reply.postMessage({ v: 1, type: "error", detail: "this page already carries four peers" });
+            reply.close();
+            return;
+        }
+        const abort = new AbortController();
+        let connection, dispose, timer, closed = false, offered = false;
+        const carrier = { close() {
+            if (closed) return;
+            closed = true;
+            abort.abort(new Error("carrier replaced or page closed"));
+            clearTimeout(timer);
+            dispose?.();
+            connection?.close();
+            reply.close();
+            if (active.get(request.peer) === carrier) active.delete(request.peer);
+        } };
+        active.set(request.peer, carrier);
+        // Listen before ICE starts so a worker deadline or superseded request
+        // can cancel a dial that has not returned a data channel yet.
+        reply.addEventListener("message", (answer) => {
+            if (offered && answer.data?.v === 1 && answer.data.type === "ready") {
+                clearTimeout(timer);
+                reply.close();
+            } else carrier.close();
+        });
+        reply.start();
+        try {
+            const opened = await dialPeer(validateAddress(request.address), freshCredential(), datagramChannel(), { signal: abort.signal });
+            connection = opened.connection;
+            if (abort.signal.aborted) {
+                // Cancellation may have run just after dial resolved,
+                // before this continuation acquired its handles.
+                opened.channel.close();
+                connection.close();
+                return;
+            }
+            const { port1, port2 } = new Channels();
+            dispose = relay(opened.channel, port1);
+            opened.channel.addEventListener("close", () => carrier.close(), { once: true });
+            connection.addEventListener("connectionstatechange", () => {
+                if (["failed", "closed", "disconnected"].includes(connection.connectionState)) carrier.close();
+            });
+            timer = setTimeout(() => carrier.close(), 5000);
+            offered = true;
+            reply.postMessage({ v: 1, type: "carrier" }, [port2]);
+        } catch (error) {
+            if (!abort.signal.aborted) {
+                try { reply.postMessage({ v: 1, type: "error", detail: error.message }); } catch { /* worker gone */ }
+            }
+            carrier.close();
+        }
+    };
+    workers.addEventListener("message", message);
+    workers.addEventListener("controllerchange", stop);
+    page.addEventListener("pagehide", stop);
+    return () => {
+        stop();
+        workers.removeEventListener("message", message);
+        workers.removeEventListener("controllerchange", stop);
+        page.removeEventListener("pagehide", stop);
+    };
 }

@@ -91,6 +91,8 @@ pub use repository::{
 
 mod sync;
 pub use dialog_repository::Revision;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) use sync::offline_sync_allowed;
 pub use sync::{
     SyncQueue, SyncResponse, SyncStatusResponse, branches_to_sync, drain_sync, sync_repository,
 };
@@ -681,6 +683,8 @@ pub mod tests {
             retiring: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             view_bindings: Default::default(),
             bridges: Default::default(),
+            reach: Default::default(),
+            iroh: Default::default(),
             sync_queue: Default::default(),
             commands: super::command_providers(),
             clients: Default::default(),

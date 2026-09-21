@@ -4,6 +4,9 @@
 //! delegation path that witnesses that target. Consumers can therefore verify
 //! revocation authority without consulting an account provider or registry.
 
+/// Read-only revocation lookup protocol and durable offline evidence.
+pub mod evidence;
+
 use std::collections::HashMap;
 
 use anyhow::Result;

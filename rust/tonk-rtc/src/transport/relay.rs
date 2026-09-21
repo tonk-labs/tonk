@@ -26,6 +26,7 @@
 //! supplies its own.
 
 use std::sync::Arc;
+use std::{cell::Cell, rc::Rc};
 
 use bytes::Bytes;
 use js_sys::Uint8Array;
@@ -33,7 +34,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{MessageEvent, MessagePort};
 
-use super::{Port, WebRtcTransport};
+use super::{Inbound, Port, WebRtcTransport};
 use iroh_base::CustomAddr;
 
 /// Route a peer's datagrams over a message port.
@@ -41,37 +42,73 @@ use iroh_base::CustomAddr;
 /// The far end of `port` is expected to own the carrier — a data
 /// channel opened with [`super::web::datagram_channel`] — and to relay
 /// in both directions without interpreting anything.
-pub fn attach(transport: &Arc<WebRtcTransport>, peer: CustomAddr, port: MessagePort) {
+pub fn attach(transport: &Arc<WebRtcTransport>, peer: CustomAddr, port: MessagePort) -> Inbound {
     let Port {
         mut outbound,
         inbound,
-    } = transport.attach(peer.clone());
+    } = transport.attach(peer);
 
-    let transport_for_close = transport.clone();
-    let peer_for_close = peer.clone();
+    let pumping = inbound.clone();
+    let lease = inbound.clone();
+    let outstanding = Rc::new(Cell::new(0_usize));
+    let acknowledged = outstanding.clone();
+    let last_pong = Rc::new(Cell::new(js_sys::Date::now()));
+    let seen_pong = last_pong.clone();
+    let replying = port.clone();
     let on_message = Closure::<dyn FnMut(MessageEvent)>::new(move |event: MessageEvent| {
         let data = event.data();
         // The far end closes by posting null rather than by closing the
         // port: a closed `MessagePort` fires no event, so a silent
         // close would leave iroh with a route to nowhere.
         if data.is_null() {
-            transport_for_close.detach(&peer_for_close);
+            inbound.detach();
+            return;
+        }
+        if let Some(control) = data.as_string() {
+            match control.as_str() {
+                "ack" => acknowledged.set(acknowledged.get().saturating_sub(1)),
+                "pong" => seen_pong.set(js_sys::Date::now()),
+                "ping" => {
+                    let _ = replying.post_message(&JsValue::from_str("pong"));
+                }
+                _ => {}
+            }
             return;
         }
         if let Ok(buffer) = data.dyn_into::<js_sys::ArrayBuffer>() {
+            let _ = replying.post_message(&JsValue::from_str("ack"));
             inbound.deliver(Bytes::from(Uint8Array::new(&buffer).to_vec()));
         }
     });
     port.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
-    // The port owns the closure from here.
-    on_message.forget();
     port.start();
+
+    // A closed/frozen document does not notify a MessagePort. A lease
+    // also bounds the time an abandoned pump keeps its closures alive.
+    let watching = lease.clone();
+    let heartbeat_port = port.clone();
+    let heartbeat = gloo_timers::callback::Interval::new(5000, move || {
+        if js_sys::Date::now() - last_pong.get() >= 15_000.0
+            || heartbeat_port
+                .post_message(&JsValue::from_str("ping"))
+                .is_err()
+        {
+            watching.detach();
+        }
+    });
 
     // A pump, because `poll_send` is synchronous. `spawn_local` because
     // a `MessagePort` is not `Send`.
     let sending = port.clone();
     wasm_bindgen_futures::spawn_local(async move {
         while let Some(datagram) = outbound.recv().await {
+            if !pumping.is_current() {
+                break;
+            }
+            if outstanding.get() >= 64 {
+                continue;
+            }
+            outstanding.set(outstanding.get() + 1);
             // Allocate in the transferable heap and move it: the buffer
             // is neutered here rather than copied into the page.
             let view = Uint8Array::new_with_length(datagram.len() as u32);
@@ -85,5 +122,11 @@ pub fn attach(transport: &Arc<WebRtcTransport>, peer: CustomAddr, port: MessageP
                 break;
             }
         }
+        pumping.detach();
+        let _ = sending.post_message(&JsValue::NULL);
+        sending.set_onmessage(None);
+        sending.close();
+        drop((on_message, heartbeat));
     });
+    lease
 }

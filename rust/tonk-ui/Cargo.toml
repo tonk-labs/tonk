@@ -18,6 +18,9 @@ helpers = [
 ]
 integration-tests = ["helpers", "dialog-common/integration-tests", "tonk-worker/helpers"]
 web-integration-tests = ["helpers", "dialog-common/integration-tests", "tonk-worker/helpers"]
+# Native WebDriver fixtures that launch a CLI built with `--features rtc`.
+# Keep ordinary account integration runs compatible with a non-RTC CLI.
+rtc-integration-tests = ["integration-tests"]
 
 [dependencies]
 async-trait = { workspace = true }

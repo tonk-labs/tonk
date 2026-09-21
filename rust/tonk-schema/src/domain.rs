@@ -260,6 +260,18 @@ pub mod device {
 pub mod peer {
     use super::{Attribute, Entity};
 
+    /// The peer URI entered for this observation, retained for retry.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.peer")]
+    #[cardinality(one)]
+    pub struct Address(pub String);
+
+    /// A human-readable connection result or failure reason.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.peer")]
+    #[cardinality(one)]
+    pub struct Detail(pub String);
+
     /// The live reachability observation — `peer:reachable` or
     /// `peer:unreachable`. An entity URI rather than a boolean so the
     /// vocabulary can grow (a dialing state, a refused one) without
@@ -281,6 +293,35 @@ pub mod peer {
     #[domain("xyz.tonk.peer")]
     #[cardinality(one)]
     pub struct Spaces(pub u64);
+}
+
+/// Transient inventory returned by the currently connected peer.
+pub mod peer_offer {
+    use super::Attribute;
+
+    /// A space's DID. An offer is not a grant of access to it.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.peer-offer")]
+    #[cardinality(one)]
+    pub struct Subject(pub String);
+
+    /// The listener's local label for the space.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.peer-offer")]
+    #[cardinality(one)]
+    pub struct Name(pub String);
+
+    /// The exact peer URI from this inventory observation.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.peer-offer")]
+    #[cardinality(one)]
+    pub struct Address(pub String);
+
+    /// This device's result of selecting this offer, never replicated.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.peer-offer")]
+    #[cardinality(one)]
+    pub struct Detail(pub String);
 }
 
 pub mod sync {
@@ -759,6 +800,23 @@ pub mod command {
         /// decodes to, and what `Date.now()` arrives as from a view.
         #[derive(Attribute, Clone, PartialEq, PartialOrd)]
         #[domain("xyz.tonk.reach-peer")]
+        pub struct Time(pub f64);
+    }
+
+    /// Select an existing space's peer upstream from the network page.
+    pub mod attach_peer {
+        use super::Attribute;
+
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.attach-peer")]
+        pub struct Peer(pub String);
+
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.attach-peer")]
+        pub struct Space(pub String);
+
+        #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+        #[domain("xyz.tonk.attach-peer")]
         pub struct Time(pub f64);
     }
 

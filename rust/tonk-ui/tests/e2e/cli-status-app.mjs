@@ -1,195 +1,276 @@
-// The same path as `cli-status.mjs`, but through the real app: the page
-// the user loads, the service worker it registers, and the
-// `/api/cli/status` and `/api/cli/spaces` routes inside it. No harness stands in for either
-// half — `cli-status.mjs` covers the transport with a purpose-built
-// wasm shim, and this covers the wiring that shim replaced.
-//
-//   page (dist/index.html + rtc.mjs)
-//     |  postMessage("tonk-rtc-carrier", [port])
-//   service worker (dist/worker_bg.wasm -> router::cli)
-//     |  QUIC over SCTP over DTLS
-//   tonk (`tonk rtc serve`)
-//
-//   cd rust/tonk-ui && trunk build
-//   cargo build -p tonk-rtc --features iroh --example rendezvous_serve
-//   node rust/tonk-ui/tests/e2e/cli-status-app.mjs
-
-import { chromium } from "playwright";
+// Real CLI + ordinary /network form: no injected carrier or probe endpoints.
+// cargo build -p tonk-cli --features rtc
+// (cd rust/tonk-ui && trunk build)
+// node rust/tonk-ui/tests/e2e/cli-status-app.mjs
+// Optional: BROWSER=firefox|webkit, CHROME=/path, DIST=/path,
+// PLAYWRIGHT_MODULE=/path/to/playwright/index.mjs, TONK_BIN=/path/to/tonk,
+// RTC_PRIVATE=1 (per-fixture private DTLS certificate).
+// RTC_EMPTY=1 (empty installation: no space, selection, or account).
+// RTC_OFFLINE=1 (HTTP blocked and app origin stopped after install; UDP remains).
+import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { readFile, stat } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, stat, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const repo = path.resolve(here, "../../../..");
-const DIST = process.env.DIST ?? path.join(repo, "rust/tonk-ui/dist");
-const CHROME = process.env.CHROME
-  ?? "/opt/pw-browsers/chromium-1194/chrome-linux/chrome";
-const SERVE = process.env.SERVE
-  ?? path.join(repo, "target/debug/examples/rendezvous_serve");
-
-const types = {
-  ".html": "text/html",
-  ".js": "text/javascript",
-  ".mjs": "text/javascript",
-  ".wasm": "application/wasm",
-  ".json": "application/json",
-  ".css": "text/css",
-  ".svg": "image/svg+xml",
-  ".png": "image/png",
-  ".der": "application/octet-stream",
-  ".yaml": "text/yaml",
-  ".woff2": "font/woff2",
+const engines = await import(process.env.PLAYWRIGHT_MODULE ?? "playwright");
+const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");
+const dist = path.resolve(process.env.DIST ?? path.join(repo, "rust/tonk-ui/dist"));
+const binary = process.env.TONK_BIN ?? path.join(repo, "target/debug/tonk");
+const engine = process.env.BROWSER ?? "chromium";
+const temporary = await mkdtemp(path.join(tmpdir(), "tonk-rtc-product-"));
+const env = { ...process.env,
+    TONK_PROFILE_DIRECTORY: path.join(temporary, "profile"),
+    TONK_SPACES_STATE: path.join(temporary, "state"),
+    TONK_TELEMETRY_STATE: path.join(temporary, "telemetry"),
+    TONK_UPDATE_STATE: path.join(temporary, "updates"),
+    TONK_TELEMETRY: "0", TONK_NO_UPDATE_CHECK: "1",
+    // Isolated device-root fixture; not evidence of account-authorized sync.
+    TONK_UNSAFE_ALLOW_DEVICE_ROOT: "1",
 };
+delete env.TONK_SPACE;
+delete env.TONK_RTC_PRIVATE_IDENTITY;
+if (process.env.RTC_EMPTY === "1") delete env.TONK_UNSAFE_ALLOW_DEVICE_ROOT;
+if (process.env.RTC_PRIVATE === "1") env.TONK_RTC_PRIVATE_IDENTITY = "1";
+await mkdir(env.TONK_PROFILE_DIRECTORY);
 
-// The dist as the app expects to be served: real MIME types, and the
-// service worker at the root scope. Anything missing is a 404 rather
-// than a fallback to index.html, so a wrong path shows up as a wrong
-// path instead of as HTML that fails to parse.
-function origin() {
-  const server = createServer(async (request, response) => {
-    const url = new URL(request.url, "http://127.0.0.1");
-    const relative = url.pathname === "/" ? "/index.html" : url.pathname;
-    const file = path.join(DIST, relative);
-    if (!file.startsWith(DIST)) return response.writeHead(403).end();
-    try {
-      if (!(await stat(file)).isFile()) throw new Error("not a file");
-      response.writeHead(200, {
-        "content-type": types[path.extname(file)] ?? "application/octet-stream",
-        "cache-control": "no-store",
-        "service-worker-allowed": "/",
-      }).end(await readFile(file));
-    } catch {
-      response.writeHead(404).end();
-    }
-  });
-  return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server)));
-}
-
-function listen() {
-  const child = spawn(SERVE, [], { stdio: ["ignore", "pipe", "inherit"] });
-  const lines = [];
-  const offered = () => lines
-    .filter((line) => line.startsWith("SPACE "))
-    .map((line) => {
-      const [, subject, name] = line.split(" ");
-      return { subject, name: name === "-" ? null : name };
+function command(args, environment = env) {
+    return new Promise((resolve, reject) => {
+        const child = spawn(binary, args, { cwd: temporary, env: environment, stdio: ["ignore", "pipe", "pipe"] });
+        let output = "";
+        child.stdout.on("data", (chunk) => { output += chunk; });
+        child.stderr.on("data", (chunk) => { output += chunk; });
+        child.once("error", reject);
+        child.once("exit", (code) => code === 0 ? resolve(output) : reject(new Error(`tonk ${args.join(" ")}: ${output}`)));
     });
-  child.stdout.on("data", (chunk) => {
-    const text = String(chunk);
-    process.stdout.write(text.replace(/^/gm, "  tonk| "));
-    lines.push(...text.split("\n").filter(Boolean));
-  });
-  const until = (prefix, seconds) => new Promise((resolve, reject) => {
-    const deadline = Date.now() + seconds * 1000;
-    const poll = setInterval(() => {
-      const line = lines.find((l) => l.startsWith(prefix));
-      if (line) { clearInterval(poll); resolve(line); }
-      else if (Date.now() > deadline) {
-        clearInterval(poll);
-        reject(new Error(`no "${prefix}" within ${seconds}s; saw: ${lines.join(" | ") || "(nothing)"}`));
-      }
-    }, 100);
-  });
-  return { child, until, offered };
 }
 
-const server = await origin();
-const { child, until, offered } = listen();
-let failure;
-let browser;
+function listen(port = 0, environment = env) {
+    const child = spawn(binary, ["rtc", "serve", "--port", String(port)], {
+        cwd: temporary, env: environment, stdio: ["ignore", "pipe", "pipe"],
+    });
+    let output = "";
+    const ready = new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`CLI startup timed out: ${output}`)), 30000);
+        const read = (chunk) => {
+            output += chunk;
+            const peer = /^PEER (.+)$/m.exec(output)?.[1];
+            const bound = /listening on port (\d+)/.exec(output)?.[1];
+            if (peer && bound) { clearTimeout(timer); resolve({ peer, port: Number(bound) }); }
+        };
+        child.stdout.on("data", read);
+        child.stderr.on("data", read);
+        child.once("error", (error) => { clearTimeout(timer); reject(error); });
+        child.once("exit", (code) => { clearTimeout(timer); reject(new Error(`CLI exited ${code}: ${output}`)); });
+    });
+    const stop = () => new Promise((resolve) => {
+        if (child.exitCode !== null || child.signalCode !== null) { resolve(); return; }
+        const timer = setTimeout(() => child.kill("SIGTERM"), 5000);
+        child.once("exit", () => { clearTimeout(timer); resolve(); });
+        child.kill("SIGINT");
+    });
+    return { ready, stop };
+}
 
+const types = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript",
+    ".wasm": "application/wasm", ".json": "application/json", ".css": "text/css", ".svg": "image/svg+xml",
+    ".png": "image/png", ".der": "application/octet-stream", ".yaml": "text/yaml", ".woff2": "font/woff2" };
+let assetRequests = 0;
+const server = createServer(async (request, response) => {
+    assetRequests += 1;
+    const url = new URL(request.url, "http://127.0.0.1");
+    const relative = ["/", "/network"].includes(url.pathname) ? "/index.html" : url.pathname;
+    const file = path.resolve(dist, `.${relative}`);
+    if (!file.startsWith(`${dist}${path.sep}`)) { response.writeHead(403).end(); return; }
+    try {
+        if (!(await stat(file)).isFile()) throw new Error("not a file");
+        response.writeHead(200, { "content-type": types[path.extname(file)] ?? "application/octet-stream",
+            "cache-control": "no-store", "service-worker-allowed": "/" }).end(await readFile(file));
+    } catch { response.writeHead(404).end(); }
+});
+
+let browser, context, listener, otherListener;
 try {
-  const peer = (await until("PEER ", 30)).slice("PEER ".length).trim();
-  console.log(`\nlistener is ${peer}\n`);
-
-  browser = await chromium.launch({ executablePath: CHROME });
-  const context = await browser.newContext();
-  const page = await context.newPage();
-  page.on("console", (message) => console.log(`  page| ${message.text()}`));
-  page.on("pageerror", (error) => console.log(`  page! ${error.message}`));
-
-  await page.goto(`http://127.0.0.1:${server.address().port}/`, { waitUntil: "load" });
-
-  // The app registers and claims the worker itself; wait for it to be
-  // the controller rather than merely registered, because an
-  // uncontrolled page's `fetch` never reaches the router.
-  await page.waitForFunction(
-    () => navigator.serviceWorker.controller !== null,
-    null,
-    { timeout: 120_000 },
-  );
-  console.log("  page| service worker is controlling");
-
-  // Before the status probe: no page has dialed, so the route must say
-  // so rather than fail. This is the ordinary state and worth pinning.
-  const before = await page.evaluate(
-    async (peer) => (await fetch(`/api/cli/status?peer=${encodeURIComponent(peer)}`)).json(),
-    peer,
-  );
-  console.log(`  page| before a carrier: ${JSON.stringify(before)}`);
-  if (before.reachable) throw new Error("reachable before any carrier was opened");
-
-  // Dial, and hand the carrier to the worker exactly as the app would.
-  await page.evaluate(async () => {
-    const rtc = await import("/rtc.mjs");
-    await rtc.attachCarrier(navigator.serviceWorker.controller);
-    console.log("carrier handed to the service worker");
-  });
-
-  const status = await page.evaluate(
-    async (peer) => (await fetch(`/api/cli/status?peer=${encodeURIComponent(peer)}`)).json(),
-    peer,
-  );
-
-  console.log(`\nstatus: ${JSON.stringify(status, null, 2)}`);
-  if (!status.reachable) throw new Error(`not reachable: ${status.detail}`);
-  for (const name of ["subject", "profile", "operator"]) {
-    if (!status[name]?.startsWith("did:")) {
-      throw new Error(`${name} is not a DID: ${status[name]}`);
+    if (process.env.RTC_EMPTY !== "1") await command(["space", "new", "rtc-fixture"]);
+    listener = listen();
+    const first = await listener.ready;
+    let other;
+    if (process.env.RTC_EMPTY !== "1") {
+        const alternate = { ...env, TONK_PROFILE_DIRECTORY: path.join(temporary, "other-profile"),
+            TONK_SPACES_STATE: path.join(temporary, "other-state") };
+        await mkdir(alternate.TONK_PROFILE_DIRECTORY);
+        await command(["space", "new", "other-cli-fixture"], alternate);
+        otherListener = listen(0, alternate);
+        other = await otherListener.ready;
+        assert.notEqual(other.peer.split("?")[0], first.peer.split("?")[0], "separate profiles must have separate peer identities");
+        assert.notEqual(other.port, first.port);
     }
-  }
-  // The greeting echoes the invocation's subject, so a genuine round
-  // trip answers with this page's own profile — not the listener's
-  // endpoint key, which names the route rather than the authority.
-  // Nothing in the worker can produce this locally: the only path to a
-  // `Greeting` is the iroh site, over the carrier.
-  const { did } = await page.evaluate(async () => (await fetch("/api/identify")).json());
-  if (status.subject !== did) {
-    throw new Error(`answered for ${status.subject}, but this page is ${did}`);
-  }
-  console.log(`\nthe tonk echoed this page's own subject: ${did}`);
-
-  // What it holds, over the same carrier. A directory listing: every
-  // space is a DID the page has no authority over and has not opened.
-  const inventory = await page.evaluate(
-    async (peer) => (await fetch(`/api/cli/spaces?peer=${encodeURIComponent(peer)}`)).json(),
-    peer,
-  );
-  console.log(`\nspaces: ${JSON.stringify(inventory, null, 2)}`);
-  if (!inventory.reachable) throw new Error(`not reachable: ${inventory.detail}`);
-
-  // Against what the listener said it seeded, so this fails if the
-  // values are lost or reordered on the way rather than merely if the
-  // call succeeds.
-  const expected = offered();
-  if (expected.length === 0) throw new Error("the listener seeded no spaces to check against");
-  const seen = (inventory.spaces ?? []).map((s) => `${s.subject} ${s.name ?? "-"}`).sort();
-  const want = expected.map((s) => `${s.subject} ${s.name ?? "-"}`).sort();
-  if (seen.join(" | ") !== want.join(" | ")) {
-    throw new Error(`offered [${want}] but the page saw [${seen}]`);
-  }
-  console.log(`the tonk's ${seen.length} spaces arrived intact, names and all`);
-
-  console.log("\nPASS: the real page asked a tonk who it is and what it holds, through the real service worker.");
-} catch (error) {
-  failure = error;
-  console.error(`\nFAIL: ${error.message}`);
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    // A normal persisted installation, not a private-browsing context. Besides
+    // making later offline-restart coverage possible, this exercises WebKit's
+    // normal OPFS policy rather than its ephemeral-context restrictions.
+    context = await engines[engine].launchPersistentContext(path.join(temporary, "browser"),
+        process.env.CHROME ? { executablePath: process.env.CHROME } : {});
+    browser = context.browser();
+    let page = await context.newPage();
+    page.on("pageerror", (error) => console.error(`page: ${error.message}`));
+    if (process.env.DEBUG) page.on("console", (message) => {
+        if (!message.text().includes("/.well-known/trunk/ws")) console.log(`page: ${message.text()}`);
+    });
+    await page.goto(`http://127.0.0.1:${server.address().port}/network`);
+    await page.waitForFunction(() => navigator.serviceWorker.controller !== null, null, { timeout: 120000 });
+    async function form() {
+        for (let tries = 0; tries < 300; tries += 1) {
+            for (const frame of page.frames()) {
+                const input = frame.locator(".nask-peer:visible").first();
+                if (await input.isVisible()) return { frame, input };
+            }
+            await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        const visible = await Promise.all(page.frames().map(async (frame) => ({
+            url: frame.url(),
+            body: (await frame.locator("body").innerText({ timeout: 1000 }).catch(() => "unavailable")).slice(0, 2000),
+        })));
+        const health = await page.evaluate(async () => {
+            const response = await fetch("/api/health", { signal: AbortSignal.timeout(2000) });
+            const health = await response.json();
+            return { build: health.build, worker: health.worker, error: health.error,
+                log: health.log?.filter(entry => ["warn", "error"].includes(entry.level)).slice(-8) };
+        }).catch(error => ({ error: error.message }));
+        throw new Error(`no network connect form rendered at ${page.url()}\n${JSON.stringify({ frames: visible, health })}`);
+    }
+    async function connect(uri, status) {
+        const { frame, input } = await form();
+        await input.fill(uri);
+        await input.press("Enter");
+        try {
+            if (status === "peer:reachable") {
+                // A prior peer may still be rendered while the command starts.
+                // Wait for this identity, not just any old successful status.
+                await frame.locator(".nrow__subject").filter({ hasText: uri.split("?")[0] })
+                    .first().waitFor({ state: "visible", timeout: 40000 });
+            }
+            await frame.locator(`[data-status="${status}"]`).waitFor({ state: "visible", timeout: 40000 });
+        } catch (error) {
+            throw new Error(`${error.message}\nNetwork page: ${await frame.locator("body").innerText()}`);
+        }
+        return frame;
+    }
+    const connected = await connect(first.peer, "peer:reachable");
+    assert.ok((await connected.locator(".nrow__subject").first().textContent()).includes(first.peer.split("?")[0]));
+    if (process.env.RTC_EMPTY === "1") {
+        assert.equal(await connected.locator('[data-peer-offer]').count(), 0);
+    } else {
+        await connected.locator('[data-peer-offer]').filter({ hasText: "rtc-fixture" }).waitFor();
+        const offer = connected.locator('[data-peer-offer]').filter({ hasText: "rtc-fixture" });
+        await offer.getByRole("button", { name: "sync through this peer" }).click();
+        await offer.getByRole("status").filter({ hasText: "access needed" }).waitFor();
+    }
+    if (process.env.DEBUG) console.log("connected to the real CLI and read its inventory");
+    if (other) {
+        const second = await connect(other.peer, "peer:reachable");
+        assert.ok((await second.locator(".nrow__subject").first().textContent()).includes(other.peer.split("?")[0]));
+        await second.locator('[data-peer-offer]').filter({ hasText: "other-cli-fixture" }).waitFor();
+        const selected = await connect(first.peer, "peer:reachable");
+        await selected.locator('[data-peer-offer]').filter({ hasText: "rtc-fixture" }).waitFor();
+        assert.equal(await selected.locator('[data-peer-offer]').filter({ hasText: "other-cli-fixture" }).count(), 0);
+    }
+    if (process.env.RTC_OFFLINE === "1") {
+        // First-install activation pins only the worker runtime. The complete
+        // offline resource graph is adopted later, after foreground startup.
+        // Match the immutable document build, not merely an active controller.
+        const build = await page.evaluate(() => globalThis.tonkBuild);
+        assert.match(build, /^[0-9a-f]{16}$/);
+        const installDeadline = Date.now() + 180000;
+        // Poll from Node: waitForFunction treats an async predicate's Promise
+        // as truthy before the CacheStorage read has actually finished.
+        while (!(await page.evaluate(async (build) => {
+            const response = await caches.match(`/.tonk-generation-${build}`, {
+                cacheName: `TONK_GENERATION_${build}`,
+            });
+            if (!response) return false;
+            const marker = await response.json();
+            return marker.build === build && marker.state === "adopted";
+        }, build))) {
+            if (Date.now() > installDeadline) throw new Error("complete offline generation was not installed within three minutes");
+            await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+        const cached = await page.evaluate(async (build) => Promise.all(
+            ["/rtc-carrier.mjs", "/rtc.mjs", "/rendezvous.der", "/worker_bg.wasm"].map(async (url) => {
+                const cacheName = url.endsWith(".wasm") ? `TONK_WORKER_${build}` : `TONK_SHELL_${build}`;
+                return { url, present: !!(await caches.match(new URL(url, location.origin).href, { cacheName })) };
+            }),
+        ), build);
+        if (!cached.every(({ present }) => present)) {
+            const inventory = await page.evaluate(async () => Promise.all((await caches.keys()).map(async name => ({
+                name, urls: (await (await caches.open(name)).keys()).slice(0, 4).map(request => request.url),
+            }))));
+            throw new Error(`missing adopted RTC assets for ${build}: ${JSON.stringify({ cached, inventory })}`);
+        }
+        // No origin fallback and no browser HTTP network. setOffline() also
+        // affects loopback ICE in Chromium and offline navigation in WebKit,
+        // which is not the "internet absent, loopback available" contract.
+        // This does not simulate navigator.onLine=false, stop the OS network,
+        // or prove delegated repository authorization survives offline.
+        const appOrigin = new URL(page.url()).origin;
+        await context.route("**/*", route => {
+            const url = new URL(route.request().url());
+            // WebKit also routes the sealed guest's local blob: module
+            // imports. Those are transferred cached bytes, not internet.
+            const externalHttp = ["http:", "https:"].includes(url.protocol) && url.origin !== appOrigin;
+            return externalHttp ? route.abort("internetdisconnected") : route.continue();
+        });
+        server.close();
+        server.closeAllConnections();
+        const requestsBeforeReload = assetRequests;
+        await page.reload();
+        await page.waitForFunction(() => navigator.serviceWorker.controller !== null);
+        assert.equal(assetRequests, requestsBeforeReload, "offline reload reached the asset server");
+        assert.equal(await page.evaluate(() => globalThis.tonkBuild), build, "reload did not boot the cached app generation");
+        await connect(first.peer, "peer:reachable");
+    }
+    const invalid = await connect("not a peer URI", "peer:invalid");
+    assert.equal(await invalid.locator('[data-peer-offer]').count(), 0, "failed attempts retain no stale inventory");
+    // Correct carrier, wrong authenticated endpoint: DTLS reachability must
+    // not turn a request for a different iroh identity into a successful probe.
+    const wrongKey = "did:key:z6MkrZ1r5XBFZjBU34qyD8fueMbMRkKw17BZaq2ivKFjnz2z";
+    assert.notEqual(first.peer.split("?")[0], wrongKey);
+    await connect(wrongKey + first.peer.slice(first.peer.indexOf("?")), "peer:unreachable");
+    await connect(first.peer, "peer:reachable");
+    await listener.stop();
+    const { frame } = await form();
+    try {
+        await frame.locator('[data-status="peer:unreachable"]').waitFor({ state: "visible", timeout: 25000 });
+    } catch (error) {
+        const health = await page.evaluate(async () => {
+            const response = await fetch("/api/health", { signal: AbortSignal.timeout(3000) });
+            const health = await response.json();
+            return { build: health.build, error: health.error,
+                log: health.log?.filter(entry => ["warn", "error"].includes(entry.level)).slice(-5) };
+        }).catch(error => ({ error: error.message }));
+        throw new Error(`${error.message}\nAfter CLI stop: ${await frame.locator("body").innerText()}\n${JSON.stringify(health)}`);
+    }
+    listener = listen(first.port);
+    const restarted = await listener.ready;
+    assert.equal(restarted.peer, first.peer, "restart changed the saved peer identity or route");
+    await connect(restarted.peer, "peer:reachable");
+    const replacement = await context.newPage();
+    await replacement.goto(page.url());
+    await replacement.waitForFunction(() => navigator.serviceWorker.controller !== null);
+    await page.close();
+    page = replacement;
+    const moved = await form();
+    await moved.frame.locator('[data-status="peer:unreachable"]').waitFor({ state: "visible", timeout: 25000 });
+    await connect(restarted.peer, "peer:reachable");
+    const version = browser?.version() ?? await page.evaluate(() => navigator.userAgent);
+    console.log(`PASS ${engine} ${version} (private certificate: ${process.env.RTC_PRIVATE === "1"}, empty registry: ${process.env.RTC_EMPTY === "1"}, two CLI profiles: ${!!other}, offline reload: ${process.env.RTC_OFFLINE === "1"}): real CLI /network connect, inventory, invalid input, wrong endpoint key, retry, disconnect, restart, carrier-tab close and retry`);
 } finally {
-  await browser?.close();
-  child.kill();
-  server.close();
+    await context?.close();
+    await listener?.stop();
+    await otherListener?.stop();
+    server.close();
+    // Only this test's mkdtemp-owned fixture, never an installation directory.
+    await rm(temporary, { recursive: true, force: true });
 }
-
-process.exit(failure ? 1 : 0);

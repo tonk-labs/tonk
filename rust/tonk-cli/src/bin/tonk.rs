@@ -675,13 +675,13 @@ enum RtcCommand {
         port: Option<u16>,
     },
 
-    /// Serve this space to peers that dial in.
+    /// Serve the profile's registered spaces to local peers that dial in.
     ///
     /// The channel carries dialog's remote effects, so a browser or
     /// another tonk can push and pull against this one. Prints the
-    /// address to register with `tonk remote add`; a browser on this
-    /// machine needs nothing, deriving the port and the certificate
-    /// fingerprint from the rendezvous phrase.
+    /// full peer URI to paste into the browser's network page or register
+    /// with `tonk remote add`. Listens on loopback only. No selected space is
+    /// required; restart to include newly registered spaces.
     #[command(after_help = "Examples:\n  tonk rtc serve\n  tonk rtc serve --port 55991")]
     Serve {
         /// Listen on this port instead of the one the phrase derives.
@@ -1426,17 +1426,18 @@ async fn main() {
                 tonk_cli::rtc::connect(tonk_cli::rtc::ConnectOptions { via, no_open, stun }).await
             }
             RtcCommand::Serve { port } => {
-                let Ok((_resolved, site)) = open_selected(None).await else {
-                    return;
-                };
-                tonk_cli::rtc::serve(
-                    &site,
-                    tonk_cli::rtc::ListenOptions {
-                        via: None,
-                        no_open: true,
-                        port,
-                    },
-                )
+                async {
+                    let config = tonk_cli::site::default_config()?;
+                    tonk_cli::rtc::serve(
+                        config,
+                        tonk_cli::rtc::ListenOptions {
+                            via: None,
+                            no_open: true,
+                            port,
+                        },
+                    )
+                    .await
+                }
                 .await
             }
             RtcCommand::Listen { via, no_open, port } => {

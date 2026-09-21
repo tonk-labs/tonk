@@ -44,6 +44,9 @@ pub mod rendezvous;
 
 pub mod signal;
 
+pub mod address;
+pub use address::{Address, Candidate};
+
 #[cfg(not(target_arch = "wasm32"))]
 pub mod dial;
 #[cfg(not(target_arch = "wasm32"))]
@@ -63,7 +66,7 @@ pub mod transport;
 pub use signal::{Description, Role};
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use dial::{Address, Candidate, Listener};
+pub use dial::Listener;
 #[cfg(not(target_arch = "wasm32"))]
 pub use identity::Identity;
 #[cfg(not(target_arch = "wasm32"))]

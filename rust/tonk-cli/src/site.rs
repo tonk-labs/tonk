@@ -1214,9 +1214,17 @@ impl SiteConfig {
 /// `*_with` constructors without reaching into `dialog-effects`
 /// for [`Directory::Profile`].
 pub fn default_config() -> Result<SiteConfig> {
+    // Explicit isolation for multiple local installations and product
+    // tests. Pair with TONK_SPACES_STATE; never repoint the user's HOME.
+    let profile_directory = match std::env::var("TONK_PROFILE_DIRECTORY") {
+        Ok(path) if !path.is_empty() => Directory::At(path),
+        Ok(_) => bail!("TONK_PROFILE_DIRECTORY must not be empty"),
+        Err(std::env::VarError::NotPresent) => Directory::Profile,
+        Err(error) => return Err(error).context("invalid TONK_PROFILE_DIRECTORY"),
+    };
     Ok(SiteConfig {
         profile_name: PROFILE_NAME.to_string(),
-        profile_directory: Directory::Profile,
+        profile_directory,
         require_account: std::env::var_os("TONK_UNSAFE_ALLOW_DEVICE_ROOT").is_none(),
         provision_account_spaces: true,
         account_store: crate::space::SpaceStore::open()

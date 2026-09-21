@@ -589,6 +589,41 @@ async fn handle_request(
         ));
     }
 
+    if req.method() == Method::POST && req.uri().path() == "/ucan/revocations" {
+        use http_body_util::{BodyExt, Limited};
+        let body = Limited::new(
+            req.into_body(),
+            tonk_identity::revocation::evidence::MAX_BODY_BYTES,
+        )
+        .collect()
+        .await;
+        let outcome = match body {
+            Ok(body) => {
+                crate::revocation::lookup::answer(
+                    registration.revocations.as_ref(),
+                    &body.to_bytes(),
+                )
+                .await
+            }
+            Err(_) => Err(crate::revocation::lookup::Error::TooLarge),
+        };
+        let (status, json) = match outcome {
+            Ok(answer) => (200, serde_json::to_vec(&answer).unwrap()),
+            Err(error) => (
+                error.status(),
+                serde_json::to_vec(&serde_json::json!({"error": error.to_string()})).unwrap(),
+            ),
+        };
+        return Ok(cors_response(
+            Response::builder()
+                .status(status)
+                .header(CONTENT_TYPE, "application/json")
+                .header(CACHE_CONTROL, "no-store")
+                .body(Full::new(Bytes::from(json)))
+                .unwrap(),
+        ));
+    }
+
     // Only accept POST requests to /ucan/
     if req.method() != Method::POST {
         return Ok(cors_response(
