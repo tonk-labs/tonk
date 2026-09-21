@@ -261,3 +261,74 @@ async fn it_lists_devices_promptly_after_another_device_pushed(
     }
     Ok(())
 }
+
+/// ACCT-C11: an explicit retry must publish the retained exact grant even
+/// when an older client has already removed the device's catalogue row.
+#[dialog_common::test]
+async fn it_republishes_explicit_device_revocation_after_the_row_is_gone(
+    env: AccessServiceAddress,
+) -> Result<()> {
+    use dialog_varsig::Principal as _;
+    let remote = format!("{}/", env.access_service_url.trim_end_matches('/'));
+    let fixture = common::AccountFixture::with_account_remote(&remote).await?;
+    fixture.activate_with(&env).await?;
+    let operator =
+        tonk_cli::account_state::credential_operator_for_store(&fixture.profile, &fixture.store)
+            .await?;
+    tonk_cli::account_state::ensure_with_operator_and_store(
+        &fixture.profile,
+        operator.clone(),
+        fixture.store.clone(),
+    )
+    .await?;
+    let branch = tonk_cli::account_state::open_account_branch_in(
+        &fixture.profile,
+        &operator,
+        &fixture.store,
+    )
+    .await?
+    .context("account branch")?;
+    let other = dialog_credentials::Ed25519Signer::generate().await?;
+    let grant = tonk_identity::delegation::mint_device_delegation(
+        fixture.root_signer().await?,
+        &other.did(),
+    )
+    .await?;
+    tonk_account::delegations::retain_space_delegation(&branch, &grant, &operator).await?;
+    branch.push().perform(&operator).await?;
+    // Intentionally no DeviceLink row: this is the post-retraction legacy state.
+    let outcome =
+        tonk_cli::account::revoke_in(&fixture.profile, &fixture.store, other.did().as_str())
+            .await?;
+    assert!(
+        matches!(outcome, tonk_cli::account::RevokeOutcome::Revoked),
+        "an absent row is not evidence that the service has an effective revocation"
+    );
+    let artifact = tonk_identity::revocation::mint_delegated_revocation(
+        fixture.profile.signer().signer().clone(),
+        &grant,
+        &grant.proof_cids()[0],
+        &fixture.link,
+    )
+    .await?;
+    let response = reqwest::Client::new()
+        .post(env.ucan_endpoint())
+        .header(reqwest::header::CONTENT_TYPE, "application/cbor")
+        .body(artifact)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await?;
+    assert!(response.status().is_success());
+    let receipt: serde_json::Value = response.json().await?;
+    assert_eq!(
+        receipt["recorded"], false,
+        "the CLI must already have published the withdrawal"
+    );
+    assert_eq!(receipt["subject"], fixture.link.issuer().to_string());
+    // Retry stays an explicit network operation with an idempotent service receipt.
+    let outcome =
+        tonk_cli::account::revoke_in(&fixture.profile, &fixture.store, other.did().as_str())
+            .await?;
+    assert!(matches!(outcome, tonk_cli::account::RevokeOutcome::Revoked));
+    Ok(())
+}
