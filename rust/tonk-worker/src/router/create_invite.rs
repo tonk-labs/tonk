@@ -115,6 +115,7 @@ pub async fn create_invite(
 }
 
 /// Mint an agent handoff for the current browser account, never the space owner.
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) async fn create_agent_handoff(
     state: AppState,
     repo_name: String,
