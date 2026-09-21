@@ -564,7 +564,7 @@ tonk-display > .site-pending:not([hidden]) {
 /* Space topbar chrome. Hoisted out of the per-instance workspace view so
    it renders on every space — including empty ones with no workspace
    instance — at the space (directory) level. The `<tonk-repo-name>`,
-   `<tonk-sync-state>`, `<tonk-sync-toggle>`, and `<tonk-share>` elements
+   `<tonk-sync-toggle>`, and `<tonk-share>` elements
    render into these classes and resolve their repo from the nearest
    `with="branch@repo"` ancestor, so the bar works wherever it sits.
    In the global stylesheet because the directory view that hosts the bar
@@ -619,82 +619,6 @@ tonk-display > .site-pending:not([hidden]) {
     outline: none;
     border-color: var(--wa-color-brand-fill-loud);
     background: var(--wa-color-surface-default);
-}
-/* The live sync chip (`<tonk-sync-state>` renders this span with one
-   `is-*` modifier). Layout on the base class, colour on the modifier. */
-.workspace__sync {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--wa-space-xs);
-    padding: var(--wa-space-3xs) var(--wa-space-s);
-    font-size: var(--wa-font-size-s);
-    border-radius: var(--wa-border-radius-s);
-}
-.workspace__sync::before {
-    content: "";
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: currentColor;
-    flex: none;
-}
-.workspace__sync.is-synced {
-    color: var(--wa-color-success-on-quiet);
-    background: var(--wa-color-success-fill-quiet);
-}
-.workspace__sync.is-synced::before {
-    background: var(--wa-color-success-fill-loud);
-}
-.workspace__sync.is-syncing {
-    color: var(--wa-color-warning-on-quiet);
-    background: var(--wa-color-warning-fill-quiet);
-}
-.workspace__sync.is-syncing::before {
-    background: var(--wa-color-warning-fill-loud);
-}
-.workspace__sync.is-paused,
-.workspace__sync.is-offline {
-    color: var(--wa-color-text-quiet);
-    background: var(--wa-color-neutral-fill-quiet);
-}
-.workspace__sync.is-offline,
-.workspace__sync.is-revoked,
-.workspace__sync.is-conflict,
-.workspace__sync.is-unavailable,
-.workspace__sync.is-unknown {
-    cursor: default;
-}
-.workspace__sync.is-revoked {
-    color: var(--wa-color-text-quiet);
-    background: var(--wa-color-neutral-fill-quiet);
-}
-.workspace__sync.is-revoked::before {
-    background: currentColor;
-}
-.workspace__sync.is-conflict {
-    color: var(--wa-color-warning-on-quiet);
-    background: var(--wa-color-warning-fill-quiet);
-}
-.workspace__sync.is-conflict::before {
-    border-radius: 0;
-    transform: rotate(45deg);
-    background: var(--wa-color-warning-fill-loud);
-}
-.workspace__sync.is-unavailable {
-    color: var(--wa-color-brand-on-quiet);
-    background: var(--wa-color-brand-fill-quiet);
-}
-.workspace__sync.is-unavailable::before {
-    background: transparent;
-    border: 1px dashed currentColor;
-}
-.workspace__sync.is-unknown {
-    color: var(--wa-color-text-quiet);
-    background: var(--wa-color-neutral-fill-quiet);
-}
-.workspace__sync.is-unknown::before {
-    background: transparent;
-    border: 1px dotted currentColor;
 }
 /* The topbar chips (identity, sync) render through a `<tonk-display>` →
    `<tonk-view>` pair whose line boxes would otherwise sit them above the
@@ -782,32 +706,6 @@ tonk-display > .site-pending:not([hidden]) {
 .workspace__sync-toggle-glyph {
     width: 18px;
     height: 18px;
-}
-/* The enable-sync trigger (`<tonk-sync-state>` renders this in place of
-   the chip when the branch has no upstream). A small "turn sync on" pill
-   sitting where the status chip otherwise would. */
-.workspace__enable-sync {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--wa-space-xs);
-    padding: var(--wa-space-3xs) var(--wa-space-s);
-    font: inherit;
-    font-size: var(--wa-font-size-s);
-    color: var(--wa-color-brand-on-quiet);
-    background: var(--wa-color-brand-fill-quiet);
-    border: none;
-    border-radius: var(--wa-border-radius-s);
-    cursor: pointer;
-}
-.workspace__enable-sync:hover {
-    background: var(--wa-color-brand-fill-normal);
-}
-/* The enable-sync dialog's form: a vertical stack of the URL field and
-   the default-service button. */
-.workspace__sync-form {
-    display: flex;
-    flex-direction: column;
-    gap: var(--wa-space-s);
 }
 /* The Hub title is a plain heading like the mock, independent of the
    explicit headline-cover treatment used by other shell chrome. */

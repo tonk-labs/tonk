@@ -377,6 +377,52 @@ mod tests {
         host.remove();
     }
 
+    /// The hub's "is an account linked" marker must vanish for a browser
+    /// with none. A directory with zero rows still draws its chrome from
+    /// a synthetic host-only conclusion, so a marker with no field
+    /// reference rendered for every fresh profile and the bar opened an
+    /// empty menu instead of the signup. `{this}` pins the marker to a
+    /// row, and the synthetic conclusion has no `this` to pin to.
+    #[dialog_common::test]
+    fn it_renders_the_linked_marker_only_for_a_registration_row() {
+        let library = include_str!("../../tonk-core/assets/library/profile.yaml");
+        let template = library
+            .split("view!:\n  this: tonk:account/registered\n  show:\n    linked: |\n")
+            .nth(1)
+            .and_then(|tail| tail.split("\n\n").next())
+            .expect("linked marker template");
+        let host = mount(template);
+
+        // The synthetic conclusion an empty directory frame renders with:
+        // host fields only, no `this`.
+        call_draw(&host, &frame(&[("", &[])]));
+        assert!(
+            host.query_selector("[data-account-linked]")
+                .unwrap()
+                .is_none(),
+            "no registration, no marker: {}",
+            host.inner_html(),
+        );
+
+        call_draw(&host, &frame(&[("did:key:zAccount", &[])]));
+        assert!(
+            host.query_selector("[data-account-linked]")
+                .unwrap()
+                .is_some(),
+            "a registration row renders the marker: {}",
+            host.inner_html(),
+        );
+
+        call_draw(&host, &frame(&[("", &[])]));
+        assert!(
+            host.query_selector("[data-account-linked]")
+                .unwrap()
+                .is_none(),
+            "signing out takes the marker away again"
+        );
+        host.remove();
+    }
+
     /// A connected view advertises the host attributes its template reads
     /// via `{dom.host/<attr>}` on `data-host-bindings`, space-separated —
     /// the owning `<tonk-display>` watches exactly those for changes.

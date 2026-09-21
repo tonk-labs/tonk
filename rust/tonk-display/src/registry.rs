@@ -1781,4 +1781,119 @@ mod tests {
             "the frame is pulled back to the right edge"
         );
     }
+
+    /// The account cell is a menu button only while an account is
+    /// linked. Unlinked, one press is one action and the dropdown ARIA
+    /// would promise a menu that never opens; linked, the menu finds its
+    /// opener through `aria-controls`, so the attributes must come back.
+    #[dialog_common::test]
+    async fn it_dresses_the_account_cell_as_a_menu_button_only_when_linked() {
+        install_fake_host();
+        install();
+        define_from_library(PROFILE_LIBRARY, "hub-bar");
+        let host = document().create_element("hub-bar").expect("host");
+        host.set_inner_html(
+            r#"<nav class="hubbar"><button type="button" data-tab="account" data-account-trigger><span data-account-label>add an account</span><span data-registered></span></button></nav>"#,
+        );
+        document()
+            .body()
+            .expect("body")
+            .append_child(&host)
+            .expect("attach");
+        settle_until(|| defined("hub-bar")).await;
+        settle_briefly().await;
+        let trigger = host
+            .query_selector("[data-account-trigger]")
+            .expect("query")
+            .expect("the trigger");
+
+        assert_eq!(
+            trigger.get_attribute("aria-haspopup"),
+            None,
+            "unlinked, the cell is not a menu button"
+        );
+        assert_eq!(trigger.get_attribute("aria-controls"), None);
+
+        let registered = host
+            .query_selector("[data-registered]")
+            .expect("query")
+            .expect("the registration slot");
+        registered.set_inner_html(r#"<span data-account-linked hidden></span>"#);
+        settle_until(|| trigger.has_attribute("aria-haspopup")).await;
+        assert_eq!(
+            trigger.get_attribute("aria-haspopup").as_deref(),
+            Some("menu"),
+            "linked, the cell is the account-menu button"
+        );
+        assert_eq!(
+            trigger.get_attribute("aria-controls").as_deref(),
+            Some("hub-account-menu")
+        );
+        assert_eq!(
+            trigger.get_attribute("aria-expanded").as_deref(),
+            Some("false")
+        );
+
+        registered.set_inner_html("");
+        settle_until(|| !trigger.has_attribute("aria-haspopup")).await;
+        assert_eq!(
+            trigger.get_attribute("aria-haspopup"),
+            None,
+            "unlinking strips the menu-button ARIA again"
+        );
+        assert_eq!(trigger.get_attribute("aria-expanded"), None);
+    }
+
+    /// The first link opens the ceremony in place; adding an account
+    /// parks it for the reload the branch rotation brings. Both cross to
+    /// the top page as `window.tonk.register`, and only the reason tells
+    /// them apart, so the reason is what this checks.
+    #[dialog_common::test]
+    async fn it_asks_the_top_page_with_the_reason_that_fits_the_click() {
+        let calls = record_bridge_calls("register");
+        define_from_library(PROFILE_LIBRARY, "hub-bar");
+        let host = document().create_element("hub-bar").expect("host");
+        host.set_inner_html(
+            r#"<nav class="hubbar"><button type="button" data-tab="account" data-account-trigger>add an account</button></nav><button type="button" data-add-profile>add account</button>"#,
+        );
+        document()
+            .body()
+            .expect("body")
+            .append_child(&host)
+            .expect("attach");
+        settle_until(|| defined("hub-bar")).await;
+        settle_briefly().await;
+
+        let trigger = host
+            .query_selector("[data-account-trigger]")
+            .expect("query")
+            .expect("the trigger");
+        fire(&trigger, "click");
+        settle_until(|| calls.length() >= 1).await;
+        let first: serde_json::Value =
+            serde_json::from_str(&calls.get(0).as_string().expect("a payload")).expect("json");
+        assert_eq!(
+            first["reason"], "needs-account",
+            "an unlinked cell opens the ceremony in place"
+        );
+        assert!(
+            first["anchor"].is_object(),
+            "and seats it at the bar: {first}"
+        );
+        assert_eq!(host.get_attribute("linking").as_deref(), Some("true"));
+        assert_eq!(host.get_attribute("tab").as_deref(), Some("account"));
+
+        let add = host
+            .query_selector("[data-add-profile]")
+            .expect("query")
+            .expect("the add-profile control");
+        fire(&add, "click");
+        settle_until(|| calls.length() >= 2).await;
+        let second: serde_json::Value =
+            serde_json::from_str(&calls.get(1).as_string().expect("a payload")).expect("json");
+        assert_eq!(
+            second["reason"], "profile-transition",
+            "adding an account parks the ceremony for the reload"
+        );
+    }
 }

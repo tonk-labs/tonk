@@ -216,8 +216,17 @@ fn it_raises_the_signup_from_an_unlinked_account_cell() {
         "the bar must be able to tell whether an account is linked",
     );
     assert!(
-        bar.contains("self.link();"),
-        "and raise the ceremony when none is, rather than switching tabs",
+        bar.contains("self.link('needs-account');"),
+        "and raise the ceremony in place when none is, rather than switching tabs",
+    );
+    assert!(
+        bar.contains("self.link('profile-transition');"),
+        "adding an account parks the ceremony for the reload the rotation brings",
+    );
+    assert!(
+        PROFILE_LIBRARY.contains("<span data-account-linked data-of={this} hidden></span>"),
+        "the linked marker must be pinned to a row with {{this}}; unpinned it is chrome \
+         and a zero-row directory still renders chrome, so every fresh profile read as linked",
     );
 }
 

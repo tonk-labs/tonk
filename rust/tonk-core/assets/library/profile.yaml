@@ -579,9 +579,12 @@ view!:
              rather than code the bundle ships. -->
         <hub-bar class="hub-bar">
           <nav class="hubbar chrome" aria-label="hub">
+            <!-- No menu-button ARIA in the markup: the bar dresses the cell
+                 as a menu button only once an account is linked. Before
+                 that one press is one action, and a dropdown affordance
+                 on it would be a lie. -->
             <button class="hcell hc-acct account-trigger" type="button" data-tab="account"
-              data-account-trigger aria-haspopup="menu" aria-expanded="false"
-              aria-controls="hub-account-menu">
+              data-account-trigger>
               <!-- Directory mode (no `entity=`), where an absent row is
                    `empty`; `no-entity` never shows without an entity to be
                    absent. The label is the offer: this cell links an account. -->
@@ -1552,11 +1555,18 @@ view!:
 # concept, and because the FAB edits the same fact the same way.
 # A marker, not a rendering: the bar asks whether a registration exists
 # and this is how it answers. Empty text so it adds nothing visible.
+#
+# `{this}` is what makes it a marker. A template with no field reference
+# is all chrome, and a directory renders its chrome even with zero rows
+# (a synthetic host-only conclusion feeds it), so an unpinned span was
+# present for a browser with no account, and the bar read every fresh
+# profile as linked. Pinned to `this`, the span is the repeat node: one
+# per registration, none without.
 view!:
   this: tonk:account/registered
   show:
     linked: |
-      <span data-account-linked hidden></span>
+      <span data-account-linked data-of={this} hidden></span>
 
 view!:
   this: tonk:account/name
@@ -1633,11 +1643,15 @@ element!: &hub-bar
     # A ceremony is up: show the account tab and keep it there. The flag
     # is an attribute so a re-render restores the same view rather than
     # dropping back to spaces mid-signup.
+    #
+    # `reason` is what the top page does with the request: `needs-account`
+    # opens the ceremony in place, `profile-transition` parks it for the
+    # reload that follows a branch rotation.
     link: |
-      (self) => {
+      (self, reason) => {
         self.setAttribute('linking', 'true');
         self.select('account');
-        self.place('profile-transition');
+        self.place(reason);
       }
     unlink: |
       (self) => {
@@ -1650,8 +1664,34 @@ element!: &hub-bar
     # unlinked, sending someone who just signed in back to signup.
     unlinked: |
       (self) => !self.querySelector('[data-account-linked]')
+    # The account cell is a menu button only while an account is linked.
+    # Unlinked, one press is one action (add an account), so the
+    # dropdown ARIA comes off; linked, it goes back on so the menu can
+    # find its opener through `aria-controls`. The registration display
+    # renders after the bar connects, which is why an observer re-runs
+    # this rather than `connected` running it once.
+    dress: |
+      (self) => {
+        const trigger = self.querySelector('[data-account-trigger]');
+        if (!trigger) return;
+        if (self.unlinked()) {
+          for (const name of ['aria-haspopup', 'aria-expanded', 'aria-controls']) {
+            trigger.removeAttribute(name);
+          }
+          return;
+        }
+        trigger.setAttribute('aria-haspopup', 'menu');
+        trigger.setAttribute('aria-controls', 'hub-account-menu');
+        if (!trigger.hasAttribute('aria-expanded')) {
+          trigger.setAttribute('aria-expanded', 'false');
+        }
+      }
     connected: |
       (self) => {
+        self.dress();
+        const dressing = new MutationObserver(() => self.dress());
+        dressing.observe(self, { childList: true, subtree: true });
+        self._dressing = dressing;
         self.addEventListener('click', (event) => {
           const cell = event.target.closest('[data-tab]');
           if (!cell) return;
@@ -1660,7 +1700,7 @@ element!: &hub-bar
           // this opaque realm has neither of, so the top page raises
           // the ceremony and this asks it to.
           if (cell.dataset.tab === 'account' && self.unlinked()) {
-            self.link();
+            self.link('needs-account');
             return;
           }
           self.select(cell.dataset.tab);
@@ -1674,15 +1714,17 @@ element!: &hub-bar
         });
 
         // Adding an account is the same ceremony as linking the first
-        // one, run for a profile that has none. The command rotates
-        // onto that profile; raising the ceremony is this element's
-        // half, because only a guest can reach `window.tonk.register`
-        // and the worker cannot.
+        // one, run on a branch that has none. The command rotates onto
+        // that branch and the worker reloads this tab once it has;
+        // raising the ceremony is this element's half, because only a
+        // guest can reach `window.tonk.register` and the worker cannot.
+        // So the request is parked, not opened: it reopens on the fresh
+        // branch after the reload.
         self.addEventListener('click', (event) => {
           if (!event.target.closest('[data-add-profile]')) return;
           const menu = self.querySelector('hub-menu');
           if (menu) menu.close(false);
-          self.link();
+          self.link('profile-transition');
         });
         // Re-seat on anything that can move the bar. The top page
         // ignores the update when no ceremony is open, so this is free
@@ -1696,6 +1738,7 @@ element!: &hub-bar
       }
     disconnected: |
       (self) => {
+        self._dressing?.disconnect();
         if (!self._reseat) return;
         window.removeEventListener('resize', self._reseat);
         window.removeEventListener('scroll', self._reseat, true);

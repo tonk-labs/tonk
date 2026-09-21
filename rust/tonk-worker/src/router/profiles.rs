@@ -279,7 +279,12 @@ async fn activate_named(
         profile_library,
     )
     .await?;
-    promote(state, new_state, source).await
+    let response = promote(state, new_state, source).await?;
+    // The tab that asked cannot await a command the way it awaited the
+    // endpoint, so it no longer reloads itself. Its requests are fenced
+    // from here on; reload it once the swap is published.
+    super::navigate::notify_profile_changed_to(source);
+    Ok(response)
 }
 
 /// Run the [`AddProfile`] command.
@@ -423,7 +428,12 @@ async fn add_profile(
         profile_library,
     )
     .await?;
-    promote(state, new_state, source).await
+    let response = promote(state, new_state, source).await?;
+    // The tab that asked cannot await a command the way it awaited the
+    // endpoint, so it no longer reloads itself. Its requests are fenced
+    // from here on; reload it once the swap is published.
+    super::navigate::notify_profile_changed_to(source);
+    Ok(response)
 }
 
 /// Sign out: withdraw this device's grant, forget the provider, and move

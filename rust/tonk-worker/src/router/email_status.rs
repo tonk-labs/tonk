@@ -359,6 +359,120 @@ thread_local! {
 }
 
 /// Keep the address a lookup resolved.
+/// The command as the form dispatches it, over the same route.
+///
+/// The native tests above cover the status mapping; this is the wire
+/// path they cannot see. The claim is the one the e2e suite sends, so a
+/// concept the decoder no longer matches fails here in seconds rather
+/// than after a 30-second wait in a browser.
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+mod wire_tests {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt as _;
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+
+    use crate::helpers::email_status_wire_query;
+    use crate::helpers::state::test_state;
+    use crate::router::{ClientId, api_router_with_state};
+
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    fn check_email_claim(email: &str) -> serde_json::Value {
+        serde_json::json!({
+            "claims": [{
+                "op": "assert",
+                "application": {
+                    "predicate": {
+                        "kind": "transient",
+                        "concept": {
+                            "description": "Ask whether an address is registered.",
+                            "with": {
+                                "email": {
+                                    "the": "xyz.tonk.command.check-email/email",
+                                    "as": "Text"
+                                }
+                            }
+                        }
+                    },
+                    "parameters": { "email": email }
+                }
+            }]
+        })
+    }
+
+    async fn post(app: &axum::Router, uri: &str, body: serde_json::Value) -> serde_json::Value {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        request.extensions_mut().insert(ClientId("form".to_owned()));
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{uri}");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
+    }
+
+    async fn yield_briefly() {
+        use wasm_bindgen::JsCast;
+        let promise = js_sys::Promise::new(&mut |resolve: js_sys::Function, _| {
+            let scope: web_sys::ServiceWorkerGlobalScope = js_sys::global().unchecked_into();
+            let _ = scope.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 10);
+        });
+        let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+    }
+
+    /// The row for `address`, once one is there whose state is past
+    /// `checking`.
+    async fn settled_state(app: &axum::Router, address: &str) -> Option<String> {
+        for _ in 0..200 {
+            let rows = post(
+                app,
+                "/api/profile/branch/main/query",
+                email_status_wire_query(),
+            )
+            .await;
+            let state = rows.as_array().and_then(|rows| {
+                rows.iter().find_map(|row| {
+                    let fields = row.get("fields")?;
+                    (fields.get("address")?.as_str()? == address)
+                        .then(|| fields.get("state")?.as_str().map(str::to_owned))
+                        .flatten()
+                })
+            });
+            match state.as_deref() {
+                Some(super::state::CHECKING) | None => yield_briefly().await,
+                Some(_) => return state,
+            }
+        }
+        None
+    }
+
+    #[dialog_common::test]
+    async fn it_answers_the_form_on_the_branch_it_asked_from() {
+        let (app, _state, _lsp) = api_router_with_state(test_state().await);
+        let address = "nobody-has-this@example.com";
+        post(
+            &app,
+            "/api/profile/branch/main/transact",
+            check_email_claim(address),
+        )
+        .await;
+
+        let state = settled_state(&app, address)
+            .await
+            .expect("the check-email command must answer on the overlay the form reads");
+        // No access service is reachable from a unit test, so the honest
+        // answer is `unavailable`; what matters is that an answer landed
+        // where the form's query reads.
+        assert_eq!(state, super::state::UNAVAILABLE);
+    }
+}
+
 fn remember_service(endpoint: &str) {
     RESOLVED_SERVICE.with(|cell| *cell.borrow_mut() = Some(endpoint.to_owned()));
 }

@@ -70,14 +70,13 @@ async fn main() {
                 return;
             }
             "profile-transition" => {
-                // Add Account already promoted the empty landing profile.
-                // Preserve the anchored ceremony request, then reload so
-                // this tab receives a new client binding before it sends
-                // any work through that profile.
+                // Add Account is rotating onto an empty branch. Park the
+                // anchored ceremony request; the worker reloads this tab
+                // once the swap is published (`profile-changed`), and the
+                // reload reopens the ceremony on the fresh branch. Not
+                // reloading here is the point: the rotation is a command
+                // in flight, and a reload now would cut it off.
                 tonk_ui::register_dialog::stash_reopen(reason);
-                if let Some(window) = web_sys::window() {
-                    let _ = window.location().reload();
-                }
                 return;
             }
             "dismiss" => {
