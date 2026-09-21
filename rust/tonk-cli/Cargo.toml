@@ -51,6 +51,10 @@ name = "connection_compatibility"
 path = "tests/connection_compatibility.rs"
 
 [[test]]
+name = "connection_commands"
+path = "tests/connection_commands.rs"
+
+[[test]]
 name = "notation"
 path = "tests/notation.rs"
 
@@ -109,11 +113,6 @@ path = "tests/agents.rs"
 [[test]]
 name = "account_spaces"
 path = "tests/account_spaces.rs"
-required-features = ["integration-tests"]
-
-[[test]]
-name = "account_interrupt"
-path = "tests/account_interrupt.rs"
 required-features = ["integration-tests"]
 
 [[test]]
