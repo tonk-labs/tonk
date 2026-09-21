@@ -1330,7 +1330,7 @@ view!:
   show:
     directory: |
       <div class="account-menu__profiles" aria-label="other accounts on this browser">
-        <button class="account-menu__row" type="button" data-id={this}
+        <button class="account-menu__row" type="button" data-id={this} data-profile={name}
           data-handle={name} data-active={active} on:switch-profile=tonk:switch-profile>
           <span class="account-menu__name">{label}</span>
         </button>
@@ -1668,7 +1668,8 @@ view!:
         </tonk-dialog>
       </div>
 
-# The name, editable in place. Its own view because it is its own
+# The name, editable in place: a text input whose `change` (Enter or
+# blur) is the rename command. Its own view because it is its own
 # concept, and because the FAB edits the same fact the same way.
 # A marker, not a rendering: the bar asks whether a registration exists
 # and this is how it answers. Empty text so it adds nothing visible.
@@ -1685,12 +1686,22 @@ view!:
     linked: |
       <span data-account-linked data-of={this} hidden></span>
 
+# The name as the hub bar shows it: the text and nothing else, so the
+# cell reads as the member's name. Without this facet the display fell
+# back to its default notation (`name: "Jack"`), which is a diagnostic,
+# not a label.
+view!:
+  this: tonk:account/name
+  show:
+    directory: |
+      <span data-account-name data-of={this}>{name}</span>
+
 view!:
   this: tonk:account/name
   show:
     editable: |
-      <inline-editable class="sname" data-settings-name value={name} aria-label="display name"
-        on:profile-rename=profile/rename></inline-editable>
+      <input class="sname" type="text" data-settings-name value={name} aria-label="display name"
+        autocomplete="off" on:profile-rename=profile/rename>
 
 view!:
   this: tonk:account/passkey

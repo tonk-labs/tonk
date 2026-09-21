@@ -2331,6 +2331,91 @@ pub(crate) mod tests {
     /// service's receipt. A device that confirmed elsewhere learns it from
     /// the status probe rather than from the activation page, so this pins
     /// the write itself rather than either caller.
+    /// A second account added on its own branch hydrates.
+    ///
+    /// The profile has one `origin` remote, re-pointed from the first
+    /// account to the second, and the branch the worker lands on is a
+    /// fresh state over the same storage, as `promote` builds one. Both
+    /// have to leave the new branch able to establish its own genesis.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_hydrates_a_second_account_on_its_own_branch() {
+        use dialog_varsig::Principal as _;
+
+        let (state, service, _first, remote) = ready_account_state(None).await;
+        assert_eq!(
+            ensure_account_state(&state).await,
+            AccountStateStatus::Ready,
+            "the first account hydrates on main",
+        );
+
+        // Onto a fresh branch, the way sign-out and add-account land.
+        super::super::account_devices::withdraw_own_authority(&state).await;
+        super::super::account::disconnect(&state).await.unwrap();
+        super::super::profile::leave_account(&state).await;
+        // The way the worker lands there: a fresh state over the same
+        // storage, as `promote` builds one.
+        let state = crate::worker::boot_state_with_profile_library(
+            state.storage.clone(),
+            state.profile_name.clone(),
+            state.profile.clone(),
+            state.registry.clone(),
+            state.profile_library.clone(),
+        )
+        .await
+        .unwrap();
+        let landing = state.active_branch.clone();
+        assert_ne!(landing, "main", "the profile moved onto a branch");
+
+        // A second account, registered with the same service.
+        let second = Ed25519Signer::generate().await.unwrap();
+        service
+            .address
+            .activate_customer(&second, "worker-second-account@example.com")
+            .await
+            .unwrap();
+        let root_did = second.did().to_string();
+        let credential_id = "account-state-second-credential".to_string();
+        let delegation =
+            tonk_identity::delegation::mint_device_delegation(second, &state.profile.did())
+                .await
+                .unwrap();
+        let delegation_hex = hex::encode(delegation.to_bytes().unwrap());
+        crate::router::identity::persist_root(
+            &state,
+            tonk_worker_api::SaveRootRequest {
+                credential_id: credential_id.clone(),
+                delegation_hex: delegation_hex.clone(),
+                passkey: None,
+                encryption_key: None,
+            },
+        )
+        .await
+        .unwrap();
+        crate::router::account::persist_link(
+            &state,
+            &tonk_worker_api::AccountLinkRequest {
+                provider: "https://accounts.example".to_string(),
+                root_did,
+                credential_id,
+                delegation_hex,
+                remote,
+                initialize_name: false,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            ensure_account_state(&state).await,
+            AccountStateStatus::Ready,
+            "the second account hydrates on {landing}",
+        );
+        require_ready_account_state(&state)
+            .await
+            .expect("the branch is ready to rename on");
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     #[dialog_common::test]
     async fn it_records_the_activation_the_bar_subscribes_to() {

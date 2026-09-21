@@ -218,6 +218,12 @@ fn it_raises_the_signup_from_an_unlinked_account_cell() {
         "adding an account parks the ceremony for the reload the rotation brings",
     );
     assert!(
+        PROFILE_LIBRARY.contains(
+            "    directory: |\n      <span data-account-name data-of={this}>{name}</span>"
+        ),
+        "the account name needs a directory facet, or the bar's label is the display's default notation",
+    );
+    assert!(
         PROFILE_LIBRARY.contains("<span data-account-linked data-of={this} hidden></span>"),
         "the linked marker must be pinned to a row with {{this}}; unpinned it is chrome \
          and a zero-row directory still renders chrome, so every fresh profile read as linked",

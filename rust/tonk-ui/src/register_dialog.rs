@@ -1408,7 +1408,11 @@ async fn read_invite_link(space: &str) -> Option<String> {
             "url": { "?": { "name": "url" } }
         }
     });
-    let endpoint = format!("{}/api/profile/branch/main/query", crate::api::origin());
+    let endpoint = format!(
+        "{}/api/profile/branch/{}/query",
+        crate::api::origin(),
+        crate::api::profile_branch()
+    );
     let response = reqwest::Client::new()
         .post(endpoint)
         .json(&body)
@@ -1453,7 +1457,11 @@ async fn account_display_name() -> Option<String> {
             "name": { "?": { "name": "name" } }
         }
     });
-    let endpoint = format!("{}/api/profile/branch/main/query", crate::api::origin());
+    let endpoint = format!(
+        "{}/api/profile/branch/{}/query",
+        crate::api::origin(),
+        crate::api::profile_branch()
+    );
     let response = reqwest::Client::new()
         .post(endpoint)
         .json(&body)
