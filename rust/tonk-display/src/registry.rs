@@ -2007,4 +2007,227 @@ mod tests {
         assert_eq!(asked["reason"], "needs-account");
         assert_eq!(host.get_attribute("linking").as_deref(), Some("true"));
     }
+
+    /// Mount the settings panel's element with `markup` inside it.
+    fn account_settings(markup: &str) -> Element {
+        install_fake_host();
+        install();
+        define_from_library(PROFILE_LIBRARY, "account-settings");
+        let host = document().create_element("account-settings").expect("host");
+        host.set_inner_html(markup);
+        document()
+            .body()
+            .expect("body")
+            .append_child(&host)
+            .expect("attach");
+        host
+    }
+
+    fn set_context(fields: &[(&str, &str)]) {
+        let context = js_sys::Object::new();
+        for (key, value) in fields {
+            let _ = Reflect::set(&context, &(*key).into(), &(*value).into());
+        }
+        let _ = Reflect::set(&host_bridge(), &"context".into(), &context);
+    }
+
+    /// A terminal's request rides the location. The element reads it
+    /// off the injected context (the guest's own location is
+    /// about:srcdoc), shows the request pane, and copies the request
+    /// onto the approve control so the click can assert it, with the
+    /// callback base58-encoded the way the worker decodes it. Declining
+    /// hands the terminal a deny on its own loopback callback.
+    #[dialog_common::test]
+    async fn it_reads_a_terminal_request_off_the_location_from_the_library() {
+        let navigations = record_bridge_calls("navigate");
+        set_context(&[
+            ("origin", "https://tonk.test"),
+            ("path", "/settings/link"),
+            (
+                "search",
+                "?audience=did%3Akey%3AzTerminal&callback=http%3A%2F%2F127.0.0.1%3A4321%2F&name=e2e+terminal",
+            ),
+            ("hash", ""),
+        ]);
+        let host = account_settings(
+            r#"<div class="pane" data-pane="account"></div><div class="pane" data-pane="link" hidden><b data-link-name></b><b data-link-account></b><b data-link-did></b><button type="button" data-link-decline>decline</button><button type="button" data-link-approve data-audience="" data-callback="" data-name="" data-expected-account="">approve</button></div><p data-ceremony-status hidden></p>"#,
+        );
+        settle_until(|| defined("account-settings")).await;
+        settle_briefly().await;
+
+        let link = host
+            .query_selector("[data-pane=\"link\"]")
+            .expect("query")
+            .expect("the link pane");
+        assert!(!link.has_attribute("hidden"), "the request pane is shown");
+        let account = host
+            .query_selector("[data-pane=\"account\"]")
+            .expect("query")
+            .expect("the account pane");
+        assert!(
+            account.has_attribute("hidden"),
+            "and the account pane is not"
+        );
+        assert_eq!(text_of(&host, "[data-link-name]"), "e2e terminal");
+        assert_eq!(text_of(&host, "[data-link-did]"), "did:key:zTerminal");
+        assert_eq!(
+            text_of(&host, "[data-link-account]"),
+            "your signed-in account"
+        );
+        let approve = host
+            .query_selector("[data-link-approve]")
+            .expect("query")
+            .expect("the approve control");
+        assert_eq!(
+            approve.get_attribute("data-audience").as_deref(),
+            Some("did:key:zTerminal")
+        );
+        assert_eq!(
+            approve.get_attribute("data-callback").as_deref(),
+            Some("VMK7D6XBoL4m6GErdKmWdY4t7ordCS"),
+            "the callback is base58 over the URL"
+        );
+        assert_eq!(
+            approve.get_attribute("data-name").as_deref(),
+            Some("e2e terminal")
+        );
+        assert_eq!(
+            approve.get_attribute("data-expected-account").as_deref(),
+            Some(""),
+            "a request naming no account leaves the field blank, which the click omits"
+        );
+
+        let decline = host
+            .query_selector("[data-link-decline]")
+            .expect("query")
+            .expect("the decline control");
+        fire(&decline, "click");
+        settle_until(|| navigations.length() >= 1).await;
+        assert_eq!(
+            navigations.get(0).as_string().as_deref(),
+            Some(
+                "http://127.0.0.1:4321/#deny=declined+in+the+browser&redirect=https%3A%2F%2Ftonk.test%2Fsettings"
+            ),
+            "declining answers the terminal on its callback and returns here"
+        );
+        set_context(&[
+            ("origin", "https://tonk.test"),
+            ("path", "/"),
+            ("search", ""),
+            ("hash", ""),
+        ]);
+    }
+
+    /// Deleting is armed by the exact phrase, and what it deletes is
+    /// counted off the owned-space rows the view renders.
+    #[dialog_common::test]
+    async fn it_arms_the_deletion_on_the_exact_phrase_from_the_library() {
+        set_context(&[
+            ("origin", "https://tonk.test"),
+            ("path", "/settings"),
+            ("search", ""),
+            ("hash", ""),
+        ]);
+        let host = account_settings(
+            r#"<div class="pane" data-pane="account"><button type="button" data-delete-account-open>delete</button><div data-delete-account-dialog><span data-delete-scope>loading</span><span data-delete-owned hidden><span data-owned-space><span data-space-name>Welcome</span></span><span data-owned-space><span data-space-name>Doomed Garden</span></span></span><label>type <b data-delete-confirm-label>delete account</b></label><input data-delete-confirm type="text"><button type="button" data-delete-account-submit data-email="owner@example.com" disabled>delete</button></div></div><p data-ceremony-status hidden></p>"#,
+        );
+        settle_until(|| defined("account-settings")).await;
+        settle_briefly().await;
+
+        let opener = host
+            .query_selector("[data-delete-account-open]")
+            .expect("query")
+            .expect("the opener");
+        fire(&opener, "click");
+        settle_briefly().await;
+        assert_eq!(
+            text_of(&host, "[data-delete-scope]"),
+            "2 owned hosted spaces will be deleted: Welcome, Doomed Garden. Spaces you joined are left intact."
+        );
+        let submit = host
+            .query_selector("[data-delete-account-submit]")
+            .expect("query")
+            .expect("the submit");
+        assert!(
+            submit.has_attribute("disabled"),
+            "nothing typed, nothing armed"
+        );
+
+        let field: web_sys::HtmlInputElement = host
+            .query_selector("[data-delete-confirm]")
+            .expect("query")
+            .expect("the field")
+            .unchecked_into();
+        field.set_value("delete");
+        fire(&field, "input");
+        settle_briefly().await;
+        assert!(
+            submit.has_attribute("disabled"),
+            "a partial phrase does not arm"
+        );
+
+        field.set_value("delete account");
+        fire(&field, "input");
+        settle_until(|| !submit.has_attribute("disabled")).await;
+        assert!(
+            !submit.has_attribute("disabled"),
+            "the exact phrase arms the submit"
+        );
+    }
+
+    /// The ceremony row is worded for the person, and a terminal state
+    /// stays on screen after the passkey cluster closes.
+    #[dialog_common::test]
+    async fn it_words_the_ceremony_row_from_the_library() {
+        set_context(&[
+            ("origin", "https://tonk.test"),
+            ("path", "/settings"),
+            ("search", ""),
+            ("hash", ""),
+        ]);
+        let host = account_settings(
+            r#"<div class="pane" data-pane="account"></div><p data-ceremony-status hidden></p><span data-rows></span>"#,
+        );
+        settle_until(|| defined("account-settings")).await;
+        settle_briefly().await;
+        let rows = host
+            .query_selector("[data-rows]")
+            .expect("query")
+            .expect("the rows slot");
+        let status = host
+            .query_selector("[data-ceremony-status]")
+            .expect("query")
+            .expect("the status line");
+
+        rows.set_inner_html(
+            r#"<span data-ceremony-row data-ceremony="add-passkey" data-ceremony-state="pending-ceremony" data-ceremony-detail="" hidden></span>"#,
+        );
+        settle_until(|| !status.has_attribute("hidden")).await;
+        assert_eq!(
+            text_of(&host, "[data-ceremony-status]"),
+            "Adding the passkey: waiting for your passkey\u{2026}"
+        );
+        assert_eq!(
+            host.get_attribute("data-ceremony-state").as_deref(),
+            Some("pending-ceremony")
+        );
+
+        rows.set_inner_html(
+            r#"<span data-ceremony-row data-ceremony="add-passkey" data-ceremony-state="refused" data-ceremony-detail="no passkey" hidden></span>"#,
+        );
+        settle_until(|| text_of(&host, "[data-ceremony-status]").contains("did not finish")).await;
+        assert_eq!(
+            text_of(&host, "[data-ceremony-status]"),
+            "Adding the passkey did not finish: no passkey"
+        );
+
+        // The cluster closing clears a transient line, not a verdict.
+        fire(&window().expect("window"), "tonk:custody-closed");
+        settle_briefly().await;
+        assert_eq!(
+            text_of(&host, "[data-ceremony-status]"),
+            "Adding the passkey did not finish: no passkey",
+            "a refusal stays on screen after the cluster closes"
+        );
+    }
 }

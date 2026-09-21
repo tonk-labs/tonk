@@ -477,6 +477,25 @@ impl Command for SwitchProfile {
     type Output = ();
 }
 
+/// Sign this device out of the account on the active branch.
+///
+/// Dispatched from the settings page. The handler withdraws the device's
+/// authority, disconnects, and moves onto an empty branch, retaining the
+/// account's branch for a later sign-in; the originating tab is then
+/// reloaded onto the fresh branch.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct SignOut {
+    /// The command entity (a fresh id per click).
+    pub this: Entity,
+    /// The click's timestamp, so signing out twice re-fires.
+    pub time: crate::domain::command::current::sign_out::Time,
+}
+
+impl Command for SignOut {
+    type Input = Self;
+    type Output = ();
+}
+
 /// Rename a space's repository from the FAB.
 ///
 /// The space-side `tonk/rename-repository` rule (`core.yaml`) cannot

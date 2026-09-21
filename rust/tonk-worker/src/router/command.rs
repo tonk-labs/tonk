@@ -234,6 +234,7 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         // Switching profiles is new, so it has no legacy shape to migrate.
         .command::<tonk_schema::command::AddProfile>()
         .command::<tonk_schema::command::SwitchProfile>()
+        .command::<tonk_schema::command::SignOut>()
         .command::<tonk_schema::command::ReplicateSpace>()
         .command::<tonk_schema::command::ForgetInvite>()
         .command::<tonk_schema::command::CheckUpdate>()

@@ -95,7 +95,7 @@ pub async fn resolve_profile_with() -> String {
 ///
 /// Two ordinary queries, because a page has no site to read it from
 /// before it mounts one: `meta` records the active branch's entity, and
-/// that entity's `dialog.branch/name` is the branch. Either failing
+/// that entity's `xyz.tonk.branch/name` is the branch. Either failing
 /// leaves the cache as it was, so the page still mounts, on `main`.
 #[cfg(target_arch = "wasm32")]
 pub async fn resolve_profile_branch() -> String {
@@ -105,7 +105,7 @@ pub async fn resolve_profile_branch() -> String {
         return profile_branch();
     };
     let name = format!(
-        r#"{{"predicate":{{"with":{{"name":{{"the":"dialog.branch/name","as":"Text","cardinality":"one"}}}}}},"terms":{{"this":{entity:?},"name":{{"?":{{"name":"name"}}}}}}}}"#
+        r#"{{"predicate":{{"with":{{"name":{{"the":"xyz.tonk.branch/name","as":"Text","cardinality":"one"}}}}}},"terms":{{"this":{entity:?},"name":{{"?":{{"name":"name"}}}}}}}}"#
     );
     let Some(branch) = query_field(META_QUERY, &name, "name").await else {
         return profile_branch();

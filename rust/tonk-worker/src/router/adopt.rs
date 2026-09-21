@@ -416,7 +416,7 @@ impl MountedConfiguration {
             .select(Query::<Branch> {
                 this: Term::var("this"),
                 name: Term::var("name"),
-                origin: Term::var("origin"),
+                replica: Term::var("replica"),
             })
             .perform(&tonk.operator)
             .try_vec()
@@ -440,7 +440,7 @@ impl MountedConfiguration {
             .select(Query::<TrackingBranch> {
                 this: Term::var("this"),
                 upstream: Term::var("upstream"),
-                origin: Term::from(replica.this().clone()),
+                replica: Term::from(replica.this().clone()),
             })
             .perform(&tonk.operator)
             .try_vec()
@@ -461,13 +461,13 @@ impl MountedConfiguration {
         let tracking = branches
             .iter()
             .filter_map(|branch| {
-                if branch.origin.0 != *replica.this()
+                if branch.replica.0 != *replica.this()
                     || remotes_by_entity.contains_key(&branch.this)
                 {
                     return None;
                 }
                 let target = branches_by_entity.get(links_by_entity.get(&branch.this)?)?;
-                let remote = remotes_by_entity.get(&target.origin.0)?;
+                let remote = remotes_by_entity.get(&target.replica.0)?;
                 Some((
                     branch.name.0.clone(),
                     UpstreamConfiguration::new(remote.name.0.clone(), target.name.0.clone()),

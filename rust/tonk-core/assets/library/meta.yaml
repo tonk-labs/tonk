@@ -33,7 +33,7 @@ attribute!: &peer/address
   description: >
     A serialized `SiteAddress` a peer is reachable at — the opaque
     payload used to locate it. Zero or more, on the entity that
-    `dialog.replica/profile` names.
+    `xyz.tonk.replica/profile` names.
   the: tonk.dialog.peer/address
   as: bytes
 
@@ -42,6 +42,13 @@ attribute!: &peer/address
 # Derived from `(profile, subject)`: the same pair always names the
 # same replica, and two peers holding one repository have different
 # ones.
+# Spelled `xyz.tonk.*`, not `dialog.*`: the `dialog.` namespace is
+# reserved, and dialog refuses a commit that writes into it. Dialog
+# surfaces its own `dialog.replica/*` and `dialog.branch/*` rows for the
+# branch being queried, but tonk records every branch of the replica
+# here, and has to name them itself. The entities are dialog's
+# derivation, so the row tonk records and the row dialog surfaces for
+# the same branch are one entity.
 concept!: &replica
   description: >
     A peer's copy of a repository — `this` is the replica, derived
@@ -49,14 +56,12 @@ concept!: &replica
   with:
     subject:
       description: The repository this replica is a view of.
-      the: dialog.replica/subject
+      the: xyz.tonk.replica/subject
       cardinality: one
       as: entity
     profile:
-      description: >
-        The peer holding it. Named `profile` because that is dialog's
-        attribute.
-      the: dialog.replica/profile
+      description: The peer holding it; `profile` is dialog's word for it.
+      the: xyz.tonk.replica/profile
       cardinality: one
       as: entity
 
@@ -74,12 +79,12 @@ concept!: &branch
   with:
     name:
       description: The branch's name on this replica.
-      the: dialog.branch/name
+      the: xyz.tonk.branch/name
       cardinality: one
       as: text
     replica:
       description: The replica this branch lives on.
-      the: dialog.branch/replica
+      the: xyz.tonk.branch/replica
       cardinality: one
       as: entity
     revision:

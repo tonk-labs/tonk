@@ -12,19 +12,11 @@
 #![warn(missing_docs)]
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-mod agent_connections;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-mod analytics;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-mod ui_account_settings;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod ui_sync_status;
 
-/// Register the workspace custom elements (`<ui-sync-status>` and
-/// `<ui-account-settings>`) with the page.
+/// Register the workspace custom elements (`<ui-sync-status>`) with the page.
 /// Idempotent — calling more than once is harmless.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub fn register() {
     ui_sync_status::register();
-    ui_account_settings::register();
 }

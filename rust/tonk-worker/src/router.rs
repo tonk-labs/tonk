@@ -231,10 +231,6 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         )
         .route("/api/account", get(account::get).delete(account::unlink))
         .route("/api/account/deletion/plan", get(account_deletion::plan))
-        .route(
-            "/api/account/spaces/delete",
-            post(account_deletion::delete_space),
-        )
         .route("/api/account/attach", post(account::link))
         .route("/api/account/display-name", post(account::set_display_name))
         // Customer registration with the same-origin access service.

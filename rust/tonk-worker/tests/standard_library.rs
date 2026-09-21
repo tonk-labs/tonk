@@ -40,12 +40,6 @@ const PROSE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/prose.y
 const ISSUE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/issue.yaml");
 const META_LIBRARY: &str = include_str!("../../tonk-core/assets/library/meta.yaml");
 
-/// Light-DOM markup mounted by the account-settings element. The profile
-/// library supplies its geometry, so their visual contract is checked here
-/// together.
-const SETTINGS_PANEL_MARKUP: &str =
-    include_str!("../../tonk-workspace/src/ui_account_settings.html");
-
 /// Lower a library document the same way the seed does, asserting it
 /// parses, analyzes with no running system, and lowers to claims.
 fn assert_library_lowers(label: &str, document: &str) {
@@ -801,13 +795,59 @@ fn it_separates_the_account_roster_into_independent_blocks() {
     );
 }
 
+/// `element!:` dictionary keys are hyphenated, never camelCase.
+///
+/// The runtime camelCases a hyphenated key onto the prototype
+/// (`link-request` becomes `self.linkRequest`), while a camelCase key
+/// is lowered by the notation and never becomes callable. The settings
+/// panel shipped with `linkRequest:` once and every act on it failed
+/// with "is not a function", so the spelling is pinned here.
+#[dialog_common::test]
+fn it_hyphenates_every_element_dictionary_key() {
+    for (label, library) in [
+        ("profile.yaml", PROFILE_LIBRARY),
+        ("core.yaml", STANDARD_LIBRARY),
+    ] {
+        for definition in library.split("\nelement!: &").skip(1) {
+            let tag = definition.lines().next().unwrap_or("").trim();
+            let body = definition.split("\n\n").next().unwrap_or("");
+            let mut in_dictionary = false;
+            for line in body.lines() {
+                if let Some(section) = line.strip_prefix("  ")
+                    && !section.starts_with(' ')
+                {
+                    in_dictionary = matches!(
+                        section.trim_end_matches(':'),
+                        "method" | "attribute" | "getter" | "setter"
+                    );
+                    continue;
+                }
+                if !in_dictionary {
+                    continue;
+                }
+                let Some(entry) = line.strip_prefix("    ") else {
+                    continue;
+                };
+                if entry.starts_with(' ') || entry.starts_with('#') {
+                    continue;
+                }
+                let key = entry.split(':').next().unwrap_or("").trim();
+                assert!(
+                    !key.chars().any(|c| c.is_ascii_uppercase()),
+                    "{label}: <{tag}> key `{key}` must be hyphenated, not camelCase",
+                );
+            }
+        }
+    }
+}
+
 #[dialog_common::test]
 fn it_serves_settings_as_a_routed_page_of_the_hub() {
     // `/settings` is a real route: the hub chrome with the account tab
-    // already open, reached by href from the account menu and the FAB
-    // alike. Every account act lives in this panel; nothing links out to
-    // a top-level page. `/settings/link` is the same page opened by a
-    // terminal asking for access.
+    // already open, reached by href from the account menu. Every account
+    // act lives in this panel; nothing links out to a top-level page.
+    // `/settings/link` is the same page opened by a terminal asking for
+    // access.
     assert!(PROFILE_LIBRARY.contains("path: \"/settings\""));
     assert!(PROFILE_LIBRARY.contains("path: \"/settings/link\""));
     // The route states which tab it wants as an attribute, rather than
@@ -815,43 +855,66 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
     assert!(PROFILE_LIBRARY.contains("<hub-bar class=\"hub-bar\" tab=\"account\">"));
     assert!(!PROFILE_LIBRARY.contains(".hub-settings"));
     assert!(PROFILE_LIBRARY.contains("href=\"/settings\""));
-    // The panes live in the shared panel — one element, two seats: the
-    // Hub's account tab and the FAB's settings dialog on the space route.
-    // Device revocation is no longer a separate settings pane.
-    assert!(PROFILE_LIBRARY.contains("<ui-account-settings>"));
-    assert!(SETTINGS_PANEL_MARKUP.contains("data-pane=\"account\""));
-    assert!(!SETTINGS_PANEL_MARKUP.contains("data-pane=\"devices\""));
-    assert!(SETTINGS_PANEL_MARKUP.contains("data-pane=\"link\""));
-    assert!(SETTINGS_PANEL_MARKUP.contains("data-delete-account-open"));
-    assert!(SETTINGS_PANEL_MARKUP.contains("data-sign-out-open"));
-    assert!(SETTINGS_PANEL_MARKUP.contains("<div class=\"sect\">sign out</div>"));
-    assert!(
-        SETTINGS_PANEL_MARKUP.contains("disconnect this account; keep local spaces on this device")
-    );
-    assert!(SETTINGS_PANEL_MARKUP.contains("sign out on this device"));
-    assert!(SETTINGS_PANEL_MARKUP.contains("heading=\"confirm sign out\""));
-    assert!(SETTINGS_PANEL_MARKUP.contains(
+
+    // The panel is markup on the branch under an `element!:` that does
+    // only what a view cannot; the Rust element is gone.
+    let panel = PROFILE_LIBRARY
+        .split("<account-settings>\n")
+        .nth(1)
+        .and_then(|rest| rest.split("</account-settings>").next())
+        .expect("the settings panel markup");
+    assert!(PROFILE_LIBRARY.contains("element!: &account-settings"));
+    assert!(!PROFILE_LIBRARY.contains("<ui-account-settings"));
+    // Two panes, the account and a terminal's request; device revocation
+    // is no longer a pane.
+    assert!(panel.contains("data-pane=\"account\""));
+    assert!(!panel.contains("data-pane=\"devices\""));
+    assert!(panel.contains("data-pane=\"link\""));
+    // The acts are commands the click asserts, not fetches an element
+    // makes: nothing here names an `/api/` path.
+    assert!(panel.contains("on:sign-out=tonk:sign-out"));
+    assert!(panel.contains("on:add-passkey=tonk:add-passkey"));
+    assert!(panel.contains("on:authorize-device=tonk:authorize-device"));
+    assert!(!panel.contains("/api/"));
+    assert!(panel.contains("data-delete-account-open"));
+    assert!(panel.contains("data-sign-out-open"));
+    assert!(panel.contains("<div class=\"sect\">sign out</div>"));
+    assert!(panel.contains("disconnect this account; keep local spaces on this device"));
+    assert!(panel.contains("sign out on this device"));
+    assert!(panel.contains("heading=\"confirm sign out\""));
+    assert!(panel.contains(
         "this disconnects the account from this browser. local spaces stay on this device, including spaces that have not been backed up or synced. you can sign into this or another account later."
     ));
-    assert!(SETTINGS_PANEL_MARKUP.contains("data-sign-out-submit>sign out</button>"));
-    assert!(!SETTINGS_PANEL_MARKUP.contains("remove this device"));
-    assert!(!SETTINGS_PANEL_MARKUP.contains("confirm device removal"));
+    assert!(panel.contains("data-sign-out-submit on:sign-out=tonk:sign-out>sign out</button>"));
+    assert!(!panel.contains("remove this device"));
+    assert!(!panel.contains("confirm device removal"));
+    assert!(!panel.contains("remove all data associated with this account from this device"));
+    assert!(panel.contains("data-add-passkey"));
+    assert!(!panel.contains("href=\"/account\""));
+    assert!(!panel.contains("href=\"/settings\""));
+    // The name, address and passkeys are facts, so the panel mounts the
+    // view that renders them rather than carrying their markup; the
+    // ceremony's progress is a row it words.
     assert!(
-        !SETTINGS_PANEL_MARKUP
-            .contains("remove all data associated with this account from this device")
-    );
-    assert!(SETTINGS_PANEL_MARKUP.contains("data-add-passkey"));
-    assert!(!SETTINGS_PANEL_MARKUP.contains("href=\"/account\""));
-    assert!(!SETTINGS_PANEL_MARKUP.contains("href=\"/settings\""));
-    // The name, address and passkeys are facts now, so the panel mounts
-    // the view that renders them rather than carrying their markup.
-    assert!(
-        SETTINGS_PANEL_MARKUP
-            .contains(r#"<tonk-display model="tonk:account/registered" view="settings">"#),
+        panel.contains(r#"<tonk-display model="tonk:account/registered" view="settings">"#),
         "the account pane must render the registration facts, not paint them",
     );
+    assert!(panel.contains(r#"<tonk-display model="state:ceremony" view="settings">"#));
+
+    // The deletion dialog rides the registration view, because the
+    // command carries the verified address and that view has it.
+    let registered = PROFILE_LIBRARY
+        .split("    settings: |\n      <div data-account-registered>")
+        .nth(1)
+        .and_then(|rest| rest.split("\n\n").next())
+        .expect("the registration settings facet");
+    assert!(registered.contains("data-delete-account-submit data-email={email}"));
+    assert!(registered.contains("on:delete-account=tonk:delete-account disabled"));
+    assert!(
+        registered.contains(r#"<tonk-display model="tonk:space/owned" view="deletion">"#),
+        "what the deletion deletes is listed from the owned-space facts",
+    );
     // Editable settings fields use native text inputs and native carets.
-    // The row moved to the view; the contract did not.
     let name_row = PROFILE_LIBRARY
         .split("<span>display name</span>")
         .nth(1)
@@ -862,15 +925,15 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
         "an unfocused display-name field must not draw an editing cursor",
     );
     assert!(
-        SETTINGS_PANEL_MARKUP.contains("data-delete-confirm type=\"text\""),
+        registered.contains("data-delete-confirm type=\"text\""),
         "the deletion confirm is a native text input",
     );
     assert!(
-        SETTINGS_PANEL_MARKUP.contains("data-delete-confirm-label>delete account</b>"),
+        registered.contains("data-delete-confirm-label>delete account</b>"),
         "the deletion confirm must say exactly what to type",
     );
     assert!(
-        !SETTINGS_PANEL_MARKUP.contains("<i class=\"cur\""),
+        !registered.contains("<i class=\"cur\""),
         "settings inputs must not draw terminal-style cursors",
     );
 }

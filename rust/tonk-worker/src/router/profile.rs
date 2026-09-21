@@ -158,7 +158,7 @@ pub(crate) async fn active_branch_name(
         .select(Query::<MetaBranch> {
             this: Term::from(entity),
             name: Term::var("name"),
-            origin: Term::var("origin"),
+            replica: Term::var("replica"),
         })
         .perform(operator)
         .try_vec()
@@ -272,13 +272,13 @@ async fn upstream_replica(
         .select(Query::<MetaBranch> {
             this: Term::from(upstream),
             name: Term::var("name"),
-            origin: Term::var("origin"),
+            replica: Term::var("replica"),
         })
         .perform(&tonk.operator)
         .try_vec()
         .await
         .ok()?;
-    let replica = branches.into_iter().next()?.origin.0;
+    let replica = branches.into_iter().next()?.replica.0;
 
     let replicas: Vec<ReplicaConcept> = handle
         .query()
@@ -316,7 +316,7 @@ pub(crate) async fn local_branches(tonk: &crate::worker::TonkState) -> Vec<(Stri
         .select(Query::<MetaBranch> {
             this: Term::var("this"),
             name: Term::var("name"),
-            origin: Term::from(replica.this.clone()),
+            replica: Term::from(replica.this.clone()),
         })
         .perform(&tonk.operator)
         .try_vec()
@@ -419,7 +419,7 @@ pub(crate) async fn leave_account(tonk: &crate::worker::TonkState) {
         .select(Query::<MetaBranch> {
             this: Term::var("this"),
             name: Term::var("name"),
-            origin: Term::from(replica.this.clone()),
+            replica: Term::from(replica.this.clone()),
         })
         .perform(&tonk.operator)
         .try_vec()
@@ -491,6 +491,56 @@ pub struct SpaceEntry {
     pub key: String,
     /// The space's identity DID.
     pub subject: Did,
+}
+
+/// Forget a branch: retract its record and what it follows from
+/// `meta`, so it is no longer listed or offered. The branch's data
+/// stays where dialog keeps it, since there is no branch deletion and
+/// a retained branch keeps clocks safe; it just stops being one of
+/// this profile's branches. Used when the account a branch followed
+/// has been deleted and nothing on the branch is worth returning to.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn forget_branch(tonk: &crate::worker::TonkState, name: &str) {
+    use tonk_schema::{Branch as MetaBranch, BranchUpstream};
+
+    let profile_did = tonk.profile.did();
+    let replica = Replica::new(profile_did.clone(), profile_did);
+    let branch = MetaBranch::new(&replica, name);
+
+    let Ok(session) = tonk
+        .reactor
+        .profile_repository()
+        .branch(super::repository::META_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+    else {
+        log!("forget branch '{name}': meta could not be opened; it stays listed");
+        return;
+    };
+    let followed: Vec<BranchUpstream> = session
+        .handle()
+        .query()
+        .select(Query::<BranchUpstream> {
+            this: Term::from(branch.this.clone()),
+            upstream: Term::var("upstream"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .unwrap_or_default();
+
+    let mut transaction = tonk
+        .reactor
+        .profile_repository()
+        .branch(super::repository::META_BRANCH)
+        .transaction()
+        .retract(branch);
+    for row in followed {
+        transaction = transaction.retract(row);
+    }
+    if let Err(error) = transaction.commit().perform(&tonk.operator).await {
+        log!("forget branch '{name}': {error}");
+    }
 }
 
 /// Response body for `GET /api/profile`.
@@ -652,6 +702,35 @@ pub(crate) mod tests {
     /// replica of the account repository, a branch on it, and a local
     /// branch following that. If the traversal is right, the account
     /// falls out; if any hop is wrong, nothing does.
+    /// A forgotten branch drops out of the listing while its data stays.
+    #[dialog_common::test]
+    async fn it_forgets_a_branch_by_retracting_its_record() {
+        let state = test_state().await;
+        leave_account(&state).await;
+        let names = |branches: Vec<(String, Entity)>| {
+            branches
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            names(local_branches(&state).await).contains(&"main".to_owned()),
+            "the account branch is listed before it is forgotten",
+        );
+
+        forget_branch(&state, "main").await;
+
+        let listed = names(local_branches(&state).await);
+        assert!(
+            !listed.contains(&"main".to_owned()),
+            "the forgotten branch is no longer listed: {listed:?}",
+        );
+        assert!(
+            !listed.is_empty(),
+            "the branch the profile moved onto is still listed: {listed:?}",
+        );
+    }
+
     #[dialog_common::test]
     async fn it_reads_the_account_off_the_active_branch() {
         use dialog_credentials::Ed25519Signer;
@@ -901,7 +980,7 @@ pub(crate) mod tests {
             .select(Query::<MetaBranch> {
                 this: Term::var("this"),
                 name: Term::var("name"),
-                origin: Term::var("origin"),
+                replica: Term::var("replica"),
             })
             .perform(&tonk.operator)
             .try_vec()
@@ -950,7 +1029,7 @@ pub(crate) mod tests {
                 .select(Query::<MetaBranch> {
                     this: Term::var("this"),
                     name: Term::var("name"),
-                    origin: Term::var("origin"),
+                    replica: Term::var("replica"),
                 })
                 .perform(&tonk.operator)
                 .try_vec()

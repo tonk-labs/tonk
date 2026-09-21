@@ -2463,7 +2463,7 @@ element!: &drag-frame
           handle: self.getAttribute('handle') || '',
         };
       }
-    handleOf: |
+    handle-of: |
       (self, target) => {
         const selector = self.options().handle;
         if (!selector) return self;

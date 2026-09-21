@@ -35,10 +35,16 @@ pub mod replica {
     #[domain("xyz.tonk.replica")]
     pub struct Name(pub String);
 
+    /// The repository this replica is a view of. Tonk's own spelling:
+    /// `dialog.replica/*` is dialog's, surfaced by dialog for the branch
+    /// being queried and reserved against anyone else writing it, so a
+    /// replica tonk records has to be named in tonk's namespace. The
+    /// entity is dialog's derivation, so the two describe one thing.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.replica")]
     pub struct Subject(pub Entity);
 
+    /// The peer holding the replica.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.replica")]
     pub struct Profile(pub Entity);
@@ -1232,6 +1238,17 @@ pub mod command {
             pub struct Time(pub f64);
         }
 
+        /// `tonk/sign-out` — leave the account on the active branch.
+        pub mod sign_out {
+            use dialog_query::Attribute;
+
+            /// The click's timestamp, so signing out again re-fires
+            /// rather than deduplicating.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("xyz.tonk.command.sign-out")]
+            pub struct Time(pub f64);
+        }
+
         /// `tonk/switch-profile` — make another profile on this browser
         /// the active one.
         pub mod switch_profile {
@@ -1870,13 +1887,18 @@ pub mod join {
 pub mod branch {
     use super::{Attribute, Entity};
 
+    /// The branch's name on its replica. Tonk's own spelling for the
+    /// same reason as `replica::Subject`: `dialog.branch/*` is reserved
+    /// for dialog's own rows. The entity is dialog's derivation, so a
+    /// branch tonk records on `meta` is the entity dialog surfaces.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.branch")]
     pub struct Name(pub String);
 
+    /// The replica the branch lives on.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.branch")]
-    pub struct Origin(pub Entity);
+    pub struct Replica(pub Entity);
 
     /// The upstream branch a local branch is tracking. Direction-
     /// explicit counterpart to [`Origin`]: asserting

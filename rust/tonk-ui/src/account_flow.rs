@@ -857,7 +857,7 @@ mod tests {
     async fn open_hub_settings(driver: &WebDriver, env: &TestEnvironment) -> Result<()> {
         goto(driver, env.tonk_web.join("settings")?.as_str()).await?;
         enter_hub(driver).await?;
-        element(driver, "ui-account-settings").await?;
+        element(driver, "account-settings").await?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
             let email = element(driver, "[data-settings-email]")
@@ -5978,7 +5978,7 @@ mod tests {
         click(&driver, "[data-open-settings]").await?;
         driver.enter_default_frame().await?;
         enter_hub(&driver).await?;
-        element(&driver, "ui-account-settings").await?;
+        element(&driver, "account-settings").await?;
         wait_for_text(&driver, "[data-settings-email]", "second@example.com").await?;
         wait_for_text(
             &driver,
@@ -5988,12 +5988,12 @@ mod tests {
         .await?;
         assert!(
             driver
-                .find_all(By::Css("ui-account-settings [data-pane=\"devices\"]"))
+                .find_all(By::Css("account-settings [data-pane=\"devices\"]"))
                 .await?
                 .is_empty(),
             "settings must not expose a devices tab or pane"
         );
-        let settings_text = element(&driver, "ui-account-settings")
+        let settings_text = element(&driver, "account-settings")
             .await?
             .text()
             .await?
@@ -7244,7 +7244,7 @@ mod tests {
 
         goto(&driver, approval_url.as_str()).await?;
         enter_guest(&driver).await?;
-        wait_for_displayed(&driver, "ui-account-settings [data-pane=\"local-link\"]").await?;
+        wait_for_displayed(&driver, "account-settings [data-pane=\"local-link\"]").await?;
         wait_for_text(&driver, "[data-local-link-name]", "garden").await?;
         assert_eq!(
             element(&driver, "[data-local-link-did]")
@@ -7351,7 +7351,7 @@ mod tests {
                             return {
                               statusText: status?.textContent,
                               statusHidden: status?.hidden,
-                              finishing: document.querySelector('ui-account-settings')
+                              finishing: document.querySelector('account-settings')
                                 ?.hasAttribute('data-local-link-finishing'),
                             };"#,
                                     vec![],
@@ -7520,7 +7520,7 @@ mod tests {
 
         goto(&driver, url_line.trim()).await?;
         enter_guest(&driver).await?;
-        wait_for_displayed(&driver, "ui-account-settings [data-pane=\"local-link\"]").await?;
+        wait_for_displayed(&driver, "account-settings [data-pane=\"local-link\"]").await?;
         assert_eq!(
             element(&driver, "[data-local-link-did]")
                 .await?
@@ -7654,7 +7654,7 @@ mod tests {
         }
         wait_for_service_worker(&driver).await?;
         enter_guest(&driver).await?;
-        wait_for_displayed(&driver, "ui-account-settings [data-pane=\"local-link\"]").await?;
+        wait_for_displayed(&driver, "account-settings [data-pane=\"local-link\"]").await?;
         assert_eq!(
             element(&driver, "[data-local-link-did]")
                 .await?
@@ -7776,7 +7776,7 @@ mod tests {
             .append_pair("expectedAccount", expected);
         goto(&driver, url.as_str()).await?;
         enter_hub(&driver).await?;
-        wait_for_displayed(&driver, "ui-account-settings [data-pane=\"link\"]").await?;
+        wait_for_displayed(&driver, "account-settings [data-pane=\"link\"]").await?;
         assert_eq!(
             element(&driver, "[data-link-account]")
                 .await?
@@ -7833,7 +7833,7 @@ mod tests {
         // The settings page names the device that is waiting, so the
         // user knows what they are approving.
         enter_hub(&driver).await?;
-        wait_for_displayed(&driver, "ui-account-settings [data-pane=\"link\"]").await?;
+        wait_for_displayed(&driver, "account-settings [data-pane=\"link\"]").await?;
         let shown = element(&driver, "[data-link-did]").await?.text().await?;
         assert_eq!(shown, audience, "the page must name the waiting device");
         assert_eq!(
@@ -7916,7 +7916,7 @@ mod tests {
         goto(&driver, url.as_str()).await?;
 
         enter_hub(&driver).await?;
-        wait_for_displayed(&driver, "ui-account-settings [data-pane=\"link\"]").await?;
+        wait_for_displayed(&driver, "account-settings [data-pane=\"link\"]").await?;
         click(&driver, "[data-link-decline]").await?;
 
         let (field, _) = tokio::time::timeout(Duration::from_secs(60), delivered)

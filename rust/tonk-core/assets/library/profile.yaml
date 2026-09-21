@@ -436,10 +436,9 @@ view!:
 
       /* ── settings — a page of the account tab (the wireframe's reading):
          the stack steps aside and the section hangs from the same bar.
-         The panel's own styling (body and rows) ships with
-         `<ui-account-settings>` in `tonk-ui/styles.css`, because the FAB
-         raises the same panel in a dialog on the space route — only the
-         hub seat's geometry lives here. ── */
+         The panel's own styling (body and rows) is scoped to
+         `<account-settings>` in `tonk-ui/styles.css`; only the hub
+         seat's geometry lives here. ── */
       .settings { display:flex; flex-direction:column; align-items:stretch;
         margin-top:7px; }
       .settings[hidden] { display:none; }
@@ -1233,6 +1232,96 @@ command!: &profile/switch
       the: xyz.tonk.command.switch-profile/time
       as: float
 
+# The settings page's acts. Each is a command the page fires with a
+# click; the worker does the work and reports where it got to as a
+# `state:ceremony` row the page reads back. Nothing here answers the
+# click with a response body.
+event!: &on/sign-out
+  type: "click"
+  prevent-default: true
+  where:
+    time: ".timeStamp"
+
+command!: &profile/sign-out
+  this: tonk:sign-out
+  description: Sign this device out of the account on the active branch.
+  with:
+    time:
+      description: The click's timestamp, so signing out again re-fires.
+      the: xyz.tonk.command.sign-out/time
+      as: float
+
+# The account entity is read off the control rather than typed here,
+# because a command field is a fact the click asserts, not a constant.
+event!: &on/add-passkey
+  type: "click"
+  prevent-default: true
+  where:
+    account: ".currentTarget.dataset.account"
+
+command!: &account/add-passkey
+  this: tonk:add-passkey
+  description: Seal the account under another passkey, proving with the current one.
+  with:
+    account:
+      description: The account, read off the control.
+      the: xyz.tonk.command.add-passkey/account
+      as: entity
+
+# The address rides on the control that armed the deletion, stamped
+# there by the registration view: the command carries the verified
+# email so the worker can bind it into the purge it signs.
+event!: &on/delete-account
+  type: "click"
+  prevent-default: true
+  where:
+    email: ".currentTarget.dataset.email"
+
+command!: &account/delete
+  this: tonk:delete-account
+  description: Delete this account from every service and this device.
+  with:
+    email:
+      description: The verified address the deletion is for.
+      the: xyz.tonk.delete-account/email
+      as: text
+
+# A terminal's request rides the location (`/settings/link?audience=…`);
+# the element copies it onto the approve control so the click can
+# assert it. `expected-account` is blank when the terminal named none,
+# and a blank field is omitted rather than asserted.
+event!: &on/authorize-device
+  type: "click"
+  prevent-default: true
+  where:
+    audience: ".currentTarget.dataset.audience"
+    callback: ".currentTarget.dataset.callback"
+    name: ".currentTarget.dataset.name"
+    expected-account: ".currentTarget.dataset.expectedAccount"
+
+command!: &device/authorize
+  this: tonk:authorize-device
+  description: Delegate the account to a waiting terminal.
+  with:
+    audience:
+      description: The terminal's DID.
+      the: xyz.tonk.authorize-device/audience
+      as: entity
+    callback:
+      description: >
+        Where the terminal listens, base58 over the URL: a bare URL
+        carries a `:` and would decode as an entity.
+      the: xyz.tonk.authorize-device/callback
+      as: text
+    name:
+      description: What the terminal calls itself.
+      the: xyz.tonk.authorize-device/name
+      as: text
+    expected-account:
+      description: The account the terminal expects, when it named one.
+      the: xyz.tonk.authorize-device/expected-account
+      as: entity
+
 # The switcher list. Renders every profile but the active one: the active
 # account is already named in the bar above, and offering to switch to
 # where you are is a no-op the worker would reject anyway.
@@ -1265,6 +1354,11 @@ concept!: &ceremony/status
     state:
       description: Where it got to — pending-ceremony, working, done, failed, refused.
       the: xyz.tonk.ceremony/state
+      cardinality: one
+      as: text
+    detail:
+      description: What refused or failed it, empty otherwise.
+      the: xyz.tonk.ceremony/detail
       cardinality: one
       as: text
 
@@ -1530,7 +1624,7 @@ view!:
   this: tonk:account/registered
   show:
     settings: |
-      <div class="pane" data-pane="account">
+      <div data-account-registered>
         <div class="srowd">
           <span>display name</span>
           <!-- The name is a different concept from the registration:
@@ -1549,6 +1643,29 @@ view!:
           Your passkey replaces a password and may be saved to a device, browser
           profile, or password manager.
         </p>
+        <!-- The deletion dialog lives on the registration because the
+             command carries the verified address, stamped on the submit
+             control here. What it deletes is listed from `space/owned`;
+             the element counts those rows into the sentence and arms
+             the submit once the phrase is typed. -->
+        <tonk-dialog data-delete-account-dialog heading="confirm account deletion">
+          <div class="confirm-body">
+            <span data-delete-scope>loading what this deletes&hellip;</span>
+            <span data-delete-owned hidden><tonk-display model="tonk:space/owned" view="deletion"></tonk-display></span>
+            <span data-delete-question>are you sure you want to delete all data associated with this account?</span>
+            <span data-delete-consequence>this action is permanent. there is no option to recover your data.</span>
+            <span data-delete-passkey>your passkey will be asked for.</span>
+            <div class="armrow">
+              <label for="delete-confirmation">type <b data-delete-confirm-label>delete account</b> to confirm:</label>
+              <input class="armfield" id="delete-confirmation" data-delete-confirm type="text"
+                autocomplete="off" autocapitalize="off" spellcheck="false"
+                aria-label="deletion confirmation" />
+            </div>
+          </div>
+          <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
+          <button class="m-go" slot="actions" type="button" data-delete-account-submit data-email={email}
+            on:delete-account=tonk:delete-account disabled><span data-delete-submit-label>delete account</span></button>
+        </tonk-dialog>
       </div>
 
 # The name, editable in place. Its own view because it is its own
@@ -1879,8 +1996,61 @@ view!:
               </button>
               <a class="hcell hc-view" href="/" data-return-spaces>spaces</a>
             </nav>
+            <!-- The panel is views over the registration, the passkeys,
+                 the owned spaces and the ceremony row, plus the acts as
+                 commands. `<account-settings>` is what is left for an
+                 element: the terminal's request read off the location,
+                 the deletion phrase, the ceremony text, and the seat the
+                 top page's passkey cluster anchors to. -->
             <section class="settings chrome">
-              <ui-account-settings with="{profile-branch}@profile:tonk"></ui-account-settings>
+              <account-settings>
+                <div class="s-body">
+                  <div class="pane" data-pane="account">
+                    <tonk-display model="tonk:account/registered" view="settings"></tonk-display>
+                    <div class="srowd">
+                      <span>another passkey for this account</span>
+                      <button class="cta" type="button" data-add-passkey data-account="tonk:add-passkey"
+                        on:add-passkey=tonk:add-passkey>add a passkey with the current one</button>
+                    </div>
+                    <div class="sect">sign out</div>
+                    <div class="srowd">
+                      <span>disconnect this account; keep local spaces on this device</span>
+                      <button class="cta" type="button" data-sign-out-open>sign out on this device</button>
+                    </div>
+                    <div class="sect">delete data</div>
+                    <div class="srowd">
+                      <span>delete all data associated with this account</span>
+                      <button class="cta" type="button" data-delete-account-open>delete account (permanent)</button>
+                    </div>
+                  </div>
+                  <div class="pane" data-pane="link" hidden data-link-approval>
+                    <div class="sect">a terminal is asking for access</div>
+                    <div class="srowd"><span>name</span><b data-link-name></b></div>
+                    <div class="srowd"><span>account</span><b class="lft" data-link-account></b></div>
+                    <div class="srowd"><span>device</span><b class="lft" data-link-did></b></div>
+                    <p class="expl">
+                      approving gives that terminal the same access to your account as this
+                      browser: every space, on every device. decline if you did not just run
+                      <code>tonk account login</code> or <code>tonk connect</code> yourself.
+                    </p>
+                    <div class="link-foot">
+                      <button class="m-cancel" type="button" data-link-decline>decline</button>
+                      <button class="m-go" type="button" data-link-approve on:authorize-device=tonk:authorize-device
+                        data-audience="" data-callback="" data-name="" data-expected-account="">approve with passkey</button>
+                    </div>
+                  </div>
+                  <p class="expl" data-ceremony-status role="status" aria-live="polite" hidden></p>
+                  <tonk-display model="state:ceremony" view="settings"></tonk-display>
+                  <div data-custody-seat aria-hidden="true"></div>
+                </div>
+                <tonk-dialog data-sign-out-dialog heading="confirm sign out">
+                  <div class="confirm-body">
+                    this disconnects the account from this browser. local spaces stay on this device, including spaces that have not been backed up or synced. you can sign into this or another account later.
+                  </div>
+                  <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
+                  <button class="m-go" slot="actions" type="button" data-sign-out-submit on:sign-out=tonk:sign-out>sign out</button>
+                </tonk-dialog>
+              </account-settings>
             </section>
           </hub-bar>
         </main>
@@ -3446,7 +3616,7 @@ element!: &drag-frame
           handle: self.getAttribute('handle') || '',
         };
       }
-    handleOf: |
+    handle-of: |
       (self, target) => {
         const selector = self.options().handle;
         if (!selector) return self;
@@ -3569,3 +3739,277 @@ element!: &drag-frame
       (self) => {
         window.removeEventListener('resize', self.__resize);
       }
+
+# The ceremony row as the settings page reads it: a marker carrying the
+# fields, which the element words. Pinned to `this` so a directory with
+# no row renders nothing (see the linked marker above).
+view!:
+  this: state:ceremony
+  show:
+    settings: |
+      <span data-ceremony-row data-of={this} data-ceremony={ceremony}
+        data-ceremony-state={state} data-ceremony-detail={detail} hidden></span>
+
+# What deleting the account deletes: every space this account provides,
+# named through the space's own row.
+view!:
+  this: tonk:space/owned
+  show:
+    deletion: |
+      <span data-owned-space data-of={this}><tonk-display model="tonk:space" entity={this} view="name"></tonk-display></span>
+
+view!:
+  this: tonk:space
+  show:
+    name: |
+      <span data-space-name>{name}</span>
+
+# The settings panel's element: what a view cannot do. The terminal's
+# request is read off the location and copied onto the approve control
+# so the click can assert it; the deletion phrase arms the submit; the
+# ceremony row is worded; and the seat the top page's passkey cluster
+# anchors to is measured, which only this realm can do.
+element!: &account-settings
+  description: The settings panel's location-bound acts, deletion arming, ceremony wording and custody seat.
+  method:
+    # Where this page is, as the host injects it: the guest's own
+    # location is about:srcdoc.
+    context: |
+      (self) => {
+        const context = window.tonk?.context ?? {};
+        if (context.origin) {
+          return { origin: context.origin, path: context.path ?? '', search: context.search ?? '', hash: context.hash ?? '' };
+        }
+        const at = window.location;
+        return { origin: at.origin, path: at.pathname, search: at.search, hash: at.hash };
+      }
+    # Keys are hyphenated: the runtime camelCases them onto the
+    # prototype, so `self.linkRequest()` is how a sibling calls this.
+    link-request: |
+      (self) => {
+        const at = self.context();
+        if (at.path !== '/settings/link') return null;
+        const params = new URLSearchParams(at.search);
+        const audience = params.get('audience');
+        const callback = params.get('callback');
+        if (!audience || !callback) return null;
+        const name = (params.get('name') ?? '').trim() || 'terminal';
+        return { audience, callback, name, expectedAccount: params.get('expectedAccount') };
+      }
+    # Base58 over the callback URL: a bare URL carries a `:` and would
+    # decode as an entity on the worker's side.
+    base58: |
+      (self, text) => {
+        const alphabet = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+        const bytes = new TextEncoder().encode(text);
+        let zeros = 0;
+        while (zeros < bytes.length && bytes[zeros] === 0) zeros += 1;
+        let n = 0n;
+        for (const byte of bytes) n = (n << 8n) | BigInt(byte);
+        let out = '';
+        while (n > 0n) { out = alphabet[Number(n % 58n)] + out; n /= 58n; }
+        return '1'.repeat(zeros) + out;
+      }
+    text: |
+      (self, selector, value) => {
+        const target = self.querySelector(selector);
+        if (target && target.textContent !== value) target.textContent = value;
+      }
+    pane: |
+      (self, name) => {
+        for (const pane of self.querySelectorAll('[data-pane]')) pane.hidden = pane.dataset.pane !== name;
+      }
+    refresh: |
+      (self) => {
+        const request = self.linkRequest();
+        if (!request) {
+          self.pane('account');
+          if (self.context().hash === '#delete-account') self.openDelete();
+          return;
+        }
+        self.text('[data-link-name]', request.name);
+        self.text('[data-link-did]', request.audience);
+        self.text('[data-link-account]', request.expectedAccount ?? 'your signed-in account');
+        const approve = self.querySelector('[data-link-approve]');
+        if (approve) {
+          approve.dataset.audience = request.audience;
+          approve.dataset.callback = self.base58(request.callback);
+          approve.dataset.name = request.name;
+          approve.dataset.expectedAccount = request.expectedAccount ?? '';
+        }
+        self.pane('link');
+      }
+    status: |
+      (self, text) => {
+        const line = self.querySelector('[data-ceremony-status]');
+        if (!line) return;
+        if (line.textContent !== text) line.textContent = text;
+        if (line.hidden !== !text) line.hidden = !text;
+        self.seat();
+      }
+    # Where the top page's passkey cluster sits: just above the seat.
+    seat: |
+      (self) => {
+        const seat = self.querySelector('[data-custody-seat]');
+        if (!seat) return;
+        const box = seat.getBoundingClientRect();
+        if (!(box.width > 0 && box.height > 0)) return;
+        window.tonk?.register?.(JSON.stringify({
+          reason: 'custody-anchor',
+          anchor: { left: box.left, bottom: box.top - 7, width: box.width },
+        }));
+      }
+    open-delete: |
+      (self) => {
+        const dialog = self.querySelector('[data-delete-account-dialog]');
+        if (!dialog) return;
+        const field = self.querySelector('[data-delete-confirm]');
+        if (field) field.value = '';
+        self.scope();
+        self.arm();
+        dialog.show?.();
+        field?.focus();
+      }
+    # The sentence the dialog opens on, counted off the owned-space rows
+    # the view renders.
+    scope: |
+      (self) => {
+        const owned = [...self.querySelectorAll('[data-owned-space]')];
+        const names = owned.map((row) => (row.querySelector('[data-space-name]')?.textContent ?? '').trim() || 'unnamed space');
+        const count = owned.length;
+        const listed = names.length ? `: ${names.join(', ')}` : '';
+        self.text('[data-delete-scope]',
+          `${count} owned hosted space${count === 1 ? '' : 's'} will be deleted${listed}. Spaces you joined are left intact.`);
+      }
+    # The submit fires the command, so it stays disabled until the exact
+    # phrase is typed and the address is on it.
+    arm: |
+      (self) => {
+        const field = self.querySelector('[data-delete-confirm]');
+        const submit = self.querySelector('[data-delete-account-submit]');
+        if (!field || !submit) return;
+        const expected = (self.querySelector('[data-delete-confirm-label]')?.textContent ?? '').trim();
+        const armed = !!expected && field.value.trim() === expected && !!submit.dataset.email;
+        if (armed === submit.hasAttribute('disabled')) {
+          if (armed) submit.removeAttribute('disabled'); else submit.setAttribute('disabled', '');
+        }
+      }
+    # Word the ceremony row. Every write is guarded, because this runs
+    # from an observer over the same subtree it writes into.
+    describe: |
+      (self) => {
+        const row = self.querySelector('[data-ceremony-row]');
+        if (!row) return;
+        const which = row.dataset.ceremony;
+        const state = row.dataset.ceremonyState;
+        const detail = row.dataset.ceremonyDetail ?? '';
+        const subject = {
+          'delete-account': 'Deleting the account',
+          'authorize-device': 'Approving the terminal',
+          'add-passkey': 'Adding the passkey',
+        }[which];
+        if (!subject) return;
+        const done = {
+          'delete-account': 'Account deleted.',
+          'authorize-device': 'Approved. Handing the terminal its access…',
+        }[which] ?? 'Done.';
+        const text = {
+          'pending-ceremony': `${subject}: waiting for your passkey…`,
+          'working': `${subject}…`,
+          'done': done,
+          'refused': `${subject} did not finish: ${detail}`,
+          'failed': `${subject} did not finish: ${detail}`,
+        }[state];
+        if (!text) return;
+        if (self.getAttribute('data-ceremony') !== which) self.setAttribute('data-ceremony', which);
+        if (self.getAttribute('data-ceremony-state') !== state) self.setAttribute('data-ceremony-state', state);
+        if (which === 'authorize-device') {
+          const asking = state === 'pending-ceremony' || state === 'working';
+          if (asking !== self.hasAttribute('data-passkey-requested')) {
+            if (asking) self.setAttribute('data-passkey-requested', ''); else self.removeAttribute('data-passkey-requested');
+          }
+        }
+        self.status(text);
+      }
+    # Declining hands the terminal a deny on its own callback. The same
+    # loopback check the worker makes on approval: a callback that is
+    # not a Tonk loopback address gets nothing.
+    decline: |
+      (self) => {
+        const request = self.linkRequest();
+        if (!request) return;
+        let target;
+        try { target = new URL(request.callback); } catch { self.status('the authorization callback address is invalid'); return; }
+        const loopback = target.protocol === 'http:' && target.hostname === '127.0.0.1' && !!target.port
+          && target.pathname === '/' && !target.search && !target.hash && !target.username && !target.password;
+        if (!loopback) { self.status('the authorization callback is not a Tonk loopback address'); return; }
+        const fields = new URLSearchParams([['deny', 'declined in the browser'], ['redirect', `${self.context().origin}/settings`]]);
+        target.hash = fields.toString();
+        window.tonk?.navigate?.(target.toString());
+      }
+    connected: |
+      (self) => {
+        self.addEventListener('click', (event) => {
+          const hit = (selector) => event.target.closest(selector);
+          if (hit('[data-sign-out-open]')) {
+            self.querySelector('[data-sign-out-dialog]')?.show?.();
+          } else if (hit('[data-delete-account-open]')) {
+            self.openDelete();
+          } else if (hit('[data-sign-out-submit]')) {
+            self.querySelector('[data-sign-out-dialog]')?.close?.();
+            self.status('Signing out…');
+          } else if (hit('[data-delete-account-submit]')) {
+            self.querySelector('[data-delete-account-dialog]')?.close?.();
+            self.status('Waiting for your passkey…');
+          } else if (hit('[data-add-passkey]')) {
+            self.status('Waiting for your passkey…');
+          } else if (hit('[data-link-approve]')) {
+            self.setAttribute('data-passkey-requested', '');
+            self.status('Waiting for your passkey…');
+          } else if (hit('[data-link-decline]')) {
+            self.decline();
+          }
+        });
+        self.addEventListener('input', (event) => {
+          if (event.target.matches?.('[data-delete-confirm]')) self.arm();
+        });
+        // The rows this words and counts arrive after connect and change
+        // while the panel is up; one observer covers all three.
+        const rows = new MutationObserver(() => { self.describe(); self.scope(); self.arm(); });
+        rows.observe(self, { childList: true, subtree: true, attributes: true,
+          attributeFilter: ['data-ceremony', 'data-ceremony-state', 'data-ceremony-detail', 'data-email'] });
+        const opened = () => {
+          if (self.hasAttribute('data-passkey-screen')) return;
+          self.setAttribute('data-passkey-screen', '');
+          self.seat();
+        };
+        const closed = () => {
+          self.removeAttribute('data-passkey-screen');
+          self.removeAttribute('data-passkey-requested');
+          if (!['refused', 'failed', 'done'].includes(self.getAttribute('data-ceremony-state'))) self.status('');
+        };
+        const reseat = () => self.seat();
+        window.addEventListener('tonk:custody-opened', opened);
+        window.addEventListener('tonk:custody-closed', closed);
+        window.addEventListener('scroll', reseat, true);
+        window.addEventListener('resize', reseat, true);
+        const sized = new ResizeObserver(reseat);
+        sized.observe(self);
+        self._teardown = () => {
+          rows.disconnect();
+          sized.disconnect();
+          window.removeEventListener('tonk:custody-opened', opened);
+          window.removeEventListener('tonk:custody-closed', closed);
+          window.removeEventListener('scroll', reseat, true);
+          window.removeEventListener('resize', reseat, true);
+        };
+        self.refresh();
+        self.describe();
+      }
+    disconnected: |
+      (self) => {
+        self._teardown?.();
+        self._teardown = null;
+      }
+    released: |
+      (self) => self.disconnected()

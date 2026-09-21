@@ -616,6 +616,27 @@ async fn promote(
     Ok(response)
 }
 
+/// Sign out, as the settings page asks for it.
+///
+/// The same path the `DELETE /api/account` route takes, so the two
+/// cannot drift while the route lives. The originating tab is fenced by
+/// the swap and cannot await a command, so it is reloaded from here once
+/// the empty branch is active.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::SignOut> for crate::router::CommandEnv {
+    async fn execute(&self, _command: tonk_schema::command::SignOut) {
+        match sign_out(self.state(), self.client()).await {
+            Ok(status) => log!("SignOut: {status:?}"),
+            Err(error) => {
+                log!("SignOut failed: {error}");
+                return;
+            }
+        }
+        super::navigate::notify_profile_changed_to(self.client());
+    }
+}
+
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 mod tests {
     use super::*;
@@ -713,6 +734,111 @@ mod tests {
         assert!(
             active_account(&tonk).await.is_none(),
             "the branch an account is added on follows nothing yet",
+        );
+    }
+
+    /// The sign-out command leaves the account branch behind.
+    ///
+    /// Through the Provider, as the settings page fires it, so the
+    /// registration is covered along with the handler.
+    #[dialog_common::test]
+    async fn it_leaves_the_account_for_the_sign_out_command() {
+        let state = Arc::new(RwLock::new(test_state().await));
+        let before = active(&state).await;
+        assert!(
+            active_account(&*state.read().await).await.is_some(),
+            "the fixture starts signed in",
+        );
+
+        let env =
+            crate::router::CommandEnv::new(state.clone(), crate::router::CommandOrigin::default());
+        <crate::router::CommandEnv as dialog_capability::Provider<
+            tonk_schema::command::SignOut,
+        >>::execute(
+            &env,
+            tonk_schema::command::SignOut {
+                this: "cmd:sign-out".parse().expect("entity"),
+                time: tonk_schema::domain::command::current::sign_out::Time(1.0),
+            },
+        )
+        .await;
+
+        assert_ne!(
+            before,
+            active(&state).await,
+            "signing out moves onto a branch that follows no account",
+        );
+        let tonk = state.read().await;
+        assert!(
+            active_account(&tonk).await.is_none(),
+            "the active branch follows nothing after sign-out",
+        );
+    }
+
+    /// After a sign-out the top page asks meta which branch is active and
+    /// what it is called, with exactly these two queries
+    /// (`tonk_host::bridge::resolve_profile_branch`). A page that cannot
+    /// read the answer falls back to `main` and boots onto the branch it
+    /// just left.
+    #[dialog_common::test]
+    async fn it_answers_the_page_which_branch_is_active_after_sign_out() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt as _;
+
+        let (app, state, _lsp) = crate::router::api_router_with_state(test_state().await);
+        let env =
+            crate::router::CommandEnv::new(state.clone(), crate::router::CommandOrigin::default());
+        <crate::router::CommandEnv as dialog_capability::Provider<
+            tonk_schema::command::SignOut,
+        >>::execute(
+            &env,
+            tonk_schema::command::SignOut {
+                this: "cmd:sign-out".parse().expect("entity"),
+                time: tonk_schema::domain::command::current::sign_out::Time(1.0),
+            },
+        )
+        .await;
+        let expected = active(&state).await;
+        assert_ne!(
+            expected, "main",
+            "the fixture signs out onto a fresh branch"
+        );
+
+        let ask = |body: String| {
+            let app = app.clone();
+            async move {
+                let mut request = Request::builder()
+                    .method("POST")
+                    .uri("/api/profile/branch/meta/query")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap();
+                request
+                    .extensions_mut()
+                    .insert(crate::router::ClientId("page".to_owned()));
+                let response = app.oneshot(request).await.unwrap();
+                assert_eq!(response.status(), StatusCode::OK);
+                let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()
+            }
+        };
+        let active_query = r#"{"predicate":{"with":{"branch":{"the":"tonk.dialog.replica/active-branch","as":"Entity","cardinality":"one"}}},"terms":{"this":{"?":{"name":"this"}},"branch":{"?":{"name":"branch"}}}}"#;
+        let rows = ask(active_query.to_owned()).await;
+        let entity = rows[0]["fields"]["branch"]
+            .as_str()
+            .unwrap_or_else(|| panic!("the active branch is a string the page can read: {rows}"))
+            .to_owned();
+        let name_query = format!(
+            r#"{{"predicate":{{"with":{{"name":{{"the":"xyz.tonk.branch/name","as":"Text","cardinality":"one"}}}}}},"terms":{{"this":{entity:?},"name":{{"?":{{"name":"name"}}}}}}}}"#
+        );
+        let rows = ask(name_query).await;
+        assert_eq!(
+            rows[0]["fields"]["name"].as_str(),
+            Some(expected.as_str()),
+            "the page must be told the branch it should boot onto: {rows}",
         );
     }
 

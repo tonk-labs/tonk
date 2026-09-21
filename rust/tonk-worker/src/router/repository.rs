@@ -5871,9 +5871,13 @@ async fn reconcile_prepared_profile_library(
                 .map_err(|error| TonkWorkerError::Internal(error.to_string()))
         })
     };
+    // Onto the ACTIVE branch, which is the one the session above was
+    // opened on. Every branch carries its own copy of the library: a
+    // branch signed out onto, or added for another account, starts empty
+    // and renders nothing until it is seeded.
     let response = super::evaluate::evaluate_profile_with_retraction_plan(
         tonk,
-        PROFILE_BRANCH,
+        &tonk.active_branch,
         library,
         &plan,
         &record,
@@ -6141,7 +6145,7 @@ where
         .select(Query::<MetaBranch> {
             this: Term::var("this"),
             name: Term::var("name"),
-            origin: Term::var("origin"),
+            replica: Term::var("replica"),
         })
         .perform(&tonk.operator)
         .try_vec()
@@ -6223,7 +6227,7 @@ where
         .select(Query::<TrackingBranch> {
             this: Term::var("this"),
             upstream: Term::var("upstream"),
-            origin: Term::from(replica_entity.clone()),
+            replica: Term::from(replica_entity.clone()),
         })
         .perform(&tonk.operator)
         .try_vec()
@@ -6255,7 +6259,7 @@ where
     // that branch belongs to.
     let mut branches = HashMap::new();
     for branch in &all_branches {
-        if branch.origin.0 != replica_entity {
+        if branch.replica.0 != replica_entity {
             continue;
         }
         if remotes_by_entity.contains_key(&branch.this) {
@@ -6263,7 +6267,7 @@ where
         }
         let upstream = tracking_by_local.get(&branch.this).and_then(|upstream| {
             let tracked_branch = branches_by_entity.get(&upstream.0)?;
-            let remote = remotes_by_entity.get(&tracked_branch.origin.0)?;
+            let remote = remotes_by_entity.get(&tracked_branch.replica.0)?;
             Some(UpstreamConfiguration::new(
                 remote.name.0.clone(),
                 tracked_branch.name.0.clone(),
@@ -9001,6 +9005,61 @@ mod tests {
     /// a commit carrying most of the tree, which after sign-in every
     /// worker restart pushed into the account.
     ///
+    /// A branch the profile moves onto (signed out onto, or added for
+    /// another account) starts empty and gets its own copy of the
+    /// library. The reconciliation used to evaluate onto `main` whatever
+    /// branch was active, so every other branch rendered nothing: the
+    /// hub showed a display's fallback instead of its view.
+    #[dialog_common::test]
+    async fn it_seeds_the_library_on_the_branch_that_is_active() {
+        use dialog_query::{Output as _, Query, Term};
+
+        let (_app, state, _key) = fresh_repo("test-seed-active-branch").await;
+        let library = include_str!("../../../tonk-core/assets/library/profile.yaml").to_owned();
+        {
+            let tonk = state.read().await;
+            super::reconcile_profile_library_from(&tonk, library.clone())
+                .await
+                .expect("main is seeded on first boot");
+        }
+        state.write().await.active_branch = "main-2".to_owned();
+        let tonk = state.read().await;
+        super::reconcile_profile_library_from(&tonk, library)
+            .await
+            .expect("the fresh branch is seeded too");
+
+        let session = tonk
+            .reactor
+            .profile_repository()
+            .branch("main-2")
+            .acquire(&tonk.operator)
+            .await
+            .expect("acquire the fresh branch");
+        assert!(
+            super::read_installed_seed(&tonk, &session)
+                .await
+                .expect("read the seed record")
+                .is_some(),
+            "the fresh branch records its own install",
+        );
+        let routes: Vec<tonk_schema::Route> = session
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::Route> {
+                this: Term::var("this"),
+                path: Term::var("path"),
+                concept: Term::var("concept"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("route query");
+        assert!(
+            routes.iter().any(|route| route.path.0 == "/settings"),
+            "the fresh branch carries the library's routes",
+        );
+    }
+
     /// Drives `reconcile_profile_library_from` directly: `bootstrap_profile`
     /// fetches the library over the network, which the harness (no
     /// service-worker registration) cannot serve.

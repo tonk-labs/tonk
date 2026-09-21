@@ -6,10 +6,9 @@
 
 use std::collections::BTreeSet;
 
-use axum::{
-    Json,
-    extract::{Extension, State},
-};
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use axum::extract::Extension;
+use axum::{Json, extract::State};
 use axum_wasm_macros::wasm_compat;
 use dialog_query::{Output as _, Query, Term};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -18,14 +17,10 @@ use tonk_common::log;
 use tonk_schema::SpaceProvider;
 use tonk_schema::domain::space::Provider;
 use tonk_schema::prelude::DidExt as _;
-use tonk_worker_api::{
-    AccountDeletionPlan, AccountDeletionSpace, AccountSpaceDeletionRequest,
-    HostedSpaceDeletionResult,
-};
+use tonk_worker_api::{AccountDeletionPlan, AccountDeletionSpace};
 
 use super::AppState;
 use crate::TonkWorkerError;
-use crate::axum::RequestOrigin;
 use crate::worker::TonkState;
 
 /// The destructive scope, from the account db alone: the directory is
@@ -95,46 +90,6 @@ pub async fn plan(
     Ok(Json(load_plan(&state).await?))
 }
 
-/// POST `/api/account/spaces/delete` deletes one reviewed owned hosted space
-/// while leaving the account and every other space intact. The worker
-/// signs the `/provider/remove` itself: deletion is the account ending
-/// its hosting relationship, and this linked device holds that
-/// authority.
-#[wasm_compat]
-pub async fn delete_space(
-    State(state): State<AppState>,
-    Extension(origin): Extension<RequestOrigin>,
-    Json(request): Json<AccountSpaceDeletionRequest>,
-) -> Result<Json<HostedSpaceDeletionResult>, TonkWorkerError> {
-    let current = {
-        let state = state.read().await;
-        load_plan(&state).await?
-    };
-    // The lookup is the ownership check: a space this account does not
-    // provide is not in its plan.
-    current
-        .spaces
-        .iter()
-        .find(|space| space.subject == request.subject)
-        .ok_or_else(|| TonkWorkerError::Forbidden("space is not owned by this account".into()))?;
-    let subject: dialog_varsig::Did = request.subject.parse().map_err(|error| {
-        TonkWorkerError::Internal(format!("reviewed space DID became invalid: {error:?}"))
-    })?;
-    {
-        let state = state.read().await;
-        super::customer::deprovision_consumer(&state, origin.url(), &subject).await?;
-    }
-
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    super::repository::remove_space_inner(&state, &subject).await?;
-    Ok(Json(HostedSpaceDeletionResult {
-        subject: request.subject,
-    }))
-}
-
-/// Run `tonk:delete-account`: check the reviewed plan's address, then
-/// ask the page for the passkey. The purge itself runs in [`purge`] once
-/// the handles arrive.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl dialog_capability::Provider<tonk_schema::command::DeleteAccount>
@@ -271,32 +226,21 @@ async fn purge_inner(
         super::customer::clear_customer(&tonk)
             .await
             .map_err(|error| error.to_string())?;
-        tonk.profile.did()
+        tonk.active_branch.clone()
     };
+    // Signing out moves the profile onto an empty branch and reloads the
+    // page onto it, which is also where a genuinely new account can be
+    // created. The deleted account's branch stays behind as data: with
+    // its account gone there is nothing to return to unless spaces were
+    // joined through it, so a branch holding none is forgotten rather
+    // than left listed as a ghost, and one that still holds joined
+    // spaces stays listed so they remain reachable.
     let _ = super::account::unlink(State(state.clone()), source.cloned().map(Extension))
         .await
         .map_err(|error| format!("the profile did not unlink: {error}"))?;
-    // Finish on a fresh profile so the released email can immediately
-    // create a genuinely new account.
-    let _ = super::profiles::add(State(state.clone()), source.cloned().map(Extension))
-        .await
-        .map_err(|error| format!("a fresh profile did not open: {error}"))?;
-    // Permanent deletion retires this account's profile rather than
-    // rebinding its retained joined spaces and delegations to another
-    // root. A retired profile that holds nothing is forgotten outright;
-    // one that still holds joined spaces stays listed as a local
-    // workspace so they remain reachable. After the rotation: moving
-    // profiles re-records the outgoing one so it stays reachable, which
-    // would undo a removal made before it.
     if current.joined_spaces == 0 {
         let tonk = state.read().await;
-        if let Err(error) = tonk
-            .registry
-            .remove_roster(&tonk.storage, &tonk.operator, &retired)
-            .await
-        {
-            log!("delete-account: the retired profile stays listed: {error}");
-        }
+        super::profile::forget_branch(&tonk, &retired).await;
     }
     Ok(())
 }
