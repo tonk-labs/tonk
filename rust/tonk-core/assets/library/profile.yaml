@@ -38,6 +38,15 @@ concept!: &space
       cardinality: one
       as: entity
   maybe:
+    owner:
+      description: >
+        The providing account, when it is the account registered on this
+        branch. Derived by a rule from `provider`, so a row can tell a
+        space this account hosts (removing it deletes the hosted copy)
+        from one it was invited to (removing it leaves).
+      the: xyz.tonk.space/owner
+      cardinality: one
+      as: entity
     presence:
       description: >
         Where this space stands ON THIS DEVICE: case:remote when no
@@ -168,7 +177,7 @@ command!: &space/replicate
 # delete submits this transient; the worker's `RemoveSpaceHandler` retracts
 # the replica record from this branch, evicts the space from the reactor
 # (stopping background sync), and deletes its local storage. An owned hosted
-# space does NOT submit it: `<ui-space-remove>` routes that verb through the
+# space does NOT submit it: `<space-remove>` routes that verb through the
 # reviewed account-space deletion flow instead.
 # The command is transient: it fires the handler once and is swept before
 # the durable commit.
@@ -180,14 +189,14 @@ command!: &space/replicate
 # distinct DOM read path doubled as the command's unique shape.
 # `xyz.tonk.command.remove-space/subject` is that distinctness by
 # construction, so the field is named for what it is. The DOM attribute
-# it is read FROM keeps its name: `<ui-space-remove>` locates this form
+# it is read FROM keeps its name: `<space-remove>` locates this form
 # by it.
 #
 # How the confirm's submit fills it.
 #
 # The source is the form's `data-remove`, not a `{subject}` template
 # field, because that attribute is load-bearing for something else:
-# `<ui-space-remove>` finds this form by `form[data-remove]` to write the
+# `<space-remove>` finds this form by `form[data-remove]` to write the
 # confirm copy into it. Stamping a second attribute carrying the same DID
 # just to feed the command would be two names for one fact. Reading the
 # one that already exists is what an `event!:` declaration is for —
@@ -495,8 +504,8 @@ view!:
       .verbs { position:absolute; left:16px; bottom:9px; display:flex; gap:18px;
         opacity:0; transition:opacity .15s var(--ease); color:var(--soft); }
       .srow-wrap:hover .verbs, .srow-wrap:focus-within .verbs { opacity:1; }
-      ui-space-remove { display:contents; }
-      .verbs ui-copy-link, .verbs tonk-share { display:contents; }
+      space-remove { display:contents; }
+      .verbs tonk-share { display:contents; }
       .verbs [data-share-copy-label] { display:none; }
       .verbs tonk-share:not([data-share-state]) [data-share-copy-label="idle"],
       .verbs tonk-share[data-share-state="idle"] [data-share-copy-label="idle"],
@@ -633,10 +642,11 @@ view!:
                  and a <label for> inside one navigates rather than opening the
                  confirm. Hovering the row reveals them (`.srow-wrap:hover`),
                  so the reveal still follows the row and not just the verbs. -->
-            <ui-space-remove data-space-subject={subject} data-space-name={name}
-              data-space-provider={provider} data-space-founded={founded-at}>
+            <space-remove data-space-subject={subject} data-space-name={name}
+              data-space-provider={provider} data-space-founded={founded-at}
+              data-space-owner={owner}>
               <span class="verbs">
-                <ui-copy-link space={subject} label="copy link"></ui-copy-link>
+                <tonk-share space={subject}><button type="button" class="copy-verb"><span data-share-copy-label="idle">copy link</span><span data-share-copy-label="copying">copying…</span><span data-share-copy-label="copied">copied</span><span data-share-copy-label="failed">couldn't copy</span></button></tonk-share>
                 <button class="verb-remove" type="button" data-space-remove-open disabled>checking&hellip;</button>
               </span>
               <tonk-dialog data-space-remove-dialog heading="confirm leaving space">
@@ -648,7 +658,7 @@ view!:
                 <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
                 <button class="m-go" slot="actions" type="submit" html:form="remove-{subject}" data-space-remove-submit>leave space</button>
               </tonk-dialog>
-            </ui-space-remove>
+            </space-remove>
           </div>
           <!-- Creating asks nothing up front: the space starts "Untitled" (the
                worker uniquifies the sentinel) and is renamed in place with the
@@ -2550,6 +2560,44 @@ concept!: &space/replicating
       cardinality: one
       as: boolean
 
+# A space with a providing account: `provider` is optional on `space`, so
+# a rule binds it through this required field.
+concept!: &space/provided
+  this: tonk:space/provided
+  description: A space an account provides through the access service.
+  with:
+    provider:
+      description: The providing account's DID.
+      the: xyz.tonk.space/provider
+      cardinality: one
+      as: entity
+
+# A space the account on this branch provides. Removing such a space
+# releases its hosted copy, where removing an invited one only leaves it,
+# so the Hub row has to know which it is looking at — and reads it off
+# the facts rather than asking the worker who is signed in.
+concept!: &space/owned
+  this: tonk:space/owned
+  description: A space the account registered on this branch provides.
+  with:
+    owner:
+      description: The providing account, registered on this branch.
+      the: xyz.tonk.space/owner
+      cardinality: one
+      as: entity
+
+rule!:
+  description: A space provided by the account registered on this branch is owned
+  assert: space/owned
+  when:
+    - assert: space/provided
+      where:
+        this: ?this
+        provider: ?owner
+    - assert: account/registered
+      where:
+        this: ?owner
+
 concept!: &space/presence
   this: tonk:space/presence
   description: Where a space stands on this device.
@@ -3203,4 +3251,73 @@ element!: &space-login
         self.addEventListener('click', () => {
           window.tonk?.register?.('{"reason":"space-login"}');
         });
+      }
+
+# Names and routes delete or leave for one Hub row. Which verb it is
+# comes off the row's own attributes: no provider means the space is
+# local (delete, or leave when it was joined rather than founded); a
+# provider this account registered as means the hosted copy goes too.
+# The click prepares the row's dialog for that verb and opens it; the
+# dialog's form submits the `space/remove` command the view bound.
+element!: &space-remove
+  description: Names delete or leave for a Hub row and opens its confirmation.
+  method:
+    action: |
+      (self) => {
+        const provider = (self.dataset.spaceProvider ?? '').trim();
+        if (!provider) return (self.dataset.spaceFounded ?? '').trim() ? 'delete-local' : 'leave';
+        return self.hasAttribute('data-space-owner') ? 'delete-hosted' : 'leave';
+      }
+    classify: |
+      (self) => {
+        const action = self.action();
+        if (self.getAttribute('data-space-action') !== action) {
+          self.setAttribute('data-space-action', action);
+        }
+        const opener = self.querySelector('[data-space-remove-open]');
+        if (!opener) return;
+        opener.textContent = action === 'leave' ? 'leave' : 'delete';
+        opener.removeAttribute('disabled');
+      }
+    prepare: |
+      (self, action) => {
+        const name = (self.dataset.spaceName ?? '').trim() || 'this space';
+        const texts = {
+          'delete-hosted': [
+            'confirm space deletion',
+            `Permanently delete ${name}? This account hosts it, so its copy on Tonk services is released along with the local data. Other members lose access. Your account and other spaces are untouched.`,
+            'delete space',
+          ],
+          'delete-local': [
+            'confirm space deletion',
+            `Permanently delete ${name} from this device? This space has no Tonk-hosted copy, so its local data will be gone for good.`,
+            'delete space',
+          ],
+          'leave': [
+            'confirm leaving space',
+            `Leave ${name}? This removes the space and its local data from this device. You'll need another invite link to join again. Other members keep access.`,
+            'leave space',
+          ],
+        };
+        const [heading, copy, submit] = texts[action] ?? texts.leave;
+        self.querySelector('[data-space-remove-dialog]')?.setAttribute('heading', heading);
+        const form = self.querySelector('form[data-remove]');
+        if (form) form.textContent = copy;
+        const button = self.querySelector('[data-space-remove-submit]');
+        if (button) button.textContent = submit;
+      }
+    connected: |
+      (self) => {
+        self.classify();
+        if (self.__wired) return;
+        self.__wired = true;
+        self.addEventListener('click', (event) => {
+          if (!event.target?.closest?.('[data-space-remove-open]')) return;
+          self.prepare(self.action());
+          self.querySelector('[data-space-remove-dialog]')?.show?.();
+        });
+      }
+    attribute-changed: |
+      (self, name) => {
+        if (name.startsWith('data-space-') && name !== 'data-space-action') self.classify();
       }

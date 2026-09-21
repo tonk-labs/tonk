@@ -1472,4 +1472,135 @@ mod tests {
             "a click asks the host to open account recovery",
         );
     }
+
+    fn space_remove_host(attributes: &[(&str, &str)]) -> Element {
+        install_fake_host();
+        install();
+        let host = document().create_element("space-remove").expect("host");
+        for (name, value) in attributes {
+            let _ = host.set_attribute(name, value);
+        }
+        host.set_inner_html(
+            r#"<button type="button" data-space-remove-open disabled>checking…</button><fake-dialog data-space-remove-dialog heading="confirm"><form id="remove-x" data-remove></form><button type="submit" data-space-remove-submit></button></fake-dialog>"#,
+        );
+        document()
+            .body()
+            .expect("body")
+            .append_child(&host)
+            .expect("attach");
+        host
+    }
+
+    fn text_of(host: &Element, selector: &str) -> String {
+        host.query_selector(selector)
+            .ok()
+            .flatten()
+            .and_then(|element| element.text_content())
+            .unwrap_or_default()
+    }
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_names_delete_or_leave_for_a_hub_row_from_the_library() {
+        define_from_library(PROFILE_LIBRARY, "space-remove");
+
+        let local = space_remove_host(&[("data-space-name", "notes"), ("data-space-founded", "1")]);
+        settle_until(|| local.get_attribute("data-space-action").is_some()).await;
+        assert_eq!(
+            local.get_attribute("data-space-action").as_deref(),
+            Some("delete-local"),
+            "a space founded here with no provider is deleted locally",
+        );
+        assert_eq!(text_of(&local, "[data-space-remove-open]"), "delete");
+        assert!(
+            local
+                .query_selector("[data-space-remove-open][disabled]")
+                .ok()
+                .flatten()
+                .is_none(),
+            "classifying enables the opener",
+        );
+
+        let invited = space_remove_host(&[
+            ("data-space-name", "forum"),
+            ("data-space-provider", "did:key:zHost"),
+        ]);
+        settle_until(|| invited.get_attribute("data-space-action").is_some()).await;
+        assert_eq!(
+            invited.get_attribute("data-space-action").as_deref(),
+            Some("leave"),
+            "a space another account provides is left",
+        );
+        assert_eq!(text_of(&invited, "[data-space-remove-open]"), "leave");
+
+        let hosted = space_remove_host(&[
+            ("data-space-name", "mine"),
+            ("data-space-provider", "did:key:zMe"),
+            ("data-space-owner", "did:key:zMe"),
+        ]);
+        settle_until(|| hosted.get_attribute("data-space-action").is_some()).await;
+        assert_eq!(
+            hosted.get_attribute("data-space-action").as_deref(),
+            Some("delete-hosted"),
+            "a space this account provides is deleted, hosted copy included",
+        );
+
+        let _ = invited.set_attribute("data-space-owner", "did:key:zHost");
+        settle_until(|| {
+            invited.get_attribute("data-space-action").as_deref() == Some("delete-hosted")
+        })
+        .await;
+        assert_eq!(
+            invited.get_attribute("data-space-action").as_deref(),
+            Some("delete-hosted"),
+            "ownership arriving later re-classifies the row",
+        );
+    }
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_prepares_and_opens_the_row_dialog_from_the_library() {
+        define_from_library(PROFILE_LIBRARY, "space-remove");
+        let host = space_remove_host(&[("data-space-name", "forum")]);
+        settle_until(|| host.get_attribute("data-space-action").is_some()).await;
+        let dialog = host
+            .query_selector("[data-space-remove-dialog]")
+            .ok()
+            .flatten()
+            .expect("dialog");
+        let shown = js_sys::Array::new();
+        let recorded = shown.clone();
+        let show = Closure::<dyn FnMut()>::new(move || {
+            recorded.push(&JsValue::TRUE);
+        });
+        let _ = Reflect::set(
+            &dialog,
+            &"show".into(),
+            show.as_ref().unchecked_ref::<js_sys::Function>(),
+        );
+        show.forget();
+
+        let opener = host
+            .query_selector("[data-space-remove-open]")
+            .ok()
+            .flatten()
+            .expect("opener");
+        let click = js_sys::Function::new_no_args("return new Event('click', { bubbles: true });")
+            .call0(&JsValue::NULL)
+            .expect("click");
+        opener
+            .dispatch_event(click.unchecked_ref())
+            .expect("dispatch");
+        settle_until(|| shown.length() >= 1).await;
+
+        assert_eq!(shown.length(), 1, "the opener shows the row's dialog");
+        assert_eq!(
+            dialog.get_attribute("heading").as_deref(),
+            Some("confirm leaving space"),
+            "the dialog is prepared for the row's verb",
+        );
+        assert!(
+            text_of(&host, "form[data-remove]").starts_with("Leave forum?"),
+            "the copy names the space",
+        );
+        assert_eq!(text_of(&host, "[data-space-remove-submit]"), "leave space");
+    }
 }

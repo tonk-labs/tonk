@@ -548,7 +548,7 @@ impl Command for ProfileRename {
 ///
 /// Removal is device-local: a synced space can be rejoined via an invite
 /// link, and server-side data is untouched. An owned hosted space does
-/// NOT submit this — `<ui-space-remove>` routes that verb through the
+/// NOT submit this — `<space-remove>` routes that verb through the
 /// reviewed account-space deletion flow instead.
 ///
 /// The field is called `subject`, which is what it is. It used to be

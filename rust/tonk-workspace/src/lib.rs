@@ -32,13 +32,10 @@ mod agent_connections;
 mod sync;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod ui_account_settings;
-/// `<ui-copy-link>` — the Hub verb that mints and copies a space invite.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-mod ui_copy_link;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-mod ui_space_remove;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod ui_sync_status;
 
@@ -49,7 +46,5 @@ mod ui_sync_status;
 pub fn register() {
     sync::register();
     ui_sync_status::register();
-    ui_copy_link::register();
     ui_account_settings::register();
-    ui_space_remove::register();
 }

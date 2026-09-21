@@ -453,7 +453,7 @@ fn it_distinguishes_leaving_from_deleting_a_space() {
 #[dialog_common::test]
 fn it_uses_the_shared_native_dialog_for_hub_space_removal() {
     for contract in [
-        "<ui-space-remove>",
+        "<space-remove ",
         "data-space-remove-open",
         "<tonk-dialog data-space-remove-dialog",
         "data-dialog=\"close\"",
@@ -731,12 +731,13 @@ fn it_builds_one_centered_hub_launcher_with_a_settings_route() {
 #[dialog_common::test]
 fn it_mints_an_invite_when_copying_a_hub_space_link() {
     assert!(
-        PROFILE_LIBRARY.contains("<ui-copy-link space={subject}"),
+        PROFILE_LIBRARY.contains("<tonk-share space={subject}>"),
         "the Hub copy action must name the space whose invite it mints"
     );
     assert!(
-        !PROFILE_LIBRARY.contains("ui-copy-link url=\"/space/{subject}\""),
-        "the Hub must not copy its member-only route as though it were an invite"
+        PROFILE_LIBRARY
+            .contains(r#"<tonk-share space={subject}><button type="button" class="copy-verb">"#),
+        "the copy verb is a plain button inside the share, never a form submit"
     );
     for (state, label) in [
         ("idle", "idle"),
@@ -757,8 +758,8 @@ fn it_mints_an_invite_when_copying_a_hub_space_link() {
 #[dialog_common::test]
 fn it_aligns_the_hub_space_actions_in_one_flex_context() {
     assert!(
-        css_rule(PROFILE_LIBRARY, ".verbs ui-copy-link,").contains("display:contents"),
-        "the copy-link host must not offset its button from delete or leave"
+        css_rule(PROFILE_LIBRARY, ".verbs tonk-share {").contains("display:contents"),
+        "the share host must not offset its button from delete or leave"
     );
     assert!(
         css_rule(PROFILE_LIBRARY, ".verbs {").contains("gap:18px"),
