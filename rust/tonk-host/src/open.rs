@@ -38,7 +38,9 @@ use web_sys::{Document, Element, HtmlDialogElement, HtmlElement, Url, window};
 /// no page left to leak on.
 type Listeners = Rc<RefCell<Vec<Closure<dyn FnMut(web_sys::Event)>>>>;
 
-/// Schemes a relayed href may carry. Everything else is rejected.
+/// Ordinary external schemes a relayed href may carry. Everything else is
+/// rejected unless it matches one of the exact unsent-composer routes in
+/// [`application_url`].
 ///
 /// `http`/`https` are the point. `mailto`/`tel` are here because they are
 /// inert handoffs to an external handler and carry no script. Nothing else
@@ -79,6 +81,8 @@ pub(crate) enum Destination {
     /// full origin (`scheme://host:port`) for `http`/`https`, and the address
     /// for `mailto:`/`tel:`, which have no origin to name.
     External { url: String, label: String },
+    /// A reviewed desktop application route that opens an unsent composer.
+    Application(String),
     /// Not openable.
     Rejected,
 }
@@ -105,6 +109,9 @@ pub(crate) fn classify(href: &str, base: &str, page_origin: &str) -> Destination
         return Destination::Rejected;
     };
     let protocol = url.protocol();
+    if application_url(&url) {
+        return Destination::Application(url.href());
+    }
     if !ALLOWED_SCHEMES.contains(&protocol.as_str()) {
         return Destination::Rejected;
     }
@@ -183,6 +190,36 @@ pub(crate) fn classify(href: &str, base: &str, page_origin: &str) -> Destination
     }
 }
 
+/// Accept only the desktop apps' documented new-composer routes.
+///
+/// Space markup is untrusted, so allowing a scheme wholesale would let it
+/// reach every command that an installed application happens to register.
+/// These two routes carry one prompt and leave it unsent for review.
+fn application_url(url: &Url) -> bool {
+    if !url.username().is_empty()
+        || !url.password().is_empty()
+        || !url.port().is_empty()
+        || !url.hash().is_empty()
+    {
+        return false;
+    }
+    let search = url.search();
+    let encoded = match (
+        url.protocol().as_str(),
+        url.hostname().as_str(),
+        url.pathname().as_str(),
+    ) {
+        ("codex:", "new", "") => search.strip_prefix("?prompt="),
+        ("claude:", "code", "/new") => search.strip_prefix("?q="),
+        _ => None,
+    };
+    encoded.is_some_and(|encoded| {
+        !encoded.is_empty()
+            && !encoded.contains('&')
+            && js_sys::decode_uri_component(encoded).is_ok()
+    })
+}
+
 /// Open `href` on behalf of a guest.
 ///
 /// Forwards until it reaches the page (see `page_effect`), then resolves the
@@ -201,10 +238,32 @@ pub fn open_external(href: &str) {
     match classify(href, &base, &page_origin) {
         Destination::SameOrigin(url) => open_same_origin(&url),
         Destination::External { url, label } => confirm_then_open(&url, &label),
-        Destination::Rejected => warn(&format!(
-            "refused to open `{href}` — scheme is not one of {ALLOWED_SCHEMES:?}"
-        )),
+        Destination::Application(url) => open_application(&url),
+        Destination::Rejected => {
+            warn("refused to open a link — its scheme or route is not allowed")
+        }
     }
+}
+
+/// Hand a reviewed unsent-composer URL to the operating system from the top
+/// document. A connected synthetic anchor preserves the user's activation and
+/// follows the same browser permission path as a literal custom-scheme link.
+fn open_application(url: &str) {
+    let Some(document) = window().and_then(|window| window.document()) else {
+        return;
+    };
+    let Ok(anchor) = document.create_element("a") else {
+        return;
+    };
+    let _ = anchor.set_attribute("href", url);
+    let Some(body) = document.body() else {
+        return;
+    };
+    let _ = body.append_child(&anchor);
+    if let Some(anchor) = anchor.dyn_ref::<HtmlElement>() {
+        anchor.click();
+    }
+    anchor.remove();
 }
 
 /// Open our own origin in a new tab, with no dialog — there is nothing to
@@ -507,6 +566,43 @@ mod tests {
             Destination::SameOrigin("https://tonk.example/space/def".to_owned()),
             "an absolute URL on our origin is still same-origin"
         );
+    }
+
+    /// Desktop app access is limited to the two documented unsent-composer
+    /// routes. The prompt is allowed to contain arbitrary encoded text because
+    /// the receiving app leaves it for the user to review.
+    #[dialog_common::test]
+    async fn it_accepts_only_reviewed_application_prompt_routes() {
+        for href in [
+            "codex://new?prompt=hello%20%26%20caf%C3%A9",
+            "claude://code/new?q=hello%20%26%20caf%C3%A9",
+        ] {
+            assert_eq!(
+                classified(href),
+                Destination::Application(href.to_owned()),
+                "{href} is a reviewed unsent-composer route"
+            );
+        }
+
+        for href in [
+            "codex://new?prompt=",
+            "codex://new?other=hello",
+            "codex://new/other?prompt=hello",
+            "codex://other?prompt=hello",
+            "codex://new?prompt=hello&path=%2Ftmp",
+            "codex://new?prompt=hello#fragment",
+            "codex://user@new?prompt=hello",
+            "claude://code?q=hello",
+            "claude://code/new?prompt=hello",
+            "claude://code/new?q=hello&folder=%2Ftmp",
+            "claude://other/new?q=hello",
+        ] {
+            assert_eq!(
+                classified(href),
+                Destination::Rejected,
+                "{href} must not broaden the application handoff contract"
+            );
+        }
     }
 
     /// A different origin is announced before it opens.

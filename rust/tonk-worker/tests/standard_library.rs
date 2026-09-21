@@ -638,9 +638,7 @@ fn it_keeps_machine_instructions_in_the_production_copy_prompt() {
             "machine instructions must not be visible before the copy button",
         );
         assert!(
-            copied.contains(
-                "Only report connected after it prints &quot;Agent connection confirmed&quot;"
-            ),
+            copied.contains("Do not report that you are connected before this appears"),
             "the clipboard prompt must define the success boundary",
         );
         assert!(
@@ -656,7 +654,7 @@ fn it_keeps_machine_instructions_in_the_production_copy_prompt() {
             "loopback prompts must trust the exact local dev deployment",
         );
         assert!(
-            library.contains("page = new URL(this.getAttribute(\"link\"))"),
+            library.contains("const link = this.getAttribute(\"link\") || \"\""),
             "sandboxed space views must derive loopback from the invitation origin",
         );
         assert!(
@@ -667,7 +665,7 @@ fn it_keeps_machine_instructions_in_the_production_copy_prompt() {
 }
 
 #[test]
-fn it_keeps_ready_agent_invites_to_one_primary_action() {
+fn it_keeps_ready_agent_invite_actions_together() {
     for library in [
         STANDARD_LIBRARY,
         include_str!("../../tonk-core/assets/library/onboarding-agent.yaml"),
@@ -678,6 +676,29 @@ fn it_keeps_ready_agent_invites_to_one_primary_action() {
             .and_then(|tail| tail.split("</tonk-agent-prompt>").next())
             .expect("the ready agent prompt");
         assert!(ready.contains("class=\"agent-prompt__copy\""));
+        assert_eq!(
+            ready.matches("data-agent-launch=\"").count(),
+            2,
+            "the ready prompt must offer the two reviewed desktop composers",
+        );
+        assert!(ready.contains("aria-label=\"open prompt in Codex\""));
+        assert!(ready.contains("aria-label=\"open prompt in Claude Code\""));
+        assert!(!ready.contains("data-agent-launch-pending"));
+        let copy = ready
+            .find("class=\"agent-prompt__copy\"")
+            .expect("the copy action");
+        let codex = ready
+            .find("data-agent-launch=\"codex\"")
+            .expect("the Codex action");
+        let claude = ready
+            .find("data-agent-launch=\"claude\"")
+            .expect("the Claude Code action");
+        assert!(
+            copy < codex && codex < claude,
+            "copy must lead the row, followed by Codex and Claude Code",
+        );
+        assert!(!ready.contains("data-agent-launch-fallback"));
+        assert!(ready.contains("this prompt is too long to open in an app"));
         assert!(
             !ready.contains("<button"),
             "a ready reusable invite needs no competing regeneration action",

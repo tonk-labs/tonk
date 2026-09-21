@@ -898,13 +898,19 @@ mod tests {
     /// safety while turning the host's console warning back into a silently
     /// dead click.
     #[dialog_common::test]
-    async fn it_relays_schemes_the_host_is_expected_to_refuse() {
+    async fn it_relays_non_http_schemes_for_the_host_to_decide() {
         set_test_base();
-        for href in ["mailto:a@example.com", "tel:+1234", "javascript:alert(1)"] {
+        for href in [
+            "mailto:a@example.com",
+            "tel:+1234",
+            "codex://new?prompt=hello",
+            "claude://code/new?q=hello",
+            "javascript:alert(1)",
+        ] {
             assert_eq!(
                 classify_href(href, &Click::plain()),
                 Intent::Open(resolved(href)),
-                "{href} should reach the host, which is the one that decides"
+                "{href} should reach the host, which is the one that decides whether to open it"
             );
         }
     }

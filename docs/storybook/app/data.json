@@ -572,8 +572,8 @@
       "variants": "Empty/existing name; field types/cardinality; notation/dry-run/sync."
     },
     {
-      "evidence": "Strong authoring/render coverage, including reported anchor/entity identity and pre-write anchor rejection; a standard-library contract keeps machine instructions inside the blank-space prompt's copy action.",
-      "gaps": "Template read failure, atomic home replacement under sync failure, route visibility and real clipboard behavior in a browser.",
+      "evidence": "Strong authoring/render coverage, including reported anchor/entity identity and pre-write anchor rejection; standard-library and browser contracts keep the blank-space prompt identical across copy and its bounded Codex and Claude Code desktop URLs while clearing stale invitations.",
+      "gaps": "Template read failure, atomic home replacement under sync failure, route visibility, external-app launch, and real clipboard behavior outside the harness.",
       "group": "Authoring, data, rendering, and transfer",
       "id": "DATA-02",
       "title": "Define/list a detail, directory, label, or title view.",
@@ -2114,12 +2114,12 @@
       "result": "—"
     },
     {
-      "claim": "view add --home and space home are atomically visible as browser home (Open questions).",
+      "claim": "view add --home and space home are atomically visible as browser home (Open questions; desktop prompt handoff).",
       "device": "hybrid",
       "file": "verification/cli-spaces-ui.md",
       "id": "DATA-02",
       "priority": "P1",
-      "result": "—"
+      "result": "Automated URL equality, replacement, boundary, narrow-layout, copy, and receipt coverage; running-product Codex/Claude launch and browser matrix remain unrun."
     },
     {
       "claim": "Assert/update/no-op/retract preserve untouched fields and handle concurrent claims (Inventory).",
@@ -2301,9 +2301,9 @@
   "verificationResults": {
     "blocked": 0,
     "fail": 0,
-    "other": 8,
+    "other": 9,
     "pass": 2,
-    "unrun": 110
+    "unrun": 109
   },
   "visualCommit": "49a873a23"
 }

@@ -160,6 +160,8 @@ mod tests {
         watch_clipboard(&driver).await?;
         click(&driver, ".playground-agent .agent-prompt__copy").await?;
         let prompt = copied_text(&driver).await?;
+        assert_desktop_prompt_links(&driver, ".playground-agent tonk-agent-prompt", &prompt)
+            .await?;
         assert_prompt_command(&prompt, &env.tonk_web, playground_invite.as_str())?;
         anyhow::ensure!(!prompt.contains("--switch-account"));
         anyhow::ensure!(prompt.contains("Scope all work to the existing Agent playground page"));
@@ -4160,6 +4162,56 @@ mod tests {
         }
     }
 
+    /// Assert that both desktop destinations decode to the exact copy value.
+    async fn assert_desktop_prompt_links(
+        driver: &WebDriver,
+        selector: &str,
+        prompt: &str,
+    ) -> Result<()> {
+        let links = driver
+            .execute(
+                r#"const root=document.querySelector(arguments[0]);
+                    return {
+                      codex:root?.querySelector('[data-agent-launch=codex]')?.getAttribute('href') || '',
+                      claude:root?.querySelector('[data-agent-launch=claude]')?.getAttribute('href') || ''
+                    };"#,
+                vec![serde_json::json!(selector)],
+            )
+            .await?;
+        let links = links.json();
+        let codex_href = links["codex"]
+            .as_str()
+            .context("the Codex prompt link is unavailable")?;
+        let parsed = url::Url::parse(codex_href)?;
+        anyhow::ensure!(
+            parsed.scheme() == "codex"
+                && parsed.host_str() == Some("new")
+                && parsed.path().is_empty(),
+            "the Codex prompt uses an unexpected destination"
+        );
+        let pairs = parsed.query_pairs().collect::<Vec<_>>();
+        anyhow::ensure!(
+            pairs.len() == 1 && pairs[0].0 == "prompt" && pairs[0].1 == prompt,
+            "the Codex destination does not contain the exact copied prompt"
+        );
+        let claude_href = links["claude"]
+            .as_str()
+            .context("the Claude Code prompt link is unavailable")?;
+        let parsed = url::Url::parse(claude_href)?;
+        anyhow::ensure!(
+            parsed.scheme() == "claude"
+                && parsed.host_str() == Some("code")
+                && parsed.path() == "/new",
+            "the Claude Code prompt uses an unexpected destination"
+        );
+        let pairs = parsed.query_pairs().collect::<Vec<_>>();
+        anyhow::ensure!(
+            pairs.len() == 1 && pairs[0].0 == "q" && pairs[0].1 == prompt,
+            "the Claude Code destination does not contain the exact copied prompt"
+        );
+        Ok(())
+    }
+
     /// The cluster's action row label, or empty while it is folded.
     async fn register_action_label(driver: &WebDriver) -> Result<String> {
         let label = driver
@@ -6087,6 +6139,7 @@ mod tests {
         env: TestEnvironment,
     ) -> Result<()> {
         let browser = driver_with_prf(&env).await?;
+        browser.set_window_rect(0, 0, 390, 844).await?;
         sign_up(&browser, &env, "ordinary-agent@example.com").await?;
         let key = create_space_awaiting_remote(&browser, "Ordinary agent", true).await?;
         await_url_containing(&browser, &format!("/space/{key}")).await?;
@@ -6099,26 +6152,143 @@ mod tests {
                     const action=copy.closest('.agent-prompt__action');
                     const card=copy.closest('.agent-prompt');
                     const button=copy.shadowRoot?.querySelector('[part~=button]');
+                    const launches=[...action.querySelectorAll('a[href]')];
                     return {actions:action.querySelectorAll('button,wa-copy-button,a[href]').length,
                         competing:!!action.querySelector('.agent-prompt__new'),
                         card:card.getBoundingClientRect().toJSON(),
                         copy:copy.getBoundingClientRect().toJSON(),
-                        button:button?.getBoundingClientRect().toJSON()};"#,
+                        button:button?.getBoundingClientRect().toJSON(),
+                        launches:launches.map(link=>link.getBoundingClientRect().toJSON())};"#,
                 vec![],
             )
             .await?;
         let layout = layout.json();
-        assert_eq!(layout["actions"], serde_json::json!(1));
+        assert_eq!(layout["actions"], serde_json::json!(3));
         assert_eq!(layout["competing"], serde_json::json!(false));
         assert!(layout["button"]["height"].as_f64().unwrap_or_default() >= 44.0);
         assert!(
             layout["copy"]["right"].as_f64().unwrap_or(f64::INFINITY)
                 <= layout["card"]["right"].as_f64().unwrap_or_default()
         );
+        for launch in layout["launches"]
+            .as_array()
+            .context("desktop launch layout missing")?
+        {
+            assert!(launch["height"].as_f64().unwrap_or_default() >= 44.0);
+            assert!(
+                launch["right"].as_f64().unwrap_or(f64::INFINITY)
+                    <= layout["card"]["right"].as_f64().unwrap_or_default()
+            );
+        }
+        browser.set_window_rect(0, 0, 900, 844).await?;
+        let desktop = browser
+            .execute(
+                r#"const root=document.querySelector('tonk-agent-prompt');
+                    const rect=(selector)=>root.querySelector(selector).getBoundingClientRect().toJSON();
+                    return {copy:rect('.agent-prompt__copy'),
+                        codex:rect('[data-agent-launch=codex]'),
+                        claude:rect('[data-agent-launch=claude]')};"#,
+                vec![],
+            )
+            .await?;
+        let desktop = desktop.json();
+        let top = desktop["copy"]["top"].as_f64().unwrap_or_default();
+        for action in ["codex", "claude"] {
+            assert!(
+                (desktop[action]["top"].as_f64().unwrap_or(f64::INFINITY) - top).abs() < 1.0,
+                "desktop agent actions must share one row"
+            );
+        }
+        assert!(
+            desktop["copy"]["right"].as_f64().unwrap_or(f64::INFINITY)
+                <= desktop["codex"]["left"].as_f64().unwrap_or_default()
+                && desktop["codex"]["right"].as_f64().unwrap_or(f64::INFINITY)
+                    <= desktop["claude"]["left"].as_f64().unwrap_or_default(),
+            "desktop agent actions must be ordered copy, Codex, Claude Code"
+        );
         watch_clipboard(&browser).await?;
         click(&browser, copy).await?;
         let prompt = copied_text(&browser).await?;
+        assert_desktop_prompt_links(&browser, "tonk-agent-prompt", &prompt).await?;
+        let contract = browser
+            .execute_async(
+                r#"const done=arguments[arguments.length-1];
+                    (async()=>{
+                      const root=document.querySelector('tonk-agent-prompt');
+                      const copy=root.querySelector('.agent-prompt__copy');
+                      const launch=(app)=>root.querySelector(`[data-agent-launch=${app}]`);
+                      const decoded=(app,key)=>new URL(launch(app).getAttribute('href')).searchParams.get(key);
+                      const tick=()=>new Promise(resolve=>setTimeout(resolve,0));
+                      const originalLink=root.getAttribute('link');
+                      const originalPrompt=copy.getAttribute('value');
+                      const claudeAvailable=launch('claude').hasAttribute('href') && !launch('claude').hidden;
 
+                      const special=`start\n${originalLink}\n\"quotes\" & + % ? café 日本語\nend`;
+                      copy.setAttribute('value',special); await tick();
+                      const specialExact=decoded('codex','prompt')===special && decoded('claude','q')===special;
+
+                      const hostedLink='https://example.invalid/space/hosted#tonk-agent-v2=hosted';
+                      root.setAttribute('link',hostedLink);
+                      const staleRemoved=!launch('codex').hasAttribute('href') && !launch('claude').hasAttribute('href') && copy.hasAttribute('disabled');
+                      const hosted=`hosted\n${hostedLink}\n\"quotes\" & + % ? café 日本語`;
+                      copy.setAttribute('value',hosted); await tick();
+                      const hostedExact=decoded('codex','prompt')===hosted && decoded('claude','q')===hosted;
+
+                      const replacement='https://example.invalid/space/replacement#tonk-agent-v2=replacement';
+                      root.setAttribute('link',replacement);
+                      const replacementCleared=!launch('codex').hasAttribute('href') && !launch('claude').hasAttribute('href');
+                      const replaced=`replacement\n${replacement}`;
+                      copy.setAttribute('value',replaced); await tick();
+                      const replacementExact=decoded('codex','prompt')===replaced && !decoded('codex','prompt').includes(hostedLink);
+
+                      const sized=(length)=>{
+                        const head=replacement+'\n';
+                        return head+'x'.repeat(length-head.length);
+                      };
+                      const boundary=sized(12000);
+                      copy.setAttribute('value',boundary); await tick();
+                      const boundaryAccepted=decoded('codex','prompt')===boundary && decoded('claude','q')===boundary;
+                      const over=sized(12001);
+                      copy.setAttribute('value',over); await tick();
+                      const overRejected=!launch('codex').hasAttribute('href') && launch('codex').hidden &&
+                        !launch('claude').hasAttribute('href') && launch('claude').hidden &&
+                        !root.querySelector('[data-agent-launch-long]').hidden && copy.getAttribute('value')===over;
+
+                      root.setAttribute('link','https://example.invalid/unsupported#other');
+                      const unsupportedCleared=!launch('codex').hasAttribute('href') && !launch('claude').hasAttribute('href');
+
+                      root.setAttribute('link',originalLink);
+                      copy.setAttribute('value',originalPrompt); await tick();
+                      const restored=decoded('codex','prompt')===originalPrompt &&
+                        decoded('claude','q')===originalPrompt && !launch('claude').hidden;
+                      done({claudeAvailable,specialExact,hostedExact,staleRemoved,replacementCleared,replacementExact,
+                        boundaryAccepted,overRejected,unsupportedCleared,restored});
+                    })().catch(error=>done({error:String(error)}));"#,
+                vec![],
+            )
+            .await?;
+        let contract = contract.json();
+        anyhow::ensure!(
+            contract.get("error").is_none(),
+            "desktop prompt contract failed to run: {contract}"
+        );
+        for check in [
+            "claudeAvailable",
+            "specialExact",
+            "hostedExact",
+            "staleRemoved",
+            "replacementCleared",
+            "replacementExact",
+            "boundaryAccepted",
+            "overRejected",
+            "unsupportedCleared",
+            "restored",
+        ] {
+            anyhow::ensure!(
+                contract[check] == serde_json::json!(true),
+                "desktop prompt contract check failed: {check}"
+            );
+        }
         assert!(!prompt.contains("--switch-account"));
         let invite = prompt
             .split("join '")
