@@ -596,6 +596,28 @@ pub(crate) async fn join_invite(tonk: &TonkState, url: &str) -> Result<JoinOutco
     Ok(outcome)
 }
 
+/// Run the ordinary join pipeline for a browser-approved local-space link.
+/// The wrapper keeps the join's private diagnostic type inside this module.
+pub(crate) async fn join_for_local_space_link(
+    tonk: &TonkState,
+    url: &str,
+) -> Result<JoinOutcome, TonkWorkerError> {
+    join_invite(tonk, url).await.map_err(Into::into)
+}
+
+/// Replace a browser-approved local-space join's invite authority with its
+/// direct space-to-account prefix. The ordinary join needs the narrower invite
+/// while pulling; the direct prefix is the durable ownership authority.
+pub(crate) async fn save_local_space_root_authority(
+    tonk: &TonkState,
+    subject: &Did,
+    chain: DelegationChain,
+) -> Result<(), TonkWorkerError> {
+    save_authority(tonk, subject, chain)
+        .await
+        .map_err(Into::into)
+}
+
 /// Parse the invite, verify it is addressed to this identity, and build
 /// the candidate chain. Reads only, except that a device joining before
 /// it has any account mints its onboarding account here.
@@ -777,7 +799,7 @@ async fn perform_join(
     // for the next commit waits forever on a branch nothing edits.
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 
-    save_authority(tonk, &prepared, prepared.chain.clone()).await?;
+    save_authority(tonk, &prepared.subject, prepared.chain.clone()).await?;
     retain_claim_authority(tonk, &prepared.key, &prepared.chain).await;
 
     if prepared.installs_replica() {
@@ -902,7 +924,7 @@ pub(super) async fn retain_claim_authority(tonk: &TonkState, key: &str, chain: &
 ///
 async fn save_authority(
     tonk: &TonkState,
-    prepared: &PreparedJoin,
+    subject: &Did,
     chain: DelegationChain,
 ) -> Result<(), JoinFailure> {
     let prefix_bytes = chain.to_bytes().map_err(|error| {
@@ -920,7 +942,7 @@ async fn save_authority(
         })?;
     tonk.profile
         .credential()
-        .site(format!("{SPACE_ROOT_SITE_PREFIX}{}", prepared.subject))
+        .site(format!("{SPACE_ROOT_SITE_PREFIX}{subject}"))
         .save(prefix_bytes)
         .perform(&tonk.operator)
         .await
