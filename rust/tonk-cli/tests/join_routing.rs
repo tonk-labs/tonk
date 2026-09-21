@@ -68,11 +68,9 @@ async fn agent_link(base: &str, expired: bool) -> Result<String> {
             .await?;
         chains.push(DelegationChain::new(grant));
     }
-    Ok(
-        AgentInvite::new(seed, chains, &scopes, &remote, validation_time)
-            .await?
-            .to_url(base)?,
-    )
+    AgentInvite::new(seed, chains, &scopes, &remote, validation_time)
+        .await?
+        .to_url(base)
 }
 
 fn secret_free(error: &anyhow::Error, secrets: &[&str]) {

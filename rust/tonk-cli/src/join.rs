@@ -221,7 +221,7 @@ impl PreparedAgent {
 #[derive(Debug)]
 pub enum PreparedInvitation {
     /// Ordinary invitation authority claimed to an eligible local identity.
-    Ordinary(PreparedOrdinary),
+    Ordinary(Box<PreparedOrdinary>),
     /// Isolated agent credentials retained under their own recipient key.
     Agent(PreparedAgent),
 }
@@ -245,7 +245,7 @@ pub async fn prepare(value: &str) -> Result<PreparedInvitation> {
         "ambiguous_invitation: link mixes ordinary and agent payloads"
     );
     ensure!(
-        !(agent_payload && !agent_fragment),
+        !agent_payload || agent_fragment,
         "malformed_agent_invitation: agent grants require a versioned agent fragment"
     );
 
@@ -257,6 +257,8 @@ pub async fn prepare(value: &str) -> Result<PreparedInvitation> {
         }))
     } else {
         let preflight = crate::invite::preflight_resolved(resolved).await?;
-        Ok(PreparedInvitation::Ordinary(PreparedOrdinary { preflight }))
+        Ok(PreparedInvitation::Ordinary(Box::new(PreparedOrdinary {
+            preflight,
+        })))
     }
 }

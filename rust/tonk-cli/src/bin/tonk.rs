@@ -2532,7 +2532,7 @@ async fn join_command(
                     connect_scoped_agent(prepared, name.as_deref()).await
                 }
                 Ok(tonk_cli::join::PreparedInvitation::Ordinary(prepared)) => {
-                    join_ordinary(prepared, name.as_deref()).await
+                    join_ordinary(*prepared, name.as_deref()).await
                 }
                 Err(error) => print_failure(error),
             }
