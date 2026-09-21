@@ -195,6 +195,97 @@ pub(crate) async fn active_account(tonk: &crate::worker::TonkState) -> Option<En
     replicas.into_iter().next().map(|row| row.subject.0)
 }
 
+/// Leave the account: move to a branch that follows nothing.
+///
+/// Signing out is not a flag and not a return to `main`. It is a branch
+/// with no upstream — and a FRESH one when every existing local branch
+/// is taken, because sharing one would mix the workspaces of two
+/// accounts that were never related.
+///
+/// That mirrors what sign-out does today by rotating profiles: promote
+/// an existing rootless local workspace, or create one. Nothing is
+/// emptied and no branch is deleted, so the account branch keeps its
+/// spaces and signing back in returns to them.
+pub(crate) async fn leave_account(tonk: &crate::worker::TonkState) {
+    use tonk_schema::{Branch as MetaBranch, BranchUpstream, ReplicaActiveBranch};
+
+    let profile_did = tonk.profile.did();
+    let replica = Replica::new(profile_did.clone(), profile_did);
+
+    let Ok(session) = tonk
+        .reactor
+        .profile_repository()
+        .branch(super::repository::META_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+    else {
+        log!("sign-out could not open meta; the active branch is unchanged");
+        return;
+    };
+    let handle = session.handle();
+
+    let branches: Vec<MetaBranch> = handle
+        .query()
+        .select(Query::<MetaBranch> {
+            this: Term::var("this"),
+            name: Term::var("name"),
+            origin: Term::from(replica.this.clone()),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .unwrap_or_default();
+    let followed: Vec<BranchUpstream> = handle
+        .query()
+        .select(Query::<BranchUpstream> {
+            this: Term::var("this"),
+            upstream: Term::var("upstream"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .unwrap_or_default();
+
+    // A local workspace is a branch of this replica that follows
+    // nothing. `meta` itself is bookkeeping rather than a workspace, so
+    // it is never a landing place.
+    let landing = branches.iter().find(|branch| {
+        branch.name.0 != super::repository::META_BRANCH
+            && !followed.iter().any(|row| row.this == branch.this)
+    });
+
+    let target = match landing {
+        Some(branch) => branch.clone(),
+        // Every local branch is taken, so make another. The name only
+        // has to be unique on this replica; what makes it a workspace
+        // is that nothing is asserted about what it follows.
+        None => {
+            let mut next = 2usize;
+            loop {
+                let name = format!("{}-{next}", PROFILE_BRANCH);
+                if !branches.iter().any(|branch| branch.name.0 == name) {
+                    break MetaBranch::new(&replica, &name);
+                }
+                next += 1;
+            }
+        }
+    };
+
+    if let Err(error) = tonk
+        .reactor
+        .profile_repository()
+        .branch(super::repository::META_BRANCH)
+        .transaction()
+        .assert(target.clone())
+        .assert(ReplicaActiveBranch::new(&replica, &target))
+        .commit()
+        .perform(&tonk.operator)
+        .await
+    {
+        log!("sign-out did not record the active branch: {error}");
+    }
+}
+
 /// One space the profile owns, as listed by `GET /api/profile`.
 ///
 /// A repository's identity is its credential's `did:key` (`subject`);
@@ -410,6 +501,64 @@ mod tests {
             resolved,
             account.this(),
             "the account is the subject of the upstream's replica",
+        );
+    }
+
+    /// Signing out twice does not share one workspace.
+    ///
+    /// The point of creating a branch rather than returning to `main`:
+    /// with a single shared local branch, leaving account A and later
+    /// account B would land both workspaces in the same place, mixing
+    /// spaces that were never related.
+    #[dialog_common::test]
+    async fn it_lands_each_sign_out_on_its_own_workspace() {
+        use dialog_credentials::Ed25519Signer;
+        use dialog_varsig::Principal as _;
+        use tonk_schema::{Branch as MetaBranch, BranchUpstream, ReplicaActiveBranch};
+
+        let state = test_state().await;
+        ensure_profile_meta_branch(&state).await;
+        let profile_did = state.profile.did();
+        let replica = Replica::new(profile_did.clone(), profile_did.clone());
+
+        // First sign-out takes the content branch, which follows nothing.
+        leave_account(&state).await;
+        let first = active_branch(&state).await.expect("a branch");
+        assert_eq!(
+            first,
+            MetaBranch::new(&replica, PROFILE_BRANCH).this,
+            "the first sign-out takes the workspace already there",
+        );
+
+        // Link an account, so the only upstream-less branch is taken.
+        let account = Ed25519Signer::import(&[93; 32]).await.unwrap().did();
+        let served = Replica::new(account.clone(), account.clone());
+        let upstream = MetaBranch::new(&served, "main");
+        let taken = MetaBranch::new(&replica, PROFILE_BRANCH);
+        state
+            .reactor
+            .profile_repository()
+            .branch(super::super::repository::META_BRANCH)
+            .transaction()
+            .assert(served)
+            .assert(upstream.clone())
+            // The branch that WAS the workspace now follows an account.
+            .assert(BranchUpstream::new(&taken, &upstream))
+            .assert(ReplicaActiveBranch::new(&replica, &taken))
+            .commit()
+            .perform(&state.operator)
+            .await
+            .expect("the link commits");
+
+        leave_account(&state).await;
+        let second = active_branch(&state).await.expect("a branch");
+        assert_ne!(
+            second, first,
+            "a second sign-out must not land on a branch that now follows an account",
+        );
+        assert!(
+            active_account(&state).await.is_none(),
+            "and the branch it lands on follows nothing",
         );
     }
 

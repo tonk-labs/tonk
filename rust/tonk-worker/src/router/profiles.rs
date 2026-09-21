@@ -512,6 +512,14 @@ pub(crate) async fn sign_out(
     };
     let _transition = transition.lock().await;
 
+    // Leave the account in the data model before the profile rotation
+    // below: this profile's own branch bookkeeping records that it
+    // follows nothing now, whichever profile ends up promoted.
+    {
+        let tonk = state.read().await;
+        super::profile::leave_account(&tonk).await;
+    }
+
     let (registry, storage, active_name, roster, profile_library) = {
         let current = state.read().await;
         try_upsert_active_entry(&current, None).await?;

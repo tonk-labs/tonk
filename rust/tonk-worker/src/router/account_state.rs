@@ -464,7 +464,58 @@ async fn record_account_replica(
     // and only this clears it.
     tonk.account_keys.invalidate();
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+
+    record_account_branch(tonk, subject).await;
     Ok(())
+}
+
+/// Record the account as a branch of the profile repository, and make
+/// it the active one.
+///
+/// The link written above indexes the account replica on profile main,
+/// which is what the sync drain routes by. This records the same link
+/// the way the DATA model describes it: a branch of the profile
+/// repository that follows a branch on the peer serving the account.
+///
+/// On `meta`, which never replicates — which branch this device is on
+/// is nobody else's business.
+///
+/// Best-effort. The account is linked either way; what fails here is
+/// the branch bookkeeping a view reads, not the link itself.
+async fn record_account_branch(tonk: &TonkState, account: &dialog_varsig::Did) {
+    use tonk_schema::prelude::DidExt as _;
+    use tonk_schema::{Branch as MetaBranch, BranchUpstream, ReplicaActiveBranch};
+
+    let profile_did = tonk.profile.did();
+    let replica = Replica::new(profile_did.clone(), profile_did);
+
+    // The branch this profile keeps for the account. Named with the
+    // full DID, following `repo_key`'s one-identifier rule.
+    let local = MetaBranch::new(&replica, &format!("account/{}", account.repo_key()));
+
+    // The peer serving the account holds its own replica of it; the
+    // branch we follow is that replica's main. Deriving both rather
+    // than storing an address here is what keeps "which peer" and
+    // "where to reach it" one traversal away instead of two copies.
+    let served = Replica::new(account.clone(), account.clone());
+    let upstream = MetaBranch::new(&served, tonk_account::MAIN_BRANCH);
+
+    if let Err(error) = tonk
+        .reactor
+        .profile_repository()
+        .branch(crate::router::repository::META_BRANCH)
+        .transaction()
+        .assert(served)
+        .assert(upstream.clone())
+        .assert(local.clone())
+        .assert(BranchUpstream::new(&local, &upstream))
+        .assert(ReplicaActiveBranch::new(&replica, &local))
+        .commit()
+        .perform(&tonk.operator)
+        .await
+    {
+        log!("account branch not recorded: {error}");
+    }
 }
 
 /// Withdraw this device's own library installation ahead of a first
@@ -1754,6 +1805,36 @@ pub(crate) async fn rename_display_name(
 
 #[cfg(test)]
 pub(crate) mod tests {
+
+    /// Linking records the account as a branch and makes it active.
+    //
+    // Wasm-only: `router::tests::test_state` builds a worker state the
+    // native target does not compile.
+    ///
+    /// The replica row this writes alongside is what the sync drain
+    /// routes by; this is the same link as the DATA model describes it,
+    /// so a view can read which account is current without asking the
+    /// worker.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[dialog_common::test]
+    async fn it_records_the_account_as_the_active_branch() {
+        use dialog_credentials::Ed25519Signer;
+        use dialog_varsig::Principal as _;
+
+        let state = crate::router::tests::test_state().await;
+        let account = Ed25519Signer::import(&[94; 32]).await.unwrap().did();
+
+        super::record_account_branch(&state, &account).await;
+
+        let resolved = crate::router::profile::active_account(&state)
+            .await
+            .expect("an account");
+        assert_eq!(
+            resolved,
+            account.this(),
+            "linking makes the account's branch the active one",
+        );
+    }
     use dialog_credentials::Ed25519Signer;
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test_configure;
