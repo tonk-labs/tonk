@@ -50,6 +50,30 @@ pub mod replica {
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.replica")]
     pub struct Status(pub Entity);
+
+    /// The branch this replica is currently on.
+    ///
+    /// Dialog models where each branch IS —
+    /// [`dialog.branch/revision`] — but nothing models which one you
+    /// are looking at, so this is tonk's. Named `active` after
+    /// Mercurial's active bookmark rather than git's `HEAD`, which
+    /// means two things and would collide with the revision above.
+    ///
+    /// Cardinality-one is the point: a second assert supersedes, so
+    /// "one active branch" is a property of the data rather than an
+    /// invariant something has to maintain. The account facts it
+    /// replaces had no such guarantee, and a query for them answered
+    /// with every account the device had ever linked.
+    ///
+    /// The `tonk.dialog.*` namespace says this extends dialog's model
+    /// and is tonk's only until dialog adopts it; migrating is a
+    /// rename with the entity and value unchanged.
+    ///
+    /// [`dialog.branch/revision`]: https://github.com/dialog-db/dialog-db
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("tonk.dialog.replica")]
+    #[cardinality(one)]
+    pub struct ActiveBranch(pub Entity);
 }
 
 /// Attributes for the account-level space directory — one entry per

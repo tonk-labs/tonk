@@ -128,10 +128,18 @@ profile repo
 └── account/<did-B>       upstream on peer B
 ```
 
-Signing in creates or switches to that account's branch. Signing out
-points active at `main`. No branch is created empty and none is
-deleted, so a signed-out profile keeps its local spaces — which is what
-the rootless-workspace path does today by rotating profiles.
+Signing in creates or switches to that account's branch.
+
+Signing out switches to a branch with NO upstream, creating one if none
+is free — not back to `main`. `main` is only the first such branch. With
+a single shared one, signing out of account A and later of account B
+would land both local workspaces in the same branch, mixing spaces that
+were never related; a fresh branch keeps them apart.
+
+That mirrors what sign-out does today, which is to "promote an existing
+rootless local workspace or create one". No branch is emptied and none
+is deleted, so a signed-out account branch keeps its spaces and signing
+back in returns to them.
 
 ## Work
 
@@ -142,7 +150,8 @@ the rootless-workspace path does today by rotating profiles.
 3. Tracking as a fact alongside dialog's upstream cell, so a rule can
    traverse it.
 4. Linking creates `account/<did>` with its tracking row and points
-   active at it. Signing out points active at `main`.
+   active at it. Signing out finds or creates an upstream-less branch
+   and points active there.
 5. Switching accounts switches branches instead of rebuilding
    `TonkState`. This is the piece that touches worker core state.
 6. Retire `xyz.tonk.remote/*` and `xyz.tonk.branch/*` once nothing

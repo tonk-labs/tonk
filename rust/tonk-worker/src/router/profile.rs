@@ -3,6 +3,7 @@
 
 use ::axum::{Json, extract::State};
 use axum_wasm_macros::wasm_compat;
+use dialog_artifacts::Entity;
 use dialog_query::{Output as _, Query, Term};
 use dialog_varsig::Did;
 use serde::{Deserialize, Serialize};
@@ -37,7 +38,7 @@ use super::repository::PROFILE_BRANCH;
 /// enumeration yet. Failing the boot over bookkeeping nobody consults
 /// would trade a working hub for a tidy one.
 pub(crate) async fn ensure_profile_meta_branch(tonk: &crate::worker::TonkState) {
-    use tonk_schema::Branch as MetaBranch;
+    use tonk_schema::{Branch as MetaBranch, ReplicaActiveBranch};
 
     // The profile repository IS the subject here: a replica of itself,
     // held by itself, which is what makes its branch entities derive
@@ -46,6 +47,19 @@ pub(crate) async fn ensure_profile_meta_branch(tonk: &crate::worker::TonkState) 
     let replica = Replica::new(profile_did.clone(), profile_did);
     // `.transaction()` on the branch reference opens it if absent —
     // the same on-demand creation a space's meta branch gets.
+    // Which branch this replica is on. Asserted here rather than only
+    // on a switch, so a profile that has never switched still answers
+    // the question — an absent active branch would be indistinguishable
+    // from a profile whose bookkeeping failed.
+    //
+    // `PROFILE_BRANCH` is the seed value because that is where an
+    // unlinked profile starts: a branch with no upstream, which is what
+    // signed out MEANS. Signing in points this at the account's branch.
+    //
+    // Re-asserting is a no-op: cardinality-one supersedes with the same
+    // value, so a boot after a switch does not drag the replica back to
+    // where it started.
+    let content = MetaBranch::new(&replica, PROFILE_BRANCH);
     let transaction = tonk
         .reactor
         .profile_repository()
@@ -53,11 +67,60 @@ pub(crate) async fn ensure_profile_meta_branch(tonk: &crate::worker::TonkState) 
         .transaction()
         .assert(replica.clone())
         .assert(replica.branch(super::repository::META_BRANCH))
-        .assert(MetaBranch::new(&replica, PROFILE_BRANCH));
+        .assert(content.clone());
 
     if let Err(error) = transaction.commit().perform(&tonk.operator).await {
         log!("profile meta branch not recorded: {error}");
+        return;
     }
+
+    // Seed the active branch only when none is recorded. Cardinality-one
+    // means an unconditional assert would supersede on every boot,
+    // dragging a profile that had switched back to its content branch.
+    if active_branch(tonk).await.is_some() {
+        return;
+    }
+    if let Err(error) = tonk
+        .reactor
+        .profile_repository()
+        .branch(super::repository::META_BRANCH)
+        .transaction()
+        .assert(ReplicaActiveBranch::new(&replica, &content))
+        .commit()
+        .perform(&tonk.operator)
+        .await
+    {
+        log!("profile active branch not recorded: {error}");
+    }
+}
+
+/// Which branch the profile replica is on, or `None` when nothing has
+/// recorded one yet.
+///
+/// Reads `meta`, which never replicates: which branch this device is
+/// looking at is nobody else's business.
+pub(crate) async fn active_branch(tonk: &crate::worker::TonkState) -> Option<Entity> {
+    use tonk_schema::ReplicaActiveBranch;
+
+    let session = tonk
+        .reactor
+        .profile_repository()
+        .branch(super::repository::META_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .ok()?;
+    let rows: Vec<ReplicaActiveBranch> = session
+        .handle()
+        .query()
+        .select(Query::<ReplicaActiveBranch> {
+            this: Term::var("this"),
+            active_branch: Term::var("active_branch"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .ok()?;
+    rows.into_iter().next().map(|row| row.active_branch.0)
 }
 
 /// One space the profile owns, as listed by `GET /api/profile`.
@@ -229,6 +292,72 @@ mod tests {
 
     use crate::api_router;
     use crate::router::tests::test_state;
+
+    /// A fresh profile starts on a branch with no upstream.
+    ///
+    /// Which is what signed out MEANS: not a flag, but a branch that
+    /// follows nothing. Seeding it at bootstrap is what makes the
+    /// question answerable at all — an absent active branch would be
+    /// indistinguishable from bookkeeping that failed.
+    #[dialog_common::test]
+    async fn it_starts_on_the_branch_with_no_upstream() {
+        use tonk_schema::Branch as MetaBranch;
+
+        let state = test_state().await;
+        let (app, state, _lsp) = crate::router::api_router_with_state(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/profile")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+        let tonk = state.read().await;
+        let active = active_branch(&tonk).await.expect("an active branch");
+        let profile_did = tonk.profile.did();
+        let replica = Replica::new(profile_did.clone(), profile_did);
+        assert_eq!(
+            active,
+            MetaBranch::new(&replica, PROFILE_BRANCH).this,
+            "a fresh profile is on its content branch",
+        );
+    }
+
+    /// Booting again does not drag a switched profile back.
+    ///
+    /// The seed is cardinality-one, so an unconditional assert would
+    /// supersede on every boot and undo the switch. This pins that the
+    /// seed only runs when nothing is recorded.
+    #[dialog_common::test]
+    async fn it_keeps_the_active_branch_a_switch_chose() {
+        use tonk_schema::{Branch as MetaBranch, ReplicaActiveBranch};
+
+        let state = test_state().await;
+        let profile_did = state.profile.did();
+        let replica = Replica::new(profile_did.clone(), profile_did);
+        // Stand in for a switch: point active at a branch the seed
+        // would never choose.
+        let elsewhere = MetaBranch::new(&replica, "account/somewhere");
+        state
+            .reactor
+            .profile_repository()
+            .branch(super::super::repository::META_BRANCH)
+            .transaction()
+            .assert(ReplicaActiveBranch::new(&replica, &elsewhere))
+            .commit()
+            .perform(&state.operator)
+            .await
+            .expect("the switch commits");
+
+        ensure_profile_meta_branch(&state).await;
+
+        let active = active_branch(&state).await.expect("an active branch");
+        assert_eq!(active, elsewhere.this, "a boot must not undo a switch",);
+    }
 
     /// The profile gains the branch enumeration a space has.
     ///

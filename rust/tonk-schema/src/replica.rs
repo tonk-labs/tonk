@@ -387,6 +387,38 @@ impl SpaceStatus {
 /// resolves independently: the durable preference is always present, the
 /// live status may lag — a single two-field concept would only resolve
 /// once both existed (the join-status lesson).
+/// Which branch a replica is currently on.
+///
+/// The one piece of branch bookkeeping dialog does not model: it says
+/// where each branch IS, never which one you are looking at. Stamped
+/// on the replica because that is what branches belong to — a branch's
+/// `dialog.branch/replica` points back here.
+///
+/// Cardinality-one, so switching supersedes rather than accumulating.
+/// This is what the account facts lacked: nothing marked which of the
+/// rows a device had written was current, and a query answered with
+/// all of them.
+///
+/// Lives on the `meta` branch, which never replicates — which branch
+/// this device is on is nobody else's business.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ReplicaActiveBranch {
+    /// The replica being stamped.
+    pub this: Entity,
+    /// The branch it is currently on.
+    pub active_branch: crate::domain::replica::ActiveBranch,
+}
+
+impl ReplicaActiveBranch {
+    /// Point `replica` at `branch`.
+    pub fn new(replica: &Replica, branch: &Branch) -> Self {
+        Self {
+            this: replica.this.clone(),
+            active_branch: crate::domain::replica::ActiveBranch(branch.this.clone()),
+        }
+    }
+}
+
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ReplicaSyncEnabled {
     /// The replica entity being stamped.
