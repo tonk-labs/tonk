@@ -63,6 +63,10 @@ pub mod output;
 pub mod recovery;
 pub mod remote;
 pub mod render;
+#[cfg(any(feature = "rtc", test))]
+pub(crate) mod resolution;
+#[cfg(any(feature = "rtc", test))]
+pub(crate) mod revocations;
 #[cfg(feature = "rtc")]
 pub mod rtc;
 pub mod schema;

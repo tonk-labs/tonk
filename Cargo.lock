@@ -6985,6 +6985,7 @@ dependencies = [
  "dialog-operator",
  "env_logger",
  "getrandom 0.4.3",
+ "gloo-timers",
  "iroh",
  "iroh-base",
  "js-sys",

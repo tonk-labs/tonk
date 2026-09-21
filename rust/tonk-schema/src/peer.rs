@@ -40,10 +40,43 @@ pub struct Peer {
 pub struct PeerIdentity {
     /// The singleton entity this observation is keyed on.
     pub this: Entity,
-    /// The authority the CLI answered for.
+    /// The authenticated endpoint DID, not a claim of space authority.
     pub subject: Subject,
     /// How many spaces it is serving.
     pub spaces: Spaces,
+}
+
+/// User-facing detail for the latest connect attempt, including retry input.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PeerDetail {
+    /// The live observation singleton.
+    pub this: Entity,
+    /// The exact URI entered by the user.
+    pub address: crate::domain::peer::Address,
+    /// A useful result or failure reason.
+    pub detail: crate::domain::peer::Detail,
+}
+
+/// A space disclosed by the peer, not permission to read or join it.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PeerOffer {
+    /// An entity scoped to the current observation overlay.
+    pub this: Entity,
+    /// The offered space's DID.
+    pub subject: crate::domain::peer_offer::Subject,
+    /// The listener's local name for it.
+    pub name: crate::domain::peer_offer::Name,
+    /// The route observed along with this offer, not a grant of authority.
+    pub address: crate::domain::peer_offer::Address,
+}
+
+/// Result of selecting an offer, scoped to its observation's lifetime.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PeerOfferDetail {
+    /// The offer entity in the live inventory overlay.
+    pub this: Entity,
+    /// Success or refusal of the explicit upstream selection.
+    pub detail: crate::domain::peer_offer::Detail,
 }
 
 impl Peer {

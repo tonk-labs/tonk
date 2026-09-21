@@ -1,6 +1,608 @@
 # A WebRTC data channel between `tonk` and a browser tab
 
-Status: proof of concept, landed behind a feature flag. Not wired to sync.
+Status: paused as a draft implementation on 2026-09-21. The ordinary Network-page
+connection and online account-authorized repository/blob sync work, but the MVP
+release gates below are not all complete. The broader C1-C7 contract was approved
+for implementation on 2026-09-20 in `feat/rtc-finish`, based on `4302dd9d`; it is
+now retained as design context rather than the scope of this draft. See the
+implementation checkpoint for current evidence. The investigation following it
+records earlier designs and measurements, some of which have been superseded.
+
+## Completion contract (approved 2026-09-20)
+
+### Intended outcome and proposed scope
+
+A running `tonk` can serve its local spaces as a sync remote for the browser.
+On the same machine, this must work without internet after the application and
+the required authority have been provisioned. It lets browser views and local
+CLI work share repository data without requiring a hosted storage service for
+each transfer. Connecting does not confer permission to read or write a space.
+
+The architecture already chosen in this document remains:
+
+```text
+browser views / commands
+        |
+service worker: repository, signed Dialog effects, iroh endpoint
+        | MessagePort datagrams
+browser page: RTCPeerConnection + unreliable, unordered data channel
+        | WebRTC carrying iroh/QUIC
+tonk rtc serve: verify invocation -> mounted local repository
+```
+
+WebRTC supplies the browser's local network path; iroh supplies authenticated
+connections and streams; Dialog supplies repository operations and capability
+checks. The page is a carrier, and does not receive the worker's signing keys.
+The public rendezvous certificate is reproducible by anyone and establishes
+neither the intended CLI's identity nor permission to use its repositories.
+
+**Proposed first completion milestone:** a supported browser can connect to an
+explicitly identified CLI, attach an already-authorized space as a peer remote,
+and synchronize edits and blobs in both directions offline. Closing a tab or
+restarting the CLI must produce recovery or a bounded, retryable failure.
+Pasting the CLI's peer URI once is acceptable for this milestone; executing
+JavaScript manually is not.
+
+LAN configuration, internet discovery/relays, native CLI-to-CLI dialing, and
+serving browser-held repositories to other peers are subsequent milestones.
+They are discussed historically below but are not established by the current
+product wiring. In particular, both product endpoint builders currently use
+`presets::Empty`; pkarr, mDNS, relay fallback and automatic remote discovery
+must not be described as shipped. This scope split is a proposal for review,
+not a claim that the wider design has been completed.
+
+### MVP scope freeze (2026-09-21)
+
+This draft is intentionally narrower than C1-C7. The MVP is one supported
+Chromium browser tab connecting to a local `tonk rtc serve`, selecting an
+already-authorized space, and synchronizing edits and blobs in both directions
+without replacing its separately configured cloud remote. It is experimental,
+opt-in, loopback-only, and may require an explicit reconnect after a transport
+failure.
+
+The MVP release gates are:
+
+1. The ordinary Network UI connects to the explicitly identified CLI and stores
+   the peer remote without granting new content authority.
+2. Existing account authority is enforced for every operation. Ordinary local
+   discovery may reveal mounted space names and DIDs, but discovery alone never
+   grants content access.
+3. Browser edits, CLI edits, and multi-megabyte blobs synchronize in both
+   directions while preserving cloud configuration and device-local `meta`.
+4. Previously verified authority remains usable after restarting both the CLI
+   and browser worker with the authority service unavailable. Unknown evidence
+   fails closed. Once a revocation is learned, later writes are denied and that
+   decision survives restart.
+5. An interrupted write cannot commit partial or corrupt content. A retry uses
+   repository compare-and-swap/reconciliation semantics and reports an unresolved
+   outcome rather than blindly replaying a possibly applied mutation.
+6. Connections, pending acquisitions, streams, buffers, and idle/abandoned work
+   have conservative bounds and are reclaimed so repeated failures cannot cause
+   unbounded growth.
+7. A focused real-profile end-to-end test covers the supported journey, including
+   the offline restart and failure boundaries above. The draft PR must state any
+   gate that remains incomplete and must not be represented as release-ready.
+
+Deferred beyond the MVP:
+
+- Firefox, WebKit, and real Safari support or compatibility guarantees.
+- Seamless multi-tab failover, frozen-tab transfer recovery, and automatic
+  reconnection beyond the behavior already implemented.
+- LAN listening, discovery/relays, native CLI-to-CLI dialing, and serving
+  browser-held repositories to other peers.
+- The exhaustive browser/network matrix, performance tuning, and broader UI
+  polish described by C5-C7.
+
+At the pause point, gates 1-3 are demonstrated by the real account fixture and
+the focused transport/product tests. Gate 4 still needs the complete offline
+CLI-and-worker restart journey and a revocation/write-boundary test. Gate 5
+still needs interrupted-transfer/CAS coverage. Gate 6 still needs native
+connection/stream/request bounds and abandoned-transfer cleanup. Gate 7 remains
+incomplete until those focused tests pass. This is the handoff boundary for the
+draft PR; work outside these gates should not be pulled into the MVP.
+
+### Baseline at `4302dd9d` (before completion work)
+
+Paths below are relative to this document. Dependency observations refer to
+Dialog commit `991ec542a6c503968a415a1601a4c4b5a543778a`, the revision in
+`Cargo.lock`; that exact source was inspected from the local Dialog repository.
+
+| Area | Observed implementation and remaining gap |
+| --- | --- |
+| Listener and protocol | [`rtc.rs`](../../rust/tonk-cli/src/rtc.rs) mounts the space registry and serves signed Dialog requests. The pinned `dialog-iroh-remote` includes archive/memory operations and streaming blobs; these do not need designing from scratch. The registry is a startup snapshot, and the command still opens a selected space before starting. |
+| Browser carrier | [`rtc.mjs`](../../rust/tonk-ui/assets/rtc.mjs) implements direct dialing and `attachCarrier()`. No production caller opens that carrier; the only external call found is in the app test. Posting the port has no worker-ready acknowledgment. |
+| Worker integration | [`router/cli.rs`](../../rust/tonk-worker/src/router/cli.rs) attaches carriers and supplies the operator's iroh site. `ReachPeer` asks for inventory, but publishes only reachable/unreachable. Names, counts, identity and failure detail are discarded from the overlay. |
+| Network UI | [`profile.yaml`](../../rust/tonk-core/assets/library/profile.yaml) defines `/network` with a peer input and an ask action in its initial empty state. It does not connect a carrier or attach a space. Once a status row exists, its template has no retry form. `PeerIdentity` exists but is never asserted by the worker. |
+| Addressing | The worker uses one phrase-derived listener route for every carrier. The real CLI advertises an encoded address and keys accepted carriers by ICE ufrag; the example listener uses phrase-derived tags instead. `reach()` parses a supplied URI but discards its route hints. Tests against the example therefore do not prove the real CLI's route integration. |
+| Multiple processes and tabs | Sixteen candidate ports are raced in one ICE connection, which chooses one path rather than enumerating sixteen identities. The transport stores one carrier per route; a new attachment replaces the old one, and an old close can remove the replacement. [`dispatch.rs`](../../rust/tonk-rtc/src/dispatch.rs) has policy tests but no production caller. |
+| Remote configuration | [`remote.rs`](../../rust/tonk-cli/src/remote.rs) accepts peer URIs. The browser's [`invite_configuration()`](../../rust/tonk-worker/src/router/join.rs) still constructs a `UcanAddress` for every invite remote. Parsing a peer URI is not yet a complete browser remote/join workflow. |
+| Authorization | The CLI uses `Responder::new`, whose pinned dependency default is `UnverifiedRevocations` (every revocation query returns none). `Served::Spaces` returns the whole mounted inventory to any verified caller, while the UDP listener binds `0.0.0.0`. Signature verification alone does not establish inventory consent or enforce revocation. |
+| Tests and packaging | The [app harness](../../rust/tonk-ui/tests/e2e/cli-status-app.mjs) injects the carrier, defaults to an example server, and calls removed `/api/cli/status` and `/api/cli/spaces` routes. Native transport tests cover a stream, a signed block put and a greeting, not a complete browser repository sync. The Nix CLI package omits the optional `rtc` feature. |
+
+### Required behavior
+
+#### C1. A complete connect action
+
+The `/network` action must accept the peer URI printed by `tonk rtc serve`,
+request a carrier from a live page, wait for the worker to acknowledge its
+registration, then issue the signed probe through the existing command system.
+An existing peer remote needing sync must be able to request the same mechanism.
+Opening an unrelated page need not start a perpetual discovery loop.
+
+Keep the connect/retry action available after every result. Render distinct
+states for not checked, connecting, connected, unavailable, invalid identity or
+address, and refused access. Provide useful failure detail and the permitted
+inventory. A connected result identifies the authenticated endpoint; a greeting's
+`subject` echoes the caller's subject and must not be presented as proof that
+the CLI owns that subject.
+
+Live status, inventory observations and carrier IDs belong in the session
+overlay. Clear stale observations on disconnect, profile change and worker
+replacement. Persist only intentional peer/remote configuration and authority.
+Late results from an old attempt must not overwrite a newer result.
+
+Acceptance: launch the real CLI, open the ordinary app, paste its URI and use
+the action successfully without a console, injected carrier or fixture endpoint.
+
+#### C2. Identity selects the peer; routes reach it
+
+Preserve and validate the URI's route hints, including an explicit port or
+private certificate. Define one versioned representation shared by the CLI,
+page and worker, and ensure the carrier is attached under the address the
+endpoint actually dials. Reject unsupported or malformed routes explicitly.
+
+Pin the expected endpoint key before trusting replies. A successful rendezvous
+only found a transport: when several CLIs occupy the port span, select or probe
+individual routes until the requested identity is reached. Never silently accept
+whichever listener won the ICE race. An identity change requires relinking,
+while a route change must not orphan the existing remote credentials.
+
+The CLI endpoint key must survive restarts per profile. Distinguish a missing
+key from a corrupt/unreadable key; concurrent starts must not mint competing
+identities for one profile. The browser remains a dialer for this milestone:
+its current derivation can vary between sessions on some engines, and it must
+not be advertised as a durable server identity.
+
+Acceptance: two CLI profiles on one machine, an occupied first port, an explicit
+non-default port, a private certificate, and a wrong endpoint key all select
+the intended peer or return an actionable refusal.
+
+#### C3. Authorization and disclosure have explicit policies
+
+Keep per-invocation signature, subject, scope, expiry, payload-integrity and
+revocation checks. Replace the production `UnverifiedRevocations` default with
+an explicit policy using the project's revocation mechanisms. A known revoked
+delegation must always fail. Offline verification must obtain and retain the
+needed evidence under the cache decision below; an unavailable lookup may reuse
+verified evidence but must not turn unknown status into approval. The acceptance fixture must
+exercise the chosen policy, including any DID-resolution evidence it needs.
+
+Decision (2026-09-20): retain ordinary peer discovery, without a separate browser
+approval ceremony. Explicitly running `tonk rtc serve` discloses its mounted space
+names and DIDs to connected local browsers. This is metadata disclosure, not
+evidence of access to those spaces. The local milestone binds loopback only;
+broader listening is out of scope and requires its own disclosure policy.
+Loopback reachability alone is not account identity.
+
+Decision (2026-09-20): previously verified revocation evidence may be cached
+indefinitely for offline use. Unknown evidence is not an approval. On returning
+online, refresh that evidence; once a revocation is learned, deny subsequent
+operations (including writes), persist the revocation across restarts, and never
+replace it with an older cached approval. A fully offline peer cannot detect a
+revocation it has not learned about. This cache policy does not extend a token's
+expiry, expand its scope, or bypass signature and payload-integrity checks.
+
+Selecting an inventory row must reuse existing account/invite authority or
+report that access is needed. It must never mint access merely because a peer
+was found. Verify account switching, device logout and removal cannot leave a
+carrier or mounted server holding authority from the previous account.
+
+Acceptance: authorized reads/writes succeed; wrong-subject, insufficient-scope,
+expired, tampered and revoked requests fail without changing data. Unavailable
+verification is distinguishable from a disconnected transport. Test metadata
+disclosure separately from content access.
+
+#### C4. A space is usable through the peer remote
+
+Provide a supported command/UI path to register an already-authorized space
+against the selected peer and configure its branch upstream. Adding a peer
+must not overwrite a separately configured cloud remote. Peer addresses must
+retain their transport type through storage, reload and any supported invite
+path; the browser must not reinterpret them as access-service URLs.
+
+Prove repository pull and push, shared content metadata and blobs through the
+real worker and real CLI storage. Keep the device-local `meta` branch (replica,
+remotes and tracking configuration) local, matching ordinary cloud sync; it is
+not a shared content branch. Preserve branch compare-and-swap behavior,
+content verification and the repository's ordering rules during interruption.
+Do not count a successful greeting or a block put as complete sync. Surface
+permission errors and unresolved outcomes; retry using repository semantics
+rather than treating every failed mutation as unapplied.
+
+A missing peer may leave local edits available and pending sync. It must not
+silently change upstream or claim that cloud fallback exists. Any fallback
+must use a separately configured, authorized remote with documented semantics.
+
+Acceptance: a browser edit reaches CLI storage, a CLI edit appears in the
+browser after sync, a multi-megabyte blob round-trips with its digest intact,
+and a restarted browser/CLI can use the saved remote configuration offline.
+
+#### C5. Carrier recovery is part of the transport
+
+Track carriers by peer, client and generation. Either retain multiple carriers
+with a selection policy, or explicitly replace an active one. In either case,
+a stale close/error cannot detach a newer carrier. Detect silent tab loss or
+freezing as well as orderly data-channel closure. Prefer a live visible page
+and request a replacement when the current carrier stops responding.
+
+Reconnect after CLI restart, page reload, service-worker `controllerchange`,
+and sleep/resume. Cancel obsolete dials and release peer connections, ports,
+listeners and callbacks. Revalidate the current profile before reattachment.
+Use bounded dial/probe deadlines and capped retries; a page with no running CLI
+must settle into a useful state. Do not copy the old per-effect dispatcher into
+the datagram path without reconciling it with iroh's connection/stream behavior.
+
+Acceptance: close or freeze the active carrier tab during a transfer with a
+second tab available; recover without corrupting data. Close the old carrier
+after its replacement attaches; the replacement must remain usable. With no
+carrier left, fail within the documented deadline and recover on a later retry.
+
+#### C6. The long-running listener has bounded resource use
+
+Bound pending dial announcements and remembered ufrags, expire failed or idle
+handshakes, and reclaim routes when connections end. The current 32-connection
+limit only removes `Closed` peers and does not bound the mux's remembered set
+or announcement queue. Exercise failed handshakes as well as successful dials.
+Account for browser `bufferedAmount` and MessagePort backlog alongside Rust's
+bounded datagram queues. Define limits and cleanup for concurrent streams and
+large/abandoned requests; dropping datagrams under load must remain recoverable.
+
+For the first milestone, document the served registry as a startup snapshot;
+report mount failures and require restart to include new registrations. Account
+or authorization changes still require immediate invalidation. Start the server
+without requiring an arbitrary selected space, and make empty-registry behavior
+and graceful shutdown explicit.
+
+Acceptance: repeated failed dials and tab churn do not permanently exhaust the
+listener or grow retained state without bound; healthy clients still connect
+after pressure subsides. Termination releases the listening port.
+
+#### C7. Shipping and verification match the supported behavior
+
+Replace the stale app harness with a test that launches `tonk rtc serve` against
+isolated real profiles/spaces and uses the `/network` command/UI. Retain the
+example listener only for transport isolation. Run the same product journey in
+Chromium, Firefox and WebKit, and record a real Safari HTTPS-to-local-CLI check;
+the historical engine measurements alone do not establish current app behavior.
+
+Test offline after installing a complete app generation, with external network
+access blocked and loopback still allowed. Check `rtc.mjs`, `rendezvous.der`,
+worker code and required authority survive offline reload. The existing asset
+stamper inventories copied files; verify this in the built product rather than
+assuming that a source-tree certificate implies an offline-ready application.
+
+Add explicit CI coverage for the `rtc` CLI feature and native transport tests,
+the current browser workflow, and wasm compilation. Keep ordinary builds
+covered too. Decide when release packaging enables `rtc`; do not advertise the
+command while release artifacts omit it. Review and pin the companion Dialog
+changes, update obsolete comments/help, and measure the actual worker bundle.
+
+Acceptance evidence must name commands, artifact revisions, browser versions,
+and which failures were exercised. A supported release requires C1–C6 plus the
+offline/browser matrix above, rather than a green transport-only smoke test.
+
+### Delivery order and decisions to settle
+
+1. Agree the local-first milestone, inventory disclosure policy and offline
+   revocation rules. These determine the meaning of a successful connection.
+2. Unify peer/carrier addressing and wire the real connect action (C1–C3), with
+   a real CLI/browser test proving that boundary.
+3. Complete peer-remote registration and authorized repository/blob sync (C4).
+4. Exercise interruption, multiple tabs/processes and resource cleanup (C5–C6).
+5. Run the supported browser/offline matrix and finish dependency/release work
+   (C7), then consider the wider networking milestones.
+
+The first milestone is local-only. Inventory disclosure and indefinite offline
+caching were resolved above by the user on 2026-09-20. The implementation must
+make these policies explicit rather than accidentally inheriting transport or
+verification defaults.
+
+### Verification performed for this review
+
+- `node --test rust/tonk-ui/tests/rtc.test.mjs`: **16 passed** on 2026-09-20.
+  These test encoding, SDP construction and rendezvous helpers, not the product
+  connection or sync workflow.
+- `cargo test --offline --locked -p tonk-rtc --features iroh`: could not start;
+  the locked Dialog revision is absent from Cargo's checkout cache. Source
+  inspection of that revision was possible in the separate local Dialog repo.
+  No Rust pass/fail claim is made about the branch itself.
+- Browser end-to-end tests and full builds were not run in this review. The
+  checked-in app harness's removed-route and fixture-server mismatches were
+  established by source inspection. Historical successful measurements below
+  have not been repeated at this revision.
+
+### Implementation checkpoint (2026-09-21)
+
+Work is isolated in `/Users/goblin/Workspace/tonk-rtc-finish`, branch
+`feat/rtc-finish`, with uncommitted changes on `4302dd9d`. The original `feat/rtc`
+worktree is unchanged. This is a working connection foundation, **not completion
+of C1–C7 or a claim that authorized offline sync ships**.
+
+Implemented:
+
+- The ordinary `/network` command requests a carrier from a controlled top-level
+  page over a private reply port, attaches its exact route, acknowledges readiness,
+  and probes the real CLI through signed Dialog effects. The UI retains retry,
+  shows the authenticated endpoint and permitted inventory, and clears stale
+  identity/inventory on failure. The event binding now reads `.timeStamp` rather
+  than trying to coerce the literal `Date.now()` into a number.
+- Shared versioned route validation preserves the advertised port and certificate
+  fingerprint. The worker accepts local routes only and pins the requested iroh
+  endpoint. CLI endpoint-key creation is serialized and corrupt keys are refused,
+  not replaced. Explicit installation/test profile directories also isolate
+  private certificates.
+- Route leases prevent a stale close, queued datagram, or old observation from
+  affecting a replacement. Page/controller changes cancel carriers; MessagePort
+  heartbeats detect silent loss. Dial, registration and probe deadlines are
+  bounded. Recovery currently requires an explicit retry, not automatic failover.
+- Listener announcements, remembered ufrags, accepted channels, MessagePort
+  traffic and SCTP buffers are bounded. Failed/stalled handshakes expire; listener
+  drop releases the socket. QUIC datagrams preserve segmentation and oversized
+  packets are dropped instead of truncated.
+- The app test launches the actual CLI with isolated storage and uses the normal
+  form. It no longer injects a carrier or calls the removed status routes.
+- The CLI now replaces `UnverifiedRevocations` with a persistent checker. A
+  bounded, versioned `POST /ucan/revocations` lookup reads the same access-service
+  index used by normal invocation verification. Services come from local account
+  configuration and mounted spaces' UCAN remotes, never from an incoming request.
+  Every configured service must establish approval. HTTPS is required except
+  for development loopback; redirects, malformed replies, unsupported services
+  and corrupt caches fail closed.
+- Verified revocation evidence has no age expiry. Unavailable services may use
+  exact previously verified evidence or absence from a verified complete target
+  snapshot; unknown evidence is not approval. Learned
+  revocations dominate later approvals across cache reopenings and service
+  sources. Atomic replacement and a cross-process lock merge concurrent updates.
+  Positive entries are capacity-bounded (4,096); evicting one fails closed until
+  refreshed. Negative entries are never evicted. Normal signature, scope and
+  token-expiration checks remain mandatory.
+- Revocation replies optionally carry the service's complete set of target CIDs,
+  without principals or delegation bytes. This is shared revocation evidence,
+  not an exception for session grants: newly minted session proofs can establish
+  absence against the last verified service state while offline. Snapshots are
+  monotonic locally; a newly observed target invalidates old exact approvals
+  until its relevant revoker is checked. Old responses cannot restore absence.
+  Snapshot work/output is bounded (8,192 targets/facts, bounded KV pages, 2 MiB
+  response); an incomplete or over-limit inventory is omitted, never truncated
+  into false absence. Exact checks remain available when no snapshot is supplied.
+- The CLI now persists validated `did:web`/`did:plc` documents for offline
+  resolution. It refreshes online, refuses redirects and oversized documents,
+  and durably invalidates old keys after a current refusal or invalid document.
+  Key/controller/fragment validation and signature verification remain Dialog's.
+  The cache is bounded (128 entries, 8 MiB); unknown/corrupt evidence fails closed.
+  Refreshes are serialized across processes and bounded within one process.
+- Public discovery uses a self-signed profile invocation for that profile's own
+  subject, rather than a delegated operator session. It passes the same strict
+  UCAN verifier without requiring revocation evidence merely to list names/IDs;
+  it does not confer content authority or special-case content verification.
+- Serving is bound to the account attachment mounted at startup. Existing
+  account-session locks guard effects, each blob chunk and the final blob commit.
+  Logout or replacement refuses further operations from those old mounts without
+  waiting for an idle peer to finish a stream. Restarting mounts the new account.
+- CLI remote enumeration, upstream metadata and browser invite/reload paths now
+  preserve peer addresses as `Iroh`, including their route hints. Setting a peer
+  upstream retains a separately registered cloud remote.
+- The Network inventory now offers `tonk:attach-peer` (profile-only), selecting
+  a peer upstream for an already-authorized space. It requires the latest observed
+  URI/subject and existing proof chains for content access; missing access is an
+  overlay refusal, not a new delegation. An authorized but unmounted directory
+  space uses ordinary verifier-only adoption, after the proof check. The command
+  bypasses cloud provisioning and preserves separately configured cloud remotes,
+  their execution metadata and the saved root prefix. Peer remote names derive
+  from endpoint identity; route updates use the normal cell CAS and refuse an
+  identity/subject conflict. Effective configuration is mirrored using the normal
+  directory convention so adoption does not silently restore the cloud upstream.
+  A directory-write failure is reported as a partial configuration requiring
+  retry, not success. Actual authorized content/blob sync now has the focused
+  account fixture described below; offline account restart remains unverified.
+- The real account fixture exposed an incorrect initial assumption: `meta` is
+  this device's replica/remote/tracking state, not a shared metadata branch.
+  Peer selection now configures `main` only, matching ordinary cloud setup;
+  device-local `meta` is not replicated. Shared content metadata stays on the
+  content branch. The contract and attachment regressions reflect this correction.
+- Saved peer remotes acquire a carrier at channel-open time, not only through
+  Network's connect button. Profile-bound contexts avoid reacquiring AppState
+  during repository I/O. Dials coalesce per endpoint; at most four peers,
+  64 pending acquisitions and 64 open transfers are retained. Acquisition is
+  bounded at 30 seconds, stream I/O at 30 seconds per operation. Errors retire
+  the exact carrier generation; possibly applied mutations are never replayed
+  by the transport. Profile changes invalidate I/O before and after each await.
+- Carrier selection tries up to three current-profile controlled pages (visible,
+  initiating, focused preferred), with an eight-second deadline per candidate.
+  Superseded attempts cancel even before ICE completes. Page heartbeats detect
+  tab loss; the Network observation also checks the CLI with a bounded signed
+  read-only hello, since an alive page alone does not prove the CLI is alive.
+- Offline scheduling now checks the selected branch's stored transport. Explicit
+  loopback peer and local upstreams remain eligible; cloud/account sweeps wait
+  for internet. Missing or malformed configuration fails closed, no upstream is
+  switched implicitly, and unsynced cloud edits stay queued.
+- Serving now opens a profile-wide context without a selected repository. Empty
+  installations answer discovery with an empty inventory, without manufacturing
+  a space or requiring an account. Broken mounts are reported and skipped;
+  startup output explicitly says that new registrations require a restart.
+- SDP fingerprint octets are normalized to uppercase at the browser boundary
+  (Firefox rejects the native lowercase spelling). The saved route is unchanged.
+  Fresh ICE credentials use the ICE/base64 alphabet, not base64url.
+- Private certificate creation is now locked across concurrent callers,
+  owner-only and atomically persisted before advertising a route. Corrupt or
+  unreadable certificates are preserved and refused, not silently regenerated;
+  persistence failure no longer leaves an ephemeral private route running.
+
+Verification so far (all against the worktree, locked Dialog revision
+`991ec542a6c503968a415a1601a4c4b5a543778a`):
+
+- `cargo test --locked -p tonk-rtc --features iroh`: **68 passed** (65 unit,
+  two Dialog-over-WebRTC, one iroh stream).
+- `cargo test --locked -p tonk-worker --test standard_library`: **32 passed**,
+  including the peer-form timestamp regression.
+- Worker library tests: **159 passed**; peer schema tests: **2 passed**;
+  latest native worker `router::cli::` regressions: **5 passed**, including stable
+  remote naming, stale/undisclosed inventory rejection, route updates and conflict
+  refusal while preserving the cloud remote. The invite peer-type reload
+  regression also passes. **Seven browser service-worker CLI tests pass**:
+  peer configuration persists after reload/reconciliation, existing cloud and
+  authority remain, authorized unmounted directory spaces are adopted, and
+  undisclosed, unjoined, content-origin and verifier-only replicas cannot register
+  a peer remote. Demand-context generation, bounded capacity and transfer
+  invalidation are covered too. Two transport-aware offline selection tests pass,
+  including exact upstream selection without implicit cloud fallback. Three session-renewal and three profile
+  browser regressions also pass. Browser-test compilation exposed a native-only
+  access-service fixture linked on wasm (conflicting `wasm-streams` exports) and
+  stale RTC state/session test constructors; target-scoping that fixture and
+  updating the constructors makes the wasm tests build without dependency changes.
+- `cargo test --locked -p tonk-cli --features rtc --lib`: **236 passed**, including
+  **12 RTC**, **5 revocation**, **5 DID-resolution** and **5 remote-address** tests.
+  `cargo test --locked -p tonk-cli --no-default-features --lib`: **223 passed**.
+  `cargo check --locked -p tonk-cli --no-default-features` also passes.
+  A real signed responder/storage test
+  verifies online writes, offline cached writes, refusal with no evidence, and
+  refusal without storage changes after learning revocation and reopening the
+  cache, including new operator keys and delegation CIDs created while offline.
+  Account lifecycle coverage includes logout with an already-open blob
+  and replacement with a new attachment of the same root.
+  The new combined evidence test uses real signatures and storage with a
+  `did:web` invocation signer. Both caches are reopened for each request; fresh
+  proof CIDs still work offline. Online and offline variants reject wrong
+  subject, read-only scope, expired invocation, expired delegation, invalid
+  signature and substituted payload, checking neither signed nor substituted
+  content reached storage. The DID response provider is isolated test data;
+  this is not yet the browser account-handoff/repository-sync fixture.
+- Identity evidence tests: **7 passed**; access-service revocation tests:
+  **17 passed** (`--features helpers`, required for the native test runtime).
+  The production access-service WebAssembly target also passes `cargo check`.
+- `node --test rust/tonk-ui/tests/rtc.test.mjs rust/tonk-ui/tests/boot-script.test.mjs`:
+  **40 passed**, including cancellation, registration acknowledgment, stale
+  controller rejection, timeout cleanup, heartbeat expiry and queue pressure.
+- `cargo build --locked -p tonk-cli --features rtc --bin tonk` and the full Trunk
+  app build succeed. The local wasm build requires the Nix LLVM compiler **and
+  archiver**, not Apple's default archiver. Latest app build: `e94a7b5a3c447b98`;
+  `worker_bg.wasm`: **33,494,323 bytes** (development artifact, not release-size
+  evidence). The built manifest contains `rtc-carrier.mjs`, `rtc.mjs`, and
+  `rendezvous.der`, and their SHA-256 hashes match the copied files. Runtime
+  offline-reload evidence is recorded separately below.
+- `node rust/tonk-ui/tests/e2e/cli-status-app.mjs` in Chromium **147.0.7727.15**:
+  the actual Network form connects, lists the fixture, rejects invalid input,
+  retries, detects CLI shutdown, and reconnects after restart with the same URI.
+  Both the public certificate and `RTC_PRIVATE=1` runs reject a wrong endpoint
+  key on the otherwise correct route, and recover by explicit retry in a second
+  tab after closing the carrier tab. Both were repeated successfully with the
+  strict revocation checker and self-signed discovery enabled. The fixture uses
+  isolated device-root authority; it is **not** an account-authorized sync test.
+- Build `e94a7b5a3c447b98` passes the private-certificate, two-CLI Chromium journey
+  with the new inventory button: selecting an unjoined offered space reports
+  `access needed`. Its worker SHA-256 is
+  `24b89cbb84783e69ae205fd17b5da4bdc8b66fd01391c5827922136f60e32a34`.
+  The same build passes WebKit 26.5 with two CLIs and the offline-reload journey
+  (`RTC_OFFLINE=1`), including the new inventory refusal action before isolation.
+- The latest build also passes the complete connection/retry/restart/tab-close
+  journey in **WebKit 26.5** with a real registered space, and in Chromium with
+  `RTC_EMPTY=1`: no account, root override, selected space or registered space.
+  The harness uses a disposable persistent browser installation. WebKit's
+  ephemeral context failed to open OPFS; the persisted context works.
+- The expanded two-CLI fixture also passes in Chromium with **two private
+  certificates**, and in WebKit with public rendezvous certificates. It checks
+  different profile endpoint IDs and ports, selects each through the normal
+  Network action, and confirms the inventory switches to the requested peer
+  without retaining the other peer's rows. A success assertion now waits for
+  the requested identity, not a previous peer's still-rendered status.
+- `RTC_OFFLINE=1` passes the entire journey in Chromium with both public and
+  private certificates and in **WebKit 26.5** with public certificates,
+  including two CLI profiles, cached app reload, invalid
+  input, wrong endpoint, retry, CLI restart and carrier-tab replacement. Before
+  disconnecting, it waits for the exact build's **adopted** generation marker
+  and checks all three RTC assets plus worker Wasm are retained. The app origin
+  is stopped and external browser HTTP is refused; reload makes zero requests
+  to the asset server. This is not OS-wide network isolation, does not force
+  `navigator.onLine=false`, and does not exercise account-authorized sync.
+  Playwright's generic offline emulation disrupted loopback dialing and WebKit
+  navigation; it is not used to simulate the local-first network boundary.
+  The fixture also permits local `blob:` modules: WebKit routes them through
+  the request interceptor even though they use transferred cached bytes.
+- **Firefox 153.0 does not pass.** After fixing its SDP fingerprint parse error,
+  it accepts the SDP but produces no ICE candidate pair for the loopback route.
+  A separate disposable direct-dial/UDP-observation fixture received zero
+  packets; browser stats and ICE logs confirmed an empty checklist. Granting
+  local-network permission did not resolve it. Temporary loopback/host-address
+  diagnostic preferences also did not resolve it. No preference override or
+  additional instrumentation was added to the product, and the listener was
+  not broadened to LAN to make the test pass. This remains a C7 compatibility
+  failure, not a passing or silently skipped test.
+- `node --test --test-timeout=90000 rust/tonk-ui/tests/*.test.mjs`:
+  **160 passed**, zero failures/cancellations, in approximately 60 seconds.
+  The earlier 30-second cap prematurely cancelled two service-worker test files;
+  both pass unchanged with sufficient time. The isolated service-worker suite
+  also passes all **72 tests**.
+
+- Latest product build: **`cb08eca7e2cfe82a`**, worker Wasm **33,616,309 bytes**,
+  SHA-256 `6247bf7ee06319ffe7dbf94b3e7feff6e30f2d2230fd77684a17ed02e151d20d`.
+  The ordinary CLI workflow passes on Chromium **147.0.7727.15** with private
+  certificates and offline reload, and WebKit **26.5** with public certificates
+  and offline reload. Both include two CLIs, wrong identity, retry, disconnect,
+  CLI restart and carrier-tab replacement. A regression caught detached status
+  writes not flushing subscription polls; the fix is included in this build.
+- The real account fixture `it_syncs_an_authorized_space_through_the_local_cli`
+  passes on Chrome **151.0.7922.176** through the harness's local HTTPS origin.
+  Ordinary signup, account activation and browser approval link the CLI; ordinary
+  account-space pull registers its replica. The actual Network UI selects the
+  peer, retaining cloud configuration and keeping device-local meta unsynced.
+  Browser-created schema/content reaches CLI storage, CLI-only edits return,
+  **3 MiB blobs transfer in both directions** (every byte checked on the CLI,
+  SHA-256 checked in the browser), and reload redials the saved upstream without
+  another connect action. Initial reconciliation uses `/sync`, not a blind push
+  with an unknown peer CAS head. Run with an RTC-enabled CLI and
+  `cargo test --locked -p tonk-ui --features rtc-integration-tests --lib
+  it_syncs_an_authorized_space_through_the_local_cli`. This is not yet the
+  account-authorized offline restart, revocation-race or interrupted-blob test.
+
+Still required, in priority order:
+
+1. **C3:** exercise the new complete-snapshot and durable DID evidence together
+   in the real account-authorized browser/CLI sync fixture, including worker and
+   CLI restarts offline. Native tests now cover fresh offline session proofs and
+   DID cache reopening/rotation/refusal, and now their combined signed-request
+   acceptance matrix; those are not yet proof of the whole account journey.
+   Verify revocation-refresh races with already-open
+   content streams, in addition to the tested refusal of subsequent invocations.
+   Account logout/replacement stream gating is implemented, but is not a
+   substitute for that revocation test.
+2. **C4:** extend the passing real account content/blob roundtrip to offline
+   browser/CLI process restarts and interruption/CAS reconciliation. Authorized
+   unmounted adoption, transport-aware offline scheduling and on-demand carrier
+   requests have worker coverage; the real account fixture proves online
+   content/blob sync and carrier recovery after page reload.
+3. **C5/C6:** exercise automatic page selection/failover and reconnect during
+   multi-page transfers, and implement native concurrent-stream/request limits.
+   Client acquisition/stream limits now have worker coverage. The profile-wide registry context is
+   implemented and tested; registry contents remain a documented startup snapshot.
+4. **C7:** Firefox's loopback ICE failure, real Safari HTTPS verification, stronger
+   network-isolation/actual offline-state coverage and release-feature/CI/dependency
+   review. Chromium and WebKit now pass the installed-app reload journey with
+   the asset origin stopped and external browser HTTP blocked; this does not
+   complete the required account-authorized restart/sync matrix.
+   Roll out the new lookup endpoint before expecting delegated content access:
+   an older access service returning 404 is a refusal, not permission to bypass
+   revocation checks. No deployment has been made by this worktree task.
+
+Cleanup audit: no `archive_reachability` source/build artifacts, temporary disk
+report, or diagnostic CLI dependencies remain. The single `Cargo.lock` addition
+is `gloo-timers` in `tonk-rtc`, required by the worker carrier heartbeat.
+
+## Historical investigation
+
+The sections below preserve the development history. In particular, the early
+chat-only status, space-based signaling, immutable per-machine certificate,
+durable browser peer identity, per-effect page dispatcher and unconditionally
+available fallback are not the current completion contract.
 
 ## What exists
 

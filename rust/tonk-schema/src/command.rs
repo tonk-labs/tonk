@@ -395,6 +395,21 @@ impl Command for ReachPeer {
     type Output = ();
 }
 
+/// Select an offered space's peer as the upstream, using only authority
+/// already held by this profile. Discovery itself grants no access.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct AttachPeer {
+    pub this: Entity,
+    pub peer: crate::domain::command::attach_peer::Peer,
+    pub space: crate::domain::command::attach_peer::Space,
+    pub time: crate::domain::command::attach_peer::Time,
+}
+
+impl Command for AttachPeer {
+    type Input = Self;
+    type Output = ();
+}
+
 impl Command for CheckUpdate {
     type Input = Self;
     type Output = ();

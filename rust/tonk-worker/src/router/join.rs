@@ -1256,8 +1256,8 @@ pub(crate) async fn mount_replica(
 }
 
 /// The repository configuration an invite describes: a single `main`
-/// branch, plus an `origin` remote tracking the invite's/space's access
-/// service if one was attached — mirroring what
+/// branch, plus an `origin` remote tracking the invite's typed peer or access
+/// service address if one was attached — mirroring what
 /// `PUT /api/repository/{name}` writes.
 fn invite_configuration(
     subject: &Did,
@@ -1266,7 +1266,21 @@ fn invite_configuration(
 ) -> Result<RepositoryConfiguration, TonkWorkerError> {
     let mut configuration = RepositoryConfiguration::default();
     if let Some(url) = remote_url {
-        let address = SiteAddress::from(UcanAddress::new(url));
+        let address = if url.starts_with("did:key:") {
+            SiteAddress::Iroh(url.parse().map_err(|error| {
+                TonkWorkerError::Router(format!("invalid invite peer address: {error}"))
+            })?)
+        } else {
+            let parsed = url::Url::parse(url).map_err(|error| {
+                TonkWorkerError::Router(format!("invalid invite access-service URL: {error}"))
+            })?;
+            if !matches!(parsed.scheme(), "https" | "http") {
+                return Err(TonkWorkerError::Router(
+                    "invite remote must be a peer URI or HTTP(S) access service".into(),
+                ));
+            }
+            SiteAddress::from(UcanAddress::new(url))
+        };
         let mut remote = RemoteConfiguration::new(address).subject(subject.clone());
         if let Some(relay) = revocation_url {
             remote = remote.revocation_url(url::Url::parse(relay).map_err(|error| {
@@ -1286,6 +1300,40 @@ fn invite_configuration(
         configuration = configuration.branch(DEFAULT_BRANCH, BranchConfiguration::default());
     }
     Ok(configuration)
+}
+
+#[cfg(test)]
+mod peer_configuration_tests {
+    use super::*;
+
+    #[test]
+    fn invite_reload_preserves_peer_transport_and_keeps_service_addresses_distinct() {
+        let peer = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+        let subject = peer.parse().unwrap();
+        let configuration = invite_configuration(&subject, Some(peer), None).unwrap();
+        let restored: RepositoryConfiguration =
+            serde_json::from_slice(&serde_json::to_vec(&configuration).unwrap()).unwrap();
+        assert!(matches!(
+            restored.remote[DEFAULT_REMOTE].address,
+            SiteAddress::Iroh(_)
+        ));
+        assert_eq!(
+            restored.branch[DEFAULT_BRANCH]
+                .upstream
+                .as_ref()
+                .unwrap()
+                .remote,
+            DEFAULT_REMOTE
+        );
+        let cloud =
+            invite_configuration(&subject, Some("https://cloud.example/ucan/"), None).unwrap();
+        assert!(matches!(
+            cloud.remote[DEFAULT_REMOTE].address,
+            SiteAddress::Ucan(_)
+        ));
+        assert!(invite_configuration(&subject, Some("did:key:not-base58"), None).is_err());
+        assert!(invite_configuration(&subject, Some("file:///tmp/space"), None).is_err());
+    }
 }
 
 /// Mount a space with a full, caller-supplied configuration — the

@@ -21,14 +21,14 @@
 //! route that now exists. A handful of dropped packets at the start of
 //! a dial costs nothing; ICE is built to expect loss.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::{Arc, Weak};
 
 use tokio::sync::mpsc;
 use webrtc::stun::attributes::ATTR_USERNAME;
-use webrtc::stun::message::Message;
+use webrtc::stun::message::{BINDING_REQUEST, Message};
 use webrtc::util::Conn;
 
 /// Where a dial came from, and what it called itself.
@@ -45,29 +45,33 @@ pub(crate) struct Dial {
     pub ufrag: String,
     /// The socket address the dial arrived from.
     pub from: SocketAddr,
+    /// Held until this pending/active dial ends. The watcher remembers
+    /// only live tickets, so failed dials can be retried without a leak.
+    pub _ticket: Arc<()>,
 }
+
+const PENDING_DIALS: usize = 32;
+const REMEMBERED_DIALS: usize = 128;
 
 /// A socket that reports the ufrags of dials it has not seen before.
 pub(crate) struct Watching {
     socket: Arc<dyn Conn + Send + Sync>,
-    announce: mpsc::UnboundedSender<Dial>,
+    announce: mpsc::Sender<Dial>,
     /// Ufrags already announced. Without this every retransmission
     /// during a dial would announce again, and the listener would build
     /// a peer connection per packet.
-    announced: Mutex<HashSet<String>>,
+    announced: Mutex<HashMap<String, Weak<()>>>,
 }
 
 impl Watching {
     /// Wrap a socket, announcing new dials on the returned channel.
-    pub(crate) fn wrap(
-        socket: Arc<dyn Conn + Send + Sync>,
-    ) -> (Self, mpsc::UnboundedReceiver<Dial>) {
-        let (announce, dials) = mpsc::unbounded_channel();
+    pub(crate) fn wrap(socket: Arc<dyn Conn + Send + Sync>) -> (Self, mpsc::Receiver<Dial>) {
+        let (announce, dials) = mpsc::channel(PENDING_DIALS);
         (
             Self {
                 socket,
                 announce,
-                announced: Mutex::new(HashSet::new()),
+                announced: Mutex::new(HashMap::new()),
             },
             dials,
         )
@@ -76,13 +80,26 @@ impl Watching {
     /// Announce a ufrag the first time it is seen, with where it came
     /// from.
     fn notice(&self, ufrag: String, from: SocketAddr) {
-        let fresh = self
-            .announced
-            .lock()
-            .map(|mut seen| seen.insert(ufrag.clone()))
-            .unwrap_or(false);
-        if fresh {
-            let _ = self.announce.send(Dial { ufrag, from });
+        let Ok(mut seen) = self.announced.lock() else {
+            return;
+        };
+        seen.retain(|_, ticket| ticket.strong_count() > 0);
+        if seen.contains_key(&ufrag) || seen.len() >= REMEMBERED_DIALS {
+            return;
+        }
+        let ticket = Arc::new(());
+        // Queue saturation is loss, not a permanently remembered dial:
+        // the next ICE retransmission can announce it again.
+        if self
+            .announce
+            .try_send(Dial {
+                ufrag: ufrag.clone(),
+                from,
+                _ticket: ticket.clone(),
+            })
+            .is_ok()
+        {
+            seen.insert(ufrag, Arc::downgrade(&ticket));
         }
     }
 }
@@ -98,10 +115,18 @@ fn destination_ufrag(packet: &[u8]) -> Option<String> {
     let mut message = Message::new();
     message.raw = packet.to_vec();
     message.decode().ok()?;
+    if message.typ != BINDING_REQUEST {
+        return None;
+    }
     let username = message.get(ATTR_USERNAME).ok()?;
     let text = String::from_utf8(username).ok()?;
     let (destination, _source) = text.split_once(':')?;
-    (!destination.is_empty()).then(|| destination.to_owned())
+    (destination.len() >= 4
+        && destination.len() <= 256
+        && destination
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"+/_-".contains(&byte)))
+    .then(|| destination.to_owned())
 }
 
 #[async_trait::async_trait]
@@ -197,5 +222,35 @@ mod tests {
         assert_eq!(destination_ufrag(&binding_request("no-colon-here")), None);
         // A plausible STUN header with nothing after it.
         assert_eq!(destination_ufrag(&[0u8; 20]), None);
+        assert_eq!(destination_ufrag(&binding_request("x:x")), None);
+        assert_eq!(
+            destination_ufrag(&binding_request("good\r\na=bad:same")),
+            None
+        );
+        assert_eq!(
+            destination_ufrag(&binding_request(&format!("{}:same", "a".repeat(257)))),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn announcement_pressure_is_bounded_and_recovers_when_tickets_end() {
+        let socket = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let (watcher, mut dials) = Watching::wrap(socket);
+        let from = "127.0.0.1:45678".parse().unwrap();
+        for index in 0..1000 {
+            watcher.notice(format!("dial-{index}"), from);
+        }
+        assert_eq!(dials.len(), PENDING_DIALS);
+        assert_eq!(watcher.announced.lock().unwrap().len(), PENDING_DIALS);
+        let first = dials.try_recv().unwrap();
+        watcher.notice(first.ufrag.clone(), from);
+        assert_eq!(dials.len(), PENDING_DIALS - 1, "live dial re-announced");
+        let name = first.ufrag.clone();
+        drop(first);
+        while dials.try_recv().is_ok() {}
+        watcher.notice(name.clone(), from);
+        assert_eq!(dials.try_recv().unwrap().ufrag, name);
+        assert_eq!(watcher.announced.lock().unwrap().len(), 1);
     }
 }

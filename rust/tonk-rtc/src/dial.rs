@@ -16,10 +16,10 @@
 //!
 //! # Consequences worth being explicit about
 //!
-//! - **The credential is a bearer secret.** Whoever holds the address
-//!   record can open a channel. That is the same property an invite URL
-//!   has, but it means the record must not be published more widely than
-//!   the right to connect.
+//! - **The route is not a bearer grant.** ICE credentials are chosen by
+//!   the dialer; knowing the port is enough to attempt a connection.
+//!   Neither the route nor the public rendezvous certificate grants
+//!   repository access. Local inventory disclosure is a separate policy.
 //!
 //! - **DTLS is one-way authenticated.** The dialer verifies this side
 //!   against the published fingerprint; this side cannot verify the
@@ -41,17 +41,15 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
 use webrtc::api::APIBuilder;
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::setting_engine::SettingEngine;
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::dtls_transport::dtls_role::DTLSRole;
-use webrtc::ice::udp_mux::{UDPMuxDefault, UDPMuxParams};
+use webrtc::ice::udp_mux::{UDPMux, UDPMuxDefault, UDPMuxParams};
 use webrtc::ice::udp_network::UDPNetwork;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::configuration::RTCConfiguration;
@@ -91,48 +89,7 @@ const _: () = assert!(DEFAULT_PORT >= 49152);
 /// consume.
 const MAX_CONCURRENT_DIALS: usize = 32;
 
-/// One address a dialer can send to.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Candidate {
-    /// The IP literal, as it will appear in the dialer's SDP.
-    pub host: String,
-    /// The UDP port this listener is bound to.
-    pub port: u16,
-}
-
-/// Everything a dialer needs, and nothing this side has to be told.
-///
-/// This is the record intended to live as a cardinality-one fact in a
-/// replicated space: a peer reads it whenever sync happens to deliver
-/// it, and dials later with no further coordination. Discovery
-/// tolerates arbitrary latency; the handshake involves no sync at all.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Address {
-    /// Where to send. Several, because a host may be multi-homed; a
-    /// dialer puts them all in the description it synthesises and lets
-    /// ICE pick.
-    pub candidates: Vec<Candidate>,
-    /// The DTLS fingerprint, as an SDP `a=fingerprint` value —
-    /// `"sha-256 ab:cd:…"`. This is what authenticates this side, and
-    /// the reason the certificate is persisted rather than minted per
-    /// run: a fingerprint that moves invalidates every address already
-    /// handed out.
-    pub fingerprint: String,
-}
-
-impl Address {
-    /// Encode for a URL fragment or a fact value.
-    pub fn encode(&self) -> String {
-        let json = serde_json::to_vec(self).expect("an address always serializes");
-        URL_SAFE_NO_PAD.encode(json)
-    }
-
-    /// Decode a record produced by [`Self::encode`].
-    pub fn decode(encoded: &str) -> Result<Self, crate::signal::DecodeError> {
-        let bytes = URL_SAFE_NO_PAD.decode(encoded.trim())?;
-        Ok(serde_json::from_slice(&bytes)?)
-    }
-}
+pub use crate::address::{Address, Candidate};
 
 /// A dialer that opened a datagram channel.
 ///
@@ -153,11 +110,27 @@ pub struct Dialer {
 /// dropping it tears all of them down.
 pub struct Listener {
     address: Address,
-    datagrams: AsyncMutex<mpsc::UnboundedReceiver<Dialer>>,
-    incoming: AsyncMutex<mpsc::UnboundedReceiver<Session>>,
+    datagrams: AsyncMutex<mpsc::Receiver<Dialer>>,
+    incoming: AsyncMutex<mpsc::Receiver<Session>>,
     /// Kept alive for the listener's life. The accept loop owns the
     /// per-dial connections; this is the handle that stops it.
     _accepting: tokio::task::JoinHandle<()>,
+    shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+impl Drop for Listener {
+    fn drop(&mut self) {
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
+        }
+    }
+}
+
+fn expired(state: RTCPeerConnectionState, idle: Duration) -> bool {
+    matches!(
+        state,
+        RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed
+    ) || (state != RTCPeerConnectionState::Connected && idle >= Duration::from_secs(20))
 }
 
 /// The offer this side answers for a given dial.
@@ -215,26 +188,13 @@ fn fabricated_offer(ufrag: &str, from: SocketAddr) -> String {
 
 /// The addresses this port can be reached on.
 ///
-/// Loopback always, for the same-machine case. Plus whichever local
-/// address the routing table would use to reach the outside world,
-/// which covers the LAN — found by "connecting" a throwaway UDP socket,
-/// which sends nothing and merely asks the kernel to pick a route.
+/// The local-first listener exposes loopback only. Wider listening needs
+/// a separate, explicit disclosure and authorization policy.
 fn reachable_on(port: u16) -> Vec<Candidate> {
-    let mut candidates = vec![Candidate {
+    vec![Candidate {
         host: "127.0.0.1".to_owned(),
         port,
-    }];
-    if let Ok(probe) = std::net::UdpSocket::bind("0.0.0.0:0")
-        && probe.connect("198.51.100.1:9").is_ok()
-        && let Ok(local) = probe.local_addr()
-        && !local.ip().is_loopback()
-    {
-        candidates.push(Candidate {
-            host: local.ip().to_string(),
-            port,
-        });
-    }
-    candidates
+    }]
 }
 
 /// Build the peer connection that answers one dial.
@@ -243,8 +203,8 @@ async fn answer_dial(
     from: SocketAddr,
     identity: &Identity,
     mux: Arc<UDPMuxDefault>,
-    sessions: mpsc::UnboundedSender<Session>,
-    datagrams: mpsc::UnboundedSender<Dialer>,
+    sessions: mpsc::Sender<Session>,
+    datagrams: mpsc::Sender<Dialer>,
 ) -> Result<Arc<RTCPeerConnection>, PeerError> {
     let mut settings = SettingEngine::default();
     // The dialer chose this ufrag and used it for both of its own ICE
@@ -261,23 +221,8 @@ async fn answer_dial(
     // this side's description can hard-code the role.
     settings.set_answering_dtls_role(DTLSRole::Client)?;
     settings.set_ice_multicast_dns_mode(webrtc::ice::mdns::MulticastDnsMode::QueryOnly);
-    // Answer from the address the dial arrived on, and only that one.
-    //
-    // The socket is bound to `0.0.0.0`, so without a filter the agent
-    // enumerates every local interface and pairs each against the
-    // dialer: it pings a loopback dialer from the LAN address and from
-    // an IPv6 link-local one. A browser offered neither of those, so it
-    // ignores the replies, and the pair that would have worked never
-    // wins. Restricting the agent to the address the packets actually
-    // came in on leaves exactly one pairing, which is the one that can
-    // succeed.
-    // The family is narrowed rather than the address: a dial that came in
-    // over IPv4 has nothing to say to an IPv6 link-local candidate, and
-    // pairing against one is what produced the replies the browser
-    // ignored. Narrowing to a single IP instead leaves the agent with no
-    // local candidate at all — the mux is bound to `0.0.0.0`, so the
-    // address it reports is not the one the packet arrived on, and
-    // gathering fails with `Candidate IP could not be found`.
+    // Match the socket's family; do not gather unrelated LAN or IPv6
+    // candidates for a loopback-only listener.
     settings.set_network_types(vec![if from.is_ipv4() {
         webrtc::ice::network_type::NetworkType::Udp4
     } else {
@@ -308,39 +253,76 @@ async fn answer_dial(
         .await?,
     );
 
-    let owner = connection.clone();
+    // The connection owns this callback: capturing a strong clone here
+    // creates a self-cycle and leaks every completed handshake.
+    let owner = Arc::downgrade(&connection);
     let dialer = ufrag.to_owned();
+    let accepted = Arc::new(std::sync::atomic::AtomicBool::new(false));
     connection.on_data_channel(Box::new(move |channel: Arc<RTCDataChannel>| {
         let sessions = sessions.clone();
         let datagrams = datagrams.clone();
         let owner = owner.clone();
         let dialer = dialer.clone();
+        let accepted = accepted.clone();
         Box::pin(async move {
+            let Some(owner) = owner.upgrade() else {
+                return;
+            };
+            if accepted.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                let _ = channel.close().await;
+                return;
+            }
+            let closing = owner.clone();
             match channel.label() {
                 CHANNEL_LABEL => {
-                    let _ = sessions.send(Session::attach(owner, channel));
+                    if sessions.try_send(Session::attach(owner, channel)).is_err() {
+                        let _ = closing.close().await;
+                    }
                 }
                 // The ufrag names this dial and nothing else: a dialer
                 // chose it, used it for both its ICE fields, and the mux
                 // routed on it. That makes it the one handle this side
                 // has for a browser that has no address of its own.
                 DATAGRAM_LABEL => {
-                    let _ = datagrams.send(Dialer {
-                        ufrag: dialer,
-                        channel,
-                        _connection: owner,
-                    });
+                    if channel.ordered() || channel.max_retransmits() != Some(0) {
+                        let _ = closing.close().await;
+                        return;
+                    }
+                    if datagrams
+                        .try_send(Dialer {
+                            ufrag: dialer,
+                            channel,
+                            _connection: owner,
+                        })
+                        .is_err()
+                    {
+                        let _ = closing.close().await;
+                    }
                 }
-                _ => {}
+                _ => {
+                    let _ = closing.close().await;
+                }
             }
         })
     }));
 
-    connection
-        .set_remote_description(RTCSessionDescription::offer(fabricated_offer(ufrag, from))?)
-        .await?;
-    let answer = connection.create_answer(None).await?;
-    connection.set_local_description(answer).await?;
+    let setup = async {
+        connection
+            .set_remote_description(RTCSessionDescription::offer(fabricated_offer(ufrag, from))?)
+            .await?;
+        let answer = connection.create_answer(None).await?;
+        connection.set_local_description(answer).await
+    };
+    match tokio::time::timeout(Duration::from_secs(5), setup).await {
+        Ok(Ok(())) => {}
+        result => {
+            let _ = connection.close().await;
+            return Err(match result {
+                Ok(Err(error)) => error.into(),
+                _ => PeerError::ConnectionFailed,
+            });
+        }
+    }
     Ok(connection)
 }
 
@@ -401,8 +383,9 @@ fn in_use(detail: &str) -> bool {
     detail.contains("address already in use") || detail.contains("addrinuse")
 }
 
+/// Listen for direct dials on IPv4 loopback. Port zero allocates a free port.
 pub async fn listen(identity: Identity, port: u16) -> Result<Listener, PeerError> {
-    let socket = tokio::net::UdpSocket::bind(("0.0.0.0", port))
+    let socket = tokio::net::UdpSocket::bind(("127.0.0.1", port))
         .await
         .map_err(|error| PeerError::Bind {
             port,
@@ -416,8 +399,9 @@ pub async fn listen(identity: Identity, port: u16) -> Result<Listener, PeerError
     let (watching, mut dials) = Watching::wrap(Arc::new(socket));
     let mux = UDPMuxDefault::new(UDPMuxParams::new(watching));
 
-    let (sessions, incoming) = mpsc::unbounded_channel();
-    let (datagrams, dialers) = mpsc::unbounded_channel();
+    let (sessions, incoming) = mpsc::channel(MAX_CONCURRENT_DIALS);
+    let (datagrams, dialers) = mpsc::channel(MAX_CONCURRENT_DIALS);
+    let (shutdown, mut stopping) = tokio::sync::oneshot::channel();
     let accepting = {
         let datagrams = datagrams.clone();
         let identity = identity.clone();
@@ -425,23 +409,44 @@ pub async fn listen(identity: Identity, port: u16) -> Result<Listener, PeerError
         tokio::spawn(async move {
             // Every connection built for a dial is kept here; dropping
             // one would tear down a live channel.
-            let mut connections: Vec<Arc<RTCPeerConnection>> = Vec::new();
-            while let Some(crate::mux::Dial { ufrag, from }) = dials.recv().await {
+            let mut connections: Vec<(Arc<RTCPeerConnection>, crate::mux::Dial, Instant)> =
+                Vec::new();
+            let mut cleanup = tokio::time::interval(Duration::from_secs(1));
+            loop {
+                let dial = tokio::select! {
+                    _ = &mut stopping => break,
+                    _ = cleanup.tick() => {
+                        let mut index = 0;
+                        while index < connections.len() {
+                            let (connection, _, seen) = &mut connections[index];
+                            if connection.connection_state() == RTCPeerConnectionState::Connected {
+                                *seen = Instant::now();
+                            }
+                            if expired(connection.connection_state(), seen.elapsed()) {
+                                let (connection, dial, _) = connections.swap_remove(index);
+                                let _ = connection.close().await;
+                                mux.remove_conn_by_ufrag(&dial.ufrag).await;
+                            } else { index += 1; }
+                        }
+                        continue;
+                    }
+                    dial = dials.recv() => match dial { Some(dial) => dial, None => break },
+                };
+                let crate::mux::Dial {
+                    ref ufrag, from, ..
+                } = dial;
                 // Nothing authenticates a dial at this layer, so a
                 // stranger can announce an arbitrary ufrag and each one
                 // would otherwise cost a peer connection and a DTLS
                 // handshake. Shed closed connections first, then refuse
                 // rather than grow without bound.
-                connections.retain(|connection| {
-                    connection.connection_state() != RTCPeerConnectionState::Closed
-                });
                 if connections.len() >= MAX_CONCURRENT_DIALS {
                     tracing::warn!(%ufrag, "refusing a dial: too many already open");
                     continue;
                 }
 
                 match answer_dial(
-                    &ufrag,
+                    ufrag,
                     from,
                     &identity,
                     mux.clone(),
@@ -450,7 +455,7 @@ pub async fn listen(identity: Identity, port: u16) -> Result<Listener, PeerError
                 )
                 .await
                 {
-                    Ok(connection) => connections.push(connection),
+                    Ok(connection) => connections.push((connection, dial, Instant::now())),
                     // One dial failing is not the listener failing —
                     // anyone can send a packet to an open port.
                     Err(error) => {
@@ -458,17 +463,23 @@ pub async fn listen(identity: Identity, port: u16) -> Result<Listener, PeerError
                     }
                 }
             }
+            for (connection, _, _) in connections {
+                let _ = connection.close().await;
+            }
+            let _ = mux.close().await;
         })
     };
 
     Ok(Listener {
         address: Address {
+            version: crate::address::VERSION,
             candidates: reachable_on(port),
             fingerprint: identity.fingerprint(),
         },
         incoming: AsyncMutex::new(incoming),
         datagrams: AsyncMutex::new(dialers),
         _accepting: accepting,
+        shutdown: Some(shutdown),
     })
 }
 
@@ -499,6 +510,49 @@ impl Listener {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_and_stalled_handshakes_do_not_hold_listener_slots_forever() {
+        assert!(expired(RTCPeerConnectionState::Failed, Duration::ZERO));
+        assert!(expired(RTCPeerConnectionState::Closed, Duration::ZERO));
+        assert!(!expired(
+            RTCPeerConnectionState::Connecting,
+            Duration::from_secs(19)
+        ));
+        assert!(expired(
+            RTCPeerConnectionState::Connecting,
+            Duration::from_secs(20)
+        ));
+        assert!(expired(
+            RTCPeerConnectionState::Disconnected,
+            Duration::from_secs(20)
+        ));
+        assert!(!expired(
+            RTCPeerConnectionState::Connected,
+            Duration::from_secs(3600)
+        ));
+    }
+
+    #[tokio::test]
+    async fn dropping_a_listener_releases_its_loopback_port() {
+        let listener = listen(Identity::generate().unwrap(), 0).await.unwrap();
+        let port = listener.address().candidates[0].port;
+        assert!(listener.address().is_loopback());
+        drop(listener);
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if tokio::net::UdpSocket::bind(("127.0.0.1", port))
+                    .await
+                    .is_ok()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
 
     /// The offer has to name where the dial came from.
     ///
@@ -653,11 +707,12 @@ mod tests {
     #[test]
     fn an_address_survives_the_round_trip() {
         let address = Address {
+            version: crate::address::VERSION,
             candidates: vec![Candidate {
                 host: "127.0.0.1".into(),
                 port: 41794,
             }],
-            fingerprint: "sha-256 ab:cd".into(),
+            fingerprint: format!("sha-256 {}", ["AB"; 32].join(":")),
         };
         assert_eq!(Address::decode(&address.encode()).unwrap(), address);
     }

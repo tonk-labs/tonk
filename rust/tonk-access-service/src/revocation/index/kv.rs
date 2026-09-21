@@ -38,6 +38,57 @@ fn failed(context: &str, error: impl std::fmt::Display) -> IndexError {
 
 #[async_trait(?Send)]
 impl RevocationIndex for KvRevocationIndex {
+    async fn targets(&self, limit: usize) -> Result<Option<BTreeSet<String>>, IndexError> {
+        let mut targets = BTreeSet::new();
+        let mut cursor: Option<String> = None;
+        let mut scanned = 0usize;
+        let mut pages = 0usize;
+        loop {
+            pages += 1;
+            if pages > limit.div_ceil(1000) + 1 {
+                return Ok(None);
+            }
+            let mut listing = self
+                .store
+                .list()
+                .prefix(super::REVOKED_PREFIX.into())
+                .limit(1000);
+            if let Some(cursor) = cursor.take() {
+                listing = listing.cursor(cursor);
+            }
+            let page = listing
+                .execute()
+                .await
+                .map_err(|error| failed("revocation snapshot failed", error))?;
+            scanned = scanned.saturating_add(page.keys.len());
+            // Bound work as well as output: many revokers of one target must
+            // not turn a small answer into unbounded namespace enumeration.
+            if scanned > limit {
+                return Ok(None);
+            }
+            for key in &page.keys {
+                let target = key
+                    .name
+                    .strip_prefix(super::REVOKED_PREFIX)
+                    .and_then(|key| key.split_once('/'))
+                    .ok_or_else(|| IndexError("malformed revocation key".into()))?
+                    .0;
+                targets.insert(target.to_owned());
+            }
+            if page.list_complete {
+                return Ok(Some(targets));
+            }
+            let next = page
+                .cursor
+                .filter(|next| !next.is_empty())
+                .ok_or_else(|| IndexError("incomplete revocation snapshot has no cursor".into()))?;
+            cursor = Some(next);
+            if scanned >= limit {
+                return Ok(None);
+            }
+        }
+    }
+
     async fn record(&self, target: &str, subject: &str) -> Result<bool, IndexError> {
         let key = revocation_key(target, subject);
         // Answer whether this call is what recorded it. The read is not
@@ -118,5 +169,42 @@ impl RevocationIndex for KvRevocationIndex {
         Ok(keys
             .iter()
             .any(|key| found.get(key).is_some_and(Option::is_some)))
+    }
+
+    async fn matching(
+        &self,
+        target: &str,
+        candidates: &BTreeSet<String>,
+    ) -> Result<BTreeSet<String>, IndexError> {
+        if candidates.is_empty() {
+            return Ok(BTreeSet::new());
+        }
+        if candidates.len() > BULK_LIMIT {
+            return Ok(self
+                .subjects(target)
+                .await?
+                .intersection(candidates)
+                .cloned()
+                .collect());
+        }
+        let keys: Vec<String> = candidates
+            .iter()
+            .map(|principal| revocation_key(target, principal))
+            .collect();
+        let found = self
+            .store
+            .get_bulk(&keys)
+            .text()
+            .await
+            .map_err(|error| failed("revocation index bulk read failed", error))?;
+        Ok(candidates
+            .iter()
+            .filter(|principal| {
+                found
+                    .get(&revocation_key(target, principal))
+                    .is_some_and(|value| value.is_some())
+            })
+            .cloned()
+            .collect())
     }
 }

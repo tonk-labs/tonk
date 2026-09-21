@@ -238,6 +238,7 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         // the network page lists peers this device may not be able to
         // hold, and the answer lands as a fact on this branch.
         .command::<tonk_schema::command::ReachPeer>()
+        .command::<tonk_schema::command::AttachPeer>()
 }
 
 /// A space branch's vocabulary — see [`CommandProviders`] for why each

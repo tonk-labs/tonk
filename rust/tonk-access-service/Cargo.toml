@@ -58,6 +58,7 @@ thiserror = { workspace = true }
 url = { workspace = true }
 
 async-trait = { workspace = true }
+futures-util = { workspace = true }
 
 # Test helpers (optional, for integration testing)
 anyhow = { workspace = true, optional = true }

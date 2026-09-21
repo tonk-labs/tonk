@@ -38,7 +38,14 @@ pub fn attach(transport: &Arc<WebRtcTransport>, peer: CustomAddr, channel: Arc<R
     let Port {
         mut outbound,
         inbound,
-    } = transport.attach(peer.clone());
+    } = transport.attach(peer);
+
+    let closing = inbound.clone();
+    channel.on_close(Box::new(move || {
+        let closing = closing.clone();
+        Box::pin(async move { closing.detach() })
+    }));
+    let pumping = inbound.clone();
 
     channel.on_message(Box::new(move |message: DataChannelMessage| {
         let inbound = inbound.clone();
@@ -49,16 +56,19 @@ pub fn attach(transport: &Arc<WebRtcTransport>, peer: CustomAddr, channel: Arc<R
     let sending = channel.clone();
     tokio::spawn(async move {
         while let Some(datagram) = outbound.recv().await {
+            if !pumping.is_current() {
+                break;
+            }
+            // Sending into SCTP is not backpressure from the network.
+            // Shed datagrams when its buffer is full; QUIC retries them.
+            if sending.buffered_amount().await >= 256 * 1024 {
+                continue;
+            }
             if sending.send(&datagram).await.is_err() {
                 break;
             }
         }
+        pumping.detach();
+        let _ = sending.close().await;
     });
-
-    let transport = transport.clone();
-    channel.on_close(Box::new(move || {
-        let transport = transport.clone();
-        let peer = peer.clone();
-        Box::pin(async move { transport.detach(&peer) })
-    }));
 }

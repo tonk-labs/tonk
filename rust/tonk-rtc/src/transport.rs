@@ -85,7 +85,7 @@
 use std::collections::HashMap;
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::task::{Context, Poll};
 
 use bytes::Bytes;
@@ -140,7 +140,10 @@ const OUTBOUND_QUEUE: usize = 256;
 #[derive(Debug)]
 struct Peer {
     outbound: mpsc::Sender<Bytes>,
+    generation: Arc<()>,
 }
+
+type Datagram = (CustomAddr, Arc<()>, Bytes);
 
 /// Shared state between the transport, its endpoint and its senders.
 #[derive(Debug, Default)]
@@ -157,8 +160,8 @@ struct Routes {
 pub struct WebRtcTransport {
     local: CustomAddr,
     routes: Arc<Routes>,
-    inbound: Mutex<Option<mpsc::Receiver<(CustomAddr, Bytes)>>>,
-    announce: mpsc::Sender<(CustomAddr, Bytes)>,
+    inbound: Mutex<Option<mpsc::Receiver<Datagram>>>,
+    announce: mpsc::Sender<Datagram>,
 }
 
 impl WebRtcTransport {
@@ -195,23 +198,38 @@ impl WebRtcTransport {
     /// actively harmful rather than merely wasteful.
     pub fn attach(&self, peer: CustomAddr) -> Port {
         let (outbound, queued) = mpsc::channel::<Bytes>(OUTBOUND_QUEUE);
+        let generation = Arc::new(());
         if let Ok(mut peers) = self.routes.peers.lock() {
-            peers.insert(peer.clone(), Peer { outbound });
+            peers.insert(
+                peer.clone(),
+                Peer {
+                    outbound,
+                    generation: generation.clone(),
+                },
+            );
         }
         Port {
             outbound: queued,
             inbound: Inbound {
                 peer,
+                generation,
+                routes: Arc::downgrade(&self.routes),
                 announce: self.announce.clone(),
             },
         }
     }
 
-    /// Forget a peer, because its channel closed.
-    pub fn detach(&self, peer: &CustomAddr) {
-        if let Ok(mut peers) = self.routes.peers.lock() {
-            peers.remove(peer);
-        }
+    /// Whether a live carrier is currently registered for this route.
+    pub fn is_attached(&self, peer: &CustomAddr) -> bool {
+        self.routes
+            .peers
+            .lock()
+            .map(|peers| {
+                peers
+                    .get(peer)
+                    .is_some_and(|peer| !peer.outbound.is_closed())
+            })
+            .unwrap_or(false)
     }
 }
 
@@ -231,7 +249,9 @@ pub struct Port {
 #[derive(Debug, Clone)]
 pub struct Inbound {
     peer: CustomAddr,
-    announce: mpsc::Sender<(CustomAddr, Bytes)>,
+    generation: Arc<()>,
+    routes: Weak<Routes>,
+    announce: mpsc::Sender<Datagram>,
 }
 
 impl Inbound {
@@ -240,7 +260,40 @@ impl Inbound {
     /// Dropped when iroh is not draining, which is what a socket does
     /// and what QUIC is built to notice.
     pub fn deliver(&self, datagram: Bytes) {
-        let _ = self.announce.try_send((self.peer.clone(), datagram));
+        if self.is_current() {
+            let _ = self
+                .announce
+                .try_send((self.peer.clone(), self.generation.clone(), datagram));
+        }
+    }
+
+    /// Whether this carrier still owns the route. Replacements invalidate
+    /// both its incoming packets and its eventual close notification.
+    pub fn is_current(&self) -> bool {
+        self.routes.upgrade().is_some_and(|routes| {
+            routes
+                .peers
+                .lock()
+                .map(|peers| {
+                    peers
+                        .get(&self.peer)
+                        .is_some_and(|peer| Arc::ptr_eq(&peer.generation, &self.generation))
+                })
+                .unwrap_or(false)
+        })
+    }
+
+    /// Remove this carrier only, never a replacement attached for the
+    /// same peer. Platform glue must call this when its pump or channel ends.
+    pub fn detach(&self) {
+        if let Some(routes) = self.routes.upgrade()
+            && let Ok(mut peers) = routes.peers.lock()
+            && peers
+                .get(&self.peer)
+                .is_some_and(|peer| Arc::ptr_eq(&peer.generation, &self.generation))
+        {
+            peers.remove(&self.peer);
+        }
     }
 }
 
@@ -267,7 +320,7 @@ impl CustomTransport for WebRtcTransport {
 #[derive(Debug)]
 struct Endpoint {
     routes: Arc<Routes>,
-    inbound: mpsc::Receiver<(CustomAddr, Bytes)>,
+    inbound: mpsc::Receiver<Datagram>,
     addrs: n0_watcher::Watchable<Vec<CustomAddr>>,
 }
 
@@ -290,10 +343,26 @@ impl CustomEndpoint for Endpoint {
         recv_infos: &mut [RecvInfo],
     ) -> Poll<io::Result<usize>> {
         let mut filled = 0;
-        while filled < bufs.len() {
+        while filled < bufs.len().min(metas.len()).min(recv_infos.len()) {
             match self.inbound.poll_recv(cx) {
-                Poll::Ready(Some((from, datagram))) => {
-                    let len = datagram.len().min(bufs[filled].len());
+                Poll::Ready(Some((from, generation, datagram))) => {
+                    let current = self
+                        .routes
+                        .peers
+                        .lock()
+                        .map(|peers| {
+                            peers
+                                .get(&from)
+                                .is_some_and(|peer| Arc::ptr_eq(&peer.generation, &generation))
+                        })
+                        .unwrap_or(false);
+                    // A queued packet can outlive its carrier. Also, a
+                    // datagram that does not fit must be dropped, never
+                    // truncated into a different QUIC packet.
+                    if !current || datagram.len() > bufs[filled].len() {
+                        continue;
+                    }
+                    let len = datagram.len();
                     bufs[filled][..len].copy_from_slice(&datagram[..len]);
                     // `RecvMeta` is non-exhaustive, so it is filled
                     // field by field rather than by struct literal.
@@ -343,7 +412,11 @@ impl CustomSender for Sender {
                 .routes
                 .peers
                 .lock()
-                .map(|peers| peers.contains_key(addr))
+                .map(|peers| {
+                    peers
+                        .get(addr)
+                        .is_some_and(|peer| !peer.outbound.is_closed())
+                })
                 .unwrap_or(false)
     }
 
@@ -354,19 +427,133 @@ impl CustomSender for Sender {
         _src: Option<&CustomAddr>,
         transmit: &Transmit<'_>,
     ) -> Poll<io::Result<()>> {
+        Poll::Ready(self.send(dst, transmit.contents, transmit.segment_size))
+    }
+}
+
+impl Sender {
+    fn send(
+        &self,
+        dst: &CustomAddr,
+        contents: &[u8],
+        segment_size: Option<usize>,
+    ) -> io::Result<()> {
         let Ok(peers) = self.routes.peers.lock() else {
-            return Poll::Ready(Err(io::Error::other("the WebRTC route table is poisoned")));
+            return Err(io::Error::other("the WebRTC route table is poisoned"));
         };
         let Some(peer) = peers.get(dst) else {
-            return Poll::Ready(Err(io::Error::other("no WebRTC channel for that peer")));
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "no WebRTC channel for that peer",
+            ));
         };
         // Queue full means the peer is not keeping up. Report success
         // and drop, exactly as a socket would: QUIC notices the loss and
         // slows down, whereas surfacing an error here would tear down a
         // connection that is merely congested.
-        let _ = peer
-            .outbound
-            .try_send(Bytes::copy_from_slice(transmit.contents));
-        Poll::Ready(Ok(()))
+        // GSO batches are separate UDP datagrams, not one larger packet.
+        let size = segment_size.unwrap_or(contents.len().max(1));
+        if size == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "zero datagram segment size",
+            ));
+        }
+        for datagram in contents.chunks(size) {
+            match peer.outbound.try_send(Bytes::copy_from_slice(datagram)) {
+                Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => {}
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::NotConnected,
+                        "the WebRTC carrier closed",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture() -> (Arc<WebRtcTransport>, CustomAddr, Sender) {
+        let transport = WebRtcTransport::new(b"local");
+        let peer = CustomAddr::from_parts(TRANSPORT_ID, b"remote");
+        let sender = Sender {
+            routes: transport.routes.clone(),
+        };
+        (transport, peer, sender)
+    }
+
+    #[test]
+    fn stale_close_does_not_remove_the_replacement() {
+        let (transport, peer, sender) = fixture();
+        let old = transport.attach(peer.clone());
+        let mut new = transport.attach(peer.clone());
+        old.inbound.detach();
+        assert!(!old.inbound.is_current());
+        assert!(new.inbound.is_current());
+        sender.send(&peer, b"new carrier", None).unwrap();
+        assert_eq!(new.outbound.try_recv().unwrap(), b"new carrier"[..]);
+        new.inbound.detach();
+        assert!(!sender.is_valid_send_addr(&peer));
+    }
+
+    #[test]
+    fn stale_and_oversized_packets_are_dropped_not_delivered_or_truncated() {
+        let (transport, peer, _) = fixture();
+        let mut endpoint = transport.bind().unwrap();
+        let old = transport.attach(peer.clone());
+        old.inbound
+            .deliver(Bytes::from_static(b"queued before replacement"));
+        let new = transport.attach(peer.clone());
+        old.inbound.deliver(Bytes::from_static(b"late old packet"));
+        new.inbound.deliver(Bytes::from_static(b"too big"));
+        new.inbound.deliver(Bytes::from_static(b"ok"));
+        let mut buffer = [0; 2];
+        let mut bufs = [io::IoSliceMut::new(&mut buffer)];
+        let mut metas = [noq_udp::RecvMeta::default()];
+        let mut infos = [RecvInfo::new(peer, None)];
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        assert!(matches!(
+            endpoint.poll_recv(&mut cx, &mut bufs, &mut metas, &mut infos),
+            Poll::Ready(Ok(1))
+        ));
+        assert_eq!(metas[0].len, 2);
+        assert_eq!(&buffer, b"ok");
+    }
+
+    #[test]
+    fn a_full_queue_is_packet_loss_but_a_closed_queue_is_not_a_route() {
+        let (transport, peer, sender) = fixture();
+        let port = transport.attach(peer.clone());
+        for _ in 0..OUTBOUND_QUEUE + 10 {
+            sender.send(&peer, b"packet", None).unwrap();
+        }
+        assert_eq!(port.outbound.len(), OUTBOUND_QUEUE);
+        drop(port.outbound);
+        assert!(!sender.is_valid_send_addr(&peer));
+        assert!(!transport.is_attached(&peer));
+        assert_eq!(
+            sender.send(&peer, b"packet", None).unwrap_err().kind(),
+            io::ErrorKind::NotConnected
+        );
+    }
+
+    #[test]
+    fn segmented_sends_preserve_datagram_boundaries() {
+        let (transport, peer, sender) = fixture();
+        let mut port = transport.attach(peer.clone());
+        sender.send(&peer, b"abcde", Some(2)).unwrap();
+        for expected in [b"ab".as_slice(), b"cd", b"e"] {
+            assert_eq!(port.outbound.try_recv().unwrap(), expected);
+        }
+        assert!(port.outbound.try_recv().is_err());
+        assert_eq!(
+            sender.send(&peer, b"x", Some(0)).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
     }
 }

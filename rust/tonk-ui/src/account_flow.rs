@@ -6233,6 +6233,324 @@ mod tests {
         Ok(())
     }
 
+    /// The normal account ceremony supplies authority. The Network UI only
+    /// selects a transport; neither it nor this test fabricates a delegation.
+    /// Run with a CLI built with `--features rtc`.
+    #[cfg(feature = "rtc-integration-tests")]
+    #[dialog_common::test]
+    async fn it_syncs_an_authorized_space_through_the_local_cli(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        driver.set_script_timeout(Duration::from_secs(90)).await?;
+        sign_up(&driver, &env, EMAIL).await?;
+        let key = create_space_awaiting_remote(&driver, "RTC authorized space", true).await?;
+        let subject = if key.starts_with("did:") {
+            key.clone()
+        } else {
+            format!("did:key:{key}")
+        };
+        for branch in ["main"] {
+            successful_body(
+                "publish the initial cloud replica",
+                &post_json(
+                    &driver,
+                    &format!("/api/repository/{key}/branch/{branch}/sync/push"),
+                    serde_json::json!({}),
+                )
+                .await?,
+            );
+        }
+        let linked = link_cli(&driver, &env).await?;
+        let pulled = run_cli(
+            &env,
+            &linked.profile,
+            &[
+                "account".into(),
+                "space".into(),
+                "pull".into(),
+                subject.clone(),
+                "--name".into(),
+                "rtc-authorized".into(),
+            ],
+        )
+        .await?;
+        anyhow::ensure!(
+            pulled.status.success(),
+            "initial CLI pull: {}",
+            pulled.stderr
+        );
+
+        // The registry is a startup snapshot: start AFTER the normal pull has
+        // registered this space. A dropped/failed test always kills the child.
+        let mut listener = tonk_command_in(&env, &linked.profile)
+            .args(["rtc", "serve", "--port", "0"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .kill_on_drop(true)
+            .spawn()?;
+        let mut stdout = BufReader::new(listener.stdout.take().context("RTC stdout")?);
+        let peer = tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let mut line = String::new();
+                anyhow::ensure!(
+                    stdout.read_line(&mut line).await? > 0,
+                    "RTC listener exited before announcing its URI"
+                );
+                if let Some(peer) = line.trim_end().strip_prefix("PEER ") {
+                    break Ok::<_, anyhow::Error>(peer.to_owned());
+                }
+            }
+        })
+        .await
+        .context("RTC startup timed out")??;
+
+        goto(&driver, env.tonk_web.join("network")?.as_str()).await?;
+        enter_guest(&driver).await?;
+        let input = wait_for_displayed(&driver, ".nask-peer").await?;
+        input.send_keys(&peer).await?;
+        input.send_keys(Key::Enter).await?;
+        wait_for_displayed(&driver, "[data-status='peer:reachable']").await?;
+        let offer = format!("[data-peer-offer='{subject}']");
+        wait_for_displayed(&driver, &format!("{offer} button"))
+            .await?
+            .click()
+            .await?;
+        wait_for_text_containing(
+            &driver,
+            &format!("{offer} [role=status]"),
+            "peer upstream selected",
+        )
+        .await?;
+        driver.enter_default_frame().await?;
+        let config = get_json(&driver, &format!("/api/repository/{key}")).await?;
+        let config = successful_body("selected peer configuration", &config);
+        anyhow::ensure!(
+            config["remote"]["origin"].is_object(),
+            "cloud configuration was lost: {config}"
+        );
+        anyhow::ensure!(
+            config["branch"]["meta"]["upstream"].is_null(),
+            "device-local metadata must stay local: {config}"
+        );
+        for branch in ["main"] {
+            anyhow::ensure!(
+                config["branch"][branch]["upstream"]["remote"]
+                    .as_str()
+                    .is_some_and(|name| name.starts_with("peer-")),
+                "{branch} did not select the peer: {config}"
+            );
+        }
+
+        let declare = |name: &str| format!("rtc-note!: &{name}\n  label: {name:?}\n");
+        let schema = "attribute!: &rtc-label\n  the: xyz.tonk.rtc-e2e/label\n  as: text\n  cardinality: one\n  description: RTC content roundtrip\nconcept!: &rtc-note\n  description: A peer-synced note\n  with:\n    label: rtc-label\n";
+        successful_body(
+            "browser writes content",
+            &post_yaml(
+                &driver,
+                &format!("/api/repository/{key}/branch/main/evaluate"),
+                &format!("{schema}{}", declare("from-browser")),
+            )
+            .await?,
+        );
+        // A newly selected remote has its own tracking/CAS state. Use normal
+        // reconciliation, which first learns/merges its head before publishing;
+        // a blind initial push correctly reports a conflict instead.
+        successful_body(
+            "browser reconciles through the peer",
+            &post_json(
+                &driver,
+                &format!("/api/repository/{key}/branch/main/sync"),
+                serde_json::json!({}),
+            )
+            .await?,
+        );
+        let read = run_cli(
+            &env,
+            &linked.profile,
+            &[
+                "--space".into(),
+                "rtc-authorized".into(),
+                "query".into(),
+                "rtc-note".into(),
+                "--json".into(),
+            ],
+        )
+        .await?;
+        anyhow::ensure!(read.status.success(), "read CLI replica: {}", read.stderr);
+        anyhow::ensure!(
+            read.stdout.contains("from-browser"),
+            "browser write never reached CLI storage: {}",
+            read.stdout
+        );
+
+        // Exercise streaming payloads, not merely the archive blocks that
+        // describe them. Both peers verify content-addressed blob bytes.
+        const BLOB_SIZE: usize = 3 * 1024 * 1024;
+        let upload = driver.execute_async(r#"
+            const done = arguments[arguments.length - 1];
+            const bytes = Uint8Array.from({length: arguments[1]}, (_, i) => (i * 31 + 17) % 251);
+            fetch(arguments[0], {method: 'POST', headers: {
+                'content-type': 'application/octet-stream', 'x-tonk-blob-name': 'from-browser.bin'
+            }, body: bytes}).then(async response => done({status: response.status, body: await response.json()}))
+                .catch(error => done({error: String(error)}));
+        "#, vec![serde_json::json!(format!("/api/repository/{key}/branch/main/blob")), serde_json::json!(BLOB_SIZE)]).await?;
+        let entity =
+            successful_body("browser uploads a multi-megabyte blob", upload.json())["entity"]
+                .as_str()
+                .context("upload returned no blob reference")?
+                .to_owned();
+        successful_body(
+            "browser publishes its blob through the peer",
+            &post_json(
+                &driver,
+                &format!("/api/repository/{key}/branch/main/sync"),
+                serde_json::json!({}),
+            )
+            .await?,
+        );
+        let blob = tokio::time::timeout(
+            Duration::from_secs(120),
+            tonk_command_in(&env, &linked.profile)
+                .args(["--space", "rtc-authorized", "blob", "cat", &entity])
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await
+        .context("CLI blob read timed out")??;
+        anyhow::ensure!(
+            blob.status.success(),
+            "CLI blob read: {}",
+            String::from_utf8_lossy(&blob.stderr)
+        );
+        anyhow::ensure!(blob.stdout.len() == BLOB_SIZE, "CLI blob length changed");
+        anyhow::ensure!(
+            blob.stdout
+                .iter()
+                .enumerate()
+                .all(|(i, byte)| *byte == ((i * 31 + 17) % 251) as u8),
+            "browser-to-CLI blob bytes changed"
+        );
+
+        let file = linked.profile.path().join("from-cli.bin");
+        let changed: Vec<u8> = blob.stdout.iter().map(|byte| byte ^ 0x5a).collect();
+        std::fs::write(&file, changed)?;
+        let added = run_cli(
+            &env,
+            &linked.profile,
+            &[
+                "--space".into(),
+                "rtc-authorized".into(),
+                "blob".into(),
+                "add".into(),
+                file.to_string_lossy().into_owned(),
+                "--no-sync".into(),
+                "--quiet".into(),
+            ],
+        )
+        .await?;
+        anyhow::ensure!(added.status.success(), "CLI blob add: {}", added.stderr);
+        let added = added.stdout.trim();
+        anyhow::ensure!(added.starts_with("blob:"), "CLI returned no blob reference");
+        successful_body(
+            "browser pulls the CLI-only blob",
+            &post_json(
+                &driver,
+                &format!("/api/repository/{key}/branch/main/sync/pull"),
+                serde_json::json!({}),
+            )
+            .await?,
+        );
+        let downloaded = driver.execute_async(r#"
+            const done = arguments[arguments.length - 1];
+            const expected = Uint8Array.from({length: arguments[1]}, (_, i) => ((i * 31 + 17) % 251) ^ 0x5a);
+            const digest = async bytes => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)),
+                byte => byte.toString(16).padStart(2, '0')).join('');
+            fetch(arguments[0]).then(async response => {
+                const actual = await response.arrayBuffer();
+                done({status: response.status, length: actual.byteLength,
+                    actual: await digest(actual), expected: await digest(expected)});
+            }).catch(error => done({error: String(error)}));
+        "#, vec![serde_json::json!(format!("/api/repository/{key}/branch/main/blob/{added}")), serde_json::json!(BLOB_SIZE)]).await?;
+        let downloaded = downloaded.json();
+        anyhow::ensure!(
+            downloaded["status"] == 200
+                && downloaded["length"] == BLOB_SIZE
+                && downloaded["actual"].is_string()
+                && downloaded["actual"] == downloaded["expected"],
+            "CLI-to-browser blob length/digest changed: {downloaded}"
+        );
+
+        // No cloud push: only a peer pull can reveal this new local revision.
+        let wrote = run_cli(
+            &env,
+            &linked.profile,
+            &[
+                "--space".into(),
+                "rtc-authorized".into(),
+                "eval".into(),
+                "--no-sync".into(),
+                "-c".into(),
+                declare("from-cli"),
+            ],
+        )
+        .await?;
+        anyhow::ensure!(wrote.status.success(), "CLI write: {}", wrote.stderr);
+        successful_body(
+            "browser pulls through the peer",
+            &post_json(
+                &driver,
+                &format!("/api/repository/{key}/branch/main/sync/pull"),
+                serde_json::json!({}),
+            )
+            .await?,
+        );
+        anyhow::ensure!(
+            owner_sees(&driver, &key, "from-cli").await?,
+            "CLI-only write never reached the browser"
+        );
+
+        // Reload closes the old page carrier. Do not visit Network or click
+        // connect again: persisted upstreams must acquire a carrier on demand.
+        driver.refresh().await?;
+        wait_for_service_worker(&driver).await?;
+        let wrote = run_cli(
+            &env,
+            &linked.profile,
+            &[
+                "--space".into(),
+                "rtc-authorized".into(),
+                "eval".into(),
+                "--no-sync".into(),
+                "-c".into(),
+                declare("after-reload"),
+            ],
+        )
+        .await?;
+        anyhow::ensure!(
+            wrote.status.success(),
+            "CLI write after reload: {}",
+            wrote.stderr
+        );
+        successful_body(
+            "saved peer reconnects after page reload",
+            &post_json(
+                &driver,
+                &format!("/api/repository/{key}/branch/main/sync/pull"),
+                serde_json::json!({}),
+            )
+            .await?,
+        );
+        anyhow::ensure!(
+            owner_sees(&driver, &key, "after-reload").await?,
+            "saved peer failed to recover after reload"
+        );
+        driver.quit().await?;
+        listener.kill().await?;
+        listener.wait().await?;
+        Ok(())
+    }
+
     #[dialog_common::test]
     async fn it_links_the_cli_through_the_browser_callback(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;

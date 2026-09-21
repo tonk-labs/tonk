@@ -1767,6 +1767,8 @@ pub(crate) async fn boot_state(
         profile_transition: Arc::new(Mutex::new(())),
         context_generation: Arc::new(AtomicU64::new(0)),
     };
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    state.reach.bind_context(&state);
     bootstrap_profile(&state).await.map_err(|e| {
         crate::TonkWorkerError::Internal(format!("failed to bootstrap profile meta: {e}"))
     })?;
@@ -1806,8 +1808,8 @@ pub struct TonkServiceWorker {
     /// Whether the self-scheduled sync loop is running. The SW owns the
     /// sync cadence (the page no longer polls): while any branch holds a
     /// live subscriber, a loop drains every [`SYNC_LOOP_MS`]; it stops when
-    /// the page goes quiet or connectivity drops, and any fetch (or the
-    /// `online` event) restarts it.
+    /// the page goes quiet or no selected transport is available. Any fetch
+    /// or connectivity event restarts it; local peers remain eligible offline.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     sync_loop: std::rc::Rc<std::cell::Cell<bool>>,
 }
@@ -2181,9 +2183,9 @@ impl TonkServiceWorker {
     }
 
     /// Connectivity changed. Re-read `navigator.onLine` (reliable in the SW
-    /// scope) and reconcile: offline stamps `sync:offline` on every open repo
-    /// so the chips/discs reflect the disconnect; online runs a drain and
-    /// restarts the self-scheduled sync loop the offline transition stopped.
+    /// scope) and reconcile: offline stamps `sync:offline` only on branches
+    /// that require internet access. Every transition runs a transport-aware
+    /// drain and restarts the loop; a loopback peer can still sync offline.
     ///
     /// Fired both by the SW's own `offline`/`online` events and by a
     /// `{type:"connectivity"}` nudge from the active page (whose events fire
@@ -2194,16 +2196,15 @@ impl TonkServiceWorker {
     #[wasm_bindgen(js_name = "onconnectivity")]
     pub fn on_connectivity(&self) -> Promise {
         let offline = offline();
-        if !offline {
-            // Restart the self-scheduled loop the offline transition stopped.
-            self.ensure_sync_loop();
-        }
+        // Local peers still need a beat when internet connectivity disappears.
+        self.ensure_sync_loop();
         let state = self.state.clone();
         let scheduler = self.sync_scheduler.clone();
         future_to_promise(async move {
             if offline {
                 crate::router::mark_offline(&state).await;
-            } else if scheduler.may_drain(js_sys::Date::now(), pending_local_work(&state).await) {
+            }
+            if scheduler.may_drain(js_sys::Date::now(), pending_local_work(&state).await) {
                 scheduler.begin_drain();
                 crate::router::drain_sync(&state).await;
                 scheduler.end_drain(js_sys::Date::now());
@@ -2222,9 +2223,7 @@ impl TonkServiceWorker {
         let state = self.state.clone();
         let scheduler = self.sync_scheduler.clone();
         future_to_promise(async move {
-            if !offline()
-                && scheduler.may_drain(js_sys::Date::now(), pending_local_work(&state).await)
-            {
+            if scheduler.may_drain(js_sys::Date::now(), pending_local_work(&state).await) {
                 scheduler.begin_drain();
                 crate::router::drain_sync(&state).await;
                 scheduler.end_drain(js_sys::Date::now());
@@ -2238,9 +2237,10 @@ impl TonkServiceWorker {
     /// (an open SSE keeps the SW alive, so the timer chain survives), the
     /// loop drains every [`SYNC_LOOP_MS`]. It stops when the page goes
     /// quiet — no subscribers means nothing is watching, and stopping lets
-    /// the browser reclaim the worker — or when connectivity drops (after
-    /// stamping `sync:offline`); any fetch or the `online` event restarts
-    /// it. This replaces the page-side `POST /api/sync` heartbeat.
+    /// the browser reclaim the worker — or no selected transport is available.
+    /// Internet loss parks cloud branches, but not local peer branches. Any
+    /// fetch or connectivity event restarts it. This replaces the page-side
+    /// `POST /api/sync` heartbeat.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     fn ensure_sync_loop(&self) {
         // A worker being replaced starts no new work — its loop would keep
@@ -2261,10 +2261,9 @@ impl TonkServiceWorker {
                     break;
                 }
                 if offline() {
-                    // Reflect the disconnect, then stop — `ononline`
-                    // restarts the loop and reconciles immediately.
+                    // Only internet-dependent branches are stamped offline;
+                    // a saved local peer can still keep this loop active.
                     crate::router::mark_offline(&state).await;
-                    break;
                 }
                 if !has_live_subscribers(&state).await {
                     break;
@@ -2340,7 +2339,21 @@ async fn has_syncable_repo(state: &AppState) -> bool {
     let repos: Vec<String> = tonk.reactor.repos().read().keys().cloned().collect();
     for repo in repos {
         if crate::router::is_sync_enabled(&tonk, &repo, "main").await {
-            return true;
+            if !offline() {
+                return true;
+            }
+            let branches: Vec<String> = tonk
+                .reactor
+                .repos()
+                .read()
+                .get(&repo)
+                .map(|cached| cached.branches().read().keys().cloned().collect())
+                .unwrap_or_default();
+            for branch in branches {
+                if crate::router::offline_sync_allowed(&tonk, &repo, &branch).await {
+                    return true;
+                }
+            }
         }
     }
     false
@@ -2486,17 +2499,9 @@ fn schedule_sync_drain(event: &FetchEvent, scheduler: &SyncScheduler, state: &Ap
             // (or a drain started) while the checks above were awaiting.
             return Ok(JsValue::UNDEFINED);
         }
-        // No upstream while offline: skip the network sweep, but stamp
-        // `sync:offline` locally so the chip/disc reflect the disconnect
-        // (skipping silently left them frozen on the last online status).
-        // Traffic keeps scheduling, so the first drain after connectivity
-        // returns proceeds normally (and the page's `online` listener polls
-        // immediately).
+        // Keep local peer work in the sweep; each branch gates its own transport.
         if offline() {
-            scheduler.begin_drain();
             crate::router::mark_offline(&state).await;
-            scheduler.end_drain(js_sys::Date::now());
-            return Ok(JsValue::UNDEFINED);
         }
         scheduler.begin_drain();
         if let Some(cause) = scheduler.take_cause() {

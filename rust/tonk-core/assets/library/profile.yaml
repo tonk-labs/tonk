@@ -406,14 +406,14 @@ command!: &profile/rename
 # ask a distinct transient, the way `tonk:check-update` does.
 # The ask's DOM binding. Fields read off `.currentTarget.elements`,
 # which is where a form's controls live — `FormData` is not what the
-# binder reads. `Date.now()` makes each ask a distinct transient, so
+# binder reads. `.timeStamp` makes each ask a distinct transient, so
 # asking twice re-fires instead of decoding as the same command.
 event!: &on/reach-peer
   type: "submit"
   prevent-default: true
   where:
     peer: ".currentTarget.elements.peer.value"
-    time: "Date.now()"
+    time: ".timeStamp"
 
 command!: &tonk/reach-peer
   this: tonk:reach-peer
@@ -421,14 +421,38 @@ command!: &tonk/reach-peer
   with:
     peer:
       description: >
-        The CLI's did:key, as `tonk rtc serve` prints it. Not derivable:
-        the rendezvous phrase names the route, the endpoint key is the
-        CLI's own identity.
+        The full peer URI printed by `tonk rtc serve`, including its
+        endpoint did:key and exact WebRTC route. The rendezvous phrase
+        is not evidence of the CLI's identity.
       the: xyz.tonk.reach-peer/peer
       as: text
     time:
       description: The click's timestamp; makes each ask a distinct transient.
       the: xyz.tonk.reach-peer/time
+      as: float
+
+event!: &on/attach-peer
+  type: "click"
+  where:
+    peer: ".currentTarget.dataset.peer"
+    space: ".currentTarget.dataset.space"
+    time: ".timeStamp"
+
+command!: &tonk/attach-peer
+  this: tonk:attach-peer
+  description: Select this peer as an existing space's sync upstream.
+  with:
+    peer:
+      the: xyz.tonk.attach-peer/peer
+      description: The exact URI of the peer that disclosed the space.
+      as: text
+    space:
+      the: xyz.tonk.attach-peer/space
+      description: The space DID; discovery does not grant authority.
+      as: text
+    time:
+      the: xyz.tonk.attach-peer/time
+      description: The click timestamp, allowing another attempt.
       as: float
 
 # Ask whether a newer seed is waiting for a space, without installing it.
@@ -900,9 +924,19 @@ concept!: &peer
       cardinality: one
       as: entity
   maybe:
+    address:
+      description: The exact peer URI, retained for retry.
+      the: xyz.tonk.peer/address
+      cardinality: one
+      as: text
+    detail:
+      description: The current connection result or failure reason.
+      the: xyz.tonk.peer/detail
+      cardinality: one
+      as: text
     subject:
       description: >
-        The authority the CLI answered for, present only while reachable.
+        The authenticated endpoint DID, present only while reachable.
       the: xyz.tonk.peer/subject
       cardinality: one
       as: text
@@ -944,10 +978,13 @@ view!:
                    serve` knows it. -->
               <form class="nask-form" on:reach-peer=tonk:reach-peer>
                 <input class="nask-peer" name="peer" type="text"
-                       placeholder="did:key: from `tonk rtc serve`" required>
-                <button class="nask chrome" type="submit">ask</button>
+                       placeholder="paste the full URI from `tonk rtc serve`" required>
+                <button class="nask chrome" type="submit">connect</button>
               </form>
             </div>
+          </tonk-display>
+          <tonk-display model="tonk:peer-offer">
+            <span slot="empty"></span>
           </tonk-display>
           <tonk-display model="tonk:remote">
             <!-- Direct child, for the same reason as the peer slot
@@ -974,7 +1011,51 @@ view!:
         <div class="nrow nrow--peer" data-status={status}>
           <span class="nrow__name">local tonk</span>
           <span class="nrow__subject">{subject}</span>
+          <span class="nrow__note" role="status">{detail}</span>
         </div>
+        <form class="nask-form" on:reach-peer=tonk:reach-peer>
+          <input class="nask-peer" name="peer" type="text" value={address}
+                 placeholder="paste the full URI from `tonk rtc serve`" required>
+          <button class="nask chrome" type="submit">connect / retry</button>
+        </form>
+      </div>
+
+concept!:
+  this: tonk:peer-offer
+  description: A space the connected peer disclosed; this grants no access.
+  with:
+    subject:
+      the: xyz.tonk.peer-offer/subject
+      description: The offered space's DID.
+      cardinality: one
+      as: text
+    name:
+      the: xyz.tonk.peer-offer/name
+      description: The peer's local name for the space.
+      cardinality: one
+      as: text
+    address:
+      the: xyz.tonk.peer-offer/address
+      description: The route of the peer that disclosed this space.
+      cardinality: one
+      as: text
+  maybe:
+    detail:
+      the: xyz.tonk.peer-offer/detail
+      description: The result of selecting this peer for sync.
+      cardinality: one
+      as: text
+
+view!:
+  this: tonk:peer-offer
+  show:
+    directory: |
+      <div class="nrow" data-peer-offer={subject}>
+        <span class="nrow__name">{name}</span>
+        <span class="nrow__subject">{subject}</span>
+        <button class="chrome" type="button" on:attach-peer=tonk:attach-peer
+                data-peer={address} data-space={subject}>sync through this peer</button>
+        <span class="nrow__note" role="status">{detail}</span>
       </div>
 
 # The stored remotes, as a directory over this branch. One row per
