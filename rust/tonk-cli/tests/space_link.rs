@@ -299,12 +299,7 @@ async fn it_lists_a_previous_accounts_space_with_its_owner(
         .expect("scratch row");
     assert_eq!(scratch.owner, None);
     assert_eq!(scratch.role, SpaceRole::Local);
-    assert!(rendered.contains("ACCESS"), "{rendered}");
-    assert_eq!(garden.access_kind, tonk_cli::inventory::AccessKind::Legacy);
-    assert_eq!(
-        scratch.access_kind,
-        tonk_cli::inventory::AccessKind::LocalOnly
-    );
+    assert!(!rendered.contains("ACCESS"), "{rendered}");
     assert!(!rendered.contains("another account"), "{rendered}");
     assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
     Ok(())

@@ -216,9 +216,9 @@ mod when_one_account_is_signed_in {
         assert_eq!(remotes["rows"].as_array().unwrap().len(), 0);
     }
 
-    /// Authority provenance is separate from ownership and is not a remote verdict.
+    /// The default listing reports local roster facts, not inferred authority provenance.
     #[dialog_common::test]
-    fn the_space_listing_carries_an_owner_and_local_authority_provenance() {
+    fn the_space_listing_carries_owner_and_role_without_an_access_guess() {
         let state = tempfile::tempdir().expect("tempdir");
         space_and_account(state.path(), "garden", Some(ACCOUNT_A));
 
@@ -229,10 +229,8 @@ mod when_one_account_is_signed_in {
         assert!(stdout.contains("NAME"), "{stdout}");
         assert!(stdout.contains("OWNER"), "{stdout}");
         assert!(stdout.contains("ROLE"), "{stdout}");
-        assert!(stdout.contains("ACCESS"), "{stdout}");
+        assert!(!stdout.contains("ACCESS"), "{stdout}");
         assert!(!stdout.contains("another account"), "{stdout}");
-        // Local-only until it is linked: no roster, so no owner.
-        assert!(stdout.contains("local-only"), "{stdout}");
     }
 }
 
