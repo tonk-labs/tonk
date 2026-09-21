@@ -673,7 +673,7 @@ async fn assemble(
             Err(dialog_repository::LoadRemoteError::NotFound { .. }) => {
                 site.repository
                     .remote("origin")
-                    .create(SiteAddress::from(dialog_remote_ucan_s3::UcanAddress::new(
+                    .create(SiteAddress::from(dialog_remote_ucan::UcanAddress::new(
                         manifest.remote.clone(),
                     )))
                     .perform(&site.operator)
@@ -705,7 +705,7 @@ async fn assemble(
         .await?;
     ensure!(
         remote.address().site()
-            == &SiteAddress::from(dialog_remote_ucan_s3::UcanAddress::new(
+            == &SiteAddress::from(dialog_remote_ucan::UcanAddress::new(
                 manifest.remote.clone()
             )),
         "connection remote does not match its trusted binding"

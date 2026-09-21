@@ -72,7 +72,7 @@ async fn scoped_site(
     // which is outside these grants and cannot silently be added to the preset.
     site.repository
         .remote("origin")
-        .create(SiteAddress::from(dialog_remote_ucan_s3::UcanAddress::new(
+        .create(SiteAddress::from(dialog_remote_ucan::UcanAddress::new(
             format!("{endpoint}/ucan/"),
         )))
         .perform(&site.operator)

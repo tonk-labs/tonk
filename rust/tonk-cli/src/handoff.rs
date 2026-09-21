@@ -299,10 +299,6 @@ pub async fn synced_name(
     Ok(available_name(display_name, registry))
 }
 
-/// [`crate::space::derive_name`] against a registry's claimed names. A
-/// claim's storage directory is `connection-<nanos>`, not the name, so
-/// an occupied canonical site cannot collide with the alias chosen here.
-
 /// Retain an explicit alias, including one that resembles an automatic alias.
 pub fn remember_connection_name(root: &std::path::Path, name: &str) -> anyhow::Result<()> {
     crate::space::validate_name(name)?;
@@ -395,6 +391,9 @@ pub async fn resolve_ordinary_name(
     Ok(chosen)
 }
 
+/// Use [`crate::space::derive_name`] against the registry's claimed names. A
+/// claim's storage directory is `connection-<nanos>`, not the name, so an
+/// occupied canonical site cannot collide with the alias chosen here.
 fn available_name(display_name: &str, registry: &crate::space::Registry) -> String {
     crate::space::derive_name(display_name, |name| registry.spaces.contains_key(name))
 }
