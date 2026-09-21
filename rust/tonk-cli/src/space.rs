@@ -1067,13 +1067,21 @@ fn register_existing(
     if registry.spaces.contains_key(name) {
         return Err(SpaceError::Exists(name.to_owned()));
     }
+    let binding_directory = binding_directory.map(canonical);
+    if let Some(directory) = &binding_directory
+        && let Some(previous) = registry.bindings.get(directory)
+        && previous != name
+    {
+        return Err(SpaceError::Io(format!(
+            "directory {} is already bound to space '{previous}'",
+            directory.display()
+        )));
+    }
     registry
         .spaces
         .insert(name.to_owned(), SpaceEntry::at(site));
     if let Some(directory) = binding_directory {
-        registry
-            .bindings
-            .insert(canonical(directory), name.to_owned());
+        registry.bindings.insert(directory, name.to_owned());
     }
     guard.save(&registry)
 }

@@ -2,16 +2,17 @@
 
 ## Current CLI access workflows
 
-People and agents use `tonk join INVITE_LINK` with the same scoped invitation
-copied from the Tonk UI. The CLI imports the invitation key and delegation
-chain, pulls one space and confirms setup without browser approval or account
-login. A separate scoped DID is used; matching the UI account's roster/activity
-identity is deferred. Import does not create ordinary membership.
+People and agents use `tonk join INVITE_LINK` for both ordinary share links and
+isolated agent links copied from the Tonk UI. The CLI validates the resolved
+link and selects its parser automatically; `--agent` is not part of the command.
+Both paths pull one space without browser approval. Ordinary links claim to an
+eligible local identity and publish membership/provenance. Agent links retain a
+separate scoped DID and publish the grant-specific setup receipt.
 
 CLI account management, ownership adoption, account migration and `tonk link`
 are removed. Local creation/transplant remain local; existing replicas and
-credentials are preserved. `tonk --space NAME join` resumes an interrupted
-scoped import. Older sharing/account-approval links are rejected before import.
+credentials are preserved. `tonk --space NAME join` resumes either import from
+its verified retained kind. Account-approval links remain outside this command.
 
 The current journey is `ACCT-C14` / `HANDOFF-21`. Browser-initiated terminal
 linking is deferred. Account-command descriptions below are historical evidence,

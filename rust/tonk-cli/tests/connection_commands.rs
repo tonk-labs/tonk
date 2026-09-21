@@ -109,7 +109,7 @@ async fn removed_workflows_preserve_existing_local_state() -> Result<()> {
                 "--name",
                 "new",
             ],
-            "unsupported_agent_invitation",
+            "invalid invite",
         ),
         (vec!["join", "--agent"], "unexpected argument"),
         (vec!["connect"], "unrecognized subcommand"),
@@ -132,14 +132,14 @@ async fn removed_workflows_preserve_existing_local_state() -> Result<()> {
         (vec!["migrate", "account"], "unrecognized subcommand"),
         (
             vec!["join", "https://example.test/join#never-print-secret"],
-            "unsupported_agent_invitation",
+            "invalid invite",
         ),
         (
             vec![
                 "join",
                 "https://example.test/join?access=old-account-proof#never-print-secret",
             ],
-            "unsupported_agent_invitation",
+            "invalid invite",
         ),
         (
             vec!["--space", "retained", "join"],
@@ -634,5 +634,144 @@ async fn connection_command_imports_bearer_restarts_and_keeps_account_state() ->
         retained.branch().await?.handle().revision().unwrap().tree,
         edited
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn ordinary_command_pulls_content_uses_synced_name_and_has_no_agent_receipt() -> Result<()> {
+    use tonk_schema::prelude::DidExt as _;
+
+    let s3 =
+        dialog_remote_s3::helpers::LocalS3::start_with_auth("test", "test", &["ordinary-commands"])
+            .await?;
+    let server = tonk_access_service::helpers::AccessServer::start(
+        s3,
+        "ordinary-commands",
+        "test",
+        "test",
+        None,
+        None,
+        None,
+    )
+    .await?;
+    let producer = common::TestSite::new().await?;
+    let address = tonk_access_service::helpers::AccessServiceAddress {
+        access_service_url: server.endpoint.clone(),
+        s3_endpoint: server.s3_server.endpoint.clone(),
+        bucket: "ordinary-commands".into(),
+        access_key_id: "test".into(),
+        secret_access_key: "test".into(),
+        service_did: server.service_did.clone(),
+        service_seed: server.service_seed.clone(),
+    };
+    address
+        .provision_subject(producer.site.repository.did().as_ref())
+        .await?;
+    let remote = format!("{}/ucan/", server.endpoint);
+    tonk_cli::remote::add(
+        &producer.site,
+        "origin",
+        &remote,
+        Some(producer.site.repository.did()),
+    )
+    .await?;
+    tonk_cli::remote::set_upstream(&producer.site, "origin").await?;
+    let entity: dialog_artifacts::Entity = "id:test:ordinary-before-cli".parse()?;
+    producer
+        .site
+        .branch()
+        .await?
+        .handle()
+        .transaction()
+        .assert(tonk_schema::RepositoryName {
+            this: producer.site.repository.did().this(),
+            name: tonk_schema::domain::repo::Name("Shared Garden".into()),
+        })
+        .assert(
+            the!("test.ordinary/value")
+                .of(entity)
+                .is("ordinary remote content".to_owned()),
+        )
+        .commit()
+        .publish()
+        .perform(&producer.site.operator)
+        .await?;
+    tonk_cli::sync::push(&producer.site).await?;
+    let invite = tonk_cli::invite::mint(
+        &producer.site,
+        Some("https://untrusted-carrier.example/join"),
+        Some(&remote),
+    )
+    .await?;
+
+    let temp = tempfile::tempdir()?;
+    let home = temp.path().join("home");
+    let project = temp.path().join("project");
+    std::fs::create_dir_all(&home)?;
+    std::fs::create_dir_all(&project)?;
+    let mut command = cli(&home, &project);
+    command.args(["join", &invite.url]);
+    let output = run(command).await?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Joined space 'shared-garden'"), "{stdout}");
+    assert!(!stdout.contains("Agent connection confirmed"));
+    let store = tonk_cli::space::SpaceStore::at(home.join("state"));
+    let registry = store.load()?;
+    assert_eq!(registry.spaces.len(), 1);
+    assert!(registry.spaces["shared-garden"].connection.is_none());
+    assert_eq!(
+        registry.bindings.get(&project.canonicalize()?),
+        Some(&"shared-garden".to_owned())
+    );
+
+    let mut show = cli(&home, &project);
+    show.args([
+        "--space",
+        "shared-garden",
+        "show",
+        "id:test:ordinary-before-cli",
+        "--json",
+    ]);
+    let shown = run(show).await?;
+    assert!(
+        shown.status.success(),
+        "{}",
+        String::from_utf8_lossy(&shown.stderr)
+    );
+    assert!(String::from_utf8_lossy(&shown.stdout).contains("ordinary remote content"));
+
+    let receipt_query =
+        "agent-connection:\n  this: ?connection\n  status: \"Agent connection confirmed\"\n";
+    let mut query = cli(&home, &project);
+    query.args([
+        "--space",
+        "shared-garden",
+        "eval",
+        "-c",
+        receipt_query,
+        "--no-sync",
+    ]);
+    let queried = run(query).await?;
+    assert!(
+        queried.status.success(),
+        "{}",
+        String::from_utf8_lossy(&queried.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&queried.stdout).contains("id:tonk:agent-connection"));
+
+    let mut replay = cli(&home, &project);
+    replay.args(["join", &invite.url]);
+    let replayed = run(replay).await?;
+    assert!(
+        replayed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&replayed.stderr)
+    );
+    assert_eq!(store.load()?.spaces.len(), 1);
     Ok(())
 }

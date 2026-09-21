@@ -34,6 +34,10 @@ can synchronize within the delegated authority. If the owner revokes the
 invite, later remote operations are rejected while any already-local replica is
 handled according to the documented local authority boundary.
 
+This import is separate from `tonk space link NAME`: join creates a local
+replica from invitation authority, while space link attaches an existing local
+space to an account and hosted service.
+
 ### Share-menu presentation decision
 
 The browser calls the transferable artifact a **share link**. Opening Share

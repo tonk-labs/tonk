@@ -349,6 +349,52 @@ pub async fn resolve_connection_name(
     Ok(chosen)
 }
 
+/// Choose and publish an ordinary import's local alias.
+///
+/// Explicit aliases are stable. Automatic aliases prefer the repository's
+/// synced name, then invitation metadata, then a subject-derived fallback.
+/// The final collision check and binding rewrite happen under one registry
+/// write guard, after all repository queries have completed.
+pub async fn resolve_ordinary_name(
+    site: &TonkSite,
+    store: &crate::space::SpaceStore,
+    root: &std::path::Path,
+    current: &str,
+    state: &crate::join::OrdinaryState,
+) -> anyhow::Result<String> {
+    if state.explicit_name {
+        return Ok(current.to_owned());
+    }
+    let stem = match synced_name(site, &crate::space::Registry::default()).await {
+        Ok(name) => name,
+        Err(_) => state
+            .advisory_name
+            .as_deref()
+            .map(|name| available_name(name, &crate::space::Registry::default()))
+            .unwrap_or_else(|| fallback_name(&state.subject, &crate::space::Registry::default())),
+    };
+    let guard = store.write_guard()?;
+    let mut registry = guard.load()?;
+    let entry = registry
+        .spaces
+        .get(current)
+        .ok_or_else(|| anyhow::anyhow!("ordinary join alias changed during naming"))?;
+    anyhow::ensure!(
+        entry.site == root.canonicalize()? && entry.connection.is_none(),
+        "ordinary_join_binding_mismatch"
+    );
+    let entry = registry.spaces.remove(current).expect("checked above");
+    let chosen = available_name(&stem, &registry);
+    registry.spaces.insert(chosen.clone(), entry);
+    for alias in registry.bindings.values_mut() {
+        if alias == current {
+            *alias = chosen.clone();
+        }
+    }
+    guard.save(&registry)?;
+    Ok(chosen)
+}
+
 fn available_name(display_name: &str, registry: &crate::space::Registry) -> String {
     crate::space::derive_name(display_name, |name| registry.spaces.contains_key(name))
 }

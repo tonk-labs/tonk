@@ -14,6 +14,29 @@ use tonk_cli::join::PreparedInvitation;
 use tonk_invite::connection::{AgentInvite, candidate_build_scopes};
 use tonk_schema::prelude::DidExt as _;
 
+fn cli(home: &std::path::Path, cwd: &std::path::Path) -> std::process::Command {
+    let binary = std::env::var_os("NEXTEST_BIN_EXE_tonk")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_tonk").into());
+    let mut command = std::process::Command::new(binary);
+    command
+        .current_dir(cwd)
+        .env("HOME", home)
+        .env("XDG_DATA_HOME", home.join("data"))
+        .env("TONK_SPACES_STATE", home.join("state"))
+        .env("TONK_TELEMETRY_STATE", home.join("telemetry"))
+        .env("TONK_UPDATE_STATE", home.join("update"))
+        .env("TONK_NO_UPDATE_CHECK", "1")
+        .env("DO_NOT_TRACK", "1")
+        .env_remove("TONK_UNSAFE_ALLOW_DEVICE_ROOT")
+        .env_remove("TONK_SPACE");
+    command
+}
+
+async fn run(mut command: std::process::Command) -> Result<std::process::Output> {
+    Ok(tokio::task::spawn_blocking(move || command.output()).await??)
+}
+
 async fn agent_link(base: &str, expired: bool) -> Result<String> {
     let owner = Signer::from(Ed25519Signer::import(&[71; 32]).await?);
     let seed = [72; 32];
@@ -172,5 +195,207 @@ async fn shortcuts_resolve_once_before_routing_both_formats() -> Result<()> {
     assert_eq!(requests.load(Ordering::SeqCst), 2);
 
     server.abort();
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn ordinary_local_join_uses_normal_storage_and_no_agent_marker() -> Result<()> {
+    let issuer = common::TestSite::new().await?;
+    let invite = tonk_cli::invite::mint(
+        &issuer.site,
+        Some("https://carrier.example.test/join"),
+        None,
+    )
+    .await?;
+    let temp = tempfile::tempdir()?;
+    let home = temp.path().join("home");
+    let project = temp.path().join("project");
+    std::fs::create_dir_all(&home)?;
+    std::fs::create_dir_all(&project)?;
+    let mut command = cli(&home, &project);
+    command.args(["join", &invite.url, "--name", "shared"]);
+    let output = run(command).await?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Joined space 'shared'"), "{stdout}");
+    assert!(stdout.contains("no sync remote"), "{stdout}");
+    assert!(!stdout.contains("Agent connection confirmed"));
+    let store = tonk_cli::space::SpaceStore::at(home.join("state"));
+    let registry = store.load()?;
+    let entry = &registry.spaces["shared"];
+    assert!(entry.connection.is_none());
+    assert!(!entry.site.join(tonk_cli::connections::MARKER_FILE).exists());
+    assert_eq!(
+        registry.bindings.get(&project.canonicalize()?),
+        Some(&"shared".to_owned())
+    );
+    let recovery = std::fs::read_to_string(entry.site.join("ordinary-join.json"))?;
+    assert!(!recovery.contains(&invite.url));
+    assert!(!recovery.contains(invite.url.split('#').next_back().unwrap()));
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn ordinary_targeted_join_requires_an_available_exact_recipient() -> Result<()> {
+    let issuer = common::TestSite::new().await?;
+    let recipient = common::TestSite::new().await?;
+    let recipient_root = tonk_cli::site::member_did(&recipient.site).await?;
+    let invite = tonk_cli::invite::mint_targeted(
+        &issuer.site,
+        Some("https://carrier.example.test/join"),
+        None,
+        recipient_root.as_str(),
+    )
+    .await?;
+    let prepared = match tonk_cli::join::prepare(&invite.url).await? {
+        PreparedInvitation::Ordinary(prepared) => prepared,
+        PreparedInvitation::Agent(_) => panic!("targeted ordinary invite reached agent parsing"),
+    };
+    tonk_cli::join::ensure_ordinary_recipient(&prepared, &recipient.config).await?;
+
+    let unrelated = common::TestSite::new().await?;
+    let error = tonk_cli::join::ensure_ordinary_recipient(&prepared, &unrelated.config)
+        .await
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("invitation_recipient_mismatch"));
+
+    let empty = tempfile::tempdir()?;
+    let project = empty.path().join("project");
+    std::fs::create_dir_all(&project)?;
+    let mut command = cli(empty.path(), &project);
+    command.args(["join", &invite.url, "--name", "must-not-exist"]);
+    let output = run(command).await?;
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("invitation_recipient_mismatch"));
+    assert!(!empty.path().join("state/spaces").exists());
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn failed_hosted_join_retains_alias_offline_edits_and_resume_state() -> Result<()> {
+    let issuer = common::TestSite::new().await?;
+    let invite = tonk_cli::invite::mint(
+        &issuer.site,
+        Some("https://carrier.example.test/join"),
+        Some("http://127.0.0.1:9/ucan/"),
+    )
+    .await?;
+    let temp = tempfile::tempdir()?;
+    let home = temp.path().join("home");
+    let project = temp.path().join("project");
+    std::fs::create_dir_all(&home)?;
+    std::fs::create_dir_all(&project)?;
+    let mut command = cli(&home, &project);
+    command.args(["join", &invite.url, "--name", "pending"]);
+    let output = run(command).await?;
+    assert!(!output.status.success());
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("Joined space"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Resume with `tonk --space pending join`"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains(&invite.url));
+    let store = tonk_cli::space::SpaceStore::at(home.join("state"));
+    let registry = store.load()?;
+    assert_eq!(registry.spaces.len(), 1);
+    let root = registry.spaces["pending"].site.clone();
+    let state: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("ordinary-join.json"))?)?;
+    assert_eq!(state["phase"], "pull_pending");
+
+    let document = "attribute!: &offline-note\n  description: Offline note\n  the: test.pending/offline-note\n  as: text\n  cardinality: one\n";
+    let mut edit = cli(&home, &project);
+    edit.args(["--space", "pending", "eval", "-c", document, "--no-sync"]);
+    let edited = run(edit).await?;
+    assert!(
+        edited.status.success(),
+        "{}",
+        String::from_utf8_lossy(&edited.stderr)
+    );
+    let mut resume = cli(&home, &project);
+    resume.args(["--space", "pending", "join"]);
+    let resumed = run(resume).await?;
+    assert!(!resumed.status.success());
+    assert!(!String::from_utf8_lossy(&resumed.stdout).contains("Joined space"));
+    assert_eq!(store.load()?.spaces.len(), 1);
+    let mut show = cli(&home, &project);
+    show.args(["--space", "pending", "show", "offline-note", "--json"]);
+    let shown = run(show).await?;
+    assert!(
+        shown.status.success(),
+        "{}",
+        String::from_utf8_lossy(&shown.stderr)
+    );
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn ordinary_advisory_names_get_collision_safe_local_aliases() -> Result<()> {
+    async fn named_invite() -> Result<tonk_cli::invite::InviteOutcome> {
+        let issuer = common::TestSite::new().await?;
+        issuer
+            .site
+            .branch()
+            .await?
+            .handle()
+            .transaction()
+            .assert(tonk_schema::RepositoryName {
+                this: issuer.site.repository.did().this(),
+                name: tonk_schema::domain::repo::Name("Shared Garden".into()),
+            })
+            .commit()
+            .publish()
+            .perform(&issuer.site.operator)
+            .await?;
+        Ok(tonk_cli::invite::mint(
+            &issuer.site,
+            Some("https://carrier.example.test/join"),
+            None,
+        )
+        .await?)
+    }
+
+    let first = named_invite().await?;
+    let second = named_invite().await?;
+    let temp = tempfile::tempdir()?;
+    let home = temp.path().join("home");
+    let first_project = temp.path().join("first-project");
+    let second_project = temp.path().join("second-project");
+    std::fs::create_dir_all(&home)?;
+    std::fs::create_dir_all(&first_project)?;
+    std::fs::create_dir_all(&second_project)?;
+    for (project, invite, expected) in [
+        (&first_project, &first.url, "shared-garden"),
+        (&second_project, &second.url, "shared-garden-2"),
+    ] {
+        let mut command = cli(&home, project);
+        command.args(["join", invite]);
+        let output = run(command).await?;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains(&format!("Joined space '{expected}'"))
+        );
+    }
+    let store = tonk_cli::space::SpaceStore::at(home.join("state"));
+    let registry = store.load()?;
+    assert!(registry.spaces.contains_key("shared-garden"));
+    assert!(registry.spaces.contains_key("shared-garden-2"));
+    assert_eq!(
+        registry.bindings[&first_project.canonicalize()?],
+        "shared-garden"
+    );
+    assert_eq!(
+        registry.bindings[&second_project.canonicalize()?],
+        "shared-garden-2"
+    );
     Ok(())
 }
