@@ -597,7 +597,7 @@ impl CustomElement for UiHubAccount {
                     event.prevent_default();
                     close_menu(&host, true);
                 }
-                "Tab" => close_menu(&host, false),
+                "Tab" if !settings_open(&host) => close_menu(&host, false),
                 _ => {}
             }
         }));
@@ -1131,6 +1131,9 @@ fn finish_linking(this: &HtmlElement) {
         {
             stack.set_hidden(false);
         }
+    }
+    if this.get_attribute("view").as_deref() == Some("settings") {
+        open_settings_view(this);
     }
 }
 
@@ -1836,6 +1839,40 @@ mod tests {
             trigger.get_attribute("aria-expanded").as_deref(),
             Some("false")
         );
+        host.remove();
+    }
+
+    #[wasm_bindgen_test]
+    fn it_keeps_settings_open_when_tabbing_between_controls() {
+        // ACCT-C14 / HANDOFF-21: menu dismissal must not hide Settings.
+        let host = account_element();
+        super::open_menu(&host);
+        super::show_settings(&host, true);
+        let document = window().unwrap().document().unwrap();
+        let view = host
+            .query_selector("[data-settings-view]")
+            .unwrap()
+            .unwrap();
+        let control: HtmlElement = document
+            .create_element("button")
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        control.set_text_content(Some("refresh access"));
+        view.append_child(&control).unwrap();
+        control.focus().unwrap();
+        assert!(super::settings_open(&host));
+        let init = KeyboardEventInit::new();
+        init.set_key("Tab");
+        init.set_bubbles(true);
+        init.set_cancelable(true);
+        let tab = KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
+        control.dispatch_event(&tab).unwrap();
+        assert!(
+            !tab.default_prevented(),
+            "the browser owns sequential focus"
+        );
+        assert!(super::settings_open(&host), "Tab must not dismiss Settings");
         host.remove();
     }
 
