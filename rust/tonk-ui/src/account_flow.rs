@@ -244,7 +244,17 @@ mod tests {
                 let display = driver
                     .execute(
                         "const display = document.querySelector('vault-active > tonk-display');
-                         return display ? {
+                         const active = document.querySelector('vault-active');
+                         const root = active && active.closest('.vault-root');
+                         const vault = active ? {
+                           connected: active.isConnected, navigated: !!active.__navigated, chosen: active.__chosen,
+                           optimistic: active.__optimistic, current: active.__current, landed: !!active.__landed,
+                           awaited: active.__rowsAwaited, nodeRows: root ? root.querySelectorAll('.vault-node-row').length : null,
+                           hereActive: root && root.querySelector('.vault-here-row') && root.querySelector('.vault-here-row').dataset.active,
+                           trees: document.querySelectorAll('vault-tree').length, actives: document.querySelectorAll('vault-active').length,
+                           unselected: !!(active.closest('.vault-doc') && active.closest('.vault-doc').classList.contains('is-unselected')),
+                         } : null;
+                         return display ? { vault,
                            attributes: [...display.attributes].map((a) => a.name + '=' + a.value),
                            children: [...display.children].map((c) => c.tagName + (c.getAttribute('slot') ? '[' + c.getAttribute('slot') + ']' : '')),
                            text: display.textContent.trim().slice(0, 200),
@@ -457,7 +467,17 @@ mod tests {
             // one with none to wire never marks itself.
             let bound = driver
                 .execute(
-                    "let bound = arguments[0];
+                    "const target = arguments[0];
+                     // A library element's handlers arrive with its upgrade; the
+                     // registry watches each such tag, so one it watches must be
+                     // upgraded before a click inside it means anything.
+                     for (let node = target; node; node = node.parentElement) {
+                       const tag = node.tagName.toLowerCase();
+                       if (!tag.includes('-') || !document.querySelector(`tonk-element-watch[data-tag=\"${tag}\"]`)) continue;
+                       const definition = customElements.get(tag);
+                       if (!definition || !(node instanceof definition)) return false;
+                     }
+                     let bound = target;
                      while (bound && !bound.getAttributeNames().some((name) => name.startsWith('on:'))) {
                        bound = bound.parentElement;
                      }
@@ -8258,6 +8278,25 @@ mod tests {
                 .context("CDP credential id is not base64")?,
         );
 
+        // The identity bridge installs once the page's wasm is up, a
+        // beat after the document loads.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            let installed = driver
+                .execute(
+                    "return typeof window.tonkIdentity?.authorizeDevice === 'function';",
+                    Vec::new(),
+                )
+                .await?;
+            if installed.json().as_bool() == Some(true) {
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the identity bridge never installed on the page"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
         let ceremony = driver
             .execute_async(
                 r#"
