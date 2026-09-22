@@ -6105,7 +6105,7 @@ mod tests {
                         trigger: document.querySelector('[data-account-trigger]')?.textContent,
                         error: document.querySelector('[data-account-error]')?.textContent,
                         errorHidden: document.querySelector('[data-account-error]')?.hidden,
-                        tab: document.querySelector('hub-bar')?.getAttribute('tab'),
+                        tab: document.querySelector('hub-bar')?.getAttribute('path'),
                         linking: document.querySelector('hub-bar')?.getAttribute('linking'),
                         barRegistered: !!customElements.get('hub-bar'),
                         hasTonkFetch: typeof window.tonk?.fetch === 'function'

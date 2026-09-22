@@ -191,31 +191,25 @@ fn it_keeps_the_handles_the_suite_drives_the_hub_by() {
     }
 }
 
-/// With no account, the account cell raises the signup rather than
-/// switching tabs.
+/// With no account, the account page raises the signup itself.
 ///
-/// The cell is the only door to linking one, so a version that merely
-/// opened an empty menu would strand a new browser with nothing to
-/// click. The old element branched on this and the bar must too — it is
-/// the difference between a tab bar and a way in.
+/// The bar's cells are links, so the page they lead to is the only
+/// door to linking an account; a version that merely showed an empty
+/// panel would strand a new browser with nothing to click.
 #[dialog_common::test]
 fn it_raises_the_signup_from_an_unlinked_account_cell() {
-    let bar = PROFILE_LIBRARY
-        .split("element!: &hub-bar")
+    let panel = PROFILE_LIBRARY
+        .split("element!: &account-settings")
         .nth(1)
         .and_then(|rest| rest.split("\nview!:").next())
-        .expect("the hub-bar definition");
+        .expect("the account-settings definition");
     assert!(
-        bar.contains("    unlinked: |"),
-        "the bar must be able to tell whether an account is linked",
+        panel.contains("    unlinked: |"),
+        "the panel must be able to tell whether an account is linked",
     );
     assert!(
-        bar.contains("self.link('needs-account');"),
-        "and raise the ceremony in place when none is, rather than switching tabs",
-    );
-    assert!(
-        bar.contains("self.link('profile-transition');"),
-        "adding an account parks the ceremony for the reload the rotation brings",
+        panel.contains("self.link('needs-account');"),
+        "and raise the ceremony in place when none is",
     );
     assert!(
         PROFILE_LIBRARY.contains(
@@ -249,35 +243,6 @@ fn it_carries_the_menu_element_on_the_branch_that_renders_it() {
     assert!(
         PROFILE_LIBRARY.contains("concept!: &element"),
         "the element concept must be seeded on the profile branch, not only in core.yaml",
-    );
-    assert!(
-        PROFILE_LIBRARY.contains("element!: &hub-menu"),
-        "the menu's behaviour must be defined as branch data",
-    );
-    assert!(
-        PROFILE_LIBRARY.contains("<hub-menu"),
-        "and the account menu must actually be one",
-    );
-}
-
-/// The menu's methods do not shadow a view's `show`.
-///
-/// One word meaning a dictionary of templates in one half of the file
-/// and "reveal the menu" in the other is a trap for whoever reads it
-/// next.
-#[dialog_common::test]
-fn it_names_the_menu_methods_open_and_close() {
-    let menu = PROFILE_LIBRARY
-        .split("element!: &hub-menu")
-        .nth(1)
-        .map(|rest| rest.split("\nelement!:").next().unwrap_or(rest))
-        .and_then(|rest| rest.split("\nview!:").next())
-        .expect("the hub-menu definition");
-    assert!(menu.contains("    open: |"), "the menu opens with `open`");
-    assert!(menu.contains("    close: |"), "and closes with `close`");
-    assert!(
-        !menu.contains("    show: |") && !menu.contains("    hide: |"),
-        "`show` belongs to views; the menu must not borrow it",
     );
 }
 
@@ -906,8 +871,10 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
     assert!(!panel.contains("confirm device removal"));
     assert!(!panel.contains("remove all data associated with this account from this device"));
     assert!(panel.contains("data-add-passkey"));
-    assert!(!panel.contains("href=\"/account\""));
-    assert!(!panel.contains("href=\"/settings\""));
+    // The account page's one link out is to its settings, and that is
+    // the panel's own row.
+    assert!(panel.contains("href=\"/settings\" data-open-settings"));
+    assert_eq!(panel.matches("href=\"/settings\"").count(), 1);
     // The name, address and passkeys are facts, so the panel mounts the
     // view that renders them rather than carrying their markup; the
     // ceremony's progress is a row it words.

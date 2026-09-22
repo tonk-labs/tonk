@@ -2076,6 +2076,10 @@ account-settings .s-body { min-width: 0; min-height: min(408px, 55vh);
     background: var(--panel); border: 1px solid var(--ring);
     font-family: var(--sans); font-weight: 400; font-size: 13.5px;
     line-height: 1.4; text-transform: none; color: var(--soft); }
+/* the account page's menu is rows under the bar, not a panel: no box */
+account-settings[data-pane="menu"] .s-body { min-height: 0; max-height: none;
+    overflow: visible; padding: 0; background: none; border: 0;
+    font: inherit; text-transform: inherit; color: inherit; }
 account-settings .pane[hidden] { display: none; }
 account-settings .srowd { display: flex; justify-content: space-between;
     align-items: baseline; gap: 16px; padding: 9px 0; }

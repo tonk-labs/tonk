@@ -69,16 +69,6 @@ async fn main() {
                 }
                 return;
             }
-            "profile-transition" => {
-                // Add Account is rotating onto an empty branch. Park the
-                // anchored ceremony request; the worker reloads this tab
-                // once the swap is published (`profile-changed`), and the
-                // reload reopens the ceremony on the fresh branch. Not
-                // reloading here is the point: the rotation is a command
-                // in flight, and a reload now would cut it off.
-                tonk_ui::register_dialog::stash_reopen(reason);
-                return;
-            }
             "dismiss" => {
                 tonk_ui::register_dialog::close();
                 return;
@@ -166,18 +156,6 @@ async fn main() {
             tonk_analytics::product::ProductResult::Success,
             None,
         );
-    }
-    if let Some(request) = tonk_ui::register_dialog::take_reopen() {
-        // A ceremony parked across a branch rotation sends its work to
-        // `profile_with()`, which still names `main` until the branch is
-        // resolved; wait for that here, and only here, so an ordinary
-        // boot (a worker upgrade among them) mounts as early as it did.
-        wasm_bindgen_futures::spawn_local(async move {
-            tonk_host::bridge::resolve_profile_with().await;
-            tonk_ui::register_dialog::open();
-            tonk_ui::register_dialog::describe(&request);
-            tonk_ui::register_dialog::adopt_stashed_share();
-        });
     }
 }
 

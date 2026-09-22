@@ -403,8 +403,6 @@ view!:
       .hub-page hub-bar { position:relative; display:block; width:100%; }
       /* The menu's own `open` attribute drives its visibility, rather
          than a `hidden` attribute script has to remember to toggle. */
-      hub-menu { display:block; }
-      hub-menu[open="false"] { display:none; }
       .account-trigger { overflow:hidden; }
       .account-trigger [data-account-label] { overflow:hidden; text-overflow:ellipsis;
         white-space:nowrap; text-transform:none; }
@@ -413,6 +411,14 @@ view!:
       .account-menu[hidden] { display:none; }
       .account-menu__profiles { display:flex; flex-direction:column; gap:7px; }
       .account-menu__profiles:empty { display:none; }
+      /* the account page's rows hang from the bar as bar-sized cells with
+         the stack's 7px gaps of page between them */
+      .account-menu__profiles-seat { display:flex; flex-direction:column; gap:7px; }
+      .account-menu__profiles-seat > span[data-when-linked] { display:contents; }
+      .account-menu__profiles-seat tonk-display { display:flex; flex-direction:column; gap:7px; }
+      .account-menu__profiles-seat tonk-display:not(:has(.account-menu__row:not([data-active]))) { display:none; }
+      /* the account you are on is the bar; the list holds the others */
+      .account-menu__row[data-active] { display:none; }
       .account-menu__row { display:flex; align-items:flex-end; justify-content:flex-end;
         gap:8px; width:100%; min-height:36px; padding:0 10px 9px 16px; text-align:left;
         background:var(--frost-solid); font:inherit; color:inherit; cursor:pointer;
@@ -560,9 +566,15 @@ view!:
         .account-menu__row, .srow, .snew { min-height:44px; }
         .m-cancel, .m-go { min-height:44px; }
       }
-      /* One page: the bar's path says whether the stack or the panel shows. */
-      .hub-page:has(hub-bar[path^="/settings"]) [data-spaces-view] { display:none; }
-      .hub-page:not(:has(hub-bar[path^="/settings"])) [data-settings-view] { display:none; }
+      /* One page: the bar's path says whether the stack or the account
+         section shows, and the section says whether its rows are for a
+         browser with an account here or without one. */
+      .hub-page:has(hub-bar[path^="/settings"]) [data-spaces-view],
+      .hub-page:has(hub-bar[path="/account"]) [data-spaces-view] { display:none; }
+      .hub-page:not(:has(hub-bar[path^="/settings"])):not(:has(hub-bar[path="/account"])) [data-settings-view] { display:none; }
+      account-settings:not([data-linked="true"]) [data-when-linked] { display:none; }
+      /* an account page with no account lists nothing: only the cluster shows */
+      .hub-page:has(hub-bar[path="/account"]) [data-settings-view]:has(account-settings:not([data-linked="true"])) { display:none; }
   show:
     directory: |
         <div class="stack chrome" data-spaces-view aria-label="spaces">
@@ -1089,6 +1101,14 @@ route!: &route/home
   path: "/"
   concept: tonk:hub
 
+# The account's page: the same hub view with the account section
+# showing its choices — settings, the other accounts on this browser,
+# adding one — or, with no account here, signing up.
+route!: &route/account
+  this: id:tonk:route/account
+  path: "/account"
+  concept: tonk:hub
+
 # ============================================================
 # PROFILE SWITCHER — the accounts this browser holds
 # ============================================================
@@ -1270,7 +1290,7 @@ view!:
     directory: |
       <div class="account-menu__profiles" aria-label="other accounts on this browser">
         <button class="account-menu__row" type="button" data-id={this} data-profile={name}
-          data-handle={name} data-active={active} on:switch-profile=tonk:switch-profile>
+          data-handle={name} html:data-active={active} on:switch-profile=tonk:switch-profile>
           <span class="account-menu__name">{label}</span>
         </button>
       </div>
@@ -1445,95 +1465,6 @@ concept!: &element
       as: {[symbol]: text}
       cardinality: one
 
-# The account menu's keyboard and focus behaviour, as branch data.
-#
-# Everything here is DOM work with no fact behind it: which item holds
-# focus, whether the menu is open, where focus returns when it closes.
-# That is why it stayed in Rust while the bar's contents became views,
-# and why it can leave Rust without becoming one — an element is a
-# place for behaviour that is not data.
-#
-# `open` is an attribute rather than internal state so CSS, devtools
-# and `getAttribute` all agree on it, and so a view can render a menu
-# already open without a script having run first.
-#
-# The methods are `open`/`close`, not `show`/`hide`: `show` is what a
-# view calls its dictionary of templates, and one word meaning two
-# things across the two halves of the same file is a trap.
-element!: &hub-menu
-  description: A roving-focus menu — arrows move, Escape closes, focus returns to the opener.
-  attribute:
-    open: "false"
-  method:
-    # Focusable items only. A disabled or hidden row is still in the DOM
-    # and must not take focus, which is why this is a method rather than
-    # a selector each caller inlines.
-    items: |
-      (self) => [...self.querySelectorAll('[role=menuitem]')].filter(
-        (item) => !item.hidden
-          && item.getAttribute('aria-disabled') !== 'true'
-          && !item.matches(':disabled'))
-    # Move focus by `step`, wrapping. With nothing focused yet, entering
-    # forwards lands on the first item and backwards on the last, so
-    # ArrowUp from the trigger opens at the bottom, as a menu should.
-    move: |
-      (self, step) => {
-        const items = self.items();
-        if (!items.length) return;
-        const at = items.indexOf(document.activeElement);
-        const next = at < 0
-          ? (step > 0 ? 0 : items.length - 1)
-          : (at + step + items.length) % items.length;
-        items[next].focus();
-      }
-    # The opener is whatever points at this menu with `aria-controls`.
-    # Read from the DOM rather than remembered, so a menu re-rendered
-    # under a fresh trigger still finds the right one.
-    opener: |
-      (self) => {
-        const id = self.getAttribute('id');
-        return id ? document.querySelector(`[aria-controls="${id}"]`) : null;
-      }
-    open: |
-      (self) => {
-        self.setAttribute('open', 'true');
-        self.opener()?.setAttribute('aria-expanded', 'true');
-        self.move(1);
-      }
-    # Closing returns focus to the opener, which is what makes the menu a
-    # detour rather than somewhere you get stranded. `restoreFocus` is
-    # false when the menu is closing because it is going away.
-    close: |
-      (self, restoreFocus) => {
-        self.setAttribute('open', 'false');
-        const trigger = self.opener();
-        if (!trigger) return;
-        trigger.setAttribute('aria-expanded', 'false');
-        if (restoreFocus !== false) trigger.focus();
-      }
-    connected: |
-      (self) => {
-        self.addEventListener('keydown', (event) => {
-          switch (event.key) {
-            case 'ArrowDown': event.preventDefault(); self.move(1); break;
-            case 'ArrowUp': event.preventDefault(); self.move(-1); break;
-            case 'Home': event.preventDefault(); self.items()[0]?.focus(); break;
-            case 'End': {
-              event.preventDefault();
-              const items = self.items();
-              items[items.length - 1]?.focus();
-              break;
-            }
-            case 'Escape': event.preventDefault(); self.close(true); break;
-          }
-        });
-      }
-    # A definition replaced while a menu is open would leave it open with
-    # no handlers. Closing without taking focus is the honest recovery:
-    # the page keeps whatever had focus, and the replacement starts shut.
-    released: |
-      (self) => self.close(false)
-
 # A passkey registered for this account.
 #
 # Directory-shaped: one row per passkey, so the settings page lists them
@@ -1653,218 +1584,37 @@ view!:
 # (`[tab=account] .stack { display: none }`) instead of a script
 # toggling `hidden` on every switch.
 element!: &hub-bar
-  description: The hub's tab bar — switches tabs and seats the signup ceremony.
+  description: The hub's bar — two links, the account's page and home; the cell for where the page is reads as current.
   attribute:
-    tab: "spaces"
-    linking: "false"
     path: "/"
   method:
-    # The path the page is on says which tab is open: the settings path
-    # is the account tab, anything else the spaces tab. A ceremony that
-    # is up keeps the account tab whatever the path. The path is read off
-    # the host's context and mirrored onto `path`, which the chrome's
-    # style keys the visible section on; the guest's own location is
-    # about:srcdoc and says nothing.
+    # Where the page is, read off the host's context and mirrored onto
+    # `path`: the chrome's style keys the visible section on it, and the
+    # cell for that section reads as current. The guest's own location
+    # is about:srcdoc and says nothing.
     route: |
       (self) => {
-        // No host context (a page with no bridge, a fixture): the tab
-        // stays as authored.
         const path = window.tonk?.context?.path;
         if (typeof path !== 'string' || !path) return;
         if (self.getAttribute('path') !== path) self.setAttribute('path', path);
-        const settings = path === '/settings' || path.startsWith('/settings/');
-        if (settings) {
-          if (self.getAttribute('tab') !== 'account') self.select('account');
-        } else if (self.getAttribute('linking') !== 'true' && self.getAttribute('tab') !== 'spaces') {
-          self.select('spaces');
-        }
-      }
-    # The bar's viewport rectangle, or null when it has no layout yet.
-    # A zero-sized bar is one the top page must not seat against: the
-    # replacement bar after a profile switch has not been laid out, and
-    # a ceremony placed at its empty rectangle lands in the corner.
-    seat: |
-      (self) => {
-        const bar = self.querySelector('.hubbar');
-        if (!bar) return null;
-        const box = bar.getBoundingClientRect();
-        if (!(box.width > 0 && box.height > 0)) return null;
-        return { left: box.left, bottom: box.bottom, width: box.width };
-      }
-    # Ask the top page to place the ceremony. `reason` distinguishes an
-    # opening from a move: a move must never open a cluster the person
-    # has just dismissed, which is why the top page keys on it.
-    #
-    # A transition sends its request even with no usable rectangle,
-    # because the outgoing bar is already gone and the request must
-    # still arrive; every other reason waits for layout.
-    place: |
-      (self, reason) => {
-        const anchor = self.seat();
-        // Only a move needs a seat: an opening or a park must reach the
-        // top page even when the bar has no rectangle yet (a settings
-        // page still laying out, a narrow window), and an unseated
-        // ceremony opens where the top page puts it.
-        if (!anchor && reason === 'reseat') return;
-        window.tonk?.register?.(JSON.stringify(
-          anchor ? { reason, space: '', anchor } : { reason, space: '' }));
-      }
-    select: |
-      (self, tab) => {
-        self.setAttribute('tab', tab);
-        for (const cell of self.querySelectorAll('[data-tab]')) {
-          const current = cell.dataset.tab === tab;
+        const account = path === '/account' || path === '/settings' || path.startsWith('/settings/');
+        for (const [selector, current] of [['[data-account-trigger]', account], ['[data-return-spaces]', !account]]) {
+          const cell = self.querySelector(selector);
+          if (!cell) continue;
           if (current) cell.setAttribute('aria-current', 'page');
           else cell.removeAttribute('aria-current');
-        }
-      }
-    # A ceremony is up: show the account tab and keep it there. The flag
-    # is an attribute so a re-render restores the same view rather than
-    # dropping back to spaces mid-signup.
-    #
-    # `reason` is what the top page does with the request: `needs-account`
-    # opens the ceremony in place, `profile-transition` parks it for the
-    # reload that follows a branch rotation.
-    link: |
-      (self, reason) => {
-        self.setAttribute('linking', 'true');
-        self.select('account');
-        self.place(reason);
-      }
-    unlink: |
-      (self) => {
-        self.setAttribute('linking', 'false');
-        self.select('spaces');
-      }
-    # Whether this browser has an account. Keyed on the REGISTRATION,
-    # not the name: the name waits on activation, so a linked account
-    # that has not confirmed its email has no name and would read as
-    # unlinked, sending someone who just signed in back to signup.
-    # The registration row or the name: a rendered name proves an
-    # account as surely as the registration does, and the two arrive on
-    # separate subscriptions, so the menu affordance lands with either
-    # rather than a beat after the label.
-    linked: |
-      (self) => !!self.querySelector('[data-account-linked], [data-account-name]')
-    # Whether it is KNOWN to have none: the link display has resolved
-    # to zero rows. Before it resolves, neither holds, and a
-    # click waits on it (see `decide`) rather than guessing.
-    unlinked: |
-      (self) => !self.linked()
-        && self.querySelector('[data-account-link]')?.dataset.state === 'empty'
-    # Act on a click the registration had not resolved for, and raise
-    # the ceremony on a settings page that has no account: that page is
-    # the door for a browser with none.
-    decide: |
-      (self) => {
-        if (self.linked()) {
-          if (self.hasAttribute('deciding')) {
-            self.removeAttribute('deciding');
-            self.querySelector('hub-menu')?.open?.();
-          }
-          return;
-        }
-        if (!self.unlinked()) return;
-        self.removeAttribute('deciding');
-        if (self.getAttribute('tab') === 'account' && self.getAttribute('linking') !== 'true') {
-          self.link('needs-account');
-        }
-      }
-    # The account cell is a menu button only while an account is linked.
-    # Unlinked, one press is one action (add an account), so the
-    # dropdown ARIA comes off; linked, it goes back on so the menu can
-    # find its opener through `aria-controls`. The registration display
-    # renders after the bar connects, which is why an observer re-runs
-    # this rather than `connected` running it once.
-    dress: |
-      (self) => {
-        const trigger = self.querySelector('[data-account-trigger]');
-        if (!trigger) return;
-        if (!self.linked()) {
-          for (const name of ['aria-haspopup', 'aria-expanded', 'aria-controls']) {
-            trigger.removeAttribute(name);
-          }
-          return;
-        }
-        trigger.setAttribute('aria-haspopup', 'menu');
-        trigger.setAttribute('aria-controls', 'hub-account-menu');
-        if (!trigger.hasAttribute('aria-expanded')) {
-          trigger.setAttribute('aria-expanded', 'false');
         }
       }
     connected: |
       (self) => {
         self.route();
-        self.dress();
-        self.decide();
         const moved = () => self.route();
         window.addEventListener('tonk:context', moved);
         self._moved = moved;
-        const dressing = new MutationObserver(() => { self.dress(); self.decide(); });
-        dressing.observe(self, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-state'] });
-        self._dressing = dressing;
-        // The top page tears the ceremony down, finished or dismissed;
-        // either way the bar returns to the spaces tab.
-        const closed = () => { if (self.getAttribute('linking') === 'true') self.unlink(); };
-        window.addEventListener('tonk:registration-closed', closed);
-        self._closed = closed;
-        self.addEventListener('click', (event) => {
-          const cell = event.target.closest('[data-tab]');
-          if (!cell) return;
-          // With no account, the account cell is not a tab — it is the
-          // door. WebAuthn needs a `window` and a user gesture, which
-          // this opaque realm has neither of, so the top page raises
-          // the ceremony and this asks it to.
-          if (cell.dataset.tab === 'account' && !self.linked()) {
-            if (self.unlinked()) {
-              self.link('needs-account');
-            } else {
-              self.select('account');
-              self.setAttribute('deciding', '');
-            }
-            return;
-          }
-          self.select(cell.dataset.tab);
-          // The account tab IS the menu: selecting it has to open the
-          // menu, or the tab shows nothing and its rows stay
-          // unclickable. Any other tab closes it.
-          const menu = self.querySelector('hub-menu');
-          if (!menu) return;
-          if (cell.dataset.tab === 'account') menu.open();
-          else menu.close(false);
-        });
-
-        // Adding an account is the same ceremony as linking the first
-        // one, run on a branch that has none. The command rotates onto
-        // that branch and the worker reloads this tab once it has;
-        // raising the ceremony is this element's half, because only a
-        // guest can reach `window.tonk.register` and the worker cannot.
-        // So the request is parked, not opened: it reopens on the fresh
-        // branch after the reload.
-        self.addEventListener('click', (event) => {
-          if (!event.target.closest('[data-add-profile]')) return;
-          const menu = self.querySelector('hub-menu');
-          if (menu) menu.close(false);
-          self.link('profile-transition');
-        });
-        // Re-seat on anything that can move the bar. The top page
-        // ignores the update when no ceremony is open, so this is free
-        // when nothing is up.
-        const reseat = () => {
-          if (self.getAttribute('linking') === 'true') self.place('reseat');
-        };
-        self._reseat = reseat;
-        window.addEventListener('resize', reseat);
-        window.addEventListener('scroll', reseat, true);
       }
     disconnected: |
       (self) => {
         if (self._moved) window.removeEventListener('tonk:context', self._moved);
-        self._dressing?.disconnect();
-        if (self._closed) window.removeEventListener('tonk:registration-closed', self._closed);
-        if (!self._reseat) return;
-        window.removeEventListener('resize', self._reseat);
-        window.removeEventListener('scroll', self._reseat, true);
       }
     released: |
       (self) => self.disconnected()
@@ -1903,50 +1653,20 @@ view!:
         <main class="hubcol">
         <hub-bar class="hub-bar">
           <nav class="hubbar chrome" aria-label="hub">
-            <!-- No menu-button ARIA in the markup: the bar dresses the cell
-                 as a menu button only once an account is linked. Before
-                 that one press is one action, and a dropdown affordance
-                 on it would be a lie. -->
-            <button class="hcell hc-acct account-trigger" type="button" data-tab="account"
-              data-account-trigger>
-              <!-- Directory mode (no `entity=`), where an absent row is
-                   `empty`; `no-entity` never shows without an entity to be
-                   absent. The label is the offer: this cell links an account. -->
-              <!-- The link, not the registration or the name: those are
-                   facts about the account and outlive a sign-out on this
-                   branch. The link row says whether THIS DEVICE holds the
-                   account here; the name renders through it. -->
+            <!-- Two links: the account's page and home. The host pushes
+                 the path and this page re-routes in place, and the cell
+                 for where the page is reads as current. -->
+            <!-- The link, not the registration or the name: those are
+                 facts about the account and outlive a sign-out on this
+                 branch. The link row says whether THIS DEVICE holds the
+                 account here; the name renders through it. Directory
+                 mode (no `entity=`), where an absent row is `empty`. -->
+            <a class="hcell hc-acct account-trigger" href="/account" data-account-trigger>
               <span data-account-label><tonk-display model="state:account-link" view="label" data-account-link
                 ><span slot="empty">add an account</span></tonk-display></span>
-            </button>
-            <!-- Home is an anchor: on the settings path the click is a
-                 navigation the bar re-routes in place; on the spaces path
-                 it is the tab's own click, and the host ignores a push to
-                 the URL already shown. -->
-            <a class="hcell hc-view" href="/" data-tab="spaces" data-return-spaces aria-current="page">spaces</a>
-          </nav>
-
-          <hub-menu id="hub-account-menu" class="account-menu chrome" data-account-menu role="menu">
-            <a class="account-menu__row" href="/settings" data-open-settings role="menuitem">
-              settings
-              <svg class="settings-icon" viewBox="0 0 9 9" aria-hidden="true">
-                <g stroke="currentColor" stroke-width="1.2">
-                  <line x1="0" y1="2.5" x2="9" y2="2.5"></line>
-                  <line x1="0" y1="6.5" x2="9" y2="6.5"></line>
-                </g>
-                <rect x="5" y="1" width="3" height="3" fill="currentColor"></rect>
-                <rect x="1" y="5" width="3" height="3" fill="currentColor"></rect>
-              </svg>
             </a>
-            <tonk-display model="tonk:profile/row"></tonk-display>
-            <!-- `data-add-profile` names the control for anything that
-                 has to find it from outside the view — the e2e suite
-                 drives the whole signup through this button. -->
-            <button class="account-menu__row account-menu__row--ink" type="button"
-              data-add-profile on:add-profile=tonk:add-profile role="menuitem">
-              add account<span class="g" aria-hidden="true">+</span>
-            </button>
-          </hub-menu>
+            <a class="hcell hc-view" href="/" data-return-spaces aria-current="page">spaces</a>
+          </nav>
         </hub-bar>
           <!-- One page for `/` and `/settings`: the stack and the panel
                are both here, and the bar's `path` picks the one that
@@ -1958,6 +1678,32 @@ view!:
         <section class="settings chrome" data-settings-view>
             <account-settings>
               <div class="s-body">
+                <!-- /account: the account's choices. Settings is a link to its
+                     page; the other accounts on this browser switch;
+                     `data-add-profile` rotates onto a fresh branch and the worker
+                     reloads this tab onto it, where the page, having no account,
+                     raises the ceremony itself. A browser with no account here
+                     is shown the sign-in cluster and nothing to list. -->
+                <div class="pane" data-pane="menu" hidden>
+                  <div class="account-menu__profiles-seat" data-account-menu>
+                    <a class="account-menu__row" href="/settings" data-open-settings data-when-linked>
+                      settings
+                      <svg class="settings-icon" viewBox="0 0 9 9" aria-hidden="true">
+                        <g stroke="currentColor" stroke-width="1.2">
+                          <line x1="0" y1="2.5" x2="9" y2="2.5"></line>
+                          <line x1="0" y1="6.5" x2="9" y2="6.5"></line>
+                        </g>
+                        <rect x="5" y="1" width="3" height="3" fill="currentColor"></rect>
+                        <rect x="1" y="5" width="3" height="3" fill="currentColor"></rect>
+                      </svg>
+                    </a>
+                    <span data-when-linked><tonk-display model="tonk:profile/row"></tonk-display></span>
+                    <button class="account-menu__row account-menu__row--ink" type="button"
+                      data-add-profile on:add-profile=tonk:add-profile data-when-linked>
+                      add account<span class="g" aria-hidden="true">+</span>
+                    </button>
+                  </div>
+                </div>
                 <div class="pane" data-pane="account">
                   <tonk-display model="tonk:account/registered" view="settings"></tonk-display>
                   <div class="srowd">
@@ -4035,12 +3781,17 @@ element!: &account-settings
     pane: |
       (self, name) => {
         for (const pane of self.querySelectorAll('[data-pane]')) pane.hidden = pane.dataset.pane !== name;
+        if (self.getAttribute('data-pane') !== name) self.setAttribute('data-pane', name);
       }
     refresh: |
       (self) => {
         if (self.localLinkShow()) return;
         const request = self.linkRequest();
         if (!request) {
+          if (self.context().path === '/account') {
+            self.pane('menu');
+            return;
+          }
           self.pane('account');
           if (self.context().hash === '#delete-account') self.openDelete();
           self.connectionsRefresh();
@@ -4166,6 +3917,63 @@ element!: &account-settings
         target.hash = fields.toString();
         window.tonk?.navigate?.(target.toString());
       }
+    # Whether this browser has an account here, read off the bar's link
+    # display: the link row says whether THIS DEVICE holds the account on
+    # this branch, and the name renders through it. Unlinked is KNOWN to
+    # have none: the display resolved to zero rows.
+    linked: |
+      (self) => !!document.querySelector('[data-account-linked], [data-account-name]')
+    unlinked: |
+      (self) => !self.linked() && document.querySelector('[data-account-link]')?.dataset.state === 'empty'
+    # A ceremony is up: the flag is an attribute so a re-render keeps it.
+    link: |
+      (self, reason) => {
+        self.setAttribute('data-linking', 'true');
+        self._shown = 'show';
+        self.place(reason);
+      }
+    unlink: |
+      (self) => { self._shown = null; self.setAttribute('data-linking', 'false'); }
+    # Ask the top page to place the ceremony under the bar. `reason`
+    # distinguishes an opening from a move: a move must never open a
+    # cluster the person has just dismissed, and only a move needs a
+    # seat; an opening reaches the top page even before the bar has a
+    # rectangle, and an unseated ceremony opens where the top page puts it.
+    place: |
+      (self, reason) => {
+        const box = document.querySelector('.hubbar')?.getBoundingClientRect();
+        const anchor = box && box.width > 0 && box.height > 0 ? { left: box.left, bottom: box.bottom, width: box.width } : null;
+        if (!anchor && reason === 'reseat') return;
+        window.tonk?.register?.(JSON.stringify(anchor ? { reason, space: '', anchor } : { reason, space: '' }));
+      }
+    # The link state the account page's rows are keyed on, and the door:
+    # the account page or the settings page with no account raises the
+    # ceremony itself once the link display has resolved empty. Signing
+    # up IS the cluster; with no account the account page lists nothing
+    # else. WebAuthn needs a `window` and a user gesture, which this
+    # opaque realm has neither of, so the top page raises it.
+    door: |
+      (self) => {
+        const linked = self.linked() ? 'true' : self.unlinked() ? 'false' : '';
+        if (self.getAttribute('data-linked') !== linked) self.setAttribute('data-linked', linked);
+        const path = self.context().path;
+        // Settings with no account here are the account page's business:
+        // it is where signing up happens, so a bare settings path goes
+        // there. A terminal's request page stays, and raises the ceremony
+        // itself, because the request rides its location.
+        if (path === '/settings' && self.unlinked()) {
+          window.tonk?.navigate?.('/account');
+          return;
+        }
+        const account = path === '/account' || path.startsWith('/settings/');
+        const linking = self.getAttribute('data-linking') === 'true';
+        if (account && self.unlinked() && !linking) self.link('needs-account');
+        // A tab switch hides the standing ceremony, and a return shows
+        // it again with everything typed intact: the cluster is the
+        // account page's content, not the spaces page's.
+        const shown = account ? 'show' : 'suspend';
+        if (linking && self._shown !== shown) { self._shown = shown; self.place(shown); }
+      }
     connected: |
       (self) => {
         self.addEventListener('click', (event) => {
@@ -4231,14 +4039,37 @@ element!: &account-settings
           window.removeEventListener('resize', reseat, true);
         };
         self.refresh();
-        const moved = () => self.refresh();
+        const moved = () => { self.refresh(); self.door(); };
         window.addEventListener('tonk:context', moved);
         self._moved = moved;
+        self.door();
+        // The link display resolves after this connects and changes while
+        // the page is up; the bar is a sibling, so the observer watches
+        // the document.
+        const resolved = new MutationObserver(() => self.door());
+        resolved.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-state'] });
+        self._resolved = resolved;
+        // The top page tears the ceremony down, finished or dismissed.
+        const torn = () => { if (self.getAttribute('data-linking') === 'true') self.unlink(); };
+        window.addEventListener('tonk:registration-closed', torn);
+        self._torn = torn;
+        // Re-seat the ceremony on anything that can move the bar; the top
+        // page ignores the update when no ceremony is open.
+        const moveSeat = () => { if (self.getAttribute('data-linking') === 'true') self.place('reseat'); };
+        window.addEventListener('resize', moveSeat);
+        window.addEventListener('scroll', moveSeat, true);
+        self._moveSeat = moveSeat;
         self.describe();
       }
     disconnected: |
       (self) => {
         if (self._moved) window.removeEventListener('tonk:context', self._moved);
+        self._resolved?.disconnect();
+        if (self._torn) window.removeEventListener('tonk:registration-closed', self._torn);
+        if (self._moveSeat) {
+          window.removeEventListener('resize', self._moveSeat);
+          window.removeEventListener('scroll', self._moveSeat, true);
+        }
         self._teardown?.();
         self._teardown = null;
       }

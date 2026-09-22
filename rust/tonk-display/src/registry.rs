@@ -1261,6 +1261,15 @@ mod tests {
     }
 
     /// A host function on the bridge that records what it is called with.
+    /// The host moved the page: the context changes and the bootstrap
+    /// announces it, the way a pushState navigation reaches the guest.
+    fn move_context(path: &str) {
+        set_context(&[("origin", "https://tonk.test"), ("path", path)]);
+        let announce =
+            js_sys::Function::new_no_args("window.dispatchEvent(new CustomEvent('tonk:context'));");
+        let _ = announce.call0(&JsValue::NULL);
+    }
+
     fn record_bridge_calls(name: &str) -> js_sys::Array {
         let calls = js_sys::Array::new();
         let recorded = calls.clone();
@@ -1782,251 +1791,128 @@ mod tests {
         );
     }
 
-    /// The account cell is a menu button only while an account is
-    /// linked. Unlinked, one press is one action and the dropdown ARIA
-    /// would promise a menu that never opens; linked, the menu finds its
-    /// opener through `aria-controls`, so the attributes must come back.
+    /// An account page opened by a browser with no account raises the
+    /// ceremony itself once the registration resolves empty: the bar's
+    /// cells are links, so that page is the door.
     #[dialog_common::test]
-    async fn it_dresses_the_account_cell_as_a_menu_button_only_when_linked() {
-        install_fake_host();
-        install();
-        define_from_library(PROFILE_LIBRARY, "hub-bar");
-        // The fake host is shared by every test on this page, and the bar
-        // reads the path off it: start on the spaces path.
-        set_context(&[("origin", "https://tonk.test"), ("path", "/")]);
-        let host = document().create_element("hub-bar").expect("host");
-        host.set_inner_html(
-            r#"<nav class="hubbar"><button type="button" data-tab="account" data-account-trigger><span data-account-label>add an account</span><span data-registered></span></button></nav>"#,
-        );
-        document()
-            .body()
-            .expect("body")
-            .append_child(&host)
-            .expect("attach");
-        settle_until(|| defined("hub-bar")).await;
-        assert!(
-            defined("hub-bar"),
-            "the library definition of <hub-bar> was never installed"
-        );
-        settle_briefly().await;
-        let trigger = host
-            .query_selector("[data-account-trigger]")
-            .expect("query")
-            .expect("the trigger");
-
-        assert_eq!(
-            trigger.get_attribute("aria-haspopup"),
-            None,
-            "unlinked, the cell is not a menu button"
-        );
-        assert_eq!(trigger.get_attribute("aria-controls"), None);
-
-        let registered = host
-            .query_selector("[data-registered]")
-            .expect("query")
-            .expect("the registration slot");
-        registered.set_inner_html(r#"<span data-account-linked hidden></span>"#);
-        settle_until(|| trigger.has_attribute("aria-haspopup")).await;
-        assert_eq!(
-            trigger.get_attribute("aria-haspopup").as_deref(),
-            Some("menu"),
-            "linked, the cell is the account-menu button"
-        );
-        assert_eq!(
-            trigger.get_attribute("aria-controls").as_deref(),
-            Some("hub-account-menu")
-        );
-        assert_eq!(
-            trigger.get_attribute("aria-expanded").as_deref(),
-            Some("false")
-        );
-
-        registered.set_inner_html("");
-        settle_until(|| !trigger.has_attribute("aria-haspopup")).await;
-        assert_eq!(
-            trigger.get_attribute("aria-haspopup"),
-            None,
-            "unlinking strips the menu-button ARIA again"
-        );
-        assert_eq!(trigger.get_attribute("aria-expanded"), None);
-
-        // The name arrives on its own subscription and proves the link
-        // just as well; the affordance must not wait for the other row.
-        registered.set_inner_html(r#"<span data-account-name>Hub Owner</span>"#);
-        settle_until(|| trigger.has_attribute("aria-haspopup")).await;
-        assert_eq!(
-            trigger.get_attribute("aria-haspopup").as_deref(),
-            Some("menu"),
-            "a rendered name dresses the cell as the menu button"
-        );
-    }
-
-    /// The first link opens the ceremony in place; adding an account
-    /// parks it for the reload the branch rotation brings. Both cross to
-    /// the top page as `window.tonk.register`, and only the reason tells
-    /// them apart, so the reason is what this checks.
-    #[dialog_common::test]
-    async fn it_asks_the_top_page_with_the_reason_that_fits_the_click() {
+    async fn it_raises_the_ceremony_on_an_unlinked_account_page() {
         install_fake_host();
         install();
         let calls = record_bridge_calls("register");
-        define_from_library(PROFILE_LIBRARY, "hub-bar");
-        // The fake host is shared by every test on this page, and the bar
-        // reads the path off it: start on the spaces path.
-        set_context(&[("origin", "https://tonk.test"), ("path", "/")]);
-        let host = document().create_element("hub-bar").expect("host");
-        host.set_inner_html(
-            r#"<nav class="hubbar"><button type="button" data-tab="account" data-account-trigger>add an account<span data-account-link data-state="empty"></span></button></nav><button type="button" data-add-profile>add account</button>"#,
+        set_context(&[("origin", "https://tonk.test"), ("path", "/account")]);
+        // The bar beside the panel carries the link display the door reads.
+        let bar = document().create_element("nav").expect("bar");
+        bar.set_class_name("hubbar");
+        bar.set_inner_html(
+            r#"<a data-account-trigger><span data-account-link data-state="loading"></span></a>"#,
         );
         document()
             .body()
             .expect("body")
-            .append_child(&host)
+            .append_child(&bar)
             .expect("attach");
-        settle_until(|| defined("hub-bar")).await;
-        assert!(
-            defined("hub-bar"),
-            "the library definition of <hub-bar> was never installed"
-        );
-        settle_briefly().await;
-
-        let trigger = host
-            .query_selector("[data-account-trigger]")
-            .expect("query")
-            .expect("the trigger");
-        fire(&trigger, "click");
-        settle_until(|| calls.length() >= 1).await;
-        let first: serde_json::Value =
-            serde_json::from_str(&calls.get(0).as_string().expect("a payload")).expect("json");
-        assert_eq!(
-            first["reason"], "needs-account",
-            "an unlinked cell opens the ceremony in place"
-        );
-        assert!(
-            first["anchor"].is_object(),
-            "and seats it at the bar: {first}"
-        );
-        assert_eq!(host.get_attribute("linking").as_deref(), Some("true"));
-        assert_eq!(host.get_attribute("tab").as_deref(), Some("account"));
-
-        let add = host
-            .query_selector("[data-add-profile]")
-            .expect("query")
-            .expect("the add-profile control");
-        fire(&add, "click");
-        settle_until(|| calls.length() >= 2).await;
-        let second: serde_json::Value =
-            serde_json::from_str(&calls.get(1).as_string().expect("a payload")).expect("json");
-        assert_eq!(
-            second["reason"], "profile-transition",
-            "adding an account parks the ceremony for the reload"
-        );
-    }
-
-    /// A click before the registration display has resolved neither
-    /// opens a menu nor raises the ceremony: it waits, and acts once the
-    /// display says which. A slower page (CI) clicked before the display
-    /// resolved and got a signup where the menu was meant.
-    #[dialog_common::test]
-    async fn it_waits_for_the_registration_before_acting_on_the_account_cell() {
-        install_fake_host();
-        install();
-        let calls = record_bridge_calls("register");
-        define_from_library(PROFILE_LIBRARY, "hub-bar");
-        // The fake host is shared by every test on this page, and the bar
-        // reads the path off it: start on the spaces path.
-        set_context(&[("origin", "https://tonk.test"), ("path", "/")]);
-        let host = document().create_element("hub-bar").expect("host");
-        host.set_inner_html(
-            r#"<nav class="hubbar"><button type="button" data-tab="account" data-account-trigger><span data-registered></span><span data-account-link data-state="loading"></span></button></nav>"#,
-        );
-        document()
-            .body()
-            .expect("body")
-            .append_child(&host)
-            .expect("attach");
-        settle_until(|| defined("hub-bar")).await;
-        assert!(
-            defined("hub-bar"),
-            "the library definition of <hub-bar> was never installed"
-        );
+        let host = account_settings(r#"<div class="pane" data-pane="account"></div>"#);
         settle_briefly().await;
         let before = calls.length();
-
-        let trigger = host
-            .query_selector("[data-account-trigger]")
-            .expect("query")
-            .expect("the trigger");
-        fire(&trigger, "click");
-        settle_briefly().await;
-        assert_eq!(
-            calls.length(),
-            before,
-            "an unresolved registration asks for nothing yet"
-        );
-        assert!(host.has_attribute("deciding"), "the click is remembered");
-
-        let registration = host
+        let registration = bar
             .query_selector("[data-account-link]")
             .expect("query")
-            .expect("the registration display");
-        let _ = registration.set_attribute("data-state", "empty");
-        settle_until(|| calls.length() > before).await;
-        let asked: serde_json::Value =
-            serde_json::from_str(&calls.get(before).as_string().expect("a payload")).expect("json");
-        assert_eq!(
-            asked["reason"], "needs-account",
-            "resolved empty, the click links"
-        );
-        assert!(!host.has_attribute("deciding"));
-
-        // The top page tearing the ceremony down returns the bar to spaces.
-        assert_eq!(host.get_attribute("tab").as_deref(), Some("account"));
-        fire(&window().expect("window"), "tonk:registration-closed");
-        settle_briefly().await;
-        assert_eq!(host.get_attribute("linking").as_deref(), Some("false"));
-        assert_eq!(host.get_attribute("tab").as_deref(), Some("spaces"));
-    }
-
-    /// A settings page opened by a browser with no account raises the
-    /// ceremony itself once the registration resolves empty: that page
-    /// is the door, and there is no cell to press.
-    #[dialog_common::test]
-    async fn it_raises_the_ceremony_on_an_unlinked_settings_page() {
-        install_fake_host();
-        install();
-        let calls = record_bridge_calls("register");
-        define_from_library(PROFILE_LIBRARY, "hub-bar");
-        // The settings page is a path the bar reads off the host's
-        // context; the account tab follows from it.
-        set_context(&[("origin", "https://tonk.test"), ("path", "/settings")]);
-        let host = document().create_element("hub-bar").expect("host");
-        host.set_inner_html(
-            r#"<nav class="hubbar"><button type="button" data-tab="account"><span data-account-link data-state="loading"></span></button></nav>"#,
-        );
-        document()
-            .body()
-            .expect("body")
-            .append_child(&host)
-            .expect("attach");
-        settle_until(|| defined("hub-bar")).await;
-        assert!(
-            defined("hub-bar"),
-            "the library definition of <hub-bar> was never installed"
-        );
-        settle_briefly().await;
-        let before = calls.length();
-
-        let registration = host
-            .query_selector("[data-account-link]")
-            .expect("query")
-            .expect("the registration display");
+            .expect("the link display");
         let _ = registration.set_attribute("data-state", "empty");
         settle_until(|| calls.length() > before).await;
         let asked: serde_json::Value =
             serde_json::from_str(&calls.get(before).as_string().expect("a payload")).expect("json");
         assert_eq!(asked["reason"], "needs-account");
-        assert_eq!(host.get_attribute("linking").as_deref(), Some("true"));
+        assert_eq!(host.get_attribute("data-linking").as_deref(), Some("true"));
+        // The fake host is shared by every test on this page; leave it
+        // on the spaces path the others expect.
+        set_context(&[("origin", "https://tonk.test"), ("path", "/")]);
+        host.remove();
+        bar.remove();
+    }
+
+    /// A bare settings page with no account here goes to the account
+    /// page, where signing up happens, instead of raising the ceremony.
+    #[dialog_common::test]
+    async fn it_sends_an_unlinked_settings_page_to_the_account_page() {
+        install_fake_host();
+        install();
+        let registers = record_bridge_calls("register");
+        let navigations = record_bridge_calls("navigate");
+        set_context(&[("origin", "https://tonk.test"), ("path", "/settings")]);
+        let bar = document().create_element("nav").expect("bar");
+        bar.set_class_name("hubbar");
+        bar.set_inner_html(
+            r#"<a data-account-trigger><span data-account-link data-state="loading"></span></a>"#,
+        );
+        document()
+            .body()
+            .expect("body")
+            .append_child(&bar)
+            .expect("attach");
+        let host = account_settings(r#"<div class="pane" data-pane="account"></div>"#);
+        settle_briefly().await;
+        let registered = registers.length();
+        let before = navigations.length();
+        let registration = bar
+            .query_selector("[data-account-link]")
+            .expect("query")
+            .expect("the link display");
+        let _ = registration.set_attribute("data-state", "empty");
+        settle_until(|| navigations.length() > before).await;
+        assert_eq!(
+            navigations.get(before).as_string().as_deref(),
+            Some("/account")
+        );
+        assert_eq!(
+            registers.length(),
+            registered,
+            "no ceremony on a bare settings page"
+        );
+        assert_ne!(host.get_attribute("data-linking").as_deref(), Some("true"));
+        set_context(&[("origin", "https://tonk.test"), ("path", "/")]);
+        host.remove();
+        bar.remove();
+    }
+
+    /// Switching to the spaces tab hides a standing ceremony and
+    /// switching back shows it again; neither tears it down.
+    #[dialog_common::test]
+    async fn it_holds_the_ceremony_across_a_tab_switch() {
+        install_fake_host();
+        install();
+        let calls = record_bridge_calls("register");
+        set_context(&[("origin", "https://tonk.test"), ("path", "/account")]);
+        let bar = document().create_element("nav").expect("bar");
+        bar.set_class_name("hubbar");
+        bar.set_inner_html(
+            r#"<a data-account-trigger><span data-account-link data-state="empty"></span></a>"#,
+        );
+        document()
+            .body()
+            .expect("body")
+            .append_child(&bar)
+            .expect("attach");
+        let host = account_settings(r#"<div class="pane" data-pane="account"></div>"#);
+        settle_until(|| host.get_attribute("data-linking").as_deref() == Some("true")).await;
+        let reason = |index: u32| -> String {
+            let asked: serde_json::Value =
+                serde_json::from_str(&calls.get(index).as_string().expect("a payload"))
+                    .expect("json");
+            asked["reason"].as_str().expect("a reason").to_owned()
+        };
+        let before = calls.length();
+        move_context("/");
+        settle_until(|| calls.length() > before).await;
+        assert_eq!(reason(before), "suspend");
+        assert_eq!(host.get_attribute("data-linking").as_deref(), Some("true"));
+        let before = calls.length();
+        move_context("/account");
+        settle_until(|| calls.length() > before).await;
+        assert_eq!(reason(before), "show");
+        set_context(&[("origin", "https://tonk.test"), ("path", "/")]);
+        host.remove();
+        bar.remove();
     }
 
     /// Mount the settings panel's element with `markup` inside it.
