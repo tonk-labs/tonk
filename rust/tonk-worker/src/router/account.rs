@@ -3,7 +3,7 @@
 
 use axum::{Extension, Json, extract::State};
 use axum_wasm_macros::wasm_compat;
-use dialog_operator::Profile;
+use dialog_peer::Profile;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_account::AccountProviderRecord;

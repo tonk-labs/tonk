@@ -222,7 +222,7 @@ pub(crate) async fn account_summary(state: &TonkState) -> Result<AccountSummary,
 /// account, so the lookup has to run against that profile's repository
 /// rather than the active one's.
 pub(crate) async fn account_display_name_for(
-    profile: &dialog_operator::Profile,
+    profile: &dialog_peer::Profile,
     operator: &crate::worker::DefaultOperator,
 ) -> Option<String> {
     use dialog_query::{Output as _, Query, Term};

@@ -89,7 +89,7 @@ pub struct AccountFixture {
     /// A site this profile created before the account existed, so its
     /// repository authority reaches no account root.
     pub pre_account_site: TonkSite,
-    pub profile: dialog_operator::Profile,
+    pub profile: dialog_peer::Profile,
     pub store: tonk_cli::space::SpaceStore,
     pub link: dialog_ucan_core::DelegationChain,
     pub config: SiteConfig,
@@ -261,7 +261,7 @@ impl AccountFixture {
     /// under.
     pub async fn operator(
         &self,
-    ) -> Result<dialog_operator::Operator<dialog_storage::provider::storage::NativeSpace>> {
+    ) -> Result<dialog_peer::Session<dialog_storage::provider::storage::NativeSpace>> {
         tonk_cli::account_state::credential_operator_for_store(&self.profile, &self.store).await
     }
 

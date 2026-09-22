@@ -507,9 +507,9 @@ mod tests {
 
     #[dialog_common::test]
     async fn strict_mount_record_accepts_local_absence_and_optional_facts() {
-        use dialog_operator::helpers;
+        use dialog_peer::helpers;
         use dialog_varsig::did;
-        let (operator, profile) = helpers::test_operator_with_profile().await;
+        let (operator, profile) = helpers::test_session_with_peer().await;
         let repository = helpers::test_repo(&operator, &profile).await;
         let branch = repository
             .branch("main")

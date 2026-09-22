@@ -8,7 +8,7 @@ use dialog_capability::{
 };
 use dialog_common::{ConditionalSend, ConditionalSync};
 use dialog_effects::authority::{Attest, Identify};
-use dialog_operator::{Operator, Profile};
+use dialog_peer::{Profile, Session};
 use dialog_repository::RemoteSite as Network;
 use dialog_storage::provider::storage::NativeSpace;
 use dialog_ucan::{Ucan, UcanAuthorization};
@@ -22,7 +22,7 @@ const REMOTE_AUTHORIZATION_MARGIN_SECONDS: u64 = 60;
 /// Operator wrapper that forwards local effects but exclusively owns UCAN
 /// authorization and every remote network fork.
 pub struct AccountBoundOperator {
-    inner: Operator<NativeSpace>,
+    inner: Session<NativeSpace>,
     profile: Profile,
     store: SpaceStore,
     require_account: bool,
@@ -35,13 +35,13 @@ impl AccountBoundOperator {
     /// opens the account repository in the same storage — reach it here
     /// rather than rebuilding one against the global install store, which
     /// would mount a different profile.
-    pub fn inner(&self) -> &Operator<NativeSpace> {
+    pub fn inner(&self) -> &Session<NativeSpace> {
         &self.inner
     }
 
     /// Wrap a raw local operator after canonical session initialization.
     pub fn new(
-        inner: Operator<NativeSpace>,
+        inner: Session<NativeSpace>,
         profile: Profile,
         store: SpaceStore,
         require_account: bool,
@@ -56,7 +56,7 @@ impl AccountBoundOperator {
 
     /// Persistent profile DID.
     pub fn profile_did(&self) -> dialog_varsig::Did {
-        self.inner.profile_did()
+        self.inner.peer().did()
     }
 
     /// Derived operator DID.
@@ -65,7 +65,7 @@ impl AccountBoundOperator {
     }
 
     /// Borrow the raw operator for credential/session initialization only.
-    pub(crate) fn local(&self) -> &Operator<NativeSpace> {
+    pub(crate) fn local(&self) -> &Session<NativeSpace> {
         &self.inner
     }
 
@@ -241,7 +241,7 @@ macro_rules! forward {
         #[async_trait::async_trait]
         impl Provider<$command> for AccountBoundOperator
         where
-            Operator<NativeSpace>: Provider<$command> + ConditionalSync,
+            Session<NativeSpace>: Provider<$command> + ConditionalSync,
             <$command as Command>::Input: ConditionalSend,
             <$command as Command>::Output: ConditionalSend,
         {
@@ -249,7 +249,7 @@ macro_rules! forward {
                 &self,
                 input: <$command as Command>::Input,
             ) -> <$command as Command>::Output {
-                <Operator<NativeSpace> as Provider<$command>>::execute(&self.inner, input).await
+                <Session<NativeSpace> as Provider<$command>>::execute(&self.inner, input).await
             }
         }
     };
@@ -301,7 +301,7 @@ struct Guarded<'a> {
 #[async_trait::async_trait]
 impl<'a> Provider<Identify> for Guarded<'a> {
     async fn execute(&self, input: <Identify as Command>::Input) -> <Identify as Command>::Output {
-        <Operator<NativeSpace> as Provider<Identify>>::execute(&self.operator.inner, input).await
+        <Session<NativeSpace> as Provider<Identify>>::execute(&self.operator.inner, input).await
     }
 }
 
@@ -310,7 +310,7 @@ macro_rules! forward_guarded {
         #[async_trait::async_trait]
         impl<'a> Provider<$command> for Guarded<'a>
         where
-            Operator<NativeSpace>: Provider<$command> + ConditionalSync,
+            Session<NativeSpace>: Provider<$command> + ConditionalSync,
             <$command as Command>::Input: ConditionalSend,
             <$command as Command>::Output: ConditionalSend,
         {
@@ -318,7 +318,7 @@ macro_rules! forward_guarded {
                 &self,
                 input: <$command as Command>::Input,
             ) -> <$command as Command>::Output {
-                <Operator<NativeSpace> as Provider<$command>>::execute(&self.operator.inner, input)
+                <Session<NativeSpace> as Provider<$command>>::execute(&self.operator.inner, input)
                     .await
             }
         }
@@ -383,7 +383,7 @@ where
 /// Initialize canonical session state before exposing an account-bound
 /// operator.
 pub async fn wrap(
-    inner: Operator<NativeSpace>,
+    inner: Session<NativeSpace>,
     profile: Profile,
     store: SpaceStore,
     require_account: bool,

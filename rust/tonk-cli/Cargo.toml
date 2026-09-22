@@ -159,7 +159,7 @@ dialog-common = { workspace = true }
 dialog-credentials = { workspace = true }
 dialog-csv = { workspace = true }
 dialog-effects = { workspace = true }
-dialog-operator = { workspace = true }
+dialog-peer = { workspace = true }
 dialog-query = { workspace = true }
 dialog-reactor = { workspace = true }
 dialog-remote-s3 = { workspace = true }

@@ -7375,7 +7375,7 @@ route!: &foreign-profile-route
         );
         let storage =
             dialog_storage::provider::storage::Storage::<crate::worker::DefaultSpace>::default();
-        let profile = dialog_operator::Profile::open(&name)
+        let profile = dialog_peer::Profile::open(&name)
             .perform(&storage)
             .await
             .expect("test profile opens");

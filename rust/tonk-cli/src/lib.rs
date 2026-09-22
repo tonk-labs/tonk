@@ -60,6 +60,7 @@ pub mod invite;
 pub mod listing;
 pub mod migrate;
 pub mod onboarding;
+pub(crate) mod peer;
 pub mod output;
 pub mod recovery;
 pub mod remote;

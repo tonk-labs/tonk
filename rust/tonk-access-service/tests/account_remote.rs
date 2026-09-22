@@ -8,8 +8,8 @@ use dialog_capability::Subject;
 use dialog_common::helpers::Provisionable as _;
 use dialog_credentials::{Credential, Ed25519Signer, Ed25519Verifier};
 use dialog_effects::space::{Space, SpaceExt as _};
-use dialog_operator::Operator;
-use dialog_operator::helpers::{test_operator_with_profile, unique_name};
+use dialog_peer::Session;
+use dialog_peer::helpers::{test_session_with_peer, unique_name};
 use dialog_query::{Attribute, Output as _, Query, Term};
 use dialog_remote_ucan::UcanAddress;
 use dialog_repository::{Branch, RemoteBranch, Repository, RepositoryExt as _};
@@ -35,14 +35,14 @@ struct Note(String);
 /// keyed on the root DID, tracking `origin` at `endpoint`. This is the shape
 /// the worker and CLI adapters build in their `mount`/`hydrate` paths.
 struct AccountDevice {
-    operator: Operator<VolatileSpace>,
+    operator: Session<VolatileSpace>,
     branch: Branch,
     remote: RemoteBranch,
 }
 
 async fn account_device(root: &Ed25519Signer, endpoint: &str) -> anyhow::Result<AccountDevice> {
     let root_did = root.did();
-    let (operator, profile) = test_operator_with_profile().await;
+    let (operator, profile) = test_session_with_peer().await;
     let link = DelegationBuilder::new()
         .issuer(dialog_credentials::Signer::from(root.clone()))
         .audience(&profile.did())
@@ -114,7 +114,7 @@ async fn static_access_endpoint(status: StatusCode, body: &'static [u8]) -> Stri
 async fn it_reports_a_never_published_authorized_branch_as_absent() -> anyhow::Result<()> {
     let service = AccessServiceAddress::start(Default::default()).await?;
     let env = service.address.clone();
-    let (operator, profile) = test_operator_with_profile().await;
+    let (operator, profile) = test_session_with_peer().await;
     let repository = profile
         .repository(unique_name("account-absence"))
         .create()
@@ -150,7 +150,7 @@ async fn it_reports_a_never_published_authorized_branch_as_absent() -> anyhow::R
 async fn it_never_classifies_remote_failures_as_absence() -> anyhow::Result<()> {
     let service = AccessServiceAddress::start(Default::default()).await?;
     let env = service.address.clone();
-    let (operator, profile) = test_operator_with_profile().await;
+    let (operator, profile) = test_session_with_peer().await;
     let repository = profile
         .repository(unique_name("account-errors"))
         .create()
@@ -248,11 +248,11 @@ async fn it_atomically_publishes_one_account_genesis_and_keeps_syncing() -> anyh
     // (profile, subject, name) rather than the subject DID itself.
     assert_eq!(
         genesis_a.branch,
-        dialog_repository::branch_of(&root_did, &operator_a.profile_did(), "main")
+        dialog_repository::branch_of(&root_did, &operator_a.peer().did(), "main")
     );
     assert_eq!(
         genesis_b.branch,
-        dialog_repository::branch_of(&root_did, &operator_b.profile_did(), "main")
+        dialog_repository::branch_of(&root_did, &operator_b.peer().did(), "main")
     );
     assert_ne!(genesis_a, genesis_b, "the race must use distinct revisions");
 
@@ -443,7 +443,7 @@ async fn it_adopts_a_losing_candidate_onto_the_winners_content() -> anyhow::Resu
 #[ignore = "requires TONK_ACCOUNT_REMOTE_URL and a staging-authorized account"]
 async fn it_proves_account_genesis_against_the_configured_live_remote() -> anyhow::Result<()> {
     let endpoint = std::env::var("TONK_ACCOUNT_REMOTE_URL")?;
-    let (operator, profile) = test_operator_with_profile().await;
+    let (operator, profile) = test_session_with_peer().await;
     let repository = profile
         .repository(unique_name("account-live"))
         .create()

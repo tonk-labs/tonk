@@ -490,7 +490,7 @@ pub mod tests {
     pub(crate) use crate::helpers::state::{persist_test_root, test_root_seed};
 
     use dialog_credentials::Ed25519Signer;
-    use dialog_operator::Profile;
+    use dialog_peer::Profile;
     use dialog_repository::RepositoryExt as _;
     use dialog_storage::provider::storage::Storage;
     use dialog_ucan_core::{DelegationBuilder, DelegationChain, subject::Subject as UcanSubject};

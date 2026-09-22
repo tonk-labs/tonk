@@ -19,7 +19,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use dialog_operator::Profile;
+use dialog_peer::Profile;
 use parking_lot::{Mutex, RwLock};
 
 mod branch;

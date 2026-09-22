@@ -367,10 +367,10 @@ mod tests {
     /// `concept.rs`'s `it_returns_concept_with_source_from_concept_query`.
     #[dialog_common::test]
     async fn it_enumerates_installed_rules_via_rule_query() -> anyhow::Result<()> {
-        use dialog_operator::helpers::{test_operator_with_profile, test_repo};
+        use dialog_peer::helpers::{test_session_with_peer, test_repo};
         use dialog_query::{Any, Output as _, Parameters, Term};
 
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 

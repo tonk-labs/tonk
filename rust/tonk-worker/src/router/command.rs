@@ -684,7 +684,7 @@ pub(crate) mod tests {
         /// access service (nothing here needs an account). The registry
         /// installed is the REAL one, not a test double.
         pub(crate) async fn test_state() -> AppState {
-            use dialog_operator::Profile;
+            use dialog_peer::Profile;
             use dialog_storage::provider::storage::Storage;
 
             let storage = Storage::<crate::worker::DefaultSpace>::default();

@@ -781,7 +781,7 @@ fn as_constant_entity(term: &dialog_query::Term<dialog_query::Any>) -> Option<En
 mod tests {
     use super::*;
     use dialog_artifacts::{Entity, Value};
-    use dialog_operator::helpers::{test_operator_with_profile, test_repo};
+    use dialog_peer::helpers::{test_session_with_peer, test_repo};
     use dialog_query::{ConceptDescriptor, Term, the};
     use dialog_repository::Branch;
     use tonk_core::meta::AnchorName;
@@ -818,7 +818,7 @@ mod tests {
     {
     }
 
-    /// `Op` is the concrete operator type [`test_operator_with_profile`]
+    /// `Op` is the concrete operator type [`test_session_with_peer`]
     /// returns; tests build fixtures via [`new_fixture`] and
     /// never need to name it directly.
     struct Fixture<Op>
@@ -831,7 +831,7 @@ mod tests {
 
     /// Open a fresh test repo with one empty `main` branch.
     async fn new_fixture() -> Fixture<impl FixtureEnv> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo
             .branch("main")

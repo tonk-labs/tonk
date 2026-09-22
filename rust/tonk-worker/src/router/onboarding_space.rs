@@ -6,7 +6,7 @@ use axum::{
 use axum_wasm_macros::wasm_compat;
 use base64::Engine as _;
 use dialog_artifacts::{Artifact, ArtifactSelector, Changes, Update};
-use dialog_operator::Profile;
+use dialog_peer::Profile;
 use dialog_query::{Output as _, Query, Term};
 use dialog_repository::{Blob, RepositoryExt as _};
 use futures_util::StreamExt as _;

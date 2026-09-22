@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use dialog_operator::{Operator, Profile};
+use dialog_peer::{Profile, Session};
 use dialog_query::{Output as _, Query, Term};
 use dialog_remote_ucan::UcanAddress;
 use dialog_repository::{Branch, SiteAddress};
@@ -143,7 +143,7 @@ async fn local_subjects(
 async fn ready_account_branch(
     profile: &Profile,
     store: &SpaceStore,
-) -> Result<(Operator<NativeSpace>, Branch)> {
+) -> Result<(Session<NativeSpace>, Branch)> {
     let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
     if let Some(branch) =
         crate::account_state::open_account_branch_in(profile, &operator, store).await?

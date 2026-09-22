@@ -2772,7 +2772,7 @@ mod tests {
                 .args(["account", "devices", "--json"])
                 .env(
                     "RUST_LOG",
-                    "debug,hyper=trace,hyper_util=trace,reqwest=debug,rustls=info,h2=info,dialog_remote_ucan_s3=trace,dialog_remote_s3=trace,dialog_operator=debug",
+                    "debug,hyper=trace,hyper_util=trace,reqwest=debug,rustls=info,h2=info,dialog_remote_ucan_s3=trace,dialog_remote_s3=trace,dialog_peer=debug",
                 )
                 .kill_on_drop(true)
                 .output(),

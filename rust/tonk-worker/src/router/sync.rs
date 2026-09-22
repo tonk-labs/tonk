@@ -1438,7 +1438,7 @@ pub(crate) async fn ensure_session_authority(state: &AppState) -> Result<(), Ton
 async fn renew_session_with<F, Fut>(state: &AppState, build: F) -> Result<(), TonkWorkerError>
 where
     F: FnOnce(
-        dialog_operator::Profile,
+        dialog_peer::Profile,
         dialog_storage::provider::storage::Storage<crate::worker::DefaultSpace>,
     ) -> Fut,
     Fut: std::future::Future<Output = Result<crate::session::Session, TonkWorkerError>>,

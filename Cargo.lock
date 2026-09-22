@@ -986,7 +986,7 @@ dependencies = [
 [[package]]
 name = "dialog-artifacts"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fprofile-operator-refactor-u83pqw#5a44630395a5f5e8f41784b2239e154b957e5f77"
 dependencies = [
  "arrayref",
  "async-stream",
@@ -1026,7 +1026,7 @@ dependencies = [
 [[package]]
 name = "dialog-capability"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fprofile-operator-refactor-u83pqw#5a44630395a5f5e8f41784b2239e154b957e5f77"
 dependencies = [
  "async-trait",
  "base58",
@@ -1049,7 +1049,7 @@ dependencies = [
 [[package]]
 name = "dialog-common"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fprofile-operator-refactor-u83pqw#5a44630395a5f5e8f41784b2239e154b957e5f77"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1078,7 +1078,7 @@ dependencies = [
 [[package]]
 name = "dialog-credentials"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fprofile-operator-refactor-u83pqw#5a44630395a5f5e8f41784b2239e154b957e5f77"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -1104,7 +1104,7 @@ dependencies = [
 [[package]]
 name = "dialog-csv"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fprofile-operator-refactor-u83pqw#5a44630395a5f5e8f41784b2239e154b957e5f77"
 dependencies = [
  "async-trait",
  "base58",
@@ -1119,7 +1119,7 @@ dependencies = [
 [[package]]
 name = "dialog-did-web"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fprofile-operator-refactor-u83pqw#5a44630395a5f5e8f41784b2239e154b957e5f77"
 dependencies = [
  "async-trait",
  "base58",
@@ -1142,7 +1142,7 @@ dependencies = [
 [[package]]
 name = "dialog-effects"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fprofile-operator-refactor-u83pqw#5a44630395a5f5e8f41784b2239e154b957e5f77"
 dependencies = [
  "async-trait",
  "base58",
@@ -1157,7 +1157,7 @@ dependencies = [
 [[package]]
 name = "dialog-identity"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fprofile-operator-refactor-u83pqw#5a44630395a5f5e8f41784b2239e154b957e5f77"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -1175,7 +1175,7 @@ dependencies = [
 [[package]]
 name = "dialog-macros"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fprofile-operator-refactor-u83pqw#5a44630395a5f5e8f41784b2239e154b957e5f77"
 dependencies = [
  "blake3",
  "convert_case",
@@ -1187,7 +1187,7 @@ dependencies = [
 [[package]]
 name = "dialog-network"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fprofile-operator-refactor-u83pqw#5a44630395a5f5e8f41784b2239e154b957e5f77"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -1201,14 +1201,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "dialog-operator"
+name = "dialog-peer"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fprofile-operator-refactor-u83pqw#5a44630395a5f5e8f41784b2239e154b957e5f77"
 dependencies = [
  "anyhow",
  "async-trait",
  "base58",
- "blake3",
  "dialog-artifacts",
  "dialog-capability",
  "dialog-common",
@@ -1241,7 +1240,7 @@ dependencies = [
 [[package]]
 name = "dialog-query"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fprofile-operator-refactor-u83pqw#5a44630395a5f5e8f41784b2239e154b957e5f77"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1280,7 +1279,7 @@ dependencies = [
  "dialog-common",
  "dialog-credentials",
  "dialog-effects",
- "dialog-operator",
+ "dialog-peer",
  "dialog-query",
  "dialog-repository",
  "dialog-search-tree",
@@ -1301,7 +1300,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-fs"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fprofile-operator-refactor-u83pqw#5a44630395a5f5e8f41784b2239e154b957e5f77"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -1318,7 +1317,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-s3"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fprofile-operator-refactor-u83pqw#5a44630395a5f5e8f41784b2239e154b957e5f77"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1357,7 +1356,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-ucan"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fprofile-operator-refactor-u83pqw#5a44630395a5f5e8f41784b2239e154b957e5f77"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1386,7 +1385,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-ucan-s3"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fprofile-operator-refactor-u83pqw#5a44630395a5f5e8f41784b2239e154b957e5f77"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1424,7 +1423,7 @@ dependencies = [
 [[package]]
 name = "dialog-repository"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fprofile-operator-refactor-u83pqw#5a44630395a5f5e8f41784b2239e154b957e5f77"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1465,7 +1464,7 @@ dependencies = [
 [[package]]
 name = "dialog-search-tree"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fprofile-operator-refactor-u83pqw#5a44630395a5f5e8f41784b2239e154b957e5f77"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1495,7 +1494,7 @@ dependencies = [
 [[package]]
 name = "dialog-storage"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fprofile-operator-refactor-u83pqw#5a44630395a5f5e8f41784b2239e154b957e5f77"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1542,7 +1541,7 @@ dependencies = [
 [[package]]
 name = "dialog-ucan"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fprofile-operator-refactor-u83pqw#5a44630395a5f5e8f41784b2239e154b957e5f77"
 dependencies = [
  "async-trait",
  "base58",
@@ -1563,7 +1562,7 @@ dependencies = [
 [[package]]
 name = "dialog-ucan-core"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fprofile-operator-refactor-u83pqw#5a44630395a5f5e8f41784b2239e154b957e5f77"
 dependencies = [
  "base64",
  "dialog-varsig",
@@ -1591,7 +1590,7 @@ dependencies = [
 [[package]]
 name = "dialog-varsig"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-09-18#289a76a5cb5c61c33b406a5210cd174e025662c3"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fprofile-operator-refactor-u83pqw#5a44630395a5f5e8f41784b2239e154b957e5f77"
 dependencies = [
  "dialog-common",
  "ed25519-dalek",
@@ -4684,7 +4683,7 @@ dependencies = [
  "dialog-credentials",
  "dialog-did-web",
  "dialog-effects",
- "dialog-operator",
+ "dialog-peer",
  "dialog-query",
  "dialog-remote-s3",
  "dialog-remote-ucan",
@@ -4738,7 +4737,7 @@ dependencies = [
  "dialog-common",
  "dialog-credentials",
  "dialog-effects",
- "dialog-operator",
+ "dialog-peer",
  "dialog-repository",
  "dialog-storage",
  "dialog-ucan",
@@ -4786,7 +4785,7 @@ dependencies = [
  "dialog-capability",
  "dialog-common",
  "dialog-effects",
- "dialog-operator",
+ "dialog-peer",
  "dialog-query",
  "dialog-repository",
  "lsp-types",
@@ -4834,7 +4833,7 @@ dependencies = [
  "dialog-credentials",
  "dialog-csv",
  "dialog-effects",
- "dialog-operator",
+ "dialog-peer",
  "dialog-query",
  "dialog-reactor",
  "dialog-remote-s3",
@@ -4973,7 +4972,7 @@ dependencies = [
  "dialog-capability",
  "dialog-common",
  "dialog-effects",
- "dialog-operator",
+ "dialog-peer",
  "dialog-query",
  "dialog-repository",
  "serde",
@@ -5144,7 +5143,7 @@ dependencies = [
  "async-trait",
  "dialog-capability",
  "dialog-common",
- "dialog-operator",
+ "dialog-peer",
  "dialog-repository",
  "lsp-types",
  "serde",
@@ -5277,7 +5276,7 @@ dependencies = [
  "dialog-common",
  "dialog-credentials",
  "dialog-effects",
- "dialog-operator",
+ "dialog-peer",
  "dialog-query",
  "dialog-repository",
  "dialog-ucan-core",
@@ -5424,7 +5423,7 @@ dependencies = [
  "dialog-credentials",
  "dialog-csv",
  "dialog-effects",
- "dialog-operator",
+ "dialog-peer",
  "dialog-query",
  "dialog-reactor",
  "dialog-remote-ucan",

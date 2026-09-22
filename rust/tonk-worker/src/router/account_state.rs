@@ -2010,7 +2010,7 @@ pub(crate) mod tests {
         Ed25519Signer,
         String,
     ) {
-        use dialog_operator::Profile;
+        use dialog_peer::Profile;
         use dialog_storage::provider::storage::Storage;
         use dialog_varsig::Principal as _;
         use tonk_access_service::helpers::AccessServiceAddress;

@@ -1313,7 +1313,7 @@ fn server_capabilities() -> ServerCapabilities {
 #[cfg(test)]
 mod tests {
     use async_trait::async_trait;
-    use dialog_operator::helpers::{test_operator_with_profile, test_repo};
+    use dialog_peer::helpers::{test_session_with_peer, test_repo};
     use dialog_repository::Branch;
     use serde_json::json;
     use tonk_schema::concept::QueryEnv;
@@ -1442,7 +1442,7 @@ mod tests {
     /// `impl Trait` in the return type hides the operator's space
     /// parameter.
     async fn new_test_env() -> TestEnv<impl QueryEnv> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo
             .branch("main")

@@ -755,7 +755,7 @@ async fn it_migrates_delegations_idempotently() -> Result<()> {
     // Mount the fixture's profile so migration has a provider for its
     // subject: it commits as the profile, and an unmounted one errors.
     let storage = Storage::<NativeSpace>::default();
-    let profile = dialog_operator::Profile::load(&fixture.config.profile_name)
+    let profile = dialog_peer::Profile::load(&fixture.config.profile_name)
         .at(fixture.config.profile_directory.clone())
         .perform(&storage)
         .await?;

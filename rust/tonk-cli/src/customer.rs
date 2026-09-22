@@ -12,7 +12,7 @@ use dialog_varsig::Did;
 use tonk_account::customer::{Receipt, RegistrationError};
 use url::Url;
 
-use dialog_operator::Profile;
+use dialog_peer::Profile;
 
 /// The access service origin for this profile's account: the attached
 /// repository descriptor's remote, with its `/ucan/` path stripped.

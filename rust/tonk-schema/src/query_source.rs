@@ -171,7 +171,7 @@ mod tests {
     wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_dedicated_worker);
 
     use dialog_artifacts::Entity;
-    use dialog_operator::helpers::{test_operator_with_profile, test_repo};
+    use dialog_peer::helpers::{test_session_with_peer, test_repo};
     use dialog_query::query::Output as _;
     use dialog_query::{Concept, Query, Term};
 
@@ -200,7 +200,7 @@ mod tests {
     #[dialog_common::test]
     async fn it_matches_a_direct_branch_query_when_performed_through_query_source()
     -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -245,7 +245,7 @@ mod tests {
     #[dialog_common::test]
     async fn it_surfaces_pending_writes_when_performed_through_a_transaction_source()
     -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -275,7 +275,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_lifts_both_staged_query_types_via_from() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 

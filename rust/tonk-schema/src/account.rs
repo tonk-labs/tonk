@@ -210,7 +210,7 @@ impl AccountSealedInbox {
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
-    use dialog_operator::helpers;
+    use dialog_peer::helpers;
     use dialog_query::{Output as _, Query, Term};
     use dialog_varsig::did;
     #[cfg(target_arch = "wasm32")]
@@ -223,7 +223,7 @@ mod tests {
     wasm_bindgen_test_configure!(run_in_browser);
 
     async fn converge(a_first: bool) -> Result<String> {
-        let (operator, profile) = helpers::test_operator_with_profile().await;
+        let (operator, profile) = helpers::test_session_with_peer().await;
         let repository = helpers::test_repo(&operator, &profile).await;
         let base = repository.branch("base").open().perform(&operator).await?;
         let base_revision = base
@@ -320,7 +320,7 @@ mod tests {
     /// own, and an account carries whichever have happened.
     #[dialog_common::test]
     async fn it_reads_registration_activation_and_suspension_apart() -> Result<()> {
-        let (operator, profile) = helpers::test_operator_with_profile().await;
+        let (operator, profile) = helpers::test_session_with_peer().await;
         let repository = helpers::test_repo(&operator, &profile).await;
         let branch = repository.branch("main").open().perform(&operator).await?;
         let account = did!("test:account").this();
@@ -451,7 +451,7 @@ mod tests {
     /// registered.
     #[dialog_common::test]
     async fn it_does_not_race_enrollment_against_activation() -> Result<()> {
-        let (operator, profile) = helpers::test_operator_with_profile().await;
+        let (operator, profile) = helpers::test_session_with_peer().await;
         let repository = helpers::test_repo(&operator, &profile).await;
         let branch = repository.branch("main").open().perform(&operator).await?;
         let account = did!("test:account").this();

@@ -10,7 +10,7 @@ use anyhow::{Context, Result, bail};
 use dialog_capability::Subject;
 use dialog_effects::credential::CredentialError;
 use dialog_effects::storage::Directory;
-use dialog_operator::{DeriveOperator, Operator, Profile};
+use dialog_peer::{Peer, Profile, Session};
 use dialog_remote_ucan::UcanAddress;
 use dialog_repository::{RemoteAddress, RemoteRepository, Repository, SiteAddress, Upstream};
 use dialog_storage::provider::storage::{NativeSpace, Storage};
@@ -53,7 +53,7 @@ pub(crate) fn credential_is_missing(error: &CredentialError) -> bool {
     }
 }
 
-async fn marker(profile: &Profile, operator: &Operator<NativeSpace>) -> Result<Option<Vec<u8>>> {
+async fn marker(profile: &Profile, operator: &Session<NativeSpace>) -> Result<Option<Vec<u8>>> {
     match profile
         .credential()
         .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
@@ -69,7 +69,7 @@ async fn marker(profile: &Profile, operator: &Operator<NativeSpace>) -> Result<O
 
 async fn save_marker(
     profile: &Profile,
-    operator: &Operator<NativeSpace>,
+    operator: &Session<NativeSpace>,
     subject: &dialog_varsig::Did,
 ) -> Result<()> {
     profile
@@ -90,7 +90,7 @@ fn marker_matches(marker: Option<&[u8]>, subject: &dialog_varsig::Did) -> bool {
 #[cfg(test)]
 async fn linked_account(
     profile: &Profile,
-    operator: &Operator<NativeSpace>,
+    operator: &Session<NativeSpace>,
 ) -> Result<Option<dialog_varsig::Did>> {
     let store = crate::space::SpaceStore::open().context("failed to locate account state")?;
     linked_account_in(profile, operator, &store).await
@@ -99,7 +99,7 @@ async fn linked_account(
 /// [`linked_account`] against a caller-supplied store.
 async fn linked_account_in(
     profile: &Profile,
-    operator: &Operator<NativeSpace>,
+    operator: &Session<NativeSpace>,
     store: &crate::space::SpaceStore,
 ) -> Result<Option<dialog_varsig::Did>> {
     crate::account_session::snapshot(profile, operator, store)
@@ -132,7 +132,7 @@ pub async fn status_in(
 /// Read durable account state through an already-mounted local operator.
 pub(crate) async fn status_with_operator_in(
     profile: &Profile,
-    operator: &Operator<NativeSpace>,
+    operator: &Session<NativeSpace>,
     store: &crate::space::SpaceStore,
 ) -> Result<AccountStateStatus> {
     let Some(subject) = linked_account_in(profile, operator, store).await? else {
@@ -143,7 +143,7 @@ pub(crate) async fn status_with_operator_in(
 
 pub(crate) async fn status_for_subject(
     profile: &Profile,
-    operator: &Operator<NativeSpace>,
+    operator: &Session<NativeSpace>,
     subject: &dialog_varsig::Did,
 ) -> Result<AccountStateStatus> {
     if marker_matches(marker(profile, operator).await?.as_deref(), subject) {
@@ -164,7 +164,7 @@ pub(crate) async fn status_for_subject(
 /// trusted base — which is ordinary for a profile that has not signed in.
 pub async fn adopt_account_access(
     profile: &Profile,
-    operator: &Operator<NativeSpace>,
+    operator: &Session<NativeSpace>,
 ) -> Result<bool> {
     let store = crate::space::SpaceStore::open().context("failed to locate account state")?;
     adopt_account_access_in(profile, operator, &store).await
@@ -173,7 +173,7 @@ pub async fn adopt_account_access(
 /// [`adopt_account_access`] against a caller-supplied store.
 pub async fn adopt_account_access_in(
     profile: &Profile,
-    operator: &Operator<NativeSpace>,
+    operator: &Session<NativeSpace>,
     store: &crate::space::SpaceStore,
 ) -> Result<bool> {
     let Some(active) = crate::account_session::snapshot(profile, operator, store)
@@ -254,7 +254,7 @@ pub async fn adopt_account_access_in(
 /// for a profile that has not signed in or hydrated.
 pub async fn open_account_branch(
     profile: &Profile,
-    operator: &Operator<NativeSpace>,
+    operator: &Session<NativeSpace>,
 ) -> Result<Option<dialog_repository::Branch>> {
     let store = crate::space::SpaceStore::open().context("failed to locate account state")?;
     open_account_branch_in(profile, operator, &store).await
@@ -263,7 +263,7 @@ pub async fn open_account_branch(
 /// [`open_account_branch`] against a caller-supplied store.
 pub async fn open_account_branch_in(
     profile: &Profile,
-    operator: &Operator<NativeSpace>,
+    operator: &Session<NativeSpace>,
     store: &crate::space::SpaceStore,
 ) -> Result<Option<dialog_repository::Branch>> {
     trace("open: start");
@@ -305,7 +305,7 @@ pub async fn open_account_branch_in(
 /// recoverable one.
 pub async fn retain_space_delegation(
     profile: &Profile,
-    operator: &Operator<NativeSpace>,
+    operator: &Session<NativeSpace>,
     chain: &DelegationChain,
 ) -> Result<bool> {
     let store = crate::space::SpaceStore::open().context("failed to locate account state")?;
@@ -315,7 +315,7 @@ pub async fn retain_space_delegation(
 /// Retain one space delegation in the account repository owned by `store`.
 pub async fn retain_space_delegation_in(
     profile: &Profile,
-    operator: &Operator<NativeSpace>,
+    operator: &Session<NativeSpace>,
     store: &crate::space::SpaceStore,
     chain: &DelegationChain,
 ) -> Result<bool> {
@@ -393,7 +393,7 @@ pub async fn migrate_delegations_here() -> Result<MigrationOutcome> {
 /// migrating nothing.
 pub async fn migrate_delegations(
     profile: &Profile,
-    operator: &Operator<NativeSpace>,
+    operator: &Session<NativeSpace>,
     storage: &Storage<NativeSpace>,
     store: &crate::space::SpaceStore,
 ) -> Result<MigrationOutcome> {
@@ -467,7 +467,7 @@ pub(crate) async fn store_operator_with_config(
     store: &crate::space::SpaceStore,
     profile_name: &str,
     profile_directory: Directory,
-) -> Result<Operator<NativeSpace>> {
+) -> Result<Session<NativeSpace>> {
     operator_with_profile(
         profile,
         &store.account_dir(),
@@ -482,7 +482,7 @@ async fn operator_with_profile(
     root: &Path,
     profile_name: &str,
     profile_directory: Directory,
-) -> Result<Operator<NativeSpace>> {
+) -> Result<Session<NativeSpace>> {
     std::fs::create_dir_all(root)
         .with_context(|| format!("failed to create account state at {}", root.display()))?;
     let root = root
@@ -500,13 +500,14 @@ async fn operator_with_profile(
     if mounted.did() != profile.did() {
         bail!("account-state profile does not match the active CLI profile");
     }
-    mounted
-        .derive(ACCOUNT_OPERATOR_CONTEXT)
-        .allow(Subject::any())
-        .base(Directory::At(root.to_owned()))
-        .build(storage)
-        .await
-        .context("failed to build account-state operator")
+    crate::peer::session_for(
+        &mounted,
+        storage,
+        Directory::At(root.to_owned()),
+        ACCOUNT_OPERATOR_CONTEXT,
+    )
+    .await
+    .context("failed to build account-state operator")
 }
 
 /// Build the stable account operator used by both credentials and repository
@@ -514,7 +515,7 @@ async fn operator_with_profile(
 pub async fn credential_operator_for_store(
     profile: &Profile,
     store: &crate::space::SpaceStore,
-) -> Result<Operator<NativeSpace>> {
+) -> Result<Session<NativeSpace>> {
     let root = store.account_dir();
     let default_store =
         crate::space::SpaceStore::open().context("failed to locate account state")?;
@@ -551,16 +552,17 @@ pub async fn credential_operator_for_store(
     let root = root
         .to_str()
         .with_context(|| format!("non-UTF-8 account state path: {}", root.display()))?;
-    profile
-        .derive(ACCOUNT_OPERATOR_CONTEXT)
-        .allow(Subject::any())
-        .base(Directory::At(root.to_owned()))
-        .build(Storage::<NativeSpace>::default())
-        .await
-        .context("failed to build account-state operator")
+    crate::peer::session_for(
+        profile,
+        Storage::<NativeSpace>::default(),
+        Directory::At(root.to_owned()),
+        ACCOUNT_OPERATOR_CONTEXT,
+    )
+    .await
+    .context("failed to build account-state operator")
 }
 
-pub(crate) async fn credential_operator(profile: &Profile) -> Result<Operator<NativeSpace>> {
+pub(crate) async fn credential_operator(profile: &Profile) -> Result<Session<NativeSpace>> {
     let store = crate::space::SpaceStore::open().context("failed to locate account state")?;
     operator_with_profile(
         profile,
@@ -575,7 +577,7 @@ pub(crate) async fn credential_operator(profile: &Profile) -> Result<Operator<Na
 pub async fn operator_for_store(
     profile: &Profile,
     store: &crate::space::SpaceStore,
-) -> Result<Operator<NativeSpace>> {
+) -> Result<Session<NativeSpace>> {
     credential_operator_for_store(profile, store).await
 }
 
@@ -592,7 +594,7 @@ async fn repoint_remote(
     name: &str,
     address: &SiteAddress,
     subject: &dialog_varsig::Did,
-    operator: &Operator<NativeSpace>,
+    operator: &Session<NativeSpace>,
 ) -> Result<RemoteRepository> {
     let reference = repository.remote(name);
     let target = RemoteAddress::new(address.clone(), subject.clone());
@@ -615,7 +617,7 @@ async fn repoint_remote(
 /// its hydrated facts or repoint a handle retained by an earlier operation.
 async fn mount(
     profile: &Profile,
-    operator: &Operator<NativeSpace>,
+    operator: &Session<NativeSpace>,
     store: &crate::space::SpaceStore,
     subject: &dialog_varsig::Did,
     remote: &str,
@@ -784,7 +786,7 @@ async fn hydrate(
 /// idempotent.
 async fn converge_account_union(
     profile: &Profile,
-    operator: &Operator<NativeSpace>,
+    operator: &Session<NativeSpace>,
     subject: &dialog_varsig::Did,
     branch: &dialog_repository::Branch,
     store: &crate::space::SpaceStore,
@@ -862,7 +864,7 @@ pub async fn ensure(profile: &Profile) -> Result<EnsureOutcome> {
 /// from a test or an embedder without reaching for install state.
 pub async fn ensure_with_operator(
     profile: &Profile,
-    operator: Operator<NativeSpace>,
+    operator: Session<NativeSpace>,
 ) -> Result<EnsureOutcome> {
     let store = crate::space::SpaceStore::open().context("failed to locate account state")?;
     ensure_with_operator_and_store(profile, operator, store).await
@@ -924,7 +926,7 @@ pub(crate) fn trace(step: &str) {
 /// than having the real install directory resolved behind its back.
 pub async fn ensure_with_operator_and_store(
     profile: &Profile,
-    operator: Operator<NativeSpace>,
+    operator: Session<NativeSpace>,
     store: crate::space::SpaceStore,
 ) -> Result<EnsureOutcome> {
     trace("ensure: start");
@@ -1082,7 +1084,7 @@ mod tests {
     #[dialog_common::test]
     async fn it_repoints_the_account_remote_when_the_link_moves() {
         use dialog_common::helpers::Provisionable as _;
-        use dialog_operator::Profile;
+        use dialog_peer::Profile;
         use dialog_ucan::UcanDelegation;
         use dialog_varsig::Principal as _;
         use tonk_access_service::helpers::AccessServiceAddress;
@@ -1122,7 +1124,7 @@ mod tests {
             store: &crate::space::SpaceStore,
             profile_name: &str,
             profile_dir: &Directory,
-        ) -> Operator<NativeSpace> {
+        ) -> Session<NativeSpace> {
             operator_with_profile(
                 profile,
                 &store.account_dir(),
@@ -1247,7 +1249,7 @@ mod tests {
     #[dialog_common::test]
     async fn it_ensures_account_state_outside_the_space_registry() {
         use dialog_common::helpers::Provisionable as _;
-        use dialog_operator::Profile;
+        use dialog_peer::Profile;
         use dialog_ucan::UcanDelegation;
         use tonk_access_service::helpers::AccessServiceAddress;
 

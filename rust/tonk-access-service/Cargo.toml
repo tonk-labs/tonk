@@ -84,7 +84,7 @@ dialog-common = { workspace = true, features = ["helpers"] }
 dialog-credentials = { workspace = true }
 # Only to name `Operator`/`Profile` in the shared account-device fixture;
 # already in the tree via dialog-repository.
-dialog-operator = { workspace = true, features = ["helpers"] }
+dialog-peer = { workspace = true, features = ["helpers"] }
 dialog-query = { workspace = true }
 dialog-remote-s3 = { workspace = true, features = ["helpers"] }
 dialog-remote-ucan-s3 = { workspace = true, features = ["helpers"] }

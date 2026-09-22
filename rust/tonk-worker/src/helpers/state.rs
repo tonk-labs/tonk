@@ -15,7 +15,7 @@
 #![cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 
 use dialog_credentials::Ed25519Signer;
-use dialog_operator::Profile;
+use dialog_peer::Profile;
 use dialog_storage::provider::storage::Storage;
 use dialog_varsig::Principal as _;
 use tonk_schema::prelude::DidExt as _;

@@ -17,7 +17,7 @@ use std::sync::{Arc, atomic::Ordering};
 
 use axum::{Extension, Json, extract::State};
 use axum_wasm_macros::wasm_compat;
-use dialog_operator::{DeriveOperator as _, Profile};
+use dialog_peer::Profile;
 use dialog_storage::provider::storage::Storage;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use dialog_varsig::Did;

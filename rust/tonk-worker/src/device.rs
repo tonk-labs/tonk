@@ -12,7 +12,7 @@
 
 use dialog_capability::{Subject, did};
 use dialog_effects::storage::{self as storage_fx, Directory, Location, LocationExt};
-use dialog_operator::Profile;
+use dialog_peer::Profile;
 use dialog_query::{Output as _, Query, Term};
 use dialog_repository::{Branch, Repository};
 use dialog_storage::provider::storage::Storage;

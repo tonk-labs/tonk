@@ -1709,7 +1709,7 @@ fn account_login_warning(status: tonk_account::AccountStateStatus, warning: &str
 /// the account-signed deposits come from — so this only reads state
 /// and points at the account page when something is missing.
 async fn print_customer_line(
-    profile: &dialog_operator::Profile,
+    profile: &dialog_peer::Profile,
     store: &tonk_cli::space::SpaceStore,
 ) {
     if let Some(line) = customer_state(profile, store).await.line() {
@@ -1742,7 +1742,7 @@ const ACCOUNT_STATUS_SCHEMA_VERSION: &str = "tonk.account-status.v1";
 /// The same facts the account section and [`print_customer_line`]
 /// print, as one structured record.
 async fn account_status_json(
-    profile: &dialog_operator::Profile,
+    profile: &dialog_peer::Profile,
     store: &tonk_cli::space::SpaceStore,
     status: &account::AccountStatus,
 ) -> AccountStatusReport {
@@ -1760,7 +1760,7 @@ async fn account_status_json(
 /// Access-service registration as one token, or `None` when the answer
 /// could not be read — which is not the same as "not registered".
 async fn customer_state(
-    profile: &dialog_operator::Profile,
+    profile: &dialog_peer::Profile,
     store: &tonk_cli::space::SpaceStore,
 ) -> CustomerState {
     use tonk_account::customer::CustomerStatus;

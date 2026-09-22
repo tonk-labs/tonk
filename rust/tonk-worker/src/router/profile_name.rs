@@ -15,7 +15,7 @@ use tonk_schema::{ProfileName, petname};
 #[cfg(target_arch = "wasm32")]
 use crate::RepositoryError;
 use crate::worker::{DefaultOperator, TonkState};
-use dialog_operator::Profile;
+use dialog_peer::Profile;
 #[cfg(target_arch = "wasm32")]
 use tonk_schema::{MemberName, Membership};
 
@@ -229,7 +229,7 @@ mod tests {
     wasm_bindgen_test_configure!(run_in_service_worker);
 
     use crate::worker::{DefaultSpace, TonkState};
-    use dialog_operator::Profile;
+    use dialog_peer::Profile;
     use dialog_storage::provider::storage::Storage;
     use tonk_schema::petname;
 

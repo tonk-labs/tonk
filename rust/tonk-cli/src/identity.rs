@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use dialog_effects::credential::CredentialError;
-use dialog_operator::{Operator, Profile};
+use dialog_peer::{Profile, Session};
 use dialog_storage::provider::storage::{NativeSpace, Storage};
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
@@ -69,7 +69,7 @@ pub async fn local_root_in(
 /// Read the canonical root while recovering interrupted account replacements.
 pub(crate) async fn local_root_for_store(
     profile: &Profile,
-    operator: &Operator<NativeSpace>,
+    operator: &Session<NativeSpace>,
     store: &crate::space::SpaceStore,
 ) -> Result<Option<LocalRoot>> {
     let guard = crate::account_session::exclusive_transition_guard(store)?;
@@ -82,7 +82,7 @@ pub(crate) async fn local_root_for_store(
 /// Load the local root through an already-mounted site operator.
 pub(crate) async fn local_root_with_operator(
     profile: &Profile,
-    operator: &Operator<NativeSpace>,
+    operator: &Session<NativeSpace>,
 ) -> Result<Option<LocalRoot>> {
     let bytes = match profile
         .credential()
@@ -118,7 +118,7 @@ pub async fn save_local_root(
 /// profile and refuse.
 pub async fn save_local_root_with_operator(
     profile: &Profile,
-    operator: &dialog_operator::Operator<dialog_storage::provider::storage::NativeSpace>,
+    operator: &dialog_peer::Session<dialog_storage::provider::storage::NativeSpace>,
     credential_id: String,
     delegation_hex: String,
 ) -> Result<LocalRoot> {

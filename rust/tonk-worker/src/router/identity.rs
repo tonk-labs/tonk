@@ -12,7 +12,7 @@ use tonk_worker_api::{PasskeyMetadata, RootStatus, SaveRootRequest};
 use super::AppState;
 use crate::TonkWorkerError;
 use crate::worker::{DefaultOperator, TonkState};
-use dialog_operator::Profile;
+use dialog_peer::Profile;
 
 const LOCAL_ROOT_SITE: &str = "tonk-local-root-v1";
 

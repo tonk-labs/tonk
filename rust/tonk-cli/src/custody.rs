@@ -12,7 +12,7 @@
 //! account secret can ever open the row again.
 
 use anyhow::{Context, Result};
-use dialog_operator::{Operator, Profile};
+use dialog_peer::{Profile, Session};
 use dialog_query::{Output as _, Query, Term};
 use dialog_repository::Branch;
 use dialog_storage::provider::storage::NativeSpace;
@@ -29,7 +29,7 @@ use zeroize::Zeroizing;
 pub async fn account_recipient(
     account: &Branch,
     root: &Did,
-    operator: &Operator<NativeSpace>,
+    operator: &Session<NativeSpace>,
 ) -> Result<Option<Did>> {
     let rows: Vec<AccountSealedInbox> = account
         .query()
@@ -65,7 +65,7 @@ pub async fn custody_space_seed(
     subject: &Did,
     recipient: &Did,
     seed: &Zeroizing<[u8; 32]>,
-    operator: &Operator<NativeSpace>,
+    operator: &Session<NativeSpace>,
 ) -> Result<()> {
     let key = RecipientKey::try_from(recipient).map_err(|error| {
         anyhow::anyhow!("the account sealed-inbox address is unusable: {error}")
@@ -102,7 +102,7 @@ pub async fn custody_space_seed(
 /// live, so they ride straight into the account when it arrives.
 pub async fn open_local_account_branch(
     profile: &Profile,
-    operator: &Operator<NativeSpace>,
+    operator: &Session<NativeSpace>,
 ) -> Result<Branch> {
     dialog_repository::Repository::from(profile)
         .branch(tonk_account::MAIN_BRANCH)
@@ -116,7 +116,7 @@ pub async fn open_local_account_branch(
 pub async fn has_custody(
     account: &Branch,
     subject: &Did,
-    operator: &Operator<NativeSpace>,
+    operator: &Session<NativeSpace>,
 ) -> Result<bool> {
     let rows: Vec<SecretPrincipal> = account
         .query()
