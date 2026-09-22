@@ -551,7 +551,7 @@ async fn complete_login(
         tonk.disposition()
     );
     let profile_changed = tonk.disposition() != super::profiles::AccountProfileDisposition::Current;
-    let device = tonk.profile.signer().signer().clone();
+    let device = tonk.profile.credential().signer().clone();
     let ceremony =
         tonk_identity::ceremony::link_device(root.clone(), device.did(), link.device_name.clone())
             .await
@@ -891,7 +891,7 @@ async fn create(
         tonk.disposition()
     );
     let profile_changed = tonk.disposition() != super::profiles::AccountProfileDisposition::Current;
-    let device = tonk.profile.signer().signer().clone();
+    let device = tonk.profile.credential().signer().clone();
     let device_did = device.did();
 
     let ceremony = tonk_identity::ceremony::create_custody_request(

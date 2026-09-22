@@ -74,7 +74,7 @@ pub async fn inspect_remote(
 
     let repo = tonk_state
         .profile
-        .repository(&params.repo)
+        .space(&params.repo)
         .load()
         .perform(&tonk_state.operator)
         .await
@@ -117,7 +117,7 @@ pub async fn inspect_remote_branch(
 
     let repo = tonk_state
         .profile
-        .repository(&params.repo)
+        .space(&params.repo)
         .load()
         .perform(&tonk_state.operator)
         .await

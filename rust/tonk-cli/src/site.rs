@@ -12,6 +12,7 @@
 //! against: profile, operator (rooted at the site directory), the
 //! repository, and the opened `main` branch.
 
+use crate::peer::NativePeer;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
@@ -31,7 +32,6 @@ use dialog_ucan_core::time::Timestamp;
 use dialog_ucan_core::time::timestamp::{Duration, SystemTime};
 use dialog_varsig::{Did, Principal};
 use tonk_account::prefix::{
-use crate::peer::NativePeer;
     SPACE_ROOT_SITE_PREFIX, space_root_site, validate_prefix as verify_prefix,
 };
 

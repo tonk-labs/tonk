@@ -646,7 +646,7 @@ mod when_recording_roster_facts {
         // account — the durable identity an unlinked device has.
         let root_bytes = joined
             .profile
-            .credential()
+            .secrets()
             .site(tonk_cli::onboarding::ONBOARDING_GRANT_SITE)
             .load::<Vec<u8>>()
             .perform(&joined.operator)
@@ -1555,7 +1555,7 @@ mod when_mounting_account_authority {
     async fn local_root(site: &TonkSite) -> Result<dialog_varsig::Did> {
         let bytes = site
             .profile
-            .credential()
+            .secrets()
             .site(tonk_cli::onboarding::ONBOARDING_GRANT_SITE)
             .load::<Vec<u8>>()
             .perform(&site.operator)
@@ -1595,7 +1595,7 @@ mod when_mounting_account_authority {
         assert_eq!(mounted.repository.did(), subject);
         let persisted = mounted
             .profile
-            .credential()
+            .secrets()
             .site(space_root_site(&subject, &account_root))
             .load::<Vec<u8>>()
             .perform(&mounted.operator)
@@ -1671,7 +1671,7 @@ mod when_mounting_account_authority {
         let key = space_root_site(&test.site.repository.did(), &root);
         test.site
             .profile
-            .credential()
+            .secrets()
             .site(key.clone())
             .save(Vec::<u8>::new())
             .perform(&test.site.operator)
@@ -1683,7 +1683,7 @@ mod when_mounting_account_authority {
         let persisted = test
             .site
             .profile
-            .credential()
+            .secrets()
             .site(key)
             .load::<Vec<u8>>()
             .perform(&test.site.operator)
@@ -1709,7 +1709,7 @@ mod when_mounting_account_authority {
         let persisted = test
             .site
             .profile
-            .credential()
+            .secrets()
             .site(space_root_site(&test.site.repository.did(), &account_root))
             .load::<Vec<u8>>()
             .perform(&test.site.operator)

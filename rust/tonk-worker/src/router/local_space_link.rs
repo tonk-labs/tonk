@@ -106,7 +106,7 @@ pub(crate) async fn approve(
     .map_err(invalid)?;
     let tonk = state.read().await;
     let root = super::identity::local_root(&tonk).await?;
-    let device = tonk.profile.signer().signer().clone();
+    let device = tonk.profile.credential().signer().clone();
     let approval = local_space_link::LocalSpaceLinkApproval::issue_from_device(
         &request,
         root.delegation,
@@ -160,7 +160,7 @@ pub(crate) async fn complete(
     }
     let outcome =
         super::join::join_for_local_space_link(&tonk, &body.invite, &request.space).await?;
-    let device = tonk.profile.signer().signer().clone();
+    let device = tonk.profile.credential().signer().clone();
     let completion = local_space_link::LocalSpaceLinkCompletion::issue_from_device(
         &approval,
         root.delegation,
@@ -211,7 +211,7 @@ pub(crate) async fn provision(
     }
     super::customer::provision_consumer(&tonk, &request.space, &consent.chain, None).await?;
     super::join::save_local_space_root_authority(&tonk, &request.space, consent.chain).await?;
-    let device = tonk.profile.signer().signer().clone();
+    let device = tonk.profile.credential().signer().clone();
     let provisioned = local_space_link::LocalSpaceLinkCompletion::issue_from_device(
         &approval,
         root.delegation,

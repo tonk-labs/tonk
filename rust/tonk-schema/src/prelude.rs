@@ -72,7 +72,7 @@ pub trait DidExt {
     /// The repository routing/storage key for this DID: the full
     /// `did:key:z6Mk…` string. A repository's identity is its
     /// credential's DID, and that whole DID is what names the dialog
-    /// database (`profile.repository(did)`), routes its URLs
+    /// database (`profile.space(did)`), routes its URLs
     /// (`/space/{did}`, `/api/repository/{did}`), and keys the reactor
     /// cache. One identifier, no suffix-stripping. The user-typed name
     /// is only a display label, stored in the repository's own
