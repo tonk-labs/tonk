@@ -43,7 +43,8 @@ async fn it_pushes_a_space_whose_account_prefix_was_never_stored(
     .await?;
     let prefix_site = space_root_site(&site.repository.did(), fixture.link.issuer());
     fixture
-        .profile.secrets()
+        .profile
+        .secrets()
         .site(prefix_site.clone())
         .save(Vec::<u8>::new())
         .perform(&site.operator)
@@ -57,7 +58,8 @@ async fn it_pushes_a_space_whose_account_prefix_was_never_stored(
     tonk_cli::sync::push(&site).await?;
 
     let restored = fixture
-        .profile.secrets()
+        .profile
+        .secrets()
         .site(prefix_site)
         .load::<Vec<u8>>()
         .perform(&site.operator)
@@ -755,7 +757,10 @@ async fn it_migrates_delegations_idempotently() -> Result<()> {
     let storage = Storage::<NativeSpace>::default();
     let profile = dialog_peer::Peer::new()
         .storage(storage.clone())
-        .load(dialog_effects::storage::Location::new(fixture.config.profile_directory.clone(), &fixture.config.profile_name))
+        .load(dialog_effects::storage::Location::new(
+            fixture.config.profile_directory.clone(),
+            &fixture.config.profile_name,
+        ))
         .await?;
 
     let first = tonk_cli::account_state::migrate_delegations(

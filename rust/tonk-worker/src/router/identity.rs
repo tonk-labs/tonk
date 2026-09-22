@@ -1,11 +1,11 @@
 //! Persist and validate the provider-neutral local passkey root.
 
+use crate::worker::DefaultPeer;
 use axum::{Json, extract::State};
 use axum_wasm_macros::wasm_compat;
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
 use serde::{Deserialize, Serialize};
-use crate::worker::DefaultPeer;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_worker_api::{PasskeyMetadata, RootStatus, SaveRootRequest};
@@ -97,7 +97,8 @@ async fn load_record_from(
     profile: &DefaultPeer,
     operator: &DefaultOperator,
 ) -> Result<Option<LocalRootRecord>, TonkWorkerError> {
-    let bytes = match profile.secrets()
+    let bytes = match profile
+        .secrets()
         .site(LOCAL_ROOT_SITE)
         .load::<Vec<u8>>()
         .perform(operator)
@@ -203,7 +204,8 @@ pub(crate) async fn forget_encryption_key(state: &TonkState) -> Result<(), TonkW
         TonkWorkerError::Internal(format!("failed to serialize local root: {error}"))
     })?;
     state
-        .profile.secrets()
+        .profile
+        .secrets()
         .site(LOCAL_ROOT_SITE)
         .save(encoded)
         .perform(&state.operator)
@@ -318,7 +320,8 @@ pub(crate) async fn persist_root(
         TonkWorkerError::Internal(format!("failed to serialize local root: {error}"))
     })?;
     state
-        .profile.secrets()
+        .profile
+        .secrets()
         .site(LOCAL_ROOT_SITE)
         .save(encoded)
         .perform(&state.operator)

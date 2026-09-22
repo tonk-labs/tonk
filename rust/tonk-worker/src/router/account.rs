@@ -1,9 +1,9 @@
 //! Attach optional provider services to the provider-neutral local root, and
 //! name the account repository that root owns.
 
+use crate::worker::DefaultPeer;
 use axum::{Extension, Json, extract::State};
 use axum_wasm_macros::wasm_compat;
-use crate::worker::DefaultPeer;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_account::AccountProviderRecord;
@@ -42,7 +42,8 @@ async fn load_provider_from(
     profile: &DefaultPeer,
     operator: &DefaultOperator,
 ) -> Result<Option<AccountProviderRecord>, TonkWorkerError> {
-    let bytes = match profile.secrets()
+    let bytes = match profile
+        .secrets()
         .site(ACCOUNT_PROVIDER_SITE)
         .load::<Vec<u8>>()
         .perform(operator)
@@ -72,7 +73,8 @@ async fn save_provider(
         TonkWorkerError::Internal(format!("failed to serialize account provider: {error}"))
     })?;
     state
-        .profile.secrets()
+        .profile
+        .secrets()
         .site(ACCOUNT_PROVIDER_SITE)
         .save(bytes)
         .perform(&state.operator)
@@ -107,10 +109,13 @@ pub(crate) async fn provider(state: &crate::worker::TonkState) -> Option<String>
 
 /// Attached provider base URL for an explicit, inactive profile.
 ///
-/// DefaultPeer roster reads use this without booting every candidate. A profile
+/// Profile roster reads use this without booting every candidate. A profile
 /// with no valid historical root, a cleared provider tombstone, or unreadable
 /// credentials is provider-free.
-pub(crate) async fn provider_from(profile: &DefaultPeer, operator: &DefaultOperator) -> Option<String> {
+pub(crate) async fn provider_from(
+    profile: &DefaultPeer,
+    operator: &DefaultOperator,
+) -> Option<String> {
     super::identity::historical_root_did(profile, operator)
         .await
         .ok()
@@ -216,7 +221,8 @@ pub(crate) async fn attach_test_account(
 /// different root, because its spaces still hang off the stored one.
 pub(crate) async fn has_attachment_history(state: &crate::worker::TonkState) -> bool {
     match state
-        .profile.secrets()
+        .profile
+        .secrets()
         .site(ACCOUNT_PROVIDER_SITE)
         .load::<Vec<u8>>()
         .perform(&state.operator)
@@ -249,7 +255,8 @@ pub(crate) async fn detach_test_account(
     state: &crate::worker::TonkState,
 ) -> Result<(), TonkWorkerError> {
     state
-        .profile.secrets()
+        .profile
+        .secrets()
         .site(ACCOUNT_PROVIDER_SITE)
         .save(Vec::<u8>::new())
         .perform(&state.operator)
@@ -444,7 +451,8 @@ pub(crate) async fn disconnect(
     // device consistently linked rather than half signed out.
     super::account_state::retract_account_replicas(state).await?;
     state
-        .profile.secrets()
+        .profile
+        .secrets()
         .site(ACCOUNT_PROVIDER_SITE)
         .save(Vec::<u8>::new())
         .perform(&state.operator)

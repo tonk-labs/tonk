@@ -10,6 +10,7 @@
 //! profile rather than inside the profile it names: a pointer stored in
 //! the thing it points at could not be read before opening it.
 
+use crate::worker::DefaultPeer;
 use dialog_capability::{Subject, did};
 use dialog_effects::storage::{self as storage_fx, Directory, Location, LocationExt};
 use dialog_query::{Output as _, Query, Term};
@@ -18,7 +19,6 @@ use dialog_storage::provider::storage::Storage;
 use dialog_varsig::Did;
 use tonk_common::log;
 use tonk_schema::DeviceProfile;
-use crate::worker::DefaultPeer;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tonk_schema::prelude::DidExt as _;
 
@@ -100,7 +100,10 @@ impl Registry {
         &self.profile
     }
 
-    async fn open_self(&self, storage: &Storage<DefaultSpace>) -> Result<DefaultPeer, TonkWorkerError> {
+    async fn open_self(
+        &self,
+        storage: &Storage<DefaultSpace>,
+    ) -> Result<DefaultPeer, TonkWorkerError> {
         // PROBE (temporary): surface the raw storage::Load error that
         // `Profile::open` swallows before falling back to `Create`.
         let probe = Subject::from(did!("local:storage"))
@@ -115,8 +118,11 @@ impl Registry {
             log!("registry load probe failed: {error}");
         }
         dialog_peer::Peer::new()
-        .storage(storage.clone())
-        .open(dialog_effects::storage::Location::new(self.directory.clone(), &self.profile))
+            .storage(storage.clone())
+            .open(dialog_effects::storage::Location::new(
+                self.directory.clone(),
+                &self.profile,
+            ))
             .await
             .map_err(|error| {
                 TonkWorkerError::Internal(format!(
@@ -191,8 +197,11 @@ impl Registry {
         name: &str,
     ) -> Result<DefaultPeer, TonkWorkerError> {
         dialog_peer::Peer::new()
-        .storage(storage.clone())
-        .open(dialog_effects::storage::Location::new(self.directory.clone(), name))
+            .storage(storage.clone())
+            .open(dialog_effects::storage::Location::new(
+                self.directory.clone(),
+                name,
+            ))
             .await
             .map_err(|error| {
                 TonkWorkerError::Internal(format!("failed to open profile '{name}': {error}"))
@@ -370,8 +379,11 @@ impl Registry {
         // than quietly hand back an existing key, since the whole point
         // is to leave the old one behind.
         let profile = dialog_peer::Peer::new()
-        .storage(storage.clone())
-        .create(dialog_effects::storage::Location::new(self.directory.clone(), &name))
+            .storage(storage.clone())
+            .create(dialog_effects::storage::Location::new(
+                self.directory.clone(),
+                &name,
+            ))
             .await
             .map_err(|error| {
                 TonkWorkerError::Internal(format!("failed to create profile '{name}': {error}"))
@@ -507,10 +519,7 @@ mod tests {
     /// own, as a device that never rotated would use.
     async fn operator(registry: &Registry, storage: &Storage<DefaultSpace>) -> DefaultOperator {
         let profile = registry.open_self(storage).await.unwrap();
-        crate::session::open(&profile)
-            .await
-            .unwrap()
-            .operator
+        crate::session::open(&profile).await.unwrap().operator
     }
 
     #[dialog_common::test]
@@ -616,10 +625,7 @@ mod tests {
         // A rotated device reads the roster through the profile it now
         // signs as, not the registry's key.
         let (_, created) = registry.create_profile(&storage).await.unwrap();
-        let other = crate::session::open(&created)
-            .await
-            .unwrap()
-            .operator;
+        let other = crate::session::open(&created).await.unwrap().operator;
         assert_eq!(
             registry.read_roster(&storage, &other).await.unwrap(),
             vec![entry(&profile_did(1).await, "one")]

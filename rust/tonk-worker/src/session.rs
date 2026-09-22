@@ -31,8 +31,8 @@ use dialog_ucan_core::time::Timestamp;
 use dialog_ucan_core::time::timestamp::{Duration, SystemTime};
 
 use crate::TonkWorkerError;
-use crate::worker::DefaultSpace;
 use crate::worker::DefaultPeer;
+use crate::worker::DefaultSpace;
 
 /// How long a session delegation is good for.
 ///
@@ -120,8 +120,7 @@ mod tests {
     use dialog_ucan_core::{DelegationBuilder, DelegationChain};
     use dialog_varsig::Principal;
 
-    /// A throwaway profile in a scratch directory, plus the storage it
-    /// is mounted in. Names are unique per call so tests never share a
+    /// A throwaway peer in a scratch directory. Names are unique per call so tests never share a
     /// profile key or a certificate store.
     ///
     /// The name must be unique across PROCESSES, not just within one: the
@@ -129,20 +128,23 @@ mod tests {
     /// hands two concurrent tests the same name — and therefore the same
     /// profile directory, whose writer lock one of them then loses.
     /// `unique_name` folds in the pid for exactly this reason.
-    async fn scratch() -> (Storage<DefaultSpace>, DefaultPeer) {
+    async fn scratch() -> DefaultPeer {
         let name = dialog_peer::helpers::unique_name("session-test");
         let storage = Storage::<DefaultSpace>::default();
         let profile = dialog_peer::Peer::new()
-        .storage(storage.clone())
-        .open(dialog_effects::storage::Location::new(Directory::Temp, name))
+            .storage(storage.clone())
+            .open(dialog_effects::storage::Location::new(
+                Directory::Temp,
+                name,
+            ))
             .await
             .expect("profile opens");
-        (storage, profile)
+        profile
     }
 
     #[dialog_common::test]
     async fn it_bounds_the_session_within_the_ttl() {
-        let (storage, profile) = scratch().await;
+        let profile = scratch().await;
         let before = now();
 
         let session = open(&profile).await.unwrap();
@@ -153,7 +155,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_creates_distinct_sessions_across_opens() {
-        let (storage, profile) = scratch().await;
+        let profile = scratch().await;
 
         let first = open(&profile).await.unwrap();
         let second = open(&profile).await.unwrap();
@@ -214,7 +216,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_authorizes_replacement_sessions_without_committing() {
-        let (storage, profile) = scratch().await;
+        let profile = scratch().await;
         let setup = open(&profile).await.unwrap();
         let space = retain_space(&profile, &setup.operator).await;
         let revision = access_revision(&profile, &setup.operator).await;
@@ -236,8 +238,11 @@ mod tests {
         let (profile_did, old_operator, space, revision, legacy) = {
             let storage = Storage::<DefaultSpace>::default();
             let profile = dialog_peer::Peer::new()
-        .storage(storage.clone())
-        .open(dialog_effects::storage::Location::new(Directory::Temp, &name))
+                .storage(storage.clone())
+                .open(dialog_effects::storage::Location::new(
+                    Directory::Temp,
+                    &name,
+                ))
                 .await
                 .unwrap();
             // Simulate Safari's saved grant naming an audience unrelated
@@ -266,7 +271,8 @@ mod tests {
                 "version": 1, "context": b"worker".to_vec(), "expires_at": expiration.to_unix()
             }))
             .unwrap();
-            profile.secrets()
+            profile
+                .secrets()
                 .site("tonk-session-v1")
                 .save(legacy.clone())
                 .perform(&storage)
@@ -284,8 +290,11 @@ mod tests {
         // been released. Reopen the same durable profile with a new pool.
         let storage = Storage::<DefaultSpace>::default();
         let profile = dialog_peer::Peer::new()
-        .storage(storage.clone())
-        .open(dialog_effects::storage::Location::new(Directory::Temp, &name))
+            .storage(storage.clone())
+            .open(dialog_effects::storage::Location::new(
+                Directory::Temp,
+                &name,
+            ))
             .await
             .unwrap();
         let session = open(&profile).await.unwrap();
@@ -293,7 +302,8 @@ mod tests {
         assert_ne!(session.operator.did(), old_operator);
         assert_eq!(access_revision(&profile, &session.operator).await, revision);
         assert_proof(&profile, &session, &space).await;
-        let after = profile.secrets()
+        let after = profile
+            .secrets()
             .site("tonk-session-v1")
             .load::<Vec<u8>>()
             .perform(&storage)

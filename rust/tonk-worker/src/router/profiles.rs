@@ -1,4 +1,4 @@
-//! DefaultPeer roster and switching — one profile per account, swapped in
+//! Profile roster and switching — one profile per account, swapped in
 //! place.
 //!
 //! Everything that should follow the active account is already scoped to
@@ -15,11 +15,10 @@
 use std::ops::Deref;
 use std::sync::{Arc, atomic::Ordering};
 
+use crate::worker::DefaultPeer;
 use axum::{Extension, Json, extract::State};
 use axum_wasm_macros::wasm_compat;
-use dialog_peer::{Peer};
 use dialog_storage::provider::storage::Storage;
-use crate::worker::DefaultPeer;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use dialog_varsig::Did;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -47,7 +46,7 @@ pub(crate) enum AccountProfileDisposition {
 }
 
 /// A read lock that pins the account ceremony to the selected profile.
-/// DefaultPeer changes queue behind this guard until all local account writes have
+/// Profile changes queue behind this guard until all local account writes have
 /// completed.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) struct AccountProfileGuard {

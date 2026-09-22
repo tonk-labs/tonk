@@ -19,8 +19,8 @@ use dialog_storage::provider::storage::Storage;
 use dialog_varsig::Principal as _;
 use tonk_schema::prelude::DidExt as _;
 
-use crate::worker::{DefaultSpace, TonkState};
 use crate::worker::DefaultPeer;
+use crate::worker::{DefaultSpace, TonkState};
 
 /// A random id minted once per test *process*, mixed into every profile
 /// name so two runs never collide on storage a shared browser profile
@@ -61,7 +61,10 @@ pub async fn test_state_without_root() -> TonkState {
     let storage = Storage::<DefaultSpace>::default();
     let profile = dialog_peer::Peer::new()
         .storage(storage.clone())
-        .open(dialog_effects::storage::Location::new(dialog_effects::storage::Directory::Profile, &profile_name))
+        .open(dialog_effects::storage::Location::new(
+            dialog_effects::storage::Directory::Profile,
+            &profile_name,
+        ))
         .await
         .expect("Failed to create test profile");
 

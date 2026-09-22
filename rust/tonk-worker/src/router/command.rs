@@ -247,7 +247,7 @@ fn space_commands() -> CommandRegistry<CommandEnv> {
         // dispatches on the space's own branch, and the refusal flow
         // ("sharing unavailable") publishes to that same branch's
         // overlay. `may_target_space` keeps it self-scoped — a space
-        // cannot mint for another space. DefaultPeer-side is still the
+        // cannot mint for another space. Profile-side is still the
         // destination once that surface moves.
         .command::<super::repository::InviteRequest>()
         // A space may ask whether ITS OWN seed is behind: the check
@@ -436,7 +436,7 @@ pub(crate) mod tests {
         };
         let entity = |uri: &str| uri.parse::<Entity>().expect("entity URI");
 
-        // DefaultPeer-only shapes: lifecycle, joining, membership grants.
+        // Profile-only shapes: lifecycle, joining, membership grants.
         let mut create = Changes::new();
         the!("xyz.tonk.command.create-space/name")
             .of(entity("cmd:create"))
@@ -685,13 +685,16 @@ pub(crate) mod tests {
         /// access service (nothing here needs an account). The registry
         /// installed is the REAL one, not a test double.
         pub(crate) async fn test_state() -> AppState {
-            use dialog_storage::provider::storage::Storage;
-
             let storage = Storage::<crate::worker::DefaultSpace>::default();
             let name = format!("command-dispatch-test-{}", rand::random::<u64>());
             let profile = dialog_peer::Peer::new()
-        .storage(storage.clone())
-        .open(dialog_effects::storage::Location::new(dialog_effects::storage::Directory::Profile, &name)).await.unwrap();
+                .storage(storage.clone())
+                .open(dialog_effects::storage::Location::new(
+                    dialog_effects::storage::Directory::Profile,
+                    &name,
+                ))
+                .await
+                .unwrap();
             let session = crate::session::open(&profile).await.unwrap();
             let reactor = crate::Reactor::new(profile.credential().clone());
             let state = TonkState {

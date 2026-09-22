@@ -77,7 +77,6 @@ use dialog_ucan_core::DelegationChain;
 use dialog_varsig::Did;
 use futures_util::StreamExt as _;
 use serde::{Deserialize, Serialize};
-use crate::worker::DefaultPeer;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_account::prefix::SPACE_ROOT_SITE_PREFIX;
@@ -961,7 +960,8 @@ async fn save_authority(
         .map_err(|error| {
             JoinFailure::claim_failed(format!("failed to save the accepted authority: {error}"))
         })?;
-    tonk.profile.secrets()
+    tonk.profile
+        .secrets()
         .site(format!("{SPACE_ROOT_SITE_PREFIX}{subject}"))
         .save(prefix_bytes)
         .perform(&tonk.operator)
@@ -2384,7 +2384,8 @@ pub(crate) mod tests {
             let tonk = state.read().await;
             let root = crate::router::identity::root_did(&tonk).await.unwrap();
             let bytes = tonk
-                .profile.secrets()
+                .profile
+                .secrets()
                 .site(format!("{SPACE_ROOT_SITE_PREFIX}{subject}"))
                 .load::<Vec<u8>>()
                 .perform(&tonk.operator)
@@ -3193,8 +3194,11 @@ pub(crate) mod tests {
         let storage =
             dialog_storage::provider::storage::Storage::<crate::worker::DefaultSpace>::default();
         let profile = dialog_peer::Peer::new()
-        .storage(storage.clone())
-        .open(dialog_effects::storage::Location::new(dialog_effects::storage::Directory::Profile, &name))
+            .storage(storage.clone())
+            .open(dialog_effects::storage::Location::new(
+                dialog_effects::storage::Directory::Profile,
+                &name,
+            ))
             .await
             .unwrap();
         assert_eq!(profile.did(), profile_did);

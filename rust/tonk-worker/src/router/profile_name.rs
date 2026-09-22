@@ -4,12 +4,12 @@
 //! the profile meta branch, or a deterministic `petname(profile_did)`
 //! when no override exists. This is what every `MemberName` write uses.
 
+use crate::worker::DefaultPeer;
 use dialog_query::{Output as _, Query, Term};
 use dialog_repository::Repository;
 use tonk_common::log;
 use tonk_schema::prelude::DidExt as _;
 use tonk_schema::{ProfileName, petname};
-use crate::worker::DefaultPeer;
 
 // Only `project_member_name` needs it now, and that is wasm-only: nothing
 // on the native target writes a name any more.
@@ -84,7 +84,7 @@ pub(crate) async fn stored_display_name_from(
 ///
 /// Reads the profile's replica index off the meta branch (the same query
 /// `get_profile` runs) and projects only `tonk:repository` routing keys.
-/// DefaultPeer and account system replicas carry no user-space roster.
+/// Profile and account system replicas carry no user-space roster.
 /// A single unparseable subject is logged and dropped rather than failing
 /// the whole list.
 pub(crate) async fn real_space_keys(tonk: &TonkState) -> Vec<String> {
@@ -239,8 +239,11 @@ mod tests {
         crate::patch_idb_versionchange();
         let storage = Storage::<DefaultSpace>::default();
         let profile = dialog_peer::Peer::new()
-        .storage(storage.clone())
-        .open(dialog_effects::storage::Location::new(dialog_effects::storage::Directory::Profile, name))
+            .storage(storage.clone())
+            .open(dialog_effects::storage::Location::new(
+                dialog_effects::storage::Directory::Profile,
+                name,
+            ))
             .await
             .expect("profile opens");
         let session = crate::session::open(&profile)

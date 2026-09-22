@@ -11,6 +11,7 @@ use dialog_capability::Subject;
 use dialog_effects::Use;
 use std::collections::HashMap;
 
+use crate::worker::DefaultPeer;
 use ::axum::{
     Json,
     body::Bytes,
@@ -28,7 +29,6 @@ use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
 use dialog_varsig::{Did, Principal};
 use serde::{Deserialize, Serialize};
-use crate::worker::DefaultPeer;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_account::prefix::SPACE_ROOT_SITE_PREFIX;
@@ -3066,13 +3066,7 @@ async fn enable_sync_for_repository(
     // stale key (e.g. an enable-sync form whose hidden repo field didn't
     // populate). The create path always runs `create_space_inner` first,
     // so the repo is present by the time this is reached on that path.
-    let repository = match tonk
-        .profile
-        .space(key)
-        .load()
-        .perform(&tonk.operator)
-        .await
-    {
+    let repository = match tonk.profile.space(key).load().perform(&tonk.operator).await {
         Ok(repository) => repository,
         Err(error) => {
             log!(
@@ -3139,13 +3133,7 @@ pub(super) async fn attach_account_remote_if_local(
     key: &str,
     remote: &str,
 ) -> Result<bool, RepositoryError> {
-    let repository = match tonk
-        .profile
-        .space(key)
-        .load()
-        .perform(&tonk.operator)
-        .await
-    {
+    let repository = match tonk.profile.space(key).load().perform(&tonk.operator).await {
         Ok(repository) => repository,
         Err(error) => {
             log!(
@@ -4551,7 +4539,8 @@ pub async fn create_repository(
             "Failed to serialize space root delegation: {error}"
         ))
     })?;
-    tonk.profile.secrets()
+    tonk.profile
+        .secrets()
         .site(format!("{SPACE_ROOT_SITE_PREFIX}{}", repository.did()))
         .save(prefix_bytes)
         .perform(&tonk.operator)
@@ -4644,7 +4633,8 @@ pub(crate) async fn space_root_prefix(
     subject: &Did,
 ) -> Result<DelegationChain, TonkWorkerError> {
     let bytes = tonk
-        .profile.secrets()
+        .profile
+        .secrets()
         .site(format!("{SPACE_ROOT_SITE_PREFIX}{subject}"))
         .load::<Vec<u8>>()
         .perform(&tonk.operator)
@@ -7821,8 +7811,11 @@ route!: &foreign-profile-route
         let storage =
             dialog_storage::provider::storage::Storage::<crate::worker::DefaultSpace>::default();
         let profile = dialog_peer::Peer::new()
-        .storage(storage.clone())
-        .open(dialog_effects::storage::Location::new(dialog_effects::storage::Directory::Profile, &name))
+            .storage(storage.clone())
+            .open(dialog_effects::storage::Location::new(
+                dialog_effects::storage::Directory::Profile,
+                &name,
+            ))
             .await
             .expect("test profile opens");
         let session = crate::session::open(&profile)
@@ -9147,7 +9140,7 @@ mod tests {
         // Drive the transient command through the real dispatcher, scoped
         // to the space's content branch — mirrors
         // `command::tests::it_dispatches_every_matched_command_in_a_batch`.
-        // DefaultPeer origin: `profile/rename` is a profile-vocabulary
+        // Profile origin: `profile/rename` is a profile-vocabulary
         // command (the FAB dispatches it routeless on the profile
         // branch); a space-branch dispatch is contained by design.
         let changes = profile_rename_transient("did:key:zRenameCmd", "brave-lynx");
@@ -9291,7 +9284,7 @@ mod tests {
             .await
             .expect("founder is named");
 
-        // DefaultPeer origin, like the FAB's routeless dispatch; a
+        // Profile origin, like the FAB's routeless dispatch; a
         // space-branch `profile/rename` is contained by design.
         let changes = profile_rename_transient("did:key:zRenameEmpty", "   ");
         crate::router::dispatch(&state, crate::router::CommandOrigin::default(), changes).await;
@@ -11968,7 +11961,8 @@ mod connection_invite_overlay_tests {
             let provider =
                 tonk_account::AccountProviderRecord::attach("https://example.test/ucan/", 1)
                     .unwrap();
-            tonk.profile.secrets()
+            tonk.profile
+                .secrets()
                 .site(tonk_account::ACCOUNT_PROVIDER_CREDENTIAL_SITE)
                 .save(provider.encode().unwrap())
                 .perform(&tonk.operator)
@@ -12059,7 +12053,8 @@ mod connection_invite_overlay_tests {
             let provider =
                 tonk_account::AccountProviderRecord::attach("https://example.test/ucan/", 1)
                     .unwrap();
-            tonk.profile.secrets()
+            tonk.profile
+                .secrets()
                 .site(tonk_account::ACCOUNT_PROVIDER_CREDENTIAL_SITE)
                 .save(provider.encode().unwrap())
                 .perform(&tonk.operator)

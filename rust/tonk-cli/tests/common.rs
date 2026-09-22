@@ -169,7 +169,8 @@ impl AccountFixture {
             // that has hydrated its account rather than one that has only
             // linked it. Without this the account reads as unhydrated and
             // nothing will mount its repository.
-            profile.secrets()
+            profile
+                .secrets()
                 .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
                 .save(link.issuer().as_str().as_bytes().to_vec())
                 .perform(&test.site.operator)

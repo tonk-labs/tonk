@@ -378,7 +378,7 @@ pub struct TonkState {
     /// seconds. Consulted by the sync drain, which rotates the session
     /// as this approaches.
     pub session_expires_at: u64,
-    /// Display name the profile was opened under. `DefaultPeer` does
+    /// Display name the profile was opened under. `Profile` does
     /// not retain this internally, so we carry it here for routes
     /// that report it back to the UI (e.g. `GET /api/profile`).
     pub profile_name: String,
@@ -462,7 +462,7 @@ impl TonkState {
 }
 
 // SAFETY: Web browsers run Wasm in a single thread only. The interior types
-// (DefaultPeer, Operator) contain `web_sys::CryptoKey` handles (via
+// (Profile, Operator) contain `web_sys::CryptoKey` handles (via
 // Ed25519SigningKey::WebCrypto) which are !Send/!Sync, but cross-thread access
 // cannot occur in a single-threaded browser context.
 #[cfg(target_arch = "wasm32")]

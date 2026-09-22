@@ -14,7 +14,6 @@ use ::axum::{
 use tokio::sync::RwLock;
 
 use crate::worker::TonkState;
-use crate::worker::DefaultPeer;
 
 /// Whether a newer service worker is installed and WAITING to take over —
 /// i.e. whether this worker is retiring.
@@ -250,13 +249,13 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         )
         .route("/api/account/devices/revoke", post(account_devices::revoke))
         .route("/api/profile", get(profile::get_profile))
-        // DefaultPeer roster and switching — every account signed in on this
+        // Profile roster and switching — every account signed in on this
         // browser has its own profile; these list them, swap the active
         // one, and mint a fresh landing pad for "add account".
         .route("/api/profiles", get(profiles::list))
         .route("/api/profiles/activate", post(profiles::activate))
         .route("/api/profiles/add", post(profiles::add))
-        // DefaultPeer-as-repository routes. The profile is its own
+        // Profile-as-repository routes. The profile is its own
         // repository but lives outside the named-repo namespace
         // (no `repo` segment), so it gets a parallel route
         // surface here rather than nesting under

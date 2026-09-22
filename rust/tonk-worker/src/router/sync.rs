@@ -10,13 +10,13 @@
 
 use std::collections::HashMap;
 
+use crate::worker::DefaultPeer;
 use ::axum::{Json, extract::Path, extract::State};
 use axum_wasm_macros::wasm_compat;
 use dialog_capability::access::{AuthorizeError, Recourse};
 use dialog_effects::Rejection;
 use dialog_repository::{PublishError, PullError, Revision};
 use serde::Deserialize;
-use crate::worker::DefaultPeer;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
@@ -1430,7 +1430,7 @@ pub async fn drain_sync(state: &AppState) {
 /// install only if the observed generation is still current. Losing
 /// candidates and construction failures have no durable session effects.
 pub(crate) async fn ensure_session_authority(state: &AppState) -> Result<(), TonkWorkerError> {
-    renew_session_with(state, |profile, storage| async move {
+    renew_session_with(state, |profile| async move {
         crate::session::rotate(&profile).await
     })
     .await
@@ -1438,20 +1438,13 @@ pub(crate) async fn ensure_session_authority(state: &AppState) -> Result<(), Ton
 
 async fn renew_session_with<F, Fut>(state: &AppState, build: F) -> Result<(), TonkWorkerError>
 where
-    F: FnOnce(
-        DefaultPeer,
-        dialog_storage::provider::storage::Storage<crate::worker::DefaultSpace>,
-    ) -> Fut,
+    F: FnOnce(DefaultPeer) -> Fut,
     Fut: std::future::Future<Output = Result<crate::session::Session, TonkWorkerError>>,
 {
     let now = crate::session::now();
-    let (profile, storage, expires_at) = {
+    let (profile, expires_at) = {
         let tonk = state.read().await;
-        (
-            tonk.profile.clone(),
-            tonk.storage.clone(),
-            tonk.session_expires_at,
-        )
+        (tonk.profile.clone(), tonk.session_expires_at)
     };
 
     if !crate::session::needs_renewal(expires_at, now) {
@@ -1460,7 +1453,7 @@ where
 
     // Signing happens outside the write lock; existing readers finish
     // before the new operator and expiry are installed together.
-    let session = build(profile, storage).await?;
+    let session = build(profile).await?;
 
     let mut tonk = state.write().await;
     // A concurrent drain may have rotated while this one was minting.
@@ -1828,7 +1821,7 @@ mod renewal_tests {
         let head = revision(&state).await;
         let due = crate::session::now();
         state.write().await.session_expires_at = due;
-        let result = renew_session_with(&state, |_, _| async {
+        let result = renew_session_with(&state, |_| async {
             Err(crate::TonkWorkerError::Internal(
                 "injected session construction failure".into(),
             ))
@@ -1848,7 +1841,7 @@ mod renewal_tests {
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
         let (installed_tx, installed_rx) = tokio::sync::oneshot::channel();
         let winner = async {
-            renew_session_with(&state, |profile, storage| async move {
+            renew_session_with(&state, |profile| async move {
                 ready_rx.await.unwrap();
                 crate::session::rotate(&profile).await
             })
@@ -1858,7 +1851,7 @@ mod renewal_tests {
             installed_tx.send(installed.clone()).unwrap();
             installed
         };
-        let loser = renew_session_with(&state, |profile, storage| async move {
+        let loser = renew_session_with(&state, |profile| async move {
             let candidate = crate::session::rotate(&profile).await.unwrap();
             ready_tx.send(()).unwrap();
             let installed = installed_rx.await.unwrap();

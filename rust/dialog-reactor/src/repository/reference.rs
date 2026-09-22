@@ -9,8 +9,8 @@
 use std::sync::Arc;
 
 use dialog_credentials::Credential;
-use dialog_varsig::Principal as _;
 use dialog_repository::{Repository, RepositoryExt as _};
+use dialog_varsig::Principal as _;
 
 use crate::env::LoadProvider;
 use crate::error::ReactorError;
@@ -88,12 +88,12 @@ impl<'a> RepositoryReference<'a> {
                     name: (*name).to_owned(),
                 }
                 .load()
-                    .perform(env)
-                    .await
-                    .map_err(|e| ReactorError::RepositoryNotFound {
-                        repo: (*name).to_string(),
-                        reason: e.to_string(),
-                    })?;
+                .perform(env)
+                .await
+                .map_err(|e| ReactorError::RepositoryNotFound {
+                    repo: (*name).to_string(),
+                    reason: e.to_string(),
+                })?;
 
                 // Insert under the lock — another caller may have
                 // raced; their entry wins.

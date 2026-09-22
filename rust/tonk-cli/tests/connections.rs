@@ -28,16 +28,19 @@ async fn scoped_site(
     let storage = Storage::<NativeSpace>::default();
     let profile = dialog_peer::Peer::new()
         .storage(storage.clone())
-        .load(dialog_effects::storage::Location::new(config.profile_directory.clone(), config.profile_name.clone()))
+        .load(dialog_effects::storage::Location::new(
+            config.profile_directory.clone(),
+            config.profile_name.clone(),
+        ))
         .await?;
     let replica = root.join("replica");
     std::fs::create_dir_all(&replica)?;
-    let peer = tonk_cli::peer::peer_for(&profile, Directory::At(replica.to_string_lossy().into_owned()),
+    let peer = tonk_cli::peer::peer_for(
+        &profile,
+        Directory::At(replica.to_string_lossy().into_owned()),
     )
     .await?;
-    let operator = peer.derive("connection-mount").await?
-        .build()
-        .await?;
+    let operator = peer.derive("connection-mount").await?.build().await?;
     let expiry = Timestamp::new(SystemTime::now() + Duration::from_secs(90 * 86400))?;
     // The profile already owns an unrelated local space. No target-space signer
     // or wider target-space grant is installed.

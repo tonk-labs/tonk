@@ -1,4 +1,5 @@
 //! One local welcome space per browser, requested only by the root UI visit.
+use crate::worker::DefaultPeer;
 use axum::{
     Json,
     extract::{Path, State},
@@ -10,7 +11,6 @@ use dialog_query::{Output as _, Query, Term};
 use dialog_repository::{Blob, RepositoryExt as _};
 use futures_util::StreamExt as _;
 use serde::{Deserialize, Serialize};
-use crate::worker::DefaultPeer;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_schema::{Replica, prelude::DidExt as _};

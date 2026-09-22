@@ -6,12 +6,12 @@
 //! and the branch every device syncs doubles as the registry. Only the
 //! account summary still proxies the account service.
 
+use crate::worker::DefaultPeer;
 use axum::{Json, extract::State};
 use axum_wasm_macros::wasm_compat;
 use dialog_ucan_core::DelegationChain;
 use dialog_varsig::Did;
 use serde::Deserialize;
-use crate::worker::DefaultPeer;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_account::delegations::account_scope;

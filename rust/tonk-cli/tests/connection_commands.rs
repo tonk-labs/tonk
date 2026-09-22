@@ -534,14 +534,21 @@ async fn connection_command_imports_bearer_restarts_and_keeps_account_state() ->
     let storage = Storage::<NativeSpace>::default();
     let ambient_profile = dialog_peer::Peer::new()
         .storage(storage.clone())
-        .create(dialog_effects::storage::Location::new(Directory::At(profile_parent.to_string_lossy().into_owned()), tonk_cli::site::PROFILE_NAME))
+        .create(dialog_effects::storage::Location::new(
+            Directory::At(profile_parent.to_string_lossy().into_owned()),
+            tonk_cli::site::PROFILE_NAME,
+        ))
         .await?;
     let ambient_base = home.join("ambient-data");
     std::fs::create_dir(&ambient_base)?;
-    let ambient_peer = tonk_cli::peer::peer_for(&ambient_profile, Directory::At(ambient_base.to_string_lossy().into_owned()),
+    let ambient_peer = tonk_cli::peer::peer_for(
+        &ambient_profile,
+        Directory::At(ambient_base.to_string_lossy().into_owned()),
     )
     .await?;
-    let ambient_operator = ambient_peer.derive("ambient-authority").await?
+    let ambient_operator = ambient_peer
+        .derive("ambient-authority")
+        .await?
         .build()
         .await?;
     let ambient_grant = DelegationBuilder::new()
