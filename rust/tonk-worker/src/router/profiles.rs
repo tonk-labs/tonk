@@ -950,7 +950,8 @@ mod tests {
             .expect("roster rows read back");
 
         assert!(
-            rows.iter().any(|row| row.active.0 && row.name.0 == tonk.active_branch),
+            rows.iter()
+                .any(|row| row.active.0 && row.name.0 == tonk.active_branch),
             "the booted worker published the branch it is on: {rows:?}",
         );
     }
