@@ -1794,6 +1794,80 @@ pub fn forget_invite_claim_json(space: &str, time: f64) -> Value {
     })
 }
 
+/// Build the routeless FAB request for a fresh scoped tool invitation.
+///
+/// `space` is additive raw command data rather than a required field on the
+/// seeded command concept, so older spaces keep matching the same stable wire
+/// command while current app chrome can name its target explicitly.
+pub fn tool_connection_claim_json(space: &str, time: f64) -> Value {
+    json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "description": "Create a separate scoped invitation for a tool.",
+                        "with": {
+                            "time":  { "the": "xyz.tonk.agent-handoff/time", "as": "Float" },
+                            "fresh": { "the": "xyz.tonk.agent-handoff/fresh", "as": "Text" },
+                            "space": { "the": "xyz.tonk.agent-handoff/space", "as": "Entity" }
+                        }
+                    }
+                },
+                "parameters": {
+                    "time": time,
+                    "fresh": "new",
+                    "space": space
+                }
+            }
+        }]
+    })
+}
+
+/// Read the worker's session-only scoped-invitation response directly.
+///
+/// The optional mode is absent when the deployment was built without
+/// `connection-invites`; status and link still produce an explicit refusal.
+pub fn tool_connection_state_query_body(subject: &str) -> Result<String, String> {
+    if subject.is_empty() {
+        return Err("tool_connection_state_query_body: empty subject".into());
+    }
+    Ok(json!({
+        "predicate": {
+            "with": {
+                "status": {
+                    "the": "xyz.tonk.agent-handoff/status", "as": "Text",
+                    "cardinality": "one"
+                },
+                "link": {
+                    "the": "xyz.tonk.agent-handoff/link", "as": "Text",
+                    "cardinality": "one"
+                },
+                "mode": {
+                    "the": "xyz.tonk.agent-handoff/mode", "as": "Text",
+                    "cardinality": "one", "optional": true
+                }
+            }
+        },
+        "terms": {
+            "this": subject,
+            "status": { "?": { "name": "status" } },
+            "link": { "?": { "name": "link" } },
+            "mode": { "?": { "name": "mode" } }
+        }
+    })
+    .to_string())
+}
+
+/// Secondary convenience copy for handing the same scoped link to an agent.
+/// The direct link action and this prompt never mint separate identities.
+pub fn tool_connection_prompt(link: &str) -> String {
+    format!(
+        "Connect to this Tonk space with the scoped tool link below:\n\n  tonk join '{link}'\n\nKeep the link private. Only report connected after the command prints \"Agent connection confirmed\". If interrupted, resume with `tonk --space NAME join`."
+    )
+}
+
 pub fn invite_claim_json(space: &str, time: f64) -> Value {
     json!({
         "claims": [{
@@ -1882,6 +1956,31 @@ mod invite {
         );
         assert!(app["parameters"].get("marker").is_none());
         assert!(app["parameters"].get("this").is_none());
+    }
+
+    #[test]
+    fn tool_connection_names_the_space_and_requests_a_fresh_identity() {
+        let claim = tool_connection_claim_json("did:key:z6Mk", 2.0);
+        let app = &claim["claims"][0]["application"];
+        assert_eq!(app["parameters"]["space"], "did:key:z6Mk");
+        assert_eq!(app["parameters"]["fresh"], "new");
+        assert_eq!(
+            app["predicate"]["concept"]["with"]["space"]["the"],
+            "xyz.tonk.agent-handoff/space"
+        );
+    }
+
+    #[test]
+    fn tool_connection_query_and_prompt_preserve_the_scoped_link() {
+        let body = tool_connection_state_query_body("did:key:z6Mk").unwrap();
+        assert!(body.contains("xyz.tonk.agent-handoff/status"));
+        assert!(body.contains("xyz.tonk.agent-handoff/link"));
+        assert!(body.contains("xyz.tonk.agent-handoff/mode"));
+        let link = "https://example.test/join?agent=grants#tonk-agent-v2=secret";
+        let prompt = tool_connection_prompt(link);
+        assert!(prompt.contains(link));
+        assert!(prompt.contains("Agent connection confirmed"));
+        assert_eq!(prompt.matches(link).count(), 1);
     }
 }
 

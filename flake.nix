@@ -419,14 +419,16 @@
           "test:e2e" = {
             description = "Run serialized real-browser account integration tests";
             command = ''
-              # Both installables come from the Nix store, so cachix serves
+              # These artifacts come from the Nix store, so cachix serves
               # them warm; rebuilding them in-place with cargo cost every CI
               # run a from-scratch compile, since runners keep no cargo
               # target directory between runs.
-              nix build .#tonk-cli .#tests-e2e
+              nix build .#tonk-cli .#tests-e2e .#tonk-ui-preview
 
               TONK_BIN="$(nix eval .#tonk-cli.outPath --raw)/bin/tonk"
               export TONK_BIN
+              TONK_UI_TEST_ARTIFACT="$(nix eval .#tonk-ui-preview.outPath --raw)"
+              export TONK_UI_TEST_ARTIFACT
               # The store-built CLI bakes in the release PostHog key; the
               # debug build the suite spawned before had none. Keep test
               # runs out of the analytics.
@@ -572,8 +574,8 @@
           # never compile, hence its own dependency-only build.
           tests-e2e = buildTestArchive {
             name = "e2e";
-            args = "--package tonk-ui --features integration-tests";
-            depsExtraArgs = "--package tonk-ui --features integration-tests";
+            args = "--package tonk-ui --features integration-tests,connection-invites";
+            depsExtraArgs = "--package tonk-ui --features integration-tests,connection-invites";
           };
 
           tests = pkgs.runCommand "tests-all" { } ''

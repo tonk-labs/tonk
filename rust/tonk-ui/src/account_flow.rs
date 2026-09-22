@@ -4492,6 +4492,66 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "connection-invites")]
+    async fn await_tool_connection_ready(driver: &WebDriver, space: &str) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            enter_guest(driver).await?;
+            let state = driver
+                .execute(
+                    r#"const surface=document.querySelector('#fabb-tool-connection-cluster');
+                       return surface && {
+                         hidden:surface.hidden,
+                         space:surface.dataset.toolSpace,
+                         mode:surface.dataset.toolMode,
+                         hasLink:!!surface.dataset.toolLink,
+                         directDisabled:document.querySelector('[data-tool-copy-link]')?.hasAttribute('disabled'),
+                         promptDisabled:document.querySelector('[data-tool-copy-prompt]')?.hasAttribute('disabled'),
+                         status:document.querySelector('[data-tool-connection-status]')?.textContent
+                       };"#,
+                    vec![],
+                )
+                .await?;
+            driver.enter_default_frame().await?;
+            let last = state.json().clone();
+            if last["hidden"] == false
+                && last["space"] == space
+                && last["mode"] == "scoped"
+                && last["hasLink"] == true
+                && last["directDisabled"] == false
+                && last["promptDisabled"] == false
+            {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "tool connection did not become ready for {space}: {last}"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    #[cfg(feature = "connection-invites")]
+    async fn copy_tool_connection(driver: &WebDriver, selector: &str) -> Result<String> {
+        enter_guest(driver).await?;
+        watch_clipboard(driver).await?;
+        let result = driver
+            .execute(
+                r#"const host=document.querySelector(arguments[0]);
+                   const button=host?.shadowRoot?.querySelector('button');
+                   if (!button) return 'missing';
+                   button.click();
+                   return 'clicked';"#,
+                vec![serde_json::json!(selector)],
+            )
+            .await?;
+        anyhow::ensure!(result.json() == "clicked", "tool copy control was missing");
+        let copied = copied_text(driver).await?;
+        driver.enter_default_frame().await?;
+        Ok(copied)
+    }
+
     /// The cluster's action row label, or empty while it is folded.
     async fn register_action_label(driver: &WebDriver) -> Result<String> {
         let label = driver
@@ -6461,6 +6521,121 @@ mod tests {
         Ok(())
     }
 
+    /// ACCT-C14 / HANDOFF-21: app chrome keeps person invitations and tool
+    /// connections explicit, and the harness-built CLI accepts only the latter.
+    #[cfg(feature = "connection-invites")]
+    #[dialog_common::test]
+    async fn tool_connection_rejects_person_links_and_confirms_the_cli(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let browser = driver_with_prf(&env).await?;
+        sign_up(&browser, &env, "tool-connection@example.com").await?;
+        let key = create_space_awaiting_remote(&browser, "Tool connection", true).await?;
+        await_url_containing(&browser, &format!("/space/{key}")).await?;
+
+        // The existing row remains an ordinary person invite. Exercise the
+        // actual clipboard handoff, then prove the CLI refuses it without
+        // producing its registry.
+        watch_guest_clipboard(&browser).await?;
+        click_share_row(&browser, "[data-share-link]").await?;
+        let _ = await_share_row_working(&browser).await?;
+        let person_link = guest_copied_text(&browser).await?;
+        let profile = tempfile::tempdir()?;
+        let rejected = run_cli(
+            &env,
+            &profile,
+            &[
+                "join".into(),
+                person_link,
+                "--name".into(),
+                "not-a-tool".into(),
+            ],
+        )
+        .await?;
+        anyhow::ensure!(
+            !rejected.status.success(),
+            "person invite reached CLI import"
+        );
+        anyhow::ensure!(
+            rejected
+                .stderr
+                .contains("This link invites a person to the space.")
+                && rejected.stderr.contains("connect a tool"),
+            "wrong-kind error was not actionable: {}",
+            rejected.stderr
+        );
+        anyhow::ensure!(
+            !profile.path().join("spaces/spaces.json").exists(),
+            "rejected person invite created a space registry"
+        );
+
+        // The separate app-owned action issues one scoped link. Both copy
+        // buttons must expose that exact identity, not mint one per copy.
+        click_share_row(&browser, "[data-tool-connection]").await?;
+        await_tool_connection_ready(&browser, &key).await?;
+        let tool_link = copy_tool_connection(&browser, "[data-tool-copy-link]").await?;
+        anyhow::ensure!(
+            tool_link.contains("#tonk-agent-v2="),
+            "tool action copied a non-scoped link"
+        );
+        let prompt = copy_tool_connection(&browser, "[data-tool-copy-prompt]").await?;
+        anyhow::ensure!(
+            prompt.matches(&tool_link).count() == 1
+                && prompt.contains("Agent connection confirmed")
+                && prompt.contains("tonk join"),
+            "tool prompt did not retain the one scoped link"
+        );
+
+        // Publish the source branch before the isolated CLI pulls it.
+        let pushed = post_json(
+            &browser,
+            &format!("/api/repository/{key}/branch/main/sync/push"),
+            serde_json::json!({}),
+        )
+        .await?;
+        successful_body("publish tool connection source", &pushed);
+        let registry = import_agent_bearer(&env, &profile, &tool_link, "tool-space").await?;
+        assert!(
+            registry
+                .get("account")
+                .is_none_or(serde_json::Value::is_null),
+            "tool connection created a CLI account"
+        );
+
+        // Return to the same space after navigation: app-owned chrome is not
+        // frozen with the seeded view, and opening it explicitly rotates the
+        // invitation rather than redisplaying a retained bearer.
+        goto(
+            &browser,
+            env.tonk_web.join(&format!("space/{key}"))?.as_str(),
+        )
+        .await?;
+        wait_for_service_worker(&browser).await?;
+        click_share_row(&browser, "[data-tool-connection]").await?;
+        await_tool_connection_ready(&browser, &key).await?;
+        let returning = copy_tool_connection(&browser, "[data-tool-copy-link]").await?;
+        anyhow::ensure!(
+            returning != tool_link,
+            "returning action reused the old bearer"
+        );
+
+        // Changing spaces replaces the whole app-owned surface. Its explicit
+        // target and copied bearer must both belong to the new space, never to
+        // the modal that was open on the previous route.
+        let second = create_space_awaiting_remote(&browser, "Second tool space", true).await?;
+        await_url_containing(&browser, &format!("/space/{second}")).await?;
+        click_share_row(&browser, "[data-tool-connection]").await?;
+        await_tool_connection_ready(&browser, &second).await?;
+        let switched = copy_tool_connection(&browser, "[data-tool-copy-link]").await?;
+        anyhow::ensure!(
+            switched != returning && switched != tool_link,
+            "space switch exposed a stale tool bearer"
+        );
+
+        browser.quit().await?;
+        Ok(())
+    }
+
     /// ACCT-C14 / HANDOFF-21: an actual browser-issued bearer works after its issuing browser exits.
     /// The test never imports browser/account signing material into the CLI.
     #[cfg(feature = "connection-invites")]
@@ -6896,28 +7071,6 @@ mod tests {
     }
 
     #[cfg(feature = "connection-invites")]
-    async fn agent_new_control(browser: &WebDriver) -> Result<WebElement> {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-        loop {
-            for control in browser
-                .find_all(By::Css(
-                    "[data-agent-mode=scoped] .agent-prompt__new, .connection-invite-new",
-                ))
-                .await?
-            {
-                if control.is_displayed().await? {
-                    return Ok(control);
-                }
-            }
-            anyhow::ensure!(
-                tokio::time::Instant::now() < deadline,
-                "explicit new invitation control did not appear"
-            );
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    }
-
-    #[cfg(feature = "connection-invites")]
     async fn import_agent_bearer(
         env: &TestEnvironment,
         profile: &TempDir,
@@ -6989,11 +7142,11 @@ mod tests {
         sign_up(&browser, &env, "agent-issuer@example.com").await?;
         let key = create_space_awaiting_remote(&browser, "Independent agents", true).await?;
         await_url_containing(&browser, &format!("/space/{key}")).await?;
-        enter_space_view(&browser).await?;
-        let first = copied_agent_bearer(&browser)
+        click_share_row(&browser, "[data-tool-connection]").await?;
+        await_tool_connection_ready(&browser, &key).await?;
+        let first = copy_tool_connection(&browser, "[data-tool-copy-link]")
             .await
-            .context("copy first invitation")?;
-        browser.enter_default_frame().await?;
+            .context("copy first tool connection")?;
         let one = poll_json(
             &browser,
             "/api/account/connections",
@@ -7005,42 +7158,17 @@ mod tests {
             .as_str()
             .context("first id missing")?
             .to_owned();
-        // Revisiting the same page must reuse the ready transient invitation.
-        goto(&browser, env.tonk_web.join("settings")?.as_str()).await?;
-        goto(
-            &browser,
-            env.tonk_web.join(&format!("space/{key}"))?.as_str(),
-        )
-        .await?;
-        enter_space_view(&browser).await?;
-        let action = agent_new_control(&browser).await?;
-        // Retained transient state reuses its bearer. If the page-only state
-        // was cleared, the fallback may ask explicitly for another invitation.
-        if action
-            .attr("class")
-            .await?
-            .is_some_and(|class| class.contains("agent-prompt__new"))
-        {
-            let repeated = copied_agent_bearer(&browser)
-                .await
-                .context("copy retained invitation after revisit")?;
-            anyhow::ensure!(
-                first == repeated,
-                "view revisit silently replaced the bearer"
-            );
-        }
-        browser.enter_default_frame().await?;
-        let stable = get_json(&browser, "/api/account/connections").await?;
-        assert_eq!(
-            successful_body("stable issued groups", &stable)
-                .as_array()
-                .unwrap()
-                .len(),
-            1
+        // Opening the explicit action again requests a separate identity and
+        // revocation boundary. Copying does not mint another one.
+        click_share_row(&browser, "[data-tool-connection]").await?;
+        await_tool_connection_ready(&browser, &key).await?;
+        let second = copy_tool_connection(&browser, "[data-tool-copy-link]")
+            .await
+            .context("copy second tool connection")?;
+        anyhow::ensure!(
+            first != second,
+            "explicit tool action reused the first bearer"
         );
-        enter_space_view(&browser).await?;
-        agent_new_control(&browser).await?.click().await?;
-        browser.enter_default_frame().await?;
         let two = poll_json(
             &browser,
             "/api/account/connections",
@@ -7062,15 +7190,6 @@ mod tests {
             .as_str()
             .context("second id missing")?
             .to_owned();
-        enter_space_view(&browser).await?;
-        let second = copied_agent_bearer(&browser)
-            .await
-            .context("copy explicit second invitation")?;
-        anyhow::ensure!(
-            first != second,
-            "explicit new invite reused the first bearer"
-        );
-        browser.enter_default_frame().await?;
         let pushed = post_json(
             &browser,
             &format!("/api/repository/{key}/branch/main/sync/push"),
@@ -7190,16 +7309,21 @@ mod tests {
             env.tonk_web.join(&format!("space/{key}"))?.as_str(),
         )
         .await?;
-        enter_space_view(&browser).await?;
-        wait_for_displayed(&browser, "[data-invite-action=new]").await?;
-        let copy_controls = browser.find_all(By::Css(".agent-prompt__copy")).await?;
-        for control in copy_controls {
-            assert!(
-                !control.is_displayed().await?,
-                "restart exposed a retained bearer"
-            );
-        }
+        enter_guest(&browser).await?;
+        element(&browser, "#fabb-tool-connection-cluster").await?;
+        let surface = browser
+            .execute(
+                r#"const node=document.querySelector('#fabb-tool-connection-cluster');
+                   return node && { hidden:node.hidden, hasLink:!!node.dataset.toolLink };"#,
+                vec![],
+            )
+            .await?;
         browser.enter_default_frame().await?;
+        anyhow::ensure!(
+            surface.json()["hidden"] == true && surface.json()["hasLink"] == false,
+            "restart exposed a retained tool bearer: {}",
+            surface.json()
+        );
         let after_restart = get_json(&browser, "/api/account/connections").await?;
         assert_eq!(
             successful_body("restart did not issue new grants", &after_restart)

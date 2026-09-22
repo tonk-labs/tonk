@@ -896,7 +896,12 @@ impl crate::reactor::Decode for EnableSyncRequest {
 /// Mount events omit `fresh`, so ordinary reconciliation reuses the session link.
 pub(crate) struct AgentHandoffRequest {
     fresh: bool,
+    /// Explicit target for routeless app chrome. Frozen space views omit it
+    /// and continue to use their dispatch origin.
+    space: Option<String>,
 }
+
+const AGENT_HANDOFF_SPACE_ATTR: &str = "xyz.tonk.agent-handoff/space";
 
 impl crate::reactor::Decode for AgentHandoffRequest {
     fn trigger_attributes() -> Vec<String> {
@@ -907,6 +912,7 @@ impl crate::reactor::Decode for AgentHandoffRequest {
         <tonk_schema::command::AgentHandoff as crate::reactor::Decode>::decode(this, facts)?;
         Some(Self {
             fresh: text_fact(facts, "xyz.tonk.agent-handoff/fresh").as_deref() == Some("new"),
+            space: text_fact(facts, AGENT_HANDOFF_SPACE_ATTR),
         })
     }
 }
@@ -921,7 +927,20 @@ impl dialog_capability::Command for AgentHandoffRequest {
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl dialog_capability::Provider<AgentHandoffRequest> for crate::router::CommandEnv {
     async fn execute(&self, request: AgentHandoffRequest) {
-        if let Err(error) = run_agent_handoff(self, request.fresh).await {
+        let repo = request
+            .space
+            .and_then(|space| space.parse::<dialog_varsig::Did>().ok())
+            .map(|did| did.repo_key().to_owned())
+            .unwrap_or_else(|| self.origin().repo.clone());
+        if repo.is_empty() || !self.may_target_space(&repo) {
+            log!(
+                "agent handoff ignored: origin '{}' may not target '{}'",
+                self.origin().repo,
+                repo
+            );
+            return;
+        }
+        if let Err(error) = run_agent_handoff(self, request.fresh, &repo).await {
             log!("agent handoff failed: {error}");
         }
     }
@@ -994,13 +1013,14 @@ async fn publish_connection_invite(
 async fn run_agent_handoff(
     env: &crate::router::CommandEnv,
     _fresh: bool,
+    repo: &str,
 ) -> Result<(), TonkWorkerError> {
     #[cfg(feature = "connection-invites")]
     {
-        return run_connection_invite(env, _fresh).await;
+        return run_connection_invite_for(env, _fresh, repo).await;
     }
     #[cfg(not(feature = "connection-invites"))]
-    agent_invitations_unavailable(env).await
+    agent_invitations_unavailable(env, repo).await
 }
 
 // Only fingerprints live here: the bearer stays exclusively in the reactor
@@ -1024,12 +1044,12 @@ fn connection_remote_recovery(
     use super::create_invite::RemoteRefusal;
     match reason {
         RemoteRefusal::NeedsAccount => {
-            ("account", "create an account or sign in to invite an agent")
+            ("account", "create an account or sign in to connect a tool")
         }
         RemoteRefusal::NeedsActivation => {
-            ("activation", "verify your email before inviting an agent")
+            ("activation", "verify your email before connecting a tool")
         }
-        RemoteRefusal::NotSynced => ("sync", "turn on sync so the agent can access this space"),
+        RemoteRefusal::NotSynced => ("sync", "turn on sync so the tool can access this space"),
         RemoteRefusal::Suspended => ("unavailable", "this account’s sync service is suspended"),
         RemoteRefusal::UnshareableRemote => (
             "unavailable",
@@ -1042,22 +1062,22 @@ fn connection_remote_recovery(
 fn connection_invite_recovery(error: &TonkWorkerError) -> (&'static str, &'static str) {
     match error {
         TonkWorkerError::RootRequired => {
-            ("account", "create an account or sign in to invite an agent")
+            ("account", "create an account or sign in to connect a tool")
         }
         TonkWorkerError::Forbidden(_) => (
             "denied",
-            "ask the space owner for permission to invite an agent",
+            "ask the space owner for permission to connect a tool",
         ),
         TonkWorkerError::NotFound(_) => (
             "unavailable",
-            "agent invitations are not available for this space",
+            "tool connections are not available for this space",
         ),
         TonkWorkerError::Upstream { code, status, .. } => match code.as_deref() {
             Some("CustomerInactive") => {
-                ("activation", "verify your email before inviting an agent")
+                ("activation", "verify your email before connecting a tool")
             }
             Some("UnknownCustomer") => {
-                ("account", "create an account or sign in to invite an agent")
+                ("account", "create an account or sign in to connect a tool")
             }
             Some("CustomerSuspended") => {
                 ("unavailable", "this account’s sync service is suspended")
@@ -1076,14 +1096,23 @@ fn connection_invite_recovery(error: &TonkWorkerError) -> (&'static str, &'stati
     }
 }
 
-#[cfg(feature = "connection-invites")]
+#[cfg(all(feature = "connection-invites", test))]
 async fn run_connection_invite(
     env: &crate::router::CommandEnv,
     fresh: bool,
 ) -> Result<(), TonkWorkerError> {
+    let repo = env.origin().repo.clone();
+    run_connection_invite_for(env, fresh, &repo).await
+}
+
+#[cfg(feature = "connection-invites")]
+async fn run_connection_invite_for(
+    env: &crate::router::CommandEnv,
+    fresh: bool,
+    repo: &str,
+) -> Result<(), TonkWorkerError> {
     let mut issued = CONNECTION_ISSUANCE.lock().await;
     issued.retain(|entry| entry.state.strong_count() > 0);
-    let repo = &env.origin().repo;
     let (subject, expected, sync_remote) = {
         let tonk = env.state().read().await;
         let repository = tonk
@@ -1102,7 +1131,7 @@ async fn run_connection_invite(
                 &subject,
                 &tonk.profile.did(),
                 "unavailable",
-                "agent invitations are not available for this space".into(),
+                "tool connections are not available for this space".into(),
                 String::new(),
             )
             .await;
@@ -1131,7 +1160,7 @@ async fn run_connection_invite(
                 super::customer::Registration::Suspended => {
                     ("unavailable", "this account’s sync service is suspended")
                 }
-                _ => ("account", "create an account or sign in to invite an agent"),
+                _ => ("account", "create an account or sign in to connect a tool"),
             };
             return publish_connection_invite(
                 &tonk,
@@ -1344,7 +1373,7 @@ async fn run_connection_invite(
         &worker_origin().unwrap_or_else(|| "https://tonk.network".into()),
     )
     .map_err(|_| TonkWorkerError::Internal("invalid connection origin".into()))?;
-    let minted = super::agent_connections::mint(env.state().clone(), repo.clone(), origin).await;
+    let minted = super::agent_connections::mint(env.state().clone(), repo.to_owned(), origin).await;
     let minted = match minted {
         Ok(mut response) => {
             response.url = shortened_or_full(response.url).await;
@@ -1434,8 +1463,8 @@ async fn run_connection_invite(
 #[cfg(not(feature = "connection-invites"))]
 async fn agent_invitations_unavailable(
     env: &crate::router::CommandEnv,
+    repo: &str,
 ) -> Result<(), TonkWorkerError> {
-    let repo = &env.origin().repo;
     let tonk = env.state().read().await;
     let repository = tonk
         .profile
@@ -1451,10 +1480,61 @@ async fn agent_invitations_unavailable(
         repo,
         &subject,
         &tonk.profile.did(),
-        "Agent invitations are not enabled on this deployment yet.".into(),
+        "Tool connections are not enabled on this deployment yet.".into(),
         String::new(),
     )
     .await
+}
+
+#[cfg(all(test, not(feature = "connection-invites"), not(target_arch = "wasm32")))]
+mod connection_invite_disabled_tests {
+    use super::*;
+
+    #[dialog_common::test]
+    async fn disabled_build_publishes_an_explicit_refusal_without_a_bearer() {
+        let state = crate::router::command::tests::native::test_state().await;
+        let repo = create_space_inner(&state, "Disabled tool connection")
+            .await
+            .unwrap();
+        let env = crate::router::CommandEnv::new(
+            state.clone(),
+            crate::router::CommandOrigin {
+                repo: repo.clone(),
+                branch: CONTENT_BRANCH.into(),
+                client: None,
+            },
+        );
+
+        run_agent_handoff(&env, true, &repo).await.unwrap();
+
+        let tonk = state.read().await;
+        let branch = tonk
+            .reactor
+            .repository(&repo)
+            .branch(CONTENT_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let rows: Vec<tonk_schema::command::AgentHandoffState> = branch
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::command::AgentHandoffState> {
+                this: Term::var("this"),
+                status: Term::var("status"),
+                link: Term::var("link"),
+                account: Term::var("account"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].status.0,
+            "Tool connections are not enabled on this deployment yet."
+        );
+        assert!(rows[0].link.0.is_empty());
+    }
 }
 
 impl dialog_capability::Command for EnableSyncRequest {
@@ -12134,6 +12214,42 @@ route!: &probe/dropped
 mod connection_invite_overlay_tests {
     use super::*;
 
+    async fn space_did(state: &AppState, repo: &str) -> Did {
+        let tonk = state.read().await;
+        tonk.profile
+            .repository(repo)
+            .load()
+            .perform(&tonk.operator)
+            .await
+            .unwrap()
+            .did()
+    }
+
+    async fn response_count(state: &AppState, repo: &str) -> usize {
+        let tonk = state.read().await;
+        let branch = tonk
+            .reactor
+            .repository(repo)
+            .branch(CONTENT_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        branch
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::command::AgentHandoffState> {
+                this: Term::var("this"),
+                status: Term::var("status"),
+                link: Term::var("link"),
+                account: Term::var("account"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap()
+            .len()
+    }
+
     async fn response(state: &AppState, repo: &str) -> tonk_schema::command::AgentHandoffState {
         let tonk = state.read().await;
         let branch = tonk
@@ -12218,6 +12334,50 @@ mod connection_invite_overlay_tests {
             connection_remote_recovery(super::super::create_invite::RemoteRefusal::NotSynced).0,
             "sync"
         );
+    }
+
+    #[dialog_common::test]
+    async fn app_owned_connection_targets_only_the_selected_space() {
+        let state = crate::router::command::tests::native::test_state().await;
+        let selected = create_space_inner(&state, "Selected tool space")
+            .await
+            .unwrap();
+        let other = create_space_inner(&state, "Other tool space")
+            .await
+            .unwrap();
+        let selected_did = space_did(&state, &selected).await;
+        let other_did = space_did(&state, &other).await;
+
+        let profile =
+            crate::router::CommandEnv::new(state.clone(), crate::router::CommandOrigin::default());
+        dialog_capability::Provider::<AgentHandoffRequest>::execute(
+            &profile,
+            AgentHandoffRequest {
+                fresh: true,
+                space: Some(selected_did.to_string()),
+            },
+        )
+        .await;
+        assert_eq!(response_count(&state, &selected).await, 1);
+        assert_eq!(response_count(&state, &other).await, 0);
+
+        let selected_space = crate::router::CommandEnv::new(
+            state.clone(),
+            crate::router::CommandOrigin {
+                repo: selected,
+                branch: CONTENT_BRANCH.into(),
+                client: None,
+            },
+        );
+        dialog_capability::Provider::<AgentHandoffRequest>::execute(
+            &selected_space,
+            AgentHandoffRequest {
+                fresh: true,
+                space: Some(other_did.to_string()),
+            },
+        )
+        .await;
+        assert_eq!(response_count(&state, &other).await, 0);
     }
 
     #[dialog_common::test]

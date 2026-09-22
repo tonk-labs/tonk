@@ -957,7 +957,7 @@ fn it_keeps_machine_instructions_in_the_production_copy_prompt() {
             "the resume command must work without a globally installed CLI",
         );
         assert!(
-            copied.contains("If access expires or is revoked, ask me for a fresh invite."),
+            copied.contains("If access expires or is revoked, ask me for a fresh link."),
             "the prompt must request fresh authority after expiry or revocation",
         );
         assert!(
@@ -1626,7 +1626,7 @@ fn it_offers_only_scoped_agent_prompts_without_account_approval() {
         assert!(
             scoped.contains("Multiple holders of this link share the same invitation authority")
         );
-        assert!(scoped.contains("ask me for a fresh invite"));
+        assert!(scoped.contains("ask me for a fresh link"));
         assert!(!scoped.contains("join --agent"));
         assert!(!scoped.contains("--switch-account"));
         assert!(!scoped.contains("requires account {account}"));

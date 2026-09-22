@@ -68,6 +68,9 @@ mod stack_rows;
 #[cfg(target_arch = "wasm32")]
 mod subscribing;
 
+#[cfg(target_arch = "wasm32")]
+mod tool_connection;
+
 /// Register `<tonk-fab>` with the page. Idempotent — safe to call multiple times.
 #[cfg(target_arch = "wasm32")]
 pub fn register() {
@@ -80,6 +83,7 @@ pub fn register() {
     cluster::register();
     banner::register();
     share::register();
+    tool_connection::register();
     space_name::register();
     profile_name::register();
     member_roster::register();

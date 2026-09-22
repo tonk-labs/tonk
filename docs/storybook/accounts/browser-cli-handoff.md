@@ -2,17 +2,19 @@
 
 ## Current CLI access workflows
 
-People and agents use `tonk join INVITE_LINK` for both ordinary share links and
-isolated agent links copied from the Tonk UI. The CLI validates the resolved
-link and selects its parser automatically; `--agent` is not part of the command.
-Both paths pull one space without browser approval. Ordinary links claim to an
-eligible local identity and publish membership/provenance. Agent links retain a
-separate scoped DID and publish the grant-specific setup receipt.
+The browser exposes two separate actions. **Invite someone** mints an ordinary
+person invite that opens in a browser and creates a member. **Connect a tool**
+mints an isolated scoped link for `tonk join TOOL_LINK`. The CLI validates the
+resolved link automatically; `--agent` is not part of the command. A new
+ordinary link is rejected before replica, credential, binding, account, or
+membership writes. Tool links retain their private invitation DID and publish
+the grant-specific setup receipt.
 
 CLI account management, ownership adoption, account migration and `tonk link`
 are removed. Local creation/transplant remain local; existing replicas and
-credentials are preserved. `tonk --space NAME join` resumes either import from
-its verified retained kind. Account-approval links remain outside this command.
+credentials are preserved. `tonk --space NAME join` resumes a scoped import or
+an already-persisted legacy ordinary journal; a new ordinary URL cannot enter
+that compatibility path. Account-approval links remain outside this command.
 
 The current journey is `ACCT-C14` / `HANDOFF-21`. Browser-initiated terminal
 linking is deferred. Account-command descriptions below are historical evidence,
@@ -344,29 +346,31 @@ folder binding made by `connect`; outside it, use the local name printed by the
 command. The local alias does not overwrite the shared display name. Existing
 local aliases are retained; subsequent shared renames do not rekey local bindings.
 
-## Scoped agent invitation
+## Scoped tool connection
 
-`ACCT-C14` describes the opt-in `connection-invites` build. The account handoff
-above remains the legacy flow. New browser issuance is not enabled by default
-until a compatible CLI is published and verified.
+`ACCT-C14` describes the `connection-invites` build. Stable wire identifiers
+retain their `agent` names, but the product action is **connect a tool**.
 
-A browser account with authority to a hosted space can copy a prompt containing
-`tonk join AGENT_LINK`. The reusable link carries a fresh invitation identity
-and grants to build that space's data and views. The CLI imports that identity
-without account login or browser approval; the issuing browser can already be
-closed. An unrelated CLI account remains attached to its own authority.
+A browser account with authority to a hosted space opens the app-owned share
+menu and chooses **connect a tool**. The surface names the exact space, explains
+that access is associated with the issuing account, and offers a direct link
+plus a secondary agent prompt. Both copy the same reusable scoped invitation;
+neither copy action silently mints a second key. The CLI imports its separate
+identity without account login or browser approval. An unrelated or malformed
+legacy CLI account remains byte-for-byte outside identity selection.
 
-The requested lifetime is 90 days. The browser refuses an upstream authority
-that cannot support it and shows the actual expiry in Settings. Reopening the
-view reuses its transient link while available. Once that link is lost, “new
-invite” creates a separate grant group explicitly. The browser retains public
-grant records, not a recoverable invitation secret.
+The requested lifetime is 90 days. The browser refuses missing account,
+activation, sync, feature, ownership, or upstream authority instead of widening
+access. Opening the action explicitly creates a fresh grant group. Copies made
+inside that open surface share one identity and revocation boundary. Switching
+space or profile replaces the surface before another copy. The browser retains
+public grant records, not a recoverable invitation secret after restart.
 
 The CLI retains the invitation credentials and a separate local replica. Only
 after pulling and pushing its grant-specific setup receipt does it report
 “Agent connection confirmed”. Later `tonk --space NAME join` resumes from
 those retained credentials. A receipt records completed setup, not exclusive
-ownership of the invite or live agent presence; several holders may use it.
+ownership of the invite or live tool presence; several holders may use it.
 
 Settings lists the space, recipient, scope, expiry, setup confirmation and
 revocation acknowledgements. Tab moves between settings controls without
@@ -377,6 +381,11 @@ Acknowledgement does not promise immediate global enforcement. Downloaded data
 and offline edits remain; revoked or expired remote access requires new
 authorization and never falls back to a CLI account.
 
-Source: PR #963 at `199e9a599`. Fresh native checks passed; browser, Safari,
-deployed compatibility and global revocation propagation remain unverified
-for the narrowed implementation. See `HANDOFF-21`.
+Executed for Plan 005 in the uncommitted worktree based at `d4003e8d6`. Fresh
+native CLI, FAB, worker, and Wasm checks cover the narrowed source. The
+feature-enabled E2E archive served the preview artifact and passed both named
+tool-connection journeys; the existing whole-browser person invitation and
+membership journey also passed. The broader Storybook item remains Drafted:
+390px layout, keyboard focus, reduced motion, profile switching while open,
+Safari, deployed compatibility, old-binary behavior, and global revocation
+propagation remain unverified. See `HANDOFF-21`.
