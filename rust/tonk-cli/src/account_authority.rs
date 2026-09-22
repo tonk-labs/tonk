@@ -8,15 +8,15 @@ use dialog_capability::{
 };
 use dialog_common::{ConditionalSend, ConditionalSync};
 use dialog_effects::authority::{Attest, Identify};
-use dialog_peer::{Session};
+use dialog_peer::Session;
 use dialog_repository::RemoteSite as Network;
 use dialog_storage::provider::storage::NativeSpace;
 use dialog_ucan::{Ucan, UcanAuthorization};
 use dialog_ucan_core::DelegationChain;
 
 use crate::account_session::{AccountSessionReadGuard, ActiveAccount};
-use crate::space::SpaceStore;
 use crate::peer::NativePeer;
+use crate::space::SpaceStore;
 
 const REMOTE_AUTHORIZATION_MARGIN_SECONDS: u64 = 60;
 

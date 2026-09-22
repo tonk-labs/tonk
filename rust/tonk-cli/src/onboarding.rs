@@ -16,15 +16,15 @@
 //! retirement (demoting the custodian to its public half) leaves an
 //! envelope that is deliberately unopenable rather than absent.
 
+use crate::peer::NativePeer;
 use anyhow::{Context, Result, bail};
 use dialog_credentials::{Credential, Ed25519Signer, Signer};
 use dialog_effects::credential::CredentialError;
-use dialog_peer::{Session};
+use dialog_peer::Session;
 use dialog_storage::provider::storage::NativeSpace;
 use dialog_varsig::{Did, Signer as VarsigSigner};
 use tonk_identity::clearance::Recovery;
 use tonk_identity::envelope::{AccountSecret, CUSTODIAN_KEK_CONTEXT, Envelope, Kek, KekMethod};
-use crate::peer::NativePeer;
 
 /// Credential site holding the onboarding account's wrapped secret.
 const ONBOARDING_ENVELOPE_SITE: &str = "tonk-onboarding-account-v1";
@@ -42,7 +42,10 @@ const ONBOARDING_CUSTODIAN_KEY: &str = "tonk-onboarding-custodian-v1";
 pub const ONBOARDING_GRANT_SITE: &str = "tonk-onboarding-grant-v1";
 
 /// This device's onboarding account, minting one on first call.
-pub async fn account(profile: &NativePeer, operator: &Session<NativeSpace>) -> Result<AccountSecret> {
+pub async fn account(
+    profile: &NativePeer,
+    operator: &Session<NativeSpace>,
+) -> Result<AccountSecret> {
     match read(profile, operator).await? {
         Some(secret) => Ok(secret),
         None => create(profile, operator).await,
@@ -146,7 +149,8 @@ async fn create(profile: &NativePeer, operator: &Session<NativeSpace>) -> Result
         .perform(operator)
         .await
         .context("failed to save the onboarding custodian")?;
-    profile.secrets()
+    profile
+        .secrets()
         .site(ONBOARDING_ENVELOPE_SITE)
         .save(envelope.encode())
         .perform(operator)
@@ -172,7 +176,8 @@ async fn create(profile: &NativePeer, operator: &Session<NativeSpace>) -> Result
     let bytes = grant
         .to_bytes()
         .map_err(|error| anyhow::anyhow!("the onboarding grant does not serialize: {error}"))?;
-    profile.secrets()
+    profile
+        .secrets()
         .site(ONBOARDING_GRANT_SITE)
         .save(bytes)
         .perform(operator)
@@ -230,7 +235,8 @@ async fn load_site(
     operator: &Session<NativeSpace>,
     site: &str,
 ) -> Result<Option<Vec<u8>>> {
-    match profile.secrets()
+    match profile
+        .secrets()
         .site(site)
         .load::<Vec<u8>>()
         .perform(operator)

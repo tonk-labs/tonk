@@ -4,8 +4,9 @@ use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use crate::peer::NativePeer;
 use anyhow::{Context, Result, bail};
-use dialog_peer::{Session};
+use dialog_peer::Session;
 use dialog_query::{Output as _, Query, Term};
 use dialog_remote_ucan::UcanAddress;
 use dialog_repository::{Branch, SiteAddress};
@@ -15,7 +16,6 @@ use tonk_account::{AccountStateStatus, MAIN_BRANCH};
 use tonk_schema::RepositoryName;
 use tonk_schema::directory::{MountBranch, MountRecord, MountRemote};
 use tonk_schema::prelude::DidExt as _;
-use crate::peer::NativePeer;
 
 #[cfg(feature = "integration-tests")]
 use crate::account;

@@ -6,10 +6,11 @@
 
 use std::path::Path;
 
+use crate::peer::NativePeer;
 use anyhow::{Context, Result, bail};
 use dialog_effects::credential::CredentialError;
 use dialog_effects::storage::Directory;
-use dialog_peer::{Session};
+use dialog_peer::Session;
 use dialog_remote_ucan::UcanAddress;
 use dialog_repository::{RemoteAddress, RemoteRepository, Repository, SiteAddress, Upstream};
 use dialog_storage::provider::storage::{NativeSpace, Storage};
@@ -18,7 +19,6 @@ use tonk_account::{
     AccountStateStatus, CreateGenesis, RemotePresence, probe_remote_main, publish_genesis_if_absent,
 };
 use tonk_schema::{Replica, prelude::DidExt as _};
-use crate::peer::NativePeer;
 
 /// Stable derivation context for the account-system operator.
 ///
@@ -54,7 +54,8 @@ pub(crate) fn credential_is_missing(error: &CredentialError) -> bool {
 }
 
 async fn marker(profile: &NativePeer, operator: &Session<NativeSpace>) -> Result<Option<Vec<u8>>> {
-    match profile.secrets()
+    match profile
+        .secrets()
         .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
         .load::<Vec<u8>>()
         .perform(operator)
@@ -71,7 +72,8 @@ async fn save_marker(
     operator: &Session<NativeSpace>,
     subject: &dialog_varsig::Did,
 ) -> Result<()> {
-    profile.secrets()
+    profile
+        .secrets()
         .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
         .save(subject.as_str().as_bytes().to_vec())
         .perform(operator)
@@ -375,7 +377,10 @@ pub async fn migrate_delegations_here() -> Result<MigrationOutcome> {
     let storage = Storage::<NativeSpace>::default();
     let profile = dialog_peer::Peer::new()
         .storage(storage.clone())
-        .load(dialog_effects::storage::Location::new(Directory::Profile, crate::site::PROFILE_NAME))
+        .load(dialog_effects::storage::Location::new(
+            Directory::Profile,
+            crate::site::PROFILE_NAME,
+        ))
         .await
         .context("failed to mount the profile for delegation migration")?;
     let operator = credential_operator(&profile).await?;
@@ -492,13 +497,18 @@ async fn operator_with_profile(
     let storage = Storage::<NativeSpace>::default();
     let mounted = dialog_peer::Peer::new()
         .storage(storage.clone())
-        .load(dialog_effects::storage::Location::new(profile_directory, profile_name))
+        .load(dialog_effects::storage::Location::new(
+            profile_directory,
+            profile_name,
+        ))
         .await
         .with_context(|| format!("failed to mount profile '{profile_name}' for account state"))?;
     if mounted.did() != profile.did() {
         bail!("account-state profile does not match the active CLI profile");
     }
-    crate::peer::session_for(&mounted, Directory::At(root.to_owned()),
+    crate::peer::session_for(
+        &mounted,
+        Directory::At(root.to_owned()),
         ACCOUNT_OPERATOR_CONTEXT,
     )
     .await
@@ -547,7 +557,9 @@ pub async fn credential_operator_for_store(
     let root = root
         .to_str()
         .with_context(|| format!("non-UTF-8 account state path: {}", root.display()))?;
-    crate::peer::session_for(profile, Directory::At(root.to_owned()),
+    crate::peer::session_for(
+        profile,
+        Directory::At(root.to_owned()),
         ACCOUNT_OPERATOR_CONTEXT,
     )
     .await
@@ -1089,8 +1101,11 @@ mod tests {
         let profile_name = format!("cli-account-repoint-{}", rand::random::<u64>());
         let storage = Storage::<NativeSpace>::default();
         let profile = dialog_peer::Peer::new()
-        .storage(storage.clone())
-        .open(dialog_effects::storage::Location::new(profile_dir.clone(), &profile_name))
+            .storage(storage.clone())
+            .open(dialog_effects::storage::Location::new(
+                profile_dir.clone(),
+                &profile_name,
+            ))
             .await
             .unwrap();
         let root = Ed25519Signer::generate().await.unwrap();
@@ -1135,7 +1150,8 @@ mod tests {
         ) {
             let attachment = tonk_account::AccountProviderRecord::attach(remote, at).unwrap();
             let operator = account_operator(profile, store, profile_name, profile_dir).await;
-            profile.secrets()
+            profile
+                .secrets()
                 .site(crate::account::ACCOUNT_LINK_SITE)
                 .save(attachment.encode().unwrap())
                 .perform(&operator)
@@ -1154,7 +1170,8 @@ mod tests {
             delegation_cid: delegation.proof_cids()[0].to_string(),
             delegation_hex: hex::encode(delegation.to_bytes().unwrap()),
         };
-        profile.secrets()
+        profile
+            .secrets()
             .site(crate::identity::LOCAL_ROOT_SITE)
             .save(serde_json::to_vec(&local_root).unwrap())
             .perform(&account_operator(&profile, &store, &profile_name, &profile_dir).await)
@@ -1251,8 +1268,11 @@ mod tests {
         let profile_name = format!("cli-account-test-{}", rand::random::<u64>());
         let storage = Storage::<NativeSpace>::default();
         let profile = dialog_peer::Peer::new()
-        .storage(storage.clone())
-        .open(dialog_effects::storage::Location::new(profile_dir.clone(), &profile_name))
+            .storage(storage.clone())
+            .open(dialog_effects::storage::Location::new(
+                profile_dir.clone(),
+                &profile_name,
+            ))
             .await
             .unwrap();
         let root = Ed25519Signer::generate().await.unwrap();
@@ -1303,14 +1323,16 @@ mod tests {
             delegation_cid: delegation.proof_cids()[0].to_string(),
             delegation_hex: hex::encode(delegation.to_bytes().unwrap()),
         };
-        profile.secrets()
+        profile
+            .secrets()
             .site(crate::identity::LOCAL_ROOT_SITE)
             .save(serde_json::to_vec(&local_root).unwrap())
             .perform(&account_operator)
             .await
             .unwrap();
         let attachment = tonk_account::AccountProviderRecord::attach(&remote, 1).unwrap();
-        profile.secrets()
+        profile
+            .secrets()
             .site(crate::account::ACCOUNT_LINK_SITE)
             .save(attachment.encode().unwrap())
             .perform(&account_operator)

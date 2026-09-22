@@ -4,6 +4,7 @@
 //! private native credential store. Repository data is nested so legacy clients
 //! cannot load it with their ambient profile. No account ceremony runs here.
 
+use crate::peer::NativePeer;
 use anyhow::{Context, Result, ensure};
 use dialog_capability::{Subject, did};
 use dialog_credentials::{Credential, Ed25519Signer, Ed25519Verifier, SignerCredential};
@@ -22,7 +23,6 @@ use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt 
 use std::path::{Path, PathBuf};
 use tonk_invite::connection::{AgentInvite, SpaceGrantBundle, candidate_build_scopes};
 use url::Url;
-use crate::peer::NativePeer;
 
 pub use tonk_invite::connection::InvitationHint;
 
@@ -357,7 +357,10 @@ async fn load_profile(
 ) -> Result<NativePeer> {
     let profile = dialog_peer::Peer::new()
         .storage(storage.clone())
-        .load(dialog_effects::storage::Location::new(profile_directory(root), PROFILE_NAME))
+        .load(dialog_effects::storage::Location::new(
+            profile_directory(root),
+            PROFILE_NAME,
+        ))
         .await
         .context("connection credential is missing or corrupt; no account fallback is permitted")?;
     ensure!(
@@ -598,10 +601,11 @@ async fn assemble(
 ) -> Result<crate::site::TonkSite> {
     let data = root.join(DATA_DIRECTORY);
     let expires = Timestamp::try_from((Timestamp::now().to_unix() + 3600) as i128)?;
-    let peer = crate::peer::peer_for(&profile, Directory::At(data.to_string_lossy().into_owned()),
-    )
-    .await?;
-    let operator = peer.derive(b"tonk-scoped-connection").await?
+    let peer =
+        crate::peer::peer_for(&profile, Directory::At(data.to_string_lossy().into_owned())).await?;
+    let operator = peer
+        .derive(b"tonk-scoped-connection")
+        .await?
         .allow(peer.access().claim(Subject::any()).expires(expires))
         .build()
         .await?;

@@ -9,14 +9,14 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use dialog_effects::credential::CredentialError;
-use dialog_peer::{Session};
+use dialog_peer::Session;
 use dialog_storage::provider::storage::{NativeSpace, Storage};
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
 use serde::{Deserialize, Serialize};
 
-use crate::site::PROFILE_NAME;
 use crate::peer::NativePeer;
+use crate::site::PROFILE_NAME;
 
 /// Storage namespace dialog uses under the platform data dir.
 /// Mirrors the constant in
@@ -85,7 +85,8 @@ pub(crate) async fn local_root_with_operator(
     profile: &NativePeer,
     operator: &Session<NativeSpace>,
 ) -> Result<Option<LocalRoot>> {
-    let bytes = match profile.secrets()
+    let bytes = match profile
+        .secrets()
         .site(LOCAL_ROOT_SITE)
         .load::<Vec<u8>>()
         .perform(operator)
@@ -153,7 +154,8 @@ pub async fn save_local_root_with_operator(
         .perform(operator)
         .await
         .context("failed to install the local-root delegation")?;
-    profile.secrets()
+    profile
+        .secrets()
         .site(LOCAL_ROOT_SITE)
         .save(serde_json::to_vec(&record).context("failed to serialize the local root")?)
         .perform(operator)
@@ -167,7 +169,10 @@ pub async fn open() -> Result<NativePeer> {
     let storage = Storage::<NativeSpace>::default();
     dialog_peer::Peer::new()
         .storage(storage.clone())
-        .open(dialog_effects::storage::Location::new(dialog_effects::storage::Directory::Profile, PROFILE_NAME))
+        .open(dialog_effects::storage::Location::new(
+            dialog_effects::storage::Directory::Profile,
+            PROFILE_NAME,
+        ))
         .await
         .with_context(|| format!("failed to open profile '{PROFILE_NAME}'"))
 }

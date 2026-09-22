@@ -22,7 +22,7 @@ use dialog_capability::Subject;
 use dialog_credentials::{Credential, Ed25519Signer, Ed25519Verifier};
 use dialog_effects::space::{Space, SpaceExt as _};
 use dialog_effects::storage::Directory;
-use dialog_peer::{Session};
+use dialog_peer::Session;
 use dialog_reactor::{BranchSession, Reactor, ReactorError};
 use dialog_repository::{Repository, RepositoryExt as _};
 use dialog_storage::provider::storage::{NativeSpace, Storage};
@@ -306,12 +306,7 @@ impl TonkSite {
         // repo. Without that root chain `profile.access().claim`
         // fails with "no delegation chain found" the moment we
         // try to mint an invite.
-        let (repository, fresh) = match profile
-            .space(REPO_NAME)
-            .load()
-            .perform(&operator)
-            .await
-        {
+        let (repository, fresh) = match profile.space(REPO_NAME).load().perform(&operator).await {
             Ok(repository) => (repository, false),
             Err(_) => (
                 bootstrap_repository(&profile, &operator, &config)
@@ -539,7 +534,8 @@ pub async fn member_did(site: &TonkSite) -> Result<Did> {
 /// sign-in retires it.
 async fn onboarding_grant_issuer(site: &TonkSite) -> Option<String> {
     let bytes = site
-        .profile.secrets()
+        .profile
+        .secrets()
         .site(crate::onboarding::ONBOARDING_GRANT_SITE)
         .load::<Vec<u8>>()
         .perform(site.operator.local())
@@ -720,7 +716,8 @@ async fn bootstrap_repository(
     let prefix_bytes = prefix
         .to_bytes()
         .context("failed to serialize repo→root delegation")?;
-    profile.secrets()
+    profile
+        .secrets()
         .site(space_root_site(&signer_repo.did(), &durable_did))
         .save(prefix_bytes)
         .perform(operator)
@@ -908,7 +905,8 @@ async fn mount_delegated_inner(
             .chain
             .to_bytes()
             .context("failed to serialize delegated prefix")?;
-        profile.secrets()
+        profile
+            .secrets()
             .site(space_root_site(&subject, &authority_root))
             .save(prefix_bytes)
             .perform(&operator)
@@ -1043,7 +1041,8 @@ async fn optional_credential(
     operator: &Session<NativeSpace>,
     site: String,
 ) -> Result<Option<Vec<u8>>> {
-    match profile.secrets()
+    match profile
+        .secrets()
         .site(site)
         .load::<Vec<u8>>()
         .perform(operator)
@@ -1154,7 +1153,8 @@ async fn save_prefix(
     site: &str,
     bytes: Vec<u8>,
 ) -> Result<()> {
-    profile.secrets()
+    profile
+        .secrets()
         .site(site.to_string())
         .save(bytes)
         .perform(operator)
@@ -1294,7 +1294,10 @@ pub fn default_config() -> Result<SiteConfig> {
 /// site (the join path provisions the space from a verifier
 /// credential rather than via `profile.space(...).open()`,
 /// but the profile + operator setup is the same).
-async fn derive_operator_for_profile(root: &Path, profile: &NativePeer) -> Result<Session<NativeSpace>> {
+async fn derive_operator_for_profile(
+    root: &Path,
+    profile: &NativePeer,
+) -> Result<Session<NativeSpace>> {
     let root_str = root
         .to_str()
         .with_context(|| format!("non-UTF-8 path: {}", root.display()))?
@@ -1430,7 +1433,10 @@ pub(crate) async fn build_profile_and_operator(
     let storage = Storage::<NativeSpace>::default();
     let profile = dialog_peer::Peer::new()
         .storage(storage.clone())
-        .open(dialog_effects::storage::Location::new(config.profile_directory.clone(), config.profile_name.clone()))
+        .open(dialog_effects::storage::Location::new(
+            config.profile_directory.clone(),
+            config.profile_name.clone(),
+        ))
         .await
         .with_context(|| format!("failed to open profile '{}'", config.profile_name))?;
     let operator = derive_operator_for_profile(root, &profile).await?;

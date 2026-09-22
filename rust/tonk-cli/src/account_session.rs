@@ -5,13 +5,13 @@ use std::io::Write as _;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use dialog_peer::{Session};
+use dialog_peer::Session;
 use dialog_storage::provider::storage::NativeSpace;
 use dialog_varsig::Did;
 use serde::{Deserialize, Serialize};
 
-use crate::space::SpaceStore;
 use crate::peer::NativePeer;
+use crate::space::SpaceStore;
 
 /// Credential site containing the sole native remote-account authority state.
 pub const ACCOUNT_SESSION_SITE: &str = "tonk-account-session-v1";
@@ -338,7 +338,8 @@ async fn projected_active(
         .parse()
         .context("stored root DID is invalid")?;
     let Some(bytes) = legacy_provider_bytes(
-        profile.secrets()
+        profile
+            .secrets()
             .site(crate::account::ACCOUNT_LINK_SITE)
             .load::<Vec<u8>>()
             .perform(operator)
@@ -587,7 +588,8 @@ pub async fn logout_transition_for_store(
     if existed {
         save_raw(profile, operator, store, &state).await?;
         // Compatibility only: canonical state is already authoritative.
-        let _ = profile.secrets()
+        let _ = profile
+            .secrets()
             .site(crate::account::ACCOUNT_LINK_SITE)
             .save(Vec::<u8>::new())
             .perform(operator)
@@ -615,19 +617,29 @@ mod tests {
 
     use super::*;
 
-    async fn isolated_session() -> (tempfile::TempDir, SpaceStore, NativePeer, Session<NativeSpace>) {
+    async fn isolated_session() -> (
+        tempfile::TempDir,
+        SpaceStore,
+        NativePeer,
+        Session<NativeSpace>,
+    ) {
         let temp = tempfile::tempdir().unwrap();
         let store = SpaceStore::at(temp.path().join("state"));
         let profile_dir = Directory::At(temp.path().join("profiles").to_string_lossy().into());
         let storage = Storage::<NativeSpace>::default();
         let profile = dialog_peer::Peer::new()
-        .storage(storage.clone())
-        .open(dialog_effects::storage::Location::new(profile_dir, format!("account-session-test-{}", rand::random::<u64>())))
+            .storage(storage.clone())
+            .open(dialog_effects::storage::Location::new(
+                profile_dir,
+                format!("account-session-test-{}", rand::random::<u64>()),
+            ))
             .await
             .unwrap();
         std::fs::create_dir_all(store.account_dir()).unwrap();
         let account_dir = store.account_dir().canonicalize().unwrap();
-        let operator = crate::peer::session_for(&profile, Directory::At(account_dir.to_string_lossy().into()),
+        let operator = crate::peer::session_for(
+            &profile,
+            Directory::At(account_dir.to_string_lossy().into()),
             b"tonk/account-session-test/v1",
         )
         .await

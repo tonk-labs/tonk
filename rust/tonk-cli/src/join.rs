@@ -4,10 +4,10 @@
 //! resolved bearer remains in memory only and is handed to the selected
 //! import path so shortcut resolution is never repeated.
 
+use crate::peer::NativePeer;
 use anyhow::{Context as _, Result, ensure};
 use serde::{Deserialize, Serialize};
 use tonk_invite::connection::InvitationHint;
-use crate::peer::NativePeer;
 
 /// Secret-free recovery journal for an ordinary invitation import.
 pub const ORDINARY_STATE_FILE: &str = "ordinary-join.json";
@@ -159,7 +159,10 @@ pub async fn ensure_ordinary_recipient(
     let storage = Storage::<NativeSpace>::default();
     let profile = dialog_peer::Peer::new()
         .storage(storage.clone())
-        .load(dialog_effects::storage::Location::new(config.profile_directory.clone(), config.profile_name.clone()))
+        .load(dialog_effects::storage::Location::new(
+            config.profile_directory.clone(),
+            config.profile_name.clone(),
+        ))
         .await
         .map_err(|_| targeted_recipient_error(expected))?;
     let operator = crate::account_state::store_operator_with_config(

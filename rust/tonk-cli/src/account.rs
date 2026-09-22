@@ -2,6 +2,7 @@
 
 use std::time::Duration;
 
+use crate::peer::NativePeer;
 use anyhow::{Context, Result, bail};
 use dialog_storage::provider::storage::NativeSpace;
 use dialog_ucan::UcanDelegation;
@@ -10,7 +11,6 @@ use dialog_varsig::Did;
 use tonk_account::{AccountProviderRecord, AccountStateStatus};
 use tonk_analytics::account::{DegradationKind, Stage};
 use url::Url;
-use crate::peer::NativePeer;
 
 /// Production account page, where the revoke ceremony runs.
 pub const DEFAULT_ACCOUNT_PAGE: &str = "https://tonk.network/settings";
@@ -484,7 +484,8 @@ pub(crate) async fn project_account_with_checkpoint(
     )
     .await?;
     checkpoint(2)?;
-    profile.secrets()
+    profile
+        .secrets()
         .site(ACCOUNT_LINK_SITE)
         .save(provider.encode()?)
         .perform(operator)
@@ -950,7 +951,8 @@ pub async fn attach_for_integration_test(
         .save(UcanDelegation(link.clone()))
         .perform(operator)
         .await?;
-    profile.secrets()
+    profile
+        .secrets()
         .site(crate::identity::LOCAL_ROOT_SITE)
         .save(serde_json::to_vec(&record)?)
         .perform(operator)
@@ -962,7 +964,8 @@ pub async fn attach_for_integration_test(
             .unwrap_or_default()
             .as_secs(),
     )?;
-    profile.secrets()
+    profile
+        .secrets()
         .site(ACCOUNT_LINK_SITE)
         .save(provider.encode()?)
         .perform(operator)
@@ -1392,13 +1395,18 @@ mod tests {
         let profile_name = format!("cli-account-timeout-test-{}", rand::random::<u64>());
         let storage = Storage::<NativeSpace>::default();
         let profile = dialog_peer::Peer::new()
-        .storage(storage.clone())
-        .open(dialog_effects::storage::Location::new(profile_dir, &profile_name))
+            .storage(storage.clone())
+            .open(dialog_effects::storage::Location::new(
+                profile_dir,
+                &profile_name,
+            ))
             .await
             .unwrap();
         std::fs::create_dir_all(store.account_dir()).unwrap();
         let account_dir = store.account_dir().canonicalize().unwrap();
-        let operator = crate::peer::session_for(&profile, Directory::At(account_dir.to_string_lossy().into()),
+        let operator = crate::peer::session_for(
+            &profile,
+            Directory::At(account_dir.to_string_lossy().into()),
             b"tonk/account-state/v1",
         )
         .await
@@ -1438,7 +1446,8 @@ mod tests {
             .perform(&operator)
             .await
             .unwrap();
-        profile.secrets()
+        profile
+            .secrets()
             .site(ACCOUNT_LINK_SITE)
             .save(provider.encode().unwrap())
             .perform(&operator)
@@ -1448,7 +1457,8 @@ mod tests {
             .await
             .unwrap();
         if ready {
-            profile.secrets()
+            profile
+                .secrets()
                 .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
                 .save(root_did.as_str().as_bytes().to_vec())
                 .perform(&operator)
@@ -1540,13 +1550,18 @@ mod tests {
         let profile_name = format!("cli-account-logout-test-{}", rand::random::<u64>());
         let storage = Storage::<NativeSpace>::default();
         let profile = dialog_peer::Peer::new()
-        .storage(storage.clone())
-        .open(dialog_effects::storage::Location::new(profile_dir, &profile_name))
+            .storage(storage.clone())
+            .open(dialog_effects::storage::Location::new(
+                profile_dir,
+                &profile_name,
+            ))
             .await
             .unwrap();
         std::fs::create_dir_all(store.account_dir()).unwrap();
         let account_dir = store.account_dir().canonicalize().unwrap();
-        let operator = crate::peer::session_for(&profile, Directory::At(account_dir.to_string_lossy().into()),
+        let operator = crate::peer::session_for(
+            &profile,
+            Directory::At(account_dir.to_string_lossy().into()),
             b"tonk/account-state/v1",
         )
         .await
@@ -1564,19 +1579,22 @@ mod tests {
             .encode()
             .unwrap();
         let trusted_base = b"trusted-base".to_vec();
-        profile.secrets()
+        profile
+            .secrets()
             .site(crate::identity::LOCAL_ROOT_SITE)
             .save(local_root_bytes.clone())
             .perform(&operator)
             .await
             .unwrap();
-        profile.secrets()
+        profile
+            .secrets()
             .site(ACCOUNT_LINK_SITE)
             .save(provider)
             .perform(&operator)
             .await
             .unwrap();
-        profile.secrets()
+        profile
+            .secrets()
             .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
             .save(trusted_base.clone())
             .perform(&operator)
@@ -1608,7 +1626,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            profile.secrets()
+            profile
+                .secrets()
                 .site(ACCOUNT_LINK_SITE)
                 .load::<Vec<u8>>()
                 .perform(&operator)
@@ -1617,7 +1636,8 @@ mod tests {
             Vec::<u8>::new()
         );
         assert_eq!(
-            profile.secrets()
+            profile
+                .secrets()
                 .site(crate::identity::LOCAL_ROOT_SITE)
                 .load::<Vec<u8>>()
                 .perform(&operator)
@@ -1626,7 +1646,8 @@ mod tests {
             local_root_bytes
         );
         assert_eq!(
-            profile.secrets()
+            profile
+                .secrets()
                 .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
                 .load::<Vec<u8>>()
                 .perform(&operator)
@@ -1669,8 +1690,11 @@ mod tests {
 
         let storage = dialog_storage::provider::storage::Storage::<NativeSpace>::default();
         let profile = dialog_peer::Peer::new()
-        .storage(storage.clone())
-        .open(dialog_effects::storage::Location::new(dialog_effects::storage::Directory::Profile, "link-audience-test"))
+            .storage(storage.clone())
+            .open(dialog_effects::storage::Location::new(
+                dialog_effects::storage::Directory::Profile,
+                "link-audience-test",
+            ))
             .await
             .unwrap();
         let account = Ed25519Signer::generate().await.unwrap();
@@ -1706,8 +1730,11 @@ mod tests {
 
         let storage = dialog_storage::provider::storage::Storage::<NativeSpace>::default();
         let profile = dialog_peer::Peer::new()
-        .storage(storage.clone())
-        .open(dialog_effects::storage::Location::new(dialog_effects::storage::Directory::Profile, "link-subject-test"))
+            .storage(storage.clone())
+            .open(dialog_effects::storage::Location::new(
+                dialog_effects::storage::Directory::Profile,
+                "link-subject-test",
+            ))
             .await
             .unwrap();
         let account = Ed25519Signer::generate().await.unwrap();
@@ -1741,10 +1768,11 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let storage = dialog_storage::provider::storage::Storage::<NativeSpace>::default();
         let profile = dialog_peer::Peer::new()
-        .storage(storage.clone())
-        .open(dialog_effects::storage::Location::new(Directory::At(
-                temp.path().join("profiles").to_string_lossy().into(),
-            ), format!("link-generation-test-{}", rand::random::<u64>())))
+            .storage(storage.clone())
+            .open(dialog_effects::storage::Location::new(
+                Directory::At(temp.path().join("profiles").to_string_lossy().into()),
+                format!("link-generation-test-{}", rand::random::<u64>()),
+            ))
             .await
             .unwrap();
         let service_url = "https://accounts.example/ucan/".to_string();
@@ -1793,13 +1821,18 @@ mod tests {
             let profile_name = format!("cli-account-recovery-test-{}", rand::random::<u64>());
             let storage = Storage::<NativeSpace>::default();
             let profile = dialog_peer::Peer::new()
-        .storage(storage.clone())
-        .open(dialog_effects::storage::Location::new(profile_dir.clone(), &profile_name))
+                .storage(storage.clone())
+                .open(dialog_effects::storage::Location::new(
+                    profile_dir.clone(),
+                    &profile_name,
+                ))
                 .await
                 .unwrap();
             std::fs::create_dir_all(store.account_dir()).unwrap();
             let account_dir = store.account_dir().canonicalize().unwrap();
-            let operator = crate::peer::session_for(&profile, Directory::At(account_dir.to_string_lossy().into()),
+            let operator = crate::peer::session_for(
+                &profile,
+                Directory::At(account_dir.to_string_lossy().into()),
                 b"tonk/account-state/v1",
             )
             .await
@@ -1843,11 +1876,16 @@ mod tests {
 
             let storage = Storage::<NativeSpace>::default();
             let profile = dialog_peer::Peer::new()
-        .storage(storage.clone())
-        .open(dialog_effects::storage::Location::new(self.profile_dir.clone(), &self.profile_name))
+                .storage(storage.clone())
+                .open(dialog_effects::storage::Location::new(
+                    self.profile_dir.clone(),
+                    &self.profile_name,
+                ))
                 .await
                 .unwrap();
-            let operator = crate::peer::session_for(&profile, Directory::At(self.account_dir.to_string_lossy().into()),
+            let operator = crate::peer::session_for(
+                &profile,
+                Directory::At(self.account_dir.to_string_lossy().into()),
                 b"tonk/account-state/v1",
             )
             .await

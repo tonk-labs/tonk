@@ -7,11 +7,11 @@
 //! so this module only probes registration state and provisions spaces,
 //! which needs no passkey.
 
+use crate::peer::NativePeer;
 use anyhow::{Context, Result, bail};
 use dialog_varsig::Did;
 use tonk_account::customer::{Receipt, RegistrationError};
 use url::Url;
-use crate::peer::NativePeer;
 
 /// The access service origin for this profile's account: the attached
 /// repository descriptor's remote, with its `/ucan/` path stripped.

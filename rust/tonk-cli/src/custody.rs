@@ -11,8 +11,9 @@
 //! directory entries it writes today. Only a ceremony holding the
 //! account secret can ever open the row again.
 
+use crate::peer::NativePeer;
 use anyhow::{Context, Result};
-use dialog_peer::{Session};
+use dialog_peer::Session;
 use dialog_query::{Output as _, Query, Term};
 use dialog_repository::Branch;
 use dialog_storage::provider::storage::NativeSpace;
@@ -22,7 +23,6 @@ use tonk_schema::{
     AccountSealedInbox, SecretMessage, SecretPrincipal, SeedKind, prelude::DidExt as _,
 };
 use zeroize::Zeroizing;
-use crate::peer::NativePeer;
 
 /// The account's published X25519 recipient, read from the account
 /// branch. `None` when the account predates the encryption key — a
@@ -300,7 +300,10 @@ pub async fn rotate_from_onboarding(
     let storage = dialog_storage::provider::storage::Storage::<NativeSpace>::default();
     let profile = dialog_peer::Peer::new()
         .storage(storage.clone())
-        .open(dialog_effects::storage::Location::new(config.profile_directory.clone(), config.profile_name.clone()))
+        .open(dialog_effects::storage::Location::new(
+            config.profile_directory.clone(),
+            config.profile_name.clone(),
+        ))
         .await
         .with_context(|| format!("failed to open profile '{}'", config.profile_name))?;
     let operator = crate::account_state::credential_operator_for_store(&profile, store).await?;
@@ -351,7 +354,8 @@ pub async fn rotate_from_onboarding(
                     let bytes = chain
                         .to_bytes()
                         .map_err(|error| format!("{subject}: serialize: {error}"))?;
-                    profile_ref.secrets()
+                    profile_ref
+                        .secrets()
                         .site(tonk_account::prefix::space_root_site(
                             &subject,
                             account_root_ref,
