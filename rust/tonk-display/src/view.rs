@@ -377,40 +377,53 @@ mod tests {
         host.remove();
     }
 
-    /// The hub's "is an account linked" marker must vanish for a browser
-    /// with none. A directory with zero rows still draws its chrome from
-    /// a synthetic host-only conclusion, so a marker with no field
-    /// reference rendered for every fresh profile and the bar opened an
-    /// empty menu instead of the signup. `{this}` pins the marker to a
-    /// row, and the synthetic conclusion has no `this` to pin to.
+    /// The hub's link label: one root pinned to `{this}`, so a browser
+    /// with no link renders no marker and no name. A two-root fragment
+    /// (marker beside the name display) repeated as a whole, and the
+    /// synthetic zero-row conclusion rendered it for nobody.
     #[dialog_common::test]
-    fn it_renders_the_linked_marker_only_for_a_registration_row() {
+    fn it_renders_the_link_label_only_for_a_link_row() {
         let library = include_str!("../../tonk-core/assets/library/profile.yaml");
         let template = library
-            .split("view!:\n  this: tonk:account/registered\n  show:\n    linked: |\n")
+            .split("view!:\n  this: account/link\n  show:\n    label: |\n")
             .nth(1)
             .and_then(|tail| tail.split("\n\n").next())
-            .expect("linked marker template");
+            .expect("link label template");
         let host = mount(template);
 
-        // The synthetic conclusion an empty directory frame renders with:
-        // host fields only, no `this`.
         call_draw(&host, &frame(&[("", &[])]));
         assert!(
             host.query_selector("[data-account-linked]")
                 .unwrap()
                 .is_none(),
-            "no registration, no marker: {}",
+            "no link, no marker: {}",
+            host.inner_html(),
+        );
+        assert!(
+            host.query_selector("tonk-display").unwrap().is_none(),
+            "no link, no name display either: {}",
             host.inner_html(),
         );
 
-        call_draw(&host, &frame(&[("did:key:zAccount", &[])]));
+        call_draw(
+            &host,
+            &frame(&[("state:account-link", &[("account", "did:key:zAccount")])]),
+        );
         assert!(
             host.query_selector("[data-account-linked]")
                 .unwrap()
                 .is_some(),
-            "a registration row renders the marker: {}",
+            "a link row renders the marker: {}",
             host.inner_html(),
+        );
+        let name = host
+            .query_selector("tonk-display[model=\"tonk:account/name\"]")
+            .unwrap()
+            .expect("the name renders through the link");
+        assert_eq!(
+            name.get_attribute("entity").as_deref(),
+            Some("did:key:zAccount"),
+            "the name display is bound to the linked account"
         );
 
         call_draw(&host, &frame(&[("", &[])]));

@@ -335,7 +335,46 @@ pub(crate) async fn persist_link(
     save_provider(state, &record).await?;
     // This profile now has an account repository to keep hidden.
     state.account_keys.invalidate();
+    publish_link(state).await;
     Ok(())
+}
+
+/// Publish whether this device holds an account link on the active
+/// branch, as the `state:account-link` overlay row. The facts on a branch
+/// describe the account and stay after a sign-out there, so a view can
+/// only tell a linked branch by this row: asserted while a link exists,
+/// retracted otherwise, and re-published whenever a state boots.
+pub(crate) async fn publish_link(state: &crate::worker::TonkState) {
+    use tonk_schema::{AccountLink, prelude::DidExt as _};
+
+    let Ok(this) = AccountLink::ENTITY.parse::<dialog_artifacts::Entity>() else {
+        return;
+    };
+    let linked = account_link(state).await.map(|chain| chain.issuer().this());
+    let main = match state
+        .reactor
+        .profile_repository()
+        .branch(&state.active_branch)
+        .acquire(&state.operator)
+        .await
+    {
+        Ok(main) => main,
+        Err(error) => {
+            log!("account link row: open the active branch: {error}");
+            return;
+        }
+    };
+    match linked {
+        Some(account) => main.state.assert_overlay(AccountLink::new(this, account)),
+        None => {
+            main.state
+                .retain_overlay_entities(|overlaid| overlaid != &this);
+        }
+    }
+    state
+        .reactor
+        .schedule_poll(std::sync::Arc::clone(&main.state));
+    state.reactor.run_scheduled_polls(&state.operator).await;
 }
 
 /// Attach provider services and finish bounded backup/restore before reporting
@@ -422,6 +461,7 @@ pub(crate) async fn disconnect(
     // workspace. The persisted root stays, so signing back in with the
     // same passkey still short-circuits in place.
     super::profiles::upsert_active_entry(state, None).await;
+    publish_link(state).await;
     status(state).await
 }
 

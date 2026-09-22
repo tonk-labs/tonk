@@ -223,10 +223,12 @@ fn it_raises_the_signup_from_an_unlinked_account_cell() {
         ),
         "the account name needs a directory facet, or the bar's label is the display's default notation",
     );
+    // What the marker renders, and that it renders nothing for a profile
+    // with no link row, is answered by rendering it (`tonk_display::view`);
+    // here only the model the bar reads is pinned down.
     assert!(
-        PROFILE_LIBRARY.contains("<span data-account-linked data-of={this} hidden></span>"),
-        "the linked marker must be pinned to a row with {{this}}; unpinned it is chrome \
-         and a zero-row directory still renders chrome, so every fresh profile read as linked",
+        PROFILE_LIBRARY.contains("concept!: &account/link\n  this: state:account-link"),
+        "linked is device state the worker publishes, not a fact read off the branch",
     );
 }
 

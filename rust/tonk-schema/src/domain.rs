@@ -1404,6 +1404,20 @@ pub mod command {
 /// what a question about a half-typed address deserves.
 /// Attributes of [`crate::CeremonyStatus`]: where a command that needs
 /// the person's passkey reports its progress to the page that asked.
+/// `state:account-link` — whether THIS DEVICE holds the account's
+/// authority on the active branch. Overlay-only: the facts on a branch
+/// describe the account and outlive a sign-out there, so linked-ness
+/// cannot be read off them.
+pub mod account_link {
+    use super::{Attribute, Entity};
+
+    /// The account this device is linked to on the active branch.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.link")]
+    #[cardinality(one)]
+    pub struct Account(pub Entity);
+}
+
 pub mod ceremony_status {
     use super::Attribute;
 

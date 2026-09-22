@@ -1870,7 +1870,7 @@ mod tests {
         define_from_library(PROFILE_LIBRARY, "hub-bar");
         let host = document().create_element("hub-bar").expect("host");
         host.set_inner_html(
-            r#"<nav class="hubbar"><button type="button" data-tab="account" data-account-trigger>add an account<span data-account-registration data-state="empty"></span></button></nav><button type="button" data-add-profile>add account</button>"#,
+            r#"<nav class="hubbar"><button type="button" data-tab="account" data-account-trigger>add an account<span data-account-link data-state="empty"></span></button></nav><button type="button" data-add-profile>add account</button>"#,
         );
         document()
             .body()
@@ -1929,7 +1929,7 @@ mod tests {
         define_from_library(PROFILE_LIBRARY, "hub-bar");
         let host = document().create_element("hub-bar").expect("host");
         host.set_inner_html(
-            r#"<nav class="hubbar"><button type="button" data-tab="account" data-account-trigger><span data-registered></span><span data-account-registration data-state="loading"></span></button></nav>"#,
+            r#"<nav class="hubbar"><button type="button" data-tab="account" data-account-trigger><span data-registered></span><span data-account-link data-state="loading"></span></button></nav>"#,
         );
         document()
             .body()
@@ -1958,7 +1958,7 @@ mod tests {
         assert!(host.has_attribute("deciding"), "the click is remembered");
 
         let registration = host
-            .query_selector("[data-account-registration]")
+            .query_selector("[data-account-link]")
             .expect("query")
             .expect("the registration display");
         let _ = registration.set_attribute("data-state", "empty");
@@ -1991,7 +1991,7 @@ mod tests {
         let host = document().create_element("hub-bar").expect("host");
         let _ = host.set_attribute("tab", "account");
         host.set_inner_html(
-            r#"<nav class="hubbar"><button type="button" data-tab="account"><span data-account-registration data-state="loading"></span></button></nav>"#,
+            r#"<nav class="hubbar"><button type="button" data-tab="account"><span data-account-link data-state="loading"></span></button></nav>"#,
         );
         document()
             .body()
@@ -2007,7 +2007,7 @@ mod tests {
         let before = calls.length();
 
         let registration = host
-            .query_selector("[data-account-registration]")
+            .query_selector("[data-account-link]")
             .expect("query")
             .expect("the registration display");
         let _ = registration.set_attribute("data-state", "empty");

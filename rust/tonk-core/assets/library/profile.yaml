@@ -587,14 +587,12 @@ view!:
               <!-- Directory mode (no `entity=`), where an absent row is
                    `empty`; `no-entity` never shows without an entity to be
                    absent. The label is the offer: this cell links an account. -->
-              <span data-account-label><tonk-display model="tonk:account/name"
+              <!-- The link, not the registration or the name: those are
+                   facts about the account and outlive a sign-out on this
+                   branch. The link row says whether THIS DEVICE holds the
+                   account here; the name renders through it. -->
+              <span data-account-label><tonk-display model="state:account-link" view="label" data-account-link
                 ><span slot="empty">add an account</span></tonk-display></span>
-              <!-- Presence of a registration, not of a NAME: the account
-                   name waits on activation, so a linked-but-unactivated
-                   account has a provider and no name. The old element
-                   keyed on the provider for exactly this reason. -->
-              <tonk-display model="tonk:account/registered" view="linked" data-account-registration
-                ><span slot="empty"></span></tonk-display>
             </button>
             <button class="hcell hc-view" type="button" data-tab="spaces" data-return-spaces aria-current="page">
               spaces
@@ -1671,20 +1669,6 @@ view!:
 # The name, editable in place: a text input whose `change` (Enter or
 # blur) is the rename command. Its own view because it is its own
 # concept, and because the FAB edits the same fact the same way.
-# A marker, not a rendering: the bar asks whether a registration exists
-# and this is how it answers. Empty text so it adds nothing visible.
-#
-# `{this}` is what makes it a marker. A template with no field reference
-# is all chrome, and a directory renders its chrome even with zero rows
-# (a synthetic host-only conclusion feeds it), so an unpinned span was
-# present for a browser with no account, and the bar read every fresh
-# profile as linked. Pinned to `this`, the span is the repeat node: one
-# per registration, none without.
-view!:
-  this: tonk:account/registered
-  show:
-    linked: |
-      <span data-account-linked data-of={this} hidden></span>
 
 # The name as the hub bar shows it: the text and nothing else, so the
 # cell reads as the member's name. Without this facet the display fell
@@ -1800,12 +1784,12 @@ element!: &hub-bar
     # rather than a beat after the label.
     linked: |
       (self) => !!self.querySelector('[data-account-linked], [data-account-name]')
-    # Whether it is KNOWN to have none: the registration display has
-    # resolved to zero rows. Before it resolves, neither holds, and a
+    # Whether it is KNOWN to have none: the link display has resolved
+    # to zero rows. Before it resolves, neither holds, and a
     # click waits on it (see `decide`) rather than guessing.
     unlinked: |
       (self) => !self.linked()
-        && self.querySelector('[data-account-registration]')?.dataset.state === 'empty'
+        && self.querySelector('[data-account-link]')?.dataset.state === 'empty'
     # Act on a click the registration had not resolved for, and raise
     # the ceremony on a settings page that has no account: that page is
     # the door for a browser with none.
@@ -2001,13 +1985,11 @@ view!:
                 <!-- Directory mode (no `entity=`), where an absent row is
                      `empty`; `no-entity` never shows without an entity to be
                      absent. The label is the offer: this cell links an account. -->
-                <span data-account-label><tonk-display model="tonk:account/name"
-                  ><span slot="empty">add an account</span></tonk-display></span>
-                <!-- The registration marker, so the bar knows whether this
-                     browser has an account; without one, the settings page
+                <!-- The link marker, so the bar knows whether this browser
+                     holds an account here; without one, the settings page
                      is the door and the bar raises the ceremony itself. -->
-                <tonk-display model="tonk:account/registered" view="linked" data-account-registration
-                  ><span slot="empty"></span></tonk-display>
+                <span data-account-label><tonk-display model="state:account-link" view="label" data-account-link
+                  ><span slot="empty">add an account</span></tonk-display></span>
               </button>
               <a class="hcell hc-view" href="/" data-return-spaces>spaces</a>
             </nav>
@@ -2641,6 +2623,30 @@ concept!: &account/linking
       the: xyz.tonk.account/linking
       cardinality: one
       as: boolean
+
+# Whether THIS DEVICE holds the account's authority on this branch.
+# Overlay-only, published by the worker: the facts on a branch describe
+# the account and stay after a sign-out there, so a bar that read them
+# would call a signed-out branch linked. This row is what "linked" means.
+concept!: &account/link
+  this: state:account-link
+  description: This device is linked to an account on the active branch.
+  with:
+    account:
+      description: The linked account's DID.
+      the: xyz.tonk.link/account
+      cardinality: one
+      as: entity
+
+# The hub bar's account cell: a hidden marker the bar keys on, and the
+# account's name rendered THROUGH the link, so a branch whose link is
+# gone offers "add an account" however much it still knows about the
+# account it followed. Pinned to `this` so no row renders nothing.
+view!:
+  this: account/link
+  show:
+    label: |
+      <span data-account-link-row data-of={this}><span data-account-linked hidden></span><tonk-display model="tonk:account/name" entity={account} view="directory"><span slot="no-entity"></span></tonk-display></span>
 
 concept!: &account/active
   this: tonk:account/active
