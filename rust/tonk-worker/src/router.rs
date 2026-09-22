@@ -14,6 +14,7 @@ use ::axum::{
 use tokio::sync::RwLock;
 
 use crate::worker::TonkState;
+use crate::worker::DefaultPeer;
 
 /// Whether a newer service worker is installed and WAITING to take over —
 /// i.e. whether this worker is retiring.
@@ -249,13 +250,13 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         )
         .route("/api/account/devices/revoke", post(account_devices::revoke))
         .route("/api/profile", get(profile::get_profile))
-        // Profile roster and switching — every account signed in on this
+        // DefaultPeer roster and switching — every account signed in on this
         // browser has its own profile; these list them, swap the active
         // one, and mint a fresh landing pad for "add account".
         .route("/api/profiles", get(profiles::list))
         .route("/api/profiles/activate", post(profiles::activate))
         .route("/api/profiles/add", post(profiles::add))
-        // Profile-as-repository routes. The profile is its own
+        // DefaultPeer-as-repository routes. The profile is its own
         // repository but lives outside the named-repo namespace
         // (no `repo` segment), so it gets a parallel route
         // surface here rather than nesting under
@@ -509,7 +510,6 @@ pub mod tests {
     pub(crate) use crate::helpers::state::{persist_test_root, test_root_seed};
 
     use dialog_credentials::Ed25519Signer;
-    use dialog_peer::Profile;
     use dialog_repository::RepositoryExt as _;
     use dialog_storage::provider::storage::Storage;
     use dialog_ucan_core::{DelegationBuilder, DelegationChain, subject::Subject as UcanSubject};
@@ -656,7 +656,7 @@ pub mod tests {
         let tonk = state.read().await;
         let repository: Repository = tonk
             .profile
-            .repository(repo)
+            .space(repo)
             .load()
             .perform(&tonk.operator)
             .await
@@ -690,7 +690,7 @@ pub mod tests {
         let tonk = state.read().await;
         let repository: Repository = tonk
             .profile
-            .repository(repo)
+            .space(repo)
             .load()
             .perform(&tonk.operator)
             .await
@@ -725,7 +725,7 @@ pub mod tests {
         let tonk = state.read().await;
         let repository: Repository = tonk
             .profile
-            .repository(repo)
+            .space(repo)
             .load()
             .perform(&tonk.operator)
             .await
@@ -758,7 +758,7 @@ pub mod tests {
         let tonk = state.read().await;
         let repository: Repository = tonk
             .profile
-            .repository(repo)
+            .space(repo)
             .load()
             .perform(&tonk.operator)
             .await
@@ -791,7 +791,7 @@ pub mod tests {
         let tonk = state.read().await;
         let repository: Repository = tonk
             .profile
-            .repository(repo)
+            .space(repo)
             .load()
             .perform(&tonk.operator)
             .await
@@ -863,7 +863,7 @@ pub mod tests {
             let tonk = state.read().await;
             let repository = tonk
                 .profile
-                .repository(&key)
+                .space(&key)
                 .load()
                 .perform(&tonk.operator)
                 .await
@@ -887,7 +887,7 @@ pub mod tests {
         let tonk = state.read().await;
         let repository = tonk
             .profile
-            .repository(&key)
+            .space(&key)
             .load()
             .perform(&tonk.operator)
             .await
@@ -918,7 +918,7 @@ pub mod tests {
 
         let repository = tonk
             .profile
-            .repository(&key)
+            .space(&key)
             .load()
             .perform(&tonk.operator)
             .await
@@ -962,7 +962,7 @@ pub mod tests {
         for key in [first, second] {
             let repository = tonk
                 .profile
-                .repository(&key)
+                .space(&key)
                 .load()
                 .perform(&tonk.operator)
                 .await

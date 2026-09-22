@@ -5,6 +5,7 @@ use axum_wasm_macros::wasm_compat;
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
 use serde::{Deserialize, Serialize};
+use crate::worker::DefaultPeer;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_worker_api::{PasskeyMetadata, RootStatus, SaveRootRequest};
@@ -12,7 +13,6 @@ use tonk_worker_api::{PasskeyMetadata, RootStatus, SaveRootRequest};
 use super::AppState;
 use crate::TonkWorkerError;
 use crate::worker::{DefaultOperator, TonkState};
-use dialog_peer::Profile;
 
 const LOCAL_ROOT_SITE: &str = "tonk-local-root-v1";
 
@@ -94,11 +94,10 @@ pub(crate) async fn load_record(
 /// profile. Account routing uses this without constructing a full TonkState
 /// for every inactive roster entry.
 async fn load_record_from(
-    profile: &Profile,
+    profile: &DefaultPeer,
     operator: &DefaultOperator,
 ) -> Result<Option<LocalRootRecord>, TonkWorkerError> {
-    let bytes = match profile
-        .credential()
+    let bytes = match profile.secrets()
         .site(LOCAL_ROOT_SITE)
         .load::<Vec<u8>>()
         .perform(operator)
@@ -128,7 +127,7 @@ async fn load_record_from(
 /// A missing record is a rootless profile; a malformed or misaddressed grant
 /// is an unreadable profile and is never treated as a match.
 pub(crate) async fn historical_root_did(
-    profile: &Profile,
+    profile: &DefaultPeer,
     operator: &DefaultOperator,
 ) -> Result<Option<dialog_varsig::Did>, TonkWorkerError> {
     let Some(record) = load_record_from(profile, operator).await? else {
@@ -204,8 +203,7 @@ pub(crate) async fn forget_encryption_key(state: &TonkState) -> Result<(), TonkW
         TonkWorkerError::Internal(format!("failed to serialize local root: {error}"))
     })?;
     state
-        .profile
-        .credential()
+        .profile.secrets()
         .site(LOCAL_ROOT_SITE)
         .save(encoded)
         .perform(&state.operator)
@@ -320,8 +318,7 @@ pub(crate) async fn persist_root(
         TonkWorkerError::Internal(format!("failed to serialize local root: {error}"))
     })?;
     state
-        .profile
-        .credential()
+        .profile.secrets()
         .site(LOCAL_ROOT_SITE)
         .save(encoded)
         .perform(&state.operator)

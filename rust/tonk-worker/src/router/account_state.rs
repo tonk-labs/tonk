@@ -27,6 +27,7 @@ use zeroize::Zeroizing;
 
 use crate::worker::TonkState;
 use crate::{RepositoryError, TonkWorkerError};
+use crate::worker::DefaultPeer;
 
 /// Remote name for the account's access branch in the profile repository.
 pub(crate) const ACCOUNT_ACCESS_REMOTE: &str = "account-access";
@@ -42,8 +43,7 @@ pub(crate) struct ReadyAccountBranch {
 /// Read the trusted marker without mounting or contacting the remote.
 async fn trusted_marker(tonk: &TonkState) -> Result<Option<Vec<u8>>, TonkWorkerError> {
     match tonk
-        .profile
-        .credential()
+        .profile.secrets()
         .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
         .load::<Vec<u8>>()
         .perform(&tonk.operator)
@@ -61,8 +61,7 @@ async fn mark_trusted(
     tonk: &TonkState,
     subject: &dialog_varsig::Did,
 ) -> Result<(), TonkWorkerError> {
-    tonk.profile
-        .credential()
+    tonk.profile.secrets()
         .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
         .save(subject.as_str().as_bytes().to_vec())
         .perform(&tonk.operator)
@@ -1830,8 +1829,7 @@ pub(crate) mod tests {
             crate::router::account::persist_link(&tonk, &matching)
                 .await
                 .unwrap();
-            tonk.profile
-                .credential()
+            tonk.profile.secrets()
                 .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
                 .save(root.did().as_str().as_bytes().to_vec())
                 .perform(&tonk.operator)
@@ -2010,7 +2008,6 @@ pub(crate) mod tests {
         Ed25519Signer,
         String,
     ) {
-        use dialog_peer::Profile;
         use dialog_storage::provider::storage::Storage;
         use dialog_varsig::Principal as _;
         use tonk_access_service::helpers::AccessServiceAddress;
@@ -2020,9 +2017,11 @@ pub(crate) mod tests {
             .unwrap();
         let storage = Storage::<crate::worker::DefaultSpace>::default();
         let name = format!("account-state-worker-test-{}", rand::random::<u64>());
-        let profile = Profile::open(&name).perform(&storage).await.unwrap();
-        let session = crate::session::open(&profile, &storage).await.unwrap();
-        let reactor = crate::Reactor::new(profile.clone());
+        let profile = dialog_peer::Peer::new()
+        .storage(storage.clone())
+        .open(dialog_effects::storage::Location::new(dialog_effects::storage::Directory::Profile, &name)).await.unwrap();
+        let session = crate::session::open(&profile).await.unwrap();
+        let reactor = crate::Reactor::new(profile.credential().clone());
         let state = TonkState {
             profile,
             operator: session.operator,
@@ -2114,8 +2113,7 @@ pub(crate) mod tests {
         // there would put the fixture in a state no real browser reaches.
         if activated {
             state
-                .profile
-                .credential()
+                .profile.secrets()
                 .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
                 .save(root_signer.did().as_str().as_bytes().to_vec())
                 .perform(&state.operator)

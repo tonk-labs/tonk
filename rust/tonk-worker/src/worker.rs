@@ -18,7 +18,7 @@ use axum::{
     body::Body,
     http::{HeaderValue, header::HeaderName},
 };
-use dialog_peer::{Profile, Session};
+use dialog_peer::{Peer, Session};
 use dialog_storage::provider::storage::Storage;
 use js_sys::Promise;
 use send_wrapper::SendWrapper;
@@ -357,10 +357,13 @@ pub type DefaultSpace = dialog_storage::provider::storage::NativeSpace;
 /// Concrete operator type for the default storage backend.
 pub type DefaultOperator = Session<DefaultSpace>;
 
+/// The worker's peer over its default storage.
+pub type DefaultPeer = Peer<DefaultSpace>;
+
 /// Application state containing the profile and operator.
 pub struct TonkState {
     /// The user's persistent profile.
-    pub profile: Profile,
+    pub profile: DefaultPeer,
     /// The operator derived from the profile — the key that signs
     /// presign invocations. Rotated by
     /// [`session`](crate::session) before its delegation lapses, so it
@@ -375,7 +378,7 @@ pub struct TonkState {
     /// seconds. Consulted by the sync drain, which rotates the session
     /// as this approaches.
     pub session_expires_at: u64,
-    /// Display name the profile was opened under. `Profile` does
+    /// Display name the profile was opened under. `DefaultPeer` does
     /// not retain this internally, so we carry it here for routes
     /// that report it back to the UI (e.g. `GET /api/profile`).
     pub profile_name: String,
@@ -459,7 +462,7 @@ impl TonkState {
 }
 
 // SAFETY: Web browsers run Wasm in a single thread only. The interior types
-// (Profile, Operator) contain `web_sys::CryptoKey` handles (via
+// (DefaultPeer, Operator) contain `web_sys::CryptoKey` handles (via
 // Ed25519SigningKey::WebCrypto) which are !Send/!Sync, but cross-thread access
 // cannot occur in a single-threaded browser context.
 #[cfg(target_arch = "wasm32")]
@@ -1718,7 +1721,7 @@ const SYNC_HIDDEN_MAX_MS: i32 = 3_600_000;
 pub(crate) async fn boot_state(
     storage: Storage<DefaultSpace>,
     profile_name: String,
-    profile: Profile,
+    profile: DefaultPeer,
     registry: crate::device::Registry,
 ) -> Result<TonkState, crate::TonkWorkerError> {
     boot_state_with_profile_library(storage, profile_name, profile, registry, Default::default())
@@ -1730,16 +1733,16 @@ pub(crate) async fn boot_state(
 pub(crate) async fn boot_state_with_profile_library(
     storage: Storage<DefaultSpace>,
     profile_name: String,
-    profile: Profile,
+    profile: DefaultPeer,
     registry: crate::device::Registry,
     profile_library: crate::router::ProfileLibraryCache,
 ) -> Result<TonkState, crate::TonkWorkerError> {
-    let reactor = crate::Reactor::new(profile.clone());
+    let reactor = crate::Reactor::new(profile.credential().clone());
     // Session construction reads branch reference cells, but no longer
     // walks or retains delegation content. Hydrating after a construction
     // failure cannot repair entropy, signing, or local reference errors;
     // surface them without touching the profile's durable contents.
-    let session = crate::session::open(&profile, &storage).await?;
+    let session = crate::session::open(&profile).await?;
 
     let state = TonkState {
         profile,
@@ -1846,7 +1849,7 @@ impl TonkServiceWorker {
             .open_active(&storage)
             .await
             .map_err(|e| JsError::new(&format!("Failed to open profile: {}", e)))?;
-        log!("Profile DID: {}", profile.did());
+        log!("DefaultPeer DID: {}", profile.did());
 
         // 3–4. Open a signing session, build state, and bootstrap the
         // profile repo's meta branch — shared with profile activation,

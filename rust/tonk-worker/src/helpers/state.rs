@@ -15,12 +15,12 @@
 #![cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 
 use dialog_credentials::Ed25519Signer;
-use dialog_peer::Profile;
 use dialog_storage::provider::storage::Storage;
 use dialog_varsig::Principal as _;
 use tonk_schema::prelude::DidExt as _;
 
 use crate::worker::{DefaultSpace, TonkState};
+use crate::worker::DefaultPeer;
 
 /// A random id minted once per test *process*, mixed into every profile
 /// name so two runs never collide on storage a shared browser profile
@@ -59,16 +59,17 @@ pub async fn test_state_without_root() -> TonkState {
 
     crate::patch_idb_versionchange();
     let storage = Storage::<DefaultSpace>::default();
-    let profile = Profile::open(&profile_name)
-        .perform(&storage)
+    let profile = dialog_peer::Peer::new()
+        .storage(storage.clone())
+        .open(dialog_effects::storage::Location::new(dialog_effects::storage::Directory::Profile, &profile_name))
         .await
         .expect("Failed to create test profile");
 
-    let session = crate::session::open(&profile, &storage)
+    let session = crate::session::open(&profile)
         .await
         .expect("Failed to open a test signing session");
 
-    let reactor = crate::Reactor::new(profile.clone());
+    let reactor = crate::Reactor::new(profile.credential().clone());
     // The registry mirrors production shape — the state's own profile
     // is the registry profile, exactly as `Registry::device()` signs
     // as `tonk` until the first rotation. Uniquely named per state,

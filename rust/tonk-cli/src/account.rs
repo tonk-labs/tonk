@@ -3,7 +3,6 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use dialog_peer::Profile;
 use dialog_storage::provider::storage::NativeSpace;
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
@@ -11,6 +10,7 @@ use dialog_varsig::Did;
 use tonk_account::{AccountProviderRecord, AccountStateStatus};
 use tonk_analytics::account::{DegradationKind, Stage};
 use url::Url;
+use crate::peer::NativePeer;
 
 /// Production account page, where the revoke ceremony runs.
 pub const DEFAULT_ACCOUNT_PAGE: &str = "https://tonk.network/settings";
@@ -32,7 +32,7 @@ pub struct LinkCancelled;
 
 /// Open the browser's passkey-protected, review-first account deletion flow.
 pub async fn open_deletion(
-    profile: &Profile,
+    profile: &NativePeer,
     account_url: &str,
     open_browser: bool,
 ) -> Result<String> {
@@ -58,7 +58,7 @@ pub const ACCOUNT_LINK_SITE: &str = tonk_account::ACCOUNT_PROVIDER_CREDENTIAL_SI
 const POST_LINK_SYNC_DEADLINE: Duration = Duration::from_secs(10);
 
 async fn ensure_after_link(
-    profile: &Profile,
+    profile: &NativePeer,
     operator: dialog_peer::Session<NativeSpace>,
     store: crate::space::SpaceStore,
     deadline: Duration,
@@ -202,7 +202,7 @@ pub struct LinkOutcome {
 /// Load the provider attachment through an already-mounted site operator and
 /// caller-supplied profile store.
 pub(crate) async fn stored_provider_in(
-    profile: &Profile,
+    profile: &NativePeer,
     operator: &dialog_peer::Session<NativeSpace>,
     store: &crate::space::SpaceStore,
 ) -> Result<Option<AccountProviderRecord>> {
@@ -210,7 +210,7 @@ pub(crate) async fn stored_provider_in(
 }
 
 async fn stored_provider_for_store(
-    profile: &Profile,
+    profile: &NativePeer,
     operator: &dialog_peer::Session<NativeSpace>,
     store: &crate::space::SpaceStore,
 ) -> Result<Option<AccountProviderRecord>> {
@@ -237,7 +237,7 @@ const ACCOUNT_REQUIRED: &str = "A Tonk account is required; run `tonk account lo
 
 /// Refuse unless one explicit profile store holds an account attachment.
 pub(crate) async fn require_account_with_operator_in(
-    profile: &Profile,
+    profile: &NativePeer,
     operator: &dialog_peer::Session<NativeSpace>,
     store: &crate::space::SpaceStore,
 ) -> Result<()> {
@@ -249,19 +249,19 @@ pub(crate) async fn require_account_with_operator_in(
 
 /// Disconnect provider services while preserving this profile's root,
 /// delegations, account repository, and spaces.
-pub async fn logout(profile: &Profile) -> Result<()> {
+pub async fn logout(profile: &NativePeer) -> Result<()> {
     let operator = crate::account_state::credential_operator(profile).await?;
     logout_with_operator(profile, &operator).await
 }
 
 /// Disconnect only the account session owned by `store`.
-pub async fn logout_in(profile: &Profile, store: &crate::space::SpaceStore) -> Result<()> {
+pub async fn logout_in(profile: &NativePeer, store: &crate::space::SpaceStore) -> Result<()> {
     let mut observer = crate::account_observability::NoopAccountObserver;
     logout_in_observed(profile, store, &mut observer).await
 }
 
 async fn logout_with_operator(
-    profile: &Profile,
+    profile: &NativePeer,
     operator: &dialog_peer::Session<NativeSpace>,
 ) -> Result<()> {
     let store = crate::space::SpaceStore::open().context("failed to locate account state")?;
@@ -269,7 +269,7 @@ async fn logout_with_operator(
 }
 
 async fn logout_with_operator_in(
-    profile: &Profile,
+    profile: &NativePeer,
     operator: &dialog_peer::Session<NativeSpace>,
     store: &crate::space::SpaceStore,
 ) -> Result<()> {
@@ -279,7 +279,7 @@ async fn logout_with_operator_in(
 
 /// Disconnect the provider session and expose the durable local commit seam.
 pub async fn logout_in_observed(
-    profile: &Profile,
+    profile: &NativePeer,
     store: &crate::space::SpaceStore,
     observer: &mut dyn crate::account_observability::CliAccountObserver,
 ) -> Result<()> {
@@ -288,7 +288,7 @@ pub async fn logout_in_observed(
 }
 
 async fn logout_with_operator_in_observed(
-    profile: &Profile,
+    profile: &NativePeer,
     operator: &dialog_peer::Session<NativeSpace>,
     store: &crate::space::SpaceStore,
     observer: &mut dyn crate::account_observability::CliAccountObserver,
@@ -305,14 +305,14 @@ async fn logout_with_operator_in_observed(
 /// mount failure should be reported as `unhydrated` rather than failing the
 /// command. Hydration is [`crate::account_state::ensure`]'s job, and the
 /// paths that need it call it directly.
-pub async fn status(profile: &Profile) -> Result<AccountStatus> {
+pub async fn status(profile: &NativePeer) -> Result<AccountStatus> {
     let store = crate::space::SpaceStore::open().context("failed to locate account state")?;
     status_in(profile, &store).await
 }
 
 /// Read account status from one explicit native profile store.
 pub async fn status_in(
-    profile: &Profile,
+    profile: &NativePeer,
     store: &crate::space::SpaceStore,
 ) -> Result<AccountStatus> {
     let device_did = profile.did().to_string();
@@ -345,7 +345,7 @@ pub async fn status_in(
 /// account holds), addressed to this profile, and signed by the issuer it
 /// names. Checked before anything is written: a browser-delivered grant
 /// arrives over an untrusted path.
-pub async fn validate_account_grant(profile: &Profile, bytes: &[u8]) -> Result<DelegationChain> {
+pub async fn validate_account_grant(profile: &NativePeer, bytes: &[u8]) -> Result<DelegationChain> {
     let chain =
         DelegationChain::try_from(bytes).context("authorization is not a delegation container")?;
     if chain.proof_cids().len() != 1 {
@@ -373,7 +373,7 @@ pub async fn validate_account_grant(profile: &Profile, bytes: &[u8]) -> Result<D
 /// Turn one validated browser response into the immutable generation that is
 /// checkpointed and replayed after a crash. This performs no local writes.
 async fn account_from_callback(
-    profile: &Profile,
+    profile: &NativePeer,
     authorization: CallbackAuthorization,
 ) -> Result<crate::account_session::ActiveAccount> {
     let grant_bytes = hex::decode(&authorization.delegation_hex)
@@ -410,7 +410,7 @@ async fn account_from_callback(
 }
 
 async fn account_from_expected_callback(
-    profile: &Profile,
+    profile: &NativePeer,
     authorization: CallbackAuthorization,
     expected: &Did,
 ) -> Result<ActiveAccount> {
@@ -426,7 +426,7 @@ async fn account_from_expected_callback(
 }
 
 async fn recorded_account_grant(
-    profile: &Profile,
+    profile: &NativePeer,
     account: &crate::account_session::ActiveAccount,
 ) -> Result<(Vec<u8>, DelegationChain)> {
     let grant_bytes =
@@ -443,7 +443,7 @@ async fn recorded_account_grant(
 /// Validate and project one exact staged generation into the compatibility
 /// credential records. Replaying the same values is idempotent.
 pub(crate) async fn project_staged_account(
-    profile: &Profile,
+    profile: &NativePeer,
     operator: &dialog_peer::Session<NativeSpace>,
     account: &crate::account_session::ActiveAccount,
 ) -> Result<()> {
@@ -451,7 +451,7 @@ pub(crate) async fn project_staged_account(
 }
 
 pub(crate) async fn project_account_with_checkpoint(
-    profile: &Profile,
+    profile: &NativePeer,
     operator: &dialog_peer::Session<NativeSpace>,
     account: &crate::account_session::ActiveAccount,
     checkpoint: &mut impl FnMut(usize) -> Result<()>,
@@ -484,8 +484,7 @@ pub(crate) async fn project_account_with_checkpoint(
     )
     .await?;
     checkpoint(2)?;
-    profile
-        .credential()
+    profile.secrets()
         .site(ACCOUNT_LINK_SITE)
         .save(provider.encode()?)
         .perform(operator)
@@ -498,7 +497,7 @@ pub use crate::account_session::ActiveAccount;
 
 /// Read the exact active generation for a conditional account transition.
 pub async fn active_in(
-    profile: &Profile,
+    profile: &NativePeer,
     store: &crate::space::SpaceStore,
 ) -> Result<Option<ActiveAccount>> {
     let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
@@ -509,7 +508,7 @@ pub async fn active_in(
 
 /// Activate a validated replacement without logging the previous account out.
 pub async fn replace_account_in(
-    profile: &Profile,
+    profile: &NativePeer,
     store: &crate::space::SpaceStore,
     expected_previous: &crate::account_session::ActiveAccount,
     replacement: &crate::account_session::ActiveAccount,
@@ -527,7 +526,7 @@ pub async fn replace_account_in(
 }
 
 async fn replace_account_with_checkpoint(
-    profile: &Profile,
+    profile: &NativePeer,
     operator: &dialog_peer::Session<NativeSpace>,
     store: &crate::space::SpaceStore,
     previous: &crate::account_session::ActiveAccount,
@@ -549,7 +548,7 @@ async fn replace_account_with_checkpoint(
 /// Resume or complete one exact staged generation. The activation guard keeps
 /// logout and other login attempts behind projection and final promotion.
 async fn complete_staged_account(
-    profile: &Profile,
+    profile: &NativePeer,
     operator: &dialog_peer::Session<NativeSpace>,
     store: &crate::space::SpaceStore,
     account: &crate::account_session::ActiveAccount,
@@ -564,7 +563,7 @@ async fn complete_staged_account(
 /// Hydrate and converge authority after the canonical account is already active.
 /// Failure here never reopens the browser ceremony.
 async fn hydrate_activated_account(
-    profile: &Profile,
+    profile: &NativePeer,
     operator: &dialog_peer::Session<NativeSpace>,
     store: &crate::space::SpaceStore,
     account: &crate::account_session::ActiveAccount,
@@ -600,7 +599,7 @@ async fn hydrate_activated_account(
 /// [`validate_account_grant`] — so a page returning something addressed
 /// elsewhere, scoped to one space, or unsigned installs no authority here.
 async fn link_via_callback(
-    profile: &Profile,
+    profile: &NativePeer,
     operator: &dialog_peer::Session<NativeSpace>,
     store: &crate::space::SpaceStore,
     options: &LinkOptions,
@@ -703,14 +702,14 @@ struct CallbackAuthorization {
 }
 
 /// Start or resume a browser handoff and activate its fresh generation.
-pub async fn link(profile: &Profile, options: &LinkOptions) -> Result<LinkOutcome> {
+pub async fn link(profile: &NativePeer, options: &LinkOptions) -> Result<LinkOutcome> {
     let operator = crate::account_state::credential_operator(profile).await?;
     link_with_operator(profile, &operator, options).await
 }
 
 /// Start or resume linking against one explicit native profile store.
 pub async fn link_in(
-    profile: &Profile,
+    profile: &NativePeer,
     store: &crate::space::SpaceStore,
     options: &LinkOptions,
 ) -> Result<LinkOutcome> {
@@ -722,7 +721,7 @@ pub async fn link_in(
 
 /// [`link_in`] with native stage reporting for the account CLI.
 pub async fn link_in_observed(
-    profile: &Profile,
+    profile: &NativePeer,
     store: &crate::space::SpaceStore,
     options: &LinkOptions,
     observer: &mut dyn crate::account_observability::CliAccountObserver,
@@ -739,7 +738,7 @@ pub async fn link_in_observed(
 /// name, which a caller that already holds a profile cannot satisfy. This
 /// form takes the operator so the whole flow is reachable from a test.
 pub async fn link_with_operator(
-    profile: &Profile,
+    profile: &NativePeer,
     operator: &dialog_peer::Session<NativeSpace>,
     options: &LinkOptions,
 ) -> Result<LinkOutcome> {
@@ -749,7 +748,7 @@ pub async fn link_with_operator(
 
 /// Observed form of [`link_with_operator`] used by the CLI command seam.
 pub async fn link_with_operator_observed(
-    profile: &Profile,
+    profile: &NativePeer,
     operator: &dialog_peer::Session<NativeSpace>,
     options: &LinkOptions,
     observer: &mut dyn crate::account_observability::CliAccountObserver,
@@ -800,7 +799,7 @@ pub async fn link_with_operator_observed(
 /// Authorize exactly the account requested by a scoped handoff.
 /// The previous generation remains active throughout browser approval.
 pub async fn link_expected_in(
-    profile: &Profile,
+    profile: &NativePeer,
     store: &crate::space::SpaceStore,
     options: &LinkOptions,
     expected_root: &Did,
@@ -876,7 +875,7 @@ pub(crate) struct AccountConnection {
 }
 
 pub(crate) async fn optional_connection_in(
-    profile: &Profile,
+    profile: &NativePeer,
     store: &crate::space::SpaceStore,
 ) -> Result<Option<AccountConnection>> {
     #[cfg(feature = "integration-tests")]
@@ -918,7 +917,7 @@ fn integration_connections() -> &'static IntegrationConnections {
 }
 
 #[cfg(feature = "integration-tests")]
-pub(crate) fn integration_site_config(profile: &Profile) -> Option<crate::site::SiteConfig> {
+pub(crate) fn integration_site_config(profile: &NativePeer) -> Option<crate::site::SiteConfig> {
     integration_connections()
         .lock()
         .expect("integration connection registry")
@@ -930,7 +929,7 @@ pub(crate) fn integration_site_config(profile: &Profile) -> Option<crate::site::
 /// Install an already-created account attachment into an isolated test profile.
 #[doc(hidden)]
 pub async fn attach_for_integration_test(
-    profile: &Profile,
+    profile: &NativePeer,
     operator: &crate::account_authority::AccountBoundOperator,
     config: crate::site::SiteConfig,
     credential_id: &str,
@@ -951,8 +950,7 @@ pub async fn attach_for_integration_test(
         .save(UcanDelegation(link.clone()))
         .perform(operator)
         .await?;
-    profile
-        .credential()
+    profile.secrets()
         .site(crate::identity::LOCAL_ROOT_SITE)
         .save(serde_json::to_vec(&record)?)
         .perform(operator)
@@ -964,8 +962,7 @@ pub async fn attach_for_integration_test(
             .unwrap_or_default()
             .as_secs(),
     )?;
-    profile
-        .credential()
+    profile.secrets()
         .site(ACCOUNT_LINK_SITE)
         .save(provider.encode()?)
         .perform(operator)
@@ -1004,14 +1001,14 @@ pub async fn attach_for_integration_test(
 /// degrades to a stderr note over local facts rather than a hang. Set
 /// `TONK_OFFLINE=1` to skip the pull entirely. One row per device — a
 /// device described more than once keeps its earliest link time.
-pub async fn devices(profile: &Profile) -> Result<Vec<DeviceRow>> {
+pub async fn devices(profile: &NativePeer) -> Result<Vec<DeviceRow>> {
     let store = crate::space::SpaceStore::open().context("failed to locate account state")?;
     devices_in(profile, &store).await
 }
 
 /// List devices through one explicit account profile store.
 pub async fn devices_in(
-    profile: &Profile,
+    profile: &NativePeer,
     store: &crate::space::SpaceStore,
 ) -> Result<Vec<DeviceRow>> {
     let _connection = optional_connection_in(profile, store)
@@ -1050,14 +1047,14 @@ pub async fn devices_in(
 /// cannot hang them. This is the verb that freshens what they read,
 /// bounded and honest: a remote that does not answer is an error naming
 /// it, not a wait.
-pub async fn sync(profile: &Profile) -> Result<crate::account_state::EnsureOutcome> {
+pub async fn sync(profile: &NativePeer) -> Result<crate::account_state::EnsureOutcome> {
     let store = crate::space::SpaceStore::open().context("failed to locate account state")?;
     sync_in(profile, &store).await
 }
 
 /// [`sync`] through one explicit account profile store.
 pub async fn sync_in(
-    profile: &Profile,
+    profile: &NativePeer,
     store: &crate::space::SpaceStore,
 ) -> Result<crate::account_state::EnsureOutcome> {
     let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
@@ -1086,7 +1083,7 @@ pub async fn sync_in(
 /// `TONK_OFFLINE=1` skips the attempt: the opt-out for air-gapped work
 /// and scripts that want local answers with no network at all.
 async fn freshen_account(
-    profile: &Profile,
+    profile: &NativePeer,
     operator: &dialog_peer::Session<NativeSpace>,
     store: &crate::space::SpaceStore,
     doing: &str,
@@ -1118,7 +1115,7 @@ async fn freshen_account(
 /// exactly there when `tonk account devices` hung the e2e suite. A
 /// deadline turns that into an error naming the remote.
 async fn account_branch(
-    profile: &Profile,
+    profile: &NativePeer,
     operator: &dialog_peer::Session<NativeSpace>,
     store: &crate::space::SpaceStore,
 ) -> Result<dialog_repository::Branch> {
@@ -1137,7 +1134,7 @@ async fn account_branch(
 /// is the dangerous outcome, so a refusal anywhere is reported rather
 /// than swallowed.
 async fn publish_revocation(
-    profile: &Profile,
+    profile: &NativePeer,
     branch: &dialog_repository::Branch,
     operator: &dialog_peer::Session<NativeSpace>,
     store: &crate::space::SpaceStore,
@@ -1262,14 +1259,14 @@ pub enum RevokeOutcome {
 /// would be a lie. For this device itself the retraction and its push
 /// come first, because a device that has just revoked itself can no
 /// longer push anything.
-pub async fn revoke(profile: &Profile, did: &str) -> Result<RevokeOutcome> {
+pub async fn revoke(profile: &NativePeer, did: &str) -> Result<RevokeOutcome> {
     let store = crate::space::SpaceStore::open().context("failed to locate account state")?;
     revoke_in(profile, &store, did).await
 }
 
 /// Revoke a device through one explicit account profile store.
 pub async fn revoke_in(
-    profile: &Profile,
+    profile: &NativePeer,
     store: &crate::space::SpaceStore,
     did: &str,
 ) -> Result<RevokeOutcome> {
@@ -1279,7 +1276,7 @@ pub async fn revoke_in(
 
 /// [`revoke_in`] with the publication boundary exposed to CLI telemetry.
 pub async fn revoke_in_observed(
-    profile: &Profile,
+    profile: &NativePeer,
     store: &crate::space::SpaceStore,
     did: &str,
     observer: &mut dyn crate::account_observability::CliAccountObserver,
@@ -1294,7 +1291,7 @@ pub async fn revoke_in_observed(
         let branch = account_branch(profile, &operator, store).await?;
         let target = link.proof_cids()[0];
         let artifact = tonk_identity::revocation::mint_self_revocation(
-            profile.signer().signer().clone(),
+            profile.credential().signer().clone(),
             &link,
             &target,
         )
@@ -1352,7 +1349,7 @@ pub async fn revoke_in_observed(
     }
     let target_cid = path.proof_cids()[0];
     let artifact = tonk_identity::revocation::mint_delegated_revocation(
-        profile.signer().signer().clone(),
+        profile.credential().signer().clone(),
         &path,
         &target_cid,
         &link,
@@ -1381,7 +1378,7 @@ mod tests {
         ready: bool,
     ) -> (
         tempfile::TempDir,
-        Profile,
+        NativePeer,
         dialog_peer::Session<NativeSpace>,
         crate::space::SpaceStore,
     ) {
@@ -1394,17 +1391,14 @@ mod tests {
         let profile_dir = Directory::At(temp.path().join("profiles").to_string_lossy().into());
         let profile_name = format!("cli-account-timeout-test-{}", rand::random::<u64>());
         let storage = Storage::<NativeSpace>::default();
-        let profile = Profile::open(&profile_name)
-            .at(profile_dir)
-            .perform(&storage)
+        let profile = dialog_peer::Peer::new()
+        .storage(storage.clone())
+        .open(dialog_effects::storage::Location::new(profile_dir, &profile_name))
             .await
             .unwrap();
         std::fs::create_dir_all(store.account_dir()).unwrap();
         let account_dir = store.account_dir().canonicalize().unwrap();
-        let operator = crate::peer::session_for(
-            &profile,
-            storage,
-            Directory::At(account_dir.to_string_lossy().into()),
+        let operator = crate::peer::session_for(&profile, Directory::At(account_dir.to_string_lossy().into()),
             b"tonk/account-state/v1",
         )
         .await
@@ -1444,8 +1438,7 @@ mod tests {
             .perform(&operator)
             .await
             .unwrap();
-        profile
-            .credential()
+        profile.secrets()
             .site(ACCOUNT_LINK_SITE)
             .save(provider.encode().unwrap())
             .perform(&operator)
@@ -1455,8 +1448,7 @@ mod tests {
             .await
             .unwrap();
         if ready {
-            profile
-                .credential()
+            profile.secrets()
                 .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
                 .save(root_did.as_str().as_bytes().to_vec())
                 .perform(&operator)
@@ -1547,17 +1539,14 @@ mod tests {
         let profile_dir = Directory::At(temp.path().join("profiles").to_string_lossy().into());
         let profile_name = format!("cli-account-logout-test-{}", rand::random::<u64>());
         let storage = Storage::<NativeSpace>::default();
-        let profile = Profile::open(&profile_name)
-            .at(profile_dir)
-            .perform(&storage)
+        let profile = dialog_peer::Peer::new()
+        .storage(storage.clone())
+        .open(dialog_effects::storage::Location::new(profile_dir, &profile_name))
             .await
             .unwrap();
         std::fs::create_dir_all(store.account_dir()).unwrap();
         let account_dir = store.account_dir().canonicalize().unwrap();
-        let operator = crate::peer::session_for(
-            &profile,
-            storage,
-            Directory::At(account_dir.to_string_lossy().into()),
+        let operator = crate::peer::session_for(&profile, Directory::At(account_dir.to_string_lossy().into()),
             b"tonk/account-state/v1",
         )
         .await
@@ -1575,22 +1564,19 @@ mod tests {
             .encode()
             .unwrap();
         let trusted_base = b"trusted-base".to_vec();
-        profile
-            .credential()
+        profile.secrets()
             .site(crate::identity::LOCAL_ROOT_SITE)
             .save(local_root_bytes.clone())
             .perform(&operator)
             .await
             .unwrap();
-        profile
-            .credential()
+        profile.secrets()
             .site(ACCOUNT_LINK_SITE)
             .save(provider)
             .perform(&operator)
             .await
             .unwrap();
-        profile
-            .credential()
+        profile.secrets()
             .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
             .save(trusted_base.clone())
             .perform(&operator)
@@ -1622,8 +1608,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            profile
-                .credential()
+            profile.secrets()
                 .site(ACCOUNT_LINK_SITE)
                 .load::<Vec<u8>>()
                 .perform(&operator)
@@ -1632,8 +1617,7 @@ mod tests {
             Vec::<u8>::new()
         );
         assert_eq!(
-            profile
-                .credential()
+            profile.secrets()
                 .site(crate::identity::LOCAL_ROOT_SITE)
                 .load::<Vec<u8>>()
                 .perform(&operator)
@@ -1642,8 +1626,7 @@ mod tests {
             local_root_bytes
         );
         assert_eq!(
-            profile
-                .credential()
+            profile.secrets()
                 .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
                 .load::<Vec<u8>>()
                 .perform(&operator)
@@ -1685,8 +1668,9 @@ mod tests {
         use dialog_varsig::Principal as _;
 
         let storage = dialog_storage::provider::storage::Storage::<NativeSpace>::default();
-        let profile = Profile::open("link-audience-test")
-            .perform(&storage)
+        let profile = dialog_peer::Peer::new()
+        .storage(storage.clone())
+        .open(dialog_effects::storage::Location::new(dialog_effects::storage::Directory::Profile, "link-audience-test"))
             .await
             .unwrap();
         let account = Ed25519Signer::generate().await.unwrap();
@@ -1721,8 +1705,9 @@ mod tests {
         use dialog_varsig::Principal as _;
 
         let storage = dialog_storage::provider::storage::Storage::<NativeSpace>::default();
-        let profile = Profile::open("link-subject-test")
-            .perform(&storage)
+        let profile = dialog_peer::Peer::new()
+        .storage(storage.clone())
+        .open(dialog_effects::storage::Location::new(dialog_effects::storage::Directory::Profile, "link-subject-test"))
             .await
             .unwrap();
         let account = Ed25519Signer::generate().await.unwrap();
@@ -1755,11 +1740,11 @@ mod tests {
 
         let temp = tempfile::tempdir().unwrap();
         let storage = dialog_storage::provider::storage::Storage::<NativeSpace>::default();
-        let profile = Profile::open(format!("link-generation-test-{}", rand::random::<u64>()))
-            .at(Directory::At(
+        let profile = dialog_peer::Peer::new()
+        .storage(storage.clone())
+        .open(dialog_effects::storage::Location::new(Directory::At(
                 temp.path().join("profiles").to_string_lossy().into(),
-            ))
-            .perform(&storage)
+            ), format!("link-generation-test-{}", rand::random::<u64>())))
             .await
             .unwrap();
         let service_url = "https://accounts.example/ucan/".to_string();
@@ -1797,7 +1782,7 @@ mod tests {
     }
 
     impl RecoveryFixture {
-        async fn new() -> (Self, Profile, dialog_peer::Session<NativeSpace>) {
+        async fn new() -> (Self, NativePeer, dialog_peer::Session<NativeSpace>) {
             use dialog_credentials::Ed25519Signer;
             use dialog_effects::storage::Directory;
             use dialog_storage::provider::storage::Storage;
@@ -1807,17 +1792,14 @@ mod tests {
             let profile_dir = Directory::At(temp.path().join("profiles").to_string_lossy().into());
             let profile_name = format!("cli-account-recovery-test-{}", rand::random::<u64>());
             let storage = Storage::<NativeSpace>::default();
-            let profile = Profile::open(&profile_name)
-                .at(profile_dir.clone())
-                .perform(&storage)
+            let profile = dialog_peer::Peer::new()
+        .storage(storage.clone())
+        .open(dialog_effects::storage::Location::new(profile_dir.clone(), &profile_name))
                 .await
                 .unwrap();
             std::fs::create_dir_all(store.account_dir()).unwrap();
             let account_dir = store.account_dir().canonicalize().unwrap();
-            let operator = crate::peer::session_for(
-                &profile,
-                storage,
-                Directory::At(account_dir.to_string_lossy().into()),
+            let operator = crate::peer::session_for(&profile, Directory::At(account_dir.to_string_lossy().into()),
                 b"tonk/account-state/v1",
             )
             .await
@@ -1855,20 +1837,17 @@ mod tests {
             )
         }
 
-        async fn reopen(&self) -> (Profile, dialog_peer::Session<NativeSpace>) {
+        async fn reopen(&self) -> (NativePeer, dialog_peer::Session<NativeSpace>) {
             use dialog_effects::storage::Directory;
             use dialog_storage::provider::storage::Storage;
 
             let storage = Storage::<NativeSpace>::default();
-            let profile = Profile::open(&self.profile_name)
-                .at(self.profile_dir.clone())
-                .perform(&storage)
+            let profile = dialog_peer::Peer::new()
+        .storage(storage.clone())
+        .open(dialog_effects::storage::Location::new(self.profile_dir.clone(), &self.profile_name))
                 .await
                 .unwrap();
-            let operator = crate::peer::session_for(
-                &profile,
-                storage,
-                Directory::At(self.account_dir.to_string_lossy().into()),
+            let operator = crate::peer::session_for(&profile, Directory::At(self.account_dir.to_string_lossy().into()),
                 b"tonk/account-state/v1",
             )
             .await
@@ -1903,7 +1882,7 @@ mod tests {
         );
     }
 
-    async fn replacement_for(profile: &Profile) -> crate::account_session::ActiveAccount {
+    async fn replacement_for(profile: &NativePeer) -> crate::account_session::ActiveAccount {
         let signer = dialog_credentials::Ed25519Signer::generate().await.unwrap();
         let authorized = tonk_identity::ceremony::authorize_device(
             signer,

@@ -19,7 +19,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use dialog_peer::Profile;
+use dialog_credentials::SignerCredential;
 use parking_lot::{Mutex, RwLock};
 
 mod branch;
@@ -70,7 +70,7 @@ pub use transaction::{Commit, TransactionBuilder};
 /// A reactive layer over dialog branches. Owned by the consumer's
 /// application state (e.g. the worker's `TonkState`).
 pub struct Reactor {
-    profile: Profile,
+    credential: SignerCredential,
     /// Serializes every subscription registration/adoption with terminal
     /// shutdown. Once closed, the gate never reopens: a registration that
     /// wins the lock is guaranteed to be drained by the following shutdown,
@@ -158,9 +158,9 @@ impl Reactor {
     /// Construct a reactor over the given profile. The reactor
     /// doesn't own an operator — every effect takes one at
     /// `perform` time, matching dialog's command/perform pattern.
-    pub fn new(profile: Profile) -> Self {
+    pub fn new(credential: SignerCredential) -> Self {
         Self {
-            profile,
+            credential,
             subscription_lifecycle: SubscriptionLifecycle::new(),
             repos: RwLock::new(HashMap::new()),
             profile_repo: RwLock::new(None),
@@ -453,8 +453,8 @@ impl Reactor {
 
     /// Borrow the profile so chain handles can open
     /// repositories on cache miss.
-    pub fn profile(&self) -> &Profile {
-        &self.profile
+    pub fn credential(&self) -> &SignerCredential {
+        &self.credential
     }
 }
 

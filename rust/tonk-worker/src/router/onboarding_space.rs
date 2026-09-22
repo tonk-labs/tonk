@@ -6,11 +6,11 @@ use axum::{
 use axum_wasm_macros::wasm_compat;
 use base64::Engine as _;
 use dialog_artifacts::{Artifact, ArtifactSelector, Changes, Update};
-use dialog_peer::Profile;
 use dialog_query::{Output as _, Query, Term};
 use dialog_repository::{Blob, RepositoryExt as _};
 use futures_util::StreamExt as _;
 use serde::{Deserialize, Serialize};
+use crate::worker::DefaultPeer;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_schema::{Replica, prelude::DidExt as _};
@@ -86,7 +86,7 @@ fn internal(error: impl std::fmt::Display) -> TonkWorkerError {
 
 async fn save(
     tonk: &TonkState,
-    registry: &Profile,
+    registry: &DefaultPeer,
     progress: &Progress,
 ) -> Result<(), TonkWorkerError> {
     registry
@@ -261,7 +261,7 @@ pub(super) async fn has_welcome_snapshot(
 async fn imported(tonk: &TonkState, key: &str, shard: &str) -> Result<bool, TonkWorkerError> {
     let repository = tonk
         .profile
-        .repository(key)
+        .space(key)
         .load()
         .perform(&tonk.operator)
         .await
@@ -296,7 +296,7 @@ async fn import_snapshot(
 ) -> Result<(), TonkWorkerError> {
     let repository = tonk
         .profile
-        .repository(key)
+        .space(key)
         .load()
         .perform(&tonk.operator)
         .await
@@ -409,7 +409,7 @@ pub async fn prepare(
     }
     let repository = tonk
         .profile
-        .repository(&path.repo)
+        .space(&path.repo)
         .load()
         .perform(&tonk.operator)
         .await
@@ -478,7 +478,7 @@ pub(super) async fn hydrate_media(
     let tonk = state.write().await;
     let repository = tonk
         .profile
-        .repository(key)
+        .space(key)
         .load()
         .perform(&tonk.operator)
         .await
@@ -587,7 +587,7 @@ mod tests {
     async fn values(tonk: &TonkState, key: &str, attribute: &str) -> Vec<Artifact> {
         let repository = tonk
             .profile
-            .repository(key)
+            .space(key)
             .load()
             .perform(&tonk.operator)
             .await
@@ -782,7 +782,7 @@ mod tests {
         let tonk = state.read().await;
         let repository = tonk
             .profile
-            .repository(key)
+            .space(key)
             .load()
             .perform(&tonk.operator)
             .await

@@ -16,6 +16,7 @@ use dialog_capability::access::{AuthorizeError, Recourse};
 use dialog_effects::Rejection;
 use dialog_repository::{PublishError, PullError, Revision};
 use serde::Deserialize;
+use crate::worker::DefaultPeer;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
@@ -1430,7 +1431,7 @@ pub async fn drain_sync(state: &AppState) {
 /// candidates and construction failures have no durable session effects.
 pub(crate) async fn ensure_session_authority(state: &AppState) -> Result<(), TonkWorkerError> {
     renew_session_with(state, |profile, storage| async move {
-        crate::session::rotate(&profile, &storage).await
+        crate::session::rotate(&profile).await
     })
     .await
 }
@@ -1438,7 +1439,7 @@ pub(crate) async fn ensure_session_authority(state: &AppState) -> Result<(), Ton
 async fn renew_session_with<F, Fut>(state: &AppState, build: F) -> Result<(), TonkWorkerError>
 where
     F: FnOnce(
-        dialog_peer::Profile,
+        DefaultPeer,
         dialog_storage::provider::storage::Storage<crate::worker::DefaultSpace>,
     ) -> Fut,
     Fut: std::future::Future<Output = Result<crate::session::Session, TonkWorkerError>>,
@@ -1778,7 +1779,7 @@ mod renewal_tests {
 
     async fn revision(state: &AppState) -> Option<dialog_repository::Revision> {
         let tonk = state.read().await;
-        dialog_repository::Repository::from(tonk.profile.signer().clone())
+        dialog_repository::Repository::from(tonk.profile.credential().clone())
             .branch(dialog_repository::ACCESS_BRANCH)
             .open()
             .perform(&tonk.operator)
@@ -1849,7 +1850,7 @@ mod renewal_tests {
         let winner = async {
             renew_session_with(&state, |profile, storage| async move {
                 ready_rx.await.unwrap();
-                crate::session::rotate(&profile, &storage).await
+                crate::session::rotate(&profile).await
             })
             .await
             .unwrap();
@@ -1858,7 +1859,7 @@ mod renewal_tests {
             installed
         };
         let loser = renew_session_with(&state, |profile, storage| async move {
-            let candidate = crate::session::rotate(&profile, &storage).await.unwrap();
+            let candidate = crate::session::rotate(&profile).await.unwrap();
             ready_tx.send(()).unwrap();
             let installed = installed_rx.await.unwrap();
             assert_ne!(candidate.operator.did().to_string(), installed);

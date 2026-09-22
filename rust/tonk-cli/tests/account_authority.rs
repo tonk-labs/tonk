@@ -43,8 +43,7 @@ async fn it_pushes_a_space_whose_account_prefix_was_never_stored(
     .await?;
     let prefix_site = space_root_site(&site.repository.did(), fixture.link.issuer());
     fixture
-        .profile
-        .credential()
+        .profile.secrets()
         .site(prefix_site.clone())
         .save(Vec::<u8>::new())
         .perform(&site.operator)
@@ -58,8 +57,7 @@ async fn it_pushes_a_space_whose_account_prefix_was_never_stored(
     tonk_cli::sync::push(&site).await?;
 
     let restored = fixture
-        .profile
-        .credential()
+        .profile.secrets()
         .site(prefix_site)
         .load::<Vec<u8>>()
         .perform(&site.operator)
@@ -287,7 +285,7 @@ async fn it_installs_authority_from_a_callback_authorization(
         "the account root must be the issuer"
     );
     let union = tonk_account::delegations::mint_account_union(
-        &fixture.profile.signer().signer().clone(),
+        &fixture.profile.credential().signer().clone(),
         &root.did(),
     )
     .await?;
@@ -755,9 +753,9 @@ async fn it_migrates_delegations_idempotently() -> Result<()> {
     // Mount the fixture's profile so migration has a provider for its
     // subject: it commits as the profile, and an unmounted one errors.
     let storage = Storage::<NativeSpace>::default();
-    let profile = dialog_peer::Profile::load(&fixture.config.profile_name)
-        .at(fixture.config.profile_directory.clone())
-        .perform(&storage)
+    let profile = dialog_peer::Peer::new()
+        .storage(storage.clone())
+        .load(dialog_effects::storage::Location::new(fixture.config.profile_directory.clone(), &fixture.config.profile_name))
         .await?;
 
     let first = tonk_cli::account_state::migrate_delegations(

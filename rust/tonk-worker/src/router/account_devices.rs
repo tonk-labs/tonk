@@ -11,6 +11,7 @@ use axum_wasm_macros::wasm_compat;
 use dialog_ucan_core::DelegationChain;
 use dialog_varsig::Did;
 use serde::Deserialize;
+use crate::worker::DefaultPeer;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_account::delegations::account_scope;
@@ -222,7 +223,7 @@ pub(crate) async fn account_summary(state: &TonkState) -> Result<AccountSummary,
 /// account, so the lookup has to run against that profile's repository
 /// rather than the active one's.
 pub(crate) async fn account_display_name_for(
-    profile: &dialog_peer::Profile,
+    profile: &DefaultPeer,
     operator: &crate::worker::DefaultOperator,
 ) -> Option<String> {
     use dialog_query::{Output as _, Query, Term};
@@ -346,7 +347,7 @@ async fn delegated_revocation(
     let target = path.proof_cids()[0];
     let artifact = hex::encode(
         tonk_identity::revocation::mint_delegated_revocation(
-            state.profile.signer().signer().clone(),
+            state.profile.credential().signer().clone(),
             &path,
             &target,
             link,
@@ -368,7 +369,7 @@ async fn self_revocation(
     let target = link.proof_cids()[0];
     let artifact = hex::encode(
         tonk_identity::revocation::mint_self_revocation(
-            state.profile.signer().signer().clone(),
+            state.profile.credential().signer().clone(),
             link,
             &target,
         )

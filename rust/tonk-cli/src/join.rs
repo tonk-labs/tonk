@@ -7,6 +7,7 @@
 use anyhow::{Context as _, Result, ensure};
 use serde::{Deserialize, Serialize};
 use tonk_invite::connection::InvitationHint;
+use crate::peer::NativePeer;
 
 /// Secret-free recovery journal for an ordinary invitation import.
 pub const ORDINARY_STATE_FILE: &str = "ordinary-join.json";
@@ -150,16 +151,15 @@ pub async fn ensure_ordinary_recipient(
     prepared: &PreparedOrdinary,
     config: &crate::site::SiteConfig,
 ) -> Result<()> {
-    use dialog_peer::Profile;
     use dialog_storage::provider::storage::{NativeSpace, Storage};
 
     let Some(expected) = prepared.expected_root() else {
         return Ok(());
     };
     let storage = Storage::<NativeSpace>::default();
-    let profile = Profile::load(config.profile_name.clone())
-        .at(config.profile_directory.clone())
-        .perform(&storage)
+    let profile = dialog_peer::Peer::new()
+        .storage(storage.clone())
+        .load(dialog_effects::storage::Location::new(config.profile_directory.clone(), config.profile_name.clone()))
         .await
         .map_err(|_| targeted_recipient_error(expected))?;
     let operator = crate::account_state::store_operator_with_config(

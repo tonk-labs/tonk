@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use dialog_peer::{Profile, Session};
+use dialog_peer::{Session};
 use dialog_query::{Output as _, Query, Term};
 use dialog_remote_ucan::UcanAddress;
 use dialog_repository::{Branch, SiteAddress};
@@ -15,6 +15,7 @@ use tonk_account::{AccountStateStatus, MAIN_BRANCH};
 use tonk_schema::RepositoryName;
 use tonk_schema::directory::{MountBranch, MountRecord, MountRemote};
 use tonk_schema::prelude::DidExt as _;
+use crate::peer::NativePeer;
 
 #[cfg(feature = "integration-tests")]
 use crate::account;
@@ -78,7 +79,7 @@ pub struct RecordWarning {
     pub message: String,
 }
 
-fn site_config(_profile: &Profile) -> Result<crate::site::SiteConfig> {
+fn site_config(_profile: &NativePeer) -> Result<crate::site::SiteConfig> {
     #[cfg(feature = "integration-tests")]
     if let Some(config) = account::integration_site_config(_profile) {
         return Ok(config);
@@ -86,7 +87,7 @@ fn site_config(_profile: &Profile) -> Result<crate::site::SiteConfig> {
     crate::site::default_config()
 }
 
-async fn open_site(path: &std::path::Path, profile: &Profile) -> Result<TonkSite> {
+async fn open_site(path: &std::path::Path, profile: &NativePeer) -> Result<TonkSite> {
     let site = TonkSite::open_with(path, site_config(profile)?).await?;
     if site.profile.did() != profile.did() {
         bail!("registered site profile does not match the active account profile");
@@ -101,7 +102,7 @@ struct LocalSpace {
 }
 
 async fn local_subjects(
-    profile: &Profile,
+    profile: &NativePeer,
     store: &SpaceStore,
 ) -> Result<HashMap<String, LocalSpace>> {
     let registry = store.load()?;
@@ -141,7 +142,7 @@ async fn local_subjects(
 /// profile is an ordinary state right after `tonk account login` on a
 /// fresh device, and reporting it as "no account" reads as data loss.
 async fn ready_account_branch(
-    profile: &Profile,
+    profile: &NativePeer,
     store: &SpaceStore,
 ) -> Result<(Session<NativeSpace>, Branch)> {
     let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
@@ -176,7 +177,7 @@ async fn ready_account_branch(
 /// List the account directory's spaces and identify subjects already
 /// registered locally. Reads the account DB — the same directory facts
 /// the Hub renders — not the retired space-backup escrow.
-pub async fn list(profile: &Profile, store: &SpaceStore) -> Result<Vec<AccountSpaceRow>> {
+pub async fn list(profile: &NativePeer, store: &SpaceStore) -> Result<Vec<AccountSpaceRow>> {
     let (operator, branch) = ready_account_branch(profile, store).await?;
     // Freshen best-effort: an offline listing still renders the local
     // copy of the directory.
@@ -209,7 +210,7 @@ fn name_error(name: Option<&str>, reason: impl std::fmt::Display) -> anyhow::Err
 
 /// Pull exactly one account space into canonical local storage.
 pub async fn pull(
-    profile: &Profile,
+    profile: &NativePeer,
     store: &SpaceStore,
     name_or_subject: &str,
     requested_name: Option<&str>,
@@ -510,7 +511,7 @@ pub async fn record_site_pushed(
 async fn record_site_for_profile(
     registry_name: &str,
     site: &TonkSite,
-    account_profile: &Profile,
+    account_profile: &NativePeer,
     store: &SpaceStore,
     require_push: bool,
 ) -> Result<RecordOutcome> {
@@ -613,7 +614,7 @@ pub(crate) async fn record_current(site: &TonkSite) -> Result<RecordOutcome> {
 }
 
 /// Best-effort directory sweep of every registered space.
-pub async fn record_registered(profile: &Profile, store: &SpaceStore) -> Vec<RecordWarning> {
+pub async fn record_registered(profile: &NativePeer, store: &SpaceStore) -> Vec<RecordWarning> {
     let registry = match store.load() {
         Ok(registry) => registry,
         Err(error) => {

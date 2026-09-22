@@ -12,7 +12,7 @@
 //! account secret can ever open the row again.
 
 use anyhow::{Context, Result};
-use dialog_peer::{Profile, Session};
+use dialog_peer::{Session};
 use dialog_query::{Output as _, Query, Term};
 use dialog_repository::Branch;
 use dialog_storage::provider::storage::NativeSpace;
@@ -22,6 +22,7 @@ use tonk_schema::{
     AccountSealedInbox, SecretMessage, SecretPrincipal, SeedKind, prelude::DidExt as _,
 };
 use zeroize::Zeroizing;
+use crate::peer::NativePeer;
 
 /// The account's published X25519 recipient, read from the account
 /// branch. `None` when the account predates the encryption key — a
@@ -101,7 +102,7 @@ pub async fn custody_space_seed(
 /// before any account exists. Where an unlinked device's custody rows
 /// live, so they ride straight into the account when it arrives.
 pub async fn open_local_account_branch(
-    profile: &Profile,
+    profile: &NativePeer,
     operator: &Session<NativeSpace>,
 ) -> Result<Branch> {
     dialog_repository::Repository::from(profile)
@@ -297,9 +298,9 @@ pub async fn rotate_from_onboarding(
         .context("the signed-in account root is invalid")?;
 
     let storage = dialog_storage::provider::storage::Storage::<NativeSpace>::default();
-    let profile = Profile::open(config.profile_name.clone())
-        .at(config.profile_directory.clone())
-        .perform(&storage)
+    let profile = dialog_peer::Peer::new()
+        .storage(storage.clone())
+        .open(dialog_effects::storage::Location::new(config.profile_directory.clone(), config.profile_name.clone()))
         .await
         .with_context(|| format!("failed to open profile '{}'", config.profile_name))?;
     let operator = crate::account_state::credential_operator_for_store(&profile, store).await?;
@@ -350,8 +351,7 @@ pub async fn rotate_from_onboarding(
                     let bytes = chain
                         .to_bytes()
                         .map_err(|error| format!("{subject}: serialize: {error}"))?;
-                    profile_ref
-                        .credential()
+                    profile_ref.secrets()
                         .site(tonk_account::prefix::space_root_site(
                             &subject,
                             account_root_ref,

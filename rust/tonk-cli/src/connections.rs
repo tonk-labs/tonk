@@ -9,7 +9,6 @@ use dialog_capability::{Subject, did};
 use dialog_credentials::{Credential, Ed25519Signer, Ed25519Verifier, SignerCredential};
 use dialog_effects::space::{Space, SpaceExt as _};
 use dialog_effects::storage::{self as storage_fx, Directory, Location, LocationExt as _};
-use dialog_peer::Profile;
 use dialog_reactor::Reactor;
 use dialog_repository::{RepositoryExt as _, SiteAddress};
 use dialog_storage::provider::storage::{NativeSpace, Storage};
@@ -23,6 +22,7 @@ use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt 
 use std::path::{Path, PathBuf};
 use tonk_invite::connection::{AgentInvite, SpaceGrantBundle, candidate_build_scopes};
 use url::Url;
+use crate::peer::NativePeer;
 
 pub use tonk_invite::connection::InvitationHint;
 
@@ -354,10 +354,10 @@ async fn load_profile(
     root: &Path,
     storage: &Storage<NativeSpace>,
     binding: &ConnectionBinding,
-) -> Result<Profile> {
-    let profile = Profile::load(PROFILE_NAME)
-        .at(profile_directory(root))
-        .perform(storage)
+) -> Result<NativePeer> {
+    let profile = dialog_peer::Peer::new()
+        .storage(storage.clone())
+        .load(dialog_effects::storage::Location::new(profile_directory(root), PROFILE_NAME))
         .await
         .context("connection credential is missing or corrupt; no account fallback is permitted")?;
     ensure!(
@@ -591,21 +591,17 @@ pub async fn open_bound(
 async fn assemble(
     root: &Path,
     manifest: &Manifest,
-    profile: Profile,
+    profile: NativePeer,
     storage: Storage<NativeSpace>,
     store: crate::space::SpaceStore,
     initialize: bool,
 ) -> Result<crate::site::TonkSite> {
     let data = root.join(DATA_DIRECTORY);
     let expires = Timestamp::try_from((Timestamp::now().to_unix() + 3600) as i128)?;
-    let peer = crate::peer::peer_for(
-        &profile,
-        storage,
-        Directory::At(data.to_string_lossy().into_owned()),
+    let peer = crate::peer::peer_for(&profile, Directory::At(data.to_string_lossy().into_owned()),
     )
     .await?;
-    let operator = peer
-        .session(peer.derive(b"tonk-scoped-connection").await?)
+    let operator = peer.derive(b"tonk-scoped-connection").await?
         .allow(peer.access().claim(Subject::any()).expires(expires))
         .build()
         .await?;
@@ -613,6 +609,7 @@ async fn assemble(
     if initialize {
         for chain in grants.chains() {
             profile
+                .access()
                 .save(UcanDelegation(chain.clone()))
                 .perform(&operator)
                 .await?;
@@ -632,7 +629,7 @@ async fn assemble(
         }
     }
     let repository = profile
-        .repository(crate::site::REPO_NAME)
+        .space(crate::site::REPO_NAME)
         .load()
         .perform(&operator)
         .await?;
@@ -663,7 +660,7 @@ async fn assemble(
         profile: profile.clone(),
         operator: wrapper,
         repository,
-        reactor: Reactor::new(profile),
+        reactor: Reactor::new(profile.credential().clone()),
         account_store: store,
     };
     if initialize {

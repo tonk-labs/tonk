@@ -9,13 +9,13 @@ use dialog_repository::Repository;
 use tonk_common::log;
 use tonk_schema::prelude::DidExt as _;
 use tonk_schema::{ProfileName, petname};
+use crate::worker::DefaultPeer;
 
 // Only `project_member_name` needs it now, and that is wasm-only: nothing
 // on the native target writes a name any more.
 #[cfg(target_arch = "wasm32")]
 use crate::RepositoryError;
 use crate::worker::{DefaultOperator, TonkState};
-use dialog_peer::Profile;
 #[cfg(target_arch = "wasm32")]
 use tonk_schema::{MemberName, Membership};
 
@@ -45,7 +45,7 @@ pub(crate) async fn resolve_display_name(tonk: &TonkState) -> String {
 
 /// The stored name for an explicit profile, or `None` when none is set.
 pub(crate) async fn stored_display_name_from(
-    profile: &Profile,
+    profile: &DefaultPeer,
     operator: &DefaultOperator,
 ) -> Option<String> {
     let profile_entity = profile.did().this();
@@ -84,7 +84,7 @@ pub(crate) async fn stored_display_name_from(
 ///
 /// Reads the profile's replica index off the meta branch (the same query
 /// `get_profile` runs) and projects only `tonk:repository` routing keys.
-/// Profile and account system replicas carry no user-space roster.
+/// DefaultPeer and account system replicas carry no user-space roster.
 /// A single unparseable subject is logged and dropped rather than failing
 /// the whole list.
 pub(crate) async fn real_space_keys(tonk: &TonkState) -> Vec<String> {
@@ -229,7 +229,6 @@ mod tests {
     wasm_bindgen_test_configure!(run_in_service_worker);
 
     use crate::worker::{DefaultSpace, TonkState};
-    use dialog_peer::Profile;
     use dialog_storage::provider::storage::Storage;
     use tonk_schema::petname;
 
@@ -239,14 +238,15 @@ mod tests {
     async fn isolated_state(name: &str) -> TonkState {
         crate::patch_idb_versionchange();
         let storage = Storage::<DefaultSpace>::default();
-        let profile = Profile::open(name)
-            .perform(&storage)
+        let profile = dialog_peer::Peer::new()
+        .storage(storage.clone())
+        .open(dialog_effects::storage::Location::new(dialog_effects::storage::Directory::Profile, name))
             .await
             .expect("profile opens");
-        let session = crate::session::open(&profile, &storage)
+        let session = crate::session::open(&profile)
             .await
             .expect("signing session opens");
-        let reactor = crate::Reactor::new(profile.clone());
+        let reactor = crate::Reactor::new(profile.credential().clone());
         TonkState {
             seed_upgrades: Default::default(),
             profile,

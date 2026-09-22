@@ -5,12 +5,13 @@ use std::io::Write as _;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use dialog_peer::{Profile, Session};
+use dialog_peer::{Session};
 use dialog_storage::provider::storage::NativeSpace;
 use dialog_varsig::Did;
 use serde::{Deserialize, Serialize};
 
 use crate::space::SpaceStore;
+use crate::peer::NativePeer;
 
 /// Credential site containing the sole native remote-account authority state.
 pub const ACCOUNT_SESSION_SITE: &str = "tonk-account-session-v1";
@@ -242,7 +243,7 @@ pub fn exclusive_transition_guard(store: &SpaceStore) -> Result<AccountSessionWr
     })
 }
 
-fn state_path(profile: &Profile, store: &SpaceStore) -> Result<PathBuf> {
+fn state_path(profile: &NativePeer, store: &SpaceStore) -> Result<PathBuf> {
     let profile_key = blake3::hash(profile.did().as_ref().as_bytes()).to_hex();
     Ok(store
         .account_dir()
@@ -260,7 +261,7 @@ fn legacy_provider_bytes(
 }
 
 async fn load_raw(
-    profile: &Profile,
+    profile: &NativePeer,
     _operator: &Session<NativeSpace>,
     store: &SpaceStore,
 ) -> Result<Option<AccountSessionState>> {
@@ -280,7 +281,7 @@ async fn load_raw(
 }
 
 async fn save_raw(
-    profile: &Profile,
+    profile: &NativePeer,
     _operator: &Session<NativeSpace>,
     store: &SpaceStore,
     state: &AccountSessionState,
@@ -326,7 +327,7 @@ async fn save_raw(
 /// when both are present. This is used only to migrate legacy installs that
 /// predate canonical account-session state.
 async fn projected_active(
-    profile: &Profile,
+    profile: &NativePeer,
     operator: &Session<NativeSpace>,
 ) -> Result<Option<ActiveAccount>> {
     let Some(root) = crate::identity::local_root_with_operator(profile, operator).await? else {
@@ -337,8 +338,7 @@ async fn projected_active(
         .parse()
         .context("stored root DID is invalid")?;
     let Some(bytes) = legacy_provider_bytes(
-        profile
-            .credential()
+        profile.secrets()
             .site(crate::account::ACCOUNT_LINK_SITE)
             .load::<Vec<u8>>()
             .perform(operator)
@@ -369,7 +369,7 @@ async fn projected_active(
 /// Initialize canonical state once, migrating the legacy root/provider
 /// projection while the caller holds the exclusive lock.
 pub async fn ensure_initialized(
-    profile: &Profile,
+    profile: &NativePeer,
     operator: &Session<NativeSpace>,
     guard: &AccountSessionWriteGuard,
 ) -> Result<()> {
@@ -421,7 +421,7 @@ pub async fn ensure_initialized(
 
 /// Read one canonical generation after finishing interrupted projections.
 pub async fn snapshot(
-    profile: &Profile,
+    profile: &NativePeer,
     operator: &Session<NativeSpace>,
     store: &SpaceStore,
 ) -> Result<AccountSessionState> {
@@ -434,7 +434,7 @@ pub async fn snapshot(
 
 /// Replace an exact active generation while retaining recovery material.
 pub(crate) async fn replace_with_checkpoint(
-    profile: &Profile,
+    profile: &NativePeer,
     operator: &Session<NativeSpace>,
     store: &SpaceStore,
     previous: &ActiveAccount,
@@ -484,7 +484,7 @@ pub(crate) async fn replace_with_checkpoint(
 /// Persist the exact post-callback account generation before compatibility
 /// projection writes begin, retaining the exclusive transition lock.
 pub async fn stage_activation(
-    profile: &Profile,
+    profile: &NativePeer,
     operator: &Session<NativeSpace>,
     store: &SpaceStore,
     account: ActiveAccount,
@@ -515,7 +515,7 @@ pub async fn stage_activation(
 
 /// Atomically promote the exact staged callback generation to active.
 pub async fn finalize_activation(
-    profile: &Profile,
+    profile: &NativePeer,
     operator: &Session<NativeSpace>,
     guard: AccountActivationGuard,
     account: &ActiveAccount,
@@ -543,7 +543,7 @@ pub async fn finalize_activation(
 
 /// Strictly read canonical state while the caller retains a shared lock.
 pub async fn load_guarded(
-    profile: &Profile,
+    profile: &NativePeer,
     operator: &Session<NativeSpace>,
     guard: &AccountSessionReadGuard,
 ) -> Result<AccountSessionState> {
@@ -554,7 +554,7 @@ pub async fn load_guarded(
 
 /// Read the sole active attachment under an existing shared guard.
 pub async fn active_guarded(
-    profile: &Profile,
+    profile: &NativePeer,
     operator: &Session<NativeSpace>,
     guard: &AccountSessionReadGuard,
 ) -> Result<Option<ActiveAccount>> {
@@ -566,7 +566,7 @@ pub async fn active_guarded(
 /// Logout is local-first: the durable transition never depends on a provider
 /// being reachable. The returned attachments are notified best-effort.
 pub async fn logout_transition_for_store(
-    profile: &Profile,
+    profile: &NativePeer,
     operator: &Session<NativeSpace>,
     store: &SpaceStore,
 ) -> Result<Vec<ActiveAccount>> {
@@ -587,8 +587,7 @@ pub async fn logout_transition_for_store(
     if existed {
         save_raw(profile, operator, store, &state).await?;
         // Compatibility only: canonical state is already authoritative.
-        let _ = profile
-            .credential()
+        let _ = profile.secrets()
             .site(crate::account::ACCOUNT_LINK_SITE)
             .save(Vec::<u8>::new())
             .perform(operator)
@@ -599,7 +598,7 @@ pub async fn logout_transition_for_store(
 
 #[cfg(feature = "integration-tests")]
 pub(crate) async fn install_for_integration_test(
-    profile: &Profile,
+    profile: &NativePeer,
     operator: &crate::account_authority::AccountBoundOperator,
     state: &AccountSessionState,
 ) -> Result<()> {
@@ -616,22 +615,19 @@ mod tests {
 
     use super::*;
 
-    async fn isolated_session() -> (tempfile::TempDir, SpaceStore, Profile, Session<NativeSpace>) {
+    async fn isolated_session() -> (tempfile::TempDir, SpaceStore, NativePeer, Session<NativeSpace>) {
         let temp = tempfile::tempdir().unwrap();
         let store = SpaceStore::at(temp.path().join("state"));
         let profile_dir = Directory::At(temp.path().join("profiles").to_string_lossy().into());
         let storage = Storage::<NativeSpace>::default();
-        let profile = Profile::open(format!("account-session-test-{}", rand::random::<u64>()))
-            .at(profile_dir)
-            .perform(&storage)
+        let profile = dialog_peer::Peer::new()
+        .storage(storage.clone())
+        .open(dialog_effects::storage::Location::new(profile_dir, format!("account-session-test-{}", rand::random::<u64>())))
             .await
             .unwrap();
         std::fs::create_dir_all(store.account_dir()).unwrap();
         let account_dir = store.account_dir().canonicalize().unwrap();
-        let operator = crate::peer::session_for(
-            &profile,
-            storage,
-            Directory::At(account_dir.to_string_lossy().into()),
+        let operator = crate::peer::session_for(&profile, Directory::At(account_dir.to_string_lossy().into()),
             b"tonk/account-session-test/v1",
         )
         .await

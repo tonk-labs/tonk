@@ -9,6 +9,7 @@
 use std::sync::Arc;
 
 use dialog_credentials::Credential;
+use dialog_varsig::Principal as _;
 use dialog_repository::{Repository, RepositoryExt as _};
 
 use crate::env::LoadProvider;
@@ -82,10 +83,11 @@ impl<'a> RepositoryReference<'a> {
                 }
 
                 // Slow path: load the repository outside the lock.
-                let repository = reactor
-                    .profile()
-                    .repository(*name)
-                    .load()
+                let repository = dialog_peer::SpaceHandle {
+                    peer: reactor.credential().did(),
+                    name: (*name).to_owned(),
+                }
+                .load()
                     .perform(env)
                     .await
                     .map_err(|e| ReactorError::RepositoryNotFound {
@@ -107,13 +109,11 @@ impl<'a> RepositoryReference<'a> {
                     return Ok(entry);
                 }
 
-                // First touch — wrap the profile's signer credential
-                // as a `Credential::Signer` and feed it through
-                // `Repository::from(Credential)` (which yields
-                // `Repository<Credential>`, the default the cache
-                // stores). The direct `From<&Profile>` impl returns
-                // `Repository<SignerCredential>` which doesn't fit.
-                let credential = Credential::Signer(reactor.profile().signer().clone());
+                // First touch — wrap the signer credential as a
+                // `Credential::Signer` and feed it through
+                // `Repository::from(Credential)`, which yields
+                // `Repository<Credential>`, the default the cache stores.
+                let credential = Credential::Signer(reactor.credential().clone());
                 let repository: Repository = Repository::from(credential);
                 let state = Arc::new(RepositoryState::new(Arc::new(repository)));
 

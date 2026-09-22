@@ -21,6 +21,7 @@ use dialog_ucan::{Ucan, UcanDelegation};
 use dialog_ucan_core::{DelegationBuilder, DelegationChain, time::Timestamp};
 use dialog_varsig::{Did, Principal};
 use serde::{Deserialize, Serialize};
+use crate::worker::DefaultPeer;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_invite::connection::{
@@ -254,7 +255,7 @@ pub(crate) async fn mint(
     let root = super::identity::local_root(&tonk).await?;
     let repository = tonk
         .profile
-        .repository(&repo)
+        .space(&repo)
         .load()
         .perform(&tonk.operator)
         .await
@@ -296,7 +297,7 @@ pub(crate) async fn mint(
     let ancestors = issuer_ancestors(&tonk, &scopes, now, expires).await?;
     let invite = issue(
         seed,
-        tonk.profile.signer().signer().clone(),
+        tonk.profile.credential().signer().clone(),
         ancestors,
         &scopes,
         &remote,
@@ -500,7 +501,7 @@ async fn confirmation(tonk: &TonkState, group: &PublicGroup) -> Result<bool, Ton
     use fields::AgentConnectionConfirmation;
     let repository = match tonk
         .profile
-        .repository(&group.repo)
+        .space(&group.repo)
         .load()
         .perform(&tonk.operator)
         .await
@@ -557,7 +558,7 @@ async fn publish_target(
     path: &DelegationChain,
     target: &ipld_core::cid::Cid,
 ) -> Result<tonk_account::customer::RevokeReceipt, TonkWorkerError> {
-    let signer = tonk.profile.signer().signer().clone();
+    let signer = tonk.profile.credential().signer().clone();
     let artifact = if path
         .proofs()
         .last()
@@ -611,7 +612,7 @@ pub async fn revoke(
         })?;
     let repository = tonk
         .profile
-        .repository(&group.repo)
+        .space(&group.repo)
         .load()
         .perform(&tonk.operator)
         .await
@@ -841,16 +842,15 @@ mod tests {
     async fn connection_management_partial_receipts_survive_restart_and_retry_only_missing()
     -> anyhow::Result<()> {
         use dialog_effects::storage::Directory;
-        use dialog_peer::Profile;
         use dialog_storage::provider::storage::Storage;
         let directory =
             std::env::temp_dir().join(format!("tonk-connection-ledger-{}", rand::random::<u64>()));
         std::fs::create_dir_all(&directory)?;
         let location = Directory::At(directory.to_string_lossy().into_owned());
         let storage = Storage::default();
-        let profile = Profile::open("ledger")
-            .at(location.clone())
-            .perform(&storage)
+        let profile = dialog_peer::Peer::new()
+        .storage(storage.clone())
+        .open(dialog_effects::storage::Location::new(location.clone(), "ledger"))
             .await?;
         let registry = crate::device::Registry {
             profile: "ledger".into(),
@@ -915,9 +915,9 @@ mod tests {
             .await?;
         assert_eq!(groups(&tonk).await?.len(), 1);
         assert!(has_issued_for_subject(&tonk, invite.grants().subject()).await?);
-        let other_profile = Profile::open("other-account")
-            .at(location.clone())
-            .perform(&tonk.storage)
+        let other_profile = dialog_peer::Peer::new()
+        .storage(tonk.storage.clone())
+        .open(dialog_effects::storage::Location::new(location.clone(), "other-account"))
             .await?;
         let other_registry = crate::device::Registry {
             profile: "other-account".into(),
@@ -1002,9 +1002,9 @@ mod tests {
         );
         drop(tonk);
         let storage = Storage::default();
-        let profile = Profile::load("ledger")
-            .at(location.clone())
-            .perform(&storage)
+        let profile = dialog_peer::Peer::new()
+        .storage(storage.clone())
+        .load(dialog_effects::storage::Location::new(location.clone(), "ledger"))
             .await?;
         let registry = crate::device::Registry {
             profile: "ledger".into(),

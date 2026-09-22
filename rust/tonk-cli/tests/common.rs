@@ -89,7 +89,7 @@ pub struct AccountFixture {
     /// A site this profile created before the account existed, so its
     /// repository authority reaches no account root.
     pub pre_account_site: TonkSite,
-    pub profile: dialog_peer::Profile,
+    pub profile: tonk_cli::peer::NativePeer,
     pub store: tonk_cli::space::SpaceStore,
     pub link: dialog_ucan_core::DelegationChain,
     pub config: SiteConfig,
@@ -169,8 +169,7 @@ impl AccountFixture {
             // that has hydrated its account rather than one that has only
             // linked it. Without this the account reads as unhydrated and
             // nothing will mount its repository.
-            profile
-                .credential()
+            profile.secrets()
                 .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
                 .save(link.issuer().as_str().as_bytes().to_vec())
                 .perform(&test.site.operator)

@@ -1,4 +1,4 @@
-//! Profile roster and switching — one profile per account, swapped in
+//! DefaultPeer roster and switching — one profile per account, swapped in
 //! place.
 //!
 //! Everything that should follow the active account is already scoped to
@@ -17,8 +17,9 @@ use std::sync::{Arc, atomic::Ordering};
 
 use axum::{Extension, Json, extract::State};
 use axum_wasm_macros::wasm_compat;
-use dialog_peer::{Peer, Profile};
+use dialog_peer::{Peer};
 use dialog_storage::provider::storage::Storage;
+use crate::worker::DefaultPeer;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use dialog_varsig::Did;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -46,7 +47,7 @@ pub(crate) enum AccountProfileDisposition {
 }
 
 /// A read lock that pins the account ceremony to the selected profile.
-/// Profile changes queue behind this guard until all local account writes have
+/// DefaultPeer changes queue behind this guard until all local account writes have
 /// completed.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) struct AccountProfileGuard {
@@ -109,7 +110,7 @@ async fn refreshed_entry(tonk: &TonkState, email: Option<String>) -> RosterEntry
 /// promoting or booting that profile.
 async fn inspected_entry(
     profile_name: String,
-    profile: &Profile,
+    profile: &DefaultPeer,
     operator: &DefaultOperator,
 ) -> RosterEntry {
     let provider = super::account::provider_from(profile, operator).await;
@@ -203,7 +204,7 @@ async fn refreshed_roster(tonk: &TonkState) -> Result<Vec<RosterEntry>, TonkWork
                 continue;
             }
         };
-        let operator = match inspection_operator(&profile, &tonk.storage).await {
+        let operator = match inspection_operator(&profile).await {
             Ok(operator) => operator,
             Err(error) => {
                 log!(
@@ -415,7 +416,7 @@ pub(crate) async fn sign_out(
                 continue;
             }
         };
-        let operator = match inspection_operator(&profile, &storage).await {
+        let operator = match inspection_operator(&profile).await {
             Ok(operator) => operator,
             Err(error) => {
                 log!(
@@ -502,7 +503,7 @@ pub(crate) async fn for_account(
     let active_name = current.profile_name.clone();
     drop(current);
 
-    let mut matched: Option<(String, Profile)> = None;
+    let mut matched: Option<(String, DefaultPeer)> = None;
     for entry in roster {
         if entry.profile_name == active_name {
             continue;
@@ -517,7 +518,7 @@ pub(crate) async fn for_account(
                 continue;
             }
         };
-        let operator = match inspection_operator(&profile, &storage).await {
+        let operator = match inspection_operator(&profile).await {
             Ok(operator) => operator,
             Err(_) => {
                 log!(
@@ -592,21 +593,18 @@ pub(crate) async fn for_account(
     Ok(AccountProfileGuard { tonk, disposition })
 }
 
-async fn inspection_operator(
-    profile: &Profile,
-    storage: &Storage<DefaultSpace>,
-) -> Result<DefaultOperator, TonkWorkerError> {
+async fn inspection_operator(profile: &DefaultPeer) -> Result<DefaultOperator, TonkWorkerError> {
     let context: [u8; 16] = rand::random();
     let internal = |error: dialog_peer::PeerError| {
         TonkWorkerError::Internal(format!("failed to inspect a roster profile: {error}"))
     };
-    let peer = Peer::new()
-        .storage(storage.clone())
-        .attach(profile.signer().clone())
+    profile
+        .derive(context)
         .await
-        .map_err(internal)?;
-    let credential = peer.derive(context).await.map_err(internal)?;
-    peer.session(credential).build().await.map_err(internal)
+        .map_err(internal)?
+        .build()
+        .await
+        .map_err(internal)
 }
 
 /// Stamp the incoming profile's roster entry, swap the state in, and
@@ -1067,7 +1065,7 @@ mod tests {
         .await
         .unwrap();
 
-        let operator = inspection_operator(&profile, &storage).await.unwrap();
+        let operator = inspection_operator(&profile).await.unwrap();
         assert_eq!(
             super::super::identity::historical_root_did(&profile, &operator)
                 .await

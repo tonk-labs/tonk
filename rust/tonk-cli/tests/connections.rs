@@ -7,7 +7,6 @@ use dialog_capability::Subject;
 use dialog_credentials::{Credential, Ed25519Signer, Ed25519Verifier, Signer};
 use dialog_effects::space::{Space, SpaceExt as _};
 use dialog_effects::storage::Directory;
-use dialog_peer::Profile;
 use dialog_repository::SiteAddress;
 use dialog_storage::provider::storage::{NativeSpace, Storage};
 use dialog_ucan::UcanDelegation;
@@ -27,20 +26,16 @@ async fn scoped_site(
     let unrelated = TonkSite::init_at_with(&root.join("unrelated"), config.clone()).await?;
     let unrelated_subject = unrelated.repository.did();
     let storage = Storage::<NativeSpace>::default();
-    let profile = Profile::load(config.profile_name.clone())
-        .at(config.profile_directory.clone())
-        .perform(&storage)
+    let profile = dialog_peer::Peer::new()
+        .storage(storage.clone())
+        .load(dialog_effects::storage::Location::new(config.profile_directory.clone(), config.profile_name.clone()))
         .await?;
     let replica = root.join("replica");
     std::fs::create_dir_all(&replica)?;
-    let peer = tonk_cli::peer::peer_for(
-        &profile,
-        storage,
-        Directory::At(replica.to_string_lossy().into_owned()),
+    let peer = tonk_cli::peer::peer_for(&profile, Directory::At(replica.to_string_lossy().into_owned()),
     )
     .await?;
-    let operator = peer
-        .session(peer.derive("connection-mount").await?)
+    let operator = peer.derive("connection-mount").await?
         .build()
         .await?;
     let expiry = Timestamp::new(SystemTime::now() + Duration::from_secs(90 * 86400))?;
@@ -57,6 +52,7 @@ async fn scoped_site(
             .try_build()
             .await?;
         profile
+            .access()
             .save(UcanDelegation(DelegationChain::new(grant)))
             .perform(&operator)
             .await?;

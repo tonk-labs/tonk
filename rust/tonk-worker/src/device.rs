@@ -12,13 +12,13 @@
 
 use dialog_capability::{Subject, did};
 use dialog_effects::storage::{self as storage_fx, Directory, Location, LocationExt};
-use dialog_peer::Profile;
 use dialog_query::{Output as _, Query, Term};
 use dialog_repository::{Branch, Repository};
 use dialog_storage::provider::storage::Storage;
 use dialog_varsig::Did;
 use tonk_common::log;
 use tonk_schema::DeviceProfile;
+use crate::worker::DefaultPeer;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tonk_schema::prelude::DidExt as _;
 
@@ -100,7 +100,7 @@ impl Registry {
         &self.profile
     }
 
-    async fn open_self(&self, storage: &Storage<DefaultSpace>) -> Result<Profile, TonkWorkerError> {
+    async fn open_self(&self, storage: &Storage<DefaultSpace>) -> Result<DefaultPeer, TonkWorkerError> {
         // PROBE (temporary): surface the raw storage::Load error that
         // `Profile::open` swallows before falling back to `Create`.
         let probe = Subject::from(did!("local:storage"))
@@ -114,9 +114,9 @@ impl Registry {
         if let Some(error) = &probe {
             log!("registry load probe failed: {error}");
         }
-        Profile::open(&self.profile)
-            .at(self.directory.clone())
-            .perform(storage)
+        dialog_peer::Peer::new()
+        .storage(storage.clone())
+        .open(dialog_effects::storage::Location::new(self.directory.clone(), &self.profile))
             .await
             .map_err(|error| {
                 TonkWorkerError::Internal(format!(
@@ -129,7 +129,7 @@ impl Registry {
     /// written.
     async fn read(
         &self,
-        registry: &Profile,
+        registry: &DefaultPeer,
         storage: &Storage<DefaultSpace>,
     ) -> Result<Option<String>, TonkWorkerError> {
         let bytes = match registry
@@ -160,7 +160,7 @@ impl Registry {
     pub(crate) async fn open_active(
         &self,
         storage: &Storage<DefaultSpace>,
-    ) -> Result<(String, Profile), TonkWorkerError> {
+    ) -> Result<(String, DefaultPeer), TonkWorkerError> {
         let registry = self.open_self(storage).await?;
 
         let name = match self.read(&registry, storage).await {
@@ -189,10 +189,10 @@ impl Registry {
         &self,
         storage: &Storage<DefaultSpace>,
         name: &str,
-    ) -> Result<Profile, TonkWorkerError> {
-        Profile::open(name)
-            .at(self.directory.clone())
-            .perform(storage)
+    ) -> Result<DefaultPeer, TonkWorkerError> {
+        dialog_peer::Peer::new()
+        .storage(storage.clone())
+        .open(dialog_effects::storage::Location::new(self.directory.clone(), name))
             .await
             .map_err(|error| {
                 TonkWorkerError::Internal(format!("failed to open profile '{name}': {error}"))
@@ -362,16 +362,16 @@ impl Registry {
     pub(crate) async fn create_profile(
         &self,
         storage: &Storage<DefaultSpace>,
-    ) -> Result<(String, Profile), TonkWorkerError> {
+    ) -> Result<(String, DefaultPeer), TonkWorkerError> {
         let suffix: [u8; 8] = rand::random();
         let name = format!("{}-{}", self.profile, hex::encode(suffix));
 
         // `create`, not `open`: a name collision must surface rather
         // than quietly hand back an existing key, since the whole point
         // is to leave the old one behind.
-        let profile = Profile::create(&name)
-            .at(self.directory.clone())
-            .perform(storage)
+        let profile = dialog_peer::Peer::new()
+        .storage(storage.clone())
+        .create(dialog_effects::storage::Location::new(self.directory.clone(), &name))
             .await
             .map_err(|error| {
                 TonkWorkerError::Internal(format!("failed to create profile '{name}': {error}"))
@@ -391,7 +391,7 @@ impl Registry {
 /// losing anything, because the pointer's only job is naming a key.
 pub async fn open_active(
     storage: &Storage<DefaultSpace>,
-) -> Result<(String, Profile), TonkWorkerError> {
+) -> Result<(String, DefaultPeer), TonkWorkerError> {
     Registry::device().open_active(storage).await
 }
 
@@ -402,7 +402,7 @@ pub async fn open_active(
 /// spaces it opened. It is simply no longer the active browser profile.
 pub async fn create_profile(
     storage: &Storage<DefaultSpace>,
-) -> Result<(String, Profile), TonkWorkerError> {
+) -> Result<(String, DefaultPeer), TonkWorkerError> {
     Registry::device().create_profile(storage).await
 }
 
@@ -507,7 +507,7 @@ mod tests {
     /// own, as a device that never rotated would use.
     async fn operator(registry: &Registry, storage: &Storage<DefaultSpace>) -> DefaultOperator {
         let profile = registry.open_self(storage).await.unwrap();
-        crate::session::open(&profile, storage)
+        crate::session::open(&profile)
             .await
             .unwrap()
             .operator
@@ -616,7 +616,7 @@ mod tests {
         // A rotated device reads the roster through the profile it now
         // signs as, not the registry's key.
         let (_, created) = registry.create_profile(&storage).await.unwrap();
-        let other = crate::session::open(&created, &storage)
+        let other = crate::session::open(&created)
             .await
             .unwrap()
             .operator;

@@ -11,19 +11,18 @@ use anyhow::{Context, Result, bail};
 use dialog_varsig::Did;
 use tonk_account::customer::{Receipt, RegistrationError};
 use url::Url;
-
-use dialog_peer::Profile;
+use crate::peer::NativePeer;
 
 /// The access service origin for this profile's account: the attached
 /// repository descriptor's remote, with its `/ucan/` path stripped.
-pub async fn access_origin(profile: &Profile) -> Result<Option<Url>> {
+pub async fn access_origin(profile: &NativePeer) -> Result<Option<Url>> {
     let store = crate::space::SpaceStore::open().context("failed to locate account state")?;
     access_origin_in(profile, &store).await
 }
 
 /// Resolve the access-service origin for one explicit native profile store.
 pub async fn access_origin_in(
-    profile: &Profile,
+    profile: &NativePeer,
     store: &crate::space::SpaceStore,
 ) -> Result<Option<Url>> {
     let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
@@ -71,7 +70,7 @@ pub async fn probe(origin: &Url, customer: &Did) -> Result<Option<Receipt>> {
 /// A consumer another customer already provides is left alone: the space
 /// exists and works locally either way.
 pub async fn provision(
-    profile: &Profile,
+    profile: &NativePeer,
     consumer: &Did,
     consent: &dialog_ucan_core::DelegationChain,
 ) -> Result<()> {
@@ -81,7 +80,7 @@ pub async fn provision(
 
 /// Provision a space under one explicit account profile.
 pub async fn provision_in(
-    profile: &Profile,
+    profile: &NativePeer,
     store: &crate::space::SpaceStore,
     consumer: &Did,
     consent: &dialog_ucan_core::DelegationChain,
@@ -93,7 +92,7 @@ pub async fn provision_in(
         .await?
         .context("the account has no repository descriptor to locate its service by")?;
     let body = tonk_identity::request::build_provider_add_invocation(
-        profile.signer().signer().clone(),
+        profile.credential().signer().clone(),
         &connection.link,
         consumer,
         consent,
@@ -126,14 +125,14 @@ pub async fn provision_in(
 /// account's chain — no passkey. A passkey holds the account root and
 /// belongs to deleting the account itself; releasing one space this
 /// account provides is an ordinary device-authorized invocation.
-pub async fn deprovision(profile: &Profile, consumer: &Did) -> Result<()> {
+pub async fn deprovision(profile: &NativePeer, consumer: &Did) -> Result<()> {
     let store = crate::space::SpaceStore::open().context("failed to locate account state")?;
     deprovision_in(profile, &store, consumer).await
 }
 
 /// Release one hosted space under one explicit account profile.
 pub async fn deprovision_in(
-    profile: &Profile,
+    profile: &NativePeer,
     store: &crate::space::SpaceStore,
     consumer: &Did,
 ) -> Result<()> {
@@ -144,7 +143,7 @@ pub async fn deprovision_in(
         .await?
         .context("the account has no repository descriptor to locate its service by")?;
     let body = tonk_identity::request::build_provider_remove_invocation(
-        profile.signer().signer().clone(),
+        profile.credential().signer().clone(),
         &connection.link,
         consumer,
     )
@@ -171,14 +170,14 @@ pub async fn deprovision_in(
 /// The service's view of this profile's account: `Ok(None)` when the
 /// profile is not linked or its account has no located service, and an
 /// inner `None` when the service does not know the customer.
-pub async fn registration_state(profile: &Profile) -> Result<Option<Option<Receipt>>> {
+pub async fn registration_state(profile: &NativePeer) -> Result<Option<Option<Receipt>>> {
     let store = crate::space::SpaceStore::open().context("failed to locate account state")?;
     registration_state_in(profile, &store).await
 }
 
 /// The service's view of one profile from its explicit native store.
 pub async fn registration_state_in(
-    profile: &Profile,
+    profile: &NativePeer,
     store: &crate::space::SpaceStore,
 ) -> Result<Option<Option<Receipt>>> {
     let Some(origin) = access_origin_in(profile, store).await? else {
