@@ -451,10 +451,17 @@ mod tests {
             // A row inside a display is clickable before the display has
             // wired its `on:` bindings; the display marks itself
             // `data-bound` once they are live, and the library's own
-            // elements wait on that marker before acting. So does this.
+            // elements wait on that marker before acting. So does this,
+            // for a click that has a binding to reach: the display
+            // resolves a click through the nearest `on:` ancestor, and
+            // one with none to wire never marks itself.
             let bound = driver
                 .execute(
-                    "const display = arguments[0].closest('tonk-display');
+                    "let bound = arguments[0];
+                     while (bound && !bound.getAttributeNames().some((name) => name.startsWith('on:'))) {
+                       bound = bound.parentElement;
+                     }
+                     const display = bound && bound.closest('tonk-display');
                      return !display || display.hasAttribute('data-bound');",
                     vec![found.to_json()?],
                 )
@@ -4922,7 +4929,10 @@ mod tests {
     /// nothing about the app.
     async fn submit_hub_wizard(driver: &WebDriver) -> Result<()> {
         enter_hub(driver).await?;
-        wait_for_displayed(driver, ".snew").await?.click().await?;
+        // Through `click`: the form's `space/create` binding must be wired
+        // before the press, or the display resolves nothing and the space
+        // is never asked for.
+        click(driver, ".snew").await?;
         // Back to the top document: everything after this — the space
         // page, the bar, the cluster — lives there.
         driver.enter_default_frame().await?;
