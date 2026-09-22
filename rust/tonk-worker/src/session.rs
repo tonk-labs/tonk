@@ -105,6 +105,7 @@ pub fn now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::worker::DefaultPeer;
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     use wasm_bindgen_test::wasm_bindgen_test_configure;
@@ -129,15 +130,14 @@ mod tests {
     async fn scratch() -> crate::worker::DefaultPeer {
         let name = dialog_peer::helpers::unique_name("session-test");
         let storage = dialog_storage::provider::storage::Storage::<DefaultSpace>::default();
-        let profile = dialog_peer::Peer::new()
+        dialog_peer::Peer::new()
             .storage(storage.clone())
             .open(dialog_effects::storage::Location::new(
                 Directory::Temp,
                 name,
             ))
             .await
-            .expect("profile opens");
-        profile
+            .expect("profile opens")
     }
 
     #[dialog_common::test]
