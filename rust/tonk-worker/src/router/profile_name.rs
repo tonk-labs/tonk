@@ -21,7 +21,6 @@ use tonk_schema::{MemberName, Membership};
 
 // Spaces re-stamp member names on their own `main` content branch,
 // which is the same name the profile's content branch carries.
-use super::repository::PROFILE_BRANCH;
 // Only the wasm-gated rename handler re-stamps member names, so this and
 // `restamp_member_name` exist only on the wasm target (the worker's real
 // runtime). Gating them keeps the native `clippy -D warnings` build clean.
@@ -37,20 +36,25 @@ const CONTENT_BRANCH: &str = "main";
 /// [`stored_display_name`] instead, so an unnamed profile reads as
 /// unnamed rather than as a generated word.
 pub(crate) async fn resolve_display_name(tonk: &TonkState) -> String {
-    stored_display_name_from(&tonk.profile, &tonk.operator)
+    stored_display_name_from(&tonk.profile, &tonk.operator, &tonk.active_branch)
         .await
         .unwrap_or_else(|| petname(&tonk.profile.did()))
 }
 
 /// The stored name for an explicit profile, or `None` when none is set.
+///
+/// Read off `branch`, the one the profile is on: each account's branch
+/// carries its own name, so a fixed branch would answer with another
+/// account's.
 pub(crate) async fn stored_display_name_from(
     profile: &Profile,
     operator: &DefaultOperator,
+    branch: &str,
 ) -> Option<String> {
     let profile_entity = profile.did().this();
 
     let branch = match Repository::from(profile)
-        .branch(PROFILE_BRANCH)
+        .branch(branch)
         .open()
         .perform(operator)
         .await
