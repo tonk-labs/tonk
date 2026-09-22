@@ -14,7 +14,7 @@
 //! row) — see [`crate::logic::member_roster_query_body`]. No concept is
 //! named, so nothing seeded on the space's branch is consulted.
 //!
-//! Renders a live count in the share stack and names in a scrollable members dialog.
+//! Renders a live count and names in the FABB's attached members panel.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -27,7 +27,6 @@ use wasm_bindgen_futures::{JsFuture, spawn_local};
 use web_sys::{HtmlElement, window};
 
 use crate::logic::{member_roster_query_body, self_did_from_conclusions, self_did_query_body};
-use crate::stack_rows;
 use crate::subscribing;
 
 const SUB_TAG: &str = "ui-member-roster";
@@ -41,8 +40,6 @@ pub struct UiMemberRosterElement {
     members: Rc<RefCell<Vec<Member>>>,
     /// The signed-in profile DID, used to mark their row as "you".
     viewer: Rc<RefCell<Option<String>>>,
-    dialog: Option<HtmlElement>,
-    listeners: Vec<crate::shadow::Bound>,
 }
 
 impl CustomElement for UiMemberRosterElement {
@@ -57,37 +54,18 @@ impl CustomElement for UiMemberRosterElement {
     }
 
     fn connected_callback(&mut self, this: &HtmlElement) {
-        let Some(document) = window().and_then(|window| window.document()) else {
-            return;
-        };
-        let Some(body) = document.body() else { return };
-        let Ok(dialog) = document.create_element("tonk-dialog") else {
-            return;
-        };
-        let dialog: HtmlElement = dialog.unchecked_into();
-        let _ = dialog.set_attribute("heading", "members");
-        dialog.set_class_name("fabb-members");
-        let _ = body.append_child(&dialog);
-        let popup = dialog.clone();
-        self.listeners
-            .push(crate::shadow::bind(this, "fabb-show-members", move |_| {
-                crate::dialog::show_dialog(&popup);
-            }));
-        self.dialog = Some(dialog.clone());
         let behaviour: Rc<dyn subscribing::Subscribing> = Rc::new(MemberRosterBehaviour {
             members: self.members.clone(),
             viewer: self.viewer.clone(),
-            dialog: dialog.clone(),
         });
         render_rows(
             this,
             &self.members.borrow(),
             self.viewer.borrow().as_deref(),
-            &dialog,
         );
         self.scaffold.connect(this, behaviour);
         if self.viewer.borrow().is_none() {
-            resolve_viewer(this, self.members.clone(), self.viewer.clone(), dialog);
+            resolve_viewer(this, self.members.clone(), self.viewer.clone());
         }
     }
 
@@ -106,25 +84,18 @@ impl CustomElement for UiMemberRosterElement {
         // Drop it and subscribe against the space that is actually here.
         self.scaffold.disconnect();
         self.members.borrow_mut().clear();
-        let Some(dialog) = self.dialog.as_ref() else {
-            return;
-        };
-        crate::dialog::close_dialog(dialog);
-        render_rows(this, &[], self.viewer.borrow().as_deref(), dialog);
+        render_rows(this, &[], self.viewer.borrow().as_deref());
         let behaviour: Rc<dyn subscribing::Subscribing> = Rc::new(MemberRosterBehaviour {
             members: self.members.clone(),
             viewer: self.viewer.clone(),
-            dialog: dialog.clone(),
         });
         self.scaffold.connect(this, behaviour);
     }
 
-    fn disconnected_callback(&mut self, this: &HtmlElement) {
+    fn disconnected_callback(&mut self, _this: &HtmlElement) {
         self.scaffold.disconnect();
-        self.listeners.clear();
-        stack_rows::clear_rows(this, SUB_TAG);
-        if let Some(dialog) = self.dialog.take() {
-            dialog.remove();
+        if let Some(panel) = member_panel(_this) {
+            panel.set_text_content(None);
         }
     }
 }
@@ -141,7 +112,6 @@ struct Member {
 /// This element's [`subscribing::Subscribing`] behaviour: the directory-mode
 /// roster query, and rendering delivered frames as member rows.
 struct MemberRosterBehaviour {
-    dialog: HtmlElement,
     members: Rc<RefCell<Vec<Member>>>,
     viewer: Rc<RefCell<Option<String>>>,
 }
@@ -163,12 +133,7 @@ impl subscribing::Subscribing for MemberRosterBehaviour {
                 members.push(row);
             }
         }
-        render_rows(
-            host,
-            &members,
-            self.viewer.borrow().as_deref(),
-            &self.dialog,
-        );
+        render_rows(host, &members, self.viewer.borrow().as_deref());
     }
 
     fn render_update(&self, host: &HtmlElement, payload: &JsValue) {
@@ -196,12 +161,7 @@ impl subscribing::Subscribing for MemberRosterBehaviour {
             }
         }
 
-        render_rows(
-            host,
-            &members,
-            self.viewer.borrow().as_deref(),
-            &self.dialog,
-        );
+        render_rows(host, &members, self.viewer.borrow().as_deref());
     }
 
     fn tag(&self) -> &'static str {
@@ -231,32 +191,44 @@ fn read_row(row: &JsValue) -> Option<Member> {
 }
 
 /// Keep the stack compact, with the full roster in the modal body.
-fn render_rows(host: &HtmlElement, members: &[Member], viewer: Option<&str>, dialog: &HtmlElement) {
-    stack_rows::clear_rows(host, SUB_TAG);
-    if let Some(row) = stack_rows::new_row(SUB_TAG) {
-        let _ = row.set_attribute("data-share-members", "");
-        let _ = row.set_attribute("muted", "");
-        let _ = row.set_attribute("aria-haspopup", "dialog");
-        row.set_text_content(Some(&format!(
-            "{} {}",
-            members.len(),
-            if members.len() == 1 {
-                "member"
-            } else {
-                "members"
-            }
-        )));
-        stack_rows::insert_row(host, &row);
+fn member_panel(host: &HtmlElement) -> Option<HtmlElement> {
+    host.closest("tonk-fab")
+        .ok()
+        .flatten()
+        .and_then(|bar| bar.shadow_root())
+        .and_then(|root| root.query_selector(".members-list").ok().flatten())
+        .and_then(|panel| panel.dyn_into::<HtmlElement>().ok())
+}
+
+fn render_rows(host: &HtmlElement, members: &[Member], viewer: Option<&str>) {
+    let Some(panel) = member_panel(host) else {
+        return;
+    };
+    panel.set_text_content(None);
+    if let Some(bar) = host.closest("tonk-fab").ok().flatten()
+        && let Some(root) = bar.shadow_root()
+        && let Ok(Some(label)) = root.query_selector(".members span")
+    {
+        label.set_text_content(Some(&format!("view members ({})", members.len())));
     }
-    dialog.set_text_content(None);
     let Some(document) = window().and_then(|window| window.document()) else {
         return;
     };
+    if members.is_empty() {
+        let Ok(empty) = document.create_element("p") else {
+            return;
+        };
+        empty.set_class_name("members-empty");
+        empty.set_text_content(Some("no members are available"));
+        let _ = panel.append_child(&empty);
+        return;
+    }
     for member in members {
         let Ok(row) = document.create_element("div") else {
             continue;
         };
         row.set_class_name("mem-row");
+        let _ = row.set_attribute("role", "listitem");
         let Ok(name) = document.create_element("span") else {
             continue;
         };
@@ -283,7 +255,7 @@ fn render_rows(host: &HtmlElement, members: &[Member], viewer: Option<&str>, dia
             tag.set_text_content(Some(&label));
             let _ = row.append_child(&tag);
         }
-        let _ = dialog.append_child(&row);
+        let _ = panel.append_child(&row);
     }
 }
 
@@ -293,7 +265,6 @@ fn resolve_viewer(
     host: &HtmlElement,
     members: Rc<RefCell<Vec<Member>>>,
     viewer: Rc<RefCell<Option<String>>>,
-    dialog: HtmlElement,
 ) {
     let Some(win) = window() else { return };
     let Some(tonk) = Reflect::get(&win, &"tonk".into())
@@ -340,13 +311,8 @@ fn resolve_viewer(
             return;
         };
         *viewer.borrow_mut() = Some(did);
-        if host.is_connected() && dialog.is_connected() {
-            render_rows(
-                &host,
-                &members.borrow(),
-                viewer.borrow().as_deref(),
-                &dialog,
-            );
+        if host.is_connected() {
+            render_rows(&host, &members.borrow(), viewer.borrow().as_deref());
         }
     });
 }
@@ -367,13 +333,27 @@ mod tests {
 
     #[wasm_bindgen_test::wasm_bindgen_test]
     fn roster_updates_count_names_and_viewer_labels() {
+        crate::register();
         let document = window().unwrap().document().unwrap();
-        let menu = document.create_element("tonk-menu").unwrap();
-        let host: HtmlElement = document.create_element("div").unwrap().unchecked_into();
-        menu.append_child(&host).unwrap();
-        let dialog: HtmlElement = document.create_element("div").unwrap().unchecked_into();
+        let bar: HtmlElement = document
+            .create_element("tonk-fab")
+            .unwrap()
+            .unchecked_into();
+        bar.set_attribute("space", "did:key:members").unwrap();
+        document.body().unwrap().append_child(&bar).unwrap();
+        let host: HtmlElement = bar
+            .query_selector("ui-member-roster")
+            .unwrap()
+            .unwrap()
+            .unchecked_into();
+        let panel: HtmlElement = bar
+            .shadow_root()
+            .unwrap()
+            .query_selector(".members-list")
+            .unwrap()
+            .unwrap()
+            .unchecked_into();
         let behaviour = MemberRosterBehaviour {
-            dialog: dialog.clone(),
             members: Rc::default(),
             viewer: Rc::new(RefCell::new(Some("did:key:owner".into()))),
         };
@@ -386,15 +366,17 @@ mod tests {
         let js = |value: serde_json::Value| js_sys::JSON::parse(&value.to_string()).unwrap();
         behaviour.render_reset(&host, &js(serde_json::json!([owner])));
         assert_eq!(
-            menu.query_selector("[data-share-members]")
+            bar.shadow_root()
+                .unwrap()
+                .query_selector(".members span")
                 .unwrap()
                 .unwrap()
                 .text_content()
                 .as_deref(),
-            Some("1 member")
+            Some("view members (1)")
         );
         assert_eq!(
-            dialog
+            panel
                 .query_selector(".mem-self")
                 .unwrap()
                 .unwrap()
@@ -403,7 +385,7 @@ mod tests {
             Some("<Owner>")
         );
         assert_eq!(
-            dialog
+            panel
                 .query_selector(".mem-you")
                 .unwrap()
                 .unwrap()
@@ -412,7 +394,7 @@ mod tests {
             Some("you, owner")
         );
         assert!(
-            dialog.query_selector("owner").unwrap().is_none(),
+            panel.query_selector("owner").unwrap().is_none(),
             "names remain plain text"
         );
         behaviour.render_update(
@@ -420,18 +402,21 @@ mod tests {
             &js(serde_json::json!({ "asserted": [member], "retracted": [] })),
         );
         assert_eq!(
-            menu.query_selector("[data-share-members]")
+            bar.shadow_root()
+                .unwrap()
+                .query_selector(".members span")
                 .unwrap()
                 .unwrap()
                 .text_content()
                 .as_deref(),
-            Some("2 members")
+            Some("view members (2)")
         );
         behaviour.render_update(
             &host,
             &js(serde_json::json!({ "asserted": [], "retracted": [owner] })),
         );
-        assert_eq!(dialog.query_selector_all(".mem-row").unwrap().length(), 1);
-        assert_eq!(dialog.text_content().as_deref(), Some("Member"));
+        assert_eq!(panel.query_selector_all(".mem-row").unwrap().length(), 1);
+        assert_eq!(panel.text_content().as_deref(), Some("Member"));
+        bar.remove();
     }
 }

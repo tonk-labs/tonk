@@ -1,18 +1,14 @@
 //! The bar — one object.
 //!
-//! `[circle 36][space 216][share 144]`, flush cells on a
-//! single frost surface separated by 1px weighted lines. Anchored right the
-//! full run mirrors to `[share][space][circle]`; compact mirrors to
-//! `[more][share?][space][circle]`. The sync disc keeps the corner and every
-//! rung keeps its place relative to it. See
-//! [`apply_flip`] for why this mirrors rather than swapping bookends alone.
+//! A 360px rail with a 48px sync/name header and four 48px primary actions.
+//! Share, members, and agent detail join as an inward panel, or stack when the
+//! viewport cannot hold the joined surface. Anchored right the rail and panel
+//! exchange columns while DOM and focus order remain coherent. See
+//! [`apply_flip`] for the resting-edge mirror.
 //!
-//! The spec's `changes` rung (432px, between space and share) is deliberately
-//! absent — see `plan/fabb-conformance.md`. It drives preview / accept /
-//! discard / restore over proposals and history points, and nothing in this
-//! repo implements either, so building it would be dead chrome. Cell widths
-//! and the flush-run geometry are otherwise spec-correct; the bar is simply
-//! shorter until the feature it serves exists.
+//! The reference's changes/review surface is outside this release because the
+//! product has no proposal/history operation for it. The Hub remains the route
+//! for creating, opening, renaming, and configuring spaces.
 //!
 //! ## Attributes
 //!
@@ -32,11 +28,8 @@
 //! `--fabb-*` values are the theme's LIGHT column and the page's dark swap
 //! never reaches it.
 //!
-//! ## Stacks
-//!
-//! A stack is a light-DOM `<tonk-menu slot="menu" data-for="space|share">`.
-//! The bar sizes it from the rung that opened it and positions it one gap
-//! below (or above, when `up`).
+//! The retained stack machinery below supports older imperative callers while
+//! the v0.17 path renders its action run and attached panels in shadow DOM.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -80,6 +73,8 @@ impl Cell {
 pub(crate) enum Panel {
     Space,
     Share,
+    Agent,
+    Members,
     Overflow,
 }
 
@@ -88,6 +83,8 @@ impl Panel {
         match self {
             Self::Space => "space",
             Self::Share => "share",
+            Self::Agent => "agent",
+            Self::Members => "members",
             Self::Overflow => "overflow",
         }
     }
@@ -152,7 +149,24 @@ pub(crate) fn build(this: &HtmlElement, state: &Shared) -> Vec<Bound> {
                 commit_edit(&host, &shared);
                 return;
             }
+            if cell == Cell::Share
+                && query(&host, ".share")
+                    .and_then(|button| button.get_attribute("data-share-state"))
+                    .as_deref()
+                    == Some("copying")
+            {
+                return;
+            }
             open_panel(&host, &shared, panel, cell, None);
+            if cell == Cell::Share
+                && !host.has_attribute("data-account-required")
+                && let Ok(Some(share)) = host.query_selector("tonk-share")
+                && let Ok(share) = share.dyn_into::<HtmlElement>()
+            {
+                // Stay in this click task: Clipboard user activation cannot
+                // survive an awaited adapter hop.
+                share.click();
+            }
             let detail = Object::new();
             let _ = Reflect::set(&detail, &"cell".into(), &panel.name().into());
             shadow::emit(&host, "fabb-cell", &detail);
@@ -165,6 +179,67 @@ pub(crate) fn build(this: &HtmlElement, state: &Shared) -> Vec<Bound> {
         listeners.push(shadow::on_click(&button, move || {
             open_panel(&host, &shared, Panel::Overflow, Cell::More, None);
         }));
+    }
+
+    for (selector, panel) in [
+        ("[data-panel=agent]", Panel::Agent),
+        ("[data-panel=members]", Panel::Members),
+    ] {
+        let Ok(Some(button)) = root.query_selector(selector) else {
+            continue;
+        };
+        let host = this.clone();
+        let shared = state.clone();
+        listeners.push(shadow::on_click(&button, move || {
+            open_panel(&host, &shared, panel, Cell::Space, None);
+            if panel == Panel::Agent
+                && let Ok(Some(agent)) = host.query_selector("tonk-agent-panel")
+                && let Ok(agent) = agent.dyn_into::<HtmlElement>()
+            {
+                shadow::emit(&agent, "fabb-agent-open", &wasm_bindgen::JsValue::NULL);
+            }
+        }));
+    }
+    if let Ok(backs) = root.query_selector_all(".back") {
+        for index in 0..backs.length() {
+            let Some(back) = backs.item(index) else {
+                continue;
+            };
+            let Ok(back) = back.dyn_into::<Element>() else {
+                continue;
+            };
+            let host = this.clone();
+            let shared = state.clone();
+            listeners.push(shadow::on_click(&back, move || {
+                open_panel(&host, &shared, Panel::Space, Cell::Space, None);
+            }));
+        }
+    }
+    if let Ok(Some(home)) = root.query_selector("[data-action=home]") {
+        listeners.push(shadow::on_click(&home, || tonk_host::navigate_to("/")));
+    }
+    if let Ok(Some(tool)) = root.query_selector("[data-action=tool]") {
+        let host = this.clone();
+        let shared = state.clone();
+        listeners.push(shadow::on_click(&tool, move || {
+            close(&host, &shared);
+            crate::tool_connection::open(&host);
+        }));
+    }
+    for (selector, event_name) in [
+        ("#agent-panel .panel-copy", "fabb-agent-copy"),
+        ("#agent-panel .agent-retry", "fabb-agent-retry"),
+    ] {
+        if let Ok(Some(button)) = root.query_selector(selector) {
+            let host = this.clone();
+            listeners.push(shadow::on_click(&button, move || {
+                if let Ok(Some(agent)) = host.query_selector("tonk-agent-panel")
+                    && let Ok(agent) = agent.dyn_into::<HtmlElement>()
+                {
+                    shadow::emit(&agent, event_name, &wasm_bindgen::JsValue::NULL);
+                }
+            }));
+        }
     }
 
     // A picked row closes the stack unless it owns a sub-stack — and on a
@@ -271,6 +346,118 @@ fn query(this: &HtmlElement, selector: &str) -> Option<Element> {
     this.shadow_root()?.query_selector(selector).ok().flatten()
 }
 
+fn is_v017(this: &HtmlElement) -> bool {
+    query(this, ".header").is_some()
+}
+
+fn panel_selector(panel: Panel) -> Option<&'static str> {
+    match panel {
+        Panel::Share => Some("#share-panel"),
+        Panel::Agent => Some("#agent-panel"),
+        Panel::Members => Some("#members-panel"),
+        Panel::Space | Panel::Overflow => None,
+    }
+}
+
+fn panel_button_selector(panel: Panel) -> &'static str {
+    match panel {
+        Panel::Space | Panel::Overflow => ".space",
+        Panel::Share => "[data-panel=share]",
+        Panel::Agent => "[data-panel=agent]",
+        Panel::Members => "[data-panel=members]",
+    }
+}
+
+fn open_panel_v017(this: &HtmlElement, state: &Shared, panel: Panel, anchor: Cell) {
+    commit_edit(this, state);
+    let panel = if panel == Panel::Overflow {
+        Panel::Space
+    } else {
+        panel
+    };
+    let requested = OpenPanel {
+        panel,
+        anchor,
+        return_to: None,
+    };
+    if state.borrow().open_panel == Some(requested) {
+        close_v017(this, state, true);
+        return;
+    }
+    state.borrow_mut().open_panel = Some(requested);
+
+    if let Some(run) = query(this, ".run") {
+        let _ = run.remove_attribute("hidden");
+        let _ = run.remove_attribute("aria-hidden");
+    }
+    if let Some(wrapper) = wrapper(this) {
+        let classes = wrapper.class_list();
+        let _ = classes.add_1("menu-open");
+        let _ = classes.toggle_with_force("has-panel", panel_selector(panel).is_some());
+    }
+    for (candidate, selector) in [
+        (Panel::Share, "#share-panel"),
+        (Panel::Agent, "#agent-panel"),
+        (Panel::Members, "#members-panel"),
+    ] {
+        if let Some(element) = query(this, selector) {
+            if candidate == panel {
+                let _ = element.remove_attribute("hidden");
+            } else {
+                let _ = element.set_attribute("hidden", "");
+            }
+        }
+    }
+    sync_expanded_v017(this, state);
+}
+
+fn close_v017(this: &HtmlElement, state: &Shared, restore_focus: bool) {
+    let open = state.borrow_mut().open_panel.take();
+    if let Some(run) = query(this, ".run") {
+        let _ = run.set_attribute("hidden", "");
+        let _ = run.set_attribute("aria-hidden", "true");
+    }
+    for selector in ["#share-panel", "#agent-panel", "#members-panel"] {
+        if let Some(panel) = query(this, selector) {
+            let _ = panel.set_attribute("hidden", "");
+        }
+    }
+    if let Some(wrapper) = wrapper(this) {
+        let classes = wrapper.class_list();
+        let _ = classes.remove_1("menu-open");
+        let _ = classes.remove_1("has-panel");
+    }
+    sync_expanded_v017(this, state);
+    if restore_focus
+        && !state.borrow().collapsed
+        && let Some(open) = open
+        && let Some(button) = query(this, panel_button_selector(open.panel))
+    {
+        let _ = button.unchecked_ref::<HtmlElement>().focus();
+    }
+}
+
+fn sync_expanded_v017(this: &HtmlElement, state: &Shared) {
+    let open = state.borrow().open_panel;
+    if let Some(space) = query(this, ".space") {
+        let _ = space.set_attribute("aria-expanded", &open.is_some().to_string());
+    }
+    for (panel, selector) in [
+        (Panel::Share, "[data-panel=share]"),
+        (Panel::Agent, "[data-panel=agent]"),
+        (Panel::Members, "[data-panel=members]"),
+    ] {
+        if let Some(button) = query(this, selector) {
+            let _ = button.set_attribute(
+                "aria-expanded",
+                &open
+                    .is_some_and(|current| current.panel == panel)
+                    .to_string(),
+            );
+        }
+    }
+}
+
 /// Sideways flight is a hover-pointer's move.
 fn wants_inplace() -> bool {
     let Some(win) = window() else { return false };
@@ -301,6 +488,14 @@ fn wants_inplace() -> bool {
 /// The DOM is genuinely reordered rather than `flex-direction: row-reverse`d,
 /// so focus and screen-reader order match the eye.
 pub(crate) fn apply_flip(this: &HtmlElement) {
+    if is_v017(this) {
+        if let Some(wrapper) = wrapper(this) {
+            let _ = wrapper
+                .class_list()
+                .toggle_with_force("flip", this.has_attribute("flip"));
+        }
+        return;
+    }
     let (Some(bar), Some(run), Some(fab), Some(space), Some(share), Some(more)) = (
         query(this, ".bar"),
         query(this, ".run"),
@@ -337,6 +532,16 @@ pub(crate) fn apply_flip(this: &HtmlElement) {
 
 /// Compatibility entrypoint for the imperative `open(cell)` surface.
 pub(crate) fn open(this: &HtmlElement, state: &Shared, cell: &str) {
+    if is_v017(this) {
+        match cell {
+            "space" => open_panel(this, state, Panel::Space, Cell::Space, None),
+            "share" => open_panel(this, state, Panel::Share, Cell::Share, None),
+            "agent" => open_panel(this, state, Panel::Agent, Cell::Space, None),
+            "members" => open_panel(this, state, Panel::Members, Cell::Space, None),
+            _ => {}
+        }
+        return;
+    }
     match cell {
         "space" => open_panel(this, state, Panel::Space, Cell::Space, None),
         "share" => {
@@ -364,6 +569,10 @@ pub(crate) fn open_panel(
     anchor: Cell,
     return_to: Option<Panel>,
 ) {
+    if is_v017(this) {
+        open_panel_v017(this, state, panel, anchor);
+        return;
+    }
     commit_edit(this, state);
     let requested = OpenPanel {
         panel,
@@ -503,6 +712,10 @@ pub(crate) fn close(this: &HtmlElement, state: &Shared) {
 }
 
 fn close_internal(this: &HtmlElement, state: &Shared, restore_focus: bool) {
+    if is_v017(this) {
+        close_v017(this, state, restore_focus);
+        return;
+    }
     let opener = state.borrow().open_panel.map(|open| open.anchor);
     // A row holding its flyout open closes with the stack it lives in.
     // Left set, it would still be open the next time the stack is
@@ -608,6 +821,10 @@ fn restore_sub(state: &Shared) {
 }
 
 fn sync_expanded(this: &HtmlElement, state: &Shared) {
+    if is_v017(this) {
+        sync_expanded_v017(this, state);
+        return;
+    }
     let open = state.borrow().open_panel;
     for cell in [Cell::Space, Cell::Share, Cell::More] {
         if let Some(button) = query(this, cell.selector()) {
@@ -745,11 +962,17 @@ pub(crate) fn update(this: &HtmlElement) {
     }
 
     let state = state_of(this);
+    let signed_out = this.has_attribute("data-account-required");
     if let Ok(Some(disc)) = root.query_selector(".fab .disc") {
-        let class = if state == "synced" {
+        let rendered = if signed_out {
+            "offline"
+        } else {
+            state.as_str()
+        };
+        let class = if rendered == "synced" {
             "disc st".to_string()
         } else {
-            format!("disc st {state}")
+            format!("disc st {rendered}")
         };
         disc.set_class_name(&class);
     }
@@ -760,10 +983,13 @@ pub(crate) fn update(this: &HtmlElement) {
         // shapes for eight states, so `revoked` and `conflict` both render a
         // hollow ring — announcing them as merely "offline" would make the
         // difference unreachable to anyone not looking at the pixel.
-        let reported = this
-            .get_attribute("data-sync-status")
-            .map(|status| status.trim_start_matches("sync:").to_string())
-            .unwrap_or_else(|| state.clone());
+        let reported = if signed_out {
+            "signed out".to_string()
+        } else {
+            this.get_attribute("data-sync-status")
+                .map(|status| status.trim_start_matches("sync:").to_string())
+                .unwrap_or_else(|| state.clone())
+        };
         let collapsed =
             wrapper(this).is_some_and(|wrapper| wrapper.class_list().contains("collapsed"));
         let label = if collapsed {
@@ -857,6 +1083,27 @@ fn update_more_glyph(this: &HtmlElement) {
 
 /// Apply the one fit-driven action partition to DOM, focus, and menus.
 pub(crate) fn apply_responsive(this: &HtmlElement, usable_width_px: f64, state: &Shared) {
+    if is_v017(this) {
+        let usable = usable_width_px.max(0.0);
+        {
+            let mut current = state.borrow_mut();
+            current.usable_width_px = usable;
+            current.layout = Some(logic::bar_layout(usable));
+        }
+        if let Some(wrapper) = wrapper(this) {
+            let _ = wrapper
+                .unchecked_ref::<HtmlElement>()
+                .style()
+                .set_property("--_room", &format!("{usable}px"));
+            let _ = wrapper
+                .class_list()
+                .toggle_with_force("stacked", usable < 720.0);
+        }
+        apply_flip(this);
+        propagate(this);
+        update(this);
+        return;
+    }
     let layout = logic::bar_layout(usable_width_px);
     if state.borrow().layout == Some(layout) {
         return;
@@ -976,6 +1223,10 @@ pub(crate) fn expand(this: &HtmlElement, state: &Shared) {
     }
     if let Some(run) = query(this, ".run") {
         let _ = run.remove_attribute("aria-hidden");
+    }
+    if is_v017(this) {
+        update(this);
+        return;
     }
     if let Some(layout) = state.borrow().layout {
         set_cell_visible(this, Cell::Space, true, false);

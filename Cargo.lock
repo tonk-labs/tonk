@@ -2045,18 +2045,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gloo-timers"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbb143cf96099802033e0d4f4963b19fd2e0b728bcf076cd9cf7f6634f092994"
-dependencies = [
- "futures-channel",
- "futures-core",
- "js-sys",
- "wasm-bindgen",
-]
-
-[[package]]
 name = "group"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4984,6 +4972,7 @@ dependencies = [
  "tonk-analytics",
  "tonk-common",
  "tonk-host",
+ "tonk-portal",
  "tonk-schema",
  "tonk-worker-api",
  "urlencoding",
@@ -5007,7 +4996,6 @@ dependencies = [
  "tonk-inspector",
  "tonk-portal",
  "tonk-tree",
- "tonk-workspace",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
@@ -5478,31 +5466,6 @@ dependencies = [
  "tonk-account",
  "url",
  "wasm-bindgen-test",
-]
-
-[[package]]
-name = "tonk-workspace"
-version = "0.6.16-rc.1"
-dependencies = [
- "bs58",
- "custom-elements",
- "dialog-common",
- "gloo-timers",
- "js-sys",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "tonk-analytics",
- "tonk-common",
- "tonk-fab",
- "tonk-host",
- "tonk-invite",
- "tonk-schema",
- "tonk-worker-api",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "wasm-bindgen-test",
- "web-sys",
 ]
 
 [[package]]

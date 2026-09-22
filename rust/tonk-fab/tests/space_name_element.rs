@@ -167,7 +167,7 @@ async fn it_dispatches_an_inlined_rename_claim_and_reverts_the_chip_immediately(
     // Simulate an edit commit: `<inline-editable>` sets its own text then
     // dispatches a bubbling `change` on blur — mirror that directly rather
     // than depending on its dblclick/focus/blur choreography, which isn't
-    // registered here (no host, no `tonk-workspace::register()` in this crate).
+    // registered here (no host or author-element runtime in this test).
     editable.set_text_content(Some("Renamed Space"));
     let init = web_sys::EventInit::new();
     init.set_bubbles(true);
@@ -295,24 +295,21 @@ async fn it_renders_the_name_from_a_delivered_frame() {
 
 const ROSTER_TAG: &str = "ui-member-roster";
 
-/// Mount a `<ui-member-roster space=SPACE>` in the `<tonk-menu>` it renders
-/// rows into and return the roster element.
+/// Mount the real FABB and return its headless roster subscriber.
 fn mount_roster() -> web_sys::HtmlElement {
     tonk_fab::register();
-    let menu = document().create_element("tonk-menu").expect("create menu");
-    let el = document()
-        .create_element(ROSTER_TAG)
-        .expect("create")
-        .dyn_into::<web_sys::HtmlElement>()
-        .expect("html element");
-    el.set_attribute("space", SPACE).expect("set space");
-    menu.append_child(el.as_ref()).expect("append roster");
+    let bar = document().create_element("tonk-fab").expect("create bar");
+    bar.set_attribute("space", SPACE).expect("set space");
     document()
         .body()
         .expect("body")
-        .append_child(&menu)
-        .expect("append menu");
-    el
+        .append_child(&bar)
+        .expect("append bar");
+    bar.query_selector(ROSTER_TAG)
+        .expect("query roster")
+        .expect("roster")
+        .dyn_into::<web_sys::HtmlElement>()
+        .expect("html element")
 }
 
 /// A single member conclusion row, shaped like a real subscription result:
@@ -374,27 +371,23 @@ fn deliver_roster(el: &web_sys::HtmlElement, method: &str, payload: &JsValue) {
         .unwrap_or_else(|_| panic!("{method} call"));
 }
 
-/// Read the compact member count rendered beside the roster element.
+/// Read the attached members action label.
 fn rendered_count(el: &web_sys::HtmlElement) -> Option<String> {
-    let menu = el.parent_element().expect("roster menu");
-    menu.query_selector(&format!(
-        "[data-row-owner={ROSTER_TAG}][data-share-members]"
-    ))
-    .expect("query count row")
-    .and_then(|row| row.text_content())
+    el.closest("tonk-fab")
+        .expect("closest bar")
+        .and_then(|bar| bar.shadow_root())
+        .and_then(|root| root.query_selector(".members span").ok().flatten())
+        .and_then(|label| label.text_content())
 }
 
-/// Read the full member names from the roster-owned dialog, in DOM order.
-fn rendered_names() -> Vec<String> {
-    let dialogs = document()
-        .query_selector_all(".fabb-members")
-        .expect("query roster dialogs");
-    let dialog = dialogs
-        .item(dialogs.length().checked_sub(1).expect("roster dialog"))
-        .expect("latest roster dialog")
-        .dyn_into::<web_sys::Element>()
-        .expect("roster dialog element");
-    let names = dialog
+/// Read names from the attached members panel, in DOM order.
+fn rendered_names(el: &web_sys::HtmlElement) -> Vec<String> {
+    let root = el
+        .closest("tonk-fab")
+        .expect("closest bar")
+        .and_then(|bar| bar.shadow_root())
+        .expect("bar shadow");
+    let names = root
         .query_selector_all(".mem-row > span:first-child")
         .expect("query member names");
     (0..names.length())
@@ -421,17 +414,17 @@ async fn it_renders_the_roster_from_delivered_frames() {
     // on the element. An element that subscribes and never renders is the
     // bug this whole scaffolding exists to catch.
     let el = mount_roster();
-    assert_eq!(rendered_count(&el).as_deref(), Some("0 members"));
-    assert!(rendered_names().is_empty());
+    assert_eq!(rendered_count(&el).as_deref(), Some("view members"));
+    assert!(rendered_names(&el).is_empty());
 
     deliver_roster(
         &el,
         "reset",
         &roster_reset_payload(&[("member:1", "Alice"), ("member:2", "Bob")]),
     );
-    assert_eq!(rendered_count(&el).as_deref(), Some("2 members"));
+    assert_eq!(rendered_count(&el).as_deref(), Some("view members (2)"));
     assert_eq!(
-        rendered_names(),
+        rendered_names(&el),
         vec!["Alice".to_string(), "Bob".to_string()],
         "a delivered reset frame must populate the roster dialog"
     );
@@ -443,14 +436,17 @@ async fn it_renders_the_roster_from_delivered_frames() {
         "update",
         &roster_update_payload(&[("member:3", "Carol")], &["member:1"]),
     );
-    assert_eq!(rendered_count(&el).as_deref(), Some("2 members"));
+    assert_eq!(rendered_count(&el).as_deref(), Some("view members (2)"));
     assert_eq!(
-        rendered_names(),
+        rendered_names(&el),
         vec!["Bob".to_string(), "Carol".to_string()],
         "a delivered update frame must retract, assert, and re-render, not be ignored"
     );
 
-    el.parent_element().expect("roster menu").remove();
+    el.closest("tonk-fab")
+        .expect("closest bar")
+        .expect("bar")
+        .remove();
 }
 
 // --- <ui-space-switcher>, built on the same subscribing scaffolding ---

@@ -97,7 +97,7 @@ use tonk_analytics::product::{
 
 use crate::logic::{
     COPIED_LINGER_MS, SHARE_TIMEOUT_MS, ShareState, enable_sync_claim_json,
-    forget_invite_claim_json, invite_claim_json, invite_state_query_body,
+    forget_invite_claim_json, invite_claim_json, invite_state_query_body, share_blocked_query_body,
 };
 use crate::subscribing;
 
@@ -393,6 +393,38 @@ struct InviteStateBehaviour {
     current_link: Rc<RefCell<Option<String>>>,
 }
 
+struct ShareBlockedBehaviour {
+    state: Rc<RefCell<ShareStateCell>>,
+}
+
+const BLOCKED_SUB_TAG: &str = "tonk-share-blocked";
+
+impl subscribing::Subscribing for ShareBlockedBehaviour {
+    fn query_body(&self, this: &HtmlElement) -> Result<String, String> {
+        share_blocked_query_body(&this.get_attribute("space").unwrap_or_default())
+    }
+
+    fn render_reset(&self, host: &HtmlElement, payload: &JsValue) {
+        let rows = js_sys::Array::from(payload);
+        if let Some(blocked) = read_blocked_row(&rows.get(rows.length().saturating_sub(1))) {
+            handle_blocked(host, &self.state, blocked);
+        }
+    }
+
+    fn render_update(&self, host: &HtmlElement, payload: &JsValue) {
+        let asserted =
+            Reflect::get(payload, &JsValue::from_str("asserted")).unwrap_or(JsValue::UNDEFINED);
+        let rows = js_sys::Array::from(&asserted);
+        if let Some(blocked) = read_blocked_row(&rows.get(rows.length().saturating_sub(1))) {
+            handle_blocked(host, &self.state, blocked);
+        }
+    }
+
+    fn tag(&self) -> &'static str {
+        BLOCKED_SUB_TAG
+    }
+}
+
 /// The routing context the invite state is published in.
 ///
 /// PROFILE main, not the space. The Hub renders one share control per
@@ -686,7 +718,10 @@ impl TonkShare {
             state: Rc::clone(&self.state),
             current_link: Rc::clone(&self.current_link),
         });
-        self.scaffold.connect_all(this, vec![invite]);
+        let blocked: Rc<dyn subscribing::Subscribing> = Rc::new(ShareBlockedBehaviour {
+            state: Rc::clone(&self.state),
+        });
+        self.scaffold.connect_all(this, vec![invite, blocked]);
     }
 
     /// Listen for the enable-sync prompt's confirm, wherever it is in the
@@ -758,9 +793,14 @@ impl TonkShare {
             {
                 fail_copy(&host, &state, "");
                 close_enable_sync_dialog();
-                tonk_host::request_registration(
-                    &serde_json::json!({ "reason": reason, "space": space }).to_string(),
-                );
+                if let Some(fab) = host
+                    .closest("tonk-fab")
+                    .ok()
+                    .flatten()
+                    .and_then(|element| element.dyn_into::<HtmlElement>().ok())
+                {
+                    crate::shadow::emit(&fab, "fabb-account-needed", &JsValue::from_str(&reason));
+                }
                 return;
             }
             let wants_share = enable_sync_dialog().is_some_and(|dialog| {
@@ -1177,6 +1217,7 @@ fn handle_link(
     if Some(&link) == pending_stale.as_ref() {
         return;
     }
+    close_enable_sync_dialog();
     settle(host, state, Ok(link));
 }
 
@@ -1212,6 +1253,24 @@ fn handle_blocked(host: &HtmlElement, state: &Rc<RefCell<ShareStateCell>>, block
                 _ => FailureKind::Unknown,
             }),
         );
+    }
+
+    if blocked.code == tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT {
+        abandon(state, &blocked.detail);
+        set_state(host, ShareState::Blocked);
+        if let Some(fab) = host
+            .closest("tonk-fab")
+            .ok()
+            .flatten()
+            .and_then(|element| element.dyn_into::<HtmlElement>().ok())
+        {
+            crate::shadow::emit(
+                &fab,
+                "fabb-account-needed",
+                &JsValue::from_str(tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT),
+            );
+        }
+        return;
     }
 
     let Some(repair) = Repair::for_code(&blocked.code) else {
@@ -1271,7 +1330,7 @@ fn open_enable_sync_dialog(detail: &str, repair: Option<Repair>) {
 }
 
 fn open_enable_sync_ceremony(detail: &str, repair: Option<Repair>, wants_share: bool) {
-    let Some(dialog) = enable_sync_dialog() else {
+    let Some((dialog, created)) = ensure_enable_sync_dialog() else {
         return;
     };
     if let Ok(Some(slot)) = dialog.query_selector(DIALOG_DETAIL) {
@@ -1317,7 +1376,44 @@ fn open_enable_sync_ceremony(detail: &str, repair: Option<Repair>, wants_share: 
             let _ = confirm.set_attribute("disabled", "");
         }
     }
-    let _ = dialog.remove_attribute("hidden");
+    if created {
+        let Some(fab) = window()
+            .and_then(|window| window.document())
+            .and_then(|document| document.query_selector("tonk-fab").ok().flatten())
+            .and_then(|element| element.dyn_into::<HtmlElement>().ok())
+        else {
+            dialog.remove();
+            return;
+        };
+        let Some(content) = dialog.dyn_ref::<HtmlElement>() else {
+            dialog.remove();
+            return;
+        };
+        let heading = repair
+            .as_ref()
+            .map_or(TERMINAL_LABEL, |repair| repair.label);
+        match crate::contained_tasks::present_element(&fab, content, heading, true) {
+            Ok(completion) => {
+                let content = content.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    let _ = wasm_bindgen_futures::JsFuture::from(completion).await;
+                    content.remove();
+                    if let Some(banner) =
+                        window()
+                            .and_then(|window| window.document())
+                            .and_then(|document| {
+                                document.get_element_by_id(crate::bar::CONNECT_BANNER_ID)
+                            })
+                    {
+                        let _ = banner.remove_attribute("hidden");
+                    }
+                });
+            }
+            Err(_) => dialog.remove(),
+        }
+    } else {
+        let _ = dialog.remove_attribute("hidden");
+    }
     if let Some(banner) = window()
         .and_then(|window| window.document())
         .and_then(|document| document.get_element_by_id(crate::bar::CONNECT_BANNER_ID))
@@ -1340,6 +1436,17 @@ fn close_enable_sync_dialog() {
     let Some(dialog) = enable_sync_dialog() else {
         return;
     };
+    if let Some(fab) = dialog
+        .closest("tonk-fab")
+        .ok()
+        .flatten()
+        .and_then(|element| element.dyn_into::<HtmlElement>().ok())
+        && let Ok(resolve) =
+            Reflect::get(&fab, &"resolve".into()).and_then(|value| value.dyn_into::<Function>())
+    {
+        let _ = resolve.call1(&fab, &JsValue::from_str("completed"));
+        return;
+    }
     let _ = dialog.set_attribute("hidden", "");
     if let Some(banner) = window()
         .and_then(|window| window.document())
@@ -1353,8 +1460,21 @@ fn enable_sync_dialog() -> Option<Element> {
     window()?.document()?.get_element_by_id(DIALOG_ID)
 }
 
+fn ensure_enable_sync_dialog() -> Option<(Element, bool)> {
+    let document = window()?.document()?;
+    if let Some(dialog) = document.get_element_by_id(DIALOG_ID) {
+        return Some((dialog, false));
+    }
+    let holder = document.create_element("div").ok()?;
+    holder.set_inner_html(crate::markup::REFUSAL_DIALOGS_HTML);
+    let dialog = holder.first_element_child()?;
+    document.body()?.append_child(&dialog).ok()?;
+    Some((dialog, true))
+}
+
 /// A subscription snapshot (`reset`) frame: the invite link off the first
 /// (and only — cardinality-one) conclusion row.
+#[cfg(test)]
 fn read_link_from_frame(payload: &JsValue) -> Option<String> {
     let conclusions = js_sys::Array::from(payload);
     read_link_field(&conclusions.get(0))
@@ -1363,6 +1483,7 @@ fn read_link_from_frame(payload: &JsValue) -> Option<String> {
 /// An incremental `update` frame: `{ asserted, retracted }`. `link` is
 /// cardinality-one, so the newest asserted row carries the current value; a
 /// bare retract (no asserted) is a no-op here.
+#[cfg(test)]
 fn read_link_from_delta(payload: &JsValue) -> Option<String> {
     let asserted =
         Reflect::get(payload, &JsValue::from_str("asserted")).unwrap_or(JsValue::UNDEFINED);
@@ -1374,6 +1495,7 @@ fn read_link_from_delta(payload: &JsValue) -> Option<String> {
 /// (and shortened) invite URL the worker's mint asserted onto the space's
 /// `xyz.tonk.credential/link` attribute. `None` for a missing/empty row or an
 /// empty link.
+#[cfg(test)]
 fn read_link_field(row: &JsValue) -> Option<String> {
     if row.is_undefined() || row.is_null() {
         return None;
@@ -1399,6 +1521,29 @@ fn set_state(host: &HtmlElement, state: ShareState) {
         && let Ok(Some(row)) = bar.query_selector("[data-share-link]")
     {
         let _ = row.set_attribute("data-share-state", state.as_str());
+    }
+    if let Some(bar) = host.closest("tonk-fab").ok().flatten()
+        && let Some(root) = bar.shadow_root()
+        && let Ok(Some(button)) = root.query_selector(".share")
+    {
+        let _ = button.set_attribute("data-share-state", state.as_str());
+        if let Ok(Some(label)) = button.query_selector("span") {
+            let text = match state {
+                ShareState::Idle | ShareState::Blocked => "copy share link",
+                ShareState::Copying => "copying…",
+                ShareState::Copied => "copied",
+                ShareState::Failed => "couldn't copy",
+            };
+            label.set_text_content(Some(text));
+            if let Ok(Some(progress)) = root.query_selector(".share-progress") {
+                progress.set_text_content(Some(match state {
+                    ShareState::Idle | ShareState::Blocked => "ready to copy a share link",
+                    ShareState::Copying => "creating and copying the share link…",
+                    ShareState::Copied => "share link copied",
+                    ShareState::Failed => "the share link could not be copied; try again",
+                }));
+            }
+        }
     }
 }
 
@@ -1567,23 +1712,6 @@ mod tests {
         let row = Object::new();
         Reflect::set(&row, &"fields".into(), &fields).expect("set fields");
         row.into()
-    }
-
-    fn blocked_reset_payload(code: &str, time: f64) -> JsValue {
-        let rows = js_sys::Array::new();
-        rows.push(&blocked_row(code, time));
-        rows.into()
-    }
-
-    /// An `update` delta payload carrying one refusal — the shape production
-    /// actually delivers a refusal in (see `share.rs`'s module doc: a
-    /// refusal always arrives after the subscription is already open).
-    fn blocked_update_payload(code: &str, time: f64) -> JsValue {
-        let asserted = js_sys::Array::new();
-        asserted.push(&blocked_row(code, time));
-        let payload = Object::new();
-        Reflect::set(&payload, &"asserted".into(), &asserted).expect("set asserted");
-        payload.into()
     }
 
     /// A stand-in for `markup.rs`'s `#fab-enable-sync` dialog: just enough
@@ -1827,19 +1955,12 @@ mod tests {
             .unchecked_into::<Function>()
             .call1(&bar, &"share".into())
             .unwrap();
-        let menu = bar.query_selector("[data-for=share]").unwrap().unwrap();
-        let copy = bar.query_selector("[data-share-link]").unwrap().unwrap();
-        copy.remove_attribute("hidden").unwrap();
-        copy.shadow_root()
-            .unwrap()
-            .query_selector(".row")
-            .unwrap()
-            .unwrap()
-            .unchecked_into::<HtmlElement>()
-            .click();
+        let root = bar.shadow_root().expect("bar shadow");
+        let menu = root.query_selector("#share-panel").unwrap().unwrap();
+        let copy = root.query_selector(".share").unwrap().unwrap();
         assert!(
             !menu.has_attribute("hidden"),
-            "copy selection must keep the stack open"
+            "copy selection must keep the attached panel open"
         );
         settle(&host, &state, Ok("https://example.test/join".to_owned()));
         flush_clipboard().await;
@@ -1899,9 +2020,9 @@ mod tests {
         assert!(state.borrow().pending.is_none());
     }
 
-    /// Mount the bar's real markup so the refusal dialogs a handler opens are
-    /// the authored ones, not a fixture's idea of them. Returns the mounted
-    /// host, which the caller removes.
+    /// Mount the bar and the authored refusal markup. Production creates this
+    /// content only when a contained request opens; tests that inspect its
+    /// slots install the same markup as an isolated fixture.
     fn mounted_bar() -> HtmlElement {
         remove_refusal_dialog();
         let document = window().expect("window").document().expect("document");
@@ -1915,10 +2036,78 @@ mod tests {
             .expect("body")
             .append_child(&host)
             .expect("mount");
-        // The refusal prompts are mounted on <body> by the bar, not authored
-        // inside it — see `element::mount_refusal_dialogs`.
-        crate::element::mount_refusal_dialogs();
+        let holder = document.create_element("div").expect("create holder");
+        holder.set_inner_html(crate::markup::REFUSAL_DIALOGS_HTML);
+        while let Some(child) = holder.first_element_child() {
+            document
+                .body()
+                .expect("body")
+                .append_child(&child)
+                .expect("mount refusal fixture");
+        }
         host
+    }
+
+    #[dialog_common::test]
+    fn the_visible_share_action_uses_the_real_headless_mint_once() {
+        let calls = Rc::new(RefCell::new(0_u32));
+        let sink = calls.clone();
+        let transact = Closure::<dyn FnMut(JsValue)>::new(move |_| {
+            *sink.borrow_mut() += 1;
+        });
+        let win = window().expect("window");
+        let tonk = Object::new();
+        Reflect::set(&tonk, &"transact".into(), transact.as_ref()).unwrap();
+        Reflect::set(&win, &"tonk".into(), &tonk).unwrap();
+
+        let bar = mounted_bar();
+        crate::element::apply_account_ready(&bar, true);
+        let root = bar.shadow_root().expect("shadow root");
+        root.query_selector(".space")
+            .unwrap()
+            .unwrap()
+            .unchecked_into::<HtmlElement>()
+            .click();
+        let share = root
+            .query_selector(".share")
+            .unwrap()
+            .unwrap()
+            .unchecked_into::<HtmlElement>();
+        share.click();
+        share.click();
+
+        let control: HtmlElement = bar
+            .query_selector("tonk-share")
+            .unwrap()
+            .unwrap()
+            .unchecked_into();
+        assert_eq!(read_state(&control), ShareState::Copying);
+        assert_eq!(
+            *calls.borrow(),
+            1,
+            "double-click cannot rotate the invite twice"
+        );
+        assert!(
+            !root
+                .query_selector("#share-panel")
+                .unwrap()
+                .unwrap()
+                .has_attribute("hidden"),
+            "the attached feedback remains visible until the copy settles"
+        );
+        assert_eq!(
+            root.query_selector(".share-progress")
+                .unwrap()
+                .unwrap()
+                .text_content()
+                .as_deref(),
+            Some("creating and copying the share link…")
+        );
+
+        bar.remove();
+        remove_refusal_dialog();
+        let _ = Reflect::delete_property(win.unchecked_ref::<Object>(), &"tonk".into());
+        drop(transact);
     }
 
     /// A refusal with no repair still has to explain itself. The confirm stays

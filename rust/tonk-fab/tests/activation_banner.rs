@@ -212,7 +212,9 @@ async fn registered_customer_can_resend_and_retires_when_active() {
             .is_none()
     );
     let share = bar
-        .query_selector("[data-share-link]")
+        .shadow_root()
+        .expect("bar shadow")
+        .query_selector(".share")
         .expect("share selector")
         .expect("share row");
     assert!(!share.has_attribute("data-activation-blocked"));

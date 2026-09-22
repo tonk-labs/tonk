@@ -17,6 +17,7 @@ reqwest = { workspace = true }
 tonk-common = { workspace = true }
 tonk-analytics = { workspace = true }
 tonk-host = { workspace = true }
+tonk-portal = { workspace = true }
 tonk-schema = { workspace = true }
 tonk-worker-api = { workspace = true }
 urlencoding = { workspace = true }
@@ -71,6 +72,7 @@ web-sys = { workspace = true, features = [
     "VisibilityState",
     "VisualViewport",
     "Window",
+    "Url",
 ] }
 
 [dev-dependencies]

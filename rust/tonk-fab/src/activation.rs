@@ -205,7 +205,15 @@ fn render(this: &HtmlElement, email: Option<&str>, activated: bool) {
     } else {
         let _ = this.remove_attribute("data-customer-email");
     }
-    if let Ok(Some(row)) = this.query_selector("[data-share-link]") {
+    if let Some(row) = this
+        .query_selector("[data-share-link]")
+        .ok()
+        .flatten()
+        .or_else(|| {
+            this.shadow_root()
+                .and_then(|root| root.query_selector(".share").ok().flatten())
+        })
+    {
         if email.is_some() && !activated {
             let _ = row.set_attribute("data-activation-blocked", "");
         } else {
@@ -302,21 +310,18 @@ fn open_cluster(this: &HtmlElement) {
         let _ = field.set_attribute("value", &email);
     }
 
-    let ceremony = cluster.clone();
-    let on_bail = Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
-        ceremony.remove();
-        if let Some(banner) = window()
-            .and_then(|window| window.document())
-            .and_then(|document| document.get_element_by_id(BANNER_ID))
-        {
-            let _ = banner.remove_attribute("hidden");
-        }
-    });
-    let _ = cluster.add_event_listener_with_callback("fabb-bail", on_bail.as_ref().unchecked_ref());
-    on_bail.forget();
-
+    let fab = this.clone();
     let on_change = Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
-        tonk_host::navigate_to("/settings");
+        if let Ok(resolve) = Reflect::get(&fab, &"resolve".into())
+            .and_then(|value| value.dyn_into::<js_sys::Function>())
+        {
+            let _ = resolve.call1(&fab, &JsValue::from_str("change-email"));
+        }
+        crate::shadow::emit(
+            &fab,
+            "fabb-account-needed",
+            &JsValue::from_str("pending-email"),
+        );
     });
     let _ = cluster
         .add_event_listener_with_callback("fabb-change-noun", on_change.as_ref().unchecked_ref());
@@ -345,8 +350,32 @@ fn open_cluster(this: &HtmlElement) {
         on_resend.forget();
     }
 
-    if let Some(body) = document.body() {
-        let _ = body.append_child(&cluster);
+    let _ = cluster.set_attribute("hidden", "");
+    let Some(body) = document.body() else { return };
+    if body.append_child(&cluster).is_err() {
+        return;
+    }
+    let Ok(content) = cluster.clone().dyn_into::<HtmlElement>() else {
+        cluster.remove();
+        return;
+    };
+    match crate::contained_tasks::present_element(this, &content, "activate sync", true) {
+        Ok(completion) => spawn_local(async move {
+            let _ = wasm_bindgen_futures::JsFuture::from(completion).await;
+            content.remove();
+            if let Some(banner) = window()
+                .and_then(|window| window.document())
+                .and_then(|document| document.get_element_by_id(BANNER_ID))
+            {
+                let _ = banner.remove_attribute("hidden");
+            }
+        }),
+        Err(_) => {
+            cluster.remove();
+            if let Some(banner) = document.get_element_by_id(BANNER_ID) {
+                let _ = banner.remove_attribute("hidden");
+            }
+        }
     }
 }
 

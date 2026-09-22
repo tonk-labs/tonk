@@ -1326,6 +1326,92 @@ pub fn member_roster_query_body() -> String {
     .to_string()
 }
 
+/// Read the worker-owned agent handoff state without relying on a seeded view.
+pub fn agent_handoff_query_body(subject: &str) -> Result<String, String> {
+    if subject.is_empty() {
+        return Err("agent_handoff_query_body: empty subject".into());
+    }
+    Ok(json!({
+        "predicate": { "with": {
+            "status": { "the": "xyz.tonk.agent-handoff/status", "as": "Text", "cardinality": "one" },
+            "link": { "the": "xyz.tonk.agent-handoff/link", "as": "Text", "cardinality": "one" },
+            "account": { "the": "xyz.tonk.agent-handoff/account", "as": "Entity", "cardinality": "one" }
+        } },
+        "terms": {
+            "this": subject,
+            "status": { "?": { "name": "status" } },
+            "link": { "?": { "name": "link" } },
+            "account": { "?": { "name": "account" } }
+        }
+    })
+    .to_string())
+}
+
+/// Build the inline transient understood by the worker's agent handoff provider.
+pub fn agent_handoff_claim_json(time: f64, fresh: bool) -> serde_json::Value {
+    let mut with = json!({
+        "time": { "the": "xyz.tonk.agent-handoff/time", "as": "Float" }
+    });
+    let mut parameters = json!({ "time": time });
+    if fresh {
+        with["fresh"] = json!({ "the": "xyz.tonk.agent-handoff/fresh", "as": "Text" });
+        parameters["fresh"] = json!("new");
+    }
+    json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "description": "Create an agent invitation for this space.",
+                        "with": with
+                    }
+                },
+                "parameters": parameters
+            }
+        }]
+    })
+}
+
+/// The complete bearer prompt copied from the agent panel.
+pub fn agent_prompt(name: &str, link: &str) -> String {
+    format!(
+        "You're helping build the \"{name}\" Tonk space.\n\nConnect to the exact space this prompt came from:\n\n  npx --yes @tonk/cli join '{link}'\n\nThis reusable bearer link contains the invitation key and grants for this space. Keep it private. Run the command without CLI account login, browser approval, or account-switch flags. The command prints the chosen local name; use --name if you need a different local alias. Only report connected after it prints \"Agent connection confirmed\", which follows a successful pull and acknowledged receipt push. If interrupted, resume without the link using `npx --yes @tonk/cli --space NAME join`. If access expires or is revoked, ask me for a fresh invite. Local data and offline edits remain available. Multiple holders of this link share the same invitation authority and receipt; the receipt does not establish exclusive use or online presence.\n\nThen run `npx --yes @tonk/cli --space NAME status` and `npx --yes @tonk/cli help tutorial`. The command binds your original working directory to the connected space; elsewhere, pass --space with the printed local name. Ask me what I want to build. Use `npx --yes @tonk/cli` for each CLI command that changes data, schemas, or views; changes sync directly into this space. Finish with `npx --yes @tonk/cli space home <concept>` to put the result on the space home."
+    )
+}
+
+#[cfg(test)]
+mod agent_handoff {
+    use super::*;
+
+    #[test]
+    fn it_uses_raw_handoff_attributes_for_old_spaces() {
+        let body = agent_handoff_query_body("did:key:space").expect("query");
+        assert!(body.contains("xyz.tonk.agent-handoff/status"));
+        assert!(body.contains("xyz.tonk.agent-handoff/link"));
+        assert!(!body.contains("tonk:agent-invite"));
+        assert!(agent_handoff_query_body("").is_err());
+    }
+
+    #[test]
+    fn it_marks_only_explicit_retries_as_fresh() {
+        let initial = agent_handoff_claim_json(1.0, false).to_string();
+        let retry = agent_handoff_claim_json(2.0, true).to_string();
+        assert!(!initial.contains("agent-handoff/fresh"));
+        assert!(retry.contains("agent-handoff/fresh"));
+        assert!(retry.contains("\"new\""));
+    }
+
+    #[test]
+    fn the_prompt_preserves_the_bearer_and_confirmation_boundary() {
+        let prompt = agent_prompt("Atlas", "https://example.test/#tonk-agent-v2=secret");
+        assert!(prompt.contains("#tonk-agent-v2=secret"));
+        assert!(prompt.contains("Agent connection confirmed"));
+        assert!(prompt.contains("Keep it private"));
+    }
+}
+
 /// The one-shot query body for the signed-in member's own profile DID.
 ///
 /// Reads the PROFILE branch's replica records by raw attribute: every

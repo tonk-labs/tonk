@@ -12,7 +12,7 @@ use std::rc::Rc;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_test::wasm_bindgen_test_configure;
-use web_sys::{CustomEvent, Event, HtmlElement, window};
+use web_sys::{CustomEvent, Event, HtmlElement, KeyboardEvent, KeyboardEventInit, window};
 
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -129,10 +129,11 @@ async fn release_glides_to_the_nearest_edge_without_losing_its_free_coordinate()
     assert_eq!(snapped.borrow().as_deref(), Some("left"));
     assert_eq!(px(&fab.style(), "left"), 16.0);
     let top = px(&fab.style(), "top");
+    let half_height = fab.get_bounding_client_rect().height() / 2.0;
     assert!(
-        (top - (target_y - 18.0)).abs() < 1.0,
+        (top - (target_y - half_height)).abs() < 1.0,
         "the release must keep its free y coordinate: expected about {}, got {top}",
-        target_y - 18.0
+        target_y - half_height
     );
 
     fab.remove();
@@ -232,4 +233,69 @@ async fn a_touch_tap_expands_but_a_nine_pixel_drag_preserves_the_collapsed_atom(
 
     parent.remove();
     drop(on_snap);
+}
+
+#[dialog_common::test]
+async fn shift_space_and_a_500ms_hold_dispatch_pause_without_toggling_collapse() {
+    tonk_fab::register();
+    let calls = Rc::new(RefCell::new(Vec::<String>::new()));
+    let sink = calls.clone();
+    let transact = Closure::<dyn FnMut(JsValue)>::new(move |request| {
+        sink.borrow_mut().push(
+            js_sys::JSON::stringify(&request)
+                .map(String::from)
+                .unwrap_or_default(),
+        );
+    });
+    let win = window().expect("window");
+    let tonk = js_sys::Object::new();
+    js_sys::Reflect::set(&tonk, &"transact".into(), transact.as_ref()).unwrap();
+    js_sys::Reflect::set(&win, &"tonk".into(), &tonk).unwrap();
+
+    let document = win.document().expect("document");
+    let fab = document
+        .create_element("tonk-fab")
+        .unwrap()
+        .dyn_into::<HtmlElement>()
+        .unwrap();
+    fab.set_attribute("space", "did:key:zPauseSpace").unwrap();
+    document.body().unwrap().append_child(&fab).unwrap();
+    let root = fab.shadow_root().unwrap();
+    let circle = root
+        .query_selector(".fab")
+        .unwrap()
+        .unwrap()
+        .unchecked_into::<HtmlElement>();
+    let wrapper = root.query_selector(".w").unwrap().unwrap();
+
+    let init = KeyboardEventInit::new();
+    init.set_key(" ");
+    init.set_shift_key(true);
+    circle
+        .dispatch_event(
+            &KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(calls.borrow().len(), 1);
+
+    let rect = circle.get_bounding_client_rect();
+    let x = rect.left() + rect.width() / 2.0;
+    let y = rect.top() + rect.height() / 2.0;
+    circle
+        .dispatch_event(&pointer_event_with_type("pointerdown", x, y, 1, "touch"))
+        .unwrap();
+    yield_for(550).await;
+    win.dispatch_event(&pointer_event_with_type("pointerup", x, y, 0, "touch"))
+        .unwrap();
+    circle.click();
+
+    assert_eq!(calls.borrow().len(), 2);
+    assert!(calls.borrow().iter().all(|request| {
+        request.contains("xyz.tonk.pause-sync/space") && request.contains("did:key:zPauseSpace")
+    }));
+    assert!(!wrapper.class_list().contains("collapsed"));
+
+    fab.remove();
+    let _ = js_sys::Reflect::delete_property(win.unchecked_ref::<js_sys::Object>(), &"tonk".into());
+    drop(transact);
 }

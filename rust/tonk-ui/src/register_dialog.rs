@@ -156,6 +156,77 @@ pub fn open_with_return_focus(restore: impl FnOnce() + 'static) {
     open_with_return(Some(Box::new(restore)));
 }
 
+/// Raise the account ceremony as the trusted surface replacing an in-space
+/// FABB, then seat it against the exact translated edge supplied by the guest.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub fn open_fabb_task(
+    presentation: &tonk_portal::task::Presentation,
+    restore: impl FnOnce() + 'static,
+) {
+    LAST_FABB_TASK_SUCCESS.with(|success| success.set(false));
+    open_with_return(Some(Box::new(restore)));
+    let Some(host) = host_element() else { return };
+    let _ = host.set_attribute("data-fabb-task", "");
+    position_fabb_task(&host, presentation);
+}
+
+/// Reseat a standing in-space account task without rebuilding its inputs.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub fn reseat_fabb_task(presentation: &tonk_portal::task::Presentation) {
+    let Some(host) = host_element().filter(|host| host.has_attribute("data-fabb-task")) else {
+        return;
+    };
+    position_fabb_task(&host, presentation);
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn position_fabb_task(host: &Element, presentation: &tonk_portal::task::Presentation) {
+    use tonk_portal::task::{Horizontal, Vertical};
+
+    let viewport_width = web_sys::window()
+        .and_then(|window| window.inner_width().ok())
+        .and_then(|value| value.as_f64())
+        .unwrap_or(1024.0);
+    let viewport_height = web_sys::window()
+        .and_then(|window| window.inner_height().ok())
+        .and_then(|value| value.as_f64())
+        .unwrap_or(768.0);
+    let width = presentation
+        .anchor
+        .width
+        .min(480.0)
+        .min((viewport_width - 32.0).max(1.0));
+    let left = match presentation.horizontal {
+        Horizontal::Left => presentation.anchor.left,
+        Horizontal::Right => presentation.anchor.right - width,
+    }
+    .clamp(16.0, (viewport_width - width - 16.0).max(16.0));
+    let Some(column) = host
+        .query_selector(".ocol")
+        .ok()
+        .flatten()
+        .and_then(|column| column.dyn_into::<HtmlElement>().ok())
+    else {
+        return;
+    };
+    let style = column.style();
+    let _ = style.set_property("left", &format!("{left}px"));
+    let _ = style.set_property("width", &format!("{width}px"));
+    let _ = style.remove_property("top");
+    let _ = style.remove_property("bottom");
+    match presentation.vertical {
+        Vertical::Top => {
+            let top = presentation.anchor.top.clamp(16.0, viewport_height - 16.0);
+            let _ = style.set_property("top", &format!("{top}px"));
+        }
+        Vertical::Bottom => {
+            let bottom =
+                (viewport_height - presentation.anchor.bottom).clamp(16.0, viewport_height - 16.0);
+            let _ = style.set_property("bottom", &format!("{bottom}px"));
+        }
+    }
+}
+
 fn open_with_return(guest_restore: Option<Box<dyn FnOnce()>>) {
     if OPEN.with(|open| open.replace(true)) {
         return;
@@ -455,6 +526,13 @@ fn announce_account_change() {
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 thread_local! {
     static ANNOUNCED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static LAST_FABB_TASK_SUCCESS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Consume whether the account ceremony that just closed established an account.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) fn take_fabb_task_success() -> bool {
+    LAST_FABB_TASK_SUCCESS.with(|success| success.replace(false))
 }
 
 /// Take the dialog down.
@@ -471,7 +549,9 @@ pub fn close() {
         // banner never appears. A plain cancel changed nothing, and
         // must not re-read: the re-render would replace the very
         // opener this close is about to restore focus to.
-        ANNOUNCED.with(|announced| announced.set(false));
+        let changed = ANNOUNCED.with(|announced| announced.replace(false));
+        let was_fabb_task = host_element().is_some_and(|host| host.has_attribute("data-fabb-task"));
+        LAST_FABB_TASK_SUCCESS.with(|success| success.set(changed && was_fabb_task));
         finish_action();
         SETUP_WATCH.with(|held| {
             if let Some(listener) = held.borrow_mut().take()
@@ -2613,8 +2693,11 @@ const RETURN_PATH: &str = "data-return-path";
 fn finish_account_navigation(host: &Element) {
     let saved = host.get_attribute(RETURN_PATH);
     let destination = account_completion_destination(saved.as_deref());
+    let contained = host.has_attribute("data-fabb-task");
     close();
-    tonk_host::navigate_to(destination);
+    if !contained {
+        tonk_host::navigate_to(destination);
+    }
 }
 
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]

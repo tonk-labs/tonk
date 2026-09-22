@@ -2082,6 +2082,75 @@ mod tests {
     }
 
     #[dialog_common::test]
+    async fn it_keeps_fabb_account_tasks_in_space(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        wait_for_service_worker(&driver).await?;
+        goto(&driver, env.tonk_web.as_str()).await?;
+        let key = create_space(&driver, "Account task space").await?;
+        await_url_containing(&driver, &format!("/space/{key}")).await?;
+        let original = driver.current_url().await?;
+
+        enter_guest(&driver).await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let mut last;
+        loop {
+            let opened = driver
+                .execute(
+                    r#"const bar=document.querySelector('tonk-fab');
+                       const root=bar?.shadowRoot;
+                       const space=root?.querySelector('.space');
+                       const account=root?.querySelector('.login');
+                       if (!bar || !root || !space || !account || account.hidden) {
+                         return {opened:false, bar:!!bar, root:!!root, space:!!space,
+                           account:!!account, accountHidden:account?.hidden ?? null};
+                       }
+                       space.click();
+                       account.click();
+                       return {opened:true};"#,
+                    Vec::new(),
+                )
+                .await?;
+            last = opened.json().clone();
+            if last["opened"].as_bool() == Some(true) {
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the FABB account entry did not become available: {last}"
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        driver.enter_default_frame().await?;
+        wait_for_displayed(&driver, "#tonk-register[data-fabb-task]").await?;
+        assert_eq!(driver.current_url().await?, original);
+
+        driver
+            .action_chain()
+            .send_keys(Key::Escape)
+            .perform()
+            .await?;
+        wait_for_absent(&driver, "#tonk-register").await?;
+        assert_eq!(driver.current_url().await?, original);
+        enter_guest(&driver).await?;
+        let restored = driver
+            .execute(
+                r#"const bar=document.querySelector('tonk-fab');
+                   return !!bar && !bar.hasAttribute('data-task-hosted') &&
+                     !bar.hasAttribute('aria-busy');"#,
+                Vec::new(),
+            )
+            .await?;
+        anyhow::ensure!(
+            restored.json() == true,
+            "the FABB did not resume after cancellation"
+        );
+        driver.enter_default_frame().await?;
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
     async fn it_removes_registration_motion_when_reduced_motion_is_requested(
         env: TestEnvironment,
     ) -> Result<()> {

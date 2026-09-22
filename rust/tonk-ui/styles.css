@@ -3070,6 +3070,23 @@ tonk-notebook-index {
   }
   #tonk-register[data-anchored] #tonk-register-head { display: none; }
 
+  /* In-space account work is a trusted modal occupying the FABB's translated
+     seat. The guest chrome remains mounted for restoration but is hidden. */
+  #tonk-register[data-fabb-task] { overflow: hidden; }
+  #tonk-register[data-fabb-task] .ocol {
+    position: absolute;
+    margin: 0;
+    max-height: calc(100dvh - 32px);
+    overflow: auto;
+    border: 1.5px solid var(--ink);
+    border-radius: 25px;
+    background: var(--page);
+  }
+  #tonk-register[data-fabb-task] .ostack { gap: 0; }
+  #tonk-register[data-fabb-task] .mblk,
+  #tonk-register[data-fabb-task] .obtn { min-height: 48px; border-radius: 0; }
+  #tonk-register[data-fabb-task] .ghost { margin: 0; min-height: 48px; }
+
   /* The study's chrome type: condensed, 600, 13px, slightly tracked and
      lowercased. Inheriting the page's body font instead made everything
      read thin and a size too large. */

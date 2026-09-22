@@ -14,8 +14,8 @@
 //! directly (see `tonk-host::ops::deliver_frame`), so a prototype shim forwards
 //! them to per-instance closures.
 //!
-//! Writes go through a child `<inline-editable>` (defined in `tonk-workspace`,
-//! registered globally): committing an edit (Enter/blur) fires a `change`
+//! Writes go through a child `<inline-editable>` (defined in the standard library,
+//! registered by the author-element runtime): committing an edit (Enter/blur) fires a `change`
 //! event this element listens for directly — there is no `tonk-display`
 //! delegate here to resolve a declarative `onchange=` binding, since this
 //! markup is Rust-owned. The commit builds an inlined `tonk/rename-repository`
