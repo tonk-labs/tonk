@@ -1791,6 +1791,9 @@ mod tests {
         install_fake_host();
         install();
         define_from_library(PROFILE_LIBRARY, "hub-bar");
+        // The fake host is shared by every test on this page, and the bar
+        // reads the path off it: start on the spaces path.
+        set_context(&[("origin", "https://tonk.test"), ("path", "/")]);
         let host = document().create_element("hub-bar").expect("host");
         host.set_inner_html(
             r#"<nav class="hubbar"><button type="button" data-tab="account" data-account-trigger><span data-account-label>add an account</span><span data-registered></span></button></nav>"#,
@@ -1868,6 +1871,9 @@ mod tests {
         install();
         let calls = record_bridge_calls("register");
         define_from_library(PROFILE_LIBRARY, "hub-bar");
+        // The fake host is shared by every test on this page, and the bar
+        // reads the path off it: start on the spaces path.
+        set_context(&[("origin", "https://tonk.test"), ("path", "/")]);
         let host = document().create_element("hub-bar").expect("host");
         host.set_inner_html(
             r#"<nav class="hubbar"><button type="button" data-tab="account" data-account-trigger>add an account<span data-account-link data-state="empty"></span></button></nav><button type="button" data-add-profile>add account</button>"#,
@@ -1927,6 +1933,9 @@ mod tests {
         install();
         let calls = record_bridge_calls("register");
         define_from_library(PROFILE_LIBRARY, "hub-bar");
+        // The fake host is shared by every test on this page, and the bar
+        // reads the path off it: start on the spaces path.
+        set_context(&[("origin", "https://tonk.test"), ("path", "/")]);
         let host = document().create_element("hub-bar").expect("host");
         host.set_inner_html(
             r#"<nav class="hubbar"><button type="button" data-tab="account" data-account-trigger><span data-registered></span><span data-account-link data-state="loading"></span></button></nav>"#,
@@ -1988,8 +1997,10 @@ mod tests {
         install();
         let calls = record_bridge_calls("register");
         define_from_library(PROFILE_LIBRARY, "hub-bar");
+        // The settings page is a path the bar reads off the host's
+        // context; the account tab follows from it.
+        set_context(&[("origin", "https://tonk.test"), ("path", "/settings")]);
         let host = document().create_element("hub-bar").expect("host");
-        let _ = host.set_attribute("tab", "account");
         host.set_inner_html(
             r#"<nav class="hubbar"><button type="button" data-tab="account"><span data-account-link data-state="loading"></span></button></nav>"#,
         );

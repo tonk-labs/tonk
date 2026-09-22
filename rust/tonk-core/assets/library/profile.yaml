@@ -560,69 +560,13 @@ view!:
         .account-menu__row, .srow, .snew { min-height:44px; }
         .m-cancel, .m-go { min-height:44px; }
       }
+      /* One page: the bar's path says whether the stack or the panel shows. */
+      .hub-page:has(hub-bar[path^="/settings"]) [data-spaces-view] { display:none; }
+      .hub-page:not(:has(hub-bar[path^="/settings"])) [data-settings-view] { display:none; }
   show:
     directory: |
-      <div class="hub-page">
-        <link rel="stylesheet" with:src="ui">
-        <!-- The hub chrome's CSS is this view's own `style: ui`, above.
-             The /settings route renders the same chrome and embeds the
-             same style (`with:src="ui@space"`), so one declaration
-             dresses both pages and neither can drift from the other. -->
-
-        <div class="hub-logo" role="img" aria-label="tonk"><svg viewBox="0 0 1024 343" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M337.41 169.57C337.41 136.215 363.983 109.171 396.764 109.171C429.539 109.171 456.112 136.215 456.112 169.57C456.112 202.932 429.539 229.975 396.764 229.975C363.983 229.975 337.41 202.932 337.41 169.57ZM643.51 54C614.396 54 589.91 61.6682 572.703 77.2353C563.913 85.1861 557.227 94.8795 552.759 105.986C552.206 97.3086 549.67 85.1977 540.937 75.1754C530.712 63.4453 515.039 55.8233 494.461 56.2041C488.76 56.3253 484.229 61.045 484.345 66.7514C484.46 72.3886 489.06 76.8833 494.668 76.8833C494.737 76.8833 494.812 76.8833 494.881 76.8833C509.044 76.6006 519.252 81.8339 525.282 88.6654C534.084 98.6415 532.072 113.834 532.02 114.197C531.167 119.817 535.012 125.079 540.626 125.962C541.168 126.048 545.537 126.602 547.612 124.565C546.673 130.203 546.171 136.076 546.171 142.192C546.171 183.349 531.225 224.038 507.39 247.764C488.403 266.66 465.219 275.805 434.911 279.382C479.549 263.671 511.569 221.038 511.569 170.874C511.569 107.365 460.262 55.8868 396.966 55.8868C333.675 55.8868 282.368 107.365 282.368 170.874C282.368 234.383 333.675 285.868 396.966 285.868C399.121 285.868 401.254 285.793 403.375 285.677C451.126 285.1 484.569 276.722 510.508 250.902C535.196 226.328 550.592 184.555 550.592 142.192C550.592 90.1771 586.197 57.8658 643.51 57.8658C737.703 57.8658 741.576 107.169 741.657 113.96C731.477 116.378 708.795 127.093 708.795 147.247V284.702H742.314C745.744 284.702 746.107 282.556 746.107 281.333V114.209C746.107 107.983 743.208 54 643.51 54Z" fill="currentColor"/><path d="M144.171 58.5683L129.662 58.5856C106.081 58.6318 91.4574 69.3695 83.3356 77.9031C72.9486 88.8081 67 103.873 67 119.221C67 148.151 86.5636 179.285 133.299 179.285V155.658C100.513 155.658 90.6043 136.029 90.6043 119.221C90.6043 104.029 99.7116 81.7516 130.135 81.7516L144.171 81.7458V261.448C131.691 261.448 124.786 248.968 124.786 238.08L104.974 238.092C104.974 267.316 130.095 284.383 143.98 284.706H170.432C195.829 284.706 215.053 259.717 215.053 196.924V107.306H225.924V155.658H274.164V58.5683H144.171Z" fill="currentColor"/><path d="M926.713 197.694L895.344 197.463C903.656 193.101 910.337 187.937 915.461 183.073C941.844 158.049 955.222 116.16 955.222 58.5828H938.99C938.99 111.527 927.318 149.447 904.302 171.286C893.817 181.227 875.475 192.721 847.444 191.544V58.5828H776.988V211.663C776.988 244.701 754.468 249.9 754.468 249.9C754.474 249.9 754.468 284.715 754.468 284.715H847.444V216.815C847.444 211.703 856.764 211.721 856.764 216.815C856.764 225.54 856.741 239.803 856.741 248.977C856.741 275.98 879.85 289.735 907.633 289.735C932.039 289.735 955.43 274.601 956.098 248.977C956.536 232.186 960.612 197.694 926.713 197.694Z" fill="currentColor"/></svg></div>
-
-        <main class="hubcol">
-        <!-- The bar owns tab state and the ceremony seat; the menu owns
-             roving focus and Escape. Both are `element!:` definitions on
-             this branch, so their behaviour is data the branch carries
-             rather than code the bundle ships. -->
-        <hub-bar class="hub-bar">
-          <nav class="hubbar chrome" aria-label="hub">
-            <!-- No menu-button ARIA in the markup: the bar dresses the cell
-                 as a menu button only once an account is linked. Before
-                 that one press is one action, and a dropdown affordance
-                 on it would be a lie. -->
-            <button class="hcell hc-acct account-trigger" type="button" data-tab="account"
-              data-account-trigger>
-              <!-- Directory mode (no `entity=`), where an absent row is
-                   `empty`; `no-entity` never shows without an entity to be
-                   absent. The label is the offer: this cell links an account. -->
-              <!-- The link, not the registration or the name: those are
-                   facts about the account and outlive a sign-out on this
-                   branch. The link row says whether THIS DEVICE holds the
-                   account here; the name renders through it. -->
-              <span data-account-label><tonk-display model="state:account-link" view="label" data-account-link
-                ><span slot="empty">add an account</span></tonk-display></span>
-            </button>
-            <button class="hcell hc-view" type="button" data-tab="spaces" data-return-spaces aria-current="page">
-              spaces
-            </button>
-          </nav>
-
-          <hub-menu id="hub-account-menu" class="account-menu chrome" data-account-menu role="menu">
-            <a class="account-menu__row" href="/settings" data-open-settings role="menuitem">
-              settings
-              <svg class="settings-icon" viewBox="0 0 9 9" aria-hidden="true">
-                <g stroke="currentColor" stroke-width="1.2">
-                  <line x1="0" y1="2.5" x2="9" y2="2.5"></line>
-                  <line x1="0" y1="6.5" x2="9" y2="6.5"></line>
-                </g>
-                <rect x="5" y="1" width="3" height="3" fill="currentColor"></rect>
-                <rect x="1" y="5" width="3" height="3" fill="currentColor"></rect>
-              </svg>
-            </a>
-            <tonk-display model="tonk:profile/row"></tonk-display>
-            <!-- `data-add-profile` names the control for anything that
-                 has to find it from outside the view — the e2e suite
-                 drives the whole signup through this button. -->
-            <button class="account-menu__row account-menu__row--ink" type="button"
-              data-add-profile on:add-profile=tonk:add-profile role="menuitem">
-              add account<span class="g" aria-hidden="true">+</span>
-            </button>
-          </hub-menu>
-        </hub-bar>
-
         <div class="stack chrome" data-spaces-view aria-label="spaces">
+          <link rel="stylesheet" with:src="ui">
           <!-- No empty-state bar. An account with no spaces and an
                account whose spaces are still arriving look identical
                from here, so any words this row could carry are wrong in
@@ -672,9 +616,6 @@ view!:
             <button class="snew chrome" type="submit">create new space<span class="g" aria-hidden="true">+</span></button>
           </form>
         </div>
-
-        </main>
-      </div>
     # The space page's waiting room. Reached only when the space's own
     # content has not arrived but the account's DIRECTORY ROW for it has
     # — so this device knows the space exists and is entitled to it, and
@@ -1716,7 +1657,28 @@ element!: &hub-bar
   attribute:
     tab: "spaces"
     linking: "false"
+    path: "/"
   method:
+    # The path the page is on says which tab is open: the settings path
+    # is the account tab, anything else the spaces tab. A ceremony that
+    # is up keeps the account tab whatever the path. The path is read off
+    # the host's context and mirrored onto `path`, which the chrome's
+    # style keys the visible section on; the guest's own location is
+    # about:srcdoc and says nothing.
+    route: |
+      (self) => {
+        // No host context (a page with no bridge, a fixture): the tab
+        // stays as authored.
+        const path = window.tonk?.context?.path;
+        if (typeof path !== 'string' || !path) return;
+        if (self.getAttribute('path') !== path) self.setAttribute('path', path);
+        const settings = path === '/settings' || path.startsWith('/settings/');
+        if (settings) {
+          if (self.getAttribute('tab') !== 'account') self.select('account');
+        } else if (self.getAttribute('linking') !== 'true' && self.getAttribute('tab') !== 'spaces') {
+          self.select('spaces');
+        }
+      }
     # The bar's viewport rectangle, or null when it has no layout yet.
     # A zero-sized bar is one the top page must not seat against: the
     # replacement bar after a profile switch has not been laid out, and
@@ -1832,8 +1794,12 @@ element!: &hub-bar
       }
     connected: |
       (self) => {
+        self.route();
         self.dress();
         self.decide();
+        const moved = () => self.route();
+        window.addEventListener('tonk:context', moved);
+        self._moved = moved;
         const dressing = new MutationObserver(() => { self.dress(); self.decide(); });
         dressing.observe(self, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-state'] });
         self._dressing = dressing;
@@ -1893,6 +1859,7 @@ element!: &hub-bar
       }
     disconnected: |
       (self) => {
+        if (self._moved) window.removeEventListener('tonk:context', self._moved);
         self._dressing?.disconnect();
         if (self._closed) window.removeEventListener('tonk:registration-closed', self._closed);
         if (!self._reseat) return;
@@ -1927,152 +1894,154 @@ view!:
   this: tonk:hub
   show:
     ui: |
-      <div class="display-view-slot">
+      <div class="hub-page">
+        <link rel="stylesheet" with:src="ui@space">
+        <!-- The hub chrome's CSS is the `space` view's own `style: ui`,
+             which also says which of the two sections below shows. -->
         <tab-title text="Tonk"></tab-title>
-        <tonk-display model="space"></tonk-display>
-      </div>
+        <div class="hub-logo" role="img" aria-label="tonk"><svg viewBox="0 0 1024 343" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M337.41 169.57C337.41 136.215 363.983 109.171 396.764 109.171C429.539 109.171 456.112 136.215 456.112 169.57C456.112 202.932 429.539 229.975 396.764 229.975C363.983 229.975 337.41 202.932 337.41 169.57ZM643.51 54C614.396 54 589.91 61.6682 572.703 77.2353C563.913 85.1861 557.227 94.8795 552.759 105.986C552.206 97.3086 549.67 85.1977 540.937 75.1754C530.712 63.4453 515.039 55.8233 494.461 56.2041C488.76 56.3253 484.229 61.045 484.345 66.7514C484.46 72.3886 489.06 76.8833 494.668 76.8833C494.737 76.8833 494.812 76.8833 494.881 76.8833C509.044 76.6006 519.252 81.8339 525.282 88.6654C534.084 98.6415 532.072 113.834 532.02 114.197C531.167 119.817 535.012 125.079 540.626 125.962C541.168 126.048 545.537 126.602 547.612 124.565C546.673 130.203 546.171 136.076 546.171 142.192C546.171 183.349 531.225 224.038 507.39 247.764C488.403 266.66 465.219 275.805 434.911 279.382C479.549 263.671 511.569 221.038 511.569 170.874C511.569 107.365 460.262 55.8868 396.966 55.8868C333.675 55.8868 282.368 107.365 282.368 170.874C282.368 234.383 333.675 285.868 396.966 285.868C399.121 285.868 401.254 285.793 403.375 285.677C451.126 285.1 484.569 276.722 510.508 250.902C535.196 226.328 550.592 184.555 550.592 142.192C550.592 90.1771 586.197 57.8658 643.51 57.8658C737.703 57.8658 741.576 107.169 741.657 113.96C731.477 116.378 708.795 127.093 708.795 147.247V284.702H742.314C745.744 284.702 746.107 282.556 746.107 281.333V114.209C746.107 107.983 743.208 54 643.51 54Z" fill="currentColor"/><path d="M144.171 58.5683L129.662 58.5856C106.081 58.6318 91.4574 69.3695 83.3356 77.9031C72.9486 88.8081 67 103.873 67 119.221C67 148.151 86.5636 179.285 133.299 179.285V155.658C100.513 155.658 90.6043 136.029 90.6043 119.221C90.6043 104.029 99.7116 81.7516 130.135 81.7516L144.171 81.7458V261.448C131.691 261.448 124.786 248.968 124.786 238.08L104.974 238.092C104.974 267.316 130.095 284.383 143.98 284.706H170.432C195.829 284.706 215.053 259.717 215.053 196.924V107.306H225.924V155.658H274.164V58.5683H144.171Z" fill="currentColor"/><path d="M926.713 197.694L895.344 197.463C903.656 193.101 910.337 187.937 915.461 183.073C941.844 158.049 955.222 116.16 955.222 58.5828H938.99C938.99 111.527 927.318 149.447 904.302 171.286C893.817 181.227 875.475 192.721 847.444 191.544V58.5828H776.988V211.663C776.988 244.701 754.468 249.9 754.468 249.9C754.474 249.9 754.468 284.715 754.468 284.715H847.444V216.815C847.444 211.703 856.764 211.721 856.764 216.815C856.764 225.54 856.741 239.803 856.741 248.977C856.741 275.98 879.85 289.735 907.633 289.735C932.039 289.735 955.43 274.601 956.098 248.977C956.536 232.186 960.612 197.694 926.713 197.694Z" fill="currentColor"/></svg></div>
+        <main class="hubcol">
+        <hub-bar class="hub-bar">
+          <nav class="hubbar chrome" aria-label="hub">
+            <!-- No menu-button ARIA in the markup: the bar dresses the cell
+                 as a menu button only once an account is linked. Before
+                 that one press is one action, and a dropdown affordance
+                 on it would be a lie. -->
+            <button class="hcell hc-acct account-trigger" type="button" data-tab="account"
+              data-account-trigger>
+              <!-- Directory mode (no `entity=`), where an absent row is
+                   `empty`; `no-entity` never shows without an entity to be
+                   absent. The label is the offer: this cell links an account. -->
+              <!-- The link, not the registration or the name: those are
+                   facts about the account and outlive a sign-out on this
+                   branch. The link row says whether THIS DEVICE holds the
+                   account here; the name renders through it. -->
+              <span data-account-label><tonk-display model="state:account-link" view="label" data-account-link
+                ><span slot="empty">add an account</span></tonk-display></span>
+            </button>
+            <!-- Home is an anchor: on the settings path the click is a
+                 navigation the bar re-routes in place; on the spaces path
+                 it is the tab's own click, and the host ignores a push to
+                 the URL already shown. -->
+            <a class="hcell hc-view" href="/" data-tab="spaces" data-return-spaces aria-current="page">spaces</a>
+          </nav>
 
-# The /settings route — the account settings page, per the fabb wireframes:
-# the same hub chrome (logo, two-cell bar) with the settings section open
-# under it. `<hub-bar tab="account">` states which tab is open; the
-# mount; its spaces cell navigates home rather than swapping in place,
-# because on this route there is no spaces stack behind it.
+          <hub-menu id="hub-account-menu" class="account-menu chrome" data-account-menu role="menu">
+            <a class="account-menu__row" href="/settings" data-open-settings role="menuitem">
+              settings
+              <svg class="settings-icon" viewBox="0 0 9 9" aria-hidden="true">
+                <g stroke="currentColor" stroke-width="1.2">
+                  <line x1="0" y1="2.5" x2="9" y2="2.5"></line>
+                  <line x1="0" y1="6.5" x2="9" y2="6.5"></line>
+                </g>
+                <rect x="5" y="1" width="3" height="3" fill="currentColor"></rect>
+                <rect x="1" y="5" width="3" height="3" fill="currentColor"></rect>
+              </svg>
+            </a>
+            <tonk-display model="tonk:profile/row"></tonk-display>
+            <!-- `data-add-profile` names the control for anything that
+                 has to find it from outside the view — the e2e suite
+                 drives the whole signup through this button. -->
+            <button class="account-menu__row account-menu__row--ink" type="button"
+              data-add-profile on:add-profile=tonk:add-profile role="menuitem">
+              add account<span class="g" aria-hidden="true">+</span>
+            </button>
+          </hub-menu>
+        </hub-bar>
+          <!-- One page for `/` and `/settings`: the stack and the panel
+               are both here, and the bar's `path` picks the one that
+               shows. The view reads nothing off the site, so a navigation
+               re-renders nothing here: the bar and the panel follow the
+               host's context on their own, and the stack keeps its rows,
+               its hover and its focus across the move. -->
+          <tonk-display model="space"></tonk-display>
+        <section class="settings chrome" data-settings-view>
+            <account-settings>
+              <div class="s-body">
+                <div class="pane" data-pane="account">
+                  <tonk-display model="tonk:account/registered" view="settings"></tonk-display>
+                  <div class="srowd">
+                    <span>another passkey for this account</span>
+                    <button class="cta" type="button" data-add-passkey data-account="tonk:add-passkey"
+                      on:add-passkey=tonk:add-passkey>add a passkey with the current one</button>
+                  </div>
+                  <section data-agent-connections hidden aria-label="agent access">
+                    <div class="srowd"><span>agent access</span><button class="cta" type="button" data-connections-refresh>refresh</button></div>
+                    <p class="expl">each invite grants access to one space. anyone holding a copy can use it. a confirmation records completed setup, not a currently connected process.</p>
+                    <p class="expl">revoking an invite affects all its holders and delegated access. enforcement can take time to reach the service; already downloaded data stays with its holders.</p>
+                    <p class="expl" data-connections-status role="status" aria-live="polite"></p>
+                    <div data-connections-list></div>
+                  </section>
+                  <div class="sect">sign out</div>
+                  <div class="srowd">
+                    <span>disconnect this account; keep local spaces on this device</span>
+                    <button class="cta" type="button" data-sign-out-open>sign out on this device</button>
+                  </div>
+                  <div class="sect">delete data</div>
+                  <div class="srowd">
+                    <span>delete all data associated with this account</span>
+                    <button class="cta" type="button" data-delete-account-open>delete account (permanent)</button>
+                  </div>
+                </div>
+                <div class="pane" data-pane="link" hidden data-link-approval>
+                  <div class="sect">a terminal is asking for access</div>
+                  <div class="srowd"><span>name</span><b data-link-name></b></div>
+                  <div class="srowd"><span>account</span><b class="lft" data-link-account></b></div>
+                  <div class="srowd"><span>device</span><b class="lft" data-link-did></b></div>
+                  <p class="expl">
+                    approving gives that terminal the same access to your account as this
+                    browser: every space, on every device. decline if you did not request
+                    account access from this device yourself.
+                  </p>
+                  <div class="link-foot">
+                    <button class="m-cancel" type="button" data-link-decline>decline</button>
+                    <button class="m-go" type="button" data-link-approve on:authorize-device=tonk:authorize-device
+                      data-audience="" data-callback="" data-name="" data-expected-account="">approve with passkey</button>
+                  </div>
+                </div>
+                <div class="pane" data-pane="local-link" hidden data-local-link-approval>
+                  <div class="sect">attach a local space to this account</div>
+                  <div class="srowd"><span>space</span><b data-local-link-name></b></div>
+                  <div class="srowd"><span>space ID</span><b class="lft" data-local-link-did></b></div>
+                  <p class="expl">
+                    approving preserves this exact local space and publishes it to the
+                    account selected in this browser. it does not sign the terminal into
+                    your account or grant access to any other space.
+                  </p>
+                  <div class="link-foot">
+                    <button class="m-cancel" type="button" data-local-link-decline>decline</button>
+                    <button class="m-go" type="button" data-local-link-approve>approve this space</button>
+                  </div>
+                </div>
+                <p class="expl" data-ceremony-status role="status" aria-live="polite" hidden></p>
+                <tonk-display model="state:ceremony" view="settings"></tonk-display>
+                <div data-custody-seat aria-hidden="true"></div>
+              </div>
+              <tonk-dialog data-sign-out-dialog heading="confirm sign out">
+                <div class="confirm-body">
+                  this disconnects the account from this browser. local spaces stay on this device, including spaces that have not been backed up or synced. you can sign into this or another account later.
+                </div>
+                <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
+                <button class="m-go" slot="actions" type="button" data-sign-out-submit on:sign-out=tonk:sign-out>sign out</button>
+              </tonk-dialog>
+            </account-settings>
+          </section>
+        </main>
+      </div>
+# The /settings route is the hub with its settings section showing: the
+# same view as `/`, so moving between them is a path change the view
+# re-renders in place, not a page swap.
 route!: &route/settings
   this: id:tonk:route/settings
   path: "/settings"
-  concept: tonk:settings
+  concept: tonk:hub
 
 # `/settings/link` is the same page: a terminal opened it to ask for
 # access, and the settings panel reads the request off the location.
 route!: &route/settings/link
   this: id:tonk:route/settings/link
   path: "/settings/link"
-  concept: tonk:settings
-
-concept!: &settings-route
-  this: tonk:settings
-  description: The account settings page.
-  with:
-    path:
-      description: The active path, picked off the site.
-      the: xyz.tonk.site/path
-      cardinality: one
-      as: text
-    profile-branch:
-      description: >
-        The branch the profile is on, picked off the site: the pane's
-        displays read the account off it.
-      the: xyz.tonk.site/profile-branch
-      cardinality: one
-      as: text
-
-view!:
-  this: tonk:settings
-  show:
-    ui: |
-      <div class="hub-page">
-        <link rel="stylesheet" with:src="ui@space">
-        <tab-title text="settings — Tonk"></tab-title>
-        <div class="hub-logo" role="img" aria-label="tonk"><svg viewBox="0 0 1024 343" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M337.41 169.57C337.41 136.215 363.983 109.171 396.764 109.171C429.539 109.171 456.112 136.215 456.112 169.57C456.112 202.932 429.539 229.975 396.764 229.975C363.983 229.975 337.41 202.932 337.41 169.57ZM643.51 54C614.396 54 589.91 61.6682 572.703 77.2353C563.913 85.1861 557.227 94.8795 552.759 105.986C552.206 97.3086 549.67 85.1977 540.937 75.1754C530.712 63.4453 515.039 55.8233 494.461 56.2041C488.76 56.3253 484.229 61.045 484.345 66.7514C484.46 72.3886 489.06 76.8833 494.668 76.8833C494.737 76.8833 494.812 76.8833 494.881 76.8833C509.044 76.6006 519.252 81.8339 525.282 88.6654C534.084 98.6415 532.072 113.834 532.02 114.197C531.167 119.817 535.012 125.079 540.626 125.962C541.168 126.048 545.537 126.602 547.612 124.565C546.673 130.203 546.171 136.076 546.171 142.192C546.171 183.349 531.225 224.038 507.39 247.764C488.403 266.66 465.219 275.805 434.911 279.382C479.549 263.671 511.569 221.038 511.569 170.874C511.569 107.365 460.262 55.8868 396.966 55.8868C333.675 55.8868 282.368 107.365 282.368 170.874C282.368 234.383 333.675 285.868 396.966 285.868C399.121 285.868 401.254 285.793 403.375 285.677C451.126 285.1 484.569 276.722 510.508 250.902C535.196 226.328 550.592 184.555 550.592 142.192C550.592 90.1771 586.197 57.8658 643.51 57.8658C737.703 57.8658 741.576 107.169 741.657 113.96C731.477 116.378 708.795 127.093 708.795 147.247V284.702H742.314C745.744 284.702 746.107 282.556 746.107 281.333V114.209C746.107 107.983 743.208 54 643.51 54Z" fill="currentColor"/><path d="M144.171 58.5683L129.662 58.5856C106.081 58.6318 91.4574 69.3695 83.3356 77.9031C72.9486 88.8081 67 103.873 67 119.221C67 148.151 86.5636 179.285 133.299 179.285V155.658C100.513 155.658 90.6043 136.029 90.6043 119.221C90.6043 104.029 99.7116 81.7516 130.135 81.7516L144.171 81.7458V261.448C131.691 261.448 124.786 248.968 124.786 238.08L104.974 238.092C104.974 267.316 130.095 284.383 143.98 284.706H170.432C195.829 284.706 215.053 259.717 215.053 196.924V107.306H225.924V155.658H274.164V58.5683H144.171Z" fill="currentColor"/><path d="M926.713 197.694L895.344 197.463C903.656 193.101 910.337 187.937 915.461 183.073C941.844 158.049 955.222 116.16 955.222 58.5828H938.99C938.99 111.527 927.318 149.447 904.302 171.286C893.817 181.227 875.475 192.721 847.444 191.544V58.5828H776.988V211.663C776.988 244.701 754.468 249.9 754.468 249.9C754.474 249.9 754.468 284.715 754.468 284.715H847.444V216.815C847.444 211.703 856.764 211.721 856.764 216.815C856.764 225.54 856.741 239.803 856.741 248.977C856.741 275.98 879.85 289.735 907.633 289.735C932.039 289.735 955.43 274.601 956.098 248.977C956.536 232.186 960.612 197.694 926.713 197.694Z" fill="currentColor"/></svg></div>
-        <main class="hubcol">
-          <!-- The account tab, open. `tab` is an attribute, so the route
-               states which tab it wants rather than mounting a different
-               element in a different mode. -->
-          <hub-bar class="hub-bar" tab="account">
-            <nav class="hubbar chrome" aria-label="hub">
-              <button class="hcell hc-acct account-trigger" type="button" data-tab="account"
-                aria-current="page">
-                <!-- Directory mode (no `entity=`), where an absent row is
-                     `empty`; `no-entity` never shows without an entity to be
-                     absent. The label is the offer: this cell links an account. -->
-                <!-- The link marker, so the bar knows whether this browser
-                     holds an account here; without one, the settings page
-                     is the door and the bar raises the ceremony itself. -->
-                <span data-account-label><tonk-display model="state:account-link" view="label" data-account-link
-                  ><span slot="empty">add an account</span></tonk-display></span>
-              </button>
-              <a class="hcell hc-view" href="/" data-return-spaces>spaces</a>
-            </nav>
-            <!-- The panel is views over the registration, the passkeys,
-                 the owned spaces and the ceremony row, plus the acts as
-                 commands. `<account-settings>` is what is left for an
-                 element: the terminal's request read off the location,
-                 the deletion phrase, the ceremony text, and the seat the
-                 top page's passkey cluster anchors to. -->
-            <section class="settings chrome">
-              <account-settings>
-                <div class="s-body">
-                  <div class="pane" data-pane="account">
-                    <tonk-display model="tonk:account/registered" view="settings"></tonk-display>
-                    <div class="srowd">
-                      <span>another passkey for this account</span>
-                      <button class="cta" type="button" data-add-passkey data-account="tonk:add-passkey"
-                        on:add-passkey=tonk:add-passkey>add a passkey with the current one</button>
-                    </div>
-                    <section data-agent-connections hidden aria-label="agent access">
-                      <div class="srowd"><span>agent access</span><button class="cta" type="button" data-connections-refresh>refresh</button></div>
-                      <p class="expl">each invite grants access to one space. anyone holding a copy can use it. a confirmation records completed setup, not a currently connected process.</p>
-                      <p class="expl">revoking an invite affects all its holders and delegated access. enforcement can take time to reach the service; already downloaded data stays with its holders.</p>
-                      <p class="expl" data-connections-status role="status" aria-live="polite"></p>
-                      <div data-connections-list></div>
-                    </section>
-                    <div class="sect">sign out</div>
-                    <div class="srowd">
-                      <span>disconnect this account; keep local spaces on this device</span>
-                      <button class="cta" type="button" data-sign-out-open>sign out on this device</button>
-                    </div>
-                    <div class="sect">delete data</div>
-                    <div class="srowd">
-                      <span>delete all data associated with this account</span>
-                      <button class="cta" type="button" data-delete-account-open>delete account (permanent)</button>
-                    </div>
-                  </div>
-                  <div class="pane" data-pane="link" hidden data-link-approval>
-                    <div class="sect">a terminal is asking for access</div>
-                    <div class="srowd"><span>name</span><b data-link-name></b></div>
-                    <div class="srowd"><span>account</span><b class="lft" data-link-account></b></div>
-                    <div class="srowd"><span>device</span><b class="lft" data-link-did></b></div>
-                    <p class="expl">
-                      approving gives that terminal the same access to your account as this
-                      browser: every space, on every device. decline if you did not request
-                      account access from this device yourself.
-                    </p>
-                    <div class="link-foot">
-                      <button class="m-cancel" type="button" data-link-decline>decline</button>
-                      <button class="m-go" type="button" data-link-approve on:authorize-device=tonk:authorize-device
-                        data-audience="" data-callback="" data-name="" data-expected-account="">approve with passkey</button>
-                    </div>
-                  </div>
-                  <div class="pane" data-pane="local-link" hidden data-local-link-approval>
-                    <div class="sect">attach a local space to this account</div>
-                    <div class="srowd"><span>space</span><b data-local-link-name></b></div>
-                    <div class="srowd"><span>space ID</span><b class="lft" data-local-link-did></b></div>
-                    <p class="expl">
-                      approving preserves this exact local space and publishes it to the
-                      account selected in this browser. it does not sign the terminal into
-                      your account or grant access to any other space.
-                    </p>
-                    <div class="link-foot">
-                      <button class="m-cancel" type="button" data-local-link-decline>decline</button>
-                      <button class="m-go" type="button" data-local-link-approve>approve this space</button>
-                    </div>
-                  </div>
-                  <p class="expl" data-ceremony-status role="status" aria-live="polite" hidden></p>
-                  <tonk-display model="state:ceremony" view="settings"></tonk-display>
-                  <div data-custody-seat aria-hidden="true"></div>
-                </div>
-                <tonk-dialog data-sign-out-dialog heading="confirm sign out">
-                  <div class="confirm-body">
-                    this disconnects the account from this browser. local spaces stay on this device, including spaces that have not been backed up or synced. you can sign into this or another account later.
-                  </div>
-                  <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
-                  <button class="m-go" slot="actions" type="button" data-sign-out-submit on:sign-out=tonk:sign-out>sign out</button>
-                </tonk-dialog>
-              </account-settings>
-            </section>
-          </hub-bar>
-        </main>
-      </div>
+  concept: tonk:hub
 
 # The /join route: redeem an invite. The shell's top-level `<tonk-site>`
 # routes every path against this table, so without an entry `/join` matched
@@ -4262,10 +4231,14 @@ element!: &account-settings
           window.removeEventListener('resize', reseat, true);
         };
         self.refresh();
+        const moved = () => self.refresh();
+        window.addEventListener('tonk:context', moved);
+        self._moved = moved;
         self.describe();
       }
     disconnected: |
       (self) => {
+        if (self._moved) window.removeEventListener('tonk:context', self._moved);
         self._teardown?.();
         self._teardown = null;
       }

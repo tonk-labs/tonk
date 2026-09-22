@@ -8013,7 +8013,7 @@ route!: &foreign-profile-route
 
         for (entity, expected) in [
             ("tonk:space", "with:src=\"ui\""),
-            ("tonk:settings", "with:src=\"ui@space\""),
+            ("tonk:hub", "with:src=\"ui@space\""),
         ] {
             let wire = tonk_template::resolve::view_query(entity).expect("view query builds");
             let query = wire
@@ -8077,7 +8077,7 @@ route!: &foreign-profile-route
     /// a name while the query asked a different question. This runs the
     /// real query against a real store holding the real library.
     ///
-    /// `tonk:settings` is the interesting subject: it embeds
+    /// `tonk:hub` is the interesting subject: it embeds
     /// `ui@space`, so the pair it stores names ANOTHER view, and a
     /// renderer that failed to read it would fall back to the bare name
     /// `space` and silently match nothing.
@@ -8086,8 +8086,8 @@ route!: &foreign-profile-route
         let tonk = test_state().await;
         install_recorded(&tonk, PROFILE_LIBRARY_URL, CURRENT).await;
 
-        let wire = tonk_template::resolve::view_embeds_query("tonk:settings")
-            .expect("embeds query builds");
+        let wire =
+            tonk_template::resolve::view_embeds_query("tonk:hub").expect("embeds query builds");
         let query = wire
             .into_concept_query()
             .expect("embeds query is a concept query");

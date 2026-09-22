@@ -146,7 +146,13 @@
     var env=event.data; if(!env) return;
     switch(env.type){
       case "ready": tonk.context=env.context; resolveReady(); return;
-      case "context": tonk.context=env.context; return;
+      case "context": {
+        tonk.context=env.context;
+        // The page moved without reloading; elements that read the
+        // location re-derive from the new context.
+        window.dispatchEvent(new CustomEvent("tonk:context",{detail:env.context}));
+        return;
+      }
       case "query-result": case "transact-result": {
         var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
         h.resolve("rows" in env ? env.rows : env.receipt); return;

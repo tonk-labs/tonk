@@ -143,8 +143,8 @@ fn it_offers_to_link_an_account_when_none_is() {
         .collect();
     assert_eq!(
         mounts.len(),
-        2,
-        "the hub and the settings route both carry the account label",
+        1,
+        "one hub page carries the account label, whichever path it is on",
     );
     for mount in mounts {
         assert!(
@@ -851,16 +851,24 @@ fn it_hyphenates_every_element_dictionary_key() {
 
 #[dialog_common::test]
 fn it_serves_settings_as_a_routed_page_of_the_hub() {
-    // `/settings` is a real route: the hub chrome with the account tab
-    // already open, reached by href from the account menu. Every account
-    // act lives in this panel; nothing links out to a top-level page.
-    // `/settings/link` is the same page opened by a terminal asking for
-    // access.
-    assert!(PROFILE_LIBRARY.contains("path: \"/settings\""));
-    assert!(PROFILE_LIBRARY.contains("path: \"/settings/link\""));
-    // The route states which tab it wants as an attribute, rather than
-    // mounting a different element in a different mode.
-    assert!(PROFILE_LIBRARY.contains("<hub-bar class=\"hub-bar\" tab=\"account\">"));
+    // `/settings` and `/settings/link` are real routes, reached by href
+    // from the account menu or opened by a terminal asking for access,
+    // and both resolve to the hub itself: one view for `/` and the
+    // settings path, so moving between them is a path change the view
+    // re-renders in place rather than a page swap. The bar carries the
+    // path and picks the section that shows.
+    for route in ["/settings", "/settings/link"] {
+        let definition = PROFILE_LIBRARY
+            .split(&format!("path: \"{route}\"\n"))
+            .nth(1)
+            .expect("the route is declared");
+        assert!(
+            definition.starts_with("  concept: tonk:hub"),
+            "{route} resolves to the hub, not a page of its own",
+        );
+    }
+    assert!(PROFILE_LIBRARY.contains("<hub-bar class=\"hub-bar\">"));
+    assert!(!PROFILE_LIBRARY.contains("tab=\"account\">"));
     assert!(!PROFILE_LIBRARY.contains(".hub-settings"));
     assert!(PROFILE_LIBRARY.contains("href=\"/settings\""));
 
