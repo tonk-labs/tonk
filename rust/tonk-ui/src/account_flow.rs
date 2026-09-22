@@ -239,25 +239,24 @@ mod tests {
         for page in pages.json().as_array().context("page directory")? {
             let entity = page.as_str().context("page identity")?;
             driver.execute("const tree=document.querySelector('vault-tree'); globalThis.__vaultLib.emit(tree, 'navigate', {open:arguments[0], deviceOpen:arguments[0]});", vec![serde_json::json!(entity)]).await?;
-            if let Err(error) = wait_for_displayed(
-                &driver,
-                &format!("vault-active > tonk-display[entity=\"{entity}\"] > tonk-view"),
-            )
-            .await
-            {
-                // Diagnostic only: keep the original assertion failure while
-                // establishing whether focused navigation replaced its frame.
-                driver.enter_default_frame().await?;
-                let route = driver.current_url().await?.path().to_owned();
-                enter_space_view(&driver).await?;
-                let state = driver.execute(r#"const display=document.querySelector('vault-active > tonk-display');
-                    return { active:display?.getAttribute('entity'), model:display?.getAttribute('model'),
-                        views:display?.querySelectorAll(':scope > tonk-view').length,
-                        visible:!!display?.querySelector(':scope > tonk-view')?.getClientRects().length };"#, vec![]).await?;
-                return Err(error).context(format!(
-                    "offline navigation after reacquiring frame: route={route}, state={}",
-                    state.json()
-                ));
+            let selector = format!("vault-active > tonk-display[entity=\"{entity}\"] > tonk-view");
+            if let Err(error) = wait_for_displayed(&driver, &selector).await {
+                let display = driver
+                    .execute(
+                        "const display = document.querySelector('vault-active > tonk-display');
+                         return display ? {
+                           attributes: [...display.attributes].map((a) => a.name + '=' + a.value),
+                           children: [...display.children].map((c) => c.tagName + (c.getAttribute('slot') ? '[' + c.getAttribute('slot') + ']' : '')),
+                           text: display.textContent.trim().slice(0, 200),
+                         } : null;",
+                        vec![],
+                    )
+                    .await
+                    .map(|value| value.json().clone())
+                    .unwrap_or(serde_json::Value::Null);
+                return Err(error.context(format!(
+                    "the vault never displayed {entity}; display={display}"
+                )));
             }
         }
         devtools.execute_cdp_with_params("Network.emulateNetworkConditions", serde_json::json!({
@@ -449,6 +448,24 @@ mod tests {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
             let found = element(driver, selector).await?;
+            // A row inside a display is clickable before the display has
+            // wired its `on:` bindings; the display marks itself
+            // `data-bound` once they are live, and the library's own
+            // elements wait on that marker before acting. So does this.
+            let bound = driver
+                .execute(
+                    "const display = arguments[0].closest('tonk-display');
+                     return !display || display.hasAttribute('data-bound');",
+                    vec![found.to_json()?],
+                )
+                .await?;
+            if bound.json().as_bool() != Some(true) {
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(anyhow!("timed out waiting for `{selector}` to be bound"));
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
             match found.click().await {
                 Ok(()) => return Ok(()),
                 Err(error)
@@ -907,6 +924,20 @@ mod tests {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         while tokio::time::Instant::now() < deadline {
             if let Ok(button) = driver.find(By::Css("#tonk-custody-continue")).await {
+                // An anchored card is seated by the guest relay a moment
+                // after it appears, and a click aimed while it moves lands
+                // where it was. Click once its place has held still.
+                let place =
+                    |rect: thirtyfour::ElementRect| (rect.x, rect.y, rect.width, rect.height);
+                let placed = place(button.rect().await?);
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                if button.rect().await.map(place).ok() != Some(placed) {
+                    continue;
+                }
+                println!(
+                    "consent card before the click: {}",
+                    custody_consent_diagnostic(driver).await
+                );
                 button.click().await?;
                 return Ok(());
             }
@@ -926,8 +957,14 @@ mod tests {
             .execute(
                 r##"const card = document.querySelector("#tonk-custody-consent");
                    const actions = card?.querySelector("#tonk-custody-actions");
+                   const button = card?.querySelector("#tonk-custody-continue");
+                   const rect = button ? button.getBoundingClientRect() : null;
                    return {
                      present: !!card,
+                     cards: document.querySelectorAll("#tonk-custody-consent").length,
+                     anchored: !!card?.hasAttribute("data-anchored"),
+                     visibility: card?.firstElementChild ? getComputedStyle(card.firstElementChild).visibility : null,
+                     continueRect: rect ? [rect.left, rect.top, rect.width, rect.height].map(Math.round) : null,
                      message: card?.querySelector("#tonk-custody-text")?.textContent?.trim() || null,
                      awaitingChoice: !!actions,
                    };"##,
@@ -2951,11 +2988,12 @@ mod tests {
     /// Read the overlay answer for `address`, waiting for the row that
     /// names it rather than whichever row happens to be there.
     async fn await_email_status(driver: &WebDriver, address: &str) -> Result<String> {
+        let endpoint = format!("/api/profile/branch/{}/query", active_branch(driver).await?);
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
             let rows = post_json(
                 driver,
-                "/api/profile/branch/main/query",
+                &endpoint,
                 tonk_worker::helpers::email_status_wire_query(),
             )
             .await?;
@@ -4417,7 +4455,7 @@ mod tests {
                 "url": { "?": { "name": "url" } }
             }
         });
-        let endpoint = "/api/profile/branch/main/query".to_owned();
+        let endpoint = format!("/api/profile/branch/{}/query", active_branch(driver).await?);
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
         loop {
             let rows = post_json(driver, &endpoint, ask.clone()).await?;
@@ -4915,12 +4953,18 @@ mod tests {
         expect_remote: bool,
     ) -> Result<String> {
         wait_for_service_worker(driver).await?;
+        let branch = active_branch(driver).await?;
         let before = space_keys(driver).await?;
         // `name` alone: where a space syncs is the worker's to resolve
         // from the account's registration, and template seeding went
         // with the template libraries.
         let claim = tonk_worker_api::create_space_claim_json(name);
-        let dispatched = post_json(driver, "/api/profile/branch/main/transact", claim).await?;
+        let dispatched = post_json(
+            driver,
+            &format!("/api/profile/branch/{branch}/transact"),
+            claim,
+        )
+        .await?;
         successful_body("dispatch space/create", &dispatched);
 
         // Subscribe for the replica rather than re-reading the profile
@@ -4929,7 +4973,7 @@ mod tests {
         let known = serde_json::to_string(&before).unwrap_or_else(|_| "[]".to_owned());
         await_subscription(
             driver,
-            "/api/profile/branch/main/query",
+            &format!("/api/profile/branch/{branch}/query"),
             tonk_worker::helpers::replica_concept_wire_query(),
             &format!(
                 r#"const before = new Set({known});
@@ -4968,7 +5012,7 @@ mod tests {
             // it the moment it commits.
             await_subscription(
                 driver,
-                "/api/profile/branch/main/query",
+                &format!("/api/profile/branch/{branch}/query"),
                 tonk_worker::helpers::remote_concept_wire_query(),
                 &format!(
                     r#"const rows = frame.conclusions || frame.asserted || [];
@@ -5060,7 +5104,19 @@ mod tests {
     /// off this very branch, so it was a second copy of what a query
     /// returns. Shaped like the old response (`status` + `body` with
     /// camelCase keys) so the assertions that consumed it still read.
+    /// The branch the profile is on, as the worker reports it. Every
+    /// account lives on a branch of its own, so a test that adds, leaves
+    /// or switches accounts asks instead of assuming `main`.
+    async fn active_branch(driver: &WebDriver) -> Result<String> {
+        let profiles = get_json(driver, "/api/profiles").await?;
+        successful_body("active branch", &profiles)["active"]
+            .as_str()
+            .map(str::to_owned)
+            .context("profiles omitted the active branch")
+    }
+
     async fn account_summary(driver: &WebDriver) -> Result<serde_json::Value> {
+        let endpoint = format!("/api/profile/branch/{}/query", active_branch(driver).await?);
         let query = serde_json::json!({
             "predicate": { "with": {
                 "email": {
@@ -5073,7 +5129,7 @@ mod tests {
                 "email": { "?": { "name": "email" } }
             }
         });
-        let rows = post_json(driver, "/api/profile/branch/main/query", query).await?;
+        let rows = post_json(driver, &endpoint, query).await?;
         let email = rows["body"]
             .as_array()
             .and_then(|rows| rows.first())
@@ -5092,7 +5148,7 @@ mod tests {
                 "name": { "?": { "name": "name" } }
             }
         });
-        let rows = post_json(driver, "/api/profile/branch/main/query", query).await?;
+        let rows = post_json(driver, &endpoint, query).await?;
         let display_name = rows["body"]
             .as_array()
             .and_then(|rows| rows.first())
@@ -5116,7 +5172,7 @@ mod tests {
                 "created_at": { "?": { "name": "created_at" } }
             }
         });
-        let rows = post_json(driver, "/api/profile/branch/main/query", query).await?;
+        let rows = post_json(driver, &endpoint, query).await?;
         // Newest first, as the panel lists them.
         let passkey = rows["body"].as_array().and_then(|rows| {
             rows.iter()
@@ -8293,9 +8349,10 @@ mod tests {
         // Create through the profile branch, the way the FAB does: a
         // transient the worker runs post-commit, with this page as the
         // originating client the worker can ask.
+        let branch = active_branch(&creator).await?;
         let created = post_json(
             &creator,
-            "/api/profile/branch/main/transact",
+            &format!("/api/profile/branch/{branch}/transact"),
             serde_json::json!({
                 "claims": [{
                     "op": "assert",
@@ -8362,10 +8419,11 @@ mod tests {
         // sealed bytes, whose `to` is the recipient. The facts follow the
         // seal, so poll for them rather than assert on the first read.
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        let mut sealed: Vec<serde_json::Value> = Vec::new();
         let recipient = loop {
             let principals = post_json(
                 &creator,
-                "/api/profile/branch/main/query",
+                &format!("/api/profile/branch/{branch}/query"),
                 serde_json::json!({
                     "terms": {
                         "this": { "?": { "name": "this" } },
@@ -8388,7 +8446,7 @@ mod tests {
             if let Some(seed) = seed {
                 let messages = post_json(
                     &creator,
-                    "/api/profile/branch/main/query",
+                    &format!("/api/profile/branch/{branch}/query"),
                     serde_json::json!({
                         "terms": {
                             "this": { "?": { "name": "this" } },
@@ -8403,6 +8461,7 @@ mod tests {
                 )
                 .await?;
                 let messages = messages["body"].as_array().cloned().unwrap_or_default();
+                sealed = messages.clone();
                 if let Some(sealed_to) = messages.iter().find_map(|row| {
                     let envelope = row["fields"]["this"].as_str().unwrap_or_default();
                     let sealed_to = row["fields"]["to"].as_str().unwrap_or_default();
@@ -8413,7 +8472,7 @@ mod tests {
             }
             anyhow::ensure!(
                 tokio::time::Instant::now() < deadline,
-                "the new space's seed was never custodied: {principals:?}"
+                "the new space's seed was never custodied: principals={principals:?} sealed={sealed:?}"
             );
             tokio::time::sleep(Duration::from_millis(250)).await;
         };
