@@ -196,6 +196,19 @@ async fn publish_roster_overlay(tonk: &TonkState, rows: &[SwitcherRow]) {
     }
 }
 
+/// Publish the switcher rows for the branch the profile booted onto.
+///
+/// The rows are session overlay facts, so a fresh worker holds none
+/// until a roster read republishes them. The hub renders the account
+/// list from them and nothing on the page reads the roster on its own,
+/// so a worker restart would otherwise show an empty list until the
+/// next `GET /api/profiles`. Best-effort, like the link row beside it.
+pub(crate) async fn publish_roster(tonk: &TonkState) {
+    if let Err(error) = refreshed_roster(tonk).await {
+        log!("switcher rows not published at boot: {error}");
+    }
+}
+
 /// The roster with every branch's live label and account state.
 async fn refreshed_response(tonk: &TonkState) -> Result<ProfilesResponse, TonkWorkerError> {
     try_upsert_active_entry(tonk, None).await?;
@@ -891,6 +904,54 @@ mod tests {
         assert_eq!(
             current[0].name.0, tonk.active_branch,
             "the active row names the branch the profile is on",
+        );
+    }
+
+    /// A fresh worker holds no overlay, so the rows have to be published
+    /// at boot: the hub reads them and nothing on the page asks for the
+    /// roster, so a worker restart would otherwise empty the account list.
+    #[dialog_common::test]
+    async fn it_publishes_the_roster_when_the_worker_boots() {
+        use dialog_query::{Output as _, Query, Term};
+        use tonk_schema::ProfileRow;
+
+        let state = test_state().await;
+        let tonk = crate::worker::boot_state_with_profile_library(
+            state.storage.clone(),
+            state.profile_name.clone(),
+            state.profile.clone(),
+            state.registry.clone(),
+            state.profile_library.clone(),
+        )
+        .await
+        .expect("the worker boots");
+        drop(state);
+
+        let session = tonk
+            .reactor
+            .profile_repository()
+            .branch(&tonk.active_branch)
+            .acquire(&tonk.operator)
+            .await
+            .expect("profile branch opens");
+        let rows: Vec<ProfileRow> = session
+            .handle()
+            .query()
+            .select(Query::<ProfileRow> {
+                this: Term::var("this"),
+                name: Term::var("name"),
+                label: Term::var("label"),
+                provider: Term::var("provider"),
+                active: Term::var("active"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("roster rows read back");
+
+        assert!(
+            rows.iter().any(|row| row.active.0 && row.name.0 == tonk.active_branch),
+            "the booted worker published the branch it is on: {rows:?}",
         );
     }
 

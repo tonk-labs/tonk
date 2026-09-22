@@ -2797,7 +2797,7 @@ async fn remove_replica_from_profile(
     broadcast(
         "/api/profile",
         &Notification {
-            branch: PROFILE_BRANCH.to_string(),
+            branch: tonk.active_branch.clone(),
             revision,
         },
     );
@@ -3922,7 +3922,7 @@ async fn commit_replica_stamp(
         Ok(revision) => broadcast(
             "/api/profile",
             &Notification {
-                branch: PROFILE_BRANCH.to_string(),
+                branch: tonk.active_branch.clone(),
                 revision,
             },
         ),
@@ -5213,7 +5213,7 @@ async fn record_replica_visibility(
     broadcast(
         "/api/profile",
         &Notification {
-            branch: PROFILE_BRANCH.to_string(),
+            branch: tonk.active_branch.clone(),
             revision,
         },
     );
@@ -5261,7 +5261,7 @@ pub(super) async fn set_replica_status(
     broadcast(
         "/api/profile",
         &Notification {
-            branch: PROFILE_BRANCH.to_string(),
+            branch: tonk.active_branch.clone(),
             revision,
         },
     );
@@ -5320,8 +5320,10 @@ pub async fn bootstrap_profile(tonk: &TonkState) -> Result<(), RepositoryError> 
         log!("profile library reconciliation skipped: {error}");
     }
     // A fresh state, a fresh overlay: say whether this device is linked
-    // on the branch it booted onto.
+    // on the branch it booted onto, and which other branches it could
+    // switch to.
     super::account::publish_link(tonk).await;
+    super::profiles::publish_roster(tonk).await;
 
     // Drain the poll the bootstrap commit scheduled.
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
