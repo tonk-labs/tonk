@@ -40,9 +40,7 @@ pub async fn session_for(
 
 /// A session of `peer` under `context`, allowed everything the peer holds.
 pub async fn derive_session(peer: &NativePeer, context: &[u8]) -> Result<NativeSession> {
-    peer.derive(context)
-        .await
-        .context("failed to derive the session key")?
+    peer.session(context)
         .allow(Subject::any())
         .build()
         .await

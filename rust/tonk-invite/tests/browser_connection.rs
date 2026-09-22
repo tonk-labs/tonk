@@ -29,8 +29,7 @@ async fn connection_browser_profile_issues_long_grants_without_operator_suffix()
     let deadline = Timestamp::try_from((now.to_unix() + DEFAULT_GRANT_TTL_SECONDS) as i128)?;
     let operator_deadline = Timestamp::try_from((now.to_unix() + 3600) as i128)?;
     let operator = profile
-        .derive(b"one-hour-browser-operator")
-        .await?
+        .session(b"one-hour-browser-operator")
         .allow(
             profile
                 .access()

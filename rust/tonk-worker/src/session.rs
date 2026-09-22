@@ -73,11 +73,7 @@ pub async fn rotate<S: PeerSpace>(peer: &Peer<S>) -> Result<Session<S>, TonkWork
         TonkWorkerError::Internal(format!("session expiration out of range: {error}"))
     })?;
     let operator = peer
-        .derive(context)
-        .await
-        .map_err(|error| {
-            TonkWorkerError::Internal(format!("failed to derive a session key: {error}"))
-        })?
+        .session(context)
         .allow(peer.access().claim(Subject::any()).expires(expiration))
         .build()
         .await
@@ -246,9 +242,7 @@ mod tests {
             // Simulate Safari's saved grant naming an audience unrelated
             // to the operator reconstructed from the legacy context.
             let old = profile
-                .derive(b"legacy-other-operator")
-                .await
-                .unwrap()
+                .session(b"legacy-other-operator")
                 .build()
                 .await
                 .unwrap();

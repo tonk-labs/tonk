@@ -81,7 +81,7 @@ async fn connection_outer_layout_prevents_old_cli_ambient_authority_fallback() -
     let peer =
         tonk_cli::peer::peer_for(&profile, Directory::At(base.to_string_lossy().into_owned()))
             .await?;
-    let operator = peer.derive("legacy-compatibility").await?.build().await?;
+    let operator = peer.session("legacy-compatibility").build().await?;
     let ambient = DelegationBuilder::new()
         .issuer(Signer::from(owner))
         .audience(&profile.did())

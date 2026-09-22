@@ -1311,9 +1311,7 @@ async fn derive_operator_for_profile(
     // a derived key re-mints identical authority on every open, and the
     // retained copies were the accumulation the in-memory session was
     // introduced to stop.
-    peer.derive(OPERATOR_CONTEXT)
-        .await
-        .context("failed to derive the site session key")?
+    peer.session(OPERATOR_CONTEXT)
         .allow(peer.access().claim(Subject::any()).expires(expiration))
         .build()
         .await

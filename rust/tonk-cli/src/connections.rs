@@ -602,8 +602,7 @@ async fn assemble(
     let peer =
         crate::peer::peer_for(&profile, Directory::At(data.to_string_lossy().into_owned())).await?;
     let operator = peer
-        .derive(b"tonk-scoped-connection")
-        .await?
+        .session(b"tonk-scoped-connection")
         .allow(peer.access().claim(Subject::any()).expires(expires))
         .build()
         .await?;

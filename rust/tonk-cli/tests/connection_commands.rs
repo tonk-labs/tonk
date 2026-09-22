@@ -546,11 +546,7 @@ async fn connection_command_imports_bearer_restarts_and_keeps_account_state() ->
         Directory::At(ambient_base.to_string_lossy().into_owned()),
     )
     .await?;
-    let ambient_operator = ambient_peer
-        .derive("ambient-authority")
-        .await?
-        .build()
-        .await?;
+    let ambient_operator = ambient_peer.session("ambient-authority").build().await?;
     let ambient_grant = DelegationBuilder::new()
         .issuer(Signer::from(owner.clone()))
         .audience(&ambient_profile.did())

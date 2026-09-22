@@ -40,7 +40,7 @@ async fn scoped_site(
         Directory::At(replica.to_string_lossy().into_owned()),
     )
     .await?;
-    let operator = peer.derive("connection-mount").await?.build().await?;
+    let operator = peer.session("connection-mount").build().await?;
     let expiry = Timestamp::new(SystemTime::now() + Duration::from_secs(90 * 86400))?;
     // The profile already owns an unrelated local space. No target-space signer
     // or wider target-space grant is installed.
