@@ -1154,6 +1154,11 @@ pub(crate) async fn passkey_facts(tonk: &TonkState) -> Option<tonk_worker_api::P
 /// living in the account is present but unusable until the access branch
 /// adopts it. This is what makes a recovered delegation authorize anything.
 ///
+/// The access branch is the branch the profile is on, the one the session
+/// operator was built for: each account's branch carries that account's
+/// authority, and adopting through a fixed branch would pull one account
+/// with another's grants.
+///
 /// Best-effort and non-fatal, like the rest of the sweep: a device that
 /// cannot reach the account keeps whatever authority it already holds.
 /// Returns whether it adopted, and logs every reason it did not.
@@ -1165,7 +1170,7 @@ pub(crate) async fn adopt_account_access(tonk: &TonkState) -> bool {
     let remote_name = tonk_account::account_access_remote_name(subject.as_str());
     let repository = Repository::from(&tonk.profile);
     let access = match repository
-        .branch(dialog_repository::ACCESS_BRANCH)
+        .branch(tonk.active_branch.as_str())
         .open()
         .perform(&tonk.operator)
         .await
@@ -2462,6 +2467,15 @@ pub(crate) mod tests {
         assert_ne!(
             followed[0], followed[1],
             "each account's branch follows a remote named for that account"
+        );
+
+        // The access branch is the branch the profile is on. Adopting
+        // through a fixed `main` would pull the FIRST account's access
+        // branch with the second account's authority, which no delegation
+        // proves, and the sweep would refuse every proof from then on.
+        assert!(
+            adopt_account_access(&state).await,
+            "the second account's authority is adopted on {landing}",
         );
     }
 
