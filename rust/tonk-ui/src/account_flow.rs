@@ -642,7 +642,28 @@ mod tests {
     async fn enter_hub(driver: &WebDriver) -> Result<()> {
         enter_guest(driver).await?;
         element(driver, ".hub-page").await?;
-        Ok(())
+        // Dressed, not merely present: the chrome's stylesheet is minted
+        // after the views mount, and a row hovered or measured before it
+        // lands moves when it does. Every carrier, since the page and the
+        // stack each declare their own.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let dressed = driver
+                .execute(
+                    r#"const links = [...document.querySelectorAll('link[data-tonk-embed]')];
+                       return links.length > 0 && links.every((link) => link.sheet && link.sheet.cssRules.length);"#,
+                    Vec::new(),
+                )
+                .await?;
+            if dressed.json().as_bool() == Some(true) {
+                return Ok(());
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the hub's stylesheet never loaded"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 
     /// Wait for the view's `with:src` embed to finish resolving.
@@ -2254,7 +2275,7 @@ mod tests {
                      color: style.color,
                      dark: window.matchMedia('(prefers-color-scheme: dark)').matches,
                      carriers: carriers.length,
-                     href: carriers.length ? carriers[0].getAttribute('href') : null,
+                     hrefs: [...carriers].map((link) => link.getAttribute('href')),
                      minted: document.querySelectorAll('link[data-tonk-embed-src]').length,
                    };"#,
                 Vec::new(),
@@ -2285,15 +2306,17 @@ mod tests {
         // whose href is not a blob URL means the pass ran and gave it
         // nothing, which is the failure the computed values above
         // would also catch but not name.
-        assert_eq!(
-            hub["carriers"], 1,
-            "the view declares one `<link with:src>`; got {hub}",
+        assert!(
+            hub["carriers"].as_u64().is_some_and(|count| count >= 1),
+            "a view declares its `<link with:src>`; got {hub}",
         );
         assert!(
-            hub["href"]
-                .as_str()
-                .is_some_and(|href| href.starts_with("blob:")),
-            "the embed pass must point the link at minted content; got {hub}",
+            hub["hrefs"].as_array().is_some_and(|hrefs| {
+                hrefs
+                    .iter()
+                    .all(|href| href.as_str().is_some_and(|href| href.starts_with("blob:")))
+            }),
+            "the embed pass must point every carrier at minted content; got {hub}",
         );
         assert_eq!(
             hub["minted"], 1,
@@ -2312,7 +2335,7 @@ mod tests {
                    return {
                      background: style.backgroundColor,
                      carriers: carriers.length,
-                     href: carriers.length ? carriers[0].getAttribute('href') : null,
+                     hrefs: [...carriers].map((link) => link.getAttribute('href')),
                      minted: document.querySelectorAll('link[data-tonk-embed-src]').length,
                    };"#,
                 Vec::new(),
@@ -2324,9 +2347,11 @@ mod tests {
             "/settings embeds the same style as the hub (`ui@space`); got {settings}",
         );
         assert!(
-            settings["href"]
-                .as_str()
-                .is_some_and(|href| href.starts_with("blob:")),
+            settings["hrefs"].as_array().is_some_and(|hrefs| {
+                hrefs
+                    .iter()
+                    .all(|href| href.as_str().is_some_and(|href| href.starts_with("blob:")))
+            }),
             "the cross-view embed must resolve to minted content; got {settings}",
         );
         assert_eq!(
@@ -3246,12 +3271,65 @@ mod tests {
         let dialog_selector = format!("{remove} tonk-dialog[data-space-remove-dialog]");
         let submit_selector = format!("{dialog_selector} .m-go");
         let row = wait_for_displayed(&driver, &format!(".srow-wrap:has({remove})")).await?;
+        // Park on the row once it has held still: its stylesheet lands a
+        // beat after it renders, and a pointer aimed at where the row was
+        // hovers nothing once it moves.
+        let measure = |driver: &WebDriver, row: &WebElement| {
+            let driver = driver.clone();
+            let row = row.clone();
+            async move {
+                driver
+                    .execute(
+                        "const r = arguments[0].getBoundingClientRect(); return [r.left, r.top, r.width, r.height].map(Math.round);",
+                        vec![row.to_json()?],
+                    )
+                    .await
+                    .map(|value| value.json().clone())
+            }
+        };
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let parked = loop {
+            let before = measure(&driver, &row).await?;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let after = measure(&driver, &row).await?;
+            if before == after || tokio::time::Instant::now() >= deadline {
+                break after;
+            }
+        };
         driver
             .action_chain()
             .move_to_element_center(&row)
             .perform()
             .await?;
-        let opener = wait_for_displayed(&driver, &opener_selector).await?;
+        let opener = match wait_for_displayed(&driver, &opener_selector).await {
+            Ok(opener) => opener,
+            Err(error) => {
+                // What the pointer is over now, against where the row was
+                // when the pointer parked on it.
+                let hover = driver
+                    .execute(
+                        "const row = arguments[0]; const r = row.getBoundingClientRect();
+                         const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+                         const verbs = row.querySelector('.verbs');
+                         return {
+                           connected: row.isConnected, hovered: row.matches(':hover'),
+                           rect: [r.left, r.top, r.width, r.height].map(Math.round),
+                           under: at ? at.tagName + '.' + at.className : null,
+                           underInRow: !!(at && row.contains(at)),
+                           verbsOpacity: verbs ? getComputedStyle(verbs).opacity : null,
+                           rows: document.querySelectorAll('.srow-wrap').length,
+                           scrollY: window.scrollY,
+                         };",
+                        vec![row.to_json()?],
+                    )
+                    .await
+                    .map(|value| value.json().clone())
+                    .unwrap_or(serde_json::Value::Null);
+                return Err(error.context(format!(
+                    "the remove verb never showed; parked={parked} now={hover}"
+                )));
+            }
+        };
         opener.click().await?;
         wait_for_displayed(&driver, &dialog_selector).await?;
 
