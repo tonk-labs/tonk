@@ -30,7 +30,7 @@ use dialog_common::log;
 /// exist as stored data, yielding an empty result (the "Model not found" on a
 /// `<tonk-display model=…>` whose one-shot query — which does route through
 /// `QueryPlan` — resolves fine).
-pub type Engine = dialog_repository::Subscription<tonk_schema::concept::QueryPlan>;
+pub type Engine = dialog_repository::StackSubscription<tonk_schema::concept::QueryPlan>;
 
 /// The engine slot: an `Option` behind an async mutex.
 ///

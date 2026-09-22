@@ -619,6 +619,7 @@ async fn evaluate_on_branch_with<'a>(
         loop {
             let (evaluated, revision_before, matches_after, eval_ms, matches_ms) =
                 evaluate_once().await?;
+            session.state.drain_commands();
             if mode != EvaluationMode::Interactive && !evaluated.analysis.analysis.has_statements()
             {
                 return Err(TonkWorkerError::Internal(
@@ -677,10 +678,18 @@ async fn evaluate_on_branch_with<'a>(
             // dispatch runs on — the commit sweeps them from the transaction.
             let matches_before = evaluated.matches;
             let commits = evaluated.commits;
-            let transients = evaluated.transients;
+            let requested = evaluated.transients;
             let t_commit = web_time::Instant::now();
             match stage_and_publish(tonk_state, evaluated.txn, record).await {
                 Ok(revision_after) => {
+                    // What the commit witnessed on the branch's session
+                    // store: the document's own commands plus any a rule
+                    // concluded and the next round consumed. The
+                    // evaluator's mirror remains the floor even if only
+                    // one of the two observers overflowed.
+                    let witnessed = session.state.drain_commands();
+                    let mut transients = witnessed;
+                    dialog_artifacts::Statement::assert(requested, &mut transients);
                     break (
                         revision_before,
                         revision_after,
@@ -721,6 +730,7 @@ async fn evaluate_on_branch_with<'a>(
     // Re-poll subscriptions so SSE clients see the new state. The chain commits
     // via dialog directly; the reactor's subscription registry is the worker's
     // responsibility.
+    drop(_committing);
     let t_poll = web_time::Instant::now();
     session.poll(&tonk_state.operator).await;
     let poll_ms = t_poll.elapsed().as_millis();
@@ -1322,6 +1332,54 @@ mod tests {
         evaluate_body(&guard, repo, "main", body.to_owned(), transact)
             .await
             .unwrap_or_else(|e| panic!("evaluate_body failed: {e}"))
+    }
+
+    #[dialog_common::test]
+    async fn it_dispatches_only_witnessed_commands_not_state_writes() {
+        use crate::router::claim::RawClaim;
+        use dialog_artifacts::{Changes, Statement, Value};
+        let (state, repo) = state_with_repo("test-witnessed-commands").await;
+        let tonk = state.read().await;
+        let branch = tonk.reactor.repository(&repo).branch("main");
+        let session = branch.acquire(&tonk.operator).await.unwrap();
+        session.state.drain_commands();
+        session
+            .state
+            .write(
+                RawClaim {
+                    the: "test/state".parse().unwrap(),
+                    of: "test:site".parse().unwrap(),
+                    is: Value::String("ready".into()),
+                    unique: false,
+                },
+                &tonk.operator,
+            )
+            .await
+            .unwrap();
+        assert!(
+            session.state.drain_commands().is_empty(),
+            "state writes are not commands"
+        );
+        let mut commands = Changes::new();
+        RawClaim {
+            the: "test/command".parse().unwrap(),
+            of: "test:command".parse().unwrap(),
+            is: Value::String("go".into()),
+            unique: false,
+        }
+        .assert(&mut commands);
+        let mut transaction = branch.transaction();
+        transaction.transients = commands;
+        let (_, witnessed) = transaction
+            .commit()
+            .perform_witnessed(&tonk.operator)
+            .await
+            .unwrap();
+        assert_eq!(witnessed.into_instructions().len(), 1);
+        assert!(
+            session.state.drain_commands().is_empty(),
+            "the commit drains its own commands"
+        );
     }
 
     /// A document declaring the transient `person-entered` concept,

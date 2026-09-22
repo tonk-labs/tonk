@@ -111,7 +111,10 @@ pub async fn publish_sync_status_attr(
     // `status` is a cardinality-one attribute, so asserting supersedes the
     // prior value at `state:here` rather than accumulating — the chip's fold
     // always sees exactly the latest status.
-    session.state.assert_overlay(stamp);
+    if let Err(error) = session.state.write(stamp, &tonk.operator).await {
+        log!("publish_sync_status: write: {error}");
+        return;
+    }
     tonk.reactor.schedule_poll(Arc::clone(&session.state));
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 }
@@ -150,7 +153,10 @@ pub async fn publish_self_identity(tonk: &crate::worker::TonkState, repo: &str, 
             return;
         }
     };
-    session.state.assert_overlay(stamp);
+    if let Err(error) = session.state.write(stamp, &tonk.operator).await {
+        log!("publish_self_identity: write: {error}");
+        return;
+    }
     tonk.reactor
         .schedule_poll(std::sync::Arc::clone(&session.state));
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
@@ -1736,7 +1742,7 @@ mod overlay_tests {
         let entity: dialog_artifacts::Entity =
             tonk_schema::Replica::SELF_STATE_HERE.parse().unwrap();
         let rows: Vec<tonk_schema::ProfileIdentity> = session
-            .handle()
+            .stack()
             .query()
             .select(Query::<tonk_schema::ProfileIdentity> {
                 this: Term::from(entity),

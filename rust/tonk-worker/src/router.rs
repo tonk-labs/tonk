@@ -1589,7 +1589,7 @@ pub mod tests {
                 .acquire(&tonk.operator)
                 .await
                 .unwrap();
-            session.state.clear_overlay();
+            session.state.clear(&tonk.operator).await.unwrap();
         }
 
         let query = |attr: &str, name: &str| {

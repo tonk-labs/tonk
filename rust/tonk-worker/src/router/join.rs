@@ -1474,7 +1474,9 @@ impl dialog_capability::Provider<tonk_schema::command::Join> for crate::router::
         // There is no paste-link page: invite links open directly in the
         // browser. Return bare /join visits home before requesting custody.
         if !carries_invite(&command.url.0) {
-            crate::router::navigate::notify_navigate(self.client(), "/");
+            let tonk = self.state().read().await;
+            crate::router::navigate::request_navigation(&tonk, self.client(), "/").await;
+            tonk.reactor.run_scheduled_polls(&tonk.operator).await;
             return;
         }
         // The invite principal's seed is custodied under the account
@@ -1570,33 +1572,23 @@ fn carries_invite(url: &str) -> bool {
     })
 }
 
-/// Drop this join's own overlay facts, and only those (scoped clear).
+/// Drop this join's own state facts, and only those (a scoped forget).
 ///
-/// The branch overlay is SHARED: the tab's `tonk:site` facts (path,
+/// The state layer is SHARED: the tab's `tonk:site` facts (path,
 /// route, concept) live there too, and they are what every view on the
-/// page resolves through. A blanket `clear_overlay()` therefore wiped
-/// the site out from under the page on every `/join` mount — the site
-/// display lost its entity, fell back to its pending spinner, and
-/// nothing downstream ever rendered. Scope the clear to the join's own
-/// entities, exactly as the site re-stamp does with its own.
-fn clear_join_overlay(session: &dialog_reactor::BranchSession, status: &dialog_artifacts::Entity) {
-    let status = status.clone();
-    session
-        .state
-        .retain_overlay_entities(move |overlaid| retains_overlay_entity(overlaid, &status));
-}
-
-/// Whether an overlaid entity SURVIVES a join's scoped clear.
-///
-/// Everything but the join's own status entity does. Split out from
-/// [`clear_join_overlay`] so the rule can be tested off-wasm: it is the
-/// whole contract, and getting it backwards is invisible until a page
-/// silently stops rendering.
-fn retains_overlay_entity(
-    overlaid: &dialog_artifacts::Entity,
+/// page resolves through. A blanket clear therefore wiped the site out
+/// from under the page on every `/join` mount — the site display lost
+/// its entity, fell back to its pending spinner, and nothing downstream
+/// ever rendered. Forget exactly the join's own status entity, as the
+/// site re-stamp does with its own.
+async fn clear_join_overlay(
+    session: &dialog_reactor::BranchSession,
     status: &dialog_artifacts::Entity,
-) -> bool {
-    overlaid != status
+    env: &crate::worker::DefaultOperator,
+) {
+    if let Err(error) = session.state.forget(vec![status.clone()], env).await {
+        log!("join: forget status: {error}");
+    }
 }
 
 /// Run the join operation from the command's full URL and drive the
@@ -1635,15 +1627,21 @@ async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command
 
     // Pending: a fresh attempt clears any prior status, then marks
     // pending. Schedule a poll so the view shows "Joining…".
-    clear_join_overlay(&session, &status_entity);
-    session.state.assert_overlay(JoinStatus {
+    let pending = JoinStatus {
         this: status_entity.clone(),
         status: Status(
             "tonk:pending"
                 .parse()
                 .unwrap_or_else(|_| status_entity.clone()),
         ),
-    });
+    };
+    if let Err(error) = session
+        .state
+        .apply(vec![status_entity.clone()], pending, &tonk.operator)
+        .await
+    {
+        log!("join: stamp pending: {error}");
+    }
     tonk.reactor.schedule_poll(Arc::clone(&session.state));
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 
@@ -1661,18 +1659,19 @@ async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command
             // redirect cannot land on "Model not found".
             //
             // Clear the in-flight status so the "Joining…" overlay empties,
-            // then tell the originating page to redirect into `/space/<subject>`.
+            // then ask the originating tab to go to `/space/<subject>`.
             //
             // The redirect is a page capability — the service worker has no
-            // `window` — and this command is transient, so it never lands in
-            // a branch a subscription could observe. The only channel back to
-            // the page that asked is a `postMessage` to its client. We post
-            // `{ type: "navigate", href }`; the page's `<tonk-host>` performs
-            // the navigation.
-            clear_join_overlay(&session, &status_entity);
+            // `window` — so the worker asserts the desired location on the
+            // tab's site (`tonk:site` `target`) in the branch's state layer;
+            // the tab's `<tonk-site>` observes it through its own stamp
+            // subscription and navigates. One poll drain delivers both the
+            // emptied status and the target.
+            clear_join_overlay(&session, &status_entity, &tonk.operator).await;
             tonk.reactor.schedule_poll(Arc::clone(&session.state));
-            tonk.reactor.run_scheduled_polls(&tonk.operator).await;
             let href = format!("/space/{key}", key = outcome.key);
+            crate::router::navigate::request_navigation(&tonk, env.client(), &href).await;
+            tonk.reactor.run_scheduled_polls(&tonk.operator).await;
             if !outcome.renewed {
                 crate::router::navigate::notify_analytics(
                     env.client(),
@@ -1681,7 +1680,6 @@ async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command
                     },
                 );
             }
-            crate::router::navigate::notify_navigate(env.client(), &href);
             log!(
                 "join: succeeded (subject {}, key {})",
                 outcome.subject,
@@ -1693,19 +1691,29 @@ async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command
             // overlay-only. The reason is chosen from the closed set, so
             // neither the URL nor an upstream body can reach the page.
             let kind = failure.kind();
-            session.state.assert_overlay(JoinStatus {
-                this: status_entity.clone(),
-                status: Status(
-                    "tonk:failed"
-                        .parse()
-                        .unwrap_or_else(|_| status_entity.clone()),
-                ),
-            });
-            session.state.assert_overlay(JoinFailureFact {
-                this: status_entity,
-                reason: Reason(kind.message().to_owned()),
-                kind: Kind(kind.as_str().to_owned()),
-            });
+            let mut failed = dialog_artifacts::Changes::new();
+            dialog_artifacts::Statement::assert(
+                JoinStatus {
+                    this: status_entity.clone(),
+                    status: Status(
+                        "tonk:failed"
+                            .parse()
+                            .unwrap_or_else(|_| status_entity.clone()),
+                    ),
+                },
+                &mut failed,
+            );
+            dialog_artifacts::Statement::assert(
+                JoinFailureFact {
+                    this: status_entity,
+                    reason: Reason(kind.message().to_owned()),
+                    kind: Kind(kind.as_str().to_owned()),
+                },
+                &mut failed,
+            );
+            if let Err(error) = session.state.write(failed, &tonk.operator).await {
+                log!("join: stamp failure: {error}");
+            }
             tonk.reactor.schedule_poll(Arc::clone(&session.state));
             tonk.reactor.run_scheduled_polls(&tonk.operator).await;
             log!("join: failed ({}): {failure:?}", kind.as_str());
@@ -1717,11 +1725,8 @@ async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command
 /// dispatches a `tonk:committed` window event, prompting the sync
 /// controller to push immediately instead of waiting for the heartbeat.
 ///
-/// Mirrors [`notify_navigate`] exactly — fire-and-forget on a spawned
-/// task, no `TonkState` access, so the caller's held read lock is
-/// irrelevant.
-///
-/// [`notify_navigate`]: crate::router::navigate::notify_navigate
+/// Fire-and-forget on a spawned task, no `TonkState` access, so the
+/// caller's held read lock is irrelevant.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) fn notify_sync(client: Option<&crate::router::ClientId>) {
     use wasm_bindgen::{JsCast, JsValue};
@@ -1814,26 +1819,57 @@ mod invite_presence_tests {
 /// `/join` mount, so the site display lost its entity and fell back to
 /// its spinner forever. Pinned here because the failure is silent —
 /// nothing errors, the page just stops rendering.
-#[cfg(test)]
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 mod overlay_scope_tests {
-    use super::{JOIN_STATUS_URI, retains_overlay_entity};
+    use super::JOIN_STATUS_URI;
     use dialog_artifacts::Entity;
+    use dialog_query::Statement as _;
 
-    #[test]
-    fn it_clears_only_the_joins_own_overlay_entity() {
+    #[dialog_common::test]
+    async fn it_clears_only_the_joins_own_state_entity() {
+        let tonk = crate::router::tests::test_state().await;
+        let session = tonk
+            .reactor
+            .profile_repository()
+            .branch(super::PROFILE_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .expect("profile meta branch opens");
         let status: Entity = JOIN_STATUS_URI.parse().expect("status URI parses");
+        let site: Entity = "tonk:site".parse().expect("URI parses");
+        let mut facts = dialog_artifacts::Changes::new();
+        dialog_query::the!("xyz.tonk.join/status")
+            .of(status.clone())
+            .is("pending".to_string())
+            .assert(&mut facts);
+        dialog_query::the!("xyz.tonk.site/path")
+            .of(site.clone())
+            .is("/join".to_string())
+            .assert(&mut facts);
+        session
+            .state
+            .write(facts, &tonk.operator)
+            .await
+            .expect("state write lands");
 
-        assert!(
-            !retains_overlay_entity(&status, &status),
+        super::clear_join_overlay(&session, &status, &tonk.operator).await;
+
+        let layer = session.state.state_layer();
+        let held = |entity: &Entity| {
+            layer
+                .scan(&dialog_artifacts::ArtifactSelector::new().of(entity.clone()))
+                .len()
+        };
+        assert_eq!(
+            held(&status),
+            0,
             "the join's own status is what the clear is for"
         );
-
-        for foreign in ["tonk:site", "tonk:join/route", "tonk:replica"] {
-            assert!(
-                retains_overlay_entity(&foreign.parse::<Entity>().expect("URI parses"), &status),
-                "{foreign} belongs to the page, not to this join"
-            );
-        }
+        assert_eq!(
+            held(&site),
+            1,
+            "the site belongs to the page, not to this join"
+        );
     }
 }
 

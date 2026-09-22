@@ -79,8 +79,9 @@ fn install_inner(page_effects: bool) {
     let listeners = ops::attach_all(document.as_ref(), state.clone());
     let installed = Installed {
         _listeners: listeners,
-        // Main-thread navigate provider: a worker command can ask the page
-        // to redirect by posting `{ type: "navigate", href }` to its client.
+        // Worker→page messages that are not state: a sync prompt and a
+        // profile change. A worker command's navigation arrives as the
+        // tab's `tonk:site` target instead, observed by `<tonk-site>`.
         // (Sync needs no page-side heartbeat: the SW schedules its own
         // drains while the page holds live subscriptions.)
         _navigate: page_effects.then(navigate::install).flatten(),

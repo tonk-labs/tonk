@@ -840,7 +840,14 @@ async fn sweep_reactor_state(state: &crate::router::AppState, dead: &Dead) {
         // another. Nor is a poll needed: the facts removed belonged to a
         // client that is gone, so no live subscriber was reading them and
         // their removal changes nothing anyone can observe.
-        branch.retain_overlay_entities(|entity| !dead.sites.contains(entity.as_str()));
+        let sites: Vec<dialog_artifacts::Entity> = dead
+            .sites
+            .iter()
+            .filter_map(|site| site.parse().ok())
+            .collect();
+        if let Err(error) = branch.forget(sites, &snap.operator).await {
+            log!("sweep: forget dead sites: {error}");
+        }
     }
 
     log!(

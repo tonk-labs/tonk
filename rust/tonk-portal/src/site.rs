@@ -370,12 +370,34 @@ fn install_self_heal(this: &HtmlElement, slot: Rc<RefCell<Option<Subscription>>>
         let host_for_frame = host.clone();
         let reset: Closure<dyn FnMut(JsValue, JsValue)> =
             Closure::wrap(Box::new(move |payload: JsValue, _opts: JsValue| {
-                if js_sys::Array::from(&payload).length() == 0 {
-                    heal_claim(&host_for_frame);
-                }
+                let rows = js_sys::Array::from(&payload);
+                apply_site_frame(&host_for_frame, &rows);
             }));
         let _ = js_sys::Reflect::set(&probe, &"reset".into(), reset.as_ref());
         reset.forget();
+
+        // After the first snapshot the host delivers deltas. This query
+        // has one site and cardinality-one fields, so an asserted row is
+        // its complete new stamp; a retraction alone means it vanished.
+        let host_for_delta = host.clone();
+        let update: Closure<dyn FnMut(JsValue, JsValue)> =
+            Closure::wrap(Box::new(move |payload: JsValue, _opts: JsValue| {
+                let asserted = js_sys::Reflect::get(&payload, &"asserted".into())
+                    .ok()
+                    .filter(js_sys::Array::is_array)
+                    .map(|rows| js_sys::Array::from(&rows))
+                    .unwrap_or_default();
+                let retracted = js_sys::Reflect::get(&payload, &"retracted".into())
+                    .ok()
+                    .filter(js_sys::Array::is_array)
+                    .map(|rows| js_sys::Array::from(&rows))
+                    .unwrap_or_default();
+                if asserted.length() > 0 || retracted.length() > 0 {
+                    apply_site_frame(&host_for_delta, &asserted);
+                }
+            }));
+        let _ = js_sys::Reflect::set(&probe, &"update".into(), update.as_ref());
+        update.forget();
 
         let body = match heal_query(&site) {
             Some(body) => body,
@@ -389,6 +411,16 @@ fn install_self_heal(this: &HtmlElement, slot: Rc<RefCell<Option<Subscription>>>
             }
         }
     });
+}
+
+/// A vanished stamp reclaims the site. A target on a live stamp asks
+/// this tab to navigate; the resulting load re-stamps and clears it.
+fn apply_site_frame(host: &HtmlElement, rows: &js_sys::Array) {
+    if rows.length() == 0 {
+        heal_claim(host);
+    } else if let Some(target) = stamped_target(rows) {
+        tonk_host::navigate_to(&target);
+    }
 }
 
 /// Re-assert the `tonk:load` claim for the site's CURRENT path — the heal
@@ -421,12 +453,26 @@ fn heal_claim(host: &Element) {
 }
 
 /// The heal subscription's body: the site entity's stamped `path` — one
-/// cardinality-one field, so an empty frame is exactly "no stamp".
+/// required cardinality-one field, so an empty frame is exactly "no stamp"
+/// — and its optional `target`, the location the worker has asked this tab
+/// to go to, absent until a command sets it.
 fn heal_query(site: &str) -> Option<JsValue> {
     let body = format!(
-        r#"{{"predicate":{{"with":{{"path":{{"the":"xyz.tonk.site/path","as":"Text","cardinality":"one"}}}}}},"terms":{{"this":{site:?},"path":{{"?":{{"name":"path"}}}}}}}}"#
+        r#"{{"predicate":{{"with":{{"path":{{"the":"xyz.tonk.site/path","as":"Text","cardinality":"one"}},"target":{{"the":"xyz.tonk.site/target","as":"Text","cardinality":"one","optional":true}}}}}},"terms":{{"this":{site:?},"path":{{"?":{{"name":"path"}}}},"target":{{"?":{{"name":"target"}}}}}}}}"#
     );
     js_sys::JSON::parse(&body).ok()
+}
+
+/// The `target` the site's rows carry, if any row has a non-empty one.
+/// Rows are wire conclusions: `{ this, fields: { path, target? } }`.
+fn stamped_target(rows: &js_sys::Array) -> Option<String> {
+    rows.iter().find_map(|row| {
+        let fields = js_sys::Reflect::get(&row, &JsValue::from_str("fields")).ok()?;
+        let target = js_sys::Reflect::get(&fields, &JsValue::from_str("target"))
+            .ok()?
+            .as_string()?;
+        (!target.is_empty()).then_some(target)
+    })
 }
 
 /// This element's site entity (`site:<uuid>`), minted once and stored on the
@@ -686,6 +732,51 @@ mod tests {
             fake.claim_body.borrow().is_none(),
             "a live stamp must not re-claim"
         );
+
+        let update: Function = Reflect::get(&probe, &"update".into())
+            .expect("update prop")
+            .dyn_into()
+            .expect("update fn");
+        // Other portal tests install guest-bridge stubs on this shared
+        // window. Exercise actual page navigation, then restore the context.
+        let win = window().unwrap();
+        let prior_bridge = Reflect::get(&win, &"tonk".into()).unwrap();
+        Reflect::set(&win, &"tonk".into(), &JsValue::UNDEFINED).unwrap();
+        let original_url = win.location().href().unwrap();
+        let target = format!(
+            "{}#site-target-regression",
+            original_url.split('#').next().unwrap()
+        );
+        let row = Object::new();
+        let fields = Object::new();
+        Reflect::set(&fields, &"path".into(), &"/space/x".into()).unwrap();
+        Reflect::set(&fields, &"target".into(), &target.clone().into()).unwrap();
+        Reflect::set(&row, &"fields".into(), &fields).unwrap();
+        let delta = Object::new();
+        Reflect::set(&delta, &"asserted".into(), &Array::of1(&row)).unwrap();
+        Reflect::set(&delta, &"retracted".into(), &full).unwrap();
+        update.call2(&probe, &delta, &JsValue::UNDEFINED).unwrap();
+        flush().await;
+        let navigated = win.location().href().unwrap();
+        Reflect::set(&win, &"tonk".into(), &prior_bridge).unwrap();
+        win.history()
+            .unwrap()
+            .replace_state_with_url(&JsValue::NULL, "", Some(&original_url))
+            .unwrap();
+        assert_eq!(navigated, target, "a target arriving in a delta navigates");
+        assert!(
+            fake.claim_body.borrow().is_none(),
+            "replacing a stamp does not heal"
+        );
+
+        Reflect::set(&delta, &"asserted".into(), &Array::new()).unwrap();
+        update.call2(&probe, &delta, &JsValue::UNDEFINED).unwrap();
+        flush().await;
+        assert!(
+            fake.claim_body.borrow().is_some(),
+            "a removal delta reclaims the site"
+        );
+        fake.claim_body.borrow_mut().take();
 
         // An empty frame is a vanished stamp: re-claim the current path.
         let _ = reset.call2(&probe, &Array::new().into(), &JsValue::UNDEFINED);

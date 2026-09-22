@@ -333,6 +333,16 @@ pub mod site {
     #[domain("xyz.tonk.site")]
     #[cardinality(one)]
     pub struct Concept(pub Entity);
+
+    /// Where this tab has been asked to go: the desired location, as an
+    /// href. A worker command that ends in a redirect (a join, a create)
+    /// asserts it on the tab's site; the page observes it, navigates, and
+    /// its `tonk:load` re-stamp of the site clears it. The stamped
+    /// [`Path`] is the observed half.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.site")]
+    #[cardinality(one)]
+    pub struct Target(pub String);
 }
 
 /// Attributes for the durable `tonk:route` table the SW reads to build its

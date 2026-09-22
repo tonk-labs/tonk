@@ -317,22 +317,28 @@ async fn transact_on_branch<'a>(
         builder = builder.apply(claim);
     }
 
-    // Capture the transient bucket before commit consumes it: the
-    // commit sweeps transients from durable storage, so this snapshot
-    // is the only post-commit view of which commands arrived. Empty →
-    // no command dispatch.
-    let transients = builder.transients.clone();
-    let to_dispatch = (!transients.is_empty()).then_some(transients);
+    // The commands to dispatch are what the commit WITNESSED: the
+    // request's own transients as the stack minted them, plus any command
+    // a rule concluded during induction and a later round consumed — that
+    // one never appears in the pre-commit bucket, which is why the bucket
+    // alone lost it. The bucket stays as the floor even if just one
+    // observer overflows: the request's own commands must still run.
+    let requested = builder.transients.clone();
 
     // The per-branch transactor lock that serializes commits is taken INSIDE
     // the reactor's `commit().perform()` (so no commit path — route or direct
     // handler — can sidestep it). Taking it here too would deadlock: the
     // mutex is not re-entrant.
-    let revision_after = builder
+    let (revision_after, witnessed) = builder
         .commit()
-        .perform(&tonk_state.operator)
+        .perform_witnessed(&tonk_state.operator)
         .await
         .map_err(reactor_to_error)?;
+    let mut transients = witnessed;
+    // One observer can overflow while the other still returns commands.
+    // Keep every requested command even when the witness is only partial.
+    dialog_artifacts::Statement::assert(requested, &mut transients);
+    let to_dispatch = (!transients.is_empty()).then_some(transients);
 
     Ok((
         Json(TransactResponse {
@@ -466,6 +472,7 @@ fn reactor_to_error(err: ReactorError) -> TonkWorkerError {
         | ReactorError::Commit(_)
         | ReactorError::Pull(_)
         | ReactorError::Download(_)
-        | ReactorError::Push(_) => TonkWorkerError::Internal(err.to_string()),
+        | ReactorError::Push(_)
+        | ReactorError::Stack(_) => TonkWorkerError::Internal(err.to_string()),
     }
 }

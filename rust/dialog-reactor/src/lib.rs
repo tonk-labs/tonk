@@ -244,7 +244,10 @@ impl Reactor {
     /// the polls a turn scheduled fire together with the env in hand.
     /// Pointer identity dedups, so a branch scheduled by both its commit
     /// and an overlay write polls a single time.
-    pub async fn run_scheduled_polls<'a, Env: SelectProvider>(&'a self, env: &'a Env) {
+    pub async fn run_scheduled_polls<'a, Env: SelectProvider + BranchOpenProvider>(
+        &'a self,
+        env: &'a Env,
+    ) {
         let scheduled = {
             let mut pending = self.pending_polls.lock();
             std::mem::take(&mut *pending)
@@ -375,6 +378,9 @@ impl Reactor {
                 branch: branch.to_owned(),
                 reason: e.to_string(),
             })?;
+        // The stack reads the branch at the head it captured; a
+        // refreshed head is movement it must advance over.
+        state.stack().advance(env).await?;
 
         // The head or upstream may have moved: deliver fresh snapshots
         // to the branch's subscriptions. Nothing else polls on their
