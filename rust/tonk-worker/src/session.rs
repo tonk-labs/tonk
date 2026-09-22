@@ -24,9 +24,8 @@
 //! drain's rotation heals. Service-worker lifetimes make that window
 //! rare; revisit only if it is ever observed.
 
-use dialog_capability::{Provider, Subject};
+use dialog_capability::Subject;
 use dialog_peer::{Peer, PeerSpace, Profile};
-use dialog_storage::provider::space::SpaceProvider;
 use dialog_storage::provider::storage::Storage;
 use dialog_ucan_core::time::Timestamp;
 use dialog_ucan_core::time::timestamp::{Duration, SystemTime};

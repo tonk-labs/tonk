@@ -1313,7 +1313,7 @@ fn server_capabilities() -> ServerCapabilities {
 #[cfg(test)]
 mod tests {
     use async_trait::async_trait;
-    use dialog_peer::helpers::{test_session_with_peer, test_repo};
+    use dialog_peer::helpers::{test_repo, test_session_with_peer};
     use dialog_repository::Branch;
     use serde_json::json;
     use tonk_schema::concept::QueryEnv;

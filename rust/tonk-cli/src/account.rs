@@ -1377,7 +1377,6 @@ pub async fn revoke_in_observed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     async fn account_state_fixture(
         ready: bool,
@@ -1387,7 +1386,6 @@ mod tests {
         dialog_peer::Session<NativeSpace>,
         crate::space::SpaceStore,
     ) {
-        use dialog_capability::Subject;
         use dialog_effects::storage::Directory;
         use dialog_storage::provider::storage::Storage;
         use dialog_varsig::Principal as _;
@@ -1410,8 +1408,8 @@ mod tests {
             Directory::At(account_dir.to_string_lossy().into()),
             b"tonk/account-state/v1",
         )
-            .await
-            .unwrap();
+        .await
+        .unwrap();
         let root = dialog_credentials::Ed25519Signer::generate().await.unwrap();
         let root_did = root.did();
         let link = tonk_identity::delegation::mint_device_delegation(root.clone(), &profile.did())
@@ -1542,7 +1540,6 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_logs_out_by_tombstoning_only_the_provider_attachment() {
-        use dialog_capability::Subject;
         use dialog_effects::storage::Directory;
         use dialog_storage::provider::storage::Storage;
 
@@ -1564,8 +1561,8 @@ mod tests {
             Directory::At(account_dir.to_string_lossy().into()),
             b"tonk/account-state/v1",
         )
-            .await
-            .unwrap();
+        .await
+        .unwrap();
         let device_did = profile.did();
         let local_root = crate::identity::LocalRoot {
             credential_id: "credential".to_string(),
@@ -1802,7 +1799,6 @@ mod tests {
 
     impl RecoveryFixture {
         async fn new() -> (Self, Profile, dialog_peer::Session<NativeSpace>) {
-            use dialog_capability::Subject;
             use dialog_credentials::Ed25519Signer;
             use dialog_effects::storage::Directory;
             use dialog_storage::provider::storage::Storage;
@@ -1820,13 +1816,13 @@ mod tests {
             std::fs::create_dir_all(store.account_dir()).unwrap();
             let account_dir = store.account_dir().canonicalize().unwrap();
             let operator = crate::peer::session_for(
-            &profile,
-            storage,
-            Directory::At(account_dir.to_string_lossy().into()),
-            b"tonk/account-state/v1",
-        )
-                .await
-                .unwrap();
+                &profile,
+                storage,
+                Directory::At(account_dir.to_string_lossy().into()),
+                b"tonk/account-state/v1",
+            )
+            .await
+            .unwrap();
             let service_url = "http://127.0.0.1:9/ucan/".to_string();
             let signer = Ed25519Signer::generate().await.unwrap();
             let authorized =
@@ -1861,7 +1857,6 @@ mod tests {
         }
 
         async fn reopen(&self) -> (Profile, dialog_peer::Session<NativeSpace>) {
-            use dialog_capability::Subject;
             use dialog_effects::storage::Directory;
             use dialog_storage::provider::storage::Storage;
 
@@ -1872,13 +1867,13 @@ mod tests {
                 .await
                 .unwrap();
             let operator = crate::peer::session_for(
-            &profile,
-            storage,
-            Directory::At(self.account_dir.to_string_lossy().into()),
-            b"tonk/account-state/v1",
-        )
-                .await
-                .unwrap();
+                &profile,
+                storage,
+                Directory::At(self.account_dir.to_string_lossy().into()),
+                b"tonk/account-state/v1",
+            )
+            .await
+            .unwrap();
             (profile, operator)
         }
 

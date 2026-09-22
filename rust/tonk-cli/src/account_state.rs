@@ -7,10 +7,9 @@
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use dialog_capability::Subject;
 use dialog_effects::credential::CredentialError;
 use dialog_effects::storage::Directory;
-use dialog_peer::{Peer, Profile, Session};
+use dialog_peer::{Profile, Session};
 use dialog_remote_ucan::UcanAddress;
 use dialog_repository::{RemoteAddress, RemoteRepository, Repository, SiteAddress, Upstream};
 use dialog_storage::provider::storage::{NativeSpace, Storage};

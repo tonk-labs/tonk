@@ -17,7 +17,7 @@ use std::sync::{Arc, atomic::Ordering};
 
 use axum::{Extension, Json, extract::State};
 use axum_wasm_macros::wasm_compat;
-use dialog_peer::Profile;
+use dialog_peer::{Peer, Profile};
 use dialog_storage::provider::storage::Storage;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use dialog_varsig::Did;
@@ -597,13 +597,16 @@ async fn inspection_operator(
     storage: &Storage<DefaultSpace>,
 ) -> Result<DefaultOperator, TonkWorkerError> {
     let context: [u8; 16] = rand::random();
-    profile
-        .derive(context.to_vec())
-        .build(storage.clone())
+    let internal = |error: dialog_peer::PeerError| {
+        TonkWorkerError::Internal(format!("failed to inspect a roster profile: {error}"))
+    };
+    let peer = Peer::new()
+        .storage(storage.clone())
+        .attach(profile.signer().clone())
         .await
-        .map_err(|error| {
-            TonkWorkerError::Internal(format!("failed to inspect a roster profile: {error}"))
-        })
+        .map_err(internal)?;
+    let credential = peer.derive(context).await.map_err(internal)?;
+    peer.session(credential).build().await.map_err(internal)
 }
 
 /// Stamp the incoming profile's roster entry, swap the state in, and

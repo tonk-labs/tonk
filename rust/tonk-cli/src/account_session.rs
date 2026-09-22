@@ -610,19 +610,13 @@ pub(crate) async fn install_for_integration_test(
 
 #[cfg(test)]
 mod tests {
-    use dialog_capability::Subject;
     use dialog_effects::storage::Directory;
-    
+
     use dialog_storage::provider::storage::Storage;
 
     use super::*;
 
-    async fn isolated_session() -> (
-        tempfile::TempDir,
-        SpaceStore,
-        Profile,
-        Session<NativeSpace>,
-    ) {
+    async fn isolated_session() -> (tempfile::TempDir, SpaceStore, Profile, Session<NativeSpace>) {
         let temp = tempfile::tempdir().unwrap();
         let store = SpaceStore::at(temp.path().join("state"));
         let profile_dir = Directory::At(temp.path().join("profiles").to_string_lossy().into());
@@ -640,8 +634,8 @@ mod tests {
             Directory::At(account_dir.to_string_lossy().into()),
             b"tonk/account-session-test/v1",
         )
-            .await
-            .unwrap();
+        .await
+        .unwrap();
         (temp, store, profile, operator)
     }
 

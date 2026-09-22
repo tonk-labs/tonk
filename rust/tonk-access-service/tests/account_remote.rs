@@ -116,7 +116,7 @@ async fn it_reports_a_never_published_authorized_branch_as_absent() -> anyhow::R
     let env = service.address.clone();
     let (operator, profile) = test_session_with_peer().await;
     let repository = profile
-        .repository(unique_name("account-absence"))
+        .space(unique_name("account-absence"))
         .create()
         .perform(&operator)
         .await?;
@@ -152,7 +152,7 @@ async fn it_never_classifies_remote_failures_as_absence() -> anyhow::Result<()> 
     let env = service.address.clone();
     let (operator, profile) = test_session_with_peer().await;
     let repository = profile
-        .repository(unique_name("account-errors"))
+        .space(unique_name("account-errors"))
         .create()
         .perform(&operator)
         .await?;
@@ -445,7 +445,7 @@ async fn it_proves_account_genesis_against_the_configured_live_remote() -> anyho
     let endpoint = std::env::var("TONK_ACCOUNT_REMOTE_URL")?;
     let (operator, profile) = test_session_with_peer().await;
     let repository = profile
-        .repository(unique_name("account-live"))
+        .space(unique_name("account-live"))
         .create()
         .perform(&operator)
         .await?;

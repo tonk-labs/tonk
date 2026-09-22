@@ -781,7 +781,7 @@ fn as_constant_entity(term: &dialog_query::Term<dialog_query::Any>) -> Option<En
 mod tests {
     use super::*;
     use dialog_artifacts::{Entity, Value};
-    use dialog_peer::helpers::{test_session_with_peer, test_repo};
+    use dialog_peer::helpers::{test_repo, test_session_with_peer};
     use dialog_query::{ConceptDescriptor, Term, the};
     use dialog_repository::Branch;
     use tonk_core::meta::AnchorName;

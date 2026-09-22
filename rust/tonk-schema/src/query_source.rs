@@ -171,7 +171,7 @@ mod tests {
     wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_dedicated_worker);
 
     use dialog_artifacts::Entity;
-    use dialog_peer::helpers::{test_session_with_peer, test_repo};
+    use dialog_peer::helpers::{test_repo, test_session_with_peer};
     use dialog_query::query::Output as _;
     use dialog_query::{Concept, Query, Term};
 

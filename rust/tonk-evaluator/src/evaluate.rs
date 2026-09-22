@@ -1302,7 +1302,7 @@ mod tests {
 
     use dialog_artifacts::Changes;
     use dialog_artifacts::Statement as ArtifactsStatement;
-    use dialog_peer::helpers::{test_session_with_peer, test_repo};
+    use dialog_peer::helpers::{test_repo, test_session_with_peer};
     use dialog_query::artifact::Type;
     use dialog_query::attribute::Cardinality as DialogCardinality;
     use dialog_query::concept::descriptor::ConceptDescriptor;

@@ -1187,7 +1187,7 @@ fn lift_resolver_premise(
 mod tests {
     use super::*;
     use dialog_artifacts::Entity;
-    use dialog_peer::helpers::{test_session_with_peer, test_repo};
+    use dialog_peer::helpers::{test_repo, test_session_with_peer};
     use dialog_query::AttributeDescriptor;
     use dialog_query::artifact::Type;
     use dialog_query::attribute::Cardinality as DialogCardinality;

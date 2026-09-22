@@ -34,7 +34,7 @@ async fn it_pushes_and_pulls_via_ucan(env: AccessServiceAddress) -> anyhow::Resu
     let (operator, profile) = test_session_with_peer().await;
 
     let repo = profile
-        .repository(unique_name("ucan-push-pull"))
+        .space(unique_name("ucan-push-pull"))
         .create()
         .perform(&operator)
         .await?;
@@ -119,7 +119,7 @@ async fn it_collaborates_via_ucan_delegation(env: AccessServiceAddress) -> anyho
 
     // Alice creates repo and delegates ownership to her profile
     let alice_repo = alice_profile
-        .repository(unique_name("collab-alice"))
+        .space(unique_name("collab-alice"))
         .create()
         .perform(&alice_op)
         .await?;
@@ -184,7 +184,7 @@ async fn it_collaborates_via_ucan_delegation(env: AccessServiceAddress) -> anyho
 
     // Bob creates his own repo pointing at Alice's remote subject
     let bob_repo = bob_profile
-        .repository(unique_name("collab-bob"))
+        .space(unique_name("collab-bob"))
         .open()
         .perform(&bob_op)
         .await?;
@@ -253,7 +253,7 @@ async fn it_syncs_blobs_via_ucan(env: AccessServiceAddress) -> anyhow::Result<()
     let (operator, profile) = test_session_with_peer().await;
 
     let repo = profile
-        .repository(unique_name("ucan-blob"))
+        .space(unique_name("ucan-blob"))
         .create()
         .perform(&operator)
         .await?;
@@ -314,7 +314,7 @@ async fn it_syncs_blobs_via_ucan(env: AccessServiceAddress) -> anyhow::Result<()
     profile_b.access().save(invite).perform(&operator_b).await?;
 
     let repo_b = profile_b
-        .repository(unique_name("ucan-blob-b"))
+        .space(unique_name("ucan-blob-b"))
         .open()
         .perform(&operator_b)
         .await?;

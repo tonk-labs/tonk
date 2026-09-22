@@ -1708,10 +1708,7 @@ fn account_login_warning(status: tonk_account::AccountStateStatus, warning: &str
 /// the browser enrolls during its passkey ceremonies, which is where
 /// the account-signed deposits come from — so this only reads state
 /// and points at the account page when something is missing.
-async fn print_customer_line(
-    profile: &dialog_peer::Profile,
-    store: &tonk_cli::space::SpaceStore,
-) {
+async fn print_customer_line(profile: &dialog_peer::Profile, store: &tonk_cli::space::SpaceStore) {
     if let Some(line) = customer_state(profile, store).await.line() {
         println!("access service: {line}");
     }
