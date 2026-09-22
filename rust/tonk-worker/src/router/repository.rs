@@ -11,7 +11,6 @@ use dialog_capability::Subject;
 use dialog_effects::Use;
 use std::collections::HashMap;
 
-use crate::worker::DefaultPeer;
 use ::axum::{
     Json,
     body::Bytes,

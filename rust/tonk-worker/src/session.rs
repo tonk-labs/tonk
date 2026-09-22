@@ -26,12 +26,10 @@
 
 use dialog_capability::Subject;
 use dialog_peer::{Peer, PeerSpace};
-use dialog_storage::provider::storage::Storage;
 use dialog_ucan_core::time::Timestamp;
 use dialog_ucan_core::time::timestamp::{Duration, SystemTime};
 
 use crate::TonkWorkerError;
-use crate::worker::DefaultPeer;
 use crate::worker::DefaultSpace;
 
 /// How long a session delegation is good for.
@@ -128,9 +126,9 @@ mod tests {
     /// hands two concurrent tests the same name — and therefore the same
     /// profile directory, whose writer lock one of them then loses.
     /// `unique_name` folds in the pid for exactly this reason.
-    async fn scratch() -> DefaultPeer {
+    async fn scratch() -> crate::worker::DefaultPeer {
         let name = dialog_peer::helpers::unique_name("session-test");
-        let storage = Storage::<DefaultSpace>::default();
+        let storage = dialog_storage::provider::storage::Storage::<DefaultSpace>::default();
         let profile = dialog_peer::Peer::new()
             .storage(storage.clone())
             .open(dialog_effects::storage::Location::new(
@@ -236,7 +234,7 @@ mod tests {
     async fn it_ignores_legacy_sessions_and_reopens_durable_storage() {
         let name = dialog_peer::helpers::unique_name("session-reopen");
         let (profile_did, old_operator, space, revision, legacy) = {
-            let storage = Storage::<DefaultSpace>::default();
+            let storage = dialog_storage::provider::storage::Storage::<DefaultSpace>::default();
             let profile = dialog_peer::Peer::new()
                 .storage(storage.clone())
                 .open(dialog_effects::storage::Location::new(
@@ -288,7 +286,7 @@ mod tests {
         };
         // All prior operators, profiles, branches and the storage pool have
         // been released. Reopen the same durable profile with a new pool.
-        let storage = Storage::<DefaultSpace>::default();
+        let storage = dialog_storage::provider::storage::Storage::<DefaultSpace>::default();
         let profile = dialog_peer::Peer::new()
             .storage(storage.clone())
             .open(dialog_effects::storage::Location::new(

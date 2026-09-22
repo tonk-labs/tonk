@@ -4,7 +4,6 @@
 //! resolved bearer remains in memory only and is handed to the selected
 //! import path so shortcut resolution is never repeated.
 
-use crate::peer::NativePeer;
 use anyhow::{Context as _, Result, ensure};
 use serde::{Deserialize, Serialize};
 use tonk_invite::connection::InvitationHint;

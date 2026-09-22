@@ -20,7 +20,6 @@ use tonk_common::log;
 
 use super::AppState;
 use crate::reactor::CommandRegistry;
-use crate::worker::DefaultPeer;
 
 /// The environment commands run against — a cheap handle (clone of
 /// [`AppState`]) that implements
@@ -685,7 +684,9 @@ pub(crate) mod tests {
         /// access service (nothing here needs an account). The registry
         /// installed is the REAL one, not a test double.
         pub(crate) async fn test_state() -> AppState {
-            let storage = Storage::<crate::worker::DefaultSpace>::default();
+            let storage =
+                dialog_storage::provider::storage::Storage::<crate::worker::DefaultSpace>::default(
+                );
             let name = format!("command-dispatch-test-{}", rand::random::<u64>());
             let profile = dialog_peer::Peer::new()
                 .storage(storage.clone())

@@ -537,7 +537,6 @@ pub async fn import_at(
         &root,
         &manifest,
         profile,
-        storage,
         store,
         manifest.phase != Phase::Ready,
     )
@@ -581,7 +580,7 @@ pub async fn open_bound(
     let storage = Storage::<NativeSpace>::default();
     let profile = load_profile(&root, &storage, binding).await?;
     let incomplete = manifest.phase != Phase::Ready;
-    let site = assemble(&root, &manifest, profile, storage, store, incomplete).await?;
+    let site = assemble(&root, &manifest, profile, store, incomplete).await?;
     if incomplete {
         sync_private_tree(&root.join(CREDENTIAL_DIRECTORY))?;
         sync_private_tree(&root.join(DATA_DIRECTORY))?;
@@ -595,7 +594,6 @@ async fn assemble(
     root: &Path,
     manifest: &Manifest,
     profile: NativePeer,
-    storage: Storage<NativeSpace>,
     store: crate::space::SpaceStore,
     initialize: bool,
 ) -> Result<crate::site::TonkSite> {
