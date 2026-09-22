@@ -854,14 +854,16 @@
         "COLLAB-01",
         "CLI-03"
       ],
-      "name": "Space actions and switching",
+      "name": "Space actions and attached panels",
       "source_paths": [
         "rust/tonk-ui/src/bin/ui.rs",
         "rust/tonk-fab/src/markup.rs",
-        "rust/tonk-fab/src/skin.rs"
+        "rust/tonk-fab/src/bar.rs",
+        "rust/tonk-fab/src/agent_panel.rs",
+        "rust/tonk-fab/src/member_roster.rs"
       ],
       "status": "captured",
-      "summary": "The expanded floating action bar names the current space and lists every other account-directory space alongside renaming, sharing, sync, and appearance actions.",
+      "summary": "The v0.17 floating action bar names the current space and exposes share, members, connect-agent, and Tonk-home actions, with attached panels and a conditional account entry.",
       "surface": "browser"
     },
     {
@@ -876,14 +878,17 @@
         "COLLAB-04",
         "COLLAB-05"
       ],
-      "name": "Join and share ceremonies",
+      "name": "Share and contained account tasks",
       "source_paths": [
         "rust/tonk-ui/src/bin/ui.rs",
-        "rust/tonk-fab/src/markup.rs",
-        "rust/tonk-fab/src/share.rs"
+        "rust/tonk-ui/src/fabb_task.rs",
+        "rust/tonk-fab/src/contained_tasks.rs",
+        "rust/tonk-fab/src/trusted_tasks.rs",
+        "rust/tonk-fab/src/share.rs",
+        "rust/tonk-portal/src/task.rs"
       ],
       "status": "captured",
-      "summary": "Invite claim, accountless accreditation, share, and absent-space access states explain what will change and retain actionable Tonk navigation before authority moves.",
+      "summary": "Share, sync repair, activation, and account-required states stay attached to the originating FABB or replace it through one trusted contained task without leaving the space.",
       "surface": "browser"
     },
     {
@@ -908,7 +913,7 @@
     {
       "area": "Accounts",
       "artifact": "app/screens/web-07-account-choice.png",
-      "capture": "production-source fixture",
+      "capture": "running product",
       "id": "WEB-07",
       "journey_ids": [
         "ACCT-B01",
@@ -919,8 +924,9 @@
       ],
       "name": "Account choice",
       "source_paths": [
-        "rust/tonk-core/assets/library/profile.yaml",
-        "rust/tonk-ui/src/register_dialog.rs"
+        "rust/tonk-ui/src/register_dialog.rs",
+        "rust/tonk-ui/styles.css",
+        "rust/tonk-ui/src/account_flow.rs"
       ],
       "status": "captured",
       "summary": "A provider-free profile can create an account, log in, choose a browser profile, or return to local Tonk.",
@@ -929,7 +935,7 @@
     {
       "area": "Accounts",
       "artifact": "app/screens/web-08-account-create.png",
-      "capture": "production-source fixture",
+      "capture": "running product",
       "id": "WEB-08",
       "journey_ids": [
         "ACCT-B02",
@@ -939,8 +945,9 @@
       ],
       "name": "Create account",
       "source_paths": [
-        "rust/tonk-core/assets/library/profile.yaml",
-        "rust/tonk-ui/src/register_dialog.rs"
+        "rust/tonk-ui/src/register_dialog.rs",
+        "rust/tonk-ui/styles.css",
+        "rust/tonk-ui/src/account_flow.rs"
       ],
       "status": "captured",
       "summary": "The account creation form collects an email and turns passkey cancellation, unsupported authenticators, and remote failures into distinct recovery steps.",
@@ -949,7 +956,7 @@
     {
       "area": "Accounts",
       "artifact": "app/screens/web-09-account-login.png",
-      "capture": "production-source fixture",
+      "capture": "running product",
       "id": "WEB-09",
       "journey_ids": [
         "ACCT-B03",
@@ -958,8 +965,9 @@
       ],
       "name": "Log in with a passkey",
       "source_paths": [
-        "rust/tonk-core/assets/library/profile.yaml",
-        "rust/tonk-ui/src/register_dialog.rs"
+        "rust/tonk-ui/src/register_dialog.rs",
+        "rust/tonk-ui/styles.css",
+        "rust/tonk-ui/src/account_flow.rs"
       ],
       "status": "captured",
       "summary": "The browser explains that a passkey ceremony will select the existing account before linking this profile.",
@@ -980,7 +988,7 @@
       "name": "CLI authorization handoff",
       "source_paths": [
         "rust/tonk-core/assets/library/profile.yaml",
-        "rust/tonk-ui/src/register_dialog.rs",
+        "rust/tonk-ui/styles.css",
         "rust/tonk-cli/src/account.rs"
       ],
       "status": "captured",
@@ -1003,7 +1011,7 @@
       "name": "Account settings",
       "source_paths": [
         "rust/tonk-core/assets/library/profile.yaml",
-        "rust/tonk-ui/src/register_dialog.rs"
+        "rust/tonk-ui/styles.css"
       ],
       "status": "captured",
       "summary": "Account facts and management stay visible while pending email confirmation is named directly and authoritative edits remain disabled until account state is ready.",
@@ -1025,7 +1033,7 @@
       "name": "Devices and revocation",
       "source_paths": [
         "rust/tonk-core/assets/library/profile.yaml",
-        "rust/tonk-ui/src/register_dialog.rs"
+        "rust/tonk-ui/styles.css"
       ],
       "status": "captured",
       "summary": "The devices panel identifies this device, confirms revocation, and requires a refresh before retry when the result cannot be confirmed.",
@@ -1044,7 +1052,7 @@
       "name": "Deletion review",
       "source_paths": [
         "rust/tonk-core/assets/library/profile.yaml",
-        "rust/tonk-ui/src/register_dialog.rs"
+        "rust/tonk-ui/styles.css"
       ],
       "status": "captured",
       "summary": "The destructive confirmation enumerates exact scope, says when cancellation changed nothing, and treats a lost result as uncertain before retry.",
@@ -2105,12 +2113,12 @@
       "result": "—"
     },
     {
-      "claim": "Share shows copy link and member count; members opens a scrollable popup (Share-menu presentation decision).",
+      "claim": "Share, members, and recovery stay attached to the v0.17 FABB (Share-menu presentation decision).",
       "device": "browser + touch",
       "file": "verification/cli-spaces-ui.md",
       "id": "COLLAB-05",
       "priority": "P2",
-      "result": "—"
+      "result": "Partial (component, 2026-09-22): FABB Wasm suites cover double-click, refusal routing, contained task ownership, responsive panels, and 12-member reset/update/retract. Real copied-link use, account completion, touch device, and Safari remain unrun."
     },
     {
       "claim": "Concept and all view kinds round-trip through list/show/render (Inventory).",
@@ -2126,7 +2134,7 @@
       "file": "verification/cli-spaces-ui.md",
       "id": "DATA-02",
       "priority": "P1",
-      "result": "—"
+      "result": "Partial (component, 2026-09-22): explicit mint and complete prompt render pass; local import and running-product home replacement remain unrun."
     },
     {
       "claim": "Assert/update/no-op/retract preserve untouched fields and handle concurrent claims (Inventory).",
@@ -2308,9 +2316,9 @@
   "verificationResults": {
     "blocked": 0,
     "fail": 0,
-    "other": 9,
+    "other": 11,
     "pass": 2,
-    "unrun": 109
+    "unrun": 107
   },
   "visualCommit": "49a873a23"
 }

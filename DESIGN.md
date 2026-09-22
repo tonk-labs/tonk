@@ -174,6 +174,34 @@ remaining cell may absorb a departed neighbor's room — but never its content.
 
 ## Component treatments
 
+### In-space FABB
+
+The in-space FABB v0.17 surface is a deliberate exception to the 36px compact
+grid used by the Hub and older chrome. Its rail is 360px wide with 48px header
+and action rows, 17px condensed labels, an 18px sync disc, a 25px exposed outer
+radius, and a 1.5px ring. Keep those dimensions together; mixing individual
+values back into the compact grid produces neither design.
+
+The header and four primary rows are the complete in-space navigation: share,
+members, connect agent, and Tonk home, with `add an account` appearing only when
+needed. Share, members, and agent detail open as panels attached to the rail.
+Panels join on the visual inside edge, mirror when the rail docks right, and
+stack above or below the rail when horizontal room is insufficient. The 48px
+sync circle may collapse or expand the rail at every viewport width.
+
+Account ceremonies, recoverable decisions, and required notices replace the
+FABB surface in place and use a top-page native modal for whole-space modality.
+Only one task may own the surface. Preserve its current panel, scroll, focus,
+edge anchor, and originating space through cancellation or completion. Guest
+content can request a typed purpose and presentation metadata; it cannot send
+arbitrary privileged markup. Passive status stays in its attached panel or
+banner until a decision or acknowledgement is actually required.
+
+The members panel renders only facts supplied by the membership projection.
+Names, roles, and the current profile are available today. Relationship type,
+parentage, and last activity are not, so do not draw a people-agent graph or
+invent activity timestamps until an authoritative schema supplies them.
+
 ### Actions
 
 | Role | Treatment |
