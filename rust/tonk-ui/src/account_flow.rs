@@ -3620,11 +3620,14 @@ mod tests {
         // One press. The cell is the account tab: it pushes `/account`
         // into the same document, and the page the Hub asks for is the
         // TOP page's cluster — so the press must not reload anything.
+        // The top document's own clock: the hub frame has one of its own.
+        driver.enter_default_frame().await?;
         let before = driver
             .execute("return performance.timeOrigin", Vec::new())
             .await?
             .json()
             .clone();
+        enter_hub(&driver).await?;
         click(&driver, "[data-account-trigger]").await?;
         await_register_dialog(&driver).await?;
 
@@ -6234,7 +6237,11 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+        // The switch was made from the account page and the reload lands
+        // there, where the stack is not shown; the spaces tab is the way
+        // back to it, pushed in place.
         enter_hub(&driver).await?;
+        click(&driver, "[data-return-spaces]").await?;
         wait_for_text_containing(&driver, ".stack", "First Garden").await?;
         driver.enter_default_frame().await?;
         let listed = get_json(&driver, "/api/profile").await?;
