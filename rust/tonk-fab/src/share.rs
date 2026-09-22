@@ -4,7 +4,8 @@
 //! `tonk:repository/fab-share` view used to supply it) and turns a click into
 //! a single control that mints a fresh invite AND puts the resulting URL on
 //! the clipboard. Once the browser confirms the write, the row answers
-//! "copied", pauses, and asks the bar to close the share stack.
+//! "copied", pauses, and then restores the idle label. The v0.17 action
+//! answers entirely in place; only an accountless share opens its gate.
 //!
 //! ## Why this needs an element at all
 //!
@@ -1930,7 +1931,7 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    async fn it_keeps_copy_open_until_clipboard_confirmation_then_lingers() {
+    async fn it_keeps_copy_open_until_clipboard_confirmation_then_lingers_in_place() {
         crate::register();
         let bar = mounted_bar();
         let host: HtmlElement = bar
@@ -1953,14 +1954,14 @@ mod tests {
         Reflect::get(&bar, &"open".into())
             .unwrap()
             .unchecked_into::<Function>()
-            .call1(&bar, &"share".into())
+            .call1(&bar, &"space".into())
             .unwrap();
         let root = bar.shadow_root().expect("bar shadow");
         let menu = root.query_selector("#share-panel").unwrap().unwrap();
         let copy = root.query_selector(".share").unwrap().unwrap();
         assert!(
-            !menu.has_attribute("hidden"),
-            "copy selection must keep the attached panel open"
+            menu.has_attribute("hidden"),
+            "a ready copy must not open the attached account gate"
         );
         settle(&host, &state, Ok("https://example.test/join".to_owned()));
         flush_clipboard().await;
@@ -1975,7 +1976,7 @@ mod tests {
             copy.get_attribute("data-share-state").as_deref(),
             Some("copied")
         );
-        assert!(!menu.has_attribute("hidden"));
+        assert!(menu.has_attribute("hidden"));
         let pause = Promise::new(&mut |resolve, _| {
             set_timeout(&resolve, COPIED_LINGER_MS + 50);
         });

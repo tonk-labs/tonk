@@ -101,6 +101,19 @@ async fn the_rail_uses_the_v017_anatomy_and_real_controls() {
         assert_eq!(control.tag_name(), "BUTTON");
         assert!((control.get_bounding_client_rect().height() - 48.0).abs() < 1.0);
     }
+    fab.remove_attribute("data-account-required")
+        .expect("ready account fixture");
+    shadow(&fab, ".share")
+        .unchecked_into::<HtmlElement>()
+        .click();
+    assert!(
+        shadow(&fab, "#share-panel").has_attribute("hidden"),
+        "a ready share answers in its action label without opening a panel"
+    );
+    assert_eq!(
+        shadow(&fab, ".share").get_attribute("aria-expanded"),
+        Some("false".into())
+    );
     assert!(
         fab.query_selector("tonk-menu")
             .expect("legacy selector")

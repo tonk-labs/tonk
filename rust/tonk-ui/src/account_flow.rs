@@ -2123,6 +2123,37 @@ mod tests {
         driver.enter_default_frame().await?;
         wait_for_displayed(&driver, "#tonk-register[data-fabb-task]").await?;
         assert_eq!(driver.current_url().await?, original);
+        let form = driver
+            .execute(
+                r#"const host = document.querySelector('#tonk-register[data-fabb-task]');
+                   const label = host?.querySelector('#tonk-register-email-row .k');
+                   const input = host?.querySelector('#tonk-register-email');
+                   const status = host?.querySelector('#tonk-register-status');
+                   const head = host?.querySelector('#tonk-register-head');
+                   const inputStyle = input && getComputedStyle(input);
+                   const statusStyle = status && getComputedStyle(status);
+                   return {
+                     label: label?.textContent?.trim() || '',
+                     status: status?.textContent?.trim() || '',
+                     inputHeight: input?.getBoundingClientRect().height || 0,
+                     inputFontSize: inputStyle?.fontSize || '',
+                     statusFontSize: statusStyle?.fontSize || '',
+                     headHeight: head?.getBoundingClientRect().height || 0
+                   };"#,
+                Vec::new(),
+            )
+            .await?;
+        let form = form.json();
+        anyhow::ensure!(
+            form["label"] == "email address"
+                && form["status"]
+                    == "Enter your email to continue. We’ll check whether you already have a Tonk account."
+                && form["inputHeight"].as_f64() == Some(48.0)
+                && form["inputFontSize"] == "18px"
+                && form["statusFontSize"] == "18px"
+                && form["headHeight"].as_f64() == Some(48.0),
+            "the contained account form drifted from the FABB reference: {form}"
+        );
 
         driver
             .action_chain()

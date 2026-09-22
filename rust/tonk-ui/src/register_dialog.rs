@@ -167,7 +167,27 @@ pub fn open_fabb_task(
     open_with_return(Some(Box::new(restore)));
     let Some(host) = host_element() else { return };
     let _ = host.set_attribute("data-fabb-task", "");
+    prepare_fabb_task_ui(&host);
     position_fabb_task(&host, presentation);
+}
+
+/// Adapt the trusted ceremony's labels to the current contained FABB form.
+///
+/// The account mechanics stay shared with the normal registration surface;
+/// only the presentation changes here. This mirrors the reference flow's
+/// full-size field label and plain introductory guidance while the outer FABB
+/// remains the task container.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn prepare_fabb_task_ui(host: &Element) {
+    if let Ok(Some(label)) = host.query_selector(&format!("{EMAIL_ROW} .k")) {
+        label.set_text_content(Some("email address"));
+    }
+    if let Ok(Some(input)) = host.query_selector(EMAIL_INPUT) {
+        let _ = input.set_attribute("aria-label", "email address");
+    }
+    set_status(
+        "Enter your email to continue. We’ll check whether you already have a Tonk account.",
+    );
 }
 
 /// Reseat a standing in-space account task without rebuilding its inputs.
@@ -1200,7 +1220,12 @@ fn show_answer(answer: &Answer) {
     if ACTION_PENDING.with(Cell::get) {
         return;
     }
-    set_status(status_for(&answer.state));
+    let contained = host.has_attribute("data-fabb-task");
+    set_status(if contained {
+        contained_status_for(&answer.state)
+    } else {
+        status_for(&answer.state)
+    });
 
     // The action row unfolds only once the lookup has named a step, and
     // says which one. Before that there is nothing to offer: an address
@@ -1251,6 +1276,20 @@ pub(crate) fn status_for(state: &str) -> &'static str {
         answer::UNAVAILABLE => "Could not reach the service. Check your connection.",
         answer::PENDING_CEREMONY => "Setting up your account…",
         _ => "",
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn contained_status_for(state: &str) -> &'static str {
+    use tonk_schema::email_state as answer;
+    match state {
+        answer::UNREGISTERED => {
+            "Create a passkey on your device or in your password manager to sign in next time."
+        }
+        answer::ACTIVE | answer::PENDING => {
+            "Use your existing passkey on your device or in your password manager."
+        }
+        _ => status_for(state),
     }
 }
 
@@ -2292,7 +2331,12 @@ fn hand_over_to_the_hub(host: &Element) {
 /// Unfold the display-name input and focus it.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn ask_for_name(host: &Element) {
-    set_status("");
+    let contained = host.has_attribute("data-fabb-task");
+    set_status(if contained {
+        "This name appears to other people in your spaces."
+    } else {
+        ""
+    });
 
     let Some(document) = web_sys::window().and_then(|window| window.document()) else {
         return;
@@ -2305,11 +2349,17 @@ fn ask_for_name(host: &Element) {
     };
     row.set_id(NAME_ROW.trim_start_matches('#'));
     row.set_class_name("orow mblk pre editing");
-    row.set_inner_html(
-        r##"<span class="k">display name</span>
+    row.set_inner_html(&format!(
+        r##"<span class="k">{}</span>
             <span class="v"><input class="ed" id="tonk-register-name" type="text"
-                  enterkeyhint="go" aria-label="display name"></span>"##,
-    );
+                  enterkeyhint="go" autocomplete="nickname" maxlength="40"
+                  aria-label="display name"></span>"##,
+        if contained {
+            "what should people call you?"
+        } else {
+            "display name"
+        }
+    ));
     let action = host.query_selector(ACTION).ok().flatten();
     match action {
         Some(action) => {

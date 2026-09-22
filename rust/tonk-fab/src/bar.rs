@@ -157,15 +157,20 @@ pub(crate) fn build(this: &HtmlElement, state: &Shared) -> Vec<Bound> {
             {
                 return;
             }
-            open_panel(&host, &shared, panel, cell, None);
-            if cell == Cell::Share
-                && !host.has_attribute("data-account-required")
-                && let Ok(Some(share)) = host.query_selector("tonk-share")
-                && let Ok(share) = share.dyn_into::<HtmlElement>()
-            {
-                // Stay in this click task: Clipboard user activation cannot
-                // survive an awaited adapter hop.
-                share.click();
+            if cell == Cell::Share && !host.has_attribute("data-account-required") {
+                if let Ok(Some(share)) = host.query_selector("tonk-share")
+                    && let Ok(share) = share.dyn_into::<HtmlElement>()
+                {
+                    // A ready share is a single in-place action: its label
+                    // answers `copy share link` -> `copying...` -> `copied`
+                    // without opening an otherwise empty attached panel.
+                    // Stay in this click task because Clipboard user
+                    // activation cannot survive an awaited adapter hop.
+                    share.click();
+                }
+            } else {
+                // An accountless share still needs the explicit account gate.
+                open_panel(&host, &shared, panel, cell, None);
             }
             let detail = Object::new();
             let _ = Reflect::set(&detail, &"cell".into(), &panel.name().into());

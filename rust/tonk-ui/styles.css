@@ -3276,6 +3276,94 @@ tonk-notebook-index {
     text-decoration: underline; text-underline-offset: 3px;
   }
 
+  /* The in-space account ceremony uses the current FABB form register: the
+     outer rounded surface is the container, inputs are ordinary full-width
+     48px controls, and guidance uses the shared 18px message style. The same
+     DOM still drives the real email lookup and WebAuthn ceremony. */
+  #tonk-register[data-fabb-task] .ocol {
+    overflow: hidden;
+    background: var(--modal, var(--card));
+  }
+  #tonk-register[data-fabb-task] .ostack { gap: 0; }
+  #tonk-register[data-fabb-task] .mblk { box-shadow: none; }
+  #tonk-register[data-fabb-task] .m-head {
+    min-height: 48px;
+    height: 48px;
+    padding: 0 18px 13px;
+    align-items: flex-end;
+    border-bottom: 1.5px solid var(--ring);
+    font-size: 17px;
+  }
+  #tonk-register[data-fabb-task] .orow {
+    min-height: 48px;
+    height: 48px;
+    padding: 12px 18px 9px;
+    align-items: center;
+    font: 400 18px/1.5 var(--cond);
+    letter-spacing: 0;
+    text-transform: none;
+  }
+  #tonk-register[data-fabb-task] .orow.editing {
+    min-height: 96px;
+    height: auto;
+    grid-template-rows: auto 48px;
+    gap: 8px;
+    padding: 16px 18px;
+  }
+  #tonk-register[data-fabb-task] .orow.editing .k {
+    color: var(--ink);
+    font: 600 17px/1.1 var(--cond);
+    letter-spacing: 0;
+  }
+  #tonk-register[data-fabb-task] .orow.editing .v {
+    align-items: stretch;
+  }
+  #tonk-register[data-fabb-task] .orow.editing .ed {
+    min-height: 48px;
+    height: 48px;
+    padding: 12px 14px 9px;
+    background: var(--wash);
+    font: 400 18px/1.5 var(--cond);
+    letter-spacing: .02em;
+  }
+  #tonk-register[data-fabb-task] .orow.editing .ed:hover {
+    background: var(--wash-p);
+  }
+  #tonk-register[data-fabb-task] .orow.editing .ed:focus-visible {
+    outline: 2px solid currentColor;
+    outline-offset: -2px;
+  }
+  #tonk-register[data-fabb-task] .obtn {
+    min-height: 48px;
+    height: 48px;
+    padding: 12px 18px;
+    align-items: center;
+    font: 600 17px/1.1 var(--cond);
+    letter-spacing: 0;
+  }
+  #tonk-register[data-fabb-task] .oexp {
+    min-height: 0;
+    margin: 0;
+    padding: 16px 18px;
+    border-top: 1.5px solid var(--ring);
+    background: var(--wash);
+  }
+  #tonk-register[data-fabb-task] .oexp p {
+    font: 400 18px/1.5 var(--cond);
+    letter-spacing: 0;
+    text-transform: none;
+  }
+  #tonk-register[data-fabb-task] .ghost {
+    width: 100%;
+    min-height: 48px;
+    margin: 0;
+    padding: 12px 18px;
+    border-top: 1.5px solid var(--ring);
+    text-align: left;
+    text-decoration: none;
+    font: 600 17px/1.1 var(--cond);
+  }
+
   @media (max-width: 519px) {
     .tonk-ceremony .m-head,
     .tonk-ceremony .orow,
