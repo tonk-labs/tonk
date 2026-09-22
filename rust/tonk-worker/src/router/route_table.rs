@@ -37,6 +37,7 @@ const ROUTES: &[&str] = &[
     "/api/inspect/repository/{repo}/remote/{remote}/branch/{branch}",
     "/api/local-space-link/approve",
     "/api/local-space-link/complete",
+    "/api/local-space-link/describe",
     "/api/local-space-link/provision",
     "/api/migrate/repo-vs-profile",
     "/api/profile",

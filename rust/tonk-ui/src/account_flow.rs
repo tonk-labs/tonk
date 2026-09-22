@@ -379,10 +379,10 @@ mod tests {
             &WebDriverErrorInner::StaleElementReference(info("stale element reference"))
         ));
         assert!(retryable_element_read_error(
-            &WebDriverErrorInner::NoSuchElement(info("no such element"))
+            &WebDriverErrorInner::ElementNotInteractable(info("element not interactable"))
         ));
         assert!(retryable_element_read_error(
-            &WebDriverErrorInner::ElementNotInteractable(info("element not interactable"))
+            &WebDriverErrorInner::NoSuchElement(info("no such element"))
         ));
         assert!(!retryable_element_read_error(
             &WebDriverErrorInner::ElementClickIntercepted(info("element click intercepted"))

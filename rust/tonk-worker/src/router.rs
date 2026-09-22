@@ -310,6 +310,10 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             post(local_space_link::approve),
         )
         .route(
+            "/api/local-space-link/describe",
+            post(local_space_link::describe),
+        )
+        .route(
             "/api/local-space-link/provision",
             post(local_space_link::provision),
         )

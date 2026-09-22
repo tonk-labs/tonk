@@ -2009,6 +2009,13 @@ view!:
                       <button class="cta" type="button" data-add-passkey data-account="tonk:add-passkey"
                         on:add-passkey=tonk:add-passkey>add a passkey with the current one</button>
                     </div>
+                    <section data-agent-connections hidden aria-label="agent access">
+                      <div class="srowd"><span>agent access</span><button class="cta" type="button" data-connections-refresh>refresh</button></div>
+                      <p class="expl">each invite grants access to one space. anyone holding a copy can use it. a confirmation records completed setup, not a currently connected process.</p>
+                      <p class="expl">revoking an invite affects all its holders and delegated access. enforcement can take time to reach the service; already downloaded data stays with its holders.</p>
+                      <p class="expl" data-connections-status role="status" aria-live="polite"></p>
+                      <div data-connections-list></div>
+                    </section>
                     <div class="sect">sign out</div>
                     <div class="srowd">
                       <span>disconnect this account; keep local spaces on this device</span>
@@ -2027,13 +2034,27 @@ view!:
                     <div class="srowd"><span>device</span><b class="lft" data-link-did></b></div>
                     <p class="expl">
                       approving gives that terminal the same access to your account as this
-                      browser: every space, on every device. decline if you did not just run
-                      <code>tonk account login</code> or <code>tonk connect</code> yourself.
+                      browser: every space, on every device. decline if you did not request
+                      account access from this device yourself.
                     </p>
                     <div class="link-foot">
                       <button class="m-cancel" type="button" data-link-decline>decline</button>
                       <button class="m-go" type="button" data-link-approve on:authorize-device=tonk:authorize-device
                         data-audience="" data-callback="" data-name="" data-expected-account="">approve with passkey</button>
+                    </div>
+                  </div>
+                  <div class="pane" data-pane="local-link" hidden data-local-link-approval>
+                    <div class="sect">attach a local space to this account</div>
+                    <div class="srowd"><span>space</span><b data-local-link-name></b></div>
+                    <div class="srowd"><span>space ID</span><b class="lft" data-local-link-did></b></div>
+                    <p class="expl">
+                      approving preserves this exact local space and publishes it to the
+                      account selected in this browser. it does not sign the terminal into
+                      your account or grant access to any other space.
+                    </p>
+                    <div class="link-foot">
+                      <button class="m-cancel" type="button" data-local-link-decline>decline</button>
+                      <button class="m-go" type="button" data-local-link-approve>approve this space</button>
                     </div>
                   </div>
                   <p class="expl" data-ceremony-status role="status" aria-live="polite" hidden></p>
@@ -3807,6 +3828,209 @@ element!: &account-settings
         const at = window.location;
         return { origin: at.origin, path: at.pathname, search: at.search, hash: at.hash };
       }
+    # The worker's HTTP API, reached the way any guest reaches it: the
+    # host relays a same-origin fetch. A refusal rejects with its status.
+    api: |
+      (self, path, body) => {
+        const init = body === undefined ? {} : { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) };
+        return window.fetch(`${self.context().origin}${path}`, init).then(async (response) => {
+          const text = await response.text();
+          if (!response.ok) { const error = new Error(text || String(response.status)); error.status = response.status; throw error; }
+          return text ? JSON.parse(text) : null;
+        });
+      }
+    # Agent access: the invites this account issued to terminals, each
+    # granting one space, and the removal of that access. The records
+    # come from the worker, which asks the service; a load that the
+    # service answers 404 hides the section, since it has none to list.
+    connections-status: |
+      (self, text) => {
+        const node = self.querySelector('[data-connections-status]');
+        if (node && node.textContent !== text) node.textContent = text;
+      }
+    connections-refresh: |
+      (self) => {
+        const generation = String((Number(self.getAttribute('data-connections-generation')) || 0) + 1);
+        self.setAttribute('data-connections-generation', generation);
+        const current = () => self.isConnected && self.getAttribute('data-connections-generation') === generation;
+        const list = self.querySelector('[data-connections-list]');
+        if (list) list.textContent = '';
+        self.connectionsStatus('loading access records…');
+        self.api('/api/account/connections').then((groups) => {
+          if (!current()) return;
+          self.querySelector('[data-agent-connections]')?.removeAttribute('hidden');
+          groups = (groups ?? []).filter((group) => !group.requestId);
+          self.connectionsStatus(groups.length
+            ? 'saved access; permission to sync is checked when the terminal connects'
+            : 'no agent invites issued from this account');
+          for (const group of groups) list?.append(self.connectionRecord(group));
+        }, (error) => {
+          if (!current()) return;
+          const section = self.querySelector('[data-agent-connections]');
+          if (section) section.hidden = error.status === 404;
+          self.connectionsStatus('access records could not be loaded. refresh to try again.');
+        });
+      }
+    connection-record: |
+      (self, group) => {
+        const el = (tag, className, text, parent) => {
+          const node = document.createElement(tag);
+          if (className) node.className = className;
+          if (text) node.textContent = text;
+          parent.append(node);
+          return node;
+        };
+        const row = document.createElement('article');
+        row.className = 'connection-record';
+        row.dataset.connectionId = group.id;
+        row.setAttribute('aria-label', group.label);
+        const heading = el('div', 'srowd', '', row);
+        el('b', 'lft', group.label, heading);
+        const count = group.targets.filter((target) => target.acknowledged).length;
+        const all = group.targets.length > 0 && count === group.targets.length;
+        const retry = !all && (group.status === 'partial' || count > 0 || group.targets.some((target) => target.error));
+        const button = el('button', 'cta', retry ? 'retry removing access' : (group.requestId ? 'remove space access' : 'remove invite access'), heading);
+        button.type = 'button';
+        button.dataset.connectionRevoke = group.id;
+        button.setAttribute('aria-label', `${group.requestId ? 'remove space access for' : 'remove invite access'} ${group.label}`);
+        if (all) button.disabled = true;
+        const details = el('details', 'expl', '', row);
+        el('summary', '', 'access details', details);
+        el('p', 'expl', `space: ${group.subject}`, details);
+        el('p', 'expl', `recipient: ${group.recipient}`, details);
+        el('p', 'expl', 'can read and edit this space', row);
+        const date = new Date(group.expiresAt * 1000);
+        el('p', 'expl', `expires: ${Number.isFinite(date.getTime()) ? date.toISOString() : group.expiresAt}`, row);
+        if (group.status === 'expired') el('p', 'expl', 'expired; send a new invitation to allow syncing again', row);
+        el('p', 'expl', group.confirmed ? 'setup confirmation received' : 'no setup confirmation recorded', row);
+        el('p', 'expl', count === 0 && group.status === 'partial' ? 'access removal requested; waiting for confirmation'
+          : count === 0 ? 'access has not been removed'
+          : `access removal confirmed for ${count} of ${group.targets.length} permissions`, row);
+        if (group.targets.some((target) => target.error)) {
+          el('p', 'expl', 'some access could not be removed. retry to remove the remaining permissions.', row);
+        }
+        return row;
+      }
+    connections-revoke: |
+      (self, button) => {
+        if (button.disabled) return;
+        const id = button.dataset.connectionRevoke ?? '';
+        if (!/^[0-9a-f]{64}$/.test(id)) return;
+        button.disabled = true;
+        self.connectionsStatus('removing access…');
+        const generation = self.getAttribute('data-connections-generation');
+        const current = () => self.isConnected && self.getAttribute('data-connections-generation') === generation;
+        self.api(`/api/account/connections/${id}/revoke`, {}).then((group) => {
+          if (!current()) return;
+          if (!group || group.id !== id) { self.connectionsStatus('the access record changed. refresh before trying again.'); return; }
+          button.closest('[data-connection-id]')?.replaceWith(self.connectionRecord(group));
+          const count = group.targets.filter((target) => target.acknowledged).length;
+          self.connectionsStatus(`access removal confirmed for ${count} of ${group.targets.length} permissions. downloaded data stays on devices that already have it.`);
+          const status = self.querySelector('[data-connections-status]');
+          if (status) { status.tabIndex = -1; status.focus(); }
+        }, () => {
+          if (!current()) return;
+          button.disabled = false;
+          self.connectionsStatus('access removal could not be confirmed. retry or refresh to check progress.');
+        });
+      }
+    # A terminal asking to attach one local space to this account. The
+    # request rides the URL as an encoded blob only the worker can read,
+    # so the pane asks it what is being asked before showing anything.
+    local-link-request: |
+      (self) => {
+        const at = self.context();
+        if (at.path !== '/settings/link') return null;
+        const params = new URLSearchParams(at.search);
+        if (params.get('intent') !== 'local-space-link') return null;
+        const request = params.get('request');
+        if (!request) return null;
+        return { request, approval: params.get('approval'), consent: params.get('consent'),
+                 invite: params.get('invite'), provisioned: params.get('provisioned') };
+      }
+    # Answer on the terminal's own callback, fields in the fragment, the
+    # same loopback check the worker makes.
+    local-link-return: |
+      (self, callback, fields) => {
+        let target;
+        try { target = new URL(callback); } catch { self.status('the callback address is invalid'); return; }
+        const loopback = target.protocol === 'http:' && target.hostname === '127.0.0.1' && !!target.port
+          && target.pathname === '/' && !target.search && !target.hash && !target.username && !target.password;
+        if (!loopback) { self.status('the callback is not a Tonk loopback address'); return; }
+        target.hash = new URLSearchParams(fields).toString();
+        window.tonk?.navigate?.(target.toString());
+      }
+    local-link-show: |
+      (self) => {
+        const request = self.localLinkRequest();
+        if (!request) return false;
+        self.pane('local-link');
+        if (self.getAttribute('data-local-link-shown') !== request.request) {
+          self.setAttribute('data-local-link-shown', request.request);
+          self.api('/api/local-space-link/describe', { request: request.request }).then((described) => {
+            self.localLink = described;
+            self.text('[data-local-link-name]', described.name);
+            self.text('[data-local-link-did]', described.subject ?? 'unreadable request');
+            self.localLinkContinue(request);
+          }, () => { self.text('[data-local-link-did]', 'unreadable request'); });
+        }
+        return true;
+      }
+    # An approval and an invite came back on the URL: the terminal has
+    # done its half, and the space is provisioned, then published.
+    local-link-continue: |
+      (self, request) => {
+        if (!(request.approval && request.invite) || self.hasAttribute('data-local-link-finishing')) return;
+        self.setAttribute('data-local-link-finishing', '');
+        if (request.provisioned) self.localLinkFinish(request);
+        else if (request.consent) self.localLinkProvision(request);
+      }
+    local-link-approve: |
+      (self) => {
+        const request = self.localLinkRequest();
+        const described = self.localLink;
+        if (!request || !described) return;
+        self.status('Approving this local space…');
+        self.api('/api/local-space-link/approve', { request: request.request }).then((response) => {
+          const approval = response?.approval;
+          if (!approval) { self.status('The approval response was not readable.'); return; }
+          self.localLinkReturn(described.callback, [['approve', approval], ['correlation', described.correlation]]);
+        }, (error) => self.status(`Could not approve this space: ${error.message}`));
+      }
+    local-link-decline: |
+      (self) => {
+        const described = self.localLink;
+        if (!self.localLinkRequest() || !described) return;
+        self.localLinkReturn(described.callback, [['deny', 'declined in the browser'], ['correlation', described.correlation]]);
+      }
+    local-link-provision: |
+      (self, request) => {
+        const described = self.localLink;
+        if (!described) return;
+        self.status('Preparing this space for publication…');
+        self.api('/api/local-space-link/provision', { request: request.request, approval: request.approval, consent: request.consent }).then((response) => {
+          const provisioned = response?.provisioned;
+          if (!provisioned) { self.status('The provisioning receipt was not readable.'); return; }
+          self.localLinkReturn(described.callback, [['provisioned', provisioned], ['correlation', described.correlation]]);
+        }, (error) => {
+          self.removeAttribute('data-local-link-finishing');
+          self.status(`Publication stopped: ${error.message}. Reload to retry.`);
+        });
+      }
+    local-link-finish: |
+      (self, request) => {
+        const described = self.localLink;
+        if (!described) return;
+        self.status('Publishing this space to your account…');
+        self.api('/api/local-space-link/complete', { request: request.request, approval: request.approval, invite: request.invite, provisioned: request.provisioned }).then((response) => {
+          const completion = response?.completion;
+          if (!completion) { self.status('The publication receipt was not readable. Reload to retry.'); return; }
+          self.localLinkReturn(described.callback, [['complete', completion], ['correlation', described.correlation]]);
+        }, (error) => {
+          self.removeAttribute('data-local-link-finishing');
+          self.status(`Publication stopped: ${error.message}. Reload to retry.`);
+        });
+      }
     # Keys are hyphenated: the runtime camelCases them onto the
     # prototype, so `self.linkRequest()` is how a sibling calls this.
     link-request: |
@@ -3845,10 +4069,12 @@ element!: &account-settings
       }
     refresh: |
       (self) => {
+        if (self.localLinkShow()) return;
         const request = self.linkRequest();
         if (!request) {
           self.pane('account');
           if (self.context().hash === '#delete-account') self.openDelete();
+          self.connectionsRefresh();
           return;
         }
         self.text('[data-link-name]', request.name);
@@ -3975,7 +4201,15 @@ element!: &account-settings
       (self) => {
         self.addEventListener('click', (event) => {
           const hit = (selector) => event.target.closest(selector);
-          if (hit('[data-sign-out-open]')) {
+          if (hit('[data-connections-refresh]')) {
+            self.connectionsRefresh();
+          } else if (hit('[data-connection-revoke]')) {
+            self.connectionsRevoke(hit('[data-connection-revoke]'));
+          } else if (hit('[data-local-link-approve]')) {
+            self.localLinkApprove();
+          } else if (hit('[data-local-link-decline]')) {
+            self.localLinkDecline();
+          } else if (hit('[data-sign-out-open]')) {
             self.querySelector('[data-sign-out-dialog]')?.show?.();
           } else if (hit('[data-delete-account-open]')) {
             self.openDelete();
