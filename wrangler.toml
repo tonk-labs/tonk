@@ -38,6 +38,7 @@ run_worker_first = [
   "/@/*",
   "/customer/*",
   "/object/*",
+  "/connection/*",
   "/ucan",
   "/ucan/*",
 ]
@@ -122,6 +123,10 @@ EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 [env.staging]
 routes = [{ pattern = "staging.tonk.xyz", custom_domain = true }]
 
+# Keep Wrangler's rebuild on the invitation-enabled staging artifact.
+[env.staging.build]
+command = "nix build --accept-flake-config .#tonk-cloudflare-preview-artifacts"
+
 [env.staging.observability]
 enabled = true
 head_sampling_rate = 1
@@ -184,6 +189,10 @@ EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 [env.preview]
 workers_dev = true
 routes = []
+
+# Wrangler rebuilds before upload, so it must select the preview artifact too.
+[env.preview.build]
+command = "nix build --accept-flake-config .#tonk-cloudflare-preview-artifacts"
 
 [env.preview.observability]
 enabled = true

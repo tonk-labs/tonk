@@ -13,7 +13,7 @@ use dialog_storage::provider::storage::{NativeSpace, Storage};
 
 /// A peer over `profile`, whose space is already mounted in `storage`,
 /// with `base` as the directory its space names resolve against.
-pub(crate) async fn peer_for(
+pub async fn peer_for(
     profile: &Profile,
     storage: Storage<NativeSpace>,
     base: Directory,
@@ -28,7 +28,7 @@ pub(crate) async fn peer_for(
 
 /// A session of `profile`'s peer under `context`, allowed everything the
 /// peer holds.
-pub(crate) async fn session_for(
+pub async fn session_for(
     profile: &Profile,
     storage: Storage<NativeSpace>,
     base: Directory,
@@ -39,7 +39,7 @@ pub(crate) async fn session_for(
 }
 
 /// A session of `peer` under `context`, allowed everything the peer holds.
-pub(crate) async fn derive_session(
+pub async fn derive_session(
     peer: &Peer<NativeSpace>,
     context: &[u8],
 ) -> Result<Session<NativeSpace>> {

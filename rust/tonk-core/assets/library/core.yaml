@@ -434,7 +434,7 @@ concept!:
 
 concept!: &tonk/agent-handoff-state
   this: tonk:agent-handoff-state
-  description: Session-only account-scoped handoff response, independent of ordinary sharing.
+  description: Session-only agent invitation response, independent of ordinary sharing.
   with:
     status:
       description: Ready marker or a pending or failure explanation.
@@ -447,7 +447,7 @@ concept!: &tonk/agent-handoff-state
       as: text
       cardinality: one
     account:
-      description: Required account when ready; a device placeholder while unavailable.
+      description: Required account for legacy handoffs; a profile placeholder for bearer invitations.
       the: xyz.tonk.agent-handoff/account
       as: entity
       cardinality: one
@@ -457,10 +457,113 @@ view!:
   show:
     ui: |
       <p data-agent-handoff-status>{status}</p>
+      <tonk-display entity={this} model=tonk:connection-invite-controls>
+        <span slot="no-entity" hidden></span>
+      </tonk-display>
+
+# Explicit new invitation; automatic mount requests omit this marker.
+event!: &on/new-agent-invite
+  type: "click"
+  where:
+    time: ".timeStamp"
+    fresh: '"new"'
+
+concept!:
+  this: tonk:new-agent-invite
+  description: Create a separate agent invitation when the user asks for one.
+  with:
+    time:
+      description: The time a separate invitation was explicitly requested.
+      the: xyz.tonk.agent-handoff/time
+      as: float
+      cardinality: one
+    fresh:
+      description: Explicit new-invitation marker; absent from automatic mounts.
+      the: xyz.tonk.agent-handoff/fresh
+      as: text
+      cardinality: one
+
+# New-mode controls also remain reachable when a transient link is unavailable.
+concept!:
+  this: tonk:connection-invite-controls
+  description: Session-only explicit action for another scoped invitation.
+  with:
+    mode:
+      description: Marker emitted only by the scoped invitation adapter.
+      the: xyz.tonk.agent-handoff/mode
+      as: text
+      cardinality: one
+
+view!:
+  this: tonk:connection-invite-controls
+  show:
+    ui: |
+      <tonk-component>
+        <script type="tonk/module">
+          customElements.get("tonk-agent-invite-controls") ||
+            customElements.define("tonk-agent-invite-controls", class extends HTMLElement {
+              static observedAttributes = ["mode"];
+              connectedCallback() {
+                this.observer = new MutationObserver(() => this.render());
+                this.observer.observe(this, { childList: true, subtree: true });
+                this.afterRegistration = () => {
+                  if (["account", "activation"].includes(this.getAttribute("mode"))) {
+                    this.dispatchEvent(new CustomEvent("mount", { bubbles: true }));
+                  }
+                };
+                window.addEventListener("tonk:registration-closed", this.afterRegistration);
+                this.onclick = event => {
+                  const button = event.target.closest("[data-invite-account]");
+                  if (!button || button.hidden) return;
+                  globalThis.tonk.register(JSON.stringify({
+                    reason: this.getAttribute("mode") === "activation"
+                      ? "agent-invite-activation" : "agent-invite-account"
+                  }));
+                };
+                this.render();
+              }
+              disconnectedCallback() {
+                this.observer?.disconnect();
+                window.removeEventListener("tonk:registration-closed", this.afterRegistration);
+                this.onclick = null;
+              }
+              attributeChangedCallback() { if (this.isConnected) this.render(); }
+              render() {
+                const mode = this.getAttribute("mode");
+                for (const button of this.querySelectorAll("[data-invite-action]")) {
+                  button.hidden = !button.dataset.inviteAction.split(" ").includes(mode);
+                }
+                const account = this.querySelector("[data-invite-account]");
+                if (account) {
+                  const label = mode === "activation" ? "verify account" : "create an account or sign in";
+                  if (account.textContent !== label) account.textContent = label;
+                }
+              }
+            });
+        </script>
+      </tonk-component>
+      <tonk-agent-invite-controls mode={mode} on:invite=tonk:agent-handoff>
+        <button class="connection-invite-new" data-invite-account data-invite-action="account activation" hidden>create an account or sign in</button>
+        <button class="connection-invite-new" data-invite-action="retry" hidden on:new-agent-invite=tonk:new-agent-invite>try again</button>
+        <button class="connection-invite-new" data-invite-action="new" hidden on:new-agent-invite=tonk:new-agent-invite>new invite</button>
+        <button class="connection-invite-new" data-invite-action="sync" hidden on:new-agent-invite=tonk:new-agent-invite>turn on sync</button>
+      </tonk-agent-invite-controls>
+      <style>
+        tonk-agent-invite-controls [hidden] { display: none !important; }
+        .connection-invite-new {
+          min-height: 36px; padding: 0 16px; border: 0; border-radius: 0;
+          background: transparent; color: var(--wa-color-text-normal);
+          box-shadow: inset 0 0 0 1px currentColor;
+          font: 600 13px/1 'IBM Plex Sans Condensed', 'Bahnschrift', 'Arial Narrow', sans-serif;
+          letter-spacing: .02em; cursor: pointer;
+        }
+        .connection-invite-new:hover { background: color-mix(in srgb, currentColor 6%, transparent); }
+        .connection-invite-new:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
+      </style>
 
 concept!: &tonk/agent-invite
   this: tonk:agent-invite
-  description: An account-scoped handoff joined with the repository name for the agent prompt.
+  description: An agent invitation joined with the repository name for the copied prompt.
   with:
     name:
       description: The repository's display name.
@@ -468,12 +571,12 @@ concept!: &tonk/agent-invite
       cardinality: one
       as: text
     link:
-      description: The complete account-scoped handoff URL.
+      description: The complete agent invitation URL.
       the: xyz.tonk.agent-invite/link
       cardinality: one
       as: text
     account:
-      description: The browser account the agent must connect as.
+      description: The account required by legacy handoffs; unused by bearer invitations.
       the: xyz.tonk.agent-invite/account
       cardinality: one
       as: entity
@@ -553,11 +656,11 @@ view!:
         <p>{detail}</p>
       </div>
 
-# Only a ready account-scoped response can produce an agent prompt. Its
+# Only a ready invitation response can produce an agent prompt. Its
 # derived attributes must differ from the response attributes, or a pending
 # response with an empty link satisfies the prompt concept directly.
 rule!:
-  description: Joins the repository name with its ready account-scoped agent handoff.
+  description: Joins the repository name with its ready agent invitation.
   assert: tonk/agent-invite
   when:
     - assert: tonk/repository
@@ -576,16 +679,62 @@ view!:
   this: tonk:agent-invite
   show:
     ui: |
+      <tonk-component>
+        <script type="tonk/module">
+          customElements.get("tonk-agent-prompt") ||
+            customElements.define("tonk-agent-prompt", class extends HTMLElement {
+              static observedAttributes = ["link"];
+              connectedCallback() {
+                this.observer = new MutationObserver(() => this.render());
+                this.observer.observe(this, { childList: true, subtree: true });
+                this.render();
+              }
+              disconnectedCallback() { this.observer?.disconnect(); }
+              attributeChangedCallback() { if (this.isConnected) this.render(); }
+              render() {
+                let mode = "";
+                try {
+                  const hash = new URL(this.getAttribute("link")).hash;
+                  mode = /^#tonk-agent-v[12]=/.test(hash) ? "scoped" : "unsupported";
+                } catch (_) {}
+                for (const block of this.querySelectorAll("[data-agent-mode]")) {
+                  block.hidden = block.dataset.agentMode !== mode;
+                }
+                let page;
+                try { page = new URL(this.getAttribute("link")); } catch (_) {}
+                const local = page && ["localhost", "127.0.0.1", "[::1]"].includes(page.hostname);
+                const copy = this.querySelector(".agent-prompt__copy");
+                const prompt = copy?.getAttribute("value") || "";
+                if (local && prompt.includes("npx --yes @tonk/cli")) {
+                  const localPrompt = prompt
+                    .replaceAll("npx --yes @tonk/cli", "tonk")
+                    .replace(
+                      "tonk join '",
+                      `TONK_CONNECTION_ORIGIN=${JSON.stringify(page.origin)} tonk join '`,
+                    );
+                  copy.setAttribute("value", localPrompt);
+                }
+              }
+            });
+        </script>
+      </tonk-component>
+      <tonk-agent-prompt link={link}>
       <div class="agent-prompt">
         <style>
+          tonk-agent-prompt [hidden] { display: none !important; }
+          tonk-agent-prompt [data-agent-mode] { display: flex; flex-direction: column; gap: var(--wa-space-m); }
           .agent-prompt { padding: var(--wa-space-l); border-radius: var(--wa-border-radius-l); background: var(--wa-color-surface-lowered); display: flex; flex-direction: column; gap: var(--wa-space-m); }
           .agent-prompt p { margin: 0; line-height: var(--wa-line-height-normal); text-wrap: pretty; }
-          .agent-prompt__action { display: flex; gap: var(--wa-space-s); align-items: center; }
+          .agent-prompt__action { display: flex; align-items: stretch; }
           .agent-prompt__copy {
-            --agent-copy-ink: var(--fabb-ink, #38182a);
-            --agent-copy-surface: var(--fabb-on-ink, #f7f6f5);
+            display: inline-flex;
+            align-self: flex-start;
+            max-inline-size: 100%;
+            --agent-copy-ink: var(--wa-color-neutral-on-loud);
+            --agent-copy-surface: var(--wa-color-text-normal);
           }
           .agent-prompt__copy::part(button) {
+            display: inline-flex;
             box-sizing: border-box;
             min-width: 144px;
             min-height: 44px;
@@ -614,7 +763,7 @@ view!:
           .agent-prompt__copy::part(button):focus-visible {
             background: var(--agent-copy-surface);
             color: var(--agent-copy-ink);
-            outline: 2px solid var(--agent-copy-ink);
+            outline: 2px solid var(--wa-color-text-normal);
             outline-offset: 3px;
           }
           .agent-prompt__copy::part(copy-icon),
@@ -629,26 +778,42 @@ view!:
             .agent-prompt__copy::part(button) { transition: none; }
             .agent-prompt__copy::part(button):active { scale: 1; }
           }
+          .agent-prompt__new {
+            min-height: 44px; padding: 0 16px; border: 0; border-radius: 0;
+            background: transparent; color: var(--wa-color-text-normal);
+            box-shadow: inset 0 0 0 1px currentColor;
+            font: 600 13px/1 'IBM Plex Sans Condensed', 'Bahnschrift', 'Arial Narrow', sans-serif;
+            letter-spacing: .02em; cursor: pointer;
+          }
+          .agent-prompt__new:hover { background: color-mix(in srgb, currentColor 6%, transparent); }
+          .agent-prompt__new:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
           .agent-prompt__note { color: var(--wa-color-text-quiet); font-size: var(--wa-font-size-s); }
         </style>
-        <p>Copy the prompt and give it to an agent of your choice. Then tell it what you want to build.</p>
-        <p class="agent-prompt__note">Your agent will connect to this space. If it needs to link your account, Tonk will open a browser approval. Keep this space open to see the connection confirmed and watch your changes arrive.</p>
+        <div data-agent-mode="unsupported" hidden>
+          <p class="agent-prompt__note">this invitation is no longer supported. reload tonk to get the latest version, then create a new invite and use <code>tonk join</code>.</p>
+          <button class="agent-prompt__new" on:new-agent-invite=tonk:new-agent-invite>new invite</button>
+        </div>
+        <div data-agent-mode="scoped" hidden>
+        <p>copy the prompt and give it to your agent. then tell it what you want to build.</p>
+        <p class="agent-prompt__note">anyone with this link can read and change this space until it expires or you revoke it. keep it private. you can close tonk after copying.</p>
         <div class="agent-prompt__action">
-          <wa-copy-button class="agent-prompt__copy" copy-label="Copy prompt" success-label="Prompt copied" error-label="Could not copy" value="You're helping build the &quot;{name}&quot; Tonk space.
+          <wa-copy-button class="agent-prompt__copy" copy-label="copy prompt" success-label="prompt copied" error-label="could not copy" value="You're helping build the &quot;{name}&quot; Tonk space.
 
       Connect to the exact space this prompt came from:
 
-        npx --yes @tonk/cli connect '{link}'
+        npx --yes @tonk/cli join '{link}'
 
-      The command uses the space’s synced name for local registration and prints the chosen local name. Use --name only if you want a different local alias. This handoff requires account {account}. If the CLI reports a different account, explain the mismatch and ask me before switching. Only after I consent, rerun the same command with `--switch-account {account}`. Browser passkey approval is still required; tell me to approve the requested account in my Tonk browser. Do not log out first. It pulls this space and sends a connection acknowledgement back to its UI. Allow the command to finish, including browser approval. Only report connected after it prints &quot;Agent connection confirmed&quot;. If interrupted after joining, run `npx --yes @tonk/cli --space NAME connect` (using the local name printed by the command). A synced status alone does not confirm the agent connection. If that resume reports revoked authority, rerun the original invite with a different local name: `npx --yes @tonk/cli connect INVITE --name NEW_NAME`.
+      This reusable bearer link contains the invitation key and grants for this space. Keep it private. Run the command without CLI account login, browser approval, or account-switch flags. The command prints the chosen local name; use --name if you need a different local alias. Only report connected after it prints &quot;Agent connection confirmed&quot;, which follows a successful pull and acknowledged receipt push. If interrupted, resume without the link using `npx --yes @tonk/cli --space NAME join`. If access expires or is revoked, ask me for a fresh invite. Local data and offline edits remain available. Multiple holders of this link share the same invitation authority and receipt; the receipt does not establish exclusive use or online presence.
 
-      Then run `npx --yes @tonk/cli status` and `npx --yes @tonk/cli help tutorial`. The command binds your working directory to the connected space; elsewhere, pass --space with the printed local name. Ask me what I want to build. Use `npx --yes @tonk/cli` for each CLI command that changes data, schemas, or views; changes sync directly into this space. Finish with `npx --yes @tonk/cli space home &lt;concept&gt;` to put the result on the space home.">
+      Then run `npx --yes @tonk/cli --space NAME status` and `npx --yes @tonk/cli help tutorial`. The command binds your original working directory to the connected space; elsewhere, pass --space with the printed local name. Ask me what I want to build. Use `npx --yes @tonk/cli` for each CLI command that changes data, schemas, or views; changes sync directly into this space. Finish with `npx --yes @tonk/cli space home &lt;concept&gt;` to put the result on the space home.">
             <span slot="copy-icon" aria-hidden="true">copy prompt</span>
             <span slot="success-icon" aria-hidden="true">prompt copied</span>
             <span slot="error-icon" aria-hidden="true">could not copy</span>
           </wa-copy-button>
         </div>
+        </div>
       </div>
+      </tonk-agent-prompt>
 
 # Connection receipt, written only after the CLI has pulled this space.
 # A durable acknowledgement, deliberately not an online/heartbeat signal.
@@ -665,34 +830,50 @@ concept!: &agent-connection
 view!:
   this: tonk:agent-connection
   show:
-    ui: |
-      <details open class="agent-connection" data-this={this}>
-        <summary aria-label="Dismiss agent connection notification">×</summary>
-        <span role="status">Your agent connected</span>
+    directory: |
+      <div class="agent-connection-receipts" aria-label="Agent connection receipts">
         <style>
-          .agent-connection {
+          .agent-connection-receipts {
             position: fixed;
             left: 50%;
             bottom: max(64px, calc(env(safe-area-inset-bottom) + 56px));
             z-index: 12;
+            width: min(432px, calc(100vw - 48px));
+            max-height: 40dvh;
+            overflow-y: auto;
+            transform: translateX(-50%);
+            display: flex;
+            flex-direction: column;
+            gap: 7px;
+          }
+        </style>
+        <tonk-display entity={this} model=tonk:agent-connection />
+      </div>
+    ui: |
+      <details open class="agent-connection" data-this={this}>
+        <summary aria-label="Dismiss agent connection notification">×</summary>
+        <span role="status">agent setup confirmed</span><span class="agent-connection-note">this confirms a completed sync, not whether the agent is online.</span>
+        <style>
+          .agent-connection {
+            position: relative;
             box-sizing: border-box;
             border: 0;
             border-radius: 0;
             margin: 0;
-            width: min(432px, calc(100vw - 48px));
+            width: 100%;
             min-height: 44px;
             padding: 12px 52px 12px 24px;
-            background: rgb(253 252 252 / 72%);
-            color: #38182a;
-            box-shadow: 0 0 0 1px rgb(56 24 42 / 85%);
+            background: var(--wa-color-surface-raised);
+            color: var(--wa-color-text-normal);
+            box-shadow: 0 0 0 1px var(--wa-color-neutral-border-normal);
             -webkit-backdrop-filter: blur(12px) saturate(1.5);
             backdrop-filter: blur(12px) saturate(1.5);
             font: 400 13px/1.45 var(--wa-font-family-body);
             text-align: center;
-            transform: translateX(-50%);
             animation: agent-connection-enter .4s cubic-bezier(.25,.46,.45,.94) both,
               agent-connection-exit .4s ease-out 120s forwards;
           }
+          .agent-connection-note { display: block; margin-top: 4px; color: var(--wa-color-text-quiet); }
           .agent-connection:not([open]) { display: none; }
           .agent-connection > summary {
             box-sizing: border-box;
@@ -721,21 +902,14 @@ view!:
             outline-offset: -3px;
           }
           @keyframes agent-connection-enter {
-            from { opacity: 0; transform: translateX(-50%) translateY(70px); }
-            to { opacity: 1; transform: translateX(-50%); }
+            from { opacity: 0; transform: translateY(12px); }
+            to { opacity: 1; transform: translateY(0); }
           }
           @keyframes agent-connection-exit {
-            from { opacity: 1; transform: translateX(-50%); }
-            to { opacity: 0; transform: translateX(-50%) translateY(12px); visibility: hidden; }
+            from { opacity: 1; transform: translateY(0); }
+            to { opacity: 0; transform: translateY(12px); visibility: hidden; }
           }
-          @media (prefers-color-scheme: dark) {
-            .agent-connection > summary:hover { background: rgb(226 223 221 / 9%); }
-            .agent-connection {
-              background: rgb(29 24 25 / 72%);
-              color: #e2dfdd;
-              box-shadow: 0 0 0 1px rgb(226 223 221 / 55%);
-            }
-          }
+
           @media (prefers-reduced-motion: reduce) {
             .agent-connection { animation-duration: 0s; }
           }
@@ -2018,7 +2192,7 @@ view!:
   show:
     ui: |
       <div class="workspace-shell" style="display:flex; flex-direction:column; min-height:100dvh;">
-        <tonk-display entity="id:tonk:agent-connection" model=tonk:agent-connection with="{branch}@{repo}">
+        <tonk-display model=tonk:agent-connection with="{branch}@{repo}">
           <span slot="no-entity"></span>
         </tonk-display>
         <div class='display-view-slot'>

@@ -61,8 +61,15 @@ jobs:
             Deploying a preview of `${{ steps.commit.outputs.short }}`...
 
       - name: Build assets
+        env:
+          DEPLOY_EVENT: ${{ github.event_name }}
+          DEPLOY_REF: ${{ github.ref }}
         run: |
-          nix build --accept-flake-config .#tonk-cloudflare-artifacts
+          artifact=tonk-cloudflare-artifacts
+          if [ "$DEPLOY_EVENT" = pull_request ] || [ "$DEPLOY_REF" = refs/heads/staging ]; then
+            artifact=tonk-cloudflare-preview-artifacts
+          fi
+          nix build --accept-flake-config ".#$artifact"
 
       # A pull request gets its own deployment in the disposable
       # `preview` environment.

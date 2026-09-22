@@ -144,6 +144,12 @@ pub const SITE_DIRNAME: &str = ".tonk";
 /// data: an empty directory is not a site.
 pub fn has_site_data(root: &Path) -> bool {
     root.join(REPO_NAME).is_dir()
+        || root.join(crate::connections::MARKER_FILE).exists()
+        || root.join(crate::connections::DATA_MARKER_FILE).exists()
+        || root
+            .join("data")
+            .join(crate::connections::DATA_MARKER_FILE)
+            .exists()
 }
 
 /// An opened tonk site: profile, operator, repository, and a
@@ -175,6 +181,11 @@ pub struct TonkSite {
 }
 
 impl TonkSite {
+    /// Whether this site uses isolated invitation authority instead of an account.
+    pub fn is_scoped(&self) -> bool {
+        self.operator.is_scoped()
+    }
+
     /// Open an already-existing site at the given directory.
     /// Errors if the directory exists but the dialog repository
     /// inside it is missing or unreadable.
@@ -187,6 +198,7 @@ impl TonkSite {
     /// unique profile name without touching the user's real
     /// data dir.
     pub async fn open_with(root: &Path, config: SiteConfig) -> Result<Self> {
+        crate::connections::reject_generic_open(root)?;
         let root = root
             .canonicalize()
             .with_context(|| format!("could not canonicalize {}", root.display()))?;
@@ -270,6 +282,7 @@ impl TonkSite {
     /// loaded, not clobbered, which is also how `tonk space new
     /// --site <path>` adopts pre-existing storage.
     pub async fn init_at_with(root: &Path, config: SiteConfig) -> Result<Self> {
+        crate::connections::reject_generic_open(root)?;
         std::fs::create_dir_all(root)
             .with_context(|| format!("failed to create {}", root.display()))?;
         // Record the format beside the data, so the next incompatible change
@@ -437,6 +450,14 @@ impl Identity {
     /// A signed-out installation may retain its durable local root. Both
     /// are installation properties, so any replica answers for them.
     pub async fn of(site: &TonkSite) -> Result<Self> {
+        if site.is_scoped() {
+            return Ok(Self {
+                account: None,
+                local_root: None,
+                onboarding: None,
+                profile: site.profile.did().to_string(),
+            });
+        }
         let active = crate::account_session::snapshot(
             &site.profile,
             site.operator.local(),
@@ -479,6 +500,17 @@ impl Identity {
             .as_deref()
             .into_iter()
             .chain(self.local_root.as_deref())
+            .chain(self.onboarding.as_deref())
+            .chain(std::iter::once(self.profile.as_str()))
+    }
+
+    /// Installation identities that do not depend on the ambient cached
+    /// account. Browser-selected local-space linking uses this narrower set
+    /// so an unrelated legacy CLI account cannot affect eligibility.
+    pub fn local_dids(&self) -> impl Iterator<Item = &str> {
+        self.local_root
+            .as_deref()
+            .into_iter()
             .chain(self.onboarding.as_deref())
             .chain(std::iter::once(self.profile.as_str()))
     }
@@ -942,48 +974,64 @@ pub async fn account_root_prefix(site: &TonkSite, account_root: &Did) -> Result<
             Ok(chain)
         }
         Err(profile_error) if site.repository.credential().signer().is_some() => {
-            let Some(dialog_credentials::Signer::Ed25519(signer)) =
-                site.repository.credential().signer()
-            else {
-                unreachable!("tonk-cli enables only Ed25519 credentials");
-            };
-            let minter = Repository::from(signer.clone());
-            let delegation: UcanDelegation = minter
-                .access()
-                .claim(&minter)
-                .delegate(account_root.clone())
-                .perform(site.operator.local())
+            direct_account_root_prefix(site, account_root)
                 .await
                 .with_context(|| {
                     format!(
                         "the profile cannot delegate this space and its repository signer failed: {profile_error}"
                     )
-                })?;
-            let chain = delegation.into_chain();
-            site.profile
-                .access()
-                .save(UcanDelegation(chain.clone()))
-                .perform(site.operator.local())
-                .await
-                .context("failed to retain repository-signed authority for this profile")?;
-            let bytes = chain
-                .to_bytes()
-                .context("failed to serialize repository-signed account-root prefix")?;
-            let validated = validate_prefix(bytes.clone(), account_root)
-                .await
-                .context("repository-signed account-root prefix is invalid")?;
-            save_prefix(
-                &site.profile,
-                site.operator.local(),
-                &space_root_site(&site.repository.did(), account_root),
-                bytes,
-            )
-            .await
-            .context("failed to persist repository-signed account-root prefix")?;
-            Ok(validated)
+                })
         }
         Err(error) => Err(error),
     }
+}
+
+/// Mint and persist a direct `space -> account-root` prefix with the local
+/// repository signer. Provisioning consumes the first proof as the space's
+/// consent, so an otherwise valid adopted chain through an onboarding account
+/// is intentionally not sufficient here.
+pub async fn direct_account_root_prefix(
+    site: &TonkSite,
+    account_root: &Did,
+) -> Result<DelegationChain> {
+    let Some(dialog_credentials::Signer::Ed25519(signer)) = site.repository.credential().signer()
+    else {
+        bail!("this device cannot sign directly for the selected local space");
+    };
+    let minter = Repository::from(signer.clone());
+    let delegation: UcanDelegation = minter
+        .access()
+        .claim(&minter)
+        .delegate(account_root.clone())
+        .perform(site.operator.local())
+        .await
+        .context("failed to mint repository-signed account-root authority")?;
+    let chain = delegation.into_chain();
+    let bytes = chain
+        .to_bytes()
+        .context("failed to serialize repository-signed account-root prefix")?;
+    let validated = validate_prefix(bytes.clone(), account_root)
+        .await
+        .context("repository-signed account-root prefix is invalid")?;
+    anyhow::ensure!(
+        validated.proofs().count() == 1,
+        "repository-signed account-root prefix is not direct"
+    );
+    site.profile
+        .access()
+        .save(UcanDelegation(validated.clone()))
+        .perform(site.operator.local())
+        .await
+        .context("failed to retain repository-signed authority for this profile")?;
+    save_prefix(
+        &site.profile,
+        site.operator.local(),
+        &space_root_site(&site.repository.did(), account_root),
+        bytes,
+    )
+    .await
+    .context("failed to persist repository-signed account-root prefix")?;
+    Ok(validated)
 }
 
 /// Decode a stored prefix for `account_root`.
@@ -1310,6 +1358,7 @@ pub async fn transplant_at_with(
     use tonk_schema::prelude::DidExt as _;
     use tonk_schema::{RepositoryName, Transplant};
 
+    crate::connections::reject_generic_open(root)?;
     let root = root
         .canonicalize()
         .with_context(|| format!("could not canonicalize {}", root.display()))?;

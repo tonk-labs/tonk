@@ -13,6 +13,8 @@
 //! unchanged.
 
 mod account;
+mod agent_connections;
+pub use agent_connections::*;
 mod analytics;
 mod claim;
 mod conclusion;

@@ -26,6 +26,7 @@ pub struct AccountBoundOperator {
     profile: Profile,
     store: SpaceStore,
     require_account: bool,
+    scoped_grants: Option<Vec<DelegationChain>>,
 }
 
 impl AccountBoundOperator {
@@ -51,7 +52,45 @@ impl AccountBoundOperator {
             profile,
             store,
             require_account,
+            scoped_grants: None,
         }
+    }
+
+    /// Whether remote work is restricted to an isolated invitation grant set.
+    pub fn is_scoped(&self) -> bool {
+        self.scoped_grants.is_some()
+    }
+
+    async fn authorize_scoped(
+        &self,
+        input: Capability<Authorize<Ucan>>,
+    ) -> Result<UcanAuthorization, AuthorizeError> {
+        let expected = self.scoped_grants.as_ref().expect("scoped mode checked");
+        let authorization = require_current_window(input, current_unix_seconds())
+            .perform(&self.inner)
+            .await?;
+        let chain = authorization
+            .chain
+            .as_ref()
+            .ok_or_else(|| AuthorizeError::Malformed {
+                detail: "connection authorization has no proof chain".into(),
+            })?;
+        let matches = expected.iter().any(|grant| {
+            chain.subject() == grant.subject()
+                && chain.proof_cids().len() == grant.proof_cids().len() + 1
+                && chain.proof_cids().starts_with(grant.proof_cids())
+                && chain.audience() == &self.inner.did()
+                && chain
+                    .proofs()
+                    .last()
+                    .is_some_and(|hop| hop.issuer() == &self.profile.did())
+        });
+        if !matches {
+            return Err(AuthorizeError::Malformed {
+                detail: "remote request is outside this connection's retained grant set".into(),
+            });
+        }
+        Ok(authorization)
     }
 
     /// Persistent profile DID.
@@ -284,6 +323,9 @@ impl Provider<Authorize<Ucan>> for AccountBoundOperator {
         &self,
         input: Capability<Authorize<Ucan>>,
     ) -> Result<UcanAuthorization, AuthorizeError> {
+        if self.is_scoped() {
+            return self.authorize_scoped(input).await;
+        }
         let guard = crate::account_session::shared_remote_guard(&self.store).map_err(|error| {
             AuthorizeError::Unavailable {
                 detail: error.to_string(),
@@ -295,7 +337,7 @@ impl Provider<Authorize<Ucan>> for AccountBoundOperator {
 
 struct Guarded<'a> {
     operator: &'a AccountBoundOperator,
-    guard: &'a AccountSessionReadGuard,
+    guard: Option<&'a AccountSessionReadGuard>,
 }
 
 #[async_trait::async_trait]
@@ -335,7 +377,13 @@ impl<'a> Provider<Authorize<Ucan>> for Guarded<'a> {
         &self,
         input: Capability<Authorize<Ucan>>,
     ) -> Result<UcanAuthorization, AuthorizeError> {
-        self.operator.authorize_guarded(input, self.guard).await
+        if self.operator.is_scoped() {
+            self.operator.authorize_scoped(input).await
+        } else {
+            self.operator
+                .authorize_guarded(input, self.guard.expect("account guard"))
+                .await
+        }
     }
 }
 
@@ -361,7 +409,11 @@ where
     Network: Provider<ForkInvocation<At, Fx>> + ConditionalSync,
 {
     async fn execute(&self, input: Fork<At, Fx>) -> Fx::Output {
-        let guard = match crate::account_session::shared_remote_guard(&self.store) {
+        let guard = match if self.is_scoped() {
+            Ok(None)
+        } else {
+            crate::account_session::shared_remote_guard(&self.store).map(Some)
+        } {
             Ok(guard) => guard,
             Err(error) => {
                 return FromAuthError::from_auth_error(AuthorizeError::Unavailable {
@@ -371,12 +423,28 @@ where
         };
         let env = Guarded {
             operator: self,
-            guard: &guard,
+            guard: guard.as_ref(),
         };
         match input.authorize(&env).await {
             Ok(invocation) => invocation.perform(&Network::default()).await,
             Err(error) => FromAuthError::from_auth_error(error),
         }
+    }
+}
+
+/// Wrap an already isolated invitation profile without initializing account state.
+pub(crate) fn wrap_scoped(
+    inner: Session<NativeSpace>,
+    profile: Profile,
+    store: SpaceStore,
+    grants: Vec<DelegationChain>,
+) -> AccountBoundOperator {
+    AccountBoundOperator {
+        inner,
+        profile,
+        store,
+        require_account: false,
+        scoped_grants: Some(grants),
     }
 }
 

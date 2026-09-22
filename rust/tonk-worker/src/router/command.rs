@@ -211,7 +211,7 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
     CommandRegistry::new()
         .command::<super::repository::CreateSpaceRequest>()
         .command::<super::repository::InviteRequest>()
-        .command::<tonk_schema::command::AgentHandoff>()
+        .command::<super::repository::AgentHandoffRequest>()
         .command::<super::repository::EnableSyncRequest>()
         .command::<tonk_schema::command::Load>()
         .command::<tonk_schema::command::PromoteMember>()
@@ -255,7 +255,7 @@ fn space_commands() -> CommandRegistry<CommandEnv> {
         // pulled onto a device that does not have it yet, because the
         // request would have to arrive on the branch it is asking for.
         .command::<tonk_schema::command::CheckUpdate>()
-        .command::<tonk_schema::command::AgentHandoff>()
+        .command::<super::repository::AgentHandoffRequest>()
         .migrated::<tonk_schema::command::ExpelMember, tonk_schema::command::legacy::ExpelMember>()
         .migrated::<tonk_schema::command::RenameRepository, tonk_schema::command::legacy::RenameRepository>()
 }

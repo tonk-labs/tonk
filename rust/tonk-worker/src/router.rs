@@ -69,12 +69,14 @@ pub(crate) mod rotation;
 
 mod join;
 pub use join::{JoinRequest, JoinResponse};
+mod local_space_link;
 
 pub(crate) mod account_devices;
 
 mod create_invite;
 pub use create_invite::{CreateInviteRequest, CreateInviteResponse};
 
+pub(crate) mod agent_connections;
 mod revoke_invite;
 
 /// Space membership management: admins and removals, as commands.
@@ -308,6 +310,18 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         // access on an existing one. See `router/join.rs`.
         .route("/api/profile/join", post(join::join))
         .route(
+            "/api/local-space-link/approve",
+            post(local_space_link::approve),
+        )
+        .route(
+            "/api/local-space-link/provision",
+            post(local_space_link::provision),
+        )
+        .route(
+            "/api/local-space-link/complete",
+            post(local_space_link::complete),
+        )
+        .route(
             "/api/migrate/repo-vs-profile",
             get(migration::repo_vs_profile),
         )
@@ -328,6 +342,11 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             post(revoke_invite::revoke),
         )
         .route("/api/repository/{repo}/invites", get(revoke_invite::list))
+        .route("/api/account/connections", get(agent_connections::list))
+        .route(
+            "/api/account/connections/{id}/revoke",
+            post(agent_connections::revoke),
+        )
         // Opt-in remote attach — wires a remote (and branch upstream)
         // onto an existing repo, idempotently. See
         // `router/repository.rs::attach_remote`.

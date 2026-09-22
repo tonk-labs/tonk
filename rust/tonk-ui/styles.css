@@ -2202,6 +2202,18 @@ ui-account-settings .cta:hover { text-decoration-thickness: 2px; }
 ui-account-settings button.cta { appearance: none; -webkit-appearance: none;
     background: none; border: 0; margin: 0; padding: 0; text-align: right; }
 ui-account-settings .srowd > .cta { flex: none; }
+ui-account-settings :is([data-agent-connections], [data-terminal-connections])[hidden] { display: none; }
+ui-account-settings :is([data-agent-connections], [data-terminal-connections]) { margin-top: 18px; }
+ui-account-settings :is([data-connections-list], [data-terminal-connections-list]) { display: grid; gap: 7px; margin-top: 12px; }
+ui-account-settings .connection-record { min-width: 0; padding: 12px;
+    background: var(--card); box-shadow: 0 0 0 1px var(--ring); }
+ui-account-settings .connection-record .expl { overflow-wrap: anywhere; }
+ui-account-settings :is([data-agent-connections], [data-terminal-connections]) .srowd { align-items: center; flex-wrap: wrap;
+    padding: 0; gap: 8px; }
+ui-account-settings :is([data-agent-connections], [data-terminal-connections]) button.cta { min-width: 44px; min-height: 44px; }
+ui-account-settings :is([data-agent-connections], [data-terminal-connections]) button.cta:disabled { opacity: .5; cursor: default; }
+ui-account-settings :is([data-agent-connections], [data-terminal-connections]) :focus-visible { outline: 2px solid var(--ink);
+    outline-offset: 3px; }
 /* A real input with a stable field surface. Keep the fill bounded to the
    editable value so the name reads as a control rather than floating at the
    end of the row. The unlayered rules also beat Web Awesome's

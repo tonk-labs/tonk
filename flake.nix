@@ -353,6 +353,12 @@
               # no `/join` route, and serve its 405.
               TRUNK_CONFIG_GENERATED="./rust/tonk-ui/.Trunk.dev.toml"
               cp ./rust/tonk-ui/Trunk.toml "$TRUNK_CONFIG_GENERATED"
+              # Enable scoped agent invitations in local development. Select
+              # features per binary: the guest pipeline has no such feature.
+              TRUNK_HTML_GENERATED="$PWD/rust/tonk-ui/.index.dev.html"
+              sed -e 's/data-bin="ui"/data-bin="ui" data-cargo-features="connection-invites"/' \
+                  -e 's/data-bin="worker"/data-bin="worker" data-cargo-features="connection-invites"/' \
+                  ./rust/tonk-ui/index.html > "$TRUNK_HTML_GENERATED"
               if [ -n "$SHORTCUT_ORIGIN" ]; then
                 # printf, not a heredoc: a heredoc's body has to sit at column
                 # zero, which nixfmt then reflows the whole surrounding Nix
@@ -377,9 +383,9 @@
               else
                 echo "dev:web: no local access service, so /@ is unproxied; invite links stay long"
               fi
-              trap 'kill "$GUIDE_PID" "$ACCESS_PID" 2>/dev/null; pkill -f "mdbook serve ./guide" 2>/dev/null; rm -f "$TRUNK_CONFIG_GENERATED"' EXIT INT TERM
+              trap 'kill "$GUIDE_PID" "$ACCESS_PID" 2>/dev/null; pkill -f "mdbook serve ./guide" 2>/dev/null; rm -f "$TRUNK_CONFIG_GENERATED" "$TRUNK_HTML_GENERATED"' EXIT INT TERM
 
-              trunk serve --config "$TRUNK_CONFIG_GENERATED" --proxy-backend "$ENDPOINT"
+              trunk serve "$TRUNK_HTML_GENERATED" --html-output index.html --config "$TRUNK_CONFIG_GENERATED" --proxy-backend "$ENDPOINT"
             '';
           };
           "lint" = {
@@ -594,6 +600,18 @@
             '';
           };
 
+          # Enable invitations in PR previews and staging deployments.
+          # Select features per binary; the guest crate has no such feature.
+          tonk-ui-preview = tonk-ui.overrideAttrs (old: {
+            pname = "tonk-ui-preview";
+            preBuild = old.preBuild + ''
+              sed -i \
+                -e 's/data-bin="ui"/data-bin="ui" data-cargo-features="connection-invites"/' \
+                -e 's/data-bin="worker"/data-bin="worker" data-cargo-features="connection-invites"/' \
+                index.html
+            '';
+          });
+
           tonk-access-service = buildWasmCrate {
             pname = "tonk-access-service";
 
@@ -621,6 +639,15 @@
               cp -r ./build/* $out/
             '';
           };
+
+          tonk-cloudflare-preview-artifacts = tonk-cloudflare-artifacts.overrideAttrs (_: {
+            pname = "tonk-cloudflare-preview-assets";
+            buildPhase = ''
+              mkdir -p ./build
+              cp -r ${tonk-access-service} ./build/tonk-access-service
+              cp -r ${tonk-ui-preview} ./build/tonk-ui
+            '';
+          });
 
           # This package is used by integration tests to run a web server
           # over a local deployment of tonk-ui with Caddy as reverse proxy
