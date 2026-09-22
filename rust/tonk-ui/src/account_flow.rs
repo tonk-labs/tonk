@@ -3617,18 +3617,31 @@ mod tests {
             "the account cell draws no dropdown caret",
         );
 
-        // One press. The Hub is a sealed guest, so the cluster it asks
-        // for is raised by the TOP page — which is also why pressing it
-        // must not navigate the Hub anywhere.
-        let before = driver.current_url().await?;
+        // One press. The cell is the account tab: it pushes `/account`
+        // into the same document, and the page the Hub asks for is the
+        // TOP page's cluster — so the press must not reload anything.
+        let before = driver
+            .execute("return performance.timeOrigin", Vec::new())
+            .await?
+            .json()
+            .clone();
         click(&driver, "[data-account-trigger]").await?;
         await_register_dialog(&driver).await?;
 
         driver.enter_default_frame().await?;
+        let landed = driver.current_url().await?;
         assert_eq!(
-            driver.current_url().await?,
-            before,
-            "adding an account happens in place, with no page in between",
+            landed.path(),
+            "/account",
+            "the account cell is the account page, got {landed}",
+        );
+        assert_eq!(
+            driver
+                .execute("return performance.timeOrigin", Vec::new())
+                .await?
+                .json(),
+            &before,
+            "adding an account happens in place, with no reload in between",
         );
 
         // Finish the ceremony the cluster raised. The Hub is never
