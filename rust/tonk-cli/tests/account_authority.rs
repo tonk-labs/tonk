@@ -584,7 +584,7 @@ async fn it_discovers_a_space_through_the_account(env: AccessServiceAddress) -> 
     .await?
     .expect("linking hydrates the joiner's account");
     let union = tonk_account::delegations::mint_account_union(
-        &joiner_profile.signer().signer().clone(),
+        &joiner_profile.credential().signer().clone(),
         &account_root,
     )
     .await?;

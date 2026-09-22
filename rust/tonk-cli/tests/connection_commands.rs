@@ -555,6 +555,7 @@ async fn connection_command_imports_bearer_restarts_and_keeps_account_state() ->
         .try_build()
         .await?;
     ambient_profile
+        .access()
         .save(UcanDelegation(DelegationChain::new(ambient_grant)))
         .perform(&ambient_operator)
         .await?;

@@ -90,7 +90,7 @@ async fn save(
     progress: &Progress,
 ) -> Result<(), TonkWorkerError> {
     registry
-        .credential()
+        .secrets()
         .site(JOURNAL)
         .save(serde_json::to_vec(progress).map_err(internal)?)
         .perform(&tonk.storage)
@@ -110,7 +110,7 @@ pub async fn welcome(
         .open_profile(&tonk.storage, tonk.registry.initial_profile())
         .await?;
     let mut progress: Progress = match registry
-        .credential()
+        .secrets()
         .site(JOURNAL)
         .load::<Vec<u8>>()
         .perform(&tonk.storage)
@@ -376,7 +376,7 @@ pub async fn prepare(
         .open_profile(&tonk.storage, tonk.registry.initial_profile())
         .await?;
     let bytes = match registry
-        .credential()
+        .secrets()
         .site(JOURNAL)
         .load::<Vec<u8>>()
         .perform(&tonk.storage)

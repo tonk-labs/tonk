@@ -133,7 +133,7 @@ impl Registry {
         storage: &Storage<DefaultSpace>,
     ) -> Result<Option<String>, TonkWorkerError> {
         let bytes = match registry
-            .credential()
+            .secrets()
             .site(ACTIVE_PROFILE_SITE)
             .load::<Vec<u8>>()
             .perform(storage)
@@ -211,7 +211,7 @@ impl Registry {
     ) -> Result<(), TonkWorkerError> {
         let registry = self.open_self(storage).await?;
         registry
-            .credential()
+            .secrets()
             .site(ACTIVE_PROFILE_SITE)
             .save(name.as_bytes().to_vec())
             .perform(storage)
