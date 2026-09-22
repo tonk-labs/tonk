@@ -798,7 +798,9 @@ async fn load_customer(
     let bytes = match state
         .profile
         .credential()
-        .site(CUSTOMER_CREDENTIAL_SITE)
+        .site(
+            crate::credential::branch_site(CUSTOMER_CREDENTIAL_SITE, &state.active_branch).as_str(),
+        )
         .load::<Vec<u8>>()
         .perform(&state.operator)
         .await
@@ -1210,7 +1212,9 @@ pub(super) async fn save_customer(
     state
         .profile
         .credential()
-        .site(CUSTOMER_CREDENTIAL_SITE)
+        .site(
+            crate::credential::branch_site(CUSTOMER_CREDENTIAL_SITE, &state.active_branch).as_str(),
+        )
         .save(bytes)
         .perform(&state.operator)
         .await
@@ -1463,7 +1467,9 @@ pub(crate) async fn clear_customer(
     state
         .profile
         .credential()
-        .site(CUSTOMER_CREDENTIAL_SITE)
+        .site(
+            crate::credential::branch_site(CUSTOMER_CREDENTIAL_SITE, &state.active_branch).as_str(),
+        )
         .save(Vec::<u8>::new())
         .perform(&state.operator)
         .await

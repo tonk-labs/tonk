@@ -35,16 +35,17 @@ async fn load_provider(
     state: &crate::worker::TonkState,
     _root_did: &dialog_varsig::Did,
 ) -> Result<Option<AccountProviderRecord>, TonkWorkerError> {
-    load_provider_from(&state.profile, &state.operator).await
+    load_provider_from(&state.profile, &state.operator, &state.active_branch).await
 }
 
 async fn load_provider_from(
     profile: &Profile,
     operator: &DefaultOperator,
+    branch: &str,
 ) -> Result<Option<AccountProviderRecord>, TonkWorkerError> {
     let bytes = match profile
         .credential()
-        .site(ACCOUNT_PROVIDER_SITE)
+        .site(crate::credential::branch_site(ACCOUNT_PROVIDER_SITE, branch).as_str())
         .load::<Vec<u8>>()
         .perform(operator)
         .await
@@ -75,7 +76,7 @@ async fn save_provider(
     state
         .profile
         .credential()
-        .site(ACCOUNT_PROVIDER_SITE)
+        .site(crate::credential::branch_site(ACCOUNT_PROVIDER_SITE, &state.active_branch).as_str())
         .save(bytes)
         .perform(&state.operator)
         .await
@@ -211,7 +212,7 @@ pub(crate) async fn detach_test_account(
     state
         .profile
         .credential()
-        .site(ACCOUNT_PROVIDER_SITE)
+        .site(crate::credential::branch_site(ACCOUNT_PROVIDER_SITE, &state.active_branch).as_str())
         .save(Vec::<u8>::new())
         .perform(&state.operator)
         .await
@@ -447,7 +448,7 @@ pub(crate) async fn disconnect(
     state
         .profile
         .credential()
-        .site(ACCOUNT_PROVIDER_SITE)
+        .site(crate::credential::branch_site(ACCOUNT_PROVIDER_SITE, &state.active_branch).as_str())
         .save(Vec::<u8>::new())
         .perform(&state.operator)
         .await
@@ -488,6 +489,80 @@ pub(crate) async fn tests_matching_request(
         delegation_hex: hex::encode(root.bytes),
         remote: TEST_ACCOUNT_REMOTE.to_string(),
         initialize_name: false,
+    }
+}
+
+/// The link row the hub bar reads: on while this device holds the
+/// account's authority on the active branch, gone when it does not.
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+mod link_row_tests {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt as _;
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+
+    use crate::helpers::state::test_state;
+    use crate::router::{ClientId, api_router_with_state};
+
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    async fn link_rows(app: &axum::Router, branch: &str) -> usize {
+        let query = r#"{"predicate":{"with":{"account":{"the":"xyz.tonk.link/account","as":"Entity","cardinality":"one"}}},"terms":{"this":{"?":{"name":"this"}},"account":{"?":{"name":"account"}}}}"#;
+        let mut request = Request::builder()
+            .method("POST")
+            .uri(format!("/api/profile/branch/{branch}/query"))
+            .header("content-type", "application/json")
+            .body(Body::from(query))
+            .unwrap();
+        request.extensions_mut().insert(ClientId("bar".to_owned()));
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice::<serde_json::Value>(&bytes)
+            .ok()
+            .and_then(|rows| rows.as_array().map(Vec::len))
+            .unwrap_or(0)
+    }
+
+    #[dialog_common::test]
+    async fn it_publishes_the_link_row_while_the_device_holds_the_account() {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let branch = state.read().await.active_branch.clone();
+        {
+            let tonk = state.read().await;
+            super::publish_link(&tonk).await;
+        }
+        assert_eq!(
+            link_rows(&app, &branch).await,
+            1,
+            "a linked device publishes one link row on its branch",
+        );
+
+        {
+            let tonk = state.read().await;
+            super::disconnect(&tonk).await.unwrap();
+        }
+        assert_eq!(
+            link_rows(&app, &branch).await,
+            0,
+            "disconnecting retracts it, whatever account facts the branch keeps",
+        );
+
+        let request = {
+            let tonk = state.read().await;
+            super::tests_matching_request(&tonk).await
+        };
+        {
+            let tonk = state.read().await;
+            super::persist_link(&tonk, &request).await.unwrap();
+        }
+        assert_eq!(
+            link_rows(&app, &branch).await,
+            1,
+            "linking again publishes it again",
+        );
     }
 }
 

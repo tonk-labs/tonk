@@ -256,8 +256,9 @@ async fn activate_named(
                 "no branch '{name}' on this profile"
             )));
         }
-        super::account_devices::withdraw_own_authority(&tonk).await;
-        super::account::disconnect(&tonk).await?;
+        // The branch keeps its link: what this device holds about an
+        // account lives with the branch that follows it, so switching
+        // neither revokes nor forgets it. Only signing out does.
         super::profile::set_active_branch(&tonk, &name).await?;
         (
             tonk.storage.clone(),
@@ -409,8 +410,7 @@ async fn add_profile(
                 return refreshed_response(&tonk).await;
             }
         }
-        super::account_devices::withdraw_own_authority(&tonk).await;
-        super::account::disconnect(&tonk).await?;
+        // The branch being left keeps its link (see `activate_named`).
         super::profile::leave_account(&tonk).await;
         (
             tonk.storage.clone(),
@@ -514,8 +514,7 @@ pub(crate) async fn for_account(
         });
     }
 
-    super::account_devices::withdraw_own_authority(&current).await;
-    super::account::disconnect(&current).await?;
+    // The branch being left keeps its link (see `activate_named`).
     match &existing {
         Some(branch) => super::profile::set_active_branch(&current, branch).await?,
         None => super::profile::leave_account(&current).await,

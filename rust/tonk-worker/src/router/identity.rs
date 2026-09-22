@@ -87,7 +87,7 @@ pub(crate) async fn validate_grant(
 pub(crate) async fn load_record(
     state: &TonkState,
 ) -> Result<Option<LocalRootRecord>, TonkWorkerError> {
-    load_record_from(&state.profile, &state.operator).await
+    load_record_from(&state.profile, &state.operator, &state.active_branch).await
 }
 
 /// Load and validate the serialized root record belonging to an explicit
@@ -96,10 +96,11 @@ pub(crate) async fn load_record(
 async fn load_record_from(
     profile: &Profile,
     operator: &DefaultOperator,
+    branch: &str,
 ) -> Result<Option<LocalRootRecord>, TonkWorkerError> {
     let bytes = match profile
         .credential()
-        .site(LOCAL_ROOT_SITE)
+        .site(crate::credential::branch_site(LOCAL_ROOT_SITE, branch).as_str())
         .load::<Vec<u8>>()
         .perform(operator)
         .await
@@ -192,7 +193,7 @@ pub(crate) async fn forget_encryption_key(state: &TonkState) -> Result<(), TonkW
     state
         .profile
         .credential()
-        .site(LOCAL_ROOT_SITE)
+        .site(crate::credential::branch_site(LOCAL_ROOT_SITE, &state.active_branch).as_str())
         .save(encoded)
         .perform(&state.operator)
         .await
@@ -208,7 +209,7 @@ pub(crate) async fn forget_root(state: &TonkState) -> Result<(), TonkWorkerError
     state
         .profile
         .credential()
-        .site(LOCAL_ROOT_SITE)
+        .site(crate::credential::branch_site(LOCAL_ROOT_SITE, &state.active_branch).as_str())
         .retract()
         .perform(&state.operator)
         .await
@@ -326,7 +327,7 @@ pub(crate) async fn persist_root(
     state
         .profile
         .credential()
-        .site(LOCAL_ROOT_SITE)
+        .site(crate::credential::branch_site(LOCAL_ROOT_SITE, &state.active_branch).as_str())
         .save(encoded)
         .perform(&state.operator)
         .await

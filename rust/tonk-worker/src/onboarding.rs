@@ -117,14 +117,21 @@ async fn read(state: &TonkState) -> Result<Option<AccountSecret>, TonkWorkerErro
         return Ok(None);
     };
     let Some(custodian) = load_custodian(state).await? else {
-        // An envelope outliving its custodian is the shape
-        // accreditation leaves behind. Reporting it as absent would
-        // send `account()` off to mint a second onboarding account on
-        // top of an accredited device, so it is an error: the envelope
-        // is deliberately unopenable, not missing.
-        return Err(TonkWorkerError::Internal(
-            "the onboarding envelope has no custodian; this device is already accredited".into(),
-        ));
+        // An envelope outliving its custodian is the shape accreditation
+        // leaves behind. While the branch follows an account, reporting
+        // it as absent would send `account()` off to mint a second local
+        // account on top of an accredited one, so it is an error: the
+        // envelope is deliberately unopenable, not missing. A branch that
+        // has since left its account acts locally again and needs a local
+        // account of its own; what the retired one sealed was rotated to
+        // the account it joined.
+        if crate::router::identity::load_record(state).await?.is_some() {
+            return Err(TonkWorkerError::Internal(
+                "the onboarding envelope has no custodian; this device is already accredited"
+                    .into(),
+            ));
+        }
+        return Ok(None);
     };
     let envelope = Envelope::decode(&envelope).map_err(|error| {
         TonkWorkerError::Internal(format!("the onboarding envelope is malformed: {error}"))
@@ -699,7 +706,9 @@ pub(crate) async fn retire(state: &TonkState) -> Result<(), TonkWorkerError> {
         .profile
         .did()
         .credential()
-        .key(ONBOARDING_CUSTODIAN_KEY)
+        .key(
+            crate::credential::branch_site(ONBOARDING_CUSTODIAN_KEY, &state.active_branch).as_str(),
+        )
         .save(Credential::from(verifier))
         .perform(&state.operator)
         .await
@@ -715,7 +724,9 @@ async fn load_custodian(state: &TonkState) -> Result<Option<Ed25519Signer>, Tonk
         .profile
         .did()
         .credential()
-        .key(ONBOARDING_CUSTODIAN_KEY)
+        .key(
+            crate::credential::branch_site(ONBOARDING_CUSTODIAN_KEY, &state.active_branch).as_str(),
+        )
         .load()
         .perform(&state.operator)
         .await
@@ -751,7 +762,9 @@ async fn save_custodian(
         .profile
         .did()
         .credential()
-        .key(ONBOARDING_CUSTODIAN_KEY)
+        .key(
+            crate::credential::branch_site(ONBOARDING_CUSTODIAN_KEY, &state.active_branch).as_str(),
+        )
         .save(Credential::from(custodian))
         .perform(&state.operator)
         .await
@@ -764,7 +777,7 @@ async fn load(state: &TonkState, site: &str) -> Result<Option<Vec<u8>>, TonkWork
     match state
         .profile
         .credential()
-        .site(site)
+        .site(crate::credential::branch_site(site, &state.active_branch).as_str())
         .load::<Vec<u8>>()
         .perform(&state.operator)
         .await
@@ -782,7 +795,7 @@ async fn save(state: &TonkState, site: &str, bytes: Vec<u8>) -> Result<(), TonkW
     state
         .profile
         .credential()
-        .site(site)
+        .site(crate::credential::branch_site(site, &state.active_branch).as_str())
         .save(bytes)
         .perform(&state.operator)
         .await
