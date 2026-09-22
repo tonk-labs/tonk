@@ -22,7 +22,8 @@ use ::axum::{
 };
 use axum_wasm_macros::wasm_compat;
 use dialog_capability::Subject;
-use dialog_credentials::{Ed25519Signer, key::KeyExport};
+use dialog_credentials::key::{ExtractableKey, KeyExport};
+use dialog_credentials::{Ed25519Signer, Extractable};
 use dialog_effects::Use;
 use dialog_query::{Output as _, Query, Term};
 use dialog_repository::{
@@ -49,22 +50,12 @@ const CONTENT_BRANCH: &str = "main";
 /// Generate an ephemeral Ed25519 signer with an extractable seed.
 ///
 /// Wasm's default `Ed25519Signer::generate` produces a non-extractable
-/// WebCrypto key whose seed can't be embedded in the invite URL; the
-/// [`ExtractableKey`] variant opts in to extractable generation.
-///
-/// [`ExtractableKey`]: dialog_credentials::key::ExtractableKey
-pub(crate) async fn generate_ephemeral() -> Result<(Ed25519Signer, [u8; 32]), TonkWorkerError> {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    let signer = {
-        use dialog_credentials::key::ExtractableKey;
-        <Ed25519Signer as ExtractableKey>::generate()
-            .await
-            .map_err(|e| {
-                TonkWorkerError::Internal(format!("failed to generate ephemeral key: {e}"))
-            })?
-    };
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-    let signer = Ed25519Signer::generate()
+/// WebCrypto key whose seed can't be embedded in the invite URL. The
+/// [`Extractable`] signer opts in to extractable generation, and its type
+/// is what lets `export` yield the seed on every platform.
+pub(crate) async fn generate_ephemeral()
+-> Result<(Ed25519Signer<Extractable>, [u8; 32]), TonkWorkerError> {
+    let signer = <Ed25519Signer<Extractable> as ExtractableKey>::generate()
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("failed to generate ephemeral key: {e}")))?;
 
