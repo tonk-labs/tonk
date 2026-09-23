@@ -620,6 +620,24 @@ test("new page requests wait while an installed successor replaces the incumbent
   assert.equal(resumed, true);
 });
 
+test("an installed successor still nudges the incumbent when waiting appears after statechange", async () => {
+  const result = pageHarness({ mode: "warm-update" });
+  await new Promise(setImmediate);
+  result.registration.installing = null;
+  result.incoming.state = "installed";
+  await result.incoming.dispatch("statechange");
+  result.registration.waiting = result.incoming;
+  for (let attempt = 0; attempt < 10 &&
+      !result.messages.some(message => message.type === "retire-if-superseded"); attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  assert.ok(
+    result.messages.some(message => message.type === "retire-if-superseded"),
+    "the page must retry after waiting becomes visible",
+  );
+  await result.activateWarmWorker();
+});
+
 test("two update-aware documents each reload once on one controller replacement", async () => {
   const result = multiPageReplacementHarness();
   await new Promise(setImmediate);

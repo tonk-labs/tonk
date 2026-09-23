@@ -645,3 +645,6 @@ async fn the_circle_collapses_and_expands_at_every_width() {
             !wrapper.class_list().contains("collapsed"),
             "expand at {width}px"
         );
+    }
+    parent.remove();
+}
