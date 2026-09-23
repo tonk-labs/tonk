@@ -12,7 +12,9 @@ use std::rc::Rc;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_test::wasm_bindgen_test_configure;
-use web_sys::{CustomEvent, Event, HtmlElement, KeyboardEvent, KeyboardEventInit, window};
+use web_sys::{
+    CustomEvent, Element, Event, HtmlElement, KeyboardEvent, KeyboardEventInit, ShadowRoot, window,
+};
 
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -59,6 +61,31 @@ async fn yield_for(ms: i32) {
         .expect("timeout resolves");
 }
 
+fn active_animations(element: &Element) -> u32 {
+    let get_animations = js_sys::Reflect::get(element, &"getAnimations".into())
+        .expect("getAnimations")
+        .dyn_into::<js_sys::Function>()
+        .expect("getAnimations is callable");
+    get_animations
+        .call0(element)
+        .expect("read animations")
+        .dyn_into::<js_sys::Array>()
+        .expect("animation list")
+        .length()
+}
+
+async fn wait_for_corner_settled(fab: &HtmlElement, root: &ShadowRoot, panel_open: bool) {
+    let wrapper = root.query_selector(".w").unwrap().expect("wrapper");
+    for _ in 0..60 {
+        yield_for(50).await;
+        let open = root.query_selector(".w.has-panel").unwrap().is_some();
+        if open == panel_open && active_animations(fab) == 0 && active_animations(&wrapper) == 0 {
+            return;
+        }
+    }
+    panic!("corner layout did not settle with panel_open={panel_open}");
+}
+
 fn px(style: &web_sys::CssStyleDeclaration, property: &str) -> f64 {
     style
         .get_property_value(property)
@@ -101,15 +128,15 @@ async fn drawer_cycles_keep_the_header_at_each_corner() {
         fab.style()
             .set_property(if vertical == "top" { "bottom" } else { "top" }, "auto")
             .unwrap();
-        yield_for(450).await;
         let root = fab.shadow_root().unwrap();
+        wait_for_corner_settled(&fab, &root, false).await;
         root.query_selector(".space")
             .unwrap()
             .unwrap()
             .dyn_into::<HtmlElement>()
             .unwrap()
             .click();
-        yield_for(450).await;
+        wait_for_corner_settled(&fab, &root, false).await;
         let header = root.query_selector(".header").unwrap().unwrap();
         let initial = header.get_bounding_client_rect();
         let (left, right, top, bottom) = (
@@ -126,9 +153,9 @@ async fn drawer_cycles_keep_the_header_at_each_corner() {
             .unwrap();
         for cycle in 0..3 {
             agent.click();
-            yield_for(450).await;
+            wait_for_corner_settled(&fab, &root, true).await;
             agent.click();
-            yield_for(450).await;
+            wait_for_corner_settled(&fab, &root, false).await;
             let rect = header.get_bounding_client_rect();
             for (edge, start, end) in [
                 ("left", left, rect.left()),
