@@ -10,7 +10,15 @@ use dialog_artifacts::Entity;
 use dialog_query::Concept;
 
 use crate::Branch;
-use crate::domain::branch::{Replica, Upstream};
+use crate::domain::branch::{Origin, Replica, Upstream};
+
+/// Tracking facts written before `branch/replica` replaced `branch/origin`.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LegacyTrackingBranch {
+    pub this: Entity,
+    pub upstream: Upstream,
+    pub origin: Origin,
+}
 
 /// A local branch's tracking relationship with a remote branch.
 ///
