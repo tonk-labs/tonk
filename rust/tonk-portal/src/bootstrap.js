@@ -90,14 +90,36 @@
   }
   function claimLoad(){
     var c=ownSpace(); if(!c||!c.siteEntity) return;
+    // `<tonk-site>` carries its in-site path as the route template wrote it,
+    // without the leading slash the route table matches against.
+    var path=c.sitePath||"/"; if(path.charAt(0)!=="/"){ path="/"+path; }
     var body={claims:[{op:"assert",application:{
       predicate:{kind:"transient",concept:{with:{path:{the:"xyz.tonk.site/path",as:"Text",cardinality:"one"}}}},
-      parameters:{"this":c.siteEntity,path:c.sitePath||"/"}
+      parameters:{"this":c.siteEntity,path:path}
     }}]};
     nativeWithContext("/api/repository/"+c.repo+"/branch/"+(c.branch||"main")+"/transact",{
       method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)
     }).catch(function(error){ console.warn("tonk: claiming this site failed",error); });
   }
+  // The stamp lives in the worker's memory, so a restarted worker, or the
+  // successor taking over from an updated one, starts without it: the site's
+  // display falls back to `no-entity` and the page would spin forever. Claim
+  // again whenever it does, as `<tonk-site>` does for the host's stamp. At most
+  // once a second, so a stamp that cannot land does not loop.
+  var lastClaim=0;
+  function healLoad(){
+    if(!ownSpace()) return;
+    var now=Date.now(); if(now-lastClaim<1000) return;
+    lastClaim=now; claimLoad();
+  }
+  new MutationObserver(function(records){
+    for(var i=0;i<records.length;i++){
+      var el=records[i].target;
+      if(el.getAttribute&&el.getAttribute("model")==="tonk:site"&&el.getAttribute("data-state")==="no-entity"){
+        healLoad(); return;
+      }
+    }
+  }).observe(document,{subtree:true,attributes:true,attributeFilter:["data-state"]});
   function call(type,extra){
     return ready.then(function(){
       return new Promise(function(resolve,reject){

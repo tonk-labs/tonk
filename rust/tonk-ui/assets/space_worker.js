@@ -226,6 +226,64 @@ function within(promise, ms, message) {
     return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
+// ---- Handing over to a successor ----------------------------------------
+//
+// A subscription is a fetch whose response never ends. While one is open this
+// worker counts as busy, and a successor that installed waits for it to
+// finish, which it never does. So once a successor has installed, this worker
+// releases its streams (the Rust worker's `onupdatefound`): the page's
+// subscriptions reconnect and land on the successor. The host's worker hands
+// over the same way.
+
+let retired = false;
+
+// Only the worker the browser holds as active serves the pages, and only it
+// may release their streams. An installing worker hears the same events about
+// its own arrival.
+function isActiveIncumbent() {
+    return self.registration.active === self.serviceWorker;
+}
+
+async function retire(reason) {
+    // Nothing to release until the space's database has come up.
+    if (retired || !rust || !isActiveIncumbent()) return;
+    retired = true;
+    log(`handing over: ${reason}`);
+    try {
+        const worker = await rust;
+        await worker.onupdatefound?.();
+    } catch (error) {
+        retired = false;
+        log("failed to release streams:", error);
+    }
+}
+
+// An installing worker is not a successor yet: its install can still fail.
+// Streams are released only once it has installed.
+function watchSuccessor(candidate) {
+    if (!candidate || !isActiveIncumbent()) return;
+    const observe = () => {
+        if (["installed", "activating", "activated"].includes(candidate.state)) {
+            candidate.removeEventListener("statechange", observe);
+            retire("a newer worker installed");
+        } else if (candidate.state === "redundant") {
+            candidate.removeEventListener("statechange", observe);
+        }
+    };
+    candidate.addEventListener("statechange", observe);
+    observe();
+}
+
+// `updatefound` fires into a sleeping worker and is lost, so a restarted
+// worker asks the registration whether a successor is already waiting.
+if (self.registration.waiting) {
+    Promise.resolve().then(() => retire("a successor was already waiting at startup"));
+}
+watchSuccessor(self.registration.installing);
+self.registration.addEventListener("updatefound", () => {
+    watchSuccessor(self.registration.installing);
+});
+
 // ---- Responses ----------------------------------------------------------
 
 // Where this deployment renders sites, from its `/.well-known/tonk`: the
@@ -372,6 +430,11 @@ self.addEventListener("fetch", event => {
         // A worker kept alive past its delegation's window would otherwise
         // hold a lapsed one: check it as it serves, and ask again when due.
         event.waitUntil(renewIfDue());
+        // A worker woken by a page while a successor waits never heard it
+        // install: hand over now, before this request opens a stream.
+        if (self.registration.waiting) {
+            event.waitUntil(retire("a successor is waiting"));
+        }
         return;
     }
     if (url.pathname === SHELL_PATH) return;
