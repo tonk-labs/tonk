@@ -333,6 +333,10 @@ enum Command {
         /// Override the local name (defaults to the pulled space's synced name).
         #[arg(long)]
         name: Option<String>,
+        /// Trust this Tonk deployment origin for the import.
+        /// Overrides TONK_CONNECTION_ORIGIN and must match the signed /ucan/ route.
+        #[arg(long, value_name = "ORIGIN", requires = "url")]
+        via: Option<String>,
     },
 
     /// Push local main to its upstream
@@ -1232,7 +1236,9 @@ async fn main() {
             )
             .await
         }
-        Command::Join { url, name } => join_command(url, name, space.as_deref()).await,
+        Command::Join { url, name, via } => {
+            join_command(url, name, via.as_deref(), space.as_deref()).await
+        }
         Command::Remote { command, json } => remote_op(command, json, space.as_deref()).await,
         Command::Blob { command, json } => blob_op(command, json, space.as_deref()).await,
         Command::Concept { command, json } => concept_op(command, json, space.as_deref()).await,
@@ -2518,6 +2524,7 @@ fn print_invite_outcome(outcome: &InviteOutcome) {
 async fn join_command(
     url: Option<String>,
     name: Option<String>,
+    via: Option<&str>,
     selected: Option<&str>,
 ) -> ExitCode {
     match url {
@@ -2528,7 +2535,7 @@ async fn join_command(
                 );
             }
             match tonk_cli::join::prepare(&url).await {
-                Ok(prepared) => connect_scoped_agent(prepared, name.as_deref()).await,
+                Ok(prepared) => connect_scoped_agent(prepared, name.as_deref(), via).await,
                 Err(error) => print_failure(error),
             }
         }
@@ -2748,10 +2755,12 @@ async fn finish_ordinary_join(
 async fn connect_scoped_agent(
     prepared: tonk_cli::join::PreparedAgent,
     requested_name: Option<&str>,
+    via: Option<&str>,
 ) -> ExitCode {
     async fn import(
         prepared: &tonk_cli::join::PreparedAgent,
         requested_name: Option<&str>,
+        via: Option<&str>,
     ) -> anyhow::Result<(
         tonk_cli::space::SpaceStore,
         String,
@@ -2763,7 +2772,7 @@ async fn connect_scoped_agent(
             tonk_cli::space::validate_name(name)?;
         }
         let remote =
-            tonk_cli::deployment::discover_connection_remote(&prepared.hint().remote).await?;
+            tonk_cli::deployment::discover_connection_remote(&prepared.hint().remote, via).await?;
         let cwd = working_directory()
             .ok_or_else(|| anyhow::anyhow!("could not read the current directory"))?
             .canonicalize()?;
@@ -2817,7 +2826,7 @@ async fn connect_scoped_agent(
         tonk_cli::space::register_connection_bound(&store, &name, &root, None, installed.clone())?;
         Ok((store, name, root, installed, cwd))
     }
-    let (store, name, root, binding, cwd) = match import(&prepared, requested_name).await {
+    let (store, name, root, binding, cwd) = match import(&prepared, requested_name, via).await {
         Ok(imported) => imported,
         Err(error) => return print_failure(error),
     };
@@ -3761,11 +3770,14 @@ mod account_spaces_parser_tests {
         for args in [
             vec!["tonk", "join", "--agent"],
             vec!["tonk", "join", "--no-open"],
-            vec!["tonk", "join", "--via", "https://example.test"],
             vec!["tonk", "join", "--switch-account", "did:key:account"],
         ] {
             assert!(Cli::try_parse_from(args).is_err());
         }
+        assert!(
+            Cli::try_parse_from(["tonk", "join", "--via", "https://staging.tonk.xyz"]).is_err(),
+            "--via selects a new invitation's deployment, not resume mode"
+        );
         assert!(Cli::try_parse_from(["tonk", "connect"]).is_err());
         assert!(Cli::try_parse_from(["tonk", "link", "--no-open"]).is_err());
     }
@@ -3773,11 +3785,21 @@ mod account_spaces_parser_tests {
     #[test]
     fn join_carries_the_exact_invite_and_local_name() {
         let invite = "https://example.test/join?access=proof#secret";
-        let cli = Cli::try_parse_from(["tonk", "join", invite, "--name", "my-agent"])
-            .expect("copied handoff parses");
+        let cli = Cli::try_parse_from([
+            "tonk",
+            "join",
+            invite,
+            "--name",
+            "my-agent",
+            "--via",
+            "https://staging.tonk.xyz",
+        ])
+        .expect("copied handoff parses");
         assert!(
-            matches!(cli.command, Some(Command::Join { url: Some(url), name })
-            if url == invite && name.as_deref() == Some("my-agent"))
+            matches!(cli.command, Some(Command::Join { url: Some(url), name, via })
+            if url == invite
+                && name.as_deref() == Some("my-agent")
+                && via.as_deref() == Some("https://staging.tonk.xyz"))
         );
     }
 
@@ -3787,7 +3809,11 @@ mod account_spaces_parser_tests {
             Cli::try_parse_from(["tonk", "join", "https://example.test/join#secret"]).unwrap();
         assert!(matches!(
             cli.command,
-            Some(Command::Join { name: None, .. })
+            Some(Command::Join {
+                name: None,
+                via: None,
+                ..
+            })
         ));
     }
 
@@ -3795,7 +3821,14 @@ mod account_spaces_parser_tests {
     fn interrupted_join_accepts_a_global_space() {
         let cli = Cli::try_parse_from(["tonk", "--space", "agent-space-2", "join"]).unwrap();
         assert_eq!(cli.space.as_deref(), Some("agent-space-2"));
-        assert!(matches!(cli.command, Some(Command::Join { url: None, .. })));
+        assert!(matches!(
+            cli.command,
+            Some(Command::Join {
+                url: None,
+                via: None,
+                ..
+            })
+        ));
     }
 
     use super::*;

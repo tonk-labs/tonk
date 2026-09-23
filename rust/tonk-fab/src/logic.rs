@@ -1862,9 +1862,14 @@ pub fn tool_connection_state_query_body(subject: &str) -> Result<String, String>
 
 /// Secondary convenience copy for handing the same scoped link to an agent.
 /// The direct link action and this prompt never mint separate identities.
-pub fn tool_connection_prompt(link: &str) -> String {
+pub fn tool_connection_prompt(link: &str, origin: &str) -> String {
+    let via = if origin.is_empty() || origin == "https://tonk.network" {
+        String::new()
+    } else {
+        format!(" --via \"{origin}\"")
+    };
     format!(
-        "Connect to this Tonk space with the scoped tool link below:\n\n  tonk join '{link}'\n\nKeep the link private. Only report connected after the command prints \"Agent connection confirmed\". If interrupted, resume with `tonk --space NAME join`."
+        "Connect to this Tonk space with the scoped tool link below:\n\n  tonk join{via} '{link}'\n\nKeep the link private. Only report connected after the command prints \"Agent connection confirmed\". If interrupted, resume with `tonk --space NAME join`."
     )
 }
 
@@ -1977,10 +1982,12 @@ mod invite {
         assert!(body.contains("xyz.tonk.agent-handoff/link"));
         assert!(body.contains("xyz.tonk.agent-handoff/mode"));
         let link = "https://example.test/join?agent=grants#tonk-agent-v2=secret";
-        let prompt = tool_connection_prompt(link);
+        let prompt = tool_connection_prompt(link, "https://staging.tonk.xyz");
         assert!(prompt.contains(link));
         assert!(prompt.contains("Agent connection confirmed"));
+        assert!(prompt.contains("tonk join --via \"https://staging.tonk.xyz\""));
         assert_eq!(prompt.matches(link).count(), 1);
+        assert!(!tool_connection_prompt(link, "https://tonk.network").contains("--via"));
     }
 }
 

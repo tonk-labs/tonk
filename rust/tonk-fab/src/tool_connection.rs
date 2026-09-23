@@ -255,7 +255,10 @@ fn copy(kind: &str) {
     };
     let is_prompt = kind == "prompt";
     let text = if is_prompt {
-        tool_connection_prompt(&link)
+        tool_connection_prompt(
+            &link,
+            &tonk_host::bridge::context_origin().unwrap_or_default(),
+        )
     } else {
         link
     };

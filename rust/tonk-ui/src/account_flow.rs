@@ -20,20 +20,22 @@ mod tests {
 
     fn assert_prompt_command(prompt: &str, origin: &url::Url, invite: &str) -> Result<()> {
         let loopback = matches!(origin.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
-        let command = if loopback {
-            format!(
-                "TONK_CONNECTION_ORIGIN=\"{}\" tonk join '{invite}'",
-                origin.origin().ascii_serialization()
-            )
+        let origin = origin.origin().ascii_serialization();
+        let command = if origin != "https://tonk.network" {
+            let executable = if loopback {
+                "tonk"
+            } else {
+                "npx --yes @tonk/cli"
+            };
+            format!("{executable} join --via \"{origin}\" '{invite}'")
         } else {
             format!("npx --yes @tonk/cli join '{invite}'")
         };
         anyhow::ensure!(prompt.contains(&command), "rendered agent prompt: {prompt}");
         if loopback {
             anyhow::ensure!(!prompt.contains("npx --yes @tonk/cli"));
-        } else {
-            anyhow::ensure!(!prompt.contains("TONK_CONNECTION_ORIGIN="));
         }
+        anyhow::ensure!(!prompt.contains("TONK_CONNECTION_ORIGIN="));
         Ok(())
     }
 
@@ -6585,6 +6587,7 @@ mod tests {
                 && prompt.contains("tonk join"),
             "tool prompt did not retain the one scoped link"
         );
+        assert_prompt_command(&prompt, &env.tonk_web, &tool_link)?;
 
         // Publish the source branch before the isolated CLI pulls it.
         let pushed = post_json(
@@ -6752,9 +6755,9 @@ mod tests {
 
         assert!(!prompt.contains("--switch-account"));
         let invite = prompt
-            .split("join '")
-            .nth(1)
-            .and_then(|part| part.split('\'').next())
+            .split_whitespace()
+            .map(|part| part.trim_matches('\''))
+            .find(|part| part.contains("#tonk-agent-v"))
             .context("scoped prompt has no connection URL")?
             .to_owned();
         assert_prompt_command(&prompt, &env.tonk_web, &invite)?;

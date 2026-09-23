@@ -702,14 +702,15 @@ view!:
                 const local = page && ["localhost", "127.0.0.1", "[::1]"].includes(page.hostname);
                 const copy = this.querySelector(".agent-prompt__copy");
                 const prompt = copy?.getAttribute("value") || "";
-                if (local && prompt.includes("npx --yes @tonk/cli")) {
-                  const localPrompt = prompt
-                    .replaceAll("npx --yes @tonk/cli", "tonk")
+                if (page && page.origin !== "https://tonk.network" && prompt.includes("npx --yes @tonk/cli")) {
+                  const executable = local ? "tonk" : "npx --yes @tonk/cli";
+                  const selectedPrompt = prompt
+                    .replaceAll("npx --yes @tonk/cli", executable)
                     .replace(
-                      "tonk join '",
-                      `TONK_CONNECTION_ORIGIN=${JSON.stringify(page.origin)} tonk join '`,
+                      `${executable} join '`,
+                      `${executable} join --via ${JSON.stringify(page.origin)} '`,
                     );
-                  copy.setAttribute("value", localPrompt);
+                  copy.setAttribute("value", selectedPrompt);
                 }
               }
             });

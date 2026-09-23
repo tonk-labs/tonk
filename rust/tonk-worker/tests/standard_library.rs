@@ -961,15 +961,15 @@ fn it_keeps_machine_instructions_in_the_production_copy_prompt() {
             "the prompt must request fresh authority after expiry or revocation",
         );
         assert!(
-            library.contains("TONK_CONNECTION_ORIGIN=${JSON.stringify(page.origin)}"),
-            "loopback prompts must trust the exact local dev deployment",
+            library.contains("join --via ${JSON.stringify(page.origin)}"),
+            "non-production prompts must select the exact issuing deployment",
         );
         assert!(
             library.contains("page = new URL(this.getAttribute(\"link\"))"),
             "sandboxed space views must derive loopback from the invitation origin",
         );
         assert!(
-            library.contains(".replaceAll(\"npx --yes @tonk/cli\", \"tonk\")"),
+            library.contains("const executable = local ? \"tonk\" : \"npx --yes @tonk/cli\""),
             "loopback prompts must use the locally built CLI",
         );
     }

@@ -223,21 +223,23 @@ is completed setup, not exclusive tool presence or proof that it is online.
 
 Imported identities stay separate from existing CLI accounts and replicas.
 Credentials are retained locally; expiry or revocation blocks further authorized
-remote work and keeps downloaded data available offline. `--via`, `--no-open`
-and `--switch-account` are not accepted by `join`. There is no `connect`
-command or legacy browser-approval fallback. Different browser accounts and
-spaces can issue independent links into the same CLI; each remains a separate
-credential and local replica. Browser issuance remains subject to the published
-CLI release gates.
+remote work and keeps downloaded data available offline. `--no-open` and
+`--switch-account` are not accepted by `join`. There is no `connect` command or
+legacy browser-approval fallback. Different browser accounts and spaces can
+issue independent links into the same CLI; each remains a separate credential
+and local replica. Browser issuance remains subject to the published CLI release
+gates.
 
 Connection imports trust the built-in Tonk deployment (`https://tonk.network`).
-For an explicitly selected development deployment, set `TONK_CONNECTION_ORIGIN`
-to its HTTPS origin or a loopback HTTP origin, for example
-`http://127.0.0.1:8787`. This setting chooses service routing only. The importer
-requires the signed grant endpoint to match that origin's `/ucan/` and verifies
-`/.well-known/tonk` without following redirects. It never chooses an approval
-page from the invite, loads an unrelated account's endpoint, or sends the
-secret-bearing fragment to discovery.
+For an explicitly selected development deployment, pass its HTTPS origin or a
+loopback HTTP origin with `--via`, for example
+`tonk join --via https://staging.tonk.xyz TOOL_LINK`. The command-line option
+overrides `TONK_CONNECTION_ORIGIN`, which remains available for development
+environments. This selection chooses service routing only; it does not open a
+browser. The importer requires the signed grant endpoint to match that origin's
+`/ucan/` and verifies `/.well-known/tonk` without following redirects. It never
+chooses an approval page from the invite, loads an unrelated account's endpoint,
+or sends the secret-bearing fragment to discovery.
 
 ### Older invitation links and interrupted handoffs
 

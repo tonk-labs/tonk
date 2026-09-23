@@ -81,16 +81,19 @@ fn connection_origin(explicit: Option<&str>) -> Result<Url> {
 
 /// Match a signed invitation endpoint to independently configured deployment
 /// discovery. No account is loaded and no approval page is opened.
-pub async fn discover_connection_remote(claimed_remote: &Url) -> Result<Url> {
-    let explicit = std::env::var(CONNECTION_ORIGIN_ENV)
-        .map(Some)
-        .or_else(|error| match error {
-            std::env::VarError::NotPresent => Ok(None),
-            std::env::VarError::NotUnicode(_) => {
-                Err(anyhow::anyhow!("connection deployment origin is not UTF-8"))
-            }
-        })?;
-    discover_connection_remote_at(claimed_remote, explicit.as_deref()).await
+pub async fn discover_connection_remote(claimed_remote: &Url, via: Option<&str>) -> Result<Url> {
+    let configured = match via {
+        Some(via) => Some(via.to_owned()),
+        None => std::env::var(CONNECTION_ORIGIN_ENV)
+            .map(Some)
+            .or_else(|error| match error {
+                std::env::VarError::NotPresent => Ok(None),
+                std::env::VarError::NotUnicode(_) => {
+                    Err(anyhow::anyhow!("connection deployment origin is not UTF-8"))
+                }
+            })?,
+    };
+    discover_connection_remote_at(claimed_remote, configured.as_deref()).await
 }
 
 async fn discover_connection_remote_at(

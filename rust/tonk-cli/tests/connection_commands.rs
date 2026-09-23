@@ -45,7 +45,6 @@ async fn connection_command_rejects_account_flags_and_implicit_resume_without_mu
     let secret = "https://example.test/join#tonk-agent-v1=never-print-this-secret";
     for flags in [
         vec!["--no-open"],
-        vec!["--via", "https://example.test"],
         vec!["--switch-account", "did:key:unrelated"],
     ] {
         let mut command = cli(home.path(), home.path());
@@ -323,13 +322,35 @@ async fn connection_command_imports_bearer_restarts_and_keeps_account_state() ->
     let project = temp.path().join("project");
     std::fs::create_dir_all(&home)?;
     std::fs::create_dir_all(&project)?;
+    for (via, expected) in [
+        (
+            "file:///tmp/not-a-deployment",
+            "connection deployment origin must use https (or loopback http)",
+        ),
+        ("https://wrong.example", "connection_untrusted_route"),
+    ] {
+        let rejected_home = temp.path().join(format!(
+            "rejected-{}",
+            via.trim_start_matches("https://")
+                .replace(['/', ':', '.'], "-")
+        ));
+        std::fs::create_dir(&rejected_home)?;
+        let mut command = cli(&rejected_home, &rejected_home);
+        command.args(["join", &link, "--via", via]);
+        let output = run(command).await?;
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(expected), "{stderr}");
+        assert!(!stderr.contains(&link));
+        assert!(!rejected_home.join("state").exists());
+    }
     let store = tonk_cli::space::SpaceStore::at(home.join("state"));
     let unrelated = tonk_cli::space::AccountRecord::new(owner.did().to_string());
     store.set_account(Some(unrelated.clone()))?;
     let mut command = cli(&home, &project);
     command
-        .args(["join", &link, "--name", "agent"])
-        .env("TONK_CONNECTION_ORIGIN", &server.endpoint)
+        .args(["join", &link, "--name", "agent", "--via", &server.endpoint])
+        .env("TONK_CONNECTION_ORIGIN", "https://wrong.example")
         .env("TONK_SPACE", "must-not-select-this");
     let output = run(command).await?;
     assert!(

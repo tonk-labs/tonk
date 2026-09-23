@@ -359,6 +359,11 @@ neither copy action silently mints a second key. The CLI imports its separate
 identity without account login or browser approval. An unrelated or malformed
 legacy CLI account remains byte-for-byte outside identity selection.
 
+Production links use the built-in deployment. A copied prompt from staging or
+a local preview includes `join --via ORIGIN`; this explicitly selects the
+deployment whose `/ucan/` route must match the signed grant. It is not a browser
+approval page, and the invitation never chooses the route by itself.
+
 The requested lifetime is 90 days. The browser refuses missing account,
 activation, sync, feature, ownership, or upstream authority instead of widening
 access. Opening the action explicitly creates a fresh grant group. Copies made

@@ -53,7 +53,9 @@ not the current product contract.
    membership, or receipt writes. Shortcut resolution is allowed; claiming is not.
 7. Success requires initial pull and acknowledged receipt push, then successful
    naming/binding. Failures return nonzero and retain safe resumable state.
-8. No new account flags, account picker, `connect` command, or browser callback.
+8. No account picker, `connect` command, or browser callback. `join --via ORIGIN`
+   may explicitly select the trusted deployment for a non-production
+   link; it never selects authority or a browser approval page.
 
 ## Current state and drift check
 
@@ -376,6 +378,37 @@ than being inferred from the browser normal paths.
 Also unrun: the ignored released-old-executable compatibility case, ignored
 production-worker persisted-KV restart case, Safari/device testing,
 production-Wasm runtime, deployment, registry, and hosted-service checks.
+
+### Follow-up evidence — 2026-09-23
+
+Source remains uncommitted on `fix/cli-device-invitations` at `0ad1c07176`; no
+push, publish, deployment, registry, or hosted-service operation was performed.
+
+- `tonk join URL --via ORIGIN` now selects an explicit trusted deployment
+  origin. It overrides `TONK_CONNECTION_ORIGIN`, must match the signed `/ucan/`
+  route, and still requires successful `/.well-known/tonk` discovery without
+  redirects. It is unavailable for URL-less resume mode.
+- Staging and local browser prompts now copy `--via` with their page origin;
+  production prompts remain concise and omit the option.
+- The complete `cargo test -p tonk-cli --locked` suite passed (with its existing
+  explicitly ignored compatibility/schema cases). The focused
+  `connection_commands` integration suite passed all 5 tests with host access,
+  including invalid-origin rejection, route-mismatch rejection, and CLI-option
+  precedence over a deliberately wrong environment fallback.
+- The focused FAB prompt test passed; the `tonk-ui` all-target check with
+  `integration-tests,connection-invites` passed; and the maintained worker
+  standard-library prompt test passed.
+- The packaged browser test
+  `tool_connection_rejects_person_links_and_confirms_the_cli` passed (1 passed,
+  93 skipped) after 547.647 seconds, exercising the copied non-production
+  command and packaged CLI together. Its first invocation stopped before the
+  build because the sandbox could not write Nix's fetcher cache; the unchanged
+  host-access rerun passed.
+- `cargo fmt --all -- --check`, `git diff --check`, and the rendered
+  `tonk join --help` command surface passed after the last source change.
+
+Still unrun in this follow-up: full repository suites, Safari/device testing,
+production deployment, registry publication, and hosted-service verification.
 
 ## Stop conditions and maintenance
 
