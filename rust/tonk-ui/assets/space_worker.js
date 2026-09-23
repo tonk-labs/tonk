@@ -125,6 +125,20 @@ async function heldGrant() {
     return held ? held.json() : null;
 }
 
+let renewing = null;
+
+// Ask again for a delegation that is close to lapsing, once at a time. Only
+// reads the held grant's expiry until it is due.
+function renewIfDue() {
+    renewing ??= spaceWorker()
+        .then(ensureGrant)
+        .catch(error => log("could not renew the space's delegation:", error))
+        .finally(() => {
+            renewing = null;
+        });
+    return renewing;
+}
+
 async function ensureGrant(worker) {
     const held = await heldGrant();
     const now = Date.now() / 1000;
@@ -355,6 +369,9 @@ self.addEventListener("fetch", event => {
     }
     if (url.pathname.startsWith("/api/")) {
         event.respondWith(spaceWorker().then(worker => worker.onfetch(event)));
+        // A worker kept alive past its delegation's window would otherwise
+        // hold a lapsed one: check it as it serves, and ask again when due.
+        event.waitUntil(renewIfDue());
         return;
     }
     if (url.pathname === SHELL_PATH) return;
