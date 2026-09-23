@@ -595,7 +595,7 @@ mod tests {
         let upstream = old_branch(&remote.this, "main");
         assert_ne!(
             local.this,
-            BranchConcept::new(&DirectoryAnchor(subject.this()), "main").this
+            BranchConcept::new(DirectoryAnchor(subject.this()), "main").this
         );
         account
             .transaction()
@@ -628,7 +628,7 @@ mod tests {
 
         account
             .transaction()
-            .assert(BranchConcept::new(&DirectoryAnchor(subject.this()), "main"))
+            .assert(BranchConcept::new(DirectoryAnchor(subject.this()), "main"))
             .commit()
             .publish()
             .perform(&operator)
