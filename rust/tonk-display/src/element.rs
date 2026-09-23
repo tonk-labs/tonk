@@ -307,15 +307,13 @@ impl CustomElement for TonkDisplay {
 
     fn observed_attributes() -> &'static [&'static str] {
         // `entity`/`model`/`view` are the subject inputs: a change to any
-        // restarts the resolve/subscribe flow. `data-active` / `data-base`
-        // are host-context attributes a parent threads in (read by a
-        // template as `{dom.host/<attr>}`); a change to one does not alter
-        // what this display resolves, only the value projected into the
+        // restarts the resolve/subscribe flow. `data-active` is a
+        // host-context attribute a parent threads in (read by a template
+        // as `{dom.host/<attr>}`); a change to it does not alter what
+        // this display resolves, only the value projected into the
         // already-mounted view, so it is propagated in place rather than
-        // restarting. `data-base` lets a wrapping `<tonk-origin>` deliver
-        // the invite-URL base (`{origin}/join`) into the view after mount.
-        // See `attribute_changed_callback`.
-        &["entity", "model", "view", "data-active", "data-base"]
+        // restarting. See `attribute_changed_callback`.
+        &["entity", "model", "view", "data-active"]
     }
 
     fn inject_children(&mut self, _this: &HtmlElement) {}
@@ -336,11 +334,17 @@ impl CustomElement for TonkDisplay {
         start_flows(&host, state);
     }
 
-    fn disconnected_callback(&mut self, _this: &HtmlElement) {
+    fn disconnected_callback(&mut self, this: &HtmlElement) {
         if let Some(state) = self.inner.borrow_mut().take() {
             let mut inner = state.borrow_mut();
             inner.disposed = true;
             inner.abort_all();
+        }
+        // The rows this display mounted are gone with it, so a style
+        // only they referred to now has no referent. Anything another
+        // display still shows is still in the document and survives.
+        if let Some(document) = this.owner_document() {
+            crate::embed::revoke_unreferenced(&document);
         }
     }
 
@@ -1698,13 +1702,13 @@ fn mount_portal_slide(host: &Element, inner: &Inner, display: &str) -> Option<Sl
 
 /// Marker attribute stamped on a `<tonk-display>` host once its event
 /// delegate is installed — the persistent, queryable twin of the one-shot
-/// `tonk-display:bound` event. A `<tonk-page onmount=…>` whose command is
+/// `tonk-display:bound` event. A `<page-mount onmount=…>` whose command is
 /// handled by this display's delegate reads it to learn the delegate is
 /// listening, so it can fire `mount` even if it connected (or reconnected
 /// across a view reconcile) *after* the announcement and missed the event.
 /// Cleared while a fresh delegate refresh is pending, so it never reads
 /// ready during the async descriptor-resolve window. This is a DOM contract
-/// shared with `<tonk-page>` in the `tonk-workspace` crate — keep the string
+/// shared with `<page-mount>` in the `tonk-workspace` crate — keep the string
 /// in sync there.
 const BOUND_ATTR: &str = "data-bound";
 
@@ -1730,7 +1734,7 @@ fn schedule_delegate_refresh(host: &Element, state: &Rc<RefCell<Inner>>) {
     };
     // A fresh delegate is about to be (re)built asynchronously; until the
     // install completes the host is not ready to handle events. Drop the
-    // readiness marker now (synchronously) so a `<tonk-page>` reading it
+    // readiness marker now (synchronously) so a `<page-mount>` reading it
     // during the resolve window does not fire into a half-installed
     // delegate. The settling refresh re-stamps it on install.
     let _ = host.remove_attribute(BOUND_ATTR);
@@ -2074,13 +2078,13 @@ async fn refresh_delegate(host: &Element, state: &Rc<RefCell<Inner>>, delegate_g
     drop(s);
 
     // Persist readiness as a queryable marker *before* announcing it, so a
-    // `<tonk-page>` that connects — or reconnects across a view reconcile —
+    // `<page-mount>` that connects — or reconnects across a view reconcile —
     // after this point can detect the delegate is installed without having
     // caught the transient event below. See [`BOUND_ATTR`].
     let _ = host.set_attribute(BOUND_ATTR, "");
 
     // The delegate's listeners are now attached. Announce it so any
-    // mount-triggered element (e.g. `<tonk-page onmount=…>`) that
+    // mount-triggered element (e.g. `<page-mount onmount=…>`) that
     // connected *before* this point — its `mount` event would have fired
     // into the void, since the delegate installs asynchronously after the
     // template renders — can now fire knowing a listener exists. Carries
@@ -2669,6 +2673,20 @@ fn mount_view_slide(
     // carousel must still resolve counter's own view, while a counter
     // display inside counter's OWN template must not.
     stamp_model_chain(host, &view_el, owner, facet);
+    // Read the embeds the template declares and inject what they name
+    // into the document head. From the template TEXT, not the mounted
+    // DOM: the markup below becomes the ROW template, so a `<link>`
+    // left in it would be cloned once per rendered row.
+    //
+    // Resolved against the MODEL entity, not `owner`. In directory mode
+    // `owner` is the row's own entity — one slide per instance — while a
+    // `style:` entry is declared on the view's subject, the same entity
+    // `view_query` read the template from. Asking a row for its view's
+    // style matches nothing, so the style silently never arrives.
+    let embed_owner = inner.model_entity.as_deref().unwrap_or(owner);
+    if let Some(template) = template.dyn_ref::<web_sys::HtmlTemplateElement>() {
+        crate::embed::resolve_embeds(host, template, display, embed_owner);
+    }
 
     let item: Element = if let Some(carousel) = inner.carousel.as_ref() {
         let wrapper = document.create_element("wa-carousel-item").ok()?;
@@ -3117,6 +3135,262 @@ mod tests {
         );
     }
 
+    /// One `style:` row, as the branch would answer a style query.
+    #[cfg(target_arch = "wasm32")]
+    fn style_rows(view: &str, name: &str, content: &str) -> Vec<Conclusion> {
+        let mut styles = std::collections::BTreeMap::new();
+        styles.insert(name.to_owned(), Ipld::String(content.to_owned()));
+        vec![Conclusion {
+            this: view.to_owned(),
+            fields: BTreeMap::from([("style".to_owned(), Ipld::Map(styles))]),
+        }]
+    }
+
+    /// Resolve embeds the way production does: into an inert
+    /// `<template>` the rows are cloned from, not against loose markup.
+    #[cfg(target_arch = "wasm32")]
+    fn resolve_into_template(
+        host: &Element,
+        markup: &str,
+        owner: &str,
+    ) -> web_sys::HtmlTemplateElement {
+        let document = window().expect("window").document().expect("document");
+        let template = document
+            .create_element("template")
+            .expect("template")
+            .dyn_into::<web_sys::HtmlTemplateElement>()
+            .expect("is a template");
+        template.set_inner_html(markup);
+        crate::embed::resolve_embeds(host, &template, markup, owner);
+        template
+    }
+
+    /// Wait real time, so `setTimeout`-based work can run.
+    #[cfg(target_arch = "wasm32")]
+    async fn sleep_ms(ms: i32) {
+        let window = window().expect("window");
+        let promise = Promise::new(&mut |resolve, _reject| {
+            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms);
+        });
+        let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+    }
+
+    /// Yield enough microtasks for the resolver's spawned task to run
+    /// its query round trip and inject.
+    #[cfg(target_arch = "wasm32")]
+    async fn settle() {
+        for _ in 0..8 {
+            let _ =
+                wasm_bindgen_futures::JsFuture::from(Promise::resolve(&JsValue::UNDEFINED)).await;
+        }
+    }
+
+    /// A template that declares an embed gets the content it names,
+    /// in the document head.
+    ///
+    /// The whole point of the `with:src` path: the style is NOT in
+    /// the rendered row (that markup becomes the row template and
+    /// would be cloned per row), it is one node in `<head>`.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn it_injects_the_style_a_template_embeds() {
+        let document = window().expect("window").document().expect("document");
+        crate::embed::clear_injected(&document);
+        let stub = stub_query_host(
+            style_rows("tonk:blobtest", "base", "body { color: rgb(1, 2, 3) }"),
+            |_| {},
+        );
+
+        let template = resolve_into_template(
+            &stub.host,
+            r#"<link rel=stylesheet with:src=base>"#,
+            "tonk:blobtest",
+        );
+        sleep_ms(150).await;
+
+        // The author wrote a `<link>`, so a `<link>` is what loads the
+        // stylesheet — it gets the content as a blob URL rather than
+        // being replaced by a `<style>` somewhere else in the document.
+        let link = template
+            .content()
+            .query_selector("link[rel=stylesheet]")
+            .expect("query")
+            .expect("the link the template declared is still there");
+        let href = link.get_attribute("href").unwrap_or_default();
+        assert!(
+            href.starts_with("blob:"),
+            "the declaration resolves to a loadable URL, got {href:?}",
+        );
+        assert_eq!(
+            link.get_attribute("data-tonk-embed").as_deref(),
+            Some("tonk:blobtest\u{1e}base"),
+            "and records which view's content it carries",
+        );
+
+        // Read the blob back through XHR rather than `fetch`: a sibling
+        // test installs a global `fetch` stub and never restores it, so
+        // fetching here would read that stub's canned response instead
+        // of this URL's contents.
+        let xhr = web_sys::XmlHttpRequest::new().expect("xhr");
+        xhr.open_with_async("GET", &href, false).expect("open");
+        xhr.send().expect("send");
+        assert_eq!(
+            xhr.response_text().ok().flatten().unwrap_or_default(),
+            "body { color: rgb(1, 2, 3) }",
+            "the URL carries the content the view declared",
+        );
+        crate::embed::clear_injected(&document);
+    }
+
+    /// Re-mounting a view does not stack a second copy of its style.
+    ///
+    /// A display re-renders on every frame, so without the marker
+    /// check the head would grow one `<style>` per render.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn it_injects_one_node_however_often_a_view_mounts() {
+        let document = window().expect("window").document().expect("document");
+        crate::embed::clear_injected(&document);
+        let stub = stub_query_host(style_rows("tonk:demo", "repeat", "p { margin: 0 }"), |_| {});
+
+        let mut hrefs = Vec::new();
+        for _ in 0..3 {
+            let template = resolve_into_template(
+                &stub.host,
+                r#"<link rel=stylesheet with:src=repeat>"#,
+                "tonk:demo",
+            );
+            sleep_ms(120).await;
+            hrefs.push(
+                template
+                    .content()
+                    .query_selector("link[rel=stylesheet]")
+                    .expect("query")
+                    .and_then(|link| link.get_attribute("href"))
+                    .unwrap_or_default(),
+            );
+        }
+
+        // Each mount has its own `<link>` — that is the author's markup,
+        // cloned per row — but they all load ONE blob. Minting per mount
+        // would leak a URL every render, since nothing can tell a stale
+        // one from a clone still using it.
+        assert!(
+            hrefs.iter().all(|href| href.starts_with("blob:")),
+            "every mount resolves: {hrefs:?}",
+        );
+        assert_eq!(
+            hrefs
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            1,
+            "three mounts of one view share one minted URL: {hrefs:?}",
+        );
+        crate::embed::clear_injected(&document);
+    }
+
+    /// A directory view's embed resolves against the VIEW's subject,
+    /// not the row it is mounting.
+    ///
+    /// Directory mode mounts one slide per instance, so `owner` is that
+    /// row's own entity. A `style:` entry is declared on the view's
+    /// subject — the same entity `view_query` read the template from —
+    /// so resolving an embed against the row asks for a style no row
+    /// has, and the page renders silently unstyled. The hub shipped
+    /// exactly this way: the style was on `tonk:space` and every query
+    /// asked for a space's DID.
+    ///
+    /// Asserted on the QUERY rather than the injected node, because the
+    /// wrong subject fails by matching nothing — an assertion on the
+    /// absent `<style>` would also pass for a resolver that never ran.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn it_resolves_an_embed_against_the_view_not_the_row() {
+        let document = window().expect("window").document().expect("document");
+        crate::embed::clear_injected(&document);
+
+        let asked: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+        let captured = asked.clone();
+        let events: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
+        let counted = events.clone();
+        let stub = stub_query_host(
+            style_rows("tonk:space", "ui", "body { color: rgb(4, 5, 6) }"),
+            move |event| {
+                *counted.borrow_mut() += 1;
+                let detail = event.detail();
+                // `to_body` serializes with the default
+                // `serde_wasm_bindgen` serializer, which renders a Rust
+                // map as a JS `Map` — whose entries `Reflect::get` cannot
+                // see, so reading `terms` as a property yields nothing
+                // whatever the query said. The host decodes the body with
+                // `from_value`; this reads it the same way.
+                let Ok(body) = Reflect::get(&detail, &"query".into()) else {
+                    return;
+                };
+                let Ok(query) = serde_wasm_bindgen::from_value::<serde_json::Value>(body) else {
+                    return;
+                };
+                // The FIRST query is the compiled-embeds lookup, which
+                // is the one that must name the view; the style fetch
+                // that follows reads whatever subject it compiled to.
+                if captured.borrow().is_some() {
+                    return;
+                }
+                if let Some(this) = query
+                    .get("terms")
+                    .and_then(|terms| terms.get("this"))
+                    .and_then(|this| this.as_str())
+                {
+                    *captured.borrow_mut() = Some(this.to_owned());
+                }
+            },
+        );
+
+        // The directory shape: the view's subject is the model entity,
+        // while the slide being mounted is one row of it.
+        let mut inner = Inner::new();
+        inner.model_entity = Some("tonk:space".to_owned());
+        let _slide = mount_view_slide(
+            &stub.host,
+            &mut inner,
+            r#"<link rel=stylesheet with:src=ui>"#,
+            "did:key:zRow",
+            "directory",
+        )
+        .expect("slide mounts");
+        settle().await;
+
+        assert!(*events.borrow() >= 1, "the resolver queries for the embed");
+        assert_eq!(
+            asked.borrow().as_deref(),
+            Some("tonk:space"),
+            "the compiled-embeds lookup names the view, not the row being rendered",
+        );
+        crate::embed::clear_injected(&document);
+    }
+
+    /// A template declaring no embed injects nothing — the resolver
+    /// costs a template that embeds nothing no query at all.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn a_template_with_no_embed_injects_nothing() {
+        let document = window().expect("window").document().expect("document");
+        crate::embed::clear_injected(&document);
+        // No host claims queries: if the resolver queried anyway, the
+        // dispatch would fail rather than answer, and nothing could be
+        // injected — so this also pins that it does not try.
+        let stub = unclaimed_host();
+
+        let _template = resolve_into_template(&stub.host, r#"<p>{title}</p>"#, "tonk:demo");
+        settle().await;
+
+        let nodes = document
+            .query_selector_all("style[data-tonk-embed]")
+            .expect("query");
+        assert_eq!(nodes.length(), 0, "nothing declared, nothing injected");
+    }
+
     /// A declaration the artifact does NOT carry still goes to the
     /// branch — the fallback a view seeded before this field existed
     /// depends on.
@@ -3135,6 +3409,643 @@ mod tests {
             table.get("on/elsewhere").is_none(),
             "an uncovered name is resolved against the branch, which no host answered",
         );
+    }
+
+    /// A query the bridge has not claimed yet is retried, not read as
+    /// "this view declares no embeds".
+    ///
+    /// The bridge that answers a guest's query is wired up as the guest
+    /// boots, so a query issued in that window returns "no host claimed
+    /// the event". Taking that as an answer is how a fresh navigation
+    /// lands unstyled while a warm one does not — the two look
+    /// identical from the result alone.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn an_unclaimed_query_is_retried_rather_than_read_as_absence() {
+        use tonk_template::embed::{Embeds, ResolvedEmbed};
+
+        let document = window().expect("window").document().expect("document");
+        crate::embed::clear_injected(&document);
+
+        let encoded = Embeds::new(BTreeMap::from([(
+            "ui".to_string(),
+            ResolvedEmbed {
+                entity: "tonk:space".into(),
+                name: "ui".into(),
+            },
+        )]))
+        .encode()
+        .expect("artifact encodes");
+
+        // Refuse to claim the first two queries, as an unbooted bridge
+        // does, then answer normally.
+        let seen = Rc::new(RefCell::new(0usize));
+        let counter = seen.clone();
+        let rows = vec![Conclusion {
+            this: "tonk:space".into(),
+            fields: BTreeMap::from([("embeds".to_string(), Ipld::Bytes(encoded))]),
+        }];
+        let mut stub = unclaimed_host();
+        let callback = Closure::wrap(Box::new(move |event: web_sys::Event| {
+            let Some(event) = event.dyn_ref::<CustomEvent>() else {
+                return;
+            };
+            let mut count = counter.borrow_mut();
+            *count += 1;
+            if *count <= 2 {
+                // Leave the event unclaimed: no `prevent_default`.
+                return;
+            }
+            event.prevent_default();
+            let detail = event.detail();
+            let value = serde_wasm_bindgen::to_value(&rows).expect("rows serialize");
+            let _ = Reflect::set(&detail, &"result".into(), &Promise::resolve(&value));
+        }) as Box<dyn FnMut(web_sys::Event)>);
+        document
+            .body()
+            .expect("body")
+            .add_event_listener_with_callback("tonk-query", callback.as_ref().unchecked_ref())
+            .expect("listener installs");
+        stub.listener = Some(callback);
+
+        let _template = resolve_into_template(
+            &stub.host,
+            r#"<link rel=stylesheet with:src=ui>"#,
+            "tonk:space",
+        );
+        // Real time, not microtasks: the retry yields with `setTimeout`,
+        // which a microtask drain never advances.
+        sleep_ms(400).await;
+
+        assert!(
+            *seen.borrow() > 2,
+            "the unclaimed attempts are retried, not taken as an answer (saw {})",
+            seen.borrow(),
+        );
+        crate::embed::clear_injected(&document);
+    }
+
+    /// A host that has left the document stops retrying.
+    ///
+    /// The bridge listens above the host, so an element detached from
+    /// the tree can never have its event claimed — retrying is waiting
+    /// for something that cannot happen, and a retry that outlives the
+    /// view that asked for it keeps firing into a document that has
+    /// moved on.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn a_detached_host_stops_retrying() {
+        let document = window().expect("window").document().expect("document");
+        crate::embed::clear_injected(&document);
+
+        let seen = Rc::new(RefCell::new(0usize));
+        let counter = seen.clone();
+        let mut stub = unclaimed_host();
+        // Never claim, so every attempt fails and the loop would run to
+        // exhaustion if nothing stopped it.
+        let callback = Closure::wrap(Box::new(move |_event: web_sys::Event| {
+            *counter.borrow_mut() += 1;
+        }) as Box<dyn FnMut(web_sys::Event)>);
+        document
+            .body()
+            .expect("body")
+            .add_event_listener_with_callback("tonk-query", callback.as_ref().unchecked_ref())
+            .expect("listener installs");
+        stub.listener = Some(callback);
+
+        let _template = resolve_into_template(
+            &stub.host,
+            r#"<link rel=stylesheet with:src=ui>"#,
+            "tonk:space",
+        );
+        // Detach before the first backoff elapses.
+        stub.host.remove();
+        sleep_ms(400).await;
+
+        assert!(
+            *seen.borrow() <= 2,
+            "a detached host stops rather than running out its attempts (saw {})",
+            seen.borrow(),
+        );
+        crate::embed::clear_injected(&document);
+    }
+
+    /// Two views embedding the SAME style share one injected node.
+    ///
+    /// The marker is keyed by `(entity, name)` rather than by the view
+    /// doing the embedding, which is what makes one declaration dress
+    /// two pages — the arrangement `/settings` and the hub actually
+    /// use.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn two_views_embedding_one_style_share_a_single_node() {
+        use tonk_template::embed::{Embeds, ResolvedEmbed};
+
+        let document = window().expect("window").document().expect("document");
+        crate::embed::clear_injected(&document);
+
+        // Both artifacts resolve to the SAME (entity, name) pair, as a
+        // bare `ui` on the owner and a cross-view `ui@space` do.
+        let pair = ResolvedEmbed {
+            entity: "tonk:space".into(),
+            name: "ui".into(),
+        };
+        let own = Embeds::new(BTreeMap::from([("ui".to_string(), pair.clone())]))
+            .encode()
+            .expect("encodes");
+        let cross = Embeds::new(BTreeMap::from([("ui@space".to_string(), pair)]))
+            .encode()
+            .expect("encodes");
+
+        for (artifact, template, owner) in [
+            (own, r#"<link rel=stylesheet with:src=ui>"#, "tonk:space"),
+            (
+                cross,
+                r#"<link rel=stylesheet with:src="ui@space">"#,
+                "tonk:settings",
+            ),
+        ] {
+            let stub = stub_query_host(
+                vec![
+                    Conclusion {
+                        this: owner.into(),
+                        fields: BTreeMap::from([("embeds".to_string(), Ipld::Bytes(artifact))]),
+                    },
+                    Conclusion {
+                        this: "tonk:space".into(),
+                        fields: BTreeMap::from([(
+                            "style".to_string(),
+                            Ipld::Map(BTreeMap::from([(
+                                "ui".to_string(),
+                                Ipld::String("body { color: rgb(7, 8, 9) }".into()),
+                            )])),
+                        )]),
+                    },
+                ],
+                |_| {},
+            );
+            let _template = resolve_into_template(&stub.host, template, owner);
+            sleep_ms(120).await;
+        }
+
+        let minted = document
+            .query_selector_all("link[data-tonk-embed-src]")
+            .expect("query");
+        assert_eq!(
+            minted.length(),
+            1,
+            "one declaration, one minted URL — however many views embed it",
+        );
+        crate::embed::clear_injected(&document);
+    }
+
+    /// A `font:` embed registers a face on the document.
+    ///
+    /// The dictionary the name lives in is what says how to read it: a
+    /// style is CSS text in the head, a font is bytes that become a
+    /// `FontFace`. Before this the renderer only ever built a
+    /// `<style>`, so a font embed resolved to a correct pair and then
+    /// injected nothing at all.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn a_font_embed_registers_a_face() {
+        use tonk_template::embed::{Embeds, ResolvedEmbed};
+
+        let document = window().expect("window").document().expect("document");
+        crate::embed::clear_injected(&document);
+        let before = document.fonts().size();
+
+        let artifact = Embeds::new(BTreeMap::from([(
+            "body".to_string(),
+            ResolvedEmbed {
+                entity: "tonk:demo".into(),
+                name: "body".into(),
+            },
+        )]))
+        .encode()
+        .expect("artifact encodes");
+
+        // A minimal, real WOFF so the face actually constructs: the
+        // bytes are what distinguish this from the style path, so a
+        // fixture the browser rejects would prove nothing.
+        let font = woff_fixture();
+        let stub = stub_query_host(
+            vec![
+                Conclusion {
+                    this: "tonk:demo".into(),
+                    fields: BTreeMap::from([("embeds".to_string(), Ipld::Bytes(artifact))]),
+                },
+                // No `style` entry by that name — the style lookup
+                // misses, and the font dictionary answers.
+                Conclusion {
+                    this: "tonk:demo".into(),
+                    fields: BTreeMap::from([(
+                        "font".to_string(),
+                        Ipld::Map(BTreeMap::from([("body".to_string(), Ipld::Bytes(font))])),
+                    )]),
+                },
+            ],
+            |_| {},
+        );
+
+        let _template = resolve_into_template(
+            &stub.host,
+            r#"<font-family name="body" with:src=body></font-family>"#,
+            "tonk:demo",
+        );
+        sleep_ms(200).await;
+
+        assert!(
+            document.fonts().size() > before,
+            "the font dictionary's bytes become a registered face",
+        );
+        assert!(
+            document
+                .query_selector("meta[data-tonk-embed-font]")
+                .expect("query")
+                .is_some(),
+            "and the registration is recorded so a re-mount does not repeat it",
+        );
+        crate::embed::clear_injected(&document);
+    }
+
+    /// A row cloned BEFORE the content arrives still gets it.
+    ///
+    /// This is the shape production actually has and every other test
+    /// here misses. Resolving is async — two query round-trips — while
+    /// `<tonk-view>` snapshots the host's children the moment it
+    /// connects. So the rows are normally in the document before the
+    /// content lands, and `cloneNode` COPIES: patching only the inert
+    /// template writes into an object nobody reads again.
+    ///
+    /// The symptom was a page with a correctly minted blob URL that
+    /// nothing pointed at — `minted: 1`, zero carriers, no stylesheet.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn a_row_cloned_before_the_content_arrives_still_gets_it() {
+        let document = window().expect("window").document().expect("document");
+        crate::embed::clear_injected(&document);
+
+        let stub = stub_query_host(style_rows("tonk:demo", "ui", ".x{color:red}"), |_| {});
+
+        let markup = r#"<link rel="stylesheet" with:src="ui">"#;
+        let template = resolve_into_template(&stub.host, markup, "tonk:demo");
+
+        // Clone and mount NOW, while the query is still in flight —
+        // before `settle()`, which is precisely what production does.
+        let row = template
+            .content()
+            .clone_node_with_deep(true)
+            .expect("clone");
+        stub.host.append_child(&row).expect("row mounts");
+
+        settle().await;
+
+        let carrier = stub
+            .host
+            .query_selector("link[data-tonk-embed]")
+            .expect("query")
+            .expect("the mounted row's link is resolved, not just the template's");
+        let href = carrier.get_attribute("href").unwrap_or_default();
+        assert!(
+            href.starts_with("blob:"),
+            "the row's link points at the minted content; got {href:?}",
+        );
+        assert_eq!(
+            document
+                .query_selector_all("link[data-tonk-embed-src]")
+                .expect("query")
+                .length(),
+            1,
+            "and patching both roots mints once, not once per root",
+        );
+        crate::embed::clear_injected(&document);
+    }
+
+    /// Registering the same font twice adds one face, not two.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn a_font_registers_once_however_often_its_view_mounts() {
+        use tonk_template::embed::{Embeds, ResolvedEmbed};
+
+        let document = window().expect("window").document().expect("document");
+        crate::embed::clear_injected(&document);
+
+        let artifact = Embeds::new(BTreeMap::from([(
+            "body".to_string(),
+            ResolvedEmbed {
+                entity: "tonk:demo".into(),
+                name: "body".into(),
+            },
+        )]))
+        .encode()
+        .expect("artifact encodes");
+        let font = woff_fixture();
+
+        for _ in 0..3 {
+            let stub = stub_query_host(
+                vec![
+                    Conclusion {
+                        this: "tonk:demo".into(),
+                        fields: BTreeMap::from([(
+                            "embeds".to_string(),
+                            Ipld::Bytes(artifact.clone()),
+                        )]),
+                    },
+                    Conclusion {
+                        this: "tonk:demo".into(),
+                        fields: BTreeMap::from([(
+                            "font".to_string(),
+                            Ipld::Map(BTreeMap::from([(
+                                "body".to_string(),
+                                Ipld::Bytes(font.clone()),
+                            )])),
+                        )]),
+                    },
+                ],
+                |_| {},
+            );
+            let _template = resolve_into_template(
+                &stub.host,
+                r#"<font-family name="body" with:src=body></font-family>"#,
+                "tonk:demo",
+            );
+            sleep_ms(150).await;
+        }
+
+        let markers = document
+            .query_selector_all("meta[data-tonk-embed-font]")
+            .expect("query");
+        assert_eq!(
+            markers.length(),
+            1,
+            "three mounts of one view register one face",
+        );
+        crate::embed::clear_injected(&document);
+    }
+
+    /// A name in NEITHER dictionary injects nothing and registers
+    /// nothing.
+    ///
+    /// The compiled pair says where to look, not that anything is
+    /// there: the content is an ordinary keyed fact, so a view can
+    /// legitimately embed a name whose bytes have not replicated yet.
+    /// What must not happen is a `<style>` with no content, or a face
+    /// built from nothing.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn a_name_in_neither_dictionary_injects_nothing() {
+        use tonk_template::embed::{Embeds, ResolvedEmbed};
+
+        let document = window().expect("window").document().expect("document");
+        crate::embed::clear_injected(&document);
+        let before = document.fonts().size();
+
+        let artifact = Embeds::new(BTreeMap::from([(
+            "absent".to_string(),
+            ResolvedEmbed {
+                entity: "tonk:demo".into(),
+                name: "absent".into(),
+            },
+        )]))
+        .encode()
+        .expect("artifact encodes");
+
+        let stub = stub_query_host(
+            vec![Conclusion {
+                this: "tonk:demo".into(),
+                fields: BTreeMap::from([("embeds".to_string(), Ipld::Bytes(artifact))]),
+            }],
+            |_| {},
+        );
+        let _template = resolve_into_template(
+            &stub.host,
+            r#"<link rel=stylesheet with:src=absent>"#,
+            "tonk:demo",
+        );
+        sleep_ms(200).await;
+
+        assert!(
+            document
+                .query_selector("style[data-tonk-embed], meta[data-tonk-embed-font]")
+                .expect("query")
+                .is_none(),
+            "nothing is injected for content that is not there",
+        );
+        assert_eq!(
+            document.fonts().size(),
+            before,
+            "and no face is built from nothing",
+        );
+        crate::embed::clear_injected(&document);
+    }
+
+    /// The smallest valid WOFF: a header with no tables.
+    ///
+    /// Real bytes rather than a placeholder because the browser
+    /// constructs the face from them — a fixture it rejects would make
+    /// the assertion above pass for the wrong reason.
+    #[cfg(target_arch = "wasm32")]
+    fn woff_fixture() -> Vec<u8> {
+        let mut woff = Vec::new();
+        woff.extend_from_slice(b"wOFF"); // signature
+        woff.extend_from_slice(&0x0001_0000u32.to_be_bytes()); // flavor
+        woff.extend_from_slice(&44u32.to_be_bytes()); // length
+        woff.extend_from_slice(&0u16.to_be_bytes()); // numTables
+        woff.extend_from_slice(&0u16.to_be_bytes()); // reserved
+        woff.extend_from_slice(&0u32.to_be_bytes()); // totalSfntSize
+        woff.extend_from_slice(&0u16.to_be_bytes()); // majorVersion
+        woff.extend_from_slice(&0u16.to_be_bytes()); // minorVersion
+        woff.extend_from_slice(&0u32.to_be_bytes()); // metaOffset
+        woff.extend_from_slice(&0u32.to_be_bytes()); // metaLength
+        woff.extend_from_slice(&0u32.to_be_bytes()); // metaOrigLength
+        woff.extend_from_slice(&0u32.to_be_bytes()); // privOffset
+        woff.extend_from_slice(&0u32.to_be_bytes()); // privLength
+        woff
+    }
+
+    /// A minted URL nothing points at any more is revoked.
+    ///
+    /// A blob URL is a document-lifetime resource the browser will not
+    /// collect on its own, so one minted for a view that is never shown
+    /// again would be held until the document died.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn an_unreferenced_url_is_revoked() {
+        let document = window().expect("window").document().expect("document");
+        crate::embed::clear_injected(&document);
+        let stub = stub_query_host(
+            style_rows("tonk:revoke", "gone", "body { color: rgb(9, 9, 9) }"),
+            |_| {},
+        );
+
+        let template = resolve_into_template(
+            &stub.host,
+            r#"<link rel=stylesheet with:src=gone>"#,
+            "tonk:revoke",
+        );
+        sleep_ms(150).await;
+        let href = template
+            .content()
+            .query_selector("link[rel=stylesheet]")
+            .expect("query")
+            .and_then(|link| link.get_attribute("href"))
+            .expect("the declaration resolved");
+        assert!(href.starts_with("blob:"), "got {href}");
+
+        // The template was never mounted, so nothing in the document
+        // refers to the content: the URL has no referent.
+        crate::embed::revoke_unreferenced(&document);
+
+        assert!(
+            document
+                .query_selector(&format!(
+                    "link[data-tonk-embed-src=\"{}\"]",
+                    "tonk:revoke\u{1e}gone"
+                ))
+                .expect("query")
+                .is_none(),
+            "the cache entry goes with the URL, so a later mount mints afresh",
+        );
+        let xhr = web_sys::XmlHttpRequest::new().expect("xhr");
+        xhr.open_with_async("GET", &href, false).expect("open");
+        assert!(xhr.send().is_err(), "the revoked URL no longer resolves",);
+        crate::embed::clear_injected(&document);
+    }
+
+    /// A URL another display is still showing is NOT revoked.
+    ///
+    /// The URL is shared on purpose — every row cloned from a template
+    /// carries it, and a second view embedding the same content reuses
+    /// it — so revoking on one teardown would blank a page that is
+    /// still on screen. This is the case a maintained refcount gets
+    /// wrong and asking the document gets right.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn a_url_another_element_still_uses_survives() {
+        let document = window().expect("window").document().expect("document");
+        crate::embed::clear_injected(&document);
+        let stub = stub_query_host(
+            style_rows("tonk:shared", "ui", "body { color: rgb(3, 3, 3) }"),
+            |_| {},
+        );
+
+        let template = resolve_into_template(
+            &stub.host,
+            r#"<link rel=stylesheet with:src=ui>"#,
+            "tonk:shared",
+        );
+        sleep_ms(150).await;
+        let link = template
+            .content()
+            .query_selector("link[rel=stylesheet]")
+            .expect("query")
+            .expect("the link");
+        let href = link.get_attribute("href").expect("resolved");
+
+        // Stand a rendered row in the document, as a mounted view would.
+        let row = link
+            .clone_node_with_deep(true)
+            .expect("clone")
+            .dyn_into::<Element>()
+            .expect("element");
+        document
+            .body()
+            .expect("body")
+            .append_child(&row)
+            .expect("append");
+
+        crate::embed::revoke_unreferenced(&document);
+
+        let xhr = web_sys::XmlHttpRequest::new().expect("xhr");
+        xhr.open_with_async("GET", &href, false).expect("open");
+        assert!(
+            xhr.send().is_ok(),
+            "a URL still on screen survives another display's teardown",
+        );
+
+        // Once that row goes, so does the URL.
+        row.remove();
+        crate::embed::revoke_unreferenced(&document);
+        let after = web_sys::XmlHttpRequest::new().expect("xhr");
+        after.open_with_async("GET", &href, false).expect("open");
+        assert!(
+            after.send().is_err(),
+            "and is revoked once the last referent is gone",
+        );
+        crate::embed::clear_injected(&document);
+    }
+
+    /// A cross-view embed reaches the entity the ANALYZER resolved,
+    /// not the bare name the template wrote.
+    ///
+    /// `/settings` embeds `ui@space`: the template names `space`, the
+    /// analyzer resolved that to `tonk:space`, and the compiled pair
+    /// carries the resolved form. If the artifact fails to decode, the
+    /// renderer falls back to the template text and queries the bare
+    /// `space`, which matches nothing — a silently unstyled page, which
+    /// is exactly what this path exists to prevent. So the decode is
+    /// asserted on the SUBJECT that gets queried.
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    async fn a_cross_view_embed_queries_the_resolved_entity() {
+        use tonk_template::embed::{Embeds, ResolvedEmbed};
+
+        let document = window().expect("window").document().expect("document");
+        crate::embed::clear_injected(&document);
+
+        let encoded = Embeds::new(BTreeMap::from([(
+            "ui@space".to_string(),
+            ResolvedEmbed {
+                entity: "tonk:space".into(),
+                name: "ui".into(),
+            },
+        )]))
+        .encode()
+        .expect("artifact encodes");
+
+        let asked: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let captured = asked.clone();
+        let stub = stub_query_host(
+            vec![Conclusion {
+                this: "tonk:settings".into(),
+                fields: BTreeMap::from([("embeds".to_string(), Ipld::Bytes(encoded))]),
+            }],
+            move |event| {
+                let detail = event.detail();
+                let Ok(body) = Reflect::get(&detail, &"query".into()) else {
+                    return;
+                };
+                let Ok(query) = serde_wasm_bindgen::from_value::<serde_json::Value>(body) else {
+                    return;
+                };
+                if let Some(this) = query
+                    .get("terms")
+                    .and_then(|terms| terms.get("this"))
+                    .and_then(|this| this.as_str())
+                {
+                    captured.borrow_mut().push(this.to_owned());
+                }
+            },
+        );
+
+        let _template = resolve_into_template(
+            &stub.host,
+            r#"<link rel="stylesheet" with:src="ui@space">"#,
+            "tonk:settings",
+        );
+        settle().await;
+
+        let asked = asked.borrow();
+        assert!(
+            asked.iter().any(|this| this == "tonk:space"),
+            "the style is fetched from the resolved entity; queries were {asked:?}",
+        );
+        assert!(
+            !asked.iter().any(|this| this == "space"),
+            "never the bare name the template wrote, which matches nothing: {asked:?}",
+        );
+        crate::embed::clear_injected(&document);
     }
 
     /// The stored artifact is read back through the view-bindings query.

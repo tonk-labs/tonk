@@ -46,30 +46,22 @@ use crate::{TonkWorkerError, axum::RequestOrigin};
 /// across replicas, where roster/governance facts must live.
 const CONTENT_BRANCH: &str = "main";
 
-/// Generate an ephemeral Ed25519 signer with an extractable seed.
+/// Generate an ephemeral Ed25519 signer and the seed it was made from.
 ///
-/// Wasm's default `Ed25519Signer::generate` produces a non-extractable
-/// WebCrypto key whose seed can't be embedded in the invite URL; the
-/// [`ExtractableKey`] variant opts in to extractable generation.
+/// The seed is what the invite URL carries, and only a signer generated
+/// as [`Extractable`] can give it back: a sealed one exports opaque
+/// handles on wasm. The signer handed on is sealed, imported from that
+/// seed, so nothing downstream holds an extractable key.
 ///
-/// [`ExtractableKey`]: dialog_credentials::key::ExtractableKey
+/// [`Extractable`]: dialog_credentials::Extractable
 pub(crate) async fn generate_ephemeral() -> Result<(Ed25519Signer, [u8; 32]), TonkWorkerError> {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    let signer = {
-        use dialog_credentials::key::ExtractableKey;
-        <Ed25519Signer as ExtractableKey>::generate()
-            .await
-            .map_err(|e| {
-                TonkWorkerError::Internal(format!("failed to generate ephemeral key: {e}"))
-            })?
-    };
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-    let signer = Ed25519Signer::generate()
+    use dialog_credentials::Extractable;
+    use dialog_credentials::key::ExtractableKey;
+
+    let extractable = <Ed25519Signer<Extractable> as ExtractableKey>::generate()
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("failed to generate ephemeral key: {e}")))?;
-
-    let exported = signer
-        .export()
+    let exported = ExtractableKey::export(&extractable)
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("failed to export ephemeral key: {e}")))?;
 
@@ -88,6 +80,9 @@ pub(crate) async fn generate_ephemeral() -> Result<(Ed25519Signer, [u8; 32]), To
             )));
         }
     };
+    let signer = Ed25519Signer::import(&seed)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("failed to import ephemeral key: {e}")))?;
 
     Ok((signer, seed))
 }

@@ -304,6 +304,17 @@ fn show_consent() {
     });
 }
 
+fn intent_label(intent: &tonk_worker_api::CustodyIntent) -> &'static str {
+    match intent {
+        tonk_worker_api::CustodyIntent::PurgeAccount(_) => "purge-account",
+        tonk_worker_api::CustodyIntent::AuthorizeDevice(_) => "authorize-device",
+        tonk_worker_api::CustodyIntent::AddPasskey(_) => "add-passkey",
+        tonk_worker_api::CustodyIntent::Enroll(_) => "enroll",
+        tonk_worker_api::CustodyIntent::CreateAccount(_) => "create-account",
+        tonk_worker_api::CustodyIntent::Login(_) => "login",
+    }
+}
+
 fn command_action(intent: &tonk_worker_api::CustodyIntent) -> AccountAction {
     match intent {
         tonk_worker_api::CustodyIntent::PurgeAccount(_) => AccountAction::DeleteAccount,
@@ -326,6 +337,10 @@ fn command_action(intent: &tonk_worker_api::CustodyIntent) -> AccountAction {
 /// origin cannot answer with another account's.
 fn run_command_ceremony(intent: tonk_worker_api::CustodyIntent, credential_id: Option<String>) {
     if BUSY.with(|busy| busy.replace(true)) {
+        tonk_common::log!(
+            "custody: a card is already up; {} not raised",
+            intent_label(&intent)
+        );
         return;
     }
     let Some(host) = mount_card(matches!(
@@ -336,6 +351,7 @@ fn run_command_ceremony(intent: tonk_worker_api::CustodyIntent, credential_id: O
         return;
     };
     set_card_message("Confirm this account action with your passkey.");
+    tonk_common::log!("custody: consent card raised for {}", intent_label(&intent));
     on_click(&host, "#tonk-custody-dismiss", remove_card);
 
     let method = match &intent {
@@ -345,6 +361,7 @@ fn run_command_ceremony(intent: tonk_worker_api::CustodyIntent, credential_id: O
     let action = command_action(&intent);
     on_click(&host, "#tonk-custody-continue", move || {
         set_card_text("Waiting for your passkey…");
+        tonk_common::log!("custody: continue clicked for {}", intent_label(&intent));
         match begin_with(method, intent.clone(), credential_id.clone()) {
             Ok(mediation) => wasm_bindgen_futures::spawn_local(async move {
                 if let Err(error) = mediation.finish().await {

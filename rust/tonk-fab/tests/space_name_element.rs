@@ -155,16 +155,16 @@ async fn it_dispatches_an_inlined_rename_claim_and_reverts_the_chip_immediately(
 
     let el = mount();
     let editable = el
-        .query_selector("tonk-editable")
+        .query_selector("inline-editable")
         .expect("query")
-        .expect("<tonk-editable> child rendered");
+        .expect("<inline-editable> child rendered");
     assert_eq!(
         editable.text_content().as_deref(),
         Some("Untitled"),
         "chip renders the placeholder before any frame arrives"
     );
 
-    // Simulate an edit commit: `<tonk-editable>` sets its own text then
+    // Simulate an edit commit: `<inline-editable>` sets its own text then
     // dispatches a bubbling `change` on blur — mirror that directly rather
     // than depending on its dblclick/focus/blur choreography, which isn't
     // registered here (no host, no `tonk-workspace::register()` in this crate).
@@ -259,9 +259,9 @@ async fn it_renders_the_name_from_a_delivered_frame() {
     // chip stayed on "Untitled" forever. See commit 71d1c58ac.
     let el = mount();
     let editable = el
-        .query_selector("tonk-editable")
+        .query_selector("inline-editable")
         .expect("query")
-        .expect("<tonk-editable> child rendered");
+        .expect("<inline-editable> child rendered");
     assert_eq!(
         editable.text_content().as_deref(),
         Some("Untitled"),
@@ -958,9 +958,9 @@ async fn it_renders_no_fallback_text_before_any_frame_arrives() {
     // render is correct until a rename lands.
     let el = mount_profile_name();
     let editable = el
-        .query_selector("tonk-editable")
+        .query_selector("inline-editable")
         .expect("query")
-        .expect("<tonk-editable> child rendered");
+        .expect("<inline-editable> child rendered");
     assert_eq!(
         editable.text_content().unwrap_or_default(),
         "",
@@ -976,9 +976,9 @@ async fn it_renders_the_profile_name_from_a_delivered_frame() {
     // delivered the exact way `tonk-host::ops::deliver_frame` does.
     let el = mount_profile_name();
     let editable = el
-        .query_selector("tonk-editable")
+        .query_selector("inline-editable")
         .expect("query")
-        .expect("<tonk-editable> child rendered");
+        .expect("<inline-editable> child rendered");
     assert_eq!(editable.text_content().unwrap_or_default(), "");
 
     deliver_profile_name(&el, "reset", &profile_name_reset_payload("Ada"));
@@ -1007,9 +1007,9 @@ async fn it_carries_the_data_rename_marker_for_element_rs_delegation() {
     // own commit, so the marker must be present for that delegate to find.
     let el = mount_profile_name();
     let editable = el
-        .query_selector("tonk-editable")
+        .query_selector("inline-editable")
         .expect("query")
-        .expect("<tonk-editable> child rendered");
+        .expect("<inline-editable> child rendered");
     assert_eq!(
         editable.get_attribute("data-rename").as_deref(),
         Some("tonk:profile")

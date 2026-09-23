@@ -912,8 +912,8 @@
       ],
       "name": "Account choice",
       "source_paths": [
-        "rust/tonk-workspace/src/ui_account_settings.html",
-        "rust/tonk-workspace/src/ui_account_settings.rs"
+        "rust/tonk-core/assets/library/profile.yaml",
+        "rust/tonk-ui/src/register_dialog.rs"
       ],
       "status": "captured",
       "summary": "A provider-free profile can create an account, log in, choose a browser profile, or return to local Tonk.",
@@ -932,8 +932,8 @@
       ],
       "name": "Create account",
       "source_paths": [
-        "rust/tonk-workspace/src/ui_account_settings.html",
-        "rust/tonk-workspace/src/ui_account_settings.rs"
+        "rust/tonk-core/assets/library/profile.yaml",
+        "rust/tonk-ui/src/register_dialog.rs"
       ],
       "status": "captured",
       "summary": "The account creation form collects an email and turns passkey cancellation, unsupported authenticators, and remote failures into distinct recovery steps.",
@@ -951,8 +951,8 @@
       ],
       "name": "Log in with a passkey",
       "source_paths": [
-        "rust/tonk-workspace/src/ui_account_settings.html",
-        "rust/tonk-workspace/src/ui_account_settings.rs"
+        "rust/tonk-core/assets/library/profile.yaml",
+        "rust/tonk-ui/src/register_dialog.rs"
       ],
       "status": "captured",
       "summary": "The browser explains that a passkey ceremony will select the existing account before linking this profile.",
@@ -972,8 +972,8 @@
       ],
       "name": "CLI authorization handoff",
       "source_paths": [
-        "rust/tonk-workspace/src/ui_account_settings.html",
-        "rust/tonk-workspace/src/ui_account_settings.rs",
+        "rust/tonk-core/assets/library/profile.yaml",
+        "rust/tonk-ui/src/register_dialog.rs",
         "rust/tonk-cli/src/account.rs"
       ],
       "status": "captured",
@@ -995,8 +995,8 @@
       ],
       "name": "Account settings",
       "source_paths": [
-        "rust/tonk-workspace/src/ui_account_settings.html",
-        "rust/tonk-workspace/src/ui_account_settings.rs"
+        "rust/tonk-core/assets/library/profile.yaml",
+        "rust/tonk-ui/src/register_dialog.rs"
       ],
       "status": "captured",
       "summary": "Account facts and management stay visible while pending email confirmation is named directly and authoritative edits remain disabled until account state is ready.",
@@ -1017,8 +1017,8 @@
       ],
       "name": "Devices and revocation",
       "source_paths": [
-        "rust/tonk-workspace/src/ui_account_settings.html",
-        "rust/tonk-workspace/src/ui_account_settings.rs"
+        "rust/tonk-core/assets/library/profile.yaml",
+        "rust/tonk-ui/src/register_dialog.rs"
       ],
       "status": "captured",
       "summary": "The devices panel identifies this device, confirms revocation, and requires a refresh before retry when the result cannot be confirmed.",
@@ -1036,8 +1036,8 @@
       ],
       "name": "Deletion review",
       "source_paths": [
-        "rust/tonk-workspace/src/ui_account_settings.html",
-        "rust/tonk-workspace/src/ui_account_settings.rs"
+        "rust/tonk-core/assets/library/profile.yaml",
+        "rust/tonk-ui/src/register_dialog.rs"
       ],
       "status": "captured",
       "summary": "The destructive confirmation enumerates exact scope, says when cancellation changed nothing, and treats a lost result as uncertain before retry.",
@@ -2218,12 +2218,12 @@
       "result": "—"
     },
     {
-      "claim": "Service-worker update never mixes asset generations (Cross a boundary).",
-      "device": "two-actor",
+      "claim": "Service-worker update preserves a usable account UI across library generations (Cross a boundary).",
+      "device": "two-actor + legacy-account",
       "file": "verification/cli-spaces-ui.md",
       "id": "UI-03",
       "priority": "P1",
-      "result": "—"
+      "result": "Exact pre-stack fixture reproduces schema-validation failure on staging d69c737ef. Worker regressions profile_library_upgrades_* check migration, decoded stylesheet bindings, preservation and idempotence. Deployed account recovery, Safari, and the full two-generation UI journey remain unverified."
     },
     {
       "claim": "Account gate permits provider-free/local use and blocks only authority-specific work (Exit early).",

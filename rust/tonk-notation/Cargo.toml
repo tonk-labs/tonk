@@ -9,6 +9,7 @@ edition.workspace = true
 crate-type = ["rlib"]
 
 [dependencies]
+base64 = { workspace = true }
 lsp-types = { workspace = true }
 saphyr = { workspace = true }
 saphyr-parser = { workspace = true }

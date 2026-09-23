@@ -231,6 +231,10 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         // Replication and update checks are the Hub's to ask for: it is
         // the surface that lists spaces this device may not hold, and
         // `ForgetInvite` clears a row that lives on this branch anyway.
+        // Switching profiles is new, so it has no legacy shape to migrate.
+        .command::<tonk_schema::command::AddProfile>()
+        .command::<tonk_schema::command::SwitchProfile>()
+        .command::<tonk_schema::command::SignOut>()
         .command::<tonk_schema::command::ReplicateSpace>()
         .command::<tonk_schema::command::ForgetInvite>()
         .command::<tonk_schema::command::CheckUpdate>()
@@ -698,6 +702,7 @@ pub(crate) mod tests {
                 storage,
                 session_expires_at: session.expires_at,
                 profile_name: name.clone(),
+                active_branch: crate::router::repository::PROFILE_BRANCH.to_owned(),
                 reactor,
                 admission: Default::default(),
                 reject_admission_content_reads: Default::default(),
@@ -731,7 +736,7 @@ pub(crate) mod tests {
             let meta = tonk
                 .reactor
                 .profile_repository()
-                .branch("main")
+                .branch(&tonk.active_branch)
                 .acquire(&tonk.operator)
                 .await
                 .unwrap();

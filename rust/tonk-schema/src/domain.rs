@@ -35,10 +35,16 @@ pub mod replica {
     #[domain("xyz.tonk.replica")]
     pub struct Name(pub String);
 
+    /// The repository this replica is a view of. Tonk's own spelling:
+    /// `dialog.replica/*` is dialog's, surfaced by dialog for the branch
+    /// being queried and reserved against anyone else writing it, so a
+    /// replica tonk records has to be named in tonk's namespace. The
+    /// entity is dialog's derivation, so the two describe one thing.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.replica")]
     pub struct Subject(pub Entity);
 
+    /// The peer holding the replica.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.replica")]
     pub struct Profile(pub Entity);
@@ -50,6 +56,110 @@ pub mod replica {
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.replica")]
     pub struct Status(pub Entity);
+
+    /// The branch this replica is currently on.
+    ///
+    /// Dialog models where each branch IS —
+    /// [`dialog.branch/revision`] — but nothing models which one you
+    /// are looking at, so this is tonk's. Named `active` after
+    /// Mercurial's active bookmark rather than git's `HEAD`, which
+    /// means two things and would collide with the revision above.
+    ///
+    /// Cardinality-one is the point: a second assert supersedes, so
+    /// "one active branch" is a property of the data rather than an
+    /// invariant something has to maintain. The account facts it
+    /// replaces had no such guarantee, and a query for them answered
+    /// with every account the device had ever linked.
+    ///
+    /// The `tonk.dialog.*` namespace says this extends dialog's model
+    /// and is tonk's only until dialog adopts it; migrating is a
+    /// rename with the entity and value unchanged.
+    ///
+    /// [`dialog.branch/revision`]: https://github.com/dialog-db/dialog-db
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("tonk.dialog.replica")]
+    #[cardinality(one)]
+    pub struct ActiveBranch(pub Entity);
+}
+
+/// Attributes tonk adds to dialog's peer model.
+///
+/// A peer and a profile are one entity in two roles:
+/// `dialog.replica/profile` names the peer holding a replica — this
+/// device in the local role, the serving service in the remote one.
+/// So an address is an attribute on that entity, not a concept of its
+/// own: there is no peer to identify separately from the profile.
+pub mod peer {
+    use super::{Attribute, SiteAddress};
+
+    /// Serialized [`SiteAddress`] bytes — the opaque payload used to
+    /// locate a peer.
+    ///
+    /// Zero or more: a peer may be reachable several ways, including
+    /// locally (`idb:` in a browser, `file:///` natively), so "here"
+    /// is not the one peer that has to be a special case.
+    ///
+    /// Keyed on the peer, and a profile's branch bookkeeping all lives
+    /// on one `meta` branch, so a peer's address is ONE fact there
+    /// however many repositories it serves — a changed address is a
+    /// single update. The same encoding as `xyz.tonk.remote/address`,
+    /// which this supersedes: that one hangs the address off a
+    /// `Remote` entity standing between a branch and the peer holding
+    /// it, and so restates it once per repository served.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("tonk.dialog.peer")]
+    pub struct Address(pub Vec<u8>);
+
+    impl Address {
+        /// Encode a [`SiteAddress`] as dag-cbor bytes.
+        pub fn encode(address: &SiteAddress) -> Self {
+            let bytes = serde_ipld_dagcbor::to_vec(address)
+                .expect("SiteAddress is serde-serializable and dag-cbor-compatible");
+            Self(bytes)
+        }
+
+        /// Decode the stored dag-cbor bytes back into a
+        /// [`SiteAddress`].
+        pub fn decode(
+            &self,
+        ) -> Result<SiteAddress, serde_ipld_dagcbor::DecodeError<std::convert::Infallible>>
+        {
+            serde_ipld_dagcbor::from_slice(&self.0)
+        }
+    }
+}
+
+/// Attributes tonk adds to dialog's branch model.
+pub mod tonk_branch {
+    use super::{Attribute, Entity};
+
+    /// The branch this one follows.
+    ///
+    /// One attribute, entity to entity. Both ends are ordinary branches
+    /// on ordinary replicas — the difference is only which peer holds
+    /// them — so there is no separate "remote branch" to model and no
+    /// remote to indirect through.
+    ///
+    /// Dialog holds the same relationship in a CELL (its `Upstream`
+    /// enum: a remote name, a branch name and the tree at the last sync
+    /// point), so there is no `dialog.*` vocabulary to reuse; this is
+    /// that relationship as a fact a rule can traverse.
+    ///
+    /// Everything else about the upstream is a traversal rather than a
+    /// field that could disagree with it:
+    ///
+    /// ```text
+    /// upstream -> branch/replica -> replica/subject   which repository
+    ///                            -> replica/profile   which peer
+    /// ```
+    ///
+    /// Absence is meaningful: a branch with no upstream follows
+    /// nothing, which on the profile repository is what signed out
+    /// means.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("tonk.dialog.branch")]
+    #[cardinality(one)]
+    pub struct Upstream(pub Entity);
 }
 
 /// Attributes for the account-level space directory — one entry per
@@ -321,6 +431,37 @@ pub mod site {
     #[domain("xyz.tonk.site")]
     #[cardinality(one)]
     pub struct Replica(pub Entity);
+
+    /// The branch the tab is on, as an ENTITY.
+    ///
+    /// The twin of [`Branch`], which is the branch's NAME: the name is
+    /// the `{branch}` half of a `{branch}@{repo}` location token, which
+    /// is how a display scopes its queries, and a branch entity there
+    /// would name no branch. This is the same branch as a node in the
+    /// graph, so a view can walk from where a tab is to what that
+    /// branch follows:
+    ///
+    /// ```text
+    /// site -> branch-entity -> branch/upstream -> branch/replica
+    ///                                          -> replica/subject
+    /// ```
+    ///
+    /// Derived from `(replica, name)` at stamp time, so it cannot
+    /// disagree with the name beside it.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.site")]
+    #[cardinality(one)]
+    pub struct BranchEntity(pub Entity);
+
+    /// The branch the PROFILE is on, whichever repository the tab is
+    /// on: the account's branch when signed in, an upstream-less one
+    /// when not. What a view interpolates into `{profile-branch}@profile:tonk`
+    /// to reach the profile from a space, in place of a `main` that was
+    /// only ever right while the profile had one branch.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.site")]
+    #[cardinality(one)]
+    pub struct ProfileBranch(pub String);
 
     /// The matched route entity (the route-table entry that matched the path).
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -794,7 +935,7 @@ pub mod command {
         use super::super::Entity;
         use super::Attribute;
 
-        /// The new repository name, read from the chip's `<tonk-editable>` on
+        /// The new repository name, read from the chip's `<inline-editable>` on
         /// commit. The derived attribute is
         /// `dom.event.current-target/value`.
         #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -829,7 +970,7 @@ pub mod command {
     }
 
     /// Attributes the `profile/rename` command reads from the identity
-    /// chip's `<tonk-editable>` commit event.
+    /// chip's `<inline-editable>` commit event.
     pub mod rename {
         use super::super::Entity;
         use super::Attribute;
@@ -980,7 +1121,7 @@ pub mod command {
         pub struct Expel(pub Entity);
     }
 
-    /// Attributes the `tonk:join` command reads from `<tonk-page>`'s
+    /// Attributes the `tonk:join` command reads from `<page-mount>`'s
     /// `mount` event. The page delivers the complete URL because the
     /// service worker cannot observe its fragment.
     pub mod join {
@@ -1082,6 +1223,49 @@ pub mod command {
             /// The click's timestamp, so each toggle re-fires.
             #[derive(Attribute, Clone, PartialEq, PartialOrd)]
             #[domain("xyz.tonk.command.pause-sync")]
+            pub struct Time(pub f64);
+        }
+
+        /// `tonk/add-profile` — rotate onto a fresh profile and open the
+        /// account ceremony on it.
+        pub mod add_profile {
+            use dialog_query::Attribute;
+
+            /// The click's timestamp, so a second attempt after a
+            /// cancelled ceremony re-fires rather than deduplicating.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("xyz.tonk.command.add-profile")]
+            pub struct Time(pub f64);
+        }
+
+        /// `tonk/sign-out` — leave the account on the active branch.
+        pub mod sign_out {
+            use dialog_query::Attribute;
+
+            /// The click's timestamp, so signing out again re-fires
+            /// rather than deduplicating.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("xyz.tonk.command.sign-out")]
+            pub struct Time(pub f64);
+        }
+
+        /// `tonk/switch-profile` — make another profile on this browser
+        /// the active one.
+        pub mod switch_profile {
+            use dialog_query::Attribute;
+
+            /// The storage handle of the profile to open — what
+            /// `Profile::open` takes. The switcher reads it off the row's
+            /// durable `xyz.tonk.roster/name`, so a command can only ever
+            /// name a profile the device actually has.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.switch-profile")]
+            pub struct Handle(pub String);
+
+            /// The click's timestamp, so switching back to a profile
+            /// already switched to re-fires rather than deduplicating.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("xyz.tonk.command.switch-profile")]
             pub struct Time(pub f64);
         }
 
@@ -1220,6 +1404,20 @@ pub mod command {
 /// what a question about a half-typed address deserves.
 /// Attributes of [`crate::CeremonyStatus`]: where a command that needs
 /// the person's passkey reports its progress to the page that asked.
+/// `state:account-link` — whether THIS DEVICE holds the account's
+/// authority on the active branch. Overlay-only: the facts on a branch
+/// describe the account and outlive a sign-out there, so linked-ness
+/// cannot be read off them.
+pub mod account_link {
+    use super::{Attribute, Entity};
+
+    /// The account this device is linked to on the active branch.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.link")]
+    #[cardinality(one)]
+    pub struct Account(pub Entity);
+}
+
 pub mod ceremony_status {
     use super::Attribute;
 
@@ -1308,13 +1506,49 @@ pub mod roster {
 
     /// The storage name the profile opens under: the activation handle.
     ///
-    /// The only fact about a profile that lives on the device rather than on
-    /// that profile's own account branch. Display name and address are read
-    /// from there; copies here could only go stale.
+    /// The only DURABLE fact about a profile that lives on the device rather
+    /// than on that profile's own account branch. The label and address below
+    /// are read from there and republished here as overlay facts, which is why
+    /// they cannot go stale: nothing persists them.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.roster")]
     #[cardinality(one)]
     pub struct Name(pub String);
+
+    /// The account name to show for a profile, as of this read.
+    ///
+    /// OVERLAY ONLY. It lives on the profile whose branch a guest can
+    /// actually query, but it describes ANOTHER profile, whose account
+    /// branch the guest cannot reach. The worker can open every profile,
+    /// so it republishes what it finds each time the roster is read.
+    ///
+    /// A durable copy here is what the design refused, and rightly: it
+    /// would be a second home for a name that is owned elsewhere, free to
+    /// disagree after a rename. An overlay fact is rebuilt from the source
+    /// on every read and never written down, so there is nothing to drift.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.roster")]
+    #[cardinality(one)]
+    pub struct Label(pub String);
+
+    /// The access service a profile's account is attached to, as of this
+    /// read. Presence is what the switcher needs: a profile with no
+    /// provider is a local workspace, never signed in or signed out.
+    ///
+    /// OVERLAY ONLY, for the same reason as [`Label`].
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.roster")]
+    #[cardinality(one)]
+    pub struct Provider(pub String);
+
+    /// Whether this row is the profile the browser is currently using.
+    ///
+    /// OVERLAY ONLY. Which profile is active is a property of the running
+    /// worker, not of any profile, so it has no durable home at all.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.roster")]
+    #[cardinality(one)]
+    pub struct Active(pub bool);
 }
 
 /// Root-owned account state replicated through the hidden account repository.
@@ -1667,13 +1901,18 @@ pub mod join {
 pub mod branch {
     use super::{Attribute, Entity};
 
+    /// The branch's name on its replica. Tonk's own spelling for the
+    /// same reason as `replica::Subject`: `dialog.branch/*` is reserved
+    /// for dialog's own rows. The entity is dialog's derivation, so a
+    /// branch tonk records on `meta` is the entity dialog surfaces.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.branch")]
     pub struct Name(pub String);
 
+    /// The replica the branch lives on.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.branch")]
-    pub struct Origin(pub Entity);
+    pub struct Replica(pub Entity);
 
     /// The upstream branch a local branch is tracking. Direction-
     /// explicit counterpart to [`Origin`]: asserting

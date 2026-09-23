@@ -381,6 +381,7 @@ async fn stamp_site_on(
         replica,
         matched.route,
         matched.concept,
+        tonk.active_branch.clone(),
     );
     let mut overlay = branch.overlay().assert(stamp);
     for (name, value) in matched.params.iter() {

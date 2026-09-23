@@ -133,7 +133,7 @@ pub async fn welcome(
     let session = tonk
         .reactor
         .profile_repository()
-        .branch("main")
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(internal)?;
@@ -225,7 +225,7 @@ async fn locally_mounted(tonk: &TonkState, key: &str) -> Result<bool, TonkWorker
     let session = tonk
         .reactor
         .profile_repository()
-        .branch("main")
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(internal)?;

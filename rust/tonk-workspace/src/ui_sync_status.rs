@@ -9,9 +9,9 @@
 //!
 //! It SUBSCRIBES to the `tonk:sync` `state:here` status the service worker
 //! stamps on the space branch (the same fact the topbar pause chip reads), so
-//! it updates live as the background sync drain reconciles — the fix for the
-//! old `<tonk-sync-badge>`, which one-shot-fetched on mount + commit + toggle
-//! (none of which recur on the Hub, so it froze on a stale reading).
+//! it updates live as the background sync drain reconciles. A predecessor
+//! one-shot-fetched on mount + commit + toggle — none of which recur on the
+//! Hub — so it froze on a stale reading; subscribing is what fixes that.
 //!
 //! Resolves its space from its `with="branch@repo"` attribute and subscribes
 //! through that routing context — the same way every consumer reaches the

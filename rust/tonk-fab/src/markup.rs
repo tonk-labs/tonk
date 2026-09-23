@@ -136,7 +136,7 @@ pub const STACK_GAP_PX: i32 = 7;
 /// `new · open ▸ · rename`. `open`'s sub-stack is filled by
 /// `<ui-space-switcher>`; the share stack's roster by `<ui-member-roster>`.
 ///
-/// The `settings` row raises the shared `<ui-account-settings>` panel in a
+/// The `settings` row raises the shared `<account-settings>` panel in a
 /// `<tonk-dialog>` the space route mounts beside this bar — the surface it
 /// was waiting for exists now.
 ///
