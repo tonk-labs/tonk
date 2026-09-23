@@ -55,7 +55,7 @@ behavior remain in the verification backlog rather than this file.
   [`tonk.rs`](../../rust/tonk-cli/src/bin/tonk.rs) writes the outer account
   registry only after the library link returns. The browser-side registration
   and callback form submission remain separate operations in
-  [`ui_account_settings.rs`](../../rust/tonk-workspace/src/ui_account_settings.rs). Existing
+  [historical `ui_account_settings.rs`](https://github.com/tonk-labs/tonk/blob/95fea7462/rust/tonk-workspace/src/ui_account_settings.rs). Existing
   [historical `account_interrupt.rs`](https://github.com/tonk-labs/tonk/blob/b7b4ecca7d519eadd4342d164cc79a30f3e122b2/rust/tonk-cli/tests/account_interrupt.rs)
   correctly pins fresh restart before approval, when nothing is yet durable.
 - **Severity:** `high`. A common account authorization can commit remote or
@@ -92,7 +92,7 @@ behavior remain in the verification backlog rather than this file.
   count again. Reload between attempts and inspect local root/profile state.
 - **Why (from the code):** The submit path starts root/passkey creation before
   `complete_remote("/accounts", ...)` at
-  [`ui_account_settings.rs`](../../rust/tonk-workspace/src/ui_account_settings.rs). The real-browser
+  [historical `ui_account_settings.rs`](https://github.com/tonk-labs/tonk/blob/95fea7462/rust/tonk-workspace/src/ui_account_settings.rs). The real-browser
   test deliberately expects the orphan at
   [`account_flow.rs:590-660`](../../rust/tonk-ui/src/account_flow.rs). The
   completed opposite contract remains at
@@ -132,9 +132,9 @@ behavior remain in the verification backlog rather than this file.
   selected profile, root, provider attachment, remote account/device, and
   customer state. Repeat at login, handoff, revoke, and delete checkpoints.
 - **Why (from the code):**
-  [`ui_account_settings.rs`](../../rust/tonk-workspace/src/ui_account_settings.rs) disables buttons and
+  [historical `ui_account_settings.rs`](https://github.com/tonk-labs/tonk/blob/95fea7462/rust/tonk-workspace/src/ui_account_settings.rs) disables buttons and
   inputs but only annotates anchors; account submit launches asynchronous work
-  at [`ui_account_settings.rs`](../../rust/tonk-workspace/src/ui_account_settings.rs). The older
+  at [historical `ui_account_settings.rs`](https://github.com/tonk-labs/tonk/blob/95fea7462/rust/tonk-workspace/src/ui_account_settings.rs). The older
   account-preflight audit explicitly records that top-level navigation destroys
   the task at
   [`plan/account-creation-preflight.md:80-96`](../../plan/account-creation-preflight.md).
