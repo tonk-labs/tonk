@@ -7004,42 +7004,12 @@ mod tests {
         sign_up(&browser, &env, "ordinary-agent@example.com").await?;
         let key = create_space_awaiting_remote(&browser, "Ordinary agent", true).await?;
         await_url_containing(&browser, &format!("/space/{key}")).await?;
-        enter_space_view(&browser).await?;
-        let copy = "[data-agent-mode=scoped] .agent-prompt__copy";
-        wait_for_displayed(&browser, copy).await?;
-        let layout = browser
-            .execute(
-                r#"const copy=document.querySelector('[data-agent-mode=scoped] .agent-prompt__copy');
-                    const action=copy.closest('.agent-prompt__action');
-                    const card=copy.closest('.agent-prompt');
-                    const button=copy.shadowRoot?.querySelector('[part~=button]');
-                    return {actions:action.querySelectorAll('button,wa-copy-button,a[href]').length,
-                        competing:!!action.querySelector('.agent-prompt__new'),
-                        card:card.getBoundingClientRect().toJSON(),
-                        copy:copy.getBoundingClientRect().toJSON(),
-                        button:button?.getBoundingClientRect().toJSON()};"#,
-                vec![],
-            )
-            .await?;
-        let layout = layout.json();
-        assert_eq!(layout["actions"], serde_json::json!(1));
-        assert_eq!(layout["competing"], serde_json::json!(false));
-        assert!(layout["button"]["height"].as_f64().unwrap_or_default() >= 44.0);
-        assert!(
-            layout["copy"]["right"].as_f64().unwrap_or(f64::INFINITY)
-                <= layout["card"]["right"].as_f64().unwrap_or_default()
-        );
-        watch_clipboard(&browser).await?;
-        click(&browser, copy).await?;
-        let prompt = copied_text(&browser).await?;
-
+        click_tool_connection_action(&browser).await?;
+        await_tool_connection_ready(&browser, &key).await?;
+        let invite = copy_tool_connection(&browser, "[data-tool-copy-link]").await?;
+        let prompt = copy_tool_connection(&browser, "[data-tool-copy-prompt]").await?;
         assert!(!prompt.contains("--switch-account"));
-        let invite = prompt
-            .split_whitespace()
-            .map(|part| part.trim_matches('\''))
-            .find(|part| part.contains("#tonk-agent-v"))
-            .context("scoped prompt has no connection URL")?
-            .to_owned();
+        assert_eq!(prompt.matches(&invite).count(), 1);
         assert_prompt_command(&prompt, &env.tonk_web, &invite)?;
         assert!(invite.contains("#tonk-agent-v2="));
         browser.enter_default_frame().await?;
