@@ -20,6 +20,8 @@ use axum::{
 };
 use dialog_peer::{Peer, Session};
 use dialog_storage::provider::storage::Storage;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use dialog_varsig::Did;
 use js_sys::Promise;
 use send_wrapper::SendWrapper;
 use tokio::sync::Mutex;
@@ -30,6 +32,9 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_futures::future_to_promise;
 use web_sys::{FetchEvent, Request, Response};
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use crate::router::space_worker;
 
 /// The fetch event whose lifetime owns background work started by one of its
 /// routed handlers.
@@ -2190,6 +2195,122 @@ impl TonkServiceWorker {
         // command dispatch registered by `/transact` to outlive that response.
         let _ = lifetime.extend(&response);
         response
+    }
+
+    /// The DID of the profile this worker signs as. A space's own worker asks
+    /// for its delegation with it.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "profileDid")]
+    pub fn profile_did(&self) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            let tonk = state.read().await;
+            Ok(JsValue::from_str(tonk.profile.did().as_str()))
+        })
+    }
+
+    /// Issue the space worker whose profile is `audience` a delegation to use
+    /// `space`. Resolves to `{ chain, expires, remote }`: the encoded chain,
+    /// when it lapses (unix seconds), and the space's upstream or `null`.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "delegateSpace")]
+    pub fn delegate_space(&self, space: String, audience: String) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            let space: Did = space
+                .parse()
+                .map_err(|e| JsError::new(&format!("space: {e:?}")))?;
+            let audience: Did = audience
+                .parse()
+                .map_err(|e| JsError::new(&format!("audience: {e:?}")))?;
+            let tonk = state.read().await;
+            let grant = space_worker::delegate(&tonk, &space, &audience)
+                .await
+                .map_err(|e| JsError::new(&e.to_string()))?;
+            let result = js_sys::Object::new();
+            let chain = js_sys::Uint8Array::from(grant.chain.as_slice());
+            let _ = js_sys::Reflect::set(&result, &"chain".into(), &chain);
+            let _ =
+                js_sys::Reflect::set(&result, &"expires".into(), &(grant.expires as f64).into());
+            let remote = grant
+                .remote
+                .map_or(JsValue::NULL, |remote| JsValue::from_str(&remote));
+            let _ = js_sys::Reflect::set(&result, &"remote".into(), &remote);
+            Ok(result.into())
+        })
+    }
+
+    /// Snapshot `space`'s `main` for its own worker to seed from. Resolves to
+    /// `{ content, revision }` (a CARv1 and the revision as JSON), or `null`
+    /// when `main` has nothing on it yet.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "snapshotSpace")]
+    pub fn snapshot_space(&self, space: String) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            let space: Did = space
+                .parse()
+                .map_err(|e| JsError::new(&format!("space: {e:?}")))?;
+            let tonk = state.read().await;
+            let Some(snapshot) = space_worker::snapshot(&tonk, &space)
+                .await
+                .map_err(|e| JsError::new(&e.to_string()))?
+            else {
+                return Ok(JsValue::NULL);
+            };
+            let result = js_sys::Object::new();
+            let content = js_sys::Uint8Array::from(snapshot.content.as_slice());
+            let revision = js_sys::Uint8Array::from(snapshot.revision.as_slice());
+            let _ = js_sys::Reflect::set(&result, &"content".into(), &content);
+            let _ = js_sys::Reflect::set(&result, &"revision".into(), &revision);
+            Ok(result.into())
+        })
+    }
+
+    /// Seed this worker's freshly mounted replica of `space` from the host's
+    /// snapshot. A replica that already has content is left alone.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "seedSpace")]
+    pub fn seed_space(
+        &self,
+        space: String,
+        content: js_sys::Uint8Array,
+        revision: js_sys::Uint8Array,
+    ) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            let space: Did = space
+                .parse()
+                .map_err(|e| JsError::new(&format!("space: {e:?}")))?;
+            let tonk = state.read().await;
+            space_worker::seed(&tonk, &space, &content.to_vec(), &revision.to_vec())
+                .await
+                .map_err(|e| JsError::new(&e.to_string()))?;
+            Ok(JsValue::UNDEFINED)
+        })
+    }
+
+    /// Take up a delegation for `space` issued by the person's profile: save
+    /// its chain and mount the space as a replica syncing with `remote`.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "adoptSpace")]
+    pub fn adopt_space(
+        &self,
+        space: String,
+        chain: js_sys::Uint8Array,
+        remote: Option<String>,
+    ) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            let space: Did = space
+                .parse()
+                .map_err(|e| JsError::new(&format!("space: {e:?}")))?;
+            let tonk = state.read().await;
+            space_worker::adopt(&tonk, &space, &chain.to_vec(), remote.as_deref())
+                .await
+                .map_err(|e| JsError::new(&e.to_string()))?;
+            Ok(JsValue::UNDEFINED)
+        })
     }
 
     /// Handles `message` events from view clients. Routes the

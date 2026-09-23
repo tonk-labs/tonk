@@ -2,25 +2,29 @@
 //
 // Each space renders at its own origin, and this worker controls that
 // origin. The profile renders on one too (`profile.{host}`), with no blobs.
-// It answers three kinds of request and refuses the rest:
+// It answers these requests and refuses the rest:
 //
 // - Navigations get the static shell, carrying the space's CSP. The server
 //   hands out the same shell for any path, so a deep link with no worker yet
 //   still boots one.
-// - `/blob/{hash}` is read from the space and served natively, so `<img>`,
-//   `<video>` and `<link>` just work. The bytes come from the host worker
-//   over a `MessagePort`, since the space database still lives on the host
-//   origin. The host binds that port to this space, so nothing here ever
-//   names a repository.
+// - `/blob/{hash}` is read from the space's own database and served
+//   natively, so `<img>`, `<video>` and `<link>` just work.
+// - `/api/*` is answered by the space's own database: the Rust worker the
+//   host runs, opened on this origin's storage (see "The space's own
+//   database" below).
 // - The app's own static assets (`/images/`, `/fonts/`) pass through to the
 //   server, which serves them on every host. A sealed frame used to reach
 //   them on the host origin; this origin is where relative URLs land now.
 // - Everything else is a 404. Author code has no network through this worker.
 //
-// The port does not survive a restart of either worker. A restarted space
-// worker has none and asks its clients to broker one from the host; a
-// restarted host worker stops acknowledging, and the space worker drops the
-// dead port and asks again.
+// The port to the host worker carries what only the host has: the space's
+// delegation, and the snapshot a fresh replica seeds from. The host binds it
+// to this space, so nothing here ever names another. It does not survive a
+// restart of either worker. A restarted space worker has none and asks its
+// clients to broker one from the host; a restarted host worker stops
+// acknowledging, and the space worker drops the dead port and asks again.
+
+import init, { activate } from "./worker.js";
 
 const SHELL_PATH = "/space-origin.html";
 const SHELL_CACHE = "tonk-space-shell";
@@ -59,7 +63,12 @@ const pending = new Map();
 self.addEventListener("message", event => {
     if (event.data?.type !== "port") return;
     const [port] = event.ports;
-    if (port) adopt(port);
+    if (!port) return;
+    adopt(port);
+    // With a way to ask for its delegation, bring the space's database up.
+    event.waitUntil(
+        spaceWorker().catch(error => log("space database failed to start:", error)),
+    );
 });
 
 function adopt(port) {
@@ -69,6 +78,82 @@ function adopt(port) {
     hostPort = port;
     for (const resolve of portWaiters.splice(0)) resolve(port);
     log("adopted a port to the host worker");
+}
+
+// ---- The space's own database -------------------------------------------
+//
+// The same Rust worker the host runs, here opening this origin's storage. On
+// its first boot it generates a profile of its own, whose key never leaves
+// this origin. It holds nothing but a delegation for this one space, which it
+// asks the person's profile for and asks again before it lapses.
+
+// The Rust worker fills a missing starter image from the app's bundled
+// library through this hook, which the host's worker defines too. The server
+// serves `/library/` on every host.
+self.tonkBundledAsset = async path => {
+    if (typeof path !== "string" || !path.startsWith("/library/") ||
+        path.includes("..") || path.includes("?") || path.includes("#")) {
+        throw new Error("invalid bundled library path");
+    }
+    return fetch(new URL(path, self.location.origin));
+};
+
+const GRANT_KEY = "/__space/grant";
+// Ask for a new delegation once the held one has less than this left.
+const RENEW_MARGIN_SECONDS = 60 * 60;
+
+let rust;
+
+function spaceWorker() {
+    rust ??= init({ module_or_path: new URL("./worker_bg.wasm", self.location.href) })
+        .then(() => activate("space", []))
+        .then(async worker => {
+            await ensureGrant(worker);
+            return worker;
+        })
+        .catch(error => {
+            rust = null;
+            throw error;
+        });
+    return rust;
+}
+
+// The delegation this worker holds: which space, and until when. Kept in the
+// shell cache so a restart does not ask again while the grant still holds.
+async function heldGrant() {
+    const held = await caches.match(GRANT_KEY, { cacheName: SHELL_CACHE });
+    return held ? held.json() : null;
+}
+
+async function ensureGrant(worker) {
+    const held = await heldGrant();
+    const now = Date.now() / 1000;
+    if (held && held.expires - now > RENEW_MARGIN_SECONDS) return held;
+    const audience = await worker.profileDid();
+    const grant = await askHost({ delegate: audience });
+    await worker.adoptSpace(grant.space, new Uint8Array(grant.chain), grant.remote ?? undefined);
+    // A freshly mounted replica is empty: seed it from the host's copy, once.
+    // The Rust side leaves a replica that already has content alone.
+    if (!held?.seeded) {
+        const snapshot = await askHost({ snapshot: true });
+        if (!snapshot.empty) {
+            await worker.seedSpace(
+                grant.space,
+                new Uint8Array(snapshot.content),
+                new Uint8Array(snapshot.revision),
+            );
+        }
+    }
+    const record = {
+        space: grant.space,
+        expires: grant.expires,
+        remote: grant.remote,
+        seeded: true,
+    };
+    const cache = await caches.open(SHELL_CACHE);
+    await cache.put(GRANT_KEY, new Response(JSON.stringify(record)));
+    log(`holding a delegation for ${grant.space} until ${new Date(grant.expires * 1000).toISOString()}`);
+    return record;
 }
 
 function onReply({ data }) {
@@ -198,8 +283,25 @@ async function serveShell() {
     return new Response(response.body, { status: response.status, headers });
 }
 
+// Read a blob from the space's own database, through the same route a page's
+// `/api/.../blob/...` read takes.
+async function readBlob(hash) {
+    const worker = await spaceWorker();
+    const { space } = await heldGrant();
+    const request = new Request(
+        new URL(`/api/repository/${space}/branch/main/blob/blob:${hash}`, self.location.origin),
+    );
+    const response = await worker.onfetch({
+        request,
+        clientId: "",
+        resultingClientId: "",
+        waitUntil() {},
+    });
+    return { status: response.status, headers: [...response.headers], body: await response.arrayBuffer() };
+}
+
 async function serveBlob(hash, request) {
-    const reply = await askHost({ blob: hash });
+    const reply = await readBlob(hash);
     const headers = new Headers(reply.headers);
     headers.set("x-content-type-options", "nosniff");
     if (reply.status !== 200) {
@@ -249,6 +351,10 @@ self.addEventListener("fetch", event => {
                 return new Response(String(error.message), { status: 502 });
             }),
         );
+        return;
+    }
+    if (url.pathname.startsWith("/api/")) {
+        event.respondWith(spaceWorker().then(worker => worker.onfetch(event)));
         return;
     }
     if (url.pathname === SHELL_PATH) return;
