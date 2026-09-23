@@ -33,9 +33,7 @@ use tonk_schema::{LegacyReplica, Replica, SpaceKind, SpaceStatus, prelude::DidEx
 use super::AppState;
 use crate::TonkWorkerError;
 
-/// The single branch the profile repository lives on. Mirrors the
-/// private copies in sibling modules.
-const PROFILE_BRANCH: &str = "main";
+use super::repository::PROFILE_BRANCH;
 
 /// Tally of what the migration stamped.
 #[derive(Clone, Copy, Debug, Default)]
