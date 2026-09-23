@@ -355,14 +355,13 @@ async fn load_profile(
     storage: &Storage<NativeSpace>,
     binding: &ConnectionBinding,
 ) -> Result<NativePeer> {
-    let profile = dialog_peer::Peer::new()
-        .storage(storage.clone())
-        .load(dialog_effects::storage::Location::new(
-            profile_directory(root),
-            PROFILE_NAME,
-        ))
-        .await
-        .context("connection credential is missing or corrupt; no account fallback is permitted")?;
+    let profile = dialog_peer::OpenPeer::load(dialog_effects::storage::Location::new(
+        profile_directory(root),
+        PROFILE_NAME,
+    ))
+    .perform(storage)
+    .await
+    .context("connection credential is missing or corrupt; no account fallback is permitted")?;
     ensure!(
         profile.did().to_string() == binding.recipient,
         "connection credential does not match its binding"
@@ -602,9 +601,8 @@ async fn assemble(
     let peer =
         crate::peer::peer_for(&profile, Directory::At(data.to_string_lossy().into_owned())).await?;
     let operator = peer
-        .session(b"tonk-scoped-connection")
+        .worker(b"tonk-scoped-connection")
         .allow(peer.access().claim(Subject::any()).expires(expires))
-        .build()
         .await?;
     let grants = validate_manifest(manifest).await?;
     if initialize {

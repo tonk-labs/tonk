@@ -3193,14 +3193,13 @@ pub(crate) mod tests {
         };
         let storage =
             dialog_storage::provider::storage::Storage::<crate::worker::DefaultSpace>::default();
-        let profile = dialog_peer::Peer::new()
-            .storage(storage.clone())
-            .open(dialog_effects::storage::Location::new(
-                dialog_effects::storage::Directory::Profile,
-                &name,
-            ))
-            .await
-            .unwrap();
+        let profile = dialog_peer::OpenPeer::open(dialog_effects::storage::Location::new(
+            dialog_effects::storage::Directory::Profile,
+            &name,
+        ))
+        .perform(&storage)
+        .await
+        .unwrap();
         assert_eq!(profile.did(), profile_did);
         // Isolate session construction from boot's legitimate meta work.
         let session = crate::session::open(&profile).await.unwrap();

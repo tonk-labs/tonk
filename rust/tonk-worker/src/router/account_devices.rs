@@ -227,14 +227,14 @@ pub(crate) async fn account_display_name_for(
     operator: &crate::worker::DefaultOperator,
 ) -> Option<String> {
     use dialog_query::{Output as _, Query, Term};
-    use dialog_repository::Repository;
     use tonk_schema::{AccountDisplayName, prelude::DidExt as _};
 
     let account = super::identity::historical_root_did(profile, operator)
         .await
         .ok()
         .flatten()?;
-    let branch = Repository::from(profile)
+    let branch = profile
+        .repository()
         .branch(tonk_account::MAIN_BRANCH)
         .open()
         .perform(operator)

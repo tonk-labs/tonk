@@ -69,19 +69,18 @@ async fn connection_outer_layout_prevents_old_cli_ambient_authority_fallback() -
     let profile_parent = home.join("data/dialog");
     std::fs::create_dir_all(&profile_parent)?;
     let storage = Storage::<NativeSpace>::default();
-    let profile = dialog_peer::Peer::new()
-        .storage(storage.clone())
-        .create(dialog_effects::storage::Location::new(
-            Directory::At(profile_parent.to_string_lossy().into_owned()),
-            tonk_cli::site::PROFILE_NAME,
-        ))
-        .await?;
+    let profile = dialog_peer::OpenPeer::create(dialog_effects::storage::Location::new(
+        Directory::At(profile_parent.to_string_lossy().into_owned()),
+        tonk_cli::site::PROFILE_NAME,
+    ))
+    .perform(&storage)
+    .await?;
     let base = home.join("legacy-data");
     std::fs::create_dir_all(&base)?;
     let peer =
         tonk_cli::peer::peer_for(&profile, Directory::At(base.to_string_lossy().into_owned()))
             .await?;
-    let operator = peer.session("legacy-compatibility").build().await?;
+    let operator = peer.worker("legacy-compatibility").await?;
     let ambient = DelegationBuilder::new()
         .issuer(Signer::from(owner))
         .audience(&profile.did())

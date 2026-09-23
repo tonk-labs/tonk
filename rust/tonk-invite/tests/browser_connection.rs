@@ -5,7 +5,6 @@ use dialog_capability::{
 };
 use dialog_credentials::{Ed25519Signer, Signer};
 use dialog_effects::Use;
-use dialog_peer::Peer;
 use dialog_storage::provider::storage::Storage;
 use dialog_ucan::{Ucan, UcanDelegation};
 use dialog_ucan_core::{DelegationBuilder, DelegationChain, time::Timestamp};
@@ -19,24 +18,22 @@ use url::Url;
 #[dialog_common::test]
 async fn connection_browser_profile_issues_long_grants_without_operator_suffix()
 -> anyhow::Result<()> {
-    let profile = Peer::new()
-        .storage(Storage::volatile())
-        .open(dialog_effects::storage::Location::profile(
-            "browser-durable-connection",
-        ))
-        .await?;
+    let profile = dialog_peer::OpenPeer::open(dialog_effects::storage::Location::profile(
+        "browser-durable-connection",
+    ))
+    .perform(&Storage::volatile())
+    .await?;
     let now = Timestamp::now();
     let deadline = Timestamp::try_from((now.to_unix() + DEFAULT_GRANT_TTL_SECONDS) as i128)?;
     let operator_deadline = Timestamp::try_from((now.to_unix() + 3600) as i128)?;
     let operator = profile
-        .session(b"one-hour-browser-operator")
+        .worker(b"one-hour-browser-operator")
         .allow(
             profile
                 .access()
                 .claim(Subject::any())
                 .expires(operator_deadline),
         )
-        .build()
         .await?;
     // The space owner is external: the profile retains a shared-space delegation,
     // and never installs the owner's secret in its credentials.

@@ -14,7 +14,7 @@ use crate::worker::DefaultPeer;
 use dialog_capability::{Subject, did};
 use dialog_effects::storage::{self as storage_fx, Directory, Location, LocationExt};
 use dialog_query::{Output as _, Query, Term};
-use dialog_repository::{Branch, Repository};
+use dialog_repository::Branch;
 use dialog_storage::provider::storage::Storage;
 use dialog_varsig::Did;
 use tonk_common::log;
@@ -117,18 +117,17 @@ impl Registry {
         if let Some(error) = &probe {
             log!("registry load probe failed: {error}");
         }
-        dialog_peer::Peer::new()
-            .storage(storage.clone())
-            .open(dialog_effects::storage::Location::new(
-                self.directory.clone(),
-                &self.profile,
+        dialog_peer::OpenPeer::open(dialog_effects::storage::Location::new(
+            self.directory.clone(),
+            &self.profile,
+        ))
+        .perform(storage)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!(
+                "failed to open the registry profile: {error}; load probe: {probe:?}"
             ))
-            .await
-            .map_err(|error| {
-                TonkWorkerError::Internal(format!(
-                    "failed to open the registry profile: {error}; load probe: {probe:?}"
-                ))
-            })
+        })
     }
 
     /// The recorded active profile name, or `None` when none was ever
@@ -196,16 +195,15 @@ impl Registry {
         storage: &Storage<DefaultSpace>,
         name: &str,
     ) -> Result<DefaultPeer, TonkWorkerError> {
-        dialog_peer::Peer::new()
-            .storage(storage.clone())
-            .open(dialog_effects::storage::Location::new(
-                self.directory.clone(),
-                name,
-            ))
-            .await
-            .map_err(|error| {
-                TonkWorkerError::Internal(format!("failed to open profile '{name}': {error}"))
-            })
+        dialog_peer::OpenPeer::open(dialog_effects::storage::Location::new(
+            self.directory.clone(),
+            name,
+        ))
+        .perform(storage)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to open profile '{name}': {error}"))
+        })
     }
 
     /// Point the active-profile pointer at `name`.
@@ -246,7 +244,8 @@ impl Registry {
         operator: &DefaultOperator,
     ) -> Result<Branch, TonkWorkerError> {
         let registry = self.open_self(storage).await?;
-        Repository::from(&registry)
+        registry
+            .repository()
             .branch(ROSTER_BRANCH)
             .open()
             .perform(operator)
@@ -378,16 +377,15 @@ impl Registry {
         // `create`, not `open`: a name collision must surface rather
         // than quietly hand back an existing key, since the whole point
         // is to leave the old one behind.
-        let profile = dialog_peer::Peer::new()
-            .storage(storage.clone())
-            .create(dialog_effects::storage::Location::new(
-                self.directory.clone(),
-                &name,
-            ))
-            .await
-            .map_err(|error| {
-                TonkWorkerError::Internal(format!("failed to create profile '{name}': {error}"))
-            })?;
+        let profile = dialog_peer::OpenPeer::create(dialog_effects::storage::Location::new(
+            self.directory.clone(),
+            &name,
+        ))
+        .perform(storage)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to create profile '{name}': {error}"))
+        })?;
 
         Ok((name, profile))
     }

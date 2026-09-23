@@ -8,7 +8,7 @@ use dialog_capability::Subject;
 use dialog_common::helpers::Provisionable as _;
 use dialog_credentials::{Credential, Ed25519Signer, Ed25519Verifier};
 use dialog_effects::space::{Space, SpaceExt as _};
-use dialog_peer::Session;
+use dialog_peer::Peer;
 use dialog_peer::helpers::{test_session_with_peer, unique_name};
 use dialog_query::{Attribute, Output as _, Query, Term};
 use dialog_remote_ucan::UcanAddress;
@@ -35,7 +35,7 @@ struct Note(String);
 /// keyed on the root DID, tracking `origin` at `endpoint`. This is the shape
 /// the worker and CLI adapters build in their `mount`/`hydrate` paths.
 struct AccountDevice {
-    operator: Session<VolatileSpace>,
+    operator: Peer<VolatileSpace>,
     branch: Branch,
     remote: RemoteBranch,
 }
@@ -248,11 +248,11 @@ async fn it_atomically_publishes_one_account_genesis_and_keeps_syncing() -> anyh
     // (profile, subject, name) rather than the subject DID itself.
     assert_eq!(
         genesis_a.branch,
-        dialog_repository::branch_of(&root_did, &operator_a.peer().did(), "main")
+        dialog_repository::branch_of(&root_did, &operator_a.home().clone(), "main")
     );
     assert_eq!(
         genesis_b.branch,
-        dialog_repository::branch_of(&root_did, &operator_b.peer().did(), "main")
+        dialog_repository::branch_of(&root_did, &operator_b.home().clone(), "main")
     );
     assert_ne!(genesis_a, genesis_b, "the race must use distinct revisions");
 

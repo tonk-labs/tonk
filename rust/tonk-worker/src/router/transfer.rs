@@ -178,7 +178,7 @@ async fn export_branch_snapshot(
         .revision()
         .ok_or_else(|| TonkWorkerError::NotFound("branch has no revision".into()))?;
     let root = dialog_common::Blake3Hash::from(*revision.tree.hash());
-    let repository = dialog_repository::Repository::from(&tonk_state.profile);
+    let repository = tonk_state.profile.repository();
 
     // The profile is a PARTIAL replica: login materializes the
     // operational regions and leaves history and coverage by reference,

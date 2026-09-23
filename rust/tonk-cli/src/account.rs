@@ -59,7 +59,7 @@ const POST_LINK_SYNC_DEADLINE: Duration = Duration::from_secs(10);
 
 async fn ensure_after_link(
     profile: &NativePeer,
-    operator: dialog_peer::Session<NativeSpace>,
+    operator: dialog_peer::Peer<NativeSpace>,
     store: crate::space::SpaceStore,
     deadline: Duration,
 ) -> Result<crate::account_state::EnsureOutcome> {
@@ -203,7 +203,7 @@ pub struct LinkOutcome {
 /// caller-supplied profile store.
 pub(crate) async fn stored_provider_in(
     profile: &NativePeer,
-    operator: &dialog_peer::Session<NativeSpace>,
+    operator: &dialog_peer::Peer<NativeSpace>,
     store: &crate::space::SpaceStore,
 ) -> Result<Option<AccountProviderRecord>> {
     stored_provider_for_store(profile, operator, store).await
@@ -211,7 +211,7 @@ pub(crate) async fn stored_provider_in(
 
 async fn stored_provider_for_store(
     profile: &NativePeer,
-    operator: &dialog_peer::Session<NativeSpace>,
+    operator: &dialog_peer::Peer<NativeSpace>,
     store: &crate::space::SpaceStore,
 ) -> Result<Option<AccountProviderRecord>> {
     let Some(active) = crate::account_session::snapshot(profile, operator, store)
@@ -238,7 +238,7 @@ const ACCOUNT_REQUIRED: &str = "A Tonk account is required; run `tonk account lo
 /// Refuse unless one explicit profile store holds an account attachment.
 pub(crate) async fn require_account_with_operator_in(
     profile: &NativePeer,
-    operator: &dialog_peer::Session<NativeSpace>,
+    operator: &dialog_peer::Peer<NativeSpace>,
     store: &crate::space::SpaceStore,
 ) -> Result<()> {
     match stored_provider_in(profile, operator, store).await? {
@@ -262,7 +262,7 @@ pub async fn logout_in(profile: &NativePeer, store: &crate::space::SpaceStore) -
 
 async fn logout_with_operator(
     profile: &NativePeer,
-    operator: &dialog_peer::Session<NativeSpace>,
+    operator: &dialog_peer::Peer<NativeSpace>,
 ) -> Result<()> {
     let store = crate::space::SpaceStore::open().context("failed to locate account state")?;
     logout_with_operator_in(profile, operator, &store).await
@@ -270,7 +270,7 @@ async fn logout_with_operator(
 
 async fn logout_with_operator_in(
     profile: &NativePeer,
-    operator: &dialog_peer::Session<NativeSpace>,
+    operator: &dialog_peer::Peer<NativeSpace>,
     store: &crate::space::SpaceStore,
 ) -> Result<()> {
     let mut observer = crate::account_observability::NoopAccountObserver;
@@ -289,7 +289,7 @@ pub async fn logout_in_observed(
 
 async fn logout_with_operator_in_observed(
     profile: &NativePeer,
-    operator: &dialog_peer::Session<NativeSpace>,
+    operator: &dialog_peer::Peer<NativeSpace>,
     store: &crate::space::SpaceStore,
     observer: &mut dyn crate::account_observability::CliAccountObserver,
 ) -> Result<()> {
@@ -444,7 +444,7 @@ async fn recorded_account_grant(
 /// credential records. Replaying the same values is idempotent.
 pub(crate) async fn project_staged_account(
     profile: &NativePeer,
-    operator: &dialog_peer::Session<NativeSpace>,
+    operator: &dialog_peer::Peer<NativeSpace>,
     account: &crate::account_session::ActiveAccount,
 ) -> Result<()> {
     project_account_with_checkpoint(profile, operator, account, &mut |_| Ok(())).await
@@ -452,7 +452,7 @@ pub(crate) async fn project_staged_account(
 
 pub(crate) async fn project_account_with_checkpoint(
     profile: &NativePeer,
-    operator: &dialog_peer::Session<NativeSpace>,
+    operator: &dialog_peer::Peer<NativeSpace>,
     account: &crate::account_session::ActiveAccount,
     checkpoint: &mut impl FnMut(usize) -> Result<()>,
 ) -> Result<()> {
@@ -528,7 +528,7 @@ pub async fn replace_account_in(
 
 async fn replace_account_with_checkpoint(
     profile: &NativePeer,
-    operator: &dialog_peer::Session<NativeSpace>,
+    operator: &dialog_peer::Peer<NativeSpace>,
     store: &crate::space::SpaceStore,
     previous: &crate::account_session::ActiveAccount,
     replacement: &crate::account_session::ActiveAccount,
@@ -550,7 +550,7 @@ async fn replace_account_with_checkpoint(
 /// logout and other login attempts behind projection and final promotion.
 async fn complete_staged_account(
     profile: &NativePeer,
-    operator: &dialog_peer::Session<NativeSpace>,
+    operator: &dialog_peer::Peer<NativeSpace>,
     store: &crate::space::SpaceStore,
     account: &crate::account_session::ActiveAccount,
 ) -> Result<()> {
@@ -565,7 +565,7 @@ async fn complete_staged_account(
 /// Failure here never reopens the browser ceremony.
 async fn hydrate_activated_account(
     profile: &NativePeer,
-    operator: &dialog_peer::Session<NativeSpace>,
+    operator: &dialog_peer::Peer<NativeSpace>,
     store: &crate::space::SpaceStore,
     account: &crate::account_session::ActiveAccount,
     url: String,
@@ -601,7 +601,7 @@ async fn hydrate_activated_account(
 /// elsewhere, scoped to one space, or unsigned installs no authority here.
 async fn link_via_callback(
     profile: &NativePeer,
-    operator: &dialog_peer::Session<NativeSpace>,
+    operator: &dialog_peer::Peer<NativeSpace>,
     store: &crate::space::SpaceStore,
     options: &LinkOptions,
     page: &str,
@@ -740,7 +740,7 @@ pub async fn link_in_observed(
 /// form takes the operator so the whole flow is reachable from a test.
 pub async fn link_with_operator(
     profile: &NativePeer,
-    operator: &dialog_peer::Session<NativeSpace>,
+    operator: &dialog_peer::Peer<NativeSpace>,
     options: &LinkOptions,
 ) -> Result<LinkOutcome> {
     let mut observer = crate::account_observability::NoopAccountObserver;
@@ -750,7 +750,7 @@ pub async fn link_with_operator(
 /// Observed form of [`link_with_operator`] used by the CLI command seam.
 pub async fn link_with_operator_observed(
     profile: &NativePeer,
-    operator: &dialog_peer::Session<NativeSpace>,
+    operator: &dialog_peer::Peer<NativeSpace>,
     options: &LinkOptions,
     observer: &mut dyn crate::account_observability::CliAccountObserver,
 ) -> Result<LinkOutcome> {
@@ -1087,7 +1087,7 @@ pub async fn sync_in(
 /// and scripts that want local answers with no network at all.
 async fn freshen_account(
     profile: &NativePeer,
-    operator: &dialog_peer::Session<NativeSpace>,
+    operator: &dialog_peer::Peer<NativeSpace>,
     store: &crate::space::SpaceStore,
     doing: &str,
 ) {
@@ -1119,7 +1119,7 @@ async fn freshen_account(
 /// deadline turns that into an error naming the remote.
 async fn account_branch(
     profile: &NativePeer,
-    operator: &dialog_peer::Session<NativeSpace>,
+    operator: &dialog_peer::Peer<NativeSpace>,
     store: &crate::space::SpaceStore,
 ) -> Result<dialog_repository::Branch> {
     tokio::time::timeout(
@@ -1139,7 +1139,7 @@ async fn account_branch(
 async fn publish_revocation(
     profile: &NativePeer,
     branch: &dialog_repository::Branch,
-    operator: &dialog_peer::Session<NativeSpace>,
+    operator: &dialog_peer::Peer<NativeSpace>,
     store: &crate::space::SpaceStore,
     artifact: &[u8],
 ) -> Result<()> {
@@ -1190,7 +1190,7 @@ async fn publish_revocation(
 /// Returns whether anything was retracted.
 async fn retract_device_rows(
     branch: &dialog_repository::Branch,
-    operator: &dialog_peer::Session<NativeSpace>,
+    operator: &dialog_peer::Peer<NativeSpace>,
     target: &str,
 ) -> Result<bool> {
     let links = tonk_schema::device_link::device_links(branch, operator)
@@ -1382,7 +1382,7 @@ mod tests {
     ) -> (
         tempfile::TempDir,
         NativePeer,
-        dialog_peer::Session<NativeSpace>,
+        dialog_peer::Peer<NativeSpace>,
         crate::space::SpaceStore,
     ) {
         use dialog_effects::storage::Directory;
@@ -1394,14 +1394,13 @@ mod tests {
         let profile_dir = Directory::At(temp.path().join("profiles").to_string_lossy().into());
         let profile_name = format!("cli-account-timeout-test-{}", rand::random::<u64>());
         let storage = Storage::<NativeSpace>::default();
-        let profile = dialog_peer::Peer::new()
-            .storage(storage.clone())
-            .open(dialog_effects::storage::Location::new(
-                profile_dir,
-                &profile_name,
-            ))
-            .await
-            .unwrap();
+        let profile = dialog_peer::OpenPeer::open(dialog_effects::storage::Location::new(
+            profile_dir,
+            &profile_name,
+        ))
+        .perform(&storage)
+        .await
+        .unwrap();
         std::fs::create_dir_all(store.account_dir()).unwrap();
         let account_dir = store.account_dir().canonicalize().unwrap();
         let operator = crate::peer::session_for(
@@ -1549,14 +1548,13 @@ mod tests {
         let profile_dir = Directory::At(temp.path().join("profiles").to_string_lossy().into());
         let profile_name = format!("cli-account-logout-test-{}", rand::random::<u64>());
         let storage = Storage::<NativeSpace>::default();
-        let profile = dialog_peer::Peer::new()
-            .storage(storage.clone())
-            .open(dialog_effects::storage::Location::new(
-                profile_dir,
-                &profile_name,
-            ))
-            .await
-            .unwrap();
+        let profile = dialog_peer::OpenPeer::open(dialog_effects::storage::Location::new(
+            profile_dir,
+            &profile_name,
+        ))
+        .perform(&storage)
+        .await
+        .unwrap();
         std::fs::create_dir_all(store.account_dir()).unwrap();
         let account_dir = store.account_dir().canonicalize().unwrap();
         let operator = crate::peer::session_for(
@@ -1689,14 +1687,13 @@ mod tests {
         use dialog_varsig::Principal as _;
 
         let storage = dialog_storage::provider::storage::Storage::<NativeSpace>::default();
-        let profile = dialog_peer::Peer::new()
-            .storage(storage.clone())
-            .open(dialog_effects::storage::Location::new(
-                dialog_effects::storage::Directory::Profile,
-                "link-audience-test",
-            ))
-            .await
-            .unwrap();
+        let profile = dialog_peer::OpenPeer::open(dialog_effects::storage::Location::new(
+            dialog_effects::storage::Directory::Profile,
+            "link-audience-test",
+        ))
+        .perform(&storage)
+        .await
+        .unwrap();
         let account = Ed25519Signer::generate().await.unwrap();
         let elsewhere = Ed25519Signer::generate().await.unwrap();
         let grant = DelegationBuilder::new()
@@ -1729,14 +1726,13 @@ mod tests {
         use dialog_varsig::Principal as _;
 
         let storage = dialog_storage::provider::storage::Storage::<NativeSpace>::default();
-        let profile = dialog_peer::Peer::new()
-            .storage(storage.clone())
-            .open(dialog_effects::storage::Location::new(
-                dialog_effects::storage::Directory::Profile,
-                "link-subject-test",
-            ))
-            .await
-            .unwrap();
+        let profile = dialog_peer::OpenPeer::open(dialog_effects::storage::Location::new(
+            dialog_effects::storage::Directory::Profile,
+            "link-subject-test",
+        ))
+        .perform(&storage)
+        .await
+        .unwrap();
         let account = Ed25519Signer::generate().await.unwrap();
         let space = Ed25519Signer::generate().await.unwrap();
         let grant = DelegationBuilder::new()
@@ -1767,14 +1763,13 @@ mod tests {
 
         let temp = tempfile::tempdir().unwrap();
         let storage = dialog_storage::provider::storage::Storage::<NativeSpace>::default();
-        let profile = dialog_peer::Peer::new()
-            .storage(storage.clone())
-            .open(dialog_effects::storage::Location::new(
-                Directory::At(temp.path().join("profiles").to_string_lossy().into()),
-                format!("link-generation-test-{}", rand::random::<u64>()),
-            ))
-            .await
-            .unwrap();
+        let profile = dialog_peer::OpenPeer::open(dialog_effects::storage::Location::new(
+            Directory::At(temp.path().join("profiles").to_string_lossy().into()),
+            format!("link-generation-test-{}", rand::random::<u64>()),
+        ))
+        .perform(&storage)
+        .await
+        .unwrap();
         let service_url = "https://accounts.example/ucan/".to_string();
         let account = Ed25519Signer::generate().await.unwrap();
         let authorized =
@@ -1810,7 +1805,7 @@ mod tests {
     }
 
     impl RecoveryFixture {
-        async fn new() -> (Self, NativePeer, dialog_peer::Session<NativeSpace>) {
+        async fn new() -> (Self, NativePeer, dialog_peer::Peer<NativeSpace>) {
             use dialog_credentials::Ed25519Signer;
             use dialog_effects::storage::Directory;
             use dialog_storage::provider::storage::Storage;
@@ -1820,14 +1815,13 @@ mod tests {
             let profile_dir = Directory::At(temp.path().join("profiles").to_string_lossy().into());
             let profile_name = format!("cli-account-recovery-test-{}", rand::random::<u64>());
             let storage = Storage::<NativeSpace>::default();
-            let profile = dialog_peer::Peer::new()
-                .storage(storage.clone())
-                .open(dialog_effects::storage::Location::new(
-                    profile_dir.clone(),
-                    &profile_name,
-                ))
-                .await
-                .unwrap();
+            let profile = dialog_peer::OpenPeer::open(dialog_effects::storage::Location::new(
+                profile_dir.clone(),
+                &profile_name,
+            ))
+            .perform(&storage)
+            .await
+            .unwrap();
             std::fs::create_dir_all(store.account_dir()).unwrap();
             let account_dir = store.account_dir().canonicalize().unwrap();
             let operator = crate::peer::session_for(
@@ -1870,19 +1864,18 @@ mod tests {
             )
         }
 
-        async fn reopen(&self) -> (NativePeer, dialog_peer::Session<NativeSpace>) {
+        async fn reopen(&self) -> (NativePeer, dialog_peer::Peer<NativeSpace>) {
             use dialog_effects::storage::Directory;
             use dialog_storage::provider::storage::Storage;
 
             let storage = Storage::<NativeSpace>::default();
-            let profile = dialog_peer::Peer::new()
-                .storage(storage.clone())
-                .open(dialog_effects::storage::Location::new(
-                    self.profile_dir.clone(),
-                    &self.profile_name,
-                ))
-                .await
-                .unwrap();
+            let profile = dialog_peer::OpenPeer::open(dialog_effects::storage::Location::new(
+                self.profile_dir.clone(),
+                &self.profile_name,
+            ))
+            .perform(&storage)
+            .await
+            .unwrap();
             let operator = crate::peer::session_for(
                 &profile,
                 Directory::At(self.account_dir.to_string_lossy().into()),

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use crate::peer::NativePeer;
 use anyhow::{Context, Result, bail};
-use dialog_peer::Session;
+use dialog_peer::Peer;
 use dialog_query::{Output as _, Query, Term};
 use dialog_remote_ucan::UcanAddress;
 use dialog_repository::{Branch, SiteAddress};
@@ -144,7 +144,7 @@ async fn local_subjects(
 async fn ready_account_branch(
     profile: &NativePeer,
     store: &SpaceStore,
-) -> Result<(Session<NativeSpace>, Branch)> {
+) -> Result<(Peer<NativeSpace>, Branch)> {
     let operator = crate::account_state::credential_operator_for_store(profile, store).await?;
     if let Some(branch) =
         crate::account_state::open_account_branch_in(profile, &operator, store).await?

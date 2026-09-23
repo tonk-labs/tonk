@@ -18,7 +18,7 @@ use axum::{
     body::Body,
     http::{HeaderValue, header::HeaderName},
 };
-use dialog_peer::{Peer, Session};
+use dialog_peer::Peer;
 use dialog_storage::provider::storage::Storage;
 use js_sys::Promise;
 use send_wrapper::SendWrapper;
@@ -355,7 +355,7 @@ pub type DefaultSpace = dialog_storage::provider::storage::WebSpace;
 pub type DefaultSpace = dialog_storage::provider::storage::NativeSpace;
 
 /// Concrete operator type for the default storage backend.
-pub type DefaultOperator = Session<DefaultSpace>;
+pub type DefaultOperator = Peer<DefaultSpace>;
 
 /// The worker's peer over its default storage.
 pub type DefaultPeer = Peer<DefaultSpace>;

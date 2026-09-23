@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use dialog_effects::credential::CredentialError;
-use dialog_peer::Session;
+use dialog_peer::Peer;
 use dialog_storage::provider::storage::{NativeSpace, Storage};
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
@@ -70,7 +70,7 @@ pub async fn local_root_in(
 /// Read the canonical root while recovering interrupted account replacements.
 pub(crate) async fn local_root_for_store(
     profile: &NativePeer,
-    operator: &Session<NativeSpace>,
+    operator: &Peer<NativeSpace>,
     store: &crate::space::SpaceStore,
 ) -> Result<Option<LocalRoot>> {
     let guard = crate::account_session::exclusive_transition_guard(store)?;
@@ -83,7 +83,7 @@ pub(crate) async fn local_root_for_store(
 /// Load the local root through an already-mounted site operator.
 pub(crate) async fn local_root_with_operator(
     profile: &NativePeer,
-    operator: &Session<NativeSpace>,
+    operator: &Peer<NativeSpace>,
 ) -> Result<Option<LocalRoot>> {
     let bytes = match profile
         .secrets()
@@ -119,7 +119,7 @@ pub async fn save_local_root(
 /// profile and refuse.
 pub async fn save_local_root_with_operator(
     profile: &NativePeer,
-    operator: &dialog_peer::Session<dialog_storage::provider::storage::NativeSpace>,
+    operator: &dialog_peer::Peer<dialog_storage::provider::storage::NativeSpace>,
     credential_id: String,
     delegation_hex: String,
 ) -> Result<LocalRoot> {
@@ -167,14 +167,13 @@ pub async fn save_local_root_with_operator(
 /// Open the user's profile, creating it on first run.
 pub async fn open() -> Result<NativePeer> {
     let storage = Storage::<NativeSpace>::default();
-    dialog_peer::Peer::new()
-        .storage(storage.clone())
-        .open(dialog_effects::storage::Location::new(
-            dialog_effects::storage::Directory::Profile,
-            PROFILE_NAME,
-        ))
-        .await
-        .with_context(|| format!("failed to open profile '{PROFILE_NAME}'"))
+    dialog_peer::OpenPeer::open(dialog_effects::storage::Location::new(
+        dialog_effects::storage::Directory::Profile,
+        PROFILE_NAME,
+    ))
+    .perform(&storage)
+    .await
+    .with_context(|| format!("failed to open profile '{PROFILE_NAME}'"))
 }
 
 /// Wipe the on-disk profile directory and create a fresh

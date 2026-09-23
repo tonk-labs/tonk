@@ -6,7 +6,6 @@
 
 use crate::worker::DefaultPeer;
 use dialog_query::{Output as _, Query, Term};
-use dialog_repository::Repository;
 use tonk_common::log;
 use tonk_schema::prelude::DidExt as _;
 use tonk_schema::{ProfileName, petname};
@@ -50,7 +49,8 @@ pub(crate) async fn stored_display_name_from(
 ) -> Option<String> {
     let profile_entity = profile.did().this();
 
-    let branch = match Repository::from(profile)
+    let branch = match profile
+        .repository()
         .branch(PROFILE_BRANCH)
         .open()
         .perform(operator)
@@ -238,14 +238,13 @@ mod tests {
     async fn isolated_state(name: &str) -> TonkState {
         crate::patch_idb_versionchange();
         let storage = Storage::<DefaultSpace>::default();
-        let profile = dialog_peer::Peer::new()
-            .storage(storage.clone())
-            .open(dialog_effects::storage::Location::new(
-                dialog_effects::storage::Directory::Profile,
-                name,
-            ))
-            .await
-            .expect("profile opens");
+        let profile = dialog_peer::OpenPeer::open(dialog_effects::storage::Location::new(
+            dialog_effects::storage::Directory::Profile,
+            name,
+        ))
+        .perform(&storage)
+        .await
+        .expect("profile opens");
         let session = crate::session::open(&profile)
             .await
             .expect("signing session opens");

@@ -5166,7 +5166,7 @@ async fn record_replica_visibility(
     let status = SpaceStatus::new(replica.this().clone(), status);
 
     // Write through the *reactor's* profile-repository handle, not a
-    // fresh `Repository::from(&tonk.profile)`. The reactor caches the
+    // fresh `tonk.profile.repository()`. The reactor caches the
     // profile repo and its meta-branch handle (opened the first time
     // the Hub queried, at boot); a commit through a separate handle
     // leaves that cached handle pinned at its old head, so the Hub —
@@ -7809,14 +7809,13 @@ route!: &foreign-profile-route
         );
         let storage =
             dialog_storage::provider::storage::Storage::<crate::worker::DefaultSpace>::default();
-        let profile = dialog_peer::Peer::new()
-            .storage(storage.clone())
-            .open(dialog_effects::storage::Location::new(
-                dialog_effects::storage::Directory::Profile,
-                &name,
-            ))
-            .await
-            .expect("test profile opens");
+        let profile = dialog_peer::OpenPeer::open(dialog_effects::storage::Location::new(
+            dialog_effects::storage::Directory::Profile,
+            &name,
+        ))
+        .perform(&storage)
+        .await
+        .expect("test profile opens");
         let session = crate::session::open(&profile)
             .await
             .expect("test session opens");

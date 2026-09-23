@@ -261,7 +261,7 @@ impl AccountFixture {
     /// under.
     pub async fn operator(
         &self,
-    ) -> Result<dialog_peer::Session<dialog_storage::provider::storage::NativeSpace>> {
+    ) -> Result<dialog_peer::Peer<dialog_storage::provider::storage::NativeSpace>> {
         tonk_cli::account_state::credential_operator_for_store(&self.profile, &self.store).await
     }
 

@@ -5,7 +5,7 @@ use std::io::Write as _;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use dialog_peer::Session;
+use dialog_peer::Peer;
 use dialog_storage::provider::storage::NativeSpace;
 use dialog_varsig::Did;
 use serde::{Deserialize, Serialize};
@@ -262,7 +262,7 @@ fn legacy_provider_bytes(
 
 async fn load_raw(
     profile: &NativePeer,
-    _operator: &Session<NativeSpace>,
+    _operator: &Peer<NativeSpace>,
     store: &SpaceStore,
 ) -> Result<Option<AccountSessionState>> {
     let path = state_path(profile, store)?;
@@ -282,7 +282,7 @@ async fn load_raw(
 
 async fn save_raw(
     profile: &NativePeer,
-    _operator: &Session<NativeSpace>,
+    _operator: &Peer<NativeSpace>,
     store: &SpaceStore,
     state: &AccountSessionState,
 ) -> Result<()> {
@@ -328,7 +328,7 @@ async fn save_raw(
 /// predate canonical account-session state.
 async fn projected_active(
     profile: &NativePeer,
-    operator: &Session<NativeSpace>,
+    operator: &Peer<NativeSpace>,
 ) -> Result<Option<ActiveAccount>> {
     let Some(root) = crate::identity::local_root_with_operator(profile, operator).await? else {
         return Ok(None);
@@ -371,7 +371,7 @@ async fn projected_active(
 /// projection while the caller holds the exclusive lock.
 pub async fn ensure_initialized(
     profile: &NativePeer,
-    operator: &Session<NativeSpace>,
+    operator: &Peer<NativeSpace>,
     guard: &AccountSessionWriteGuard,
 ) -> Result<()> {
     if let Some(mut state) = load_raw(profile, operator, &guard.store).await? {
@@ -423,7 +423,7 @@ pub async fn ensure_initialized(
 /// Read one canonical generation after finishing interrupted projections.
 pub async fn snapshot(
     profile: &NativePeer,
-    operator: &Session<NativeSpace>,
+    operator: &Peer<NativeSpace>,
     store: &SpaceStore,
 ) -> Result<AccountSessionState> {
     let guard = exclusive_transition_guard(store)?;
@@ -436,7 +436,7 @@ pub async fn snapshot(
 /// Replace an exact active generation while retaining recovery material.
 pub(crate) async fn replace_with_checkpoint(
     profile: &NativePeer,
-    operator: &Session<NativeSpace>,
+    operator: &Peer<NativeSpace>,
     store: &SpaceStore,
     previous: &ActiveAccount,
     replacement: &ActiveAccount,
@@ -486,7 +486,7 @@ pub(crate) async fn replace_with_checkpoint(
 /// projection writes begin, retaining the exclusive transition lock.
 pub async fn stage_activation(
     profile: &NativePeer,
-    operator: &Session<NativeSpace>,
+    operator: &Peer<NativeSpace>,
     store: &SpaceStore,
     account: ActiveAccount,
 ) -> Result<AccountActivationGuard> {
@@ -517,7 +517,7 @@ pub async fn stage_activation(
 /// Atomically promote the exact staged callback generation to active.
 pub async fn finalize_activation(
     profile: &NativePeer,
-    operator: &Session<NativeSpace>,
+    operator: &Peer<NativeSpace>,
     guard: AccountActivationGuard,
     account: &ActiveAccount,
 ) -> Result<()> {
@@ -545,7 +545,7 @@ pub async fn finalize_activation(
 /// Strictly read canonical state while the caller retains a shared lock.
 pub async fn load_guarded(
     profile: &NativePeer,
-    operator: &Session<NativeSpace>,
+    operator: &Peer<NativeSpace>,
     guard: &AccountSessionReadGuard,
 ) -> Result<AccountSessionState> {
     load_raw(profile, operator, &guard.store)
@@ -556,7 +556,7 @@ pub async fn load_guarded(
 /// Read the sole active attachment under an existing shared guard.
 pub async fn active_guarded(
     profile: &NativePeer,
-    operator: &Session<NativeSpace>,
+    operator: &Peer<NativeSpace>,
     guard: &AccountSessionReadGuard,
 ) -> Result<Option<ActiveAccount>> {
     Ok(load_guarded(profile, operator, guard).await?.active)
@@ -568,7 +568,7 @@ pub async fn active_guarded(
 /// being reachable. The returned attachments are notified best-effort.
 pub async fn logout_transition_for_store(
     profile: &NativePeer,
-    operator: &Session<NativeSpace>,
+    operator: &Peer<NativeSpace>,
     store: &SpaceStore,
 ) -> Result<Vec<ActiveAccount>> {
     let guard = exclusive_transition_guard(store)?;
@@ -617,24 +617,18 @@ mod tests {
 
     use super::*;
 
-    async fn isolated_session() -> (
-        tempfile::TempDir,
-        SpaceStore,
-        NativePeer,
-        Session<NativeSpace>,
-    ) {
+    async fn isolated_session() -> (tempfile::TempDir, SpaceStore, NativePeer, Peer<NativeSpace>) {
         let temp = tempfile::tempdir().unwrap();
         let store = SpaceStore::at(temp.path().join("state"));
         let profile_dir = Directory::At(temp.path().join("profiles").to_string_lossy().into());
         let storage = Storage::<NativeSpace>::default();
-        let profile = dialog_peer::Peer::new()
-            .storage(storage.clone())
-            .open(dialog_effects::storage::Location::new(
-                profile_dir,
-                format!("account-session-test-{}", rand::random::<u64>()),
-            ))
-            .await
-            .unwrap();
+        let profile = dialog_peer::OpenPeer::open(dialog_effects::storage::Location::new(
+            profile_dir,
+            format!("account-session-test-{}", rand::random::<u64>()),
+        ))
+        .perform(&storage)
+        .await
+        .unwrap();
         std::fs::create_dir_all(store.account_dir()).unwrap();
         let account_dir = store.account_dir().canonicalize().unwrap();
         let operator = crate::peer::session_for(

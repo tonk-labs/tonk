@@ -847,13 +847,12 @@ mod tests {
         std::fs::create_dir_all(&directory)?;
         let location = Directory::At(directory.to_string_lossy().into_owned());
         let storage = Storage::default();
-        let profile = dialog_peer::Peer::new()
-            .storage(storage.clone())
-            .open(dialog_effects::storage::Location::new(
-                location.clone(),
-                "ledger",
-            ))
-            .await?;
+        let profile = dialog_peer::OpenPeer::open(dialog_effects::storage::Location::new(
+            location.clone(),
+            "ledger",
+        ))
+        .perform(&storage)
+        .await?;
         let registry = crate::device::Registry {
             profile: "ledger".into(),
             directory: location.clone(),
@@ -917,13 +916,12 @@ mod tests {
             .await?;
         assert_eq!(groups(&tonk).await?.len(), 1);
         assert!(has_issued_for_subject(&tonk, invite.grants().subject()).await?);
-        let other_profile = dialog_peer::Peer::new()
-            .storage(tonk.storage.clone())
-            .open(dialog_effects::storage::Location::new(
-                location.clone(),
-                "other-account",
-            ))
-            .await?;
+        let other_profile = dialog_peer::OpenPeer::open(dialog_effects::storage::Location::new(
+            location.clone(),
+            "other-account",
+        ))
+        .perform(&tonk.storage.clone())
+        .await?;
         let other_registry = crate::device::Registry {
             profile: "other-account".into(),
             directory: location.clone(),
@@ -1007,13 +1005,12 @@ mod tests {
         );
         drop(tonk);
         let storage = Storage::default();
-        let profile = dialog_peer::Peer::new()
-            .storage(storage.clone())
-            .load(dialog_effects::storage::Location::new(
-                location.clone(),
-                "ledger",
-            ))
-            .await?;
+        let profile = dialog_peer::OpenPeer::load(dialog_effects::storage::Location::new(
+            location.clone(),
+            "ledger",
+        ))
+        .perform(&storage)
+        .await?;
         let registry = crate::device::Registry {
             profile: "ledger".into(),
             directory: location,

@@ -13,7 +13,7 @@
 
 use crate::peer::NativePeer;
 use anyhow::{Context, Result};
-use dialog_peer::Session;
+use dialog_peer::Peer;
 use dialog_query::{Output as _, Query, Term};
 use dialog_repository::Branch;
 use dialog_storage::provider::storage::NativeSpace;
@@ -30,7 +30,7 @@ use zeroize::Zeroizing;
 pub async fn account_recipient(
     account: &Branch,
     root: &Did,
-    operator: &Session<NativeSpace>,
+    operator: &Peer<NativeSpace>,
 ) -> Result<Option<Did>> {
     let rows: Vec<AccountSealedInbox> = account
         .query()
@@ -66,7 +66,7 @@ pub async fn custody_space_seed(
     subject: &Did,
     recipient: &Did,
     seed: &Zeroizing<[u8; 32]>,
-    operator: &Session<NativeSpace>,
+    operator: &Peer<NativeSpace>,
 ) -> Result<()> {
     let key = RecipientKey::try_from(recipient).map_err(|error| {
         anyhow::anyhow!("the account sealed-inbox address is unusable: {error}")
@@ -103,9 +103,10 @@ pub async fn custody_space_seed(
 /// live, so they ride straight into the account when it arrives.
 pub async fn open_local_account_branch(
     profile: &NativePeer,
-    operator: &Session<NativeSpace>,
+    operator: &Peer<NativeSpace>,
 ) -> Result<Branch> {
-    dialog_repository::Repository::from(profile)
+    profile
+        .repository()
         .branch(tonk_account::MAIN_BRANCH)
         .open()
         .perform(operator)
@@ -117,7 +118,7 @@ pub async fn open_local_account_branch(
 pub async fn has_custody(
     account: &Branch,
     subject: &Did,
-    operator: &Session<NativeSpace>,
+    operator: &Peer<NativeSpace>,
 ) -> Result<bool> {
     let rows: Vec<SecretPrincipal> = account
         .query()
@@ -298,14 +299,13 @@ pub async fn rotate_from_onboarding(
         .context("the signed-in account root is invalid")?;
 
     let storage = dialog_storage::provider::storage::Storage::<NativeSpace>::default();
-    let profile = dialog_peer::Peer::new()
-        .storage(storage.clone())
-        .open(dialog_effects::storage::Location::new(
-            config.profile_directory.clone(),
-            config.profile_name.clone(),
-        ))
-        .await
-        .with_context(|| format!("failed to open profile '{}'", config.profile_name))?;
+    let profile = dialog_peer::OpenPeer::open(dialog_effects::storage::Location::new(
+        config.profile_directory.clone(),
+        config.profile_name.clone(),
+    ))
+    .perform(&storage)
+    .await
+    .with_context(|| format!("failed to open profile '{}'", config.profile_name))?;
     let operator = crate::account_state::credential_operator_for_store(&profile, store).await?;
     let Some(secret) = crate::onboarding::read_if_openable_in(&profile, &operator).await? else {
         return Ok(Vec::new());

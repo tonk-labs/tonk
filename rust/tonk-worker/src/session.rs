@@ -51,7 +51,7 @@ pub const RENEWAL_MARGIN_SECONDS: u64 = 60 * 60;
 /// the delegation authorizing it stops being valid.
 pub struct Session<S: Clone = DefaultSpace> {
     /// The operator, keyed for this session alone.
-    pub operator: dialog_peer::Session<S>,
+    pub operator: dialog_peer::Peer<S>,
     /// Expiry of the `profile → operator` delegation, unix seconds.
     pub expires_at: u64,
 }
@@ -73,9 +73,8 @@ pub async fn rotate<S: PeerSpace>(peer: &Peer<S>) -> Result<Session<S>, TonkWork
         TonkWorkerError::Internal(format!("session expiration out of range: {error}"))
     })?;
     let operator = peer
-        .session(context)
+        .worker(context)
         .allow(peer.access().claim(Subject::any()).expires(expiration))
-        .build()
         .await
         .map_err(|error| {
             TonkWorkerError::Internal(format!("failed to build a session operator: {error}"))
@@ -126,14 +125,13 @@ mod tests {
     async fn scratch() -> crate::worker::DefaultPeer {
         let name = dialog_peer::helpers::unique_name("session-test");
         let storage = dialog_storage::provider::storage::Storage::<DefaultSpace>::default();
-        dialog_peer::Peer::new()
-            .storage(storage.clone())
-            .open(dialog_effects::storage::Location::new(
-                Directory::Temp,
-                name,
-            ))
-            .await
-            .expect("profile opens")
+        dialog_peer::OpenPeer::open(dialog_effects::storage::Location::new(
+            Directory::Temp,
+            name,
+        ))
+        .perform(&storage)
+        .await
+        .expect("profile opens")
     }
 
     #[dialog_common::test]
@@ -155,13 +153,13 @@ mod tests {
         let second = open(&profile).await.unwrap();
 
         assert_ne!(first.operator.did(), second.operator.did());
-        assert_eq!(first.operator.peer().did(), profile.did());
-        assert_eq!(second.operator.peer().did(), profile.did());
+        assert_eq!(first.operator.home().clone(), profile.did());
+        assert_eq!(second.operator.home().clone(), profile.did());
     }
 
     async fn access_revision(
         profile: &DefaultPeer,
-        operator: &dialog_peer::Session<DefaultSpace>,
+        operator: &dialog_peer::Peer<DefaultSpace>,
     ) -> Option<dialog_repository::Revision> {
         dialog_repository::Repository::from(profile.credential().clone())
             .branch(dialog_repository::ACCESS_BRANCH)
@@ -174,7 +172,7 @@ mod tests {
 
     async fn retain_space(
         profile: &DefaultPeer,
-        operator: &dialog_peer::Session<DefaultSpace>,
+        operator: &dialog_peer::Peer<DefaultSpace>,
     ) -> dialog_varsig::Did {
         let space = Ed25519Signer::generate().await.unwrap();
         let grant = DelegationBuilder::new()
@@ -219,7 +217,7 @@ mod tests {
         let second = open(&profile).await.unwrap();
         assert_eq!(access_revision(&profile, &second.operator).await, revision);
         assert_ne!(first.operator.did(), second.operator.did());
-        assert_eq!(second.operator.peer().did(), profile.did());
+        assert_eq!(second.operator.home().clone(), profile.did());
         for session in [&first, &second] {
             assert_proof(&profile, session, &space).await;
             assert_proof(&profile, session, &space).await;
@@ -231,21 +229,16 @@ mod tests {
         let name = dialog_peer::helpers::unique_name("session-reopen");
         let (profile_did, old_operator, space, revision, legacy) = {
             let storage = dialog_storage::provider::storage::Storage::<DefaultSpace>::default();
-            let profile = dialog_peer::Peer::new()
-                .storage(storage.clone())
-                .open(dialog_effects::storage::Location::new(
-                    Directory::Temp,
-                    &name,
-                ))
-                .await
-                .unwrap();
+            let profile = dialog_peer::OpenPeer::open(dialog_effects::storage::Location::new(
+                Directory::Temp,
+                &name,
+            ))
+            .perform(&storage)
+            .await
+            .unwrap();
             // Simulate Safari's saved grant naming an audience unrelated
             // to the operator reconstructed from the legacy context.
-            let old = profile
-                .session(b"legacy-other-operator")
-                .build()
-                .await
-                .unwrap();
+            let old = profile.worker(b"legacy-other-operator").await.unwrap();
             let expiration =
                 Timestamp::new(SystemTime::now() + Duration::from_secs(SESSION_TTL_SECONDS))
                     .unwrap();
@@ -281,14 +274,13 @@ mod tests {
         // All prior operators, profiles, branches and the storage pool have
         // been released. Reopen the same durable profile with a new pool.
         let storage = dialog_storage::provider::storage::Storage::<DefaultSpace>::default();
-        let profile = dialog_peer::Peer::new()
-            .storage(storage.clone())
-            .open(dialog_effects::storage::Location::new(
-                Directory::Temp,
-                &name,
-            ))
-            .await
-            .unwrap();
+        let profile = dialog_peer::OpenPeer::open(dialog_effects::storage::Location::new(
+            Directory::Temp,
+            &name,
+        ))
+        .perform(&storage)
+        .await
+        .unwrap();
         let session = open(&profile).await.unwrap();
         assert_eq!(profile.did(), profile_did);
         assert_ne!(session.operator.did(), old_operator);

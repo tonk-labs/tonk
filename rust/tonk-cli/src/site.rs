@@ -22,7 +22,7 @@ use dialog_capability::Subject;
 use dialog_credentials::{Credential, Ed25519Signer, Ed25519Verifier};
 use dialog_effects::space::{Space, SpaceExt as _};
 use dialog_effects::storage::Directory;
-use dialog_peer::Session;
+use dialog_peer::Peer;
 use dialog_reactor::{BranchSession, Reactor, ReactorError};
 use dialog_repository::{Repository, RepositoryExt as _};
 use dialog_storage::provider::storage::{NativeSpace, Storage};
@@ -596,7 +596,7 @@ pub async fn record_founder_membership_for(site: &TonkSite, member: Did) -> Resu
 /// regardless of how it was bootstrapped.
 async fn bootstrap_repository(
     profile: &NativePeer,
-    operator: &Session<NativeSpace>,
+    operator: &Peer<NativeSpace>,
     config: &SiteConfig,
 ) -> Result<Repository> {
     let account_store = &config.account_store;
@@ -816,7 +816,7 @@ pub(crate) async fn mount_delegated_in_empty(
 pub(crate) async fn mount_delegated_with(
     root: &Path,
     profile: NativePeer,
-    operator: Session<NativeSpace>,
+    operator: Peer<NativeSpace>,
     chain: DelegationChain,
     config: SiteConfig,
 ) -> Result<TonkSite> {
@@ -826,7 +826,7 @@ pub(crate) async fn mount_delegated_with(
 async fn mount_delegated_inner(
     root: &Path,
     profile: NativePeer,
-    operator: Session<NativeSpace>,
+    operator: Peer<NativeSpace>,
     chain: DelegationChain,
     config: SiteConfig,
     require_reusable: bool,
@@ -1038,7 +1038,7 @@ async fn validate_prefix(bytes: Vec<u8>, account_root: &Did) -> Result<Delegatio
 /// Read one credential site, treating absence and emptiness alike.
 async fn optional_credential(
     profile: &NativePeer,
-    operator: &Session<NativeSpace>,
+    operator: &Peer<NativeSpace>,
     site: String,
 ) -> Result<Option<Vec<u8>>> {
     match profile
@@ -1065,7 +1065,7 @@ async fn optional_credential(
 /// ownership edge; explicit ownership adoption remains a separate operation.
 pub async fn load_account_root_prefix_for(
     profile: &NativePeer,
-    operator: &Session<NativeSpace>,
+    operator: &Peer<NativeSpace>,
     subject: &Did,
     account_root: &Did,
 ) -> Result<DelegationChain> {
@@ -1110,7 +1110,7 @@ pub async fn load_account_root_prefix_for(
 /// therefore cannot silently change ownership.
 pub async fn adopt_account_root_prefix_for(
     profile: &NativePeer,
-    operator: &Session<NativeSpace>,
+    operator: &Peer<NativeSpace>,
     subject: &Did,
     account_root: &Did,
 ) -> Result<DelegationChain> {
@@ -1140,7 +1140,7 @@ pub async fn adopt_account_root_prefix_for(
 /// Compatibility name for callers that explicitly establish ownership.
 pub async fn account_root_prefix_for(
     profile: &NativePeer,
-    operator: &Session<NativeSpace>,
+    operator: &Peer<NativeSpace>,
     subject: &Did,
     account_root: &Did,
 ) -> Result<DelegationChain> {
@@ -1149,7 +1149,7 @@ pub async fn account_root_prefix_for(
 
 async fn save_prefix(
     profile: &NativePeer,
-    operator: &Session<NativeSpace>,
+    operator: &Peer<NativeSpace>,
     site: &str,
     bytes: Vec<u8>,
 ) -> Result<()> {
@@ -1169,11 +1169,12 @@ async fn save_prefix(
 /// the union edge needed by account-bound authorization.
 pub(crate) async fn recover_prefix(
     profile: &NativePeer,
-    operator: &Session<NativeSpace>,
+    operator: &Peer<NativeSpace>,
     subject: &Did,
     account_root: &Did,
 ) -> Result<Option<DelegationChain>> {
-    let access = Repository::from(profile)
+    let access = profile
+        .repository()
         .branch(dialog_repository::ACCESS_BRANCH)
         .open()
         .perform(operator)
@@ -1213,7 +1214,7 @@ pub(crate) async fn recover_prefix(
 /// Extend held authority over `subject` to the account root.
 async fn mint_prefix(
     profile: &NativePeer,
-    operator: &Session<NativeSpace>,
+    operator: &Peer<NativeSpace>,
     subject: &Did,
     account_root: &Did,
 ) -> Result<DelegationChain> {
@@ -1297,7 +1298,7 @@ pub fn default_config() -> Result<SiteConfig> {
 async fn derive_operator_for_profile(
     root: &Path,
     profile: &NativePeer,
-) -> Result<Session<NativeSpace>> {
+) -> Result<Peer<NativeSpace>> {
     let root_str = root
         .to_str()
         .with_context(|| format!("non-UTF-8 path: {}", root.display()))?
@@ -1311,9 +1312,8 @@ async fn derive_operator_for_profile(
     // a derived key re-mints identical authority on every open, and the
     // retained copies were the accumulation the in-memory session was
     // introduced to stop.
-    peer.session(OPERATOR_CONTEXT)
+    peer.worker(OPERATOR_CONTEXT)
         .allow(peer.access().claim(Subject::any()).expires(expiration))
-        .build()
         .await
         .context("failed to build operator")
 }
@@ -1427,16 +1427,15 @@ async fn mint_fresh_subject(root: &Path, config: &SiteConfig) -> Result<()> {
 pub(crate) async fn build_profile_and_operator(
     root: &Path,
     config: &SiteConfig,
-) -> Result<(NativePeer, Session<NativeSpace>)> {
+) -> Result<(NativePeer, Peer<NativeSpace>)> {
     let storage = Storage::<NativeSpace>::default();
-    let profile = dialog_peer::Peer::new()
-        .storage(storage.clone())
-        .open(dialog_effects::storage::Location::new(
-            config.profile_directory.clone(),
-            config.profile_name.clone(),
-        ))
-        .await
-        .with_context(|| format!("failed to open profile '{}'", config.profile_name))?;
+    let profile = dialog_peer::OpenPeer::open(dialog_effects::storage::Location::new(
+        config.profile_directory.clone(),
+        config.profile_name.clone(),
+    ))
+    .perform(&storage)
+    .await
+    .with_context(|| format!("failed to open profile '{}'", config.profile_name))?;
     let operator = derive_operator_for_profile(root, &profile).await?;
 
     Ok((profile, operator))

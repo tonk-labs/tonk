@@ -156,14 +156,13 @@ pub async fn ensure_ordinary_recipient(
         return Ok(());
     };
     let storage = Storage::<NativeSpace>::default();
-    let profile = dialog_peer::Peer::new()
-        .storage(storage.clone())
-        .load(dialog_effects::storage::Location::new(
-            config.profile_directory.clone(),
-            config.profile_name.clone(),
-        ))
-        .await
-        .map_err(|_| targeted_recipient_error(expected))?;
+    let profile = dialog_peer::OpenPeer::load(dialog_effects::storage::Location::new(
+        config.profile_directory.clone(),
+        config.profile_name.clone(),
+    ))
+    .perform(&storage)
+    .await
+    .map_err(|_| targeted_recipient_error(expected))?;
     let operator = crate::account_state::store_operator_with_config(
         &profile,
         &config.account_store,

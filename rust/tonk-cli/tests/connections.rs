@@ -26,13 +26,12 @@ async fn scoped_site(
     let unrelated = TonkSite::init_at_with(&root.join("unrelated"), config.clone()).await?;
     let unrelated_subject = unrelated.repository.did();
     let storage = Storage::<NativeSpace>::default();
-    let profile = dialog_peer::Peer::new()
-        .storage(storage.clone())
-        .load(dialog_effects::storage::Location::new(
-            config.profile_directory.clone(),
-            config.profile_name.clone(),
-        ))
-        .await?;
+    let profile = dialog_peer::OpenPeer::load(dialog_effects::storage::Location::new(
+        config.profile_directory.clone(),
+        config.profile_name.clone(),
+    ))
+    .perform(&storage)
+    .await?;
     let replica = root.join("replica");
     std::fs::create_dir_all(&replica)?;
     let peer = tonk_cli::peer::peer_for(
@@ -40,7 +39,7 @@ async fn scoped_site(
         Directory::At(replica.to_string_lossy().into_owned()),
     )
     .await?;
-    let operator = peer.session("connection-mount").build().await?;
+    let operator = peer.worker("connection-mount").await?;
     let expiry = Timestamp::new(SystemTime::now() + Duration::from_secs(90 * 86400))?;
     // The profile already owns an unrelated local space. No target-space signer
     // or wider target-space grant is installed.

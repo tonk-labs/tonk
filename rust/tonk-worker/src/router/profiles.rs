@@ -597,7 +597,7 @@ async fn inspection_operator(profile: &DefaultPeer) -> Result<DefaultOperator, T
     let internal = |error: dialog_peer::PeerError| {
         TonkWorkerError::Internal(format!("failed to inspect a roster profile: {error}"))
     };
-    profile.session(context).build().await.map_err(internal)
+    profile.worker(context).await.map_err(internal)
 }
 
 /// Stamp the incoming profile's roster entry, swap the state in, and

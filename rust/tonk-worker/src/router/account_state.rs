@@ -333,7 +333,7 @@ async fn configure_account_upstream(
 ) -> Result<String, TonkWorkerError> {
     let subject = subject.clone();
     let key = subject.repo_key().to_owned();
-    let repository = Repository::from(&tonk.profile);
+    let repository = tonk.profile.repository();
 
     let address = SiteAddress::from(UcanAddress::new(account_remote(tonk).await?.as_str()));
     let remote = match repository
@@ -494,7 +494,9 @@ async fn hydrate_untrusted(tonk: &TonkState) -> Result<(), TonkWorkerError> {
         .acquire(&tonk.operator)
         .await
         .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
-    let remote = Repository::from(&tonk.profile)
+    let remote = tonk
+        .profile
+        .repository()
         .remote(tonk_account::ORIGIN_REMOTE)
         .load()
         .perform(&tonk.operator)
@@ -1114,7 +1116,7 @@ pub(crate) async fn adopt_account_access(tonk: &TonkState) -> bool {
         return false;
     };
     let subject = root.root_did.clone();
-    let repository = Repository::from(&tonk.profile);
+    let repository = tonk.profile.repository();
     let access = match repository
         .branch(dialog_repository::ACCESS_BRANCH)
         .open()
@@ -2019,14 +2021,13 @@ pub(crate) mod tests {
             .unwrap();
         let storage = Storage::<crate::worker::DefaultSpace>::default();
         let name = format!("account-state-worker-test-{}", rand::random::<u64>());
-        let profile = dialog_peer::Peer::new()
-            .storage(storage.clone())
-            .open(dialog_effects::storage::Location::new(
-                dialog_effects::storage::Directory::Profile,
-                &name,
-            ))
-            .await
-            .unwrap();
+        let profile = dialog_peer::OpenPeer::open(dialog_effects::storage::Location::new(
+            dialog_effects::storage::Directory::Profile,
+            &name,
+        ))
+        .perform(&storage)
+        .await
+        .unwrap();
         let session = crate::session::open(&profile).await.unwrap();
         let reactor = crate::Reactor::new(profile.credential().clone());
         let state = TonkState {

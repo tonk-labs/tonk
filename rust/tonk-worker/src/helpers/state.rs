@@ -59,14 +59,13 @@ pub async fn test_state_without_root() -> TonkState {
 
     crate::patch_idb_versionchange();
     let storage = Storage::<DefaultSpace>::default();
-    let profile = dialog_peer::Peer::new()
-        .storage(storage.clone())
-        .open(dialog_effects::storage::Location::new(
-            dialog_effects::storage::Directory::Profile,
-            &profile_name,
-        ))
-        .await
-        .expect("Failed to create test profile");
+    let profile = dialog_peer::OpenPeer::open(dialog_effects::storage::Location::new(
+        dialog_effects::storage::Directory::Profile,
+        &profile_name,
+    ))
+    .perform(&storage)
+    .await
+    .expect("Failed to create test profile");
 
     let session = crate::session::open(&profile)
         .await
