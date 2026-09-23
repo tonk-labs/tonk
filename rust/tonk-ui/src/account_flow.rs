@@ -6884,6 +6884,8 @@ mod tests {
                        const root = bar?.shadowRoot;
                        if (!barClass || !agentClass || !(bar instanceof barClass) ||
                            !(agent instanceof agentClass) ||
+                           typeof agent.__tonkReset !== 'function' ||
+                           bar.hasAttribute('data-account-required') ||
                            agent.getAttribute('space') !== arguments[0] ||
                            !root?.querySelector('.space') || !root?.querySelector('.agent'))
                          return false;
