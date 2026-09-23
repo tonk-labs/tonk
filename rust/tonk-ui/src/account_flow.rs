@@ -6869,13 +6869,7 @@ mod tests {
 
         // Reopen the same browser's on-disk profile, with no live issuer process
         // during either CLI connection. No exported passkey or root key is used.
-        let mut caps = DesiredCapabilities::chrome();
-        caps.set_headless()?;
-        caps.accept_insecure_certs(true)?;
-        caps.add_arg(&format!("--user-data-dir={}", browser_profile.display()))?;
-        if let Ok(binary) = std::env::var("CHROME") {
-            caps.set_binary(&binary)?;
-        }
+        let caps = env.chrome_capabilities_for_profile(&browser_profile)?;
         let browser = WebDriver::new(env.chromedriver.as_str(), caps).await?;
         goto(&browser, env.tonk_web.join("settings")?.as_str()).await?;
         wait_for_service_worker(&browser).await?;
@@ -7325,13 +7319,7 @@ mod tests {
             readback.stderr
         );
         assert_eq!(readback.stdout, "scoped browser blob readback");
-        let mut caps = DesiredCapabilities::chrome();
-        caps.set_headless()?;
-        caps.accept_insecure_certs(true)?;
-        caps.add_arg(&format!("--user-data-dir={}", browser_profile.display()))?;
-        if let Ok(binary) = std::env::var("CHROME") {
-            caps.set_binary(&binary)?;
-        }
+        let caps = env.chrome_capabilities_for_profile(&browser_profile)?;
         let browser = WebDriver::new(env.chromedriver.as_str(), caps).await?;
         goto(&browser, env.tonk_web.join("settings")?.as_str()).await?;
         wait_for_service_worker(&browser).await?;

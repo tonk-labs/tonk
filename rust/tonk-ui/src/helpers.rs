@@ -199,6 +199,14 @@ mod native {
                 .prefix("chrome-profile-")
                 .tempdir_in(&self.browser_profile_root)?
                 .keep();
+            self.chrome_capabilities_for_profile(&profile)
+        }
+
+        /// Reopens a saved profile with the same Chrome settings as new sessions.
+        pub fn chrome_capabilities_for_profile(
+            &self,
+            profile: &std::path::Path,
+        ) -> Result<ChromeCapabilities> {
             let mut caps = DesiredCapabilities::chrome();
             // NOTE: Discovered arcana while reverse engineering
             // wasm-bindgen-test-runner. TL;DR Chrome will crash when running as
@@ -961,6 +969,21 @@ mod native {
             assert!(first.starts_with(&browser_profile_root));
             assert!(second.starts_with(&browser_profile_root));
             assert_ne!(first.parent(), Some(std::env::temp_dir().as_path()));
+            let reopened = env.chrome_capabilities_for_profile(&first)?;
+            let args = serde_json::to_value(reopened)?;
+            let args = args["goog:chromeOptions"]["args"]
+                .as_array()
+                .ok_or_else(|| anyhow::anyhow!("Chrome capabilities contain no arguments"))?;
+            assert!(args.iter().any(|arg| arg == "--no-sandbox"));
+            assert!(args.iter().any(|arg| arg == "--disable-dev-shm-usage"));
+            assert!(
+                args.iter()
+                    .any(|arg| arg == "--host-resolver-rules=MAP tonk.network 127.0.0.1")
+            );
+            assert_eq!(
+                profile_from(env.chrome_capabilities_for_profile(&first)?)?,
+                first
+            );
             workspace.close()?;
             Ok(())
         }
