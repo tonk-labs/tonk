@@ -45,21 +45,26 @@ pub struct OrdinaryState {
 }
 
 impl OrdinaryState {
-    /// Construct recovery state for a newly claimed replica.
-    pub fn new(
-        prepared: &PreparedOrdinary,
+    /// Construct recovery state for a previously claimed ordinary replica.
+    ///
+    /// New CLI imports never call this path. It exists only so an import
+    /// journal written by an older CLI can still be resumed explicitly with
+    /// `tonk --space NAME join`.
+    pub fn legacy(
+        invitation: &tonk_schema::Invitation,
         directory: &std::path::Path,
         explicit_name: bool,
+        advisory_name: Option<&str>,
         has_remote: bool,
         phase: OrdinaryPhase,
     ) -> Result<Self> {
         Ok(Self {
             version: 1,
-            invitation: prepared.invitation().this.to_string(),
-            subject: prepared.invitation().subject.0.to_string(),
+            invitation: invitation.this.to_string(),
+            subject: invitation.subject.0.to_string(),
             directory: directory.canonicalize()?,
             explicit_name,
-            advisory_name: prepared.advisory_name().map(str::to_owned),
+            advisory_name: advisory_name.map(str::to_owned),
             has_remote,
             phase,
         })
@@ -95,100 +100,6 @@ impl OrdinaryState {
     }
 }
 
-/// An ordinary sharing invitation validated without changing local state.
-pub struct PreparedOrdinary {
-    preflight: crate::invite::InvitePreflight,
-}
-
-impl std::fmt::Debug for PreparedOrdinary {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("PreparedOrdinary")
-            .field("invitation", &self.preflight.invitation)
-            .field("expected_root", &self.preflight.expected_root)
-            .field("url", &"[REDACTED]")
-            .finish()
-    }
-}
-
-impl PreparedOrdinary {
-    /// Resolved bearer URL for the existing ordinary claim adapter.
-    pub fn url(&self) -> &str {
-        &self.preflight.url
-    }
-
-    /// Stable public identity of the exact invitation.
-    pub fn invitation(&self) -> &tonk_schema::Invitation {
-        &self.preflight.invitation
-    }
-
-    /// Required local root for a targeted invitation.
-    pub fn expected_root(&self) -> Option<&dialog_varsig::Did> {
-        self.preflight.expected_root.as_ref()
-    }
-
-    /// Advisory display name signed into the invitation at mint time.
-    pub fn advisory_name(&self) -> Option<&str> {
-        self.preflight.invite.space_name.as_deref()
-    }
-
-    /// Whether the validated invitation configures a sync remote.
-    pub fn has_remote(&self) -> bool {
-        self.preflight.invite.remote_url.is_some()
-    }
-
-    /// Consume this prepared value for import.
-    pub fn into_preflight(self) -> crate::invite::InvitePreflight {
-        self.preflight
-    }
-}
-
-/// Reject a targeted ordinary invitation unless its exact recipient authority
-/// is already available locally. This reads existing credentials and never
-/// creates an onboarding account or switches accounts.
-pub async fn ensure_ordinary_recipient(
-    prepared: &PreparedOrdinary,
-    config: &crate::site::SiteConfig,
-) -> Result<()> {
-    use dialog_operator::Profile;
-    use dialog_storage::provider::storage::{NativeSpace, Storage};
-
-    let Some(expected) = prepared.expected_root() else {
-        return Ok(());
-    };
-    let storage = Storage::<NativeSpace>::default();
-    let profile = Profile::load(config.profile_name.clone())
-        .at(config.profile_directory.clone())
-        .perform(&storage)
-        .await
-        .map_err(|_| targeted_recipient_error(expected))?;
-    let operator = crate::account_state::store_operator_with_config(
-        &profile,
-        &config.account_store,
-        &config.profile_name,
-        config.profile_directory.clone(),
-    )
-    .await?;
-    let local_root = crate::identity::local_root_with_operator(&profile, &operator)
-        .await?
-        .map(|root| root.root_did);
-    let onboarding = crate::onboarding::did(&profile, &operator)
-        .await?
-        .map(|did| did.to_string());
-    ensure!(
-        local_root.as_deref() == Some(expected.as_str())
-            || onboarding.as_deref() == Some(expected.as_str()),
-        targeted_recipient_error(expected)
-    );
-    Ok(())
-}
-
-fn targeted_recipient_error(expected: &dialog_varsig::Did) -> anyhow::Error {
-    anyhow::anyhow!(
-        "invitation_recipient_mismatch: this invitation targets {expected}, which is not available on this device; request an invitation for an eligible local identity"
-    )
-}
-
 /// An agent invitation whose signed public route and grants have been checked.
 pub struct PreparedAgent {
     url: String,
@@ -217,18 +128,11 @@ impl PreparedAgent {
     }
 }
 
-/// A resolved invitation dispatched to exactly one validated parser.
-#[derive(Debug)]
-pub enum PreparedInvitation {
-    /// Ordinary invitation authority claimed to an eligible local identity.
-    Ordinary(Box<PreparedOrdinary>),
-    /// Isolated agent credentials retained under their own recipient key.
-    Agent(PreparedAgent),
-}
-
 /// Resolve an invitation once, reject ambiguous carriers, and validate it with
-/// the parser selected by its versioned payload marker.
-pub async fn prepare(value: &str) -> Result<PreparedInvitation> {
+/// the parser selected by its versioned payload marker. A successful result is
+/// always isolated tool authority; ordinary person invitations are recognized
+/// only far enough to return the dedicated wrong-kind error.
+pub async fn prepare(value: &str) -> Result<PreparedAgent> {
     let resolved = crate::invite::resolve_url(value).await?;
     let parsed = url::Url::parse(&resolved).context("invalid invitation URL")?;
     let agent_fragment = parsed
@@ -251,14 +155,14 @@ pub async fn prepare(value: &str) -> Result<PreparedInvitation> {
 
     if agent_fragment {
         let hint = crate::connections::inspect_link(&resolved).await?;
-        Ok(PreparedInvitation::Agent(PreparedAgent {
+        Ok(PreparedAgent {
             url: resolved,
             hint,
-        }))
+        })
     } else {
-        let preflight = crate::invite::preflight_resolved(resolved).await?;
-        Ok(PreparedInvitation::Ordinary(Box::new(PreparedOrdinary {
-            preflight,
-        })))
+        crate::invite::preflight_resolved(resolved).await?;
+        anyhow::bail!(
+            "This link invites a person to the space.\nTo connect the CLI, ask for a link from \"connect a tool\" in Tonk."
+        )
     }
 }

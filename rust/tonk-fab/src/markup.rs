@@ -160,16 +160,18 @@ pub const STACKS_HTML: &str = r#"<ui-sync-status headless with="main@{space}"></
   <tonk-mi chrome data-mi-cfg>settings<svg class="g" width="9" height="9" viewBox="0 0 9 9" aria-hidden="true"><g stroke="currentColor" stroke-width="1.2"><line x1="0" y1="2.5" x2="9" y2="2.5"></line><line x1="0" y1="6.5" x2="9" y2="6.5"></line></g><rect x="5" y="1" width="3" height="3" fill="currentColor"></rect><rect x="1" y="5" width="3" height="3" fill="currentColor"></rect></svg></tonk-mi>
 </tonk-menu>
 <tonk-share headless space="{space}"></tonk-share>
+<tonk-tool-connection headless space="{space}"></tonk-tool-connection>
 <tonk-menu id="fabb-share-menu" slot="menu" data-for="share" role="group" aria-label="share actions" hidden>
   <tonk-mi chrome data-mi-back hidden>back<span class="g">&#9666;</span></tonk-mi>
   <tonk-mi chrome data-share-account>log in to share<span class="g">&#8598;</span></tonk-mi>
   <tonk-mi chrome data-share-link hidden>
-    <span class="say say--idle">copy link</span>
+    <span class="say say--idle">invite someone</span>
     <span class="say say--copying">copying&hellip;</span>
     <span class="say say--copied">copied</span>
     <span class="say say--failed">couldn&rsquo;t copy</span>
     <span class="say say--activation">confirm your email to share</span>
   </tonk-mi>
+  <tonk-mi chrome data-tool-connection>connect a tool</tonk-mi>
   <ui-member-roster space="{space}"></ui-member-roster>
 </tonk-menu>
 <tonk-menu id="fabb-overflow-menu" slot="menu" data-for="overflow" role="group" aria-label="more actions" hidden>
@@ -189,6 +191,7 @@ tonk-fab .rename-mark{ display:inline-block; width:6px; height:12px; background:
 tonk-fab > ui-sync-status[headless],
 tonk-fab > ui-space-name[headless],
 tonk-fab > tonk-share[headless]{ display:none; }
+tonk-fab > tonk-tool-connection[headless]{ display:none; }
 /* the row producers render their rows as SIBLINGS (see stack_rows), so they
    hold nothing themselves — laid out they would only add a stack gap where
    they sit */
@@ -239,6 +242,15 @@ pub const REFUSAL_DIALOGS_HTML: &str = r#"<tonk-cluster id="fabb-connect-cluster
   <p slot="narrator"><span data-enable-sync-detail>This space only exists on this device.</span> <span data-enable-sync-action>Connect it so other people can open it.</span></p>
   <tonk-button slot="run" variant="primary" solid data-enable-sync-confirm>connect</tonk-button>
   <span slot="ghost">keep it on this device</span>
+</tonk-cluster>
+<tonk-cluster id="fabb-tool-connection-cluster" hidden data-tool-space="">
+  <p slot="statement">connect a tool</p>
+  <p>give a tool access to this space under your account</p>
+  <p slot="narrator" data-tool-connection-status>creating a private link&hellip;</p>
+  <tonk-button slot="run" variant="primary" solid data-tool-copy-link disabled>copy link</tonk-button>
+  <tonk-button slot="run" solid data-tool-copy-prompt disabled>copy agent prompt</tonk-button>
+  <tonk-button slot="run" solid data-tool-retry hidden>try again</tonk-button>
+  <span slot="ghost">back to share</span>
 </tonk-cluster>"#;
 
 /// Stamp the space DID into [`STACKS_HTML`].
@@ -276,6 +288,7 @@ pub const SPACE_BINDINGS: &[(&str, &str, &str)] = &[
     ("ui-space-name", "space", ""),
     ("ui-space-switcher", "current", ""),
     ("tonk-share", "space", ""),
+    ("tonk-tool-connection", "space", ""),
     ("ui-member-roster", "space", ""),
 ];
 
@@ -525,7 +538,12 @@ mod tests {
         // with no slot never renders inside a shadow host — and the CSS says
         // so out loud.
         let html = stacks_html("did:key:z6Mk");
-        for headless in ["ui-sync-status", "ui-space-name", "tonk-share"] {
+        for headless in [
+            "ui-sync-status",
+            "ui-space-name",
+            "tonk-share",
+            "tonk-tool-connection",
+        ] {
             let tag = html
                 .split(&format!("<{headless}"))
                 .nth(1)
@@ -565,10 +583,24 @@ mod tests {
         let html = stacks_html("did:key:z6Mk");
         assert!(html.contains("data-share-account>log in to share"));
         assert!(html.contains("data-share-link hidden"));
+        assert!(html.contains("data-tool-connection>connect a tool"));
         assert!(
             html.find("data-share-account").unwrap() < html.find("data-share-link").unwrap(),
             "the safe account action is authored before the gated copy action"
         );
+    }
+
+    #[test]
+    fn it_separates_person_invites_from_tool_connections() {
+        let html = stacks_html("did:key:z6Mk");
+        assert!(html.contains("data-share-link hidden"));
+        assert!(html.contains("say--idle\">invite someone"));
+        assert!(html.contains("data-tool-connection>connect a tool"));
+        assert!(
+            REFUSAL_DIALOGS_HTML.contains("give a tool access to this space under your account")
+        );
+        assert!(REFUSAL_DIALOGS_HTML.contains("data-tool-copy-link"));
+        assert!(REFUSAL_DIALOGS_HTML.contains("data-tool-copy-prompt"));
     }
 
     #[test]

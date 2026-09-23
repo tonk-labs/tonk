@@ -159,7 +159,15 @@ async fn connection_candidate_grants_cover_cli_authoring_and_remote_sync() -> Re
 }
 
 async fn agent_link(seed: [u8; 32], remote: &url::Url) -> Result<(String, String)> {
-    let owner = Signer::from(Ed25519Signer::import(&[82; 32]).await?);
+    agent_link_from([82; 32], seed, remote).await
+}
+
+async fn agent_link_from(
+    owner_seed: [u8; 32],
+    seed: [u8; 32],
+    remote: &url::Url,
+) -> Result<(String, String)> {
+    let owner = Signer::from(Ed25519Signer::import(&owner_seed).await?);
     let recipient = Ed25519Signer::import(&seed).await?;
     let scopes = tonk_invite::connection::candidate_build_scopes(&owner.did());
     let expiry = Timestamp::try_from((Timestamp::now().to_unix() + 90 * 86400) as i128)?;
@@ -184,6 +192,123 @@ async fn agent_link(seed: [u8; 32], remote: &url::Url) -> Result<(String, String
         invite.to_url("https://tonk.network/connect")?,
         recipient.did().to_string(),
     ))
+}
+
+fn state_bytes(store: &tonk_cli::space::SpaceStore) -> Result<Option<Vec<u8>>> {
+    let path = store.root().join("spaces.json");
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+#[dialog_common::test]
+async fn connection_import_and_resume_ignore_all_ambient_account_states() -> Result<()> {
+    use tonk_cli::connections;
+
+    let temp = tempfile::tempdir()?;
+    let remote = url::Url::parse("http://127.0.0.1:9/ucan/")?;
+    let owner = Ed25519Signer::import(&[82; 32]).await?;
+    let cases = [
+        ("absent", None),
+        ("same", Some(owner.did().to_string())),
+        ("unrelated", Some("did:key:unrelated-account".into())),
+    ];
+    for (index, (name, account)) in cases.into_iter().enumerate() {
+        let store = tonk_cli::space::SpaceStore::at(temp.path().join(format!("state-{name}")));
+        if let Some(account) = account {
+            store.set_account(Some(tonk_cli::space::AccountRecord::new(account)))?;
+        }
+        let before = state_bytes(&store)?;
+        let (link, recipient) = agent_link([100 + index as u8; 32], &remote).await?;
+        let validated = connections::validate_link(&link, &remote).await?;
+        let root = temp.path().join(format!("connection-{name}"));
+        let binding = connections::import_at(&root, &validated, store.clone()).await?;
+        assert_eq!(binding.recipient, recipient);
+        assert_eq!(
+            state_bytes(&store)?,
+            before,
+            "{name} import changed account state"
+        );
+        let reopened = connections::open_bound(&root, &binding, store.clone()).await?;
+        assert_eq!(reopened.profile.did().to_string(), recipient);
+        drop(reopened);
+        assert_eq!(
+            state_bytes(&store)?,
+            before,
+            "{name} resume changed account state"
+        );
+    }
+
+    let malformed = tonk_cli::space::SpaceStore::at(temp.path().join("state-malformed"));
+    std::fs::create_dir_all(malformed.root())?;
+    std::fs::write(malformed.root().join("spaces.json"), b"legacy-not-json")?;
+    let before = state_bytes(&malformed)?;
+    let (link, recipient) = agent_link([110; 32], &remote).await?;
+    let validated = connections::validate_link(&link, &remote).await?;
+    let root = temp.path().join("connection-malformed");
+    let binding = connections::import_at(&root, &validated, malformed.clone()).await?;
+    assert_eq!(binding.recipient, recipient);
+    let reopened = connections::open_bound(&root, &binding, malformed.clone()).await?;
+    assert_eq!(reopened.profile.did().to_string(), recipient);
+    drop(reopened);
+    assert_eq!(state_bytes(&malformed)?, before);
+    assert!(
+        malformed.load().is_err(),
+        "malformed ambient state was repaired"
+    );
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn connections_from_different_issuers_and_spaces_remain_isolated() -> Result<()> {
+    use tonk_cli::connections;
+
+    let temp = tempfile::tempdir()?;
+    let store = tonk_cli::space::SpaceStore::at(temp.path().join("state"));
+    let first_remote = url::Url::parse("http://127.0.0.1:9/ucan/")?;
+    let second_remote = url::Url::parse("http://127.0.0.1:8/ucan/")?;
+    let fixtures = [
+        agent_link_from([41; 32], [51; 32], &first_remote).await?,
+        agent_link_from([42; 32], [52; 32], &second_remote).await?,
+        agent_link_from([41; 32], [53; 32], &first_remote).await?,
+    ];
+    let remotes = [&first_remote, &second_remote, &first_remote];
+    let mut bindings = Vec::new();
+    for (index, ((link, recipient), remote)) in fixtures.into_iter().zip(remotes).enumerate() {
+        let validated = connections::validate_link(&link, remote).await?;
+        let root = temp.path().join(format!("connection-{index}"));
+        let binding = connections::import_at(&root, &validated, store.clone()).await?;
+        assert_eq!(binding.recipient, recipient);
+        let reopened = connections::open_bound(&root, &binding, store.clone()).await?;
+        assert_eq!(reopened.profile.did().to_string(), recipient);
+        drop(reopened);
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join(connections::MARKER_FILE))?)?;
+        assert_eq!(manifest["remote"], remote.to_string());
+        bindings.push(binding);
+    }
+    assert_ne!(bindings[0].subject, bindings[1].subject);
+    assert_eq!(bindings[0].subject, bindings[2].subject);
+    assert_eq!(
+        bindings
+            .iter()
+            .map(|binding| &binding.id)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        3
+    );
+    assert_eq!(
+        bindings
+            .iter()
+            .map(|binding| &binding.recipient)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        3
+    );
+    assert!(!store.root().exists());
+    Ok(())
 }
 
 #[dialog_common::test]

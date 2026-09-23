@@ -89,7 +89,7 @@ async fn agent_prompt_is_copyable_without_showing_machine_instructions() -> anyh
     .await?;
     let route = tonk_cli::render::RenderRoute::parse("id:test:prompt@tonk:agent-invite")?;
     let html = tonk_cli::render::render(&test.site, &route).await?;
-    assert!(html.contains("copy the prompt and give it to your agent."));
+    assert!(html.contains("copy the prompt and give it to your tool."));
     assert!(html.contains("copy-label=\"copy prompt\""));
     assert!(
         html.contains("npx --yes @tonk/cli join 'https://example.test/join#tonk-agent-v1=secret'")
@@ -399,7 +399,7 @@ async fn connection_uses_the_space_name_and_avoids_local_collisions() -> anyhow:
 }
 
 #[dialog_common::test]
-async fn join_accepts_an_open_invite_without_agent_credentials() -> anyhow::Result<()> {
+async fn join_rejects_an_open_person_invite_without_creating_credentials() -> anyhow::Result<()> {
     let issuer = common::TestSite::new().await?;
     let invite =
         tonk_cli::invite::mint(&issuer.site, Some("https://example.test/join"), None).await?;
@@ -421,17 +421,18 @@ async fn join_accepts_an_open_invite_without_agent_credentials() -> anyhow::Resu
             .env("DO_NOT_TRACK", "1")
             .env_remove("TONK_SPACE")
             .output()?;
+        assert!(!output.status.success());
         assert!(
-            output.status.success(),
+            String::from_utf8_lossy(&output.stderr)
+                .contains("This link invites a person to the space."),
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
         let store = tonk_cli::space::SpaceStore::at(home.path().join("spaces"));
         let registry = store.load()?;
-        assert_eq!(registry.spaces.len(), 1);
-        let entry = registry.spaces.values().next().unwrap();
-        assert!(entry.connection.is_none());
-        assert!(!entry.site.join(tonk_cli::connections::MARKER_FILE).exists());
+        assert!(registry.spaces.is_empty());
+        assert!(registry.bindings.is_empty());
+        assert!(!home.path().join("data").exists());
     }
     Ok(())
 }

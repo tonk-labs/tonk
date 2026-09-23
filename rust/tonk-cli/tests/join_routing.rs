@@ -1,18 +1,20 @@
-//! Typed invitation routing before `tonk join` mutates local state.
+//! Tool-only invitation routing before `tonk join` mutates local state.
 
 mod common;
 
 use anyhow::Result;
 use dialog_credentials::{Ed25519Signer, Signer};
+use dialog_effects::storage::Directory;
 use dialog_ucan_core::time::{Duration, SystemTime, Timestamp};
 use dialog_ucan_core::{DelegationBuilder, DelegationChain};
 use dialog_varsig::Principal as _;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::RwLock;
-use tonk_cli::join::PreparedInvitation;
 use tonk_invite::connection::{AgentInvite, candidate_build_scopes};
-use tonk_schema::prelude::DidExt as _;
+
+const WRONG_KIND: &str = "This link invites a person to the space.\nTo connect the CLI, ask for a link from \"connect a tool\" in Tonk.";
 
 fn cli(home: &std::path::Path, cwd: &std::path::Path) -> std::process::Command {
     let binary = std::env::var_os("NEXTEST_BIN_EXE_tonk")
@@ -37,9 +39,8 @@ async fn run(mut command: std::process::Command) -> Result<std::process::Output>
     Ok(tokio::task::spawn_blocking(move || command.output()).await??)
 }
 
-async fn agent_link(base: &str, expired: bool) -> Result<String> {
+async fn agent_fixture(base: &str, seed: [u8; 32], expired: bool) -> Result<AgentInvite> {
     let owner = Signer::from(Ed25519Signer::import(&[71; 32]).await?);
-    let seed = [72; 32];
     let recipient = Ed25519Signer::import(&seed).await?;
     let remote = url::Url::parse("https://access.example.test/ucan/")?;
     let scopes = candidate_build_scopes(&owner.did());
@@ -56,21 +57,22 @@ async fn agent_link(base: &str, expired: bool) -> Result<String> {
     };
     let mut chains = Vec::new();
     for scope in &scopes {
-        let grant = DelegationBuilder::new()
-            .issuer(owner.clone())
-            .audience(&recipient.did())
-            .subject(scope.subject.clone())
-            .command(scope.command.0.clone())
-            .policy(scope.policy())
-            .expiration(expiration)
-            .meta(tonk_invite::home_address_meta(&remote))
-            .try_build()
-            .await?;
-        chains.push(DelegationChain::new(grant));
+        chains.push(DelegationChain::new(
+            DelegationBuilder::new()
+                .issuer(owner.clone())
+                .audience(&recipient.did())
+                .subject(scope.subject.clone())
+                .command(scope.command.0.clone())
+                .policy(scope.policy())
+                .expiration(expiration)
+                .meta(tonk_invite::home_address_meta(&remote))
+                .try_build()
+                .await?,
+        ));
     }
-    AgentInvite::new(seed, chains, &scopes, &remote, validation_time)
-        .await?
-        .to_url(base)
+    let invite = AgentInvite::new(seed, chains.clone(), &scopes, &remote, validation_time).await?;
+    let _ = invite.to_url(base)?;
+    Ok(invite)
 }
 
 fn secret_free(error: &anyhow::Error, secrets: &[&str]) {
@@ -83,8 +85,33 @@ fn secret_free(error: &anyhow::Error, secrets: &[&str]) {
     }
 }
 
+fn snapshot(root: &std::path::Path) -> Result<BTreeMap<std::path::PathBuf, Vec<u8>>> {
+    fn visit(
+        root: &std::path::Path,
+        at: &std::path::Path,
+        files: &mut BTreeMap<std::path::PathBuf, Vec<u8>>,
+    ) -> Result<()> {
+        if !at.exists() {
+            return Ok(());
+        }
+        for entry in std::fs::read_dir(at)? {
+            let entry = entry?;
+            let path = entry.path();
+            if entry.file_type()?.is_dir() {
+                visit(root, &path, files)?;
+            } else {
+                files.insert(path.strip_prefix(root)?.to_owned(), std::fs::read(path)?);
+            }
+        }
+        Ok(())
+    }
+    let mut files = BTreeMap::new();
+    visit(root, root, &mut files)?;
+    Ok(files)
+}
+
 #[dialog_common::test]
-async fn it_routes_and_validates_full_links_without_fallback() -> Result<()> {
+async fn it_accepts_supported_tool_links_and_rejects_other_kinds_without_fallback() -> Result<()> {
     let issuer = common::TestSite::new().await?;
     let ordinary = tonk_cli::invite::mint(
         &issuer.site,
@@ -92,25 +119,37 @@ async fn it_routes_and_validates_full_links_without_fallback() -> Result<()> {
         None,
     )
     .await?;
-    match tonk_cli::join::prepare(&ordinary.url).await? {
-        PreparedInvitation::Ordinary(prepared) => {
-            assert_eq!(prepared.invitation().subject.0, ordinary.subject.this());
-        }
-        PreparedInvitation::Agent(_) => panic!("ordinary invitation reached the agent parser"),
-    }
+    let error = tonk_cli::join::prepare(&ordinary.url).await.unwrap_err();
+    assert_eq!(format!("{error:#}"), WRONG_KIND);
+    secret_free(&error, &[ordinary.url.split('#').next_back().unwrap()]);
 
-    let agent = agent_link("https://carrier.example.test/join", false).await?;
-    match tonk_cli::join::prepare(&agent).await? {
-        PreparedInvitation::Agent(prepared) => {
-            assert_eq!(
-                prepared.hint().remote.as_str(),
-                "https://access.example.test/ucan/"
-            );
-        }
-        PreparedInvitation::Ordinary(_) => panic!("agent invitation reached the ordinary parser"),
-    }
+    let targeted = common::TestSite::new().await?;
+    let target = tonk_cli::site::member_did(&targeted.site).await?;
+    let targeted = tonk_cli::invite::mint_targeted(
+        &issuer.site,
+        Some("https://carrier.example.test/join"),
+        None,
+        target.as_str(),
+    )
+    .await?;
+    assert_eq!(
+        format!(
+            "{:#}",
+            tonk_cli::join::prepare(&targeted.url).await.unwrap_err()
+        ),
+        WRONG_KIND
+    );
 
-    let mut mixed = url::Url::parse(&agent)?;
+    let seed = [72; 32];
+    let agent = agent_fixture("https://carrier.example.test/join", seed, false).await?;
+    let prepared =
+        tonk_cli::join::prepare(&agent.to_url("https://carrier.example.test/join")?).await?;
+    assert_eq!(
+        prepared.hint().remote.as_str(),
+        "https://access.example.test/ucan/"
+    );
+
+    let mut mixed = url::Url::parse(&agent.to_url("https://carrier.example.test/join")?)?;
     mixed
         .query_pairs_mut()
         .append_pair("access", "ordinary-proof");
@@ -118,7 +157,9 @@ async fn it_routes_and_validates_full_links_without_fallback() -> Result<()> {
     assert!(format!("{error:#}").contains("ambiguous_invitation"));
     secret_free(&error, &["ordinary-proof", "tonk-agent-v"]);
 
-    let unsupported = agent.replace("tonk-agent-v2=", "tonk-agent-v99=");
+    let unsupported = agent
+        .to_url("https://carrier.example.test/join")?
+        .replace("tonk-agent-v2=", "tonk-agent-v99=");
     let error = tonk_cli::join::prepare(&unsupported).await.unwrap_err();
     assert!(format!("{error:#}").contains("connection_unsupported_version"));
     secret_free(&error, &["tonk-agent-v99"]);
@@ -128,7 +169,8 @@ async fn it_routes_and_validates_full_links_without_fallback() -> Result<()> {
     assert!(format!("{error:#}").contains("invalid invite"));
     secret_free(&error, &["not-base58", "never-print-secret"]);
 
-    let expired = agent_link("https://carrier.example.test/join", true).await?;
+    let expired = agent_fixture("https://carrier.example.test/join", [73; 32], true).await?;
+    let expired = expired.to_url("https://carrier.example.test/join")?;
     let error = tonk_cli::join::prepare(&expired).await.unwrap_err();
     assert!(format!("{error:#}").contains("Expired at"), "{error:#}");
     secret_free(&error, &["tonk-agent-v2"]);
@@ -136,7 +178,7 @@ async fn it_routes_and_validates_full_links_without_fallback() -> Result<()> {
 }
 
 #[dialog_common::test]
-async fn shortcuts_resolve_once_before_routing_both_formats() -> Result<()> {
+async fn shortcuts_resolve_once_before_tool_only_routing() -> Result<()> {
     use axum::Router;
     use axum::http::{HeaderValue, StatusCode, header};
     use axum::response::IntoResponse;
@@ -151,10 +193,12 @@ async fn shortcuts_resolve_once_before_routing_both_formats() -> Result<()> {
             let requests = requests.clone();
             async move {
                 requests.fetch_add(1, Ordering::SeqCst);
-                let location = location.read().await.clone();
                 (
                     StatusCode::TEMPORARY_REDIRECT,
-                    [(header::LOCATION, HeaderValue::from_str(&location).unwrap())],
+                    [(
+                        header::LOCATION,
+                        HeaderValue::from_str(&location.read().await).unwrap(),
+                    )],
                 )
                     .into_response()
             }
@@ -168,308 +212,153 @@ async fn shortcuts_resolve_once_before_routing_both_formats() -> Result<()> {
     let ordinary =
         tonk_cli::invite::mint(&issuer.site, Some(&format!("{base}/join")), None).await?;
     let ordinary_url = url::Url::parse(&ordinary.url)?;
-    let ordinary_fragment = ordinary_url.fragment().unwrap();
     let mut ordinary_location = ordinary_url.clone();
     ordinary_location.set_fragment(None);
     *location.write().await = ordinary_location.to_string();
-    let short = format!("{base}/@/{}#{ordinary_fragment}", "a".repeat(64));
-    assert!(matches!(
-        tonk_cli::join::prepare(&short).await?,
-        PreparedInvitation::Ordinary(_)
-    ));
+    let short = format!(
+        "{base}/@/{}#{}",
+        "a".repeat(64),
+        ordinary_url.fragment().unwrap()
+    );
+    assert_eq!(
+        format!("{:#}", tonk_cli::join::prepare(&short).await.unwrap_err()),
+        WRONG_KIND
+    );
     assert_eq!(requests.load(Ordering::SeqCst), 1);
 
-    let agent = agent_link(&format!("{base}/join"), false).await?;
-    let agent_url = url::Url::parse(&agent)?;
-    let agent_fragment = agent_url.fragment().unwrap();
+    let agent = agent_fixture(&format!("{base}/join"), [74; 32], false).await?;
+    let agent_url = url::Url::parse(&agent.to_url(&format!("{base}/join"))?)?;
     let mut agent_location = agent_url.clone();
     agent_location.set_fragment(None);
     *location.write().await = agent_location.to_string();
-    let short = format!("{base}/@/{}#{agent_fragment}", "b".repeat(64));
-    assert!(matches!(
-        tonk_cli::join::prepare(&short).await?,
-        PreparedInvitation::Agent(_)
-    ));
+    let short = format!(
+        "{base}/@/{}#{}",
+        "b".repeat(64),
+        agent_url.fragment().unwrap()
+    );
+    tonk_cli::join::prepare(&short).await?;
     assert_eq!(requests.load(Ordering::SeqCst), 2);
-
     server.abort();
     Ok(())
 }
 
 #[dialog_common::test]
-async fn ordinary_local_join_uses_normal_storage_and_no_agent_marker() -> Result<()> {
-    let issuer = common::TestSite::new().await?;
-    let invite = tonk_cli::invite::mint(
-        &issuer.site,
-        Some("https://carrier.example.test/join"),
-        None,
-    )
-    .await?;
-    let temp = tempfile::tempdir()?;
-    let home = temp.path().join("home");
-    let project = temp.path().join("project");
-    std::fs::create_dir_all(&home)?;
-    std::fs::create_dir_all(&project)?;
-    let mut command = cli(&home, &project);
-    command.args(["join", &invite.url, "--name", "shared"]);
-    let output = run(command).await?;
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Joined space 'shared'"), "{stdout}");
-    assert!(stdout.contains("no sync remote"), "{stdout}");
-    assert!(!stdout.contains("Agent connection confirmed"));
-    let store = tonk_cli::space::SpaceStore::at(home.join("state"));
-    let registry = store.load()?;
-    let entry = &registry.spaces["shared"];
-    assert!(entry.connection.is_none());
-    assert!(!entry.site.join(tonk_cli::connections::MARKER_FILE).exists());
-    assert_eq!(
-        registry.bindings.get(&project.canonicalize()?),
-        Some(&"shared".to_owned())
-    );
-    let recovery = std::fs::read_to_string(entry.site.join("ordinary-join.json"))?;
-    assert!(!recovery.contains(&invite.url));
-    assert!(!recovery.contains(invite.url.split('#').next_back().unwrap()));
-    Ok(())
-}
-
-#[dialog_common::test]
-async fn ordinary_targeted_join_requires_an_available_exact_recipient() -> Result<()> {
+async fn ordinary_links_fail_before_any_cli_state_or_binding_write() -> Result<()> {
     let issuer = common::TestSite::new().await?;
     let recipient = common::TestSite::new().await?;
     let recipient_root = tonk_cli::site::member_did(&recipient.site).await?;
-    let invite = tonk_cli::invite::mint_targeted(
+    let links = [
+        tonk_cli::invite::mint(
+            &issuer.site,
+            Some("https://carrier.example.test/join"),
+            None,
+        )
+        .await?
+        .url,
+        tonk_cli::invite::mint_targeted(
+            &issuer.site,
+            Some("https://carrier.example.test/join"),
+            None,
+            recipient_root.as_str(),
+        )
+        .await?
+        .url,
+    ];
+    let temp = tempfile::tempdir()?;
+    let home = temp.path().join("home");
+    let project = temp.path().join("project");
+    std::fs::create_dir_all(&home)?;
+    std::fs::create_dir_all(&project)?;
+    let store = tonk_cli::space::SpaceStore::at(home.join("state"));
+    let account = tonk_cli::space::AccountRecord::new("did:key:unchanged");
+    store.set_account(Some(account.clone()))?;
+    std::fs::write(
+        home.join("legacy-account-sentinel"),
+        b"malformed-but-untouched",
+    )?;
+    let before = snapshot(&home)?;
+    for link in links {
+        let mut command = cli(&home, &project);
+        command.args(["join", &link, "--name", "must-not-exist"]);
+        let output = run(command).await?;
+        assert!(!output.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr).trim(),
+            format!("error: {WRONG_KIND}")
+        );
+        assert!(output.stdout.is_empty());
+        assert_eq!(snapshot(&home)?, before);
+        assert_eq!(store.account()?, Some(account.clone()));
+        assert!(store.load()?.spaces.is_empty());
+        assert!(store.load()?.bindings.is_empty());
+    }
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn an_already_persisted_ordinary_import_can_resume_only_by_space() -> Result<()> {
+    let issuer = common::TestSite::new().await?;
+    let invite = tonk_cli::invite::mint(
         &issuer.site,
         Some("https://carrier.example.test/join"),
         None,
-        recipient_root.as_str(),
     )
     .await?;
-    let prepared = match tonk_cli::join::prepare(&invite.url).await? {
-        PreparedInvitation::Ordinary(prepared) => prepared,
-        PreparedInvitation::Agent(_) => panic!("targeted ordinary invite reached agent parsing"),
+    let preflight = tonk_cli::invite::preflight(&invite.url).await?;
+    let temp = tempfile::tempdir()?;
+    let home = temp.path().join("home");
+    let project = temp.path().join("project");
+    std::fs::create_dir_all(&home)?;
+    std::fs::create_dir_all(&project)?;
+    #[cfg(target_os = "macos")]
+    let profile_parent = home.join("Library/Application Support/dialog");
+    #[cfg(not(target_os = "macos"))]
+    let profile_parent = home.join("data/dialog");
+    std::fs::create_dir_all(&profile_parent)?;
+    let store = tonk_cli::space::SpaceStore::at(home.join("state"));
+    let root = store.canonical_site("legacy");
+    let config = tonk_cli::site::SiteConfig {
+        profile_name: tonk_cli::site::PROFILE_NAME.into(),
+        profile_directory: Directory::At(profile_parent.to_string_lossy().into_owned()),
+        require_account: true,
+        provision_account_spaces: true,
+        account_store: store.clone(),
     };
-    tonk_cli::join::ensure_ordinary_recipient(&prepared, &recipient.config).await?;
-
-    let unrelated = common::TestSite::new().await?;
-    let error = tonk_cli::join::ensure_ordinary_recipient(&prepared, &unrelated.config)
-        .await
-        .unwrap_err();
-    assert!(format!("{error:#}").contains("invitation_recipient_mismatch"));
-
-    let empty = tempfile::tempdir()?;
-    let project = empty.path().join("project");
-    std::fs::create_dir_all(&project)?;
-    let mut command = cli(empty.path(), &project);
-    command.args(["join", &invite.url, "--name", "must-not-exist"]);
-    let output = run(command).await?;
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("invitation_recipient_mismatch"));
-    assert!(!empty.path().join("state/spaces").exists());
-    Ok(())
-}
-
-#[dialog_common::test]
-async fn failed_hosted_join_retains_alias_offline_edits_and_resume_state() -> Result<()> {
-    let issuer = common::TestSite::new().await?;
-    let invite = tonk_cli::invite::mint(
-        &issuer.site,
-        Some("https://carrier.example.test/join"),
-        Some("http://127.0.0.1:9/ucan/"),
-    )
-    .await?;
-    let temp = tempfile::tempdir()?;
-    let home = temp.path().join("home");
-    let project = temp.path().join("project");
-    std::fs::create_dir_all(&home)?;
-    std::fs::create_dir_all(&project)?;
-    let mut command = cli(&home, &project);
-    command.args(["join", &invite.url, "--name", "pending"]);
-    let output = run(command).await?;
-    assert!(!output.status.success());
-    assert!(!String::from_utf8_lossy(&output.stdout).contains("Joined space"));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("Resume with `tonk --space pending join`"),
-        "{stderr}"
-    );
-    assert!(!stderr.contains(&invite.url));
-    let store = tonk_cli::space::SpaceStore::at(home.join("state"));
-    let registry = store.load()?;
-    assert_eq!(registry.spaces.len(), 1);
-    let root = registry.spaces["pending"].site.clone();
-    let state: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(root.join("ordinary-join.json"))?)?;
-    assert_eq!(state["phase"], "pull_pending");
-
-    let document = "attribute!: &offline-note\n  description: Offline note\n  the: test.pending/offline-note\n  as: text\n  cardinality: one\n";
-    let mut edit = cli(&home, &project);
-    edit.args(["--space", "pending", "eval", "-c", document, "--no-sync"]);
-    let edited = run(edit).await?;
-    assert!(
-        edited.status.success(),
-        "{}",
-        String::from_utf8_lossy(&edited.stderr)
-    );
-    let mut resume = cli(&home, &project);
-    resume.args(["--space", "pending", "join"]);
-    let resumed = run(resume).await?;
-    assert!(!resumed.status.success());
-    let retry_error = String::from_utf8_lossy(&resumed.stderr);
-    assert!(!retry_error.contains("account login"), "{retry_error}");
-    assert!(
-        retry_error.contains("127.0.0.1:9"),
-        "retry must reach the invitation remote: {retry_error}"
-    );
-    assert!(!String::from_utf8_lossy(&resumed.stdout).contains("Joined space"));
-    assert_eq!(store.load()?.spaces.len(), 1);
-    let mut show = cli(&home, &project);
-    show.args(["--space", "pending", "show", "offline-note", "--json"]);
-    let shown = run(show).await?;
-    assert!(
-        shown.status.success(),
-        "{}",
-        String::from_utf8_lossy(&shown.stderr)
-    );
-    Ok(())
-}
-
-#[dialog_common::test]
-async fn ordinary_join_resumes_after_registry_publication_is_interrupted() -> Result<()> {
-    let issuer = common::TestSite::new().await?;
-    let invite = tonk_cli::invite::mint(
-        &issuer.site,
-        Some("https://carrier.example.test/join"),
+    tonk_cli::invite::claim(&root, &invite.url, config).await?;
+    tonk_cli::join::OrdinaryState::legacy(
+        &preflight.invitation,
+        &project,
+        true,
         None,
-    )
-    .await?;
-    let temp = tempfile::tempdir()?;
-    let home = temp.path().join("home");
-    let project = temp.path().join("project");
-    std::fs::create_dir_all(&home)?;
-    std::fs::create_dir_all(&project)?;
-    let store = tonk_cli::space::SpaceStore::at(home.join("state"));
-    let guard = store.write_guard()?;
+        false,
+        tonk_cli::join::OrdinaryPhase::Ready,
+    )?
+    .save(&root)?;
+    tonk_cli::space::register_existing_bound(&store, "legacy", &root, &project)?;
 
-    let mut command = cli(&home, &project);
-    command
-        .args(["join", &invite.url, "--name", "interrupted"])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-    let mut child = command.spawn()?;
-    let root = store.canonical_site("interrupted");
-    let journal = root.join("ordinary-join.json");
-    let ready = tokio::time::timeout(std::time::Duration::from_secs(30), async {
-        loop {
-            let phase = std::fs::read(&journal)
-                .ok()
-                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
-            if phase
-                .as_ref()
-                .is_some_and(|value| value["phase"] == "ready")
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    })
-    .await;
-    let _ = child.kill();
-    let interrupted = tokio::task::spawn_blocking(move || child.wait_with_output()).await??;
-    drop(guard);
-    assert!(
-        ready.is_ok(),
-        "ordinary import never reached publication barrier: {}",
-        String::from_utf8_lossy(&interrupted.stderr)
-    );
-    assert!(!store.load()?.spaces.contains_key("interrupted"));
-    assert!(!String::from_utf8_lossy(&interrupted.stdout).contains("Joined space"));
+    let mut rejected = cli(&home, &project);
+    rejected.args(["join", &invite.url]);
+    let rejected = run(rejected).await?;
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains(WRONG_KIND));
 
     let mut resume = cli(&home, &home);
-    resume.args(["--space", "interrupted", "join"]);
+    resume.args(["--space", "legacy", "join"]);
     let resumed = run(resume).await?;
     assert!(
         resumed.status.success(),
         "{}",
         String::from_utf8_lossy(&resumed.stderr)
     );
-    assert!(String::from_utf8_lossy(&resumed.stdout).contains("Joined space 'interrupted'"));
-    let registry = store.load()?;
-    assert_eq!(registry.spaces.len(), 1);
+    assert!(String::from_utf8_lossy(&resumed.stdout).contains("Joined space 'legacy'"));
     assert_eq!(
-        registry.bindings.get(&project.canonicalize()?),
-        Some(&"interrupted".to_owned())
-    );
-    assert!(!registry.bindings.contains_key(&home.canonicalize()?));
-    Ok(())
-}
-
-#[dialog_common::test]
-async fn ordinary_advisory_names_get_collision_safe_local_aliases() -> Result<()> {
-    async fn named_invite() -> Result<tonk_cli::invite::InviteOutcome> {
-        let issuer = common::TestSite::new().await?;
-        issuer
-            .site
-            .branch()
-            .await?
-            .handle()
-            .transaction()
-            .assert(tonk_schema::RepositoryName {
-                this: issuer.site.repository.did().this(),
-                name: tonk_schema::domain::repo::Name("Shared Garden".into()),
-            })
-            .commit()
-            .publish()
-            .perform(&issuer.site.operator)
-            .await?;
-        Ok(tonk_cli::invite::mint(
-            &issuer.site,
-            Some("https://carrier.example.test/join"),
-            None,
-        )
-        .await?)
-    }
-
-    let first = named_invite().await?;
-    let second = named_invite().await?;
-    let temp = tempfile::tempdir()?;
-    let home = temp.path().join("home");
-    let first_project = temp.path().join("first-project");
-    let second_project = temp.path().join("second-project");
-    std::fs::create_dir_all(&home)?;
-    std::fs::create_dir_all(&first_project)?;
-    std::fs::create_dir_all(&second_project)?;
-    for (project, invite, expected) in [
-        (&first_project, &first.url, "shared-garden"),
-        (&second_project, &second.url, "shared-garden-2"),
-    ] {
-        let mut command = cli(&home, project);
-        command.args(["join", invite]);
-        let output = run(command).await?;
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(
-            String::from_utf8_lossy(&output.stdout).contains(&format!("Joined space '{expected}'"))
-        );
-    }
-    let store = tonk_cli::space::SpaceStore::at(home.join("state"));
-    let registry = store.load()?;
-    assert!(registry.spaces.contains_key("shared-garden"));
-    assert!(registry.spaces.contains_key("shared-garden-2"));
-    assert_eq!(
-        registry.bindings[&first_project.canonicalize()?],
-        "shared-garden"
-    );
-    assert_eq!(
-        registry.bindings[&second_project.canonicalize()?],
-        "shared-garden-2"
+        store
+            .load()?
+            .bindings
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([project.canonicalize()?])
     );
     Ok(())
 }

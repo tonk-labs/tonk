@@ -49,9 +49,11 @@ pub struct HandoffMetadata {
 /// Validate account scope before any local mutation or browser ceremony.
 pub async fn preflight_connect(url: &str) -> anyhow::Result<ConnectInvite> {
     let invite = crate::invite::preflight(url).await?;
-    let expected_root = invite.expected_root.ok_or_else(|| anyhow::anyhow!(
-        "agent setup requires an account-scoped invitation; copy a fresh agent prompt from Tonk. To join this invitation as your current account, run `tonk join URL --name NAME` without --agent"
-    ))?;
+    let expected_root = invite.expected_root.ok_or_else(|| {
+        anyhow::anyhow!(
+            "tool setup requires an account-scoped invitation; use \"connect a tool\" in Tonk"
+        )
+    })?;
     Ok(ConnectInvite {
         metadata: HandoffMetadata {
             version: 1,
@@ -168,7 +170,7 @@ pub async fn confirm_connection(site: &TonkSite) -> anyhow::Result<()> {
     record_connection(site).await?;
     crate::sync::push(site)
         .await
-        .context("connection receipt is local; retry join --agent on this space to publish it")?;
+        .context("connection receipt is local; retry `tonk --space NAME join` to publish it")?;
     Ok(())
 }
 

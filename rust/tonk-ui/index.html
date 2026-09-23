@@ -576,6 +576,12 @@
                         navigator.serviceWorker.controller === priorController
                     ) {
                         retirementRequested = true;
+                        // Installation has committed the full generation.
+                        // Repeat the activation request from the installed
+                        // successor if Chrome left it waiting after install.
+                        incoming.postMessage({
+                            type: "activate-if-installed",
+                        });
                         priorController.postMessage({
                             type: "retire-if-superseded",
                         });

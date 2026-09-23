@@ -957,19 +957,19 @@ fn it_keeps_machine_instructions_in_the_production_copy_prompt() {
             "the resume command must work without a globally installed CLI",
         );
         assert!(
-            copied.contains("If access expires or is revoked, ask me for a fresh invite."),
+            copied.contains("If access expires or is revoked, ask me for a fresh link."),
             "the prompt must request fresh authority after expiry or revocation",
         );
         assert!(
-            library.contains("TONK_CONNECTION_ORIGIN=${JSON.stringify(page.origin)}"),
-            "loopback prompts must trust the exact local dev deployment",
+            library.contains("join --via ${JSON.stringify(page.origin)}"),
+            "non-production prompts must select the exact issuing deployment",
         );
         assert!(
             library.contains("page = new URL(this.getAttribute(\"link\"))"),
             "sandboxed space views must derive loopback from the invitation origin",
         );
         assert!(
-            library.contains(".replaceAll(\"npx --yes @tonk/cli\", \"tonk\")"),
+            library.contains("const executable = local ? \"tonk\" : \"npx --yes @tonk/cli\""),
             "loopback prompts must use the locally built CLI",
         );
     }
@@ -1626,12 +1626,13 @@ fn it_offers_only_scoped_agent_prompts_without_account_approval() {
         assert!(
             scoped.contains("Multiple holders of this link share the same invitation authority")
         );
-        assert!(scoped.contains("ask me for a fresh invite"));
+        assert!(scoped.contains("ask me for a fresh link"));
         assert!(!scoped.contains("join --agent"));
         assert!(!scoped.contains("--switch-account"));
         assert!(!scoped.contains("requires account {account}"));
     }
     let playground = include_str!("../../tonk-core/assets/library/onboarding-agent.yaml");
+    assert!(playground.contains("<page-mount on:invite=tonk:agent-handoff></page-mount>"));
     let scoped = playground
         .split("<div data-agent-mode=\"scoped\" hidden>")
         .nth(1)

@@ -637,6 +637,11 @@ fn attach_stack_verbs(this: &HtmlElement, state: &bar::Shared) -> Vec<Bound> {
             {
                 share.click();
             }
+            return;
+        }
+        if row.has_attribute("data-tool-connection") {
+            bar::close(&host, &shared);
+            crate::tool_connection::open(&host);
         }
     })];
     let host = this.clone();

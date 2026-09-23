@@ -2,7 +2,6 @@
 mod common;
 
 use anyhow::Result;
-use dialog_common::helpers::Provider as _;
 use dialog_credentials::{Ed25519Signer, Signer};
 use dialog_query::the;
 use dialog_ucan_core::{
@@ -46,7 +45,6 @@ async fn connection_command_rejects_account_flags_and_implicit_resume_without_mu
     let secret = "https://example.test/join#tonk-agent-v1=never-print-this-secret";
     for flags in [
         vec!["--no-open"],
-        vec!["--via", "https://example.test"],
         vec!["--switch-account", "did:key:unrelated"],
     ] {
         let mut command = cli(home.path(), home.path());
@@ -324,13 +322,35 @@ async fn connection_command_imports_bearer_restarts_and_keeps_account_state() ->
     let project = temp.path().join("project");
     std::fs::create_dir_all(&home)?;
     std::fs::create_dir_all(&project)?;
+    for (via, expected) in [
+        (
+            "file:///tmp/not-a-deployment",
+            "connection deployment origin must use https (or loopback http)",
+        ),
+        ("https://wrong.example", "connection_untrusted_route"),
+    ] {
+        let rejected_home = temp.path().join(format!(
+            "rejected-{}",
+            via.trim_start_matches("https://")
+                .replace(['/', ':', '.'], "-")
+        ));
+        std::fs::create_dir(&rejected_home)?;
+        let mut command = cli(&rejected_home, &rejected_home);
+        command.args(["join", &link, "--via", via]);
+        let output = run(command).await?;
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(expected), "{stderr}");
+        assert!(!stderr.contains(&link));
+        assert!(!rejected_home.join("state").exists());
+    }
     let store = tonk_cli::space::SpaceStore::at(home.join("state"));
     let unrelated = tonk_cli::space::AccountRecord::new(owner.did().to_string());
     store.set_account(Some(unrelated.clone()))?;
     let mut command = cli(&home, &project);
     command
-        .args(["join", &link, "--name", "agent"])
-        .env("TONK_CONNECTION_ORIGIN", &server.endpoint)
+        .args(["join", &link, "--name", "agent", "--via", &server.endpoint])
+        .env("TONK_CONNECTION_ORIGIN", "https://wrong.example")
         .env("TONK_SPACE", "must-not-select-this");
     let output = run(command).await?;
     assert!(
@@ -634,187 +654,6 @@ async fn connection_command_imports_bearer_restarts_and_keeps_account_state() ->
     assert_eq!(
         retained.branch().await?.handle().revision().unwrap().tree,
         edited
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn ordinary_command_pulls_content_uses_synced_name_and_has_no_agent_receipt() -> Result<()> {
-    use tonk_schema::prelude::DidExt as _;
-
-    let s3 =
-        dialog_remote_s3::helpers::LocalS3::start_with_auth("test", "test", &["ordinary-commands"])
-            .await?;
-    let server = tonk_access_service::helpers::AccessServer::start(
-        s3,
-        "ordinary-commands",
-        "test",
-        "test",
-        None,
-        None,
-        None,
-    )
-    .await?;
-    let producer = common::TestSite::new().await?;
-    let address = tonk_access_service::helpers::AccessServiceAddress {
-        access_service_url: server.endpoint.clone(),
-        s3_endpoint: server.s3_server.endpoint.clone(),
-        bucket: "ordinary-commands".into(),
-        access_key_id: "test".into(),
-        secret_access_key: "test".into(),
-        service_did: server.service_did.clone(),
-        service_seed: server.service_seed.clone(),
-    };
-    address
-        .provision_subject(producer.site.repository.did().as_ref())
-        .await?;
-    let remote = format!("{}/ucan/", server.endpoint);
-    tonk_cli::remote::add(
-        &producer.site,
-        "origin",
-        &remote,
-        Some(producer.site.repository.did()),
-    )
-    .await?;
-    tonk_cli::remote::set_upstream(&producer.site, "origin").await?;
-    let entity: dialog_artifacts::Entity = "id:test:ordinary-before-cli".parse()?;
-    producer
-        .site
-        .branch()
-        .await?
-        .handle()
-        .transaction()
-        .assert(tonk_schema::RepositoryName {
-            this: producer.site.repository.did().this(),
-            name: tonk_schema::domain::repo::Name("Shared Garden".into()),
-        })
-        .assert(
-            the!("test.ordinary/value")
-                .of(entity)
-                .is("ordinary remote content".to_owned()),
-        )
-        .commit()
-        .publish()
-        .perform(&producer.site.operator)
-        .await?;
-    tonk_cli::sync::push(&producer.site).await?;
-    let invite = tonk_cli::invite::mint(
-        &producer.site,
-        Some("https://untrusted-carrier.example/join"),
-        Some(&remote),
-    )
-    .await?;
-
-    let temp = tempfile::tempdir()?;
-    let home = temp.path().join("home");
-    let project = temp.path().join("project");
-    std::fs::create_dir_all(&home)?;
-    std::fs::create_dir_all(&project)?;
-    let mut command = cli(&home, &project);
-    command.args(["join", &invite.url]);
-    let output = run(command).await?;
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Joined space 'shared-garden'"), "{stdout}");
-    assert!(!stdout.contains("Agent connection confirmed"));
-    let store = tonk_cli::space::SpaceStore::at(home.join("state"));
-    let registry = store.load()?;
-    assert_eq!(registry.spaces.len(), 1);
-    assert!(registry.spaces["shared-garden"].connection.is_none());
-    assert_eq!(
-        registry.bindings.get(&project.canonicalize()?),
-        Some(&"shared-garden".to_owned())
-    );
-
-    let mut show = cli(&home, &project);
-    show.args([
-        "--space",
-        "shared-garden",
-        "show",
-        "id:test:ordinary-before-cli",
-        "--json",
-    ]);
-    let shown = run(show).await?;
-    assert!(
-        shown.status.success(),
-        "{}",
-        String::from_utf8_lossy(&shown.stderr)
-    );
-    assert!(String::from_utf8_lossy(&shown.stdout).contains("ordinary remote content"));
-
-    let receipt_query =
-        "agent-connection:\n  this: ?connection\n  status: \"Agent connection confirmed\"\n";
-    let mut query = cli(&home, &project);
-    query.args([
-        "--space",
-        "shared-garden",
-        "eval",
-        "-c",
-        receipt_query,
-        "--no-sync",
-    ]);
-    let queried = run(query).await?;
-    assert!(
-        queried.status.success(),
-        "{}",
-        String::from_utf8_lossy(&queried.stderr)
-    );
-    assert!(!String::from_utf8_lossy(&queried.stdout).contains("id:tonk:agent-connection"));
-
-    let mut replay = cli(&home, &project);
-    replay.args(["join", &invite.url]);
-    let replayed = run(replay).await?;
-    assert!(
-        replayed.status.success(),
-        "{}",
-        String::from_utf8_lossy(&replayed.stderr)
-    );
-    assert_eq!(store.load()?.spaces.len(), 1);
-
-    let document = "attribute!: &pending-publication-note\n  description: Pending publication note\n  the: test.ordinary/pending-publication-note\n  as: text\n  cardinality: one\n";
-    let mut edit = cli(&home, &project);
-    edit.args([
-        "--space",
-        "shared-garden",
-        "eval",
-        "-c",
-        document,
-        "--no-sync",
-    ]);
-    let edited = run(edit).await?;
-    assert!(
-        edited.status.success(),
-        "{}",
-        String::from_utf8_lossy(&edited.stderr)
-    );
-
-    let root = store.load()?.spaces["shared-garden"].site.clone();
-    let mut pending = tonk_cli::join::OrdinaryState::read(&root)?
-        .expect("ordinary join must retain its recovery journal");
-    pending.phase = tonk_cli::join::OrdinaryPhase::PublicationPending;
-    pending.save(&root)?;
-    server.stop().await?;
-
-    let mut resume = cli(&home, &project);
-    resume.args(["--space", "shared-garden", "join"]);
-    let resumed = run(resume).await?;
-    assert!(!resumed.status.success());
-    assert!(!String::from_utf8_lossy(&resumed.stdout).contains("Joined space"));
-    let stderr = String::from_utf8_lossy(&resumed.stderr);
-    assert!(
-        stderr.contains("Resume with `tonk --space shared-garden join`"),
-        "{stderr}"
-    );
-    assert_eq!(store.load()?.spaces.len(), 1);
-    assert_eq!(
-        tonk_cli::join::OrdinaryState::read(&root)?
-            .expect("failed publication must retain recovery state")
-            .phase,
-        tonk_cli::join::OrdinaryPhase::PublicationPending
     );
     Ok(())
 }

@@ -50,12 +50,12 @@
       "surface": "browser",
       "area": "Spaces",
       "name": "Space actions and switching",
-      "summary": "The expanded floating action bar names the current space and lists every other account-directory space alongside renaming, sharing, sync, and appearance actions.",
+      "summary": "The expanded floating action bar names the current space and separates person invitations from scoped tool connections alongside switching, renaming, sync, and appearance actions.",
       "artifact": "app/screens/web-04-space-actions.png",
       "capture": "running product",
       "status": "captured",
-      "journey_ids": ["SPACE-06", "SYNC-01", "SYNC-02", "SYNC-03", "SYNC-04", "COLLAB-01", "CLI-03"],
-      "source_paths": ["rust/tonk-ui/src/bin/ui.rs", "rust/tonk-fab/src/markup.rs", "rust/tonk-fab/src/skin.rs"]
+      "journey_ids": ["ACCT-C14", "SPACE-06", "SYNC-01", "SYNC-02", "SYNC-03", "SYNC-04", "COLLAB-01", "CLI-03"],
+      "source_paths": ["rust/tonk-ui/src/bin/ui.rs", "rust/tonk-fab/src/markup.rs", "rust/tonk-fab/src/tool_connection.rs", "rust/tonk-fab/src/skin.rs"]
     },
     {
       "id": "WEB-05",
