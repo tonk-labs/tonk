@@ -56,14 +56,32 @@ pub struct Session<S: Clone = DefaultSpace> {
     pub expires_at: u64,
 }
 
-/// Open a fresh signing session of `peer`.
+/// Open a fresh signing session of `peer`, on the profile's `main`.
 pub async fn open<S: PeerSpace>(peer: &Peer<S>) -> Result<Session<S>, TonkWorkerError> {
-    rotate(peer).await
+    rotate(peer, crate::router::repository::PROFILE_BRANCH).await
 }
 
-/// Create a fresh session key and bounded in-memory grant from the peer.
+/// Open a signing session whose worker proves from, and retains
+/// delegations into, `access_branch` of the profile repository.
+///
+/// The profile keeps one branch per account, and the branch it is on
+/// carries that account's authority: the worker has to prove with the
+/// grants of the account the profile is signed in as, not with whatever
+/// `main` happens to hold.
+pub async fn open_on<S: PeerSpace>(
+    peer: &Peer<S>,
+    access_branch: &str,
+) -> Result<Session<S>, TonkWorkerError> {
+    rotate(peer, access_branch).await
+}
+
+/// Create a fresh session key and bounded in-memory grant from the peer,
+/// proving from `access_branch`.
 /// Existing session credentials and delegations are left untouched.
-pub async fn rotate<S: PeerSpace>(peer: &Peer<S>) -> Result<Session<S>, TonkWorkerError> {
+pub async fn rotate<S: PeerSpace>(
+    peer: &Peer<S>,
+    access_branch: &str,
+) -> Result<Session<S>, TonkWorkerError> {
     let mut context = [0u8; 32];
     getrandom::fill(&mut context).map_err(|error| {
         TonkWorkerError::Internal(format!("failed to generate session entropy: {error}"))
@@ -75,6 +93,7 @@ pub async fn rotate<S: PeerSpace>(peer: &Peer<S>) -> Result<Session<S>, TonkWork
     let operator = peer
         .worker(context)
         .allow(peer.access().claim(Subject::any()).expires(expiration))
+        .branch(access_branch)
         .await
         .map_err(|error| {
             TonkWorkerError::Internal(format!("failed to build a session operator: {error}"))

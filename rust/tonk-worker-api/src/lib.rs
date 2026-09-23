@@ -33,8 +33,8 @@ mod sync;
 
 pub use account::{
     AccountDeletionPlan, AccountDeletionSpace, AccountDevice, AccountDisplayNameRequest,
-    AccountDisplayNameResponse, AccountLinkRequest, AccountSpaceDeletionRequest, AccountStatus,
-    AccountSummary, HostedSpaceDeletionResult, RevokeDeviceAcknowledgement, RevokeDeviceRequest,
+    AccountDisplayNameResponse, AccountLinkRequest, AccountStatus, AccountSummary,
+    RevokeDeviceAcknowledgement, RevokeDeviceRequest,
 };
 pub use analytics::{ANALYTICS_MESSAGE, AnalyticsEvent, AnalyticsMessage};
 pub use claim::{ClaimResponse, QueryResponse};

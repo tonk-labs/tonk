@@ -187,6 +187,10 @@ fn scalar_text(scalar: &Scalar) -> String {
         Scalar::UnsignedInteger(value) => value.to_string(),
         Scalar::Float(value) => value.to_string(),
         Scalar::Boolean(value) => value.to_string(),
+        // Binary has no text reading, and a command field sourced from
+        // a constant is text. Treated as "no value" rather than
+        // re-encoded: the same way a blank control is handled.
+        Scalar::Bytes(_) => String::new(),
         // `null` reads as "no value", which the runtime treats the way
         // it treats a blank control: the field is omitted, the command
         // still posts.

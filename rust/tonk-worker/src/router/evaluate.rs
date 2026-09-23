@@ -421,14 +421,17 @@ pub(super) type RetractionPlanner<'a> = &'a (
 
 enum Retractions<'a> {
     Fixed(Vec<crate::router::claim::RawClaim>),
-    Planned(RetractionPlanner<'a>),
+    Planned {
+        retract: RetractionPlanner<'a>,
+        desired: &'a [crate::router::claim::RawClaim],
+    },
 }
 
 impl Retractions<'_> {
     async fn resolve(&self) -> Result<Vec<crate::router::claim::RawClaim>, TonkWorkerError> {
         match self {
             Self::Fixed(claims) => Ok(claims.clone()),
-            Self::Planned(plan) => plan().await,
+            Self::Planned { retract, .. } => retract().await,
         }
     }
 }
@@ -529,6 +532,15 @@ async fn evaluate_on_branch_with<'a>(
         let mut txn = branch.transaction();
         for claim in retract.resolve().await? {
             txn = txn.retract(claim);
+        }
+        if let Retractions::Planned { desired, .. } = &retract {
+            // The library was analyzed in isolation. Seed its complete desired
+            // schema into this same transaction before resolving the document
+            // against the branch: legacy schemas otherwise validate new views
+            // against old fields and prevent the migration from committing.
+            for claim in *desired {
+                txn = txn.assert(claim.clone());
+            }
         }
         let t_eval = web_time::Instant::now();
         let evaluated = syntax
@@ -893,6 +905,7 @@ pub(super) async fn evaluate_profile_with_retraction_plan<'a>(
     branch: &'a str,
     body: String,
     retract: RetractionPlanner<'a>,
+    desired: &'a [crate::router::claim::RawClaim],
     record: SeedRecord<'a>,
 ) -> Result<EvaluateResponse, TonkWorkerError> {
     let tonk_branch = tonk_state.reactor.profile_repository().branch(branch);
@@ -901,7 +914,7 @@ pub(super) async fn evaluate_profile_with_retraction_plan<'a>(
         tonk_branch,
         Bytes::from(body.into_bytes()),
         EvaluateQuery { transact: true },
-        Retractions::Planned(retract),
+        Retractions::Planned { retract, desired },
         Some(record),
         EvaluationMode::LibrarySeed,
     )
@@ -1251,7 +1264,10 @@ mod tests {
             tonk.reactor.repository(&repo).branch("main"),
             CONCEPTS.to_owned().into(),
             super::EvaluateQuery { transact: true },
-            super::Retractions::Planned(&retractions),
+            super::Retractions::Planned {
+                retract: &retractions,
+                desired: &[],
+            },
             None,
             super::EvaluationMode::LibrarySeedWithRace,
         )

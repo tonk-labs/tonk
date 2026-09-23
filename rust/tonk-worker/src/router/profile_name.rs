@@ -18,10 +18,8 @@ use crate::worker::{DefaultOperator, TonkState};
 #[cfg(target_arch = "wasm32")]
 use tonk_schema::{MemberName, Membership};
 
-// The profile repository lives on `main` (it has no content/meta
-// split); spaces re-stamp member names on their own `main` content
-// branch.
-const PROFILE_BRANCH: &str = "main";
+// Spaces re-stamp member names on their own `main` content branch,
+// which is the same name the profile's content branch carries.
 // Only the wasm-gated rename handler re-stamps member names, so this and
 // `restamp_member_name` exist only on the wasm target (the worker's real
 // runtime). Gating them keeps the native `clippy -D warnings` build clean.
@@ -37,21 +35,26 @@ const CONTENT_BRANCH: &str = "main";
 /// [`stored_display_name`] instead, so an unnamed profile reads as
 /// unnamed rather than as a generated word.
 pub(crate) async fn resolve_display_name(tonk: &TonkState) -> String {
-    stored_display_name_from(&tonk.profile, &tonk.operator)
+    stored_display_name_from(&tonk.profile, &tonk.operator, &tonk.active_branch)
         .await
         .unwrap_or_else(|| petname(&tonk.profile.did()))
 }
 
 /// The stored name for an explicit profile, or `None` when none is set.
+///
+/// Read off `branch`, the one the profile is on: each account's branch
+/// carries its own name, so a fixed branch would answer with another
+/// account's.
 pub(crate) async fn stored_display_name_from(
     profile: &DefaultPeer,
     operator: &DefaultOperator,
+    branch: &str,
 ) -> Option<String> {
     let profile_entity = profile.did().this();
 
     let branch = match profile
         .repository()
-        .branch(PROFILE_BRANCH)
+        .branch(branch)
         .open()
         .perform(operator)
         .await
@@ -97,7 +100,7 @@ pub(crate) async fn real_space_keys(tonk: &TonkState) -> Vec<String> {
     let session = match tonk
         .reactor
         .profile_repository()
-        .branch(PROFILE_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
     {
@@ -256,6 +259,7 @@ mod tests {
             storage,
             session_expires_at: session.expires_at,
             profile_name: name.to_string(),
+            active_branch: crate::router::repository::PROFILE_BRANCH.to_owned(),
             reactor,
             admission: Default::default(),
             reject_admission_content_reads: Default::default(),
@@ -289,7 +293,7 @@ mod tests {
         let profile_entity = tonk.profile.did().this();
         tonk.reactor
             .profile_repository()
-            .branch(PROFILE_BRANCH)
+            .branch(&tonk.active_branch)
             .transaction()
             .assert(ProfileName::new(profile_entity, "brave-lynx".into()))
             .commit()

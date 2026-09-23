@@ -9,7 +9,7 @@
 //! consumer can list spaces cheaply and fetch one space's full mount
 //! record when it needs to replicate.
 
-use crate::domain::branch::Origin as BranchOrigin;
+use crate::domain::branch::Replica as BranchReplica;
 use crate::domain::remote::{Address as RemoteAddress, Origin as RemoteOrigin};
 use crate::prelude::DidExt as _;
 use crate::{
@@ -413,7 +413,7 @@ where
             .select(Query::<BranchConcept> {
                 this: Term::var("this"),
                 name: Term::var("name"),
-                origin: Term::from(BranchOrigin::from(anchor.clone())),
+                replica: Term::from(BranchReplica::from(anchor.clone())),
             })
             .perform(env)
             .try_vec()
@@ -433,7 +433,7 @@ where
                 .select(Query::<BranchConcept> {
                     this: Term::var("this"),
                     name: Term::var("name"),
-                    origin: Term::from(BranchOrigin::from(origin)),
+                    replica: Term::from(BranchReplica::from(origin)),
                 })
                 .perform(env)
                 .try_vec()
@@ -455,7 +455,7 @@ where
                 .select(Query::<TrackingBranch> {
                     this: Term::from(local.this.clone()),
                     upstream: Term::var("upstream"),
-                    origin: Term::var("origin"),
+                    replica: Term::var("replica"),
                 })
                 .perform(env)
                 .try_vec()

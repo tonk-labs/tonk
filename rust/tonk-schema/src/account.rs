@@ -533,6 +533,32 @@ pub struct EmailStatus {
     pub state: crate::domain::email_status::State,
 }
 
+/// This device holds an account's authority on the active branch.
+///
+/// Published on the branch overlay by the worker whenever the link
+/// changes, and re-published at boot, so a view can tell a linked branch
+/// from one whose account facts merely remain after a sign-out.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AccountLink {
+    /// Always [`AccountLink::ENTITY`]: one row per branch overlay.
+    pub this: Entity,
+    /// The linked account.
+    pub account: crate::domain::account_link::Account,
+}
+
+impl AccountLink {
+    /// The single entity the link row lives on.
+    pub const ENTITY: &str = "state:account-link";
+
+    /// A link to `account`.
+    pub fn new(this: Entity, account: Entity) -> Self {
+        Self {
+            this,
+            account: crate::domain::account_link::Account(account),
+        }
+    }
+}
+
 /// Where a passkey-gated command got to, on the profile overlay.
 ///
 /// The hub's settings page asserts `tonk:delete-account`,
@@ -578,6 +604,14 @@ pub mod ceremony {
     pub const AUTHORIZE_DEVICE: &str = "authorize-device";
     /// `tonk:add-passkey`.
     pub const ADD_PASSKEY: &str = "add-passkey";
+    /// `tonk:add-profile` — signing up a fresh profile's account.
+    ///
+    /// Unlike its siblings the worker does not drive this one to
+    /// completion: it rotates the profile, asks the page to raise the
+    /// signup, and the page's own ceremony runs from there. The status
+    /// exists so the hub can show that a signup is up without holding
+    /// that fact in element state, which a re-render would lose.
+    pub const ADD_PROFILE: &str = "add-profile";
 }
 
 /// The states a [`CeremonyStatus`] can report.

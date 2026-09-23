@@ -27,6 +27,17 @@ pub(crate) struct ApproveResponse {
     approval: String,
 }
 
+/// What a local-space link request asks, as the page shows it before
+/// anyone approves.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DescribeResponse {
+    name: String,
+    subject: Option<String>,
+    callback: String,
+    correlation: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CompleteRequest {
@@ -88,6 +99,27 @@ fn decode(value: &str, label: &str) -> Result<Vec<u8>, TonkWorkerError> {
 
 fn encode(bytes: &[u8]) -> Result<String, TonkWorkerError> {
     local_space_link::encode_transport(bytes).map_err(invalid)
+}
+
+/// POST `/api/local-space-link/describe`: the request's name, space and
+/// callback. The page cannot read the transport encoding itself, so it
+/// asks; nothing is validated or signed here, that is `approve`'s.
+#[wasm_compat]
+pub(crate) async fn describe(
+    State(_state): State<AppState>,
+    Json(body): Json<ApproveRequest>,
+) -> Result<Json<DescribeResponse>, TonkWorkerError> {
+    let request = local_space_link::LocalSpaceLinkRequest::from_bytes(&decode(
+        &body.request,
+        "local-space link request",
+    )?)
+    .map_err(invalid)?;
+    Ok(Json(DescribeResponse {
+        name: request.name().to_owned(),
+        subject: request.subject_hint().map(ToString::to_string),
+        callback: request.callback().to_string(),
+        correlation: request.correlation().to_owned(),
+    }))
 }
 
 #[wasm_compat]

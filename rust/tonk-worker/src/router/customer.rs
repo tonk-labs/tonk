@@ -450,7 +450,7 @@ pub(crate) async fn record_custody_cell(
     let mut transaction = state
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&state.active_branch)
         .transaction()
         // A message sealed to the passkey's custody DID: only a fresh
         // assertion of that passkey opens it. The account is a real
@@ -631,7 +631,7 @@ pub(crate) async fn record_space_provider(
     if let Err(error) = state
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&state.active_branch)
         .transaction()
         .assert(SpaceProvider::new(consumer, &account))
         .commit()
@@ -656,7 +656,7 @@ pub(crate) async fn retract_space_provider(
     let branch = match state
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&state.active_branch)
         .acquire(&state.operator)
         .await
     {
@@ -710,7 +710,7 @@ pub(crate) async fn space_provider_recorded(
     let branch = match state
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&state.active_branch)
         .acquire(&state.operator)
         .await
     {
@@ -798,7 +798,9 @@ async fn load_customer(
     let bytes = match state
         .profile
         .secrets()
-        .site(CUSTOMER_CREDENTIAL_SITE)
+        .site(
+            crate::credential::branch_site(CUSTOMER_CREDENTIAL_SITE, &state.active_branch).as_str(),
+        )
         .load::<Vec<u8>>()
         .perform(&state.operator)
         .await
@@ -950,7 +952,7 @@ pub(crate) async fn record_activation(state: &crate::worker::TonkState) {
     if let Err(error) = state
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&state.active_branch)
         .transaction()
         .assert(AccountActive::new(account.this(), at))
         .commit()
@@ -1022,7 +1024,7 @@ pub(crate) async fn account_registration(
     let Ok(branch) = state
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&state.active_branch)
         .acquire(&state.operator)
         .await
     else {
@@ -1155,7 +1157,7 @@ pub(crate) async fn record_customer_status(
     let mut transaction = state
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&state.active_branch)
         .transaction()
         .assert(AccountRegistered::new(
             account.this(),
@@ -1210,7 +1212,9 @@ pub(super) async fn save_customer(
     state
         .profile
         .secrets()
-        .site(CUSTOMER_CREDENTIAL_SITE)
+        .site(
+            crate::credential::branch_site(CUSTOMER_CREDENTIAL_SITE, &state.active_branch).as_str(),
+        )
         .save(bytes)
         .perform(&state.operator)
         .await
@@ -1463,7 +1467,9 @@ pub(crate) async fn clear_customer(
     state
         .profile
         .secrets()
-        .site(CUSTOMER_CREDENTIAL_SITE)
+        .site(
+            crate::credential::branch_site(CUSTOMER_CREDENTIAL_SITE, &state.active_branch).as_str(),
+        )
         .save(Vec::<u8>::new())
         .perform(&state.operator)
         .await

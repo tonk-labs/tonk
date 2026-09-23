@@ -331,7 +331,7 @@ pub(crate) async fn mint(
     let account = tonk
         .reactor
         .profile_repository()
-        .branch("main")
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(failure)?;
@@ -352,7 +352,7 @@ pub(crate) async fn mint(
         .map_err(failure)?;
     tonk.reactor
         .profile_repository()
-        .branch("main")
+        .branch(&tonk.active_branch)
         .transaction()
         .assert(AgentGrantGroup {
             this: group_entity(&group.id)?,
@@ -388,7 +388,7 @@ async fn groups(tonk: &TonkState) -> Result<Vec<PublicGroup>, TonkWorkerError> {
     let session = tonk
         .reactor
         .profile_repository()
-        .branch("main")
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(failure)?;
@@ -430,7 +430,7 @@ async fn summarize(
     let session = tonk
         .reactor
         .profile_repository()
-        .branch("main")
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(failure)?;
@@ -640,7 +640,7 @@ where
     let bundle = validate(group).await?;
     tonk.reactor
         .profile_repository()
-        .branch("main")
+        .branch(&tonk.active_branch)
         .transaction()
         .assert(fields::AgentGrantRevocationIntent {
             this: group_entity(&group.id)?,
@@ -667,7 +667,7 @@ where
                 // Save each acknowledgement before sending the next revocation.
                 tonk.reactor
                     .profile_repository()
-                    .branch("main")
+                    .branch(&tonk.active_branch)
                     .transaction()
                     .assert(AgentGrantRevocation {
                         this: receipt_entity(&group.id, &target.cid)?,
@@ -836,6 +836,112 @@ mod tests {
         assert!(matches!(&error, TonkWorkerError::Forbidden(_)), "{error}");
         assert!(error.to_string().contains(&limit), "{error}");
     }
+    /// The invitation ledger lives on the branch the profile is on. A
+    /// profile that added a second account is on `main-N`, and a ledger
+    /// pinned to `main` would retain the new account's grants into the
+    /// first account's branch and commit through an upstream its device
+    /// holds no authority for.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_keeps_the_invitation_ledger_on_the_branch_the_profile_is_on() -> anyhow::Result<()>
+    {
+        use dialog_effects::storage::Directory;
+        use dialog_effects::storage::Location;
+        use dialog_peer::OpenPeer;
+        use dialog_storage::provider::storage::Storage;
+        let directory =
+            std::env::temp_dir().join(format!("tonk-connection-branch-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&directory)?;
+        let location = Directory::At(directory.to_string_lossy().into_owned());
+        let storage = Storage::default();
+        let profile = OpenPeer::open(Location::new(location.clone(), "ledger-branch"))
+            .perform(&storage)
+            .await?;
+        let registry = crate::device::Registry {
+            profile: "ledger-branch".into(),
+            directory: location.clone(),
+        };
+        let first =
+            crate::worker::boot_state(storage, "ledger-branch".into(), profile, registry).await?;
+        // Onto a fresh branch, the way add-account lands, and booted the
+        // way the worker lands there.
+        super::super::profile::leave_account(&first).await;
+        let tonk = crate::worker::boot_state_with_profile_library(
+            first.storage.clone(),
+            first.profile_name.clone(),
+            first.profile.clone(),
+            first.registry.clone(),
+            first.profile_library.clone(),
+        )
+        .await?;
+        drop(first);
+        assert_ne!(
+            tonk.active_branch, "main",
+            "the profile moved onto a branch"
+        );
+
+        let root = Ed25519Signer::import(&[57; 32]).await?;
+        let grant =
+            tonk_identity::delegation::mint_device_delegation(root.clone(), &tonk.profile.did())
+                .await?;
+        super::super::identity::persist_root(
+            &tonk,
+            tonk_worker_api::SaveRootRequest {
+                credential_id: "ledger-branch-fixture".into(),
+                delegation_hex: hex::encode(grant.to_bytes()?),
+                passkey: None,
+                encryption_key: None,
+            },
+        )
+        .await?;
+        let (signer, ancestors, scopes, now) = fixture(DEFAULT_GRANT_TTL_SECONDS + 60).await;
+        let deadline = Timestamp::try_from((now.to_unix() + DEFAULT_GRANT_TTL_SECONDS) as i128)?;
+        let remote = "https://sync.example.test/ucan/".parse()?;
+        let invite = issue([58; 32], signer, ancestors, &scopes, &remote, now, deadline).await?;
+        let group = PublicGroup {
+            terminal_request: None,
+            version: 1,
+            id: grant_set_id(
+                invite.grants().subject().as_str(),
+                invite.grants().recipient().as_str(),
+                &cids(invite.grants()),
+            ),
+            account: root.did().to_string(),
+            repo: "unmounted".into(),
+            subject: invite.grants().subject().to_string(),
+            recipient: invite.grants().recipient().to_string(),
+            label: "branch fixture".into(),
+            remote: remote.to_string(),
+            issued_at: now.to_unix(),
+            chains: invite
+                .grants()
+                .chains()
+                .iter()
+                .map(|chain| chain.to_bytes().map(hex::encode))
+                .collect::<Result<_, _>>()?,
+        };
+        tonk.reactor
+            .profile_repository()
+            .branch(&tonk.active_branch)
+            .transaction()
+            .assert(AgentGrantGroup {
+                this: group_entity(&group.id)?,
+                account: fields::Account(group.account.clone()),
+                subject: fields::Subject(group.subject.clone()),
+                public_record: fields::PublicRecord(serde_json::to_string(&group)?),
+            })
+            .commit()
+            .perform(&tonk.operator)
+            .await?;
+        assert_eq!(
+            groups(&tonk).await?.len(),
+            1,
+            "the ledger reads the branch it is on"
+        );
+        assert!(has_issued_for_subject(&tonk, invite.grants().subject()).await?);
+        Ok(())
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
     async fn connection_management_partial_receipts_survive_restart_and_retry_only_missing()

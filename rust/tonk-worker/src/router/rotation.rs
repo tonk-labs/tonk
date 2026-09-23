@@ -78,7 +78,7 @@ pub(crate) async fn rotate_from_onboarding(tonk: &TonkState) {
     let branch = match tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
     {
@@ -116,7 +116,7 @@ pub(crate) async fn rotate_from_onboarding(tonk: &TonkState) {
             // handle held across them.
             tonk.reactor
                 .profile_repository()
-                .branch(tonk_account::MAIN_BRANCH)
+                .branch(&tonk.active_branch)
                 .transaction()
                 .retract(row)
                 .assert(replacement.message)
@@ -162,7 +162,7 @@ async fn sealed_to(
     let branch = tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(|error| TonkWorkerError::Internal(format!("open profile main: {error}")))?;
@@ -386,7 +386,7 @@ pub(super) async fn reconcile_founder_membership(
     let profile = tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(|error| {
@@ -682,7 +682,7 @@ async fn retract_onboarding_facts(
     let branch = tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(|error| TonkWorkerError::Internal(format!("open profile main: {error}")))?;
@@ -724,7 +724,7 @@ async fn retract_onboarding_facts(
     let mut transaction = tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .transaction();
     for row in keys {
         transaction = transaction.retract(row);
@@ -896,7 +896,7 @@ mod tests {
         let branch = tonk
             .reactor
             .profile_repository()
-            .branch(tonk_account::MAIN_BRANCH)
+            .branch(&tonk.active_branch)
             .acquire(&tonk.operator)
             .await
             .unwrap();

@@ -987,11 +987,6 @@
        injects alongside the guest runtime. Only `wa.js` / `wa.css` live
        here now; the wasm/js/snippets are built by the rust link above. -->
         <link data-trunk rel="copy-dir" href="./assets/guest" />
-        <link
-            data-trunk
-            rel="copy-file"
-            href="../tonk-sigil/assets/sigils.svg"
-        />
         <!-- `<tonk-code>` web component bundle. On a plain page the crate's
        `install()` injects `<script type="module"
        src="/tonk-code/tonk-code.js">`; inside a sealed guest the bundle is

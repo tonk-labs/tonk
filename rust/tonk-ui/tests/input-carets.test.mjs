@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const UI = join(HERE, "..");
-const WORKSPACE = join(UI, "..", "tonk-workspace", "src");
+const LIBRARY = join(UI, "..", "tonk-core", "assets", "library", "profile.yaml");
 
 const accountStyles = readFileSync(join(UI, "src", "account.css"), "utf8");
 const appStyles = readFileSync(join(UI, "styles.css"), "utf8");
@@ -14,10 +14,18 @@ const registration = readFileSync(
   join(UI, "src", "register_dialog.rs"),
   "utf8",
 );
-const settings = readFileSync(
-  join(WORKSPACE, "ui_account_settings.html"),
-  "utf8",
-);
+// The settings panel is markup on the profile branch: the
+// `<account-settings>` element's contents, plus the registration view's
+// `settings` facet, which carries the display name and the deletion
+// dialog.
+const library = readFileSync(LIBRARY, "utf8");
+const panel = library.split("<account-settings>\n")[1]?.split("</account-settings>")[0];
+const registered = library
+  .split("    settings: |\n      <div data-account-registered>")[1]
+  ?.split("\n\n")[0];
+assert.ok(panel, "the settings panel markup must be in the profile library");
+assert.ok(registered, "the registration settings facet must be in the profile library");
+const settings = `${registered}\n${panel}`;
 
 test("authored text fields keep the browser's native insertion caret", () => {
   for (const [name, source] of [
@@ -54,7 +62,7 @@ test("account deletion names its confirmation phrase beside a native input", () 
 });
 
 test("the settings display name has visible input affordance", () => {
-  const rule = appStyles.match(/ui-account-settings \.sname \{([\s\S]*?)\}/);
+  const rule = appStyles.match(/account-settings \.sname \{([\s\S]*?)\}/);
   assert.ok(rule, "the display-name input must have an authored style rule");
   assert.match(
     rule[1],

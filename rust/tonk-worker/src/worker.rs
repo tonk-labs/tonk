@@ -369,6 +369,11 @@ pub struct TonkState {
     /// [`session`](crate::session) before its delegation lapses, so it
     /// is not stable for the life of the worker.
     pub operator: DefaultOperator,
+    /// The branch of the profile repository this state is on: the
+    /// account's branch when signed in, an upstream-less one when not.
+    /// Read from `meta` at boot; a switch records a new active branch
+    /// there and rebuilds the state, so it is fixed for one state's life.
+    pub active_branch: String,
     /// The storage pool every space is mounted in. Held so a rotated
     /// operator can be built over the *same* pool: a replacement with
     /// its own would leave the reactor's cached repository and branch
@@ -1743,10 +1748,22 @@ pub(crate) async fn boot_state_with_profile_library(
     // failure cannot repair entropy, signing, or local reference errors;
     // surface them without touching the profile's durable contents.
     let session = crate::session::open(&profile).await?;
+    // Which branch the profile is on. Reading `meta` takes an operator,
+    // so the bootstrap session opens on `main`; a profile that is on
+    // another branch gets a session whose authority is that branch's.
+    let active_branch = crate::router::profile::active_branch_name(&reactor, &session.operator)
+        .await
+        .unwrap_or_else(|| crate::router::repository::PROFILE_BRANCH.to_owned());
+    let session = if active_branch == crate::router::repository::PROFILE_BRANCH {
+        session
+    } else {
+        crate::session::open_on(&profile, &active_branch).await?
+    };
 
     let state = TonkState {
         profile,
         operator: session.operator,
+        active_branch,
         storage,
         session_expires_at: session.expires_at,
         profile_name,

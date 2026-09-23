@@ -65,8 +65,9 @@ pub use sync::*;
 
 pub mod account;
 pub use account::{
-    AccountActive, AccountDisplayName, AccountLinking, AccountRegistered, AccountSealedInbox,
-    AccountSuspended, CeremonyStatus, EmailStatus, ceremony, ceremony_state, email_state,
+    AccountActive, AccountDisplayName, AccountLink, AccountLinking, AccountRegistered,
+    AccountSealedInbox, AccountSuspended, CeremonyStatus, EmailStatus, ceremony, ceremony_state,
+    email_state,
 };
 
 pub mod custody;
@@ -124,7 +125,7 @@ pub use identity::{ProfileIdentity, ProfileName};
 mod recovery;
 mod roster;
 pub use recovery::RecoveryPasskey;
-pub use roster::DeviceProfile;
+pub use roster::{DeviceProfile, ProfileRow};
 
 mod petname;
 pub use petname::petname;

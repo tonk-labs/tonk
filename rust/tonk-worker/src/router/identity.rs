@@ -87,7 +87,7 @@ pub(crate) async fn validate_grant(
 pub(crate) async fn load_record(
     state: &TonkState,
 ) -> Result<Option<LocalRootRecord>, TonkWorkerError> {
-    load_record_from(&state.profile, &state.operator).await
+    load_record_from(&state.profile, &state.operator, &state.active_branch).await
 }
 
 /// Load and validate the serialized root record belonging to an explicit
@@ -96,10 +96,11 @@ pub(crate) async fn load_record(
 async fn load_record_from(
     profile: &DefaultPeer,
     operator: &DefaultOperator,
+    branch: &str,
 ) -> Result<Option<LocalRootRecord>, TonkWorkerError> {
     let bytes = match profile
         .secrets()
-        .site(LOCAL_ROOT_SITE)
+        .site(crate::credential::branch_site(LOCAL_ROOT_SITE, branch).as_str())
         .load::<Vec<u8>>()
         .perform(operator)
         .await
@@ -122,20 +123,6 @@ async fn load_record_from(
         )));
     }
     Ok(Some(record))
-}
-
-/// Return the verified historical account root for an explicit profile.
-/// A missing record is a rootless profile; a malformed or misaddressed grant
-/// is an unreadable profile and is never treated as a match.
-pub(crate) async fn historical_root_did(
-    profile: &DefaultPeer,
-    operator: &DefaultOperator,
-) -> Result<Option<dialog_varsig::Did>, TonkWorkerError> {
-    let Some(record) = load_record_from(profile, operator).await? else {
-        return Ok(None);
-    };
-    let delegation = validate_grant(record.delegation, &profile.did()).await?;
-    Ok(Some(delegation.issuer().clone()))
 }
 
 /// Load and validate the local root, failing when it is missing.
@@ -206,11 +193,27 @@ pub(crate) async fn forget_encryption_key(state: &TonkState) -> Result<(), TonkW
     state
         .profile
         .secrets()
-        .site(LOCAL_ROOT_SITE)
+        .site(crate::credential::branch_site(LOCAL_ROOT_SITE, &state.active_branch).as_str())
         .save(encoded)
         .perform(&state.operator)
         .await
         .map_err(|error| TonkWorkerError::Internal(format!("failed to save local root: {error}")))
+}
+
+/// Forget the local root record: the device no longer holds a grant.
+///
+/// Signing out ends here, after the grant is retracted and its
+/// revocation published, so the next sign-in has to reopen the passkey
+/// to mint a new one. Idempotent, like the retract it performs.
+pub(crate) async fn forget_root(state: &TonkState) -> Result<(), TonkWorkerError> {
+    state
+        .profile
+        .secrets()
+        .site(crate::credential::branch_site(LOCAL_ROOT_SITE, &state.active_branch).as_str())
+        .retract()
+        .perform(&state.operator)
+        .await
+        .map_err(|error| TonkWorkerError::Internal(format!("failed to forget local root: {error}")))
 }
 
 pub(crate) async fn persist_root(
@@ -278,25 +281,27 @@ pub(crate) async fn persist_root(
         // An unreadable stored delegation refuses too — the roots can't
         // be proven equal.
         //
-        // A root is replaceable only when this profile has NO account
-        // attachment history at all: a creation ceremony binds the
-        // root before registration can still fail (an email already
-        // taken, a service outage), and that half-created record must
-        // not wedge the profile — a retry may replace it. A stored
-        // attachment OR the sign-out tombstone both refuse: signed out
-        // or signed in, this profile's spaces and delegations hang off
-        // the stored root, and a different account arrives through
-        // add-account, never by rebinding this profile.
+        // A different root is refused only while the branch the profile
+        // is on follows another account: that branch's spaces and
+        // delegations hang off the account it follows, and a different
+        // account arrives through add-account, on a branch that follows
+        // nothing. A branch following nothing takes any root — the
+        // half-created record a failed registration leaves behind must
+        // not wedge the profile, and after signing out the branch is
+        // free for whichever account signs in next.
         if stored_root.as_ref() != Some(chain.issuer()) {
-            if super::account::has_attachment_history(state).await {
+            use tonk_schema::prelude::DidExt as _;
+            if let Some(followed) = super::profile::active_account(state).await
+                && followed != chain.issuer().this()
+            {
                 return Err(TonkWorkerError::Conflict(
-                    "a different account is already signed in on this profile; \
+                    "a different account is signed in on this branch; \
                      use \"Add account\" to sign in with another account"
                         .to_string(),
                 ));
             }
             tonk_common::log!(
-                "replacing a dangling account root (no attachment was ever made): {} -> {}",
+                "replacing a root the branch does not follow: {} -> {}",
                 stored_root
                     .map(|did| did.to_string())
                     .unwrap_or_else(|| "unreadable".to_string()),
@@ -322,7 +327,7 @@ pub(crate) async fn persist_root(
     state
         .profile
         .secrets()
-        .site(LOCAL_ROOT_SITE)
+        .site(crate::credential::branch_site(LOCAL_ROOT_SITE, &state.active_branch).as_str())
         .save(encoded)
         .perform(&state.operator)
         .await
@@ -524,36 +529,19 @@ mod tests {
         ));
     }
 
-    /// Sign-out keeps the profile's root, data, and certificates; a
-    /// later ceremony that resolves a DIFFERENT passkey is another
-    /// account arriving, and each account gets its own profile via
-    /// add-account. Persisting it here would silently rebind this
-    /// profile's spaces to a root that never owned them.
+    /// While the branch follows an account, another account's root is
+    /// refused: that account arrives through add-account, on a branch
+    /// following nothing.
     #[dialog_common::test]
-    async fn it_rejects_a_different_root_on_a_previously_linked_profile() {
+    async fn it_rejects_a_different_root_while_the_branch_follows_an_account() {
         let state = Arc::new(RwLock::new(test_state().await));
-        let (profile_name, previous_root) = {
+        let previous_root = {
             let state = state.read().await;
-            (
-                state.profile_name.clone(),
-                local_root(&state).await.unwrap().root_did,
-            )
+            local_root(&state).await.unwrap().root_did
         };
         let device = state.read().await.profile.did();
         let (replacement, _) = request_for(2, &device).await;
 
-        let _ = super::super::account::unlink(State(state.clone()), None)
-            .await
-            .unwrap();
-        let _ = super::super::profiles::activate(
-            State(state.clone()),
-            None,
-            Json(tonk_worker_api::ActivateProfileRequest {
-                profile: profile_name,
-            }),
-        )
-        .await
-        .unwrap();
         let error = save(State(state.clone()), Json(replacement))
             .await
             .unwrap_err();
@@ -569,6 +557,24 @@ mod tests {
         );
     }
 
+    /// After signing out the branch follows nothing, so another
+    /// account's root is taken.
+    #[dialog_common::test]
+    async fn it_accepts_a_different_root_after_signing_out() {
+        let state = Arc::new(RwLock::new(test_state().await));
+        let device = state.read().await.profile.did();
+        let (replacement, grant) = request_for(2, &device).await;
+
+        let _ = super::super::account::unlink(State(state.clone()), None)
+            .await
+            .unwrap();
+        let Json(status) = save(State(state.clone()), Json(replacement)).await.unwrap();
+
+        assert!(matches!(
+            status,
+            RootStatus::Ready { root_did, .. } if root_did == grant.issuer().to_string()
+        ));
+    }
     /// The dangling case `has_attachment_history` exists for: a
     /// creation ceremony saved the root, registration failed, and no
     /// attachment (nor sign-out tombstone) was ever written. A retry
@@ -619,15 +625,6 @@ mod tests {
         let _ = super::super::account::unlink(State(state.clone()), None)
             .await
             .unwrap();
-        let _ = super::super::profiles::activate(
-            State(state.clone()),
-            None,
-            Json(tonk_worker_api::ActivateProfileRequest {
-                profile: profile_name,
-            }),
-        )
-        .await
-        .unwrap();
         let Json(status) = save(State(state.clone()), Json(request)).await.unwrap();
 
         assert!(matches!(

@@ -1430,8 +1430,12 @@ pub async fn drain_sync(state: &AppState) {
 /// install only if the observed generation is still current. Losing
 /// candidates and construction failures have no durable session effects.
 pub(crate) async fn ensure_session_authority(state: &AppState) -> Result<(), TonkWorkerError> {
-    renew_session_with(state, |profile| async move {
-        crate::session::rotate(&profile).await
+    // The replacement proves with the same branch's authority as the
+    // session it replaces; renewing on `main` would sign the profile
+    // out of its account mid-session.
+    let access_branch = state.read().await.active_branch.clone();
+    renew_session_with(state, move |profile| async move {
+        crate::session::rotate(&profile, &access_branch).await
     })
     .await
 }
@@ -1843,7 +1847,7 @@ mod renewal_tests {
         let winner = async {
             renew_session_with(&state, |profile| async move {
                 ready_rx.await.unwrap();
-                crate::session::rotate(&profile).await
+                crate::session::rotate(&profile, crate::router::repository::PROFILE_BRANCH).await
             })
             .await
             .unwrap();
@@ -1852,7 +1856,10 @@ mod renewal_tests {
             installed
         };
         let loser = renew_session_with(&state, |profile| async move {
-            let candidate = crate::session::rotate(&profile).await.unwrap();
+            let candidate =
+                crate::session::rotate(&profile, crate::router::repository::PROFILE_BRANCH)
+                    .await
+                    .unwrap();
             ready_tx.send(()).unwrap();
             let installed = installed_rx.await.unwrap();
             assert_ne!(candidate.operator.did().to_string(), installed);

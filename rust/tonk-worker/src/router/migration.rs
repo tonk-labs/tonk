@@ -33,10 +33,6 @@ use tonk_schema::{LegacyReplica, Replica, SpaceKind, SpaceStatus, prelude::DidEx
 use super::AppState;
 use crate::TonkWorkerError;
 
-/// The single branch the profile repository lives on. Mirrors the
-/// private copies in sibling modules.
-const PROFILE_BRANCH: &str = "main";
-
 /// Tally of what the migration stamped.
 #[derive(Clone, Copy, Debug, Default)]
 struct MigrationReport {
@@ -77,7 +73,7 @@ async fn run_migration(state: AppState) -> Result<MigrationReport, TonkWorkerErr
     let meta = tonk
         .reactor
         .profile_repository()
-        .branch(PROFILE_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(|e| {
@@ -149,7 +145,7 @@ async fn run_migration(state: AppState) -> Result<MigrationReport, TonkWorkerErr
     let mut transaction = tonk
         .reactor
         .profile_repository()
-        .branch(PROFILE_BRANCH)
+        .branch(&tonk.active_branch)
         .transaction();
     let mut report = MigrationReport::default();
 
@@ -218,7 +214,7 @@ mod tests {
         let account = Ed25519Signer::import(&[75; 32]).await.unwrap().did();
         tonk.reactor
             .profile_repository()
-            .branch(PROFILE_BRANCH)
+            .branch(&tonk.active_branch)
             .transaction()
             .assert(Replica::account(tonk.profile.did(), account))
             .commit()
@@ -236,7 +232,7 @@ mod tests {
         let rows: Vec<SpaceStatus> = tonk
             .reactor
             .profile_repository()
-            .branch(PROFILE_BRANCH)
+            .branch(&tonk.active_branch)
             .acquire(&tonk.operator)
             .await
             .unwrap()

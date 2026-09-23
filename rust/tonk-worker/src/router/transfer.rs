@@ -190,14 +190,18 @@ async fn export_branch_snapshot(
     // With no remote configured there is nothing to reach for; sparse is
     // then the honest answer.
     let export = repository.snapshot(revision).export();
-    let export = match repository
-        .remote(super::account_state::ACCOUNT_ACCESS_REMOTE)
-        .load()
-        .perform(&tonk_state.operator)
-        .await
-    {
-        Ok(upstream) => export.download(upstream),
-        Err(_) => export.sparse(),
+    let upstream = match super::identity::local_root(tonk_state).await {
+        Ok(root) => repository
+            .remote(tonk_account::account_access_remote_name(root.root_did.as_str()).as_str())
+            .load()
+            .perform(&tonk_state.operator)
+            .await
+            .ok(),
+        Err(_) => None,
+    };
+    let export = match upstream {
+        Some(upstream) => export.download(upstream),
+        None => export.sparse(),
     };
 
     dialog_repository::codec::encode(export.perform(&tonk_state.operator), vec![root])

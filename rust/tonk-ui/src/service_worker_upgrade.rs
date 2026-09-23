@@ -979,7 +979,7 @@ pub(crate) mod tests {
         }
 
         driver.goto(env.tonk_web.join("settings")?.as_str()).await?;
-        wait_for_guest_selector(&driver, "ui-account-settings").await?;
+        wait_for_guest_selector(&driver, "account-settings").await?;
         driver.enter_default_frame().await?;
 
         let devtools = ChromeDevTools::new(driver.handle.clone());

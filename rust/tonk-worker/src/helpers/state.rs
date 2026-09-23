@@ -19,7 +19,6 @@ use dialog_storage::provider::storage::Storage;
 use dialog_varsig::Principal as _;
 use tonk_schema::prelude::DidExt as _;
 
-use crate::worker::DefaultPeer;
 use crate::worker::{DefaultSpace, TonkState};
 
 /// A random id minted once per test *process*, mixed into every profile
@@ -89,6 +88,7 @@ pub async fn test_state_without_root() -> TonkState {
         storage,
         session_expires_at: session.expires_at,
         profile_name,
+        active_branch: crate::router::repository::PROFILE_BRANCH.to_owned(),
         reactor,
         admission: Default::default(),
         reject_admission_content_reads: Default::default(),
@@ -176,7 +176,7 @@ pub(crate) async fn persist_test_root(state: &TonkState) -> dialog_varsig::Did {
     state
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&state.active_branch)
         .transaction()
         .assert(tonk_schema::AccountSealedInbox::new(
             root_did.this(),
@@ -196,5 +196,17 @@ pub async fn test_state() -> TonkState {
     crate::router::account::attach_test_account(&state)
         .await
         .unwrap();
+    // What a link records on `meta`: the branch the profile is on follows
+    // the account's branch on the peer serving it. Without it a sign-out
+    // finds the branch following nothing and stays put.
+    crate::router::profile::ensure_profile_meta_branch(&state).await;
+    let root = crate::router::identity::local_root(&state)
+        .await
+        .expect("the fixture has a local root")
+        .root_did;
+    let address = dialog_repository::SiteAddress::from(dialog_remote_ucan::UcanAddress::new(
+        crate::router::account::TEST_ACCOUNT_REMOTE,
+    ));
+    crate::router::account_state::record_account_branch(&state, &root, &address).await;
     state
 }

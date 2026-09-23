@@ -145,6 +145,14 @@ mod native {
         }
 
         fn close(self) -> std::io::Result<()> {
+            // Keep the tree for a post-mortem when asked: with
+            // `TONK_E2E_CHROME_LOG` it holds Chrome's own log, console
+            // included, which is the only account of what the page did.
+            if std::env::var_os("TONK_E2E_KEEP_WORKSPACE").is_some() {
+                let kept = self.0.keep();
+                eprintln!("E2E DIAGNOSTIC: workspace kept at {}", kept.display());
+                return Ok(());
+            }
             // A child terminated a moment ago can still be flushing its
             // last writes while removal walks the tree — Chrome in
             // particular outlives `quit` by however long its profile
@@ -590,7 +598,20 @@ mod native {
                 let test_server =
                     format!("git+file:{}#tonk-ui-test-server", repository_root.display());
                 let mut command = std::process::Command::new("nix");
-                command.args(["run", &test_server, "--"]);
+                // Spell the features out rather than relying on the
+                // ambient config: the child runs with `XDG_CONFIG_HOME`
+                // pinned below (for Caddy), which also hides a per-user
+                // `~/.config/nix/nix.conf`. CI gets these from the
+                // system-wide `/etc/nix/nix.conf` and so never noticed;
+                // a developer who enabled them per-user saw `nix run`
+                // fail before the web server ever bound.
+                command.args([
+                    "--extra-experimental-features",
+                    "nix-command flakes",
+                    "run",
+                    &test_server,
+                    "--",
+                ]);
                 command
             };
             test_server.args([

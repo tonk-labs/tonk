@@ -1145,4 +1145,996 @@ mod tests {
         let bare = CustomEvent::new(ELEMENT_NEEDED).expect("event");
         assert_eq!(tag_of(&bare), None);
     }
+
+    // ── Library elements ──────────────────────────────────────────
+    //
+    // The elements the libraries define replaced Rust elements that only
+    // ever needed the DOM. Their JS is read off the library text here,
+    // so what runs under test is what a guest runs, not a restatement.
+
+    const CORE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/core.yaml");
+    const PROFILE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/profile.yaml");
+
+    /// The dictionaries `element!: &{tag}` declares in `source`, as the
+    /// registry receives them: `(dictionary, [(name, source)])`.
+    fn library_element(source: &str, tag: &str) -> Vec<(String, Vec<(String, String)>)> {
+        let heading = format!("element!: &{tag}");
+        let mut lines = source
+            .lines()
+            .skip_while(|line| line.trim_end() != heading)
+            .skip(1)
+            .peekable();
+        let mut out: Vec<(String, Vec<(String, String)>)> = Vec::new();
+        let mut current: Option<usize> = None;
+        while let Some(line) = lines.next() {
+            if !line.is_empty() && !line.starts_with(' ') {
+                break;
+            }
+            if line.trim().is_empty() || line.trim_start().starts_with('#') {
+                continue;
+            }
+            if let Some(name) = line
+                .strip_prefix("  ")
+                .filter(|rest| !rest.starts_with(' '))
+                .and_then(|rest| rest.strip_suffix(':'))
+            {
+                current = if matches!(name, "method" | "getter" | "setter" | "attribute") {
+                    out.push((name.to_owned(), Vec::new()));
+                    Some(out.len() - 1)
+                } else {
+                    None
+                };
+                continue;
+            }
+            let Some(index) = current else {
+                continue;
+            };
+            let Some(entry) = line
+                .strip_prefix("    ")
+                .filter(|rest| !rest.starts_with(' '))
+            else {
+                continue;
+            };
+            if let Some(name) = entry.strip_suffix(": |") {
+                let mut body = String::new();
+                while let Some(next) = lines.peek() {
+                    if next.trim().is_empty() {
+                        body.push('\n');
+                        lines.next();
+                        continue;
+                    }
+                    let Some(rest) = next.strip_prefix("      ") else {
+                        break;
+                    };
+                    body.push_str(rest);
+                    body.push('\n');
+                    lines.next();
+                }
+                out[index].1.push((name.to_owned(), body));
+            } else if let Some((name, value)) = entry.split_once(": ") {
+                out[index]
+                    .1
+                    .push((name.to_owned(), value.trim().trim_matches('"').to_owned()));
+            }
+        }
+        assert!(!out.is_empty(), "no `element!: &{tag}` in the library");
+        out
+    }
+
+    fn define_from_library(source: &str, tag: &str) {
+        let dictionaries = library_element(source, tag);
+        let borrowed: Vec<(&str, Vec<(&str, &str)>)> = dictionaries
+            .iter()
+            .map(|(name, entries)| {
+                (
+                    name.as_str(),
+                    entries
+                        .iter()
+                        .map(|(key, value)| (key.as_str(), value.as_str()))
+                        .collect(),
+                )
+            })
+            .collect();
+        let maps: Vec<(&str, &[(&str, &str)])> = borrowed
+            .iter()
+            .map(|(name, entries)| (*name, entries.as_slice()))
+            .collect();
+        let entity = format!("did:key:zLibrary{}", tag.replace('-', ""));
+        define_dictionaries(tag, &entity, &maps);
+    }
+
+    /// `window.tonk`, the host's bridge into this realm, created if the
+    /// page has none yet.
+    fn host_bridge() -> js_sys::Object {
+        let win = window().expect("window");
+        match Reflect::get(&win, &"tonk".into())
+            .ok()
+            .filter(|value| value.is_object())
+        {
+            Some(bridge) => bridge.into(),
+            None => {
+                let bridge = js_sys::Object::new();
+                let _ = Reflect::set(&win, &"tonk".into(), &bridge);
+                bridge
+            }
+        }
+    }
+
+    /// A host function on the bridge that records what it is called with.
+    /// The host moved the page: the context changes and the bootstrap
+    /// announces it, the way a pushState navigation reaches the guest.
+    fn move_context(path: &str) {
+        set_context(&[("origin", "https://tonk.test"), ("path", path)]);
+        let announce =
+            js_sys::Function::new_no_args("window.dispatchEvent(new CustomEvent('tonk:context'));");
+        let _ = announce.call0(&JsValue::NULL);
+    }
+
+    fn record_bridge_calls(name: &str) -> js_sys::Array {
+        let calls = js_sys::Array::new();
+        let recorded = calls.clone();
+        let function = Closure::<dyn FnMut(JsValue)>::new(move |payload| {
+            recorded.push(&payload);
+        });
+        let _ = Reflect::set(
+            &host_bridge(),
+            &name.into(),
+            function.as_ref().unchecked_ref::<js_sys::Function>(),
+        );
+        function.forget();
+        calls
+    }
+
+    fn keydown(host: &Element, key: &str) {
+        let make = js_sys::Function::new_with_args(
+            "key",
+            "return new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });",
+        );
+        let event = make
+            .call1(&JsValue::NULL, &key.into())
+            .expect("keyboard event");
+        host.dispatch_event(event.unchecked_ref())
+            .expect("dispatch");
+    }
+
+    /// A bubbling event, as the events a page raises are.
+    fn fire(target: &web_sys::EventTarget, name: &str) {
+        let make = js_sys::Function::new_with_args(
+            "name",
+            "return new Event(name, { bubbles: true, cancelable: true });",
+        );
+        let event = make.call1(&JsValue::NULL, &name.into()).expect("event");
+        target
+            .dispatch_event(event.unchecked_ref())
+            .expect("dispatch");
+    }
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_names_the_tab_through_the_host_from_the_library() {
+        let titles = record_bridge_calls("setTitle");
+        define_from_library(CORE_LIBRARY, "tab-title");
+        let host = render("tab-title").await;
+        settle_until(|| defined("tab-title")).await;
+        assert!(
+            defined("tab-title"),
+            "the library definition of <tab-title> was never installed"
+        );
+
+        let _ = host.set_attribute("text", "welcome");
+        settle_until(|| titles.length() >= 1).await;
+        assert_eq!(
+            titles.get(0).as_string().as_deref(),
+            Some("welcome"),
+            "a text is pushed to the host, which owns the title",
+        );
+
+        let _ = host.set_attribute("hidden", "");
+        let _ = host.set_attribute("text", "unseen");
+        settle_briefly().await;
+        assert_eq!(titles.length(), 1, "nothing is pushed while hidden");
+
+        let _ = host.remove_attribute("hidden");
+        settle_until(|| titles.length() >= 2).await;
+        assert_eq!(
+            titles.get(1).as_string().as_deref(),
+            Some("unseen"),
+            "unhiding pushes the title it was keeping",
+        );
+        let _ = host.set_attribute("text", "");
+        settle_briefly().await;
+        assert_eq!(titles.length(), 2, "an empty text is not a title");
+    }
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_mounts_the_location_once_the_display_is_bound() {
+        define_from_library(CORE_LIBRARY, "page-mount");
+        install_fake_host();
+        install();
+        let display = document().create_element("tonk-display").expect("display");
+        let page = document().create_element("page-mount").expect("page");
+        display.append_child(&page).expect("nest");
+        let mounts = js_sys::Array::new();
+        let recorded = mounts.clone();
+        let on_mount = Closure::<dyn FnMut(CustomEvent)>::new(move |event: CustomEvent| {
+            recorded.push(&event.detail());
+        });
+        let _ =
+            display.add_event_listener_with_callback("mount", on_mount.as_ref().unchecked_ref());
+        on_mount.forget();
+        document()
+            .body()
+            .expect("body")
+            .append_child(&display)
+            .expect("attach");
+        settle_until(|| defined("page-mount")).await;
+        assert!(
+            defined("page-mount"),
+            "the library definition of <page-mount> was never installed"
+        );
+        settle_briefly().await;
+        assert_eq!(
+            mounts.length(),
+            0,
+            "no mount before the enclosing display is bound"
+        );
+
+        let _ = display.set_attribute("data-bound", "");
+        settle_until(|| mounts.length() >= 1).await;
+        let detail = mounts.get(0);
+        let pathname = Reflect::get(&detail, &"pathname".into())
+            .ok()
+            .and_then(|value| value.as_string());
+        assert!(
+            pathname
+                .as_deref()
+                .is_some_and(|path| path.starts_with('/')),
+            "the detail is the parsed location, got {pathname:?}",
+        );
+        assert!(
+            Reflect::get(&detail, &"searchParams".into()).is_ok_and(|value| value.is_object()),
+            "search params ride as a plain object",
+        );
+
+        fire(&page, "tonk:join-retry");
+        settle_until(|| mounts.length() >= 2).await;
+        assert_eq!(mounts.length(), 2, "a join retry mounts again");
+    }
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_commits_on_enter_and_restores_on_escape_from_the_library() {
+        define_from_library(CORE_LIBRARY, "inline-editable");
+        let host = render("inline-editable").await;
+        settle_until(|| host.get_attribute("role").as_deref() == Some("textbox")).await;
+        assert!(
+            defined("inline-editable"),
+            "the library definition of <inline-editable> was never installed"
+        );
+        assert_eq!(
+            host.get_attribute("role").as_deref(),
+            Some("textbox"),
+            "connected ran"
+        );
+        host.set_text_content(Some("before"));
+        let changes = js_sys::Array::new();
+        let recorded = changes.clone();
+        let on_change = Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
+            recorded.push(&JsValue::TRUE);
+        });
+        let _ = host.add_event_listener_with_callback("change", on_change.as_ref().unchecked_ref());
+        on_change.forget();
+
+        fire(&host, "dblclick");
+        settle_briefly().await;
+        assert_eq!(
+            host.get_attribute("contenteditable").as_deref(),
+            Some("plaintext-only"),
+            "a double-click opens the edit",
+        );
+        host.set_text_content(Some("after"));
+        keydown(&host, "Enter");
+        settle_briefly().await;
+        assert_eq!(
+            host.get_attribute("contenteditable").as_deref(),
+            Some("false"),
+            "Enter ends the edit",
+        );
+        assert_eq!(changes.length(), 1, "a changed text fires change on commit");
+
+        fire(&host, "dblclick");
+        settle_briefly().await;
+        host.set_text_content(Some("half-typed"));
+        keydown(&host, "Escape");
+        settle_briefly().await;
+        assert_eq!(
+            host.text_content().as_deref(),
+            Some("after"),
+            "Escape restores the text the edit began with",
+        );
+        assert_eq!(changes.length(), 1, "a cancelled edit fires no change");
+
+        assert_eq!(
+            Reflect::get(&host, &"value".into())
+                .ok()
+                .and_then(|value| value.as_string())
+                .as_deref(),
+            Some("after"),
+            "value reads the text",
+        );
+        let _ = Reflect::set(&host, &"value".into(), &"set".into());
+        assert_eq!(
+            host.text_content().as_deref(),
+            Some("set"),
+            "setting value writes the text",
+        );
+    }
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_asks_the_host_to_open_recovery_on_click_from_the_library() {
+        let calls = record_bridge_calls("register");
+        define_from_library(PROFILE_LIBRARY, "space-login");
+        let host = render("space-login").await;
+        settle_until(|| defined("space-login")).await;
+        assert!(
+            defined("space-login"),
+            "the library definition of <space-login> was never installed"
+        );
+        settle_briefly().await;
+
+        fire(&host, "click");
+        settle_until(|| calls.length() >= 1).await;
+        assert_eq!(
+            calls.get(0).as_string().as_deref(),
+            Some(r#"{"reason":"space-login"}"#),
+            "a click asks the host to open account recovery",
+        );
+    }
+
+    fn space_remove_host(attributes: &[(&str, &str)]) -> Element {
+        install_fake_host();
+        install();
+        let host = document().create_element("space-remove").expect("host");
+        for (name, value) in attributes {
+            let _ = host.set_attribute(name, value);
+        }
+        host.set_inner_html(
+            r#"<button type="button" data-space-remove-open disabled>checking…</button><fake-dialog data-space-remove-dialog heading="confirm"><form id="remove-x" data-remove></form><button type="submit" data-space-remove-submit></button></fake-dialog>"#,
+        );
+        document()
+            .body()
+            .expect("body")
+            .append_child(&host)
+            .expect("attach");
+        host
+    }
+
+    fn text_of(host: &Element, selector: &str) -> String {
+        host.query_selector(selector)
+            .ok()
+            .flatten()
+            .and_then(|element| element.text_content())
+            .unwrap_or_default()
+    }
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_names_delete_or_leave_for_a_hub_row_from_the_library() {
+        define_from_library(PROFILE_LIBRARY, "space-remove");
+
+        let local = space_remove_host(&[("data-space-name", "notes"), ("data-space-founded", "1")]);
+        settle_until(|| local.get_attribute("data-space-action").is_some()).await;
+        assert_eq!(
+            local.get_attribute("data-space-action").as_deref(),
+            Some("delete-local"),
+            "a space founded here with no provider is deleted locally",
+        );
+        assert_eq!(text_of(&local, "[data-space-remove-open]"), "delete");
+        assert!(
+            local
+                .query_selector("[data-space-remove-open][disabled]")
+                .ok()
+                .flatten()
+                .is_none(),
+            "classifying enables the opener",
+        );
+
+        let invited = space_remove_host(&[
+            ("data-space-name", "forum"),
+            ("data-space-provider", "did:key:zHost"),
+        ]);
+        settle_until(|| invited.get_attribute("data-space-action").is_some()).await;
+        assert_eq!(
+            invited.get_attribute("data-space-action").as_deref(),
+            Some("leave"),
+            "a space another account provides is left",
+        );
+        assert_eq!(text_of(&invited, "[data-space-remove-open]"), "leave");
+
+        let hosted = space_remove_host(&[
+            ("data-space-name", "mine"),
+            ("data-space-provider", "did:key:zMe"),
+            ("data-space-owner", "did:key:zMe"),
+        ]);
+        settle_until(|| hosted.get_attribute("data-space-action").is_some()).await;
+        assert_eq!(
+            hosted.get_attribute("data-space-action").as_deref(),
+            Some("delete-hosted"),
+            "a space this account provides is deleted, hosted copy included",
+        );
+
+        let _ = invited.set_attribute("data-space-owner", "did:key:zHost");
+        settle_until(|| {
+            invited.get_attribute("data-space-action").as_deref() == Some("delete-hosted")
+        })
+        .await;
+        assert_eq!(
+            invited.get_attribute("data-space-action").as_deref(),
+            Some("delete-hosted"),
+            "ownership arriving later re-classifies the row",
+        );
+    }
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_prepares_and_opens_the_row_dialog_from_the_library() {
+        define_from_library(PROFILE_LIBRARY, "space-remove");
+        let host = space_remove_host(&[("data-space-name", "forum")]);
+        settle_until(|| host.get_attribute("data-space-action").is_some()).await;
+        let dialog = host
+            .query_selector("[data-space-remove-dialog]")
+            .ok()
+            .flatten()
+            .expect("dialog");
+        let shown = js_sys::Array::new();
+        let recorded = shown.clone();
+        let show = Closure::<dyn FnMut()>::new(move || {
+            recorded.push(&JsValue::TRUE);
+        });
+        let _ = Reflect::set(
+            &dialog,
+            &"show".into(),
+            show.as_ref().unchecked_ref::<js_sys::Function>(),
+        );
+        show.forget();
+
+        let opener = host
+            .query_selector("[data-space-remove-open]")
+            .ok()
+            .flatten()
+            .expect("opener");
+        let click = js_sys::Function::new_no_args("return new Event('click', { bubbles: true });")
+            .call0(&JsValue::NULL)
+            .expect("click");
+        opener
+            .dispatch_event(click.unchecked_ref())
+            .expect("dispatch");
+        settle_until(|| shown.length() >= 1).await;
+
+        assert_eq!(shown.length(), 1, "the opener shows the row's dialog");
+        assert_eq!(
+            dialog.get_attribute("heading").as_deref(),
+            Some("confirm leaving space"),
+            "the dialog is prepared for the row's verb",
+        );
+        assert!(
+            text_of(&host, "form[data-remove]").starts_with("Leave forum?"),
+            "the copy names the space",
+        );
+        assert_eq!(text_of(&host, "[data-space-remove-submit]"), "leave space");
+    }
+
+    fn drag_frame() -> Element {
+        install_fake_host();
+        install();
+        let host = document().create_element("drag-frame").expect("frame");
+        let _ = host.set_attribute(
+            "style",
+            "position:fixed;width:40px;height:40px;left:200px;top:150px;",
+        );
+        document()
+            .body()
+            .expect("body")
+            .append_child(&host)
+            .expect("attach");
+        host
+    }
+
+    /// A synthetic pointer event, dispatched on `target`.
+    fn pointer(target: &web_sys::EventTarget, kind: &str, x: f64, y: f64, buttons: i32) {
+        let make = js_sys::Function::new_with_args(
+            "kind, x, y, buttons",
+            "return new PointerEvent(kind, { clientX: x, clientY: y, buttons, button: 0, pointerId: 1, pointerType: 'mouse', bubbles: true, cancelable: true });",
+        );
+        let event = make
+            .call4(
+                &JsValue::NULL,
+                &kind.into(),
+                &x.into(),
+                &y.into(),
+                &buttons.into(),
+            )
+            .expect("pointer event");
+        target
+            .dispatch_event(event.unchecked_ref())
+            .expect("dispatch");
+    }
+
+    fn px(host: &Element, property: &str) -> f64 {
+        let style: web_sys::CssStyleDeclaration =
+            host.unchecked_ref::<web_sys::HtmlElement>().style();
+        style
+            .get_property_value(property)
+            .ok()
+            .and_then(|value| value.trim_end_matches("px").parse().ok())
+            .unwrap_or(f64::NAN)
+    }
+
+    fn viewport() -> (f64, f64) {
+        let win = window().expect("window");
+        let read =
+            |value: Result<JsValue, JsValue>| value.ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
+        (read(win.inner_width()), read(win.inner_height()))
+    }
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_drags_a_frame_and_docks_it_to_the_nearest_edge_from_the_library() {
+        define_from_library(CORE_LIBRARY, "drag-frame");
+        let host = drag_frame();
+        settle_until(|| host.has_attribute("inset")).await;
+        let ends = js_sys::Array::new();
+        let recorded = ends.clone();
+        let on_end = Closure::<dyn FnMut(CustomEvent)>::new(move |event: CustomEvent| {
+            recorded.push(&event.detail());
+        });
+        let _ = host.add_event_listener_with_callback("drag-end", on_end.as_ref().unchecked_ref());
+        on_end.forget();
+        let win = window().expect("window");
+        let (_, vh) = viewport();
+        let target_y = (vh / 2.0).floor();
+
+        let clicks = js_sys::Array::new();
+        let recorded = clicks.clone();
+        let on_click = Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
+            recorded.push(&JsValue::TRUE);
+        });
+        let _ =
+            document().add_event_listener_with_callback("click", on_click.as_ref().unchecked_ref());
+        on_click.forget();
+        pointer(&host, "pointerdown", 220.0, 170.0, 1);
+        pointer(&win, "pointermove", 80.0, target_y, 1);
+        assert!(
+            host.has_attribute("dragging"),
+            "past the dead zone the press is a drag"
+        );
+        pointer(&win, "pointerup", 80.0, target_y, 0);
+        // The click a browser raises right after the release is not a click.
+        fire(&host, "click");
+        assert_eq!(
+            clicks.length(),
+            0,
+            "the click that ends a drag is swallowed"
+        );
+        settle_until(|| ends.length() >= 1).await;
+        fire(&host, "click");
+        assert_eq!(clicks.length(), 1, "a later click reaches the page again");
+
+        assert!(!host.has_attribute("dragging"));
+        assert_eq!(
+            host.get_attribute("docked").as_deref(),
+            Some("left"),
+            "release docks to the nearest edge"
+        );
+        assert_eq!(px(&host, "left"), 16.0, "the docked edge sits at the inset");
+        let expected_top = 150.0 + (target_y - 170.0);
+        assert!(
+            (px(&host, "top") - expected_top).abs() < 1.0,
+            "docking keeps the coordinate along the edge, got {} for {expected_top}",
+            px(&host, "top"),
+        );
+        let edge = Reflect::get(&ends.get(0), &"edge".into())
+            .ok()
+            .and_then(|value| value.as_string());
+        assert_eq!(edge.as_deref(), Some("left"), "drag-end names the edge");
+    }
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_treats_a_press_within_the_dead_zone_as_a_tap_from_the_library() {
+        define_from_library(CORE_LIBRARY, "drag-frame");
+        let host = drag_frame();
+        settle_until(|| host.has_attribute("inset")).await;
+        let clicks = js_sys::Array::new();
+        let recorded = clicks.clone();
+        let on_click = Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
+            recorded.push(&JsValue::TRUE);
+        });
+        let _ =
+            document().add_event_listener_with_callback("click", on_click.as_ref().unchecked_ref());
+        on_click.forget();
+        let win = window().expect("window");
+
+        pointer(&host, "pointerdown", 220.0, 170.0, 1);
+        pointer(&win, "pointermove", 222.0, 171.0, 1);
+        assert!(!host.has_attribute("dragging"), "two pixels is still a tap");
+        pointer(&win, "pointerup", 222.0, 171.0, 0);
+        settle_briefly().await;
+
+        assert_eq!(
+            px(&host, "left"),
+            200.0,
+            "a tap leaves the frame where it was"
+        );
+        assert!(!host.has_attribute("docked"), "a tap does not dock");
+        fire(&host, "click");
+        settle_briefly().await;
+        assert_eq!(
+            clicks.length(),
+            1,
+            "the tap's click reaches the content and the page"
+        );
+    }
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_keeps_the_frame_inside_the_viewport_on_resize_from_the_library() {
+        define_from_library(CORE_LIBRARY, "drag-frame");
+        let host = drag_frame();
+        settle_until(|| host.has_attribute("inset")).await;
+        let (vw, _) = viewport();
+        let style: web_sys::CssStyleDeclaration =
+            host.unchecked_ref::<web_sys::HtmlElement>().style();
+        let _ = style.set_property("left", "5000px");
+
+        fire(&window().expect("window"), "resize");
+        settle_briefly().await;
+
+        assert_eq!(host.get_attribute("docked").as_deref(), Some("right"));
+        assert_eq!(
+            px(&host, "left"),
+            vw - 40.0 - 16.0,
+            "the frame is pulled back to the right edge"
+        );
+    }
+
+    /// An account page opened by a browser with no account raises the
+    /// ceremony itself once the registration resolves empty: the bar's
+    /// cells are links, so that page is the door.
+    #[dialog_common::test]
+    async fn it_raises_the_ceremony_on_an_unlinked_account_page() {
+        install_fake_host();
+        install();
+        let calls = record_bridge_calls("register");
+        set_context(&[("origin", "https://tonk.test"), ("path", "/account")]);
+        // The bar beside the panel carries the link display the door reads.
+        let bar = document().create_element("nav").expect("bar");
+        bar.set_class_name("hubbar");
+        bar.set_inner_html(
+            r#"<a data-account-trigger><span data-account-link data-state="loading"></span></a>"#,
+        );
+        document()
+            .body()
+            .expect("body")
+            .append_child(&bar)
+            .expect("attach");
+        let host = account_settings(r#"<div class="pane" data-pane="account"></div>"#);
+        settle_briefly().await;
+        let before = calls.length();
+        let registration = bar
+            .query_selector("[data-account-link]")
+            .expect("query")
+            .expect("the link display");
+        let _ = registration.set_attribute("data-state", "empty");
+        settle_until(|| calls.length() > before).await;
+        let asked: serde_json::Value =
+            serde_json::from_str(&calls.get(before).as_string().expect("a payload")).expect("json");
+        assert_eq!(asked["reason"], "needs-account");
+        assert_eq!(host.get_attribute("data-linking").as_deref(), Some("true"));
+        // The fake host is shared by every test on this page; leave it
+        // on the spaces path the others expect.
+        set_context(&[("origin", "https://tonk.test"), ("path", "/")]);
+        host.remove();
+        bar.remove();
+    }
+
+    /// A bare settings page with no account here goes to the account
+    /// page, where signing up happens, instead of raising the ceremony.
+    #[dialog_common::test]
+    async fn it_sends_an_unlinked_settings_page_to_the_account_page() {
+        install_fake_host();
+        install();
+        let registers = record_bridge_calls("register");
+        let navigations = record_bridge_calls("navigate");
+        set_context(&[("origin", "https://tonk.test"), ("path", "/settings")]);
+        let bar = document().create_element("nav").expect("bar");
+        bar.set_class_name("hubbar");
+        bar.set_inner_html(
+            r#"<a data-account-trigger><span data-account-link data-state="loading"></span></a>"#,
+        );
+        document()
+            .body()
+            .expect("body")
+            .append_child(&bar)
+            .expect("attach");
+        let host = account_settings(r#"<div class="pane" data-pane="account"></div>"#);
+        settle_briefly().await;
+        let registered = registers.length();
+        let before = navigations.length();
+        let registration = bar
+            .query_selector("[data-account-link]")
+            .expect("query")
+            .expect("the link display");
+        let _ = registration.set_attribute("data-state", "empty");
+        settle_until(|| navigations.length() > before).await;
+        assert_eq!(
+            navigations.get(before).as_string().as_deref(),
+            Some("/account")
+        );
+        assert_eq!(
+            registers.length(),
+            registered,
+            "no ceremony on a bare settings page"
+        );
+        assert_ne!(host.get_attribute("data-linking").as_deref(), Some("true"));
+        set_context(&[("origin", "https://tonk.test"), ("path", "/")]);
+        host.remove();
+        bar.remove();
+    }
+
+    /// Switching to the spaces tab hides a standing ceremony and
+    /// switching back shows it again; neither tears it down.
+    #[dialog_common::test]
+    async fn it_holds_the_ceremony_across_a_tab_switch() {
+        install_fake_host();
+        install();
+        let calls = record_bridge_calls("register");
+        set_context(&[("origin", "https://tonk.test"), ("path", "/account")]);
+        let bar = document().create_element("nav").expect("bar");
+        bar.set_class_name("hubbar");
+        bar.set_inner_html(
+            r#"<a data-account-trigger><span data-account-link data-state="empty"></span></a>"#,
+        );
+        document()
+            .body()
+            .expect("body")
+            .append_child(&bar)
+            .expect("attach");
+        let host = account_settings(r#"<div class="pane" data-pane="account"></div>"#);
+        settle_until(|| host.get_attribute("data-linking").as_deref() == Some("true")).await;
+        let reason = |index: u32| -> String {
+            let asked: serde_json::Value =
+                serde_json::from_str(&calls.get(index).as_string().expect("a payload"))
+                    .expect("json");
+            asked["reason"].as_str().expect("a reason").to_owned()
+        };
+        let before = calls.length();
+        move_context("/");
+        settle_until(|| calls.length() > before).await;
+        assert_eq!(reason(before), "suspend");
+        assert_eq!(host.get_attribute("data-linking").as_deref(), Some("true"));
+        let before = calls.length();
+        move_context("/account");
+        settle_until(|| calls.length() > before).await;
+        assert_eq!(reason(before), "show");
+        set_context(&[("origin", "https://tonk.test"), ("path", "/")]);
+        host.remove();
+        bar.remove();
+    }
+
+    /// Mount the settings panel's element with `markup` inside it.
+    fn account_settings(markup: &str) -> Element {
+        install_fake_host();
+        install();
+        define_from_library(PROFILE_LIBRARY, "account-settings");
+        let host = document().create_element("account-settings").expect("host");
+        host.set_inner_html(markup);
+        document()
+            .body()
+            .expect("body")
+            .append_child(&host)
+            .expect("attach");
+        host
+    }
+
+    fn set_context(fields: &[(&str, &str)]) {
+        let context = js_sys::Object::new();
+        for (key, value) in fields {
+            let _ = Reflect::set(&context, &(*key).into(), &(*value).into());
+        }
+        let _ = Reflect::set(&host_bridge(), &"context".into(), &context);
+    }
+
+    /// A terminal's request rides the location. The element reads it
+    /// off the injected context (the guest's own location is
+    /// about:srcdoc), shows the request pane, and copies the request
+    /// onto the approve control so the click can assert it, with the
+    /// callback base58-encoded the way the worker decodes it. Declining
+    /// hands the terminal a deny on its own loopback callback.
+    #[dialog_common::test]
+    async fn it_reads_a_terminal_request_off_the_location_from_the_library() {
+        let navigations = record_bridge_calls("navigate");
+        set_context(&[
+            ("origin", "https://tonk.test"),
+            ("path", "/settings/link"),
+            (
+                "search",
+                "?audience=did%3Akey%3AzTerminal&callback=http%3A%2F%2F127.0.0.1%3A4321%2F&name=e2e+terminal",
+            ),
+            ("hash", ""),
+        ]);
+        let host = account_settings(
+            r#"<div class="pane" data-pane="account"></div><div class="pane" data-pane="link" hidden><b data-link-name></b><b data-link-account></b><b data-link-did></b><button type="button" data-link-decline>decline</button><button type="button" data-link-approve data-audience="" data-callback="" data-name="" data-expected-account="">approve</button></div><p data-ceremony-status hidden></p>"#,
+        );
+        settle_until(|| defined("account-settings")).await;
+        settle_briefly().await;
+
+        let link = host
+            .query_selector("[data-pane=\"link\"]")
+            .expect("query")
+            .expect("the link pane");
+        assert!(!link.has_attribute("hidden"), "the request pane is shown");
+        let account = host
+            .query_selector("[data-pane=\"account\"]")
+            .expect("query")
+            .expect("the account pane");
+        assert!(
+            account.has_attribute("hidden"),
+            "and the account pane is not"
+        );
+        assert_eq!(text_of(&host, "[data-link-name]"), "e2e terminal");
+        assert_eq!(text_of(&host, "[data-link-did]"), "did:key:zTerminal");
+        assert_eq!(
+            text_of(&host, "[data-link-account]"),
+            "your signed-in account"
+        );
+        let approve = host
+            .query_selector("[data-link-approve]")
+            .expect("query")
+            .expect("the approve control");
+        assert_eq!(
+            approve.get_attribute("data-audience").as_deref(),
+            Some("did:key:zTerminal")
+        );
+        assert_eq!(
+            approve.get_attribute("data-callback").as_deref(),
+            Some("VMK7D6XBoL4m6GErdKmWdY4t7ordCS"),
+            "the callback is base58 over the URL"
+        );
+        assert_eq!(
+            approve.get_attribute("data-name").as_deref(),
+            Some("e2e terminal")
+        );
+        assert_eq!(
+            approve.get_attribute("data-expected-account").as_deref(),
+            Some(""),
+            "a request naming no account leaves the field blank, which the click omits"
+        );
+
+        let decline = host
+            .query_selector("[data-link-decline]")
+            .expect("query")
+            .expect("the decline control");
+        fire(&decline, "click");
+        settle_until(|| navigations.length() >= 1).await;
+        assert_eq!(
+            navigations.get(0).as_string().as_deref(),
+            Some(
+                "http://127.0.0.1:4321/#deny=declined+in+the+browser&redirect=https%3A%2F%2Ftonk.test%2Fsettings"
+            ),
+            "declining answers the terminal on its callback and returns here"
+        );
+        set_context(&[
+            ("origin", "https://tonk.test"),
+            ("path", "/"),
+            ("search", ""),
+            ("hash", ""),
+        ]);
+    }
+
+    /// Deleting is armed by the exact phrase, and what it deletes is
+    /// counted off the owned-space rows the view renders.
+    #[dialog_common::test]
+    async fn it_arms_the_deletion_on_the_exact_phrase_from_the_library() {
+        set_context(&[
+            ("origin", "https://tonk.test"),
+            ("path", "/settings"),
+            ("search", ""),
+            ("hash", ""),
+        ]);
+        let host = account_settings(
+            r#"<div class="pane" data-pane="account"><button type="button" data-delete-account-open>delete</button><div data-delete-account-dialog><span data-delete-scope>loading</span><span data-delete-owned hidden><span data-owned-space><span data-space-name>Welcome</span></span><span data-owned-space><span data-space-name>Doomed Garden</span></span></span><label>type <b data-delete-confirm-label>delete account</b></label><input data-delete-confirm type="text"><button type="button" data-delete-account-submit data-email="owner@example.com" disabled>delete</button></div></div><p data-ceremony-status hidden></p>"#,
+        );
+        settle_until(|| defined("account-settings")).await;
+        settle_briefly().await;
+
+        let opener = host
+            .query_selector("[data-delete-account-open]")
+            .expect("query")
+            .expect("the opener");
+        fire(&opener, "click");
+        settle_briefly().await;
+        assert_eq!(
+            text_of(&host, "[data-delete-scope]"),
+            "2 owned hosted spaces will be deleted: Welcome, Doomed Garden. Spaces you joined are left intact."
+        );
+        let submit = host
+            .query_selector("[data-delete-account-submit]")
+            .expect("query")
+            .expect("the submit");
+        assert!(
+            submit.has_attribute("disabled"),
+            "nothing typed, nothing armed"
+        );
+
+        let field: web_sys::HtmlInputElement = host
+            .query_selector("[data-delete-confirm]")
+            .expect("query")
+            .expect("the field")
+            .unchecked_into();
+        field.set_value("delete");
+        fire(&field, "input");
+        settle_briefly().await;
+        assert!(
+            submit.has_attribute("disabled"),
+            "a partial phrase does not arm"
+        );
+
+        field.set_value("delete account");
+        fire(&field, "input");
+        settle_until(|| !submit.has_attribute("disabled")).await;
+        assert!(
+            !submit.has_attribute("disabled"),
+            "the exact phrase arms the submit"
+        );
+    }
+
+    /// The ceremony row is worded for the person, and a terminal state
+    /// stays on screen after the passkey cluster closes.
+    #[dialog_common::test]
+    async fn it_words_the_ceremony_row_from_the_library() {
+        set_context(&[
+            ("origin", "https://tonk.test"),
+            ("path", "/settings"),
+            ("search", ""),
+            ("hash", ""),
+        ]);
+        let host = account_settings(
+            r#"<div class="pane" data-pane="account"></div><p data-ceremony-status hidden></p><span data-rows></span>"#,
+        );
+        settle_until(|| defined("account-settings")).await;
+        settle_briefly().await;
+        let rows = host
+            .query_selector("[data-rows]")
+            .expect("query")
+            .expect("the rows slot");
+        let status = host
+            .query_selector("[data-ceremony-status]")
+            .expect("query")
+            .expect("the status line");
+
+        rows.set_inner_html(
+            r#"<span data-ceremony-row data-ceremony="add-passkey" data-ceremony-state="pending-ceremony" data-ceremony-detail="" hidden></span>"#,
+        );
+        settle_until(|| !status.has_attribute("hidden")).await;
+        assert_eq!(
+            text_of(&host, "[data-ceremony-status]"),
+            "Adding the passkey: waiting for your passkey\u{2026}"
+        );
+        assert_eq!(
+            host.get_attribute("data-ceremony-state").as_deref(),
+            Some("pending-ceremony")
+        );
+
+        rows.set_inner_html(
+            r#"<span data-ceremony-row data-ceremony="add-passkey" data-ceremony-state="refused" data-ceremony-detail="no passkey" hidden></span>"#,
+        );
+        settle_until(|| text_of(&host, "[data-ceremony-status]").contains("did not finish")).await;
+        assert_eq!(
+            text_of(&host, "[data-ceremony-status]"),
+            "Adding the passkey did not finish: no passkey"
+        );
+
+        // The cluster closing clears a transient line, not a verdict.
+        fire(&window().expect("window"), "tonk:custody-closed");
+        settle_briefly().await;
+        assert_eq!(
+            text_of(&host, "[data-ceremony-status]"),
+            "Adding the passkey did not finish: no passkey",
+            "a refusal stays on screen after the cluster closes"
+        );
+    }
 }

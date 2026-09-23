@@ -345,7 +345,10 @@ pub(crate) fn build_assertion_application(
             // a query per declaration name on every refresh.
             if super::view::is_view(&resolved) {
                 user_fields.remove(super::view::BINDINGS_FIELD);
-                if let Some(bindings) = super::view::compile_bindings(assertion, scope)? {
+                user_fields.remove(super::view::EMBEDS_FIELD);
+                let compiled = super::view::compile_bindings(assertion, scope)?;
+                analysis.warnings.extend(compiled.warnings);
+                if let Some(bindings) = compiled.bindings {
                     let encoded = bindings.encode().map_err(|reason| {
                         AnalyzeError::at(
                             AnalyzeErrorKind::InvalidViewBindings { reason },
@@ -358,6 +361,26 @@ pub(crate) fn build_assertion_application(
                     );
                     retract_terms.insert(
                         super::view::BINDINGS_FIELD.into(),
+                        Term::<dialog_query::Any>::blank(),
+                    );
+                    any_assert = true;
+                }
+                // The embeds ride the view the same way: resolved once
+                // here, so the renderer asks for the subject that was
+                // checked rather than one a caller supplied.
+                if let Some(embeds) = compiled.embeds {
+                    let encoded = embeds.encode().map_err(|reason| {
+                        AnalyzeError::at(
+                            AnalyzeErrorKind::InvalidViewBindings { reason },
+                            head_range,
+                        )
+                    })?;
+                    assert_terms.insert(
+                        super::view::EMBEDS_FIELD.into(),
+                        Term::Constant(Value::Record(encoded)),
+                    );
+                    retract_terms.insert(
+                        super::view::EMBEDS_FIELD.into(),
                         Term::<dialog_query::Any>::blank(),
                     );
                     any_assert = true;
@@ -858,6 +881,7 @@ fn scalar_to_value(scalar: &Scalar) -> Value {
         Scalar::UnsignedInteger(u) => Value::UnsignedInt(*u),
         Scalar::Float(f) => Value::Float(*f),
         Scalar::Boolean(b) => Value::Boolean(*b),
+        Scalar::Bytes(bytes) => Value::Bytes(bytes.clone()),
         // dialog's `Value` has no Null variant; encode an explicit
         // absence as an empty string so the digest stays total.
         // This only matters for `null` literals in `with:` slots,
