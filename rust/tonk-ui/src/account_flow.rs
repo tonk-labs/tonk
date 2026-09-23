@@ -4496,6 +4496,15 @@ mod tests {
 
     #[cfg(feature = "connection-invites")]
     async fn await_tool_connection_ready(driver: &WebDriver, space: &str) -> Result<()> {
+        await_tool_connection_ready_after(driver, space, None).await
+    }
+
+    #[cfg(feature = "connection-invites")]
+    async fn await_tool_connection_ready_after(
+        driver: &WebDriver,
+        space: &str,
+        previous_link: Option<&str>,
+    ) -> Result<()> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
         loop {
             enter_guest(driver).await?;
@@ -4507,11 +4516,12 @@ mod tests {
                          space:surface.dataset.toolSpace,
                          mode:surface.dataset.toolMode,
                          hasLink:!!surface.dataset.toolLink,
+                         newLink:!arguments[0] || surface.dataset.toolLink !== arguments[0],
                          directDisabled:document.querySelector('[data-tool-copy-link]')?.hasAttribute('disabled'),
                          promptDisabled:document.querySelector('[data-tool-copy-prompt]')?.hasAttribute('disabled'),
                          status:document.querySelector('[data-tool-connection-status]')?.textContent
                        };"#,
-                    vec![],
+                    vec![serde_json::json!(previous_link)],
                 )
                 .await?;
             driver.enter_default_frame().await?;
@@ -4520,6 +4530,7 @@ mod tests {
                 && last["space"] == space
                 && last["mode"] == "scoped"
                 && last["hasLink"] == true
+                && last["newLink"] == true
                 && last["directDisabled"] == false
                 && last["promptDisabled"] == false
             {
@@ -6627,7 +6638,7 @@ mod tests {
         .await?;
         wait_for_service_worker(&browser).await?;
         click_share_row(&browser, "[data-tool-connection]").await?;
-        await_tool_connection_ready(&browser, &key).await?;
+        await_tool_connection_ready_after(&browser, &key, Some(&tool_link)).await?;
         let returning = copy_tool_connection(&browser, "[data-tool-copy-link]").await?;
         anyhow::ensure!(
             returning != tool_link,
