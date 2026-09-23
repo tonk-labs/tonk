@@ -27,6 +27,34 @@
     if(c.hash){ headers.push(["x-tonk-hash",c.hash]); }
     return headers;
   }
+  // A space rendered on its own origin keeps its database in its own worker
+  // (`siteHost` says it is on one, `repo` that it renders a space). Its reads
+  // and writes to that space go there directly instead of up the relay, and
+  // it claims `tonk:load` there for its path: the host stamps its site in the
+  // host's worker, which this frame no longer reads from.
+  function ownSpace(){
+    var c=(window.tonk&&window.tonk.context)||{};
+    return location.origin!=="null"&&c.siteHost&&c.repo?c:null;
+  }
+  function ownsPath(url){
+    var c=ownSpace();
+    return !!c&&url.indexOf("/api/repository/"+c.repo+"/")===0;
+  }
+  function nativeWithContext(input,init){
+    var request=new Request(input,init);
+    contextHeaders().forEach(function(h){ request.headers.set(h[0],h[1]); });
+    return nativeFetch(request);
+  }
+  function claimLoad(){
+    var c=ownSpace(); if(!c||!c.siteEntity) return;
+    var body={claims:[{op:"assert",application:{
+      predicate:{kind:"transient",concept:{with:{path:{the:"xyz.tonk.site/path",as:"Text",cardinality:"one"}}}},
+      parameters:{"this":c.siteEntity,path:c.sitePath||"/"}
+    }}]};
+    nativeWithContext("/api/repository/"+c.repo+"/branch/"+(c.branch||"main")+"/transact",{
+      method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)
+    }).catch(function(error){ console.warn("tonk: claiming this site failed",error); });
+  }
   function call(type,extra){
     return ready.then(function(){
       return new Promise(function(resolve,reject){
@@ -145,9 +173,10 @@
   port.onmessage=function(event){
     var env=event.data; if(!env) return;
     switch(env.type){
-      case "ready": tonk.context=env.context; resolveReady(); return;
+      case "ready": tonk.context=env.context; resolveReady(); claimLoad(); return;
       case "context": {
         tonk.context=env.context;
+        claimLoad();
         // The page moved without reloading; elements that read the
         // location re-derive from the new context.
         window.dispatchEvent(new CustomEvent("tonk:context",{detail:env.context}));
@@ -405,6 +434,8 @@
   }
   window.fetch=function(input,init){
     var url=(typeof input==="string")?input:(input&&input.url)||"";
+    // This space's own data, on its own origin: its own worker answers.
+    if(ownsPath(url)){ return nativeWithContext(input,init); }
     // Host-relative (`/…`, not `//`): route through the relay.
     if(url.charAt(0)==="/"&&url.charAt(1)!=="/"){
       return relayRequest(url,input,init);

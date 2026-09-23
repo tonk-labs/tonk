@@ -1628,8 +1628,10 @@ self.onmessage = event => {
 // A base58btc blob hash, the whole of what a space worker may ask for.
 const SPACE_BLOB_HASH = /^[1-9A-HJ-NP-Za-km-z]+$/;
 
-// Serve a space origin's worker over `port`, scoped to `repo` and `branch`.
-// Every request is acknowledged before it is read, so the space worker can
+// Serve a space origin's worker over `port`, scoped to `repo` and `branch`:
+// its blob reads, the delegation it holds for that one space, and the
+// snapshot it seeds its replica from. Every
+// request is acknowledged before it is read, so the space worker can
 // tell a restarted (silent) worker from a slow read. The read runs through
 // the same route a page's `/api/.../blob/...` fetch takes.
 function bindSpacePort(port, { repo, branch }) {
@@ -1639,6 +1641,32 @@ function bindSpacePort(port, { repo, branch }) {
         if (typeof id !== "number") return;
         port.postMessage({ id, ack: true });
         try {
+            // The space worker asks for a delegation for its own profile. It
+            // is issued for the space this port is bound to, never another.
+            if (typeof data.delegate === "string") {
+                const worker = await activateWorker();
+                const grant = await worker.delegateSpace(repo, data.delegate);
+                const chain = grant.chain.buffer;
+                port.postMessage(
+                    { id, space: repo, chain, expires: grant.expires, remote: grant.remote },
+                    [chain],
+                );
+                return;
+            }
+            // A freshly mounted space worker seeds its replica from this one's
+            // copy of the space: its `main`, as a snapshot.
+            if (data.snapshot === true) {
+                const worker = await activateWorker();
+                const snapshot = await worker.snapshotSpace(repo);
+                if (!snapshot) {
+                    port.postMessage({ id, empty: true });
+                    return;
+                }
+                const content = snapshot.content.buffer;
+                const revision = snapshot.revision.buffer;
+                port.postMessage({ id, content, revision }, [content, revision]);
+                return;
+            }
             if (typeof data.blob !== "string" || !SPACE_BLOB_HASH.test(data.blob)) {
                 throw new Error("malformed blob hash");
             }

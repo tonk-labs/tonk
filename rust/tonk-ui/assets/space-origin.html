@@ -54,6 +54,7 @@
                     if (container.controller) return;
                     await container.register("/space_worker.js", {
                         scope: "/",
+                        type: "module",
                         updateViaCache: "none",
                     });
                     if (container.controller) return;

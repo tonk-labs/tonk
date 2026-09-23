@@ -2355,6 +2355,19 @@ fn build_context(host: &Element, state: &Rc<RefCell<PortalState>>) -> Object {
     if let Some(site_host) = state.borrow().site_host.as_deref() {
         let _ = Reflect::set(&context, &"siteHost".into(), &JsValue::from_str(site_host));
     }
+    // A `<tonk-site>`'s own site entity and in-site path, which a guest on a
+    // real origin claims `tonk:load` for against its own worker. Distinct from
+    // `site` above, the tab's site the service worker assigned.
+    if let Some(site_entity) = host.get_attribute("data-site") {
+        let _ = Reflect::set(
+            &context,
+            &"siteEntity".into(),
+            &JsValue::from_str(&site_entity),
+        );
+    }
+    if let Some(site_path) = host.get_attribute("path") {
+        let _ = Reflect::set(&context, &"sitePath".into(), &JsValue::from_str(&site_path));
+    }
     let _ = Reflect::set(&context, &"path".into(), &JsValue::from_str(&path));
     let _ = Reflect::set(&context, &"search".into(), &JsValue::from_str(&search));
     let _ = Reflect::set(&context, &"hash".into(), &JsValue::from_str(&hash));
