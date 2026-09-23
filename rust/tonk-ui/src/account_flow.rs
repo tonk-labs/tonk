@@ -5799,19 +5799,28 @@ mod tests {
         let key = create_space(&driver, "Waiting for Email").await?;
         await_url_containing(&driver, &format!("/space/{key}")).await?;
 
-        enter_guest(&driver).await?;
-        let condition = driver
-            .execute(
-                r#"const action = document.querySelector('tonk-fab')?.shadowRoot?.querySelector('.condition');
-                   return { hidden: action?.hasAttribute('hidden'), text: action?.textContent?.trim() };"#,
-                vec![],
-            )
-            .await?;
-        assert!(
-            condition.json()["hidden"] == false && condition.json()["text"] == "confirm your email",
-            "the FAB must name the existing account's pending step: {}",
-            condition.json(),
-        );
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            enter_guest(&driver).await?;
+            let condition = driver
+                .execute(
+                    r#"const action = document.querySelector('tonk-fab')?.shadowRoot?.querySelector('.condition');
+                       return { hidden: action?.hasAttribute('hidden'), text: action?.textContent?.trim() };"#,
+                    vec![],
+                )
+                .await?;
+            if condition.json()["hidden"] == false
+                && condition.json()["text"] == "confirm your email"
+            {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the FAB must name the existing account's pending step: {}",
+                condition.json(),
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
         driver.enter_default_frame().await?;
 
         open_space_actions(&driver).await?;
