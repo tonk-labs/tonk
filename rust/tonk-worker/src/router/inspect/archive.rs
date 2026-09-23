@@ -95,7 +95,7 @@ pub async fn inspect_archive_block(
 
     let repo = match tonk_state
         .profile
-        .repository(&params.repo)
+        .space(&params.repo)
         .load()
         .perform(&tonk_state.operator)
         .await
@@ -201,7 +201,7 @@ pub async fn inspect_remote_archive_block(
 
     let repo = match tonk_state
         .profile
-        .repository(&params.repo)
+        .space(&params.repo)
         .load()
         .perform(&tonk_state.operator)
         .await

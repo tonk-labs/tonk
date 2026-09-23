@@ -688,14 +688,19 @@ pub(crate) mod tests {
         /// access service (nothing here needs an account). The registry
         /// installed is the REAL one, not a test double.
         pub(crate) async fn test_state() -> AppState {
-            use dialog_operator::Profile;
-            use dialog_storage::provider::storage::Storage;
-
-            let storage = Storage::<crate::worker::DefaultSpace>::default();
+            let storage =
+                dialog_storage::provider::storage::Storage::<crate::worker::DefaultSpace>::default(
+                );
             let name = format!("command-dispatch-test-{}", rand::random::<u64>());
-            let profile = Profile::open(&name).perform(&storage).await.unwrap();
-            let session = crate::session::open(&profile, &storage).await.unwrap();
-            let reactor = crate::Reactor::new(profile.clone());
+            let profile = dialog_peer::OpenPeer::open(dialog_effects::storage::Location::new(
+                dialog_effects::storage::Directory::Profile,
+                &name,
+            ))
+            .perform(&storage)
+            .await
+            .unwrap();
+            let session = crate::session::open(&profile).await.unwrap();
+            let reactor = crate::Reactor::new(profile.credential().clone());
             let state = TonkState {
                 profile,
                 operator: session.operator,

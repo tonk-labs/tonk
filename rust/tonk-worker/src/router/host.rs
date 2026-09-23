@@ -243,7 +243,7 @@ pub async fn guest(
 
     let repo = tonk
         .profile
-        .repository(&params.repo)
+        .space(&params.repo)
         .load()
         .perform(&tonk.operator)
         .await

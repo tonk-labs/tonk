@@ -10,6 +10,7 @@
 
 use std::collections::HashMap;
 
+use crate::worker::DefaultPeer;
 use ::axum::{Json, extract::Path, extract::State};
 use axum_wasm_macros::wasm_compat;
 use dialog_capability::access::{AuthorizeError, Recourse};
@@ -1433,28 +1434,21 @@ pub(crate) async fn ensure_session_authority(state: &AppState) -> Result<(), Ton
     // session it replaces; renewing on `main` would sign the profile
     // out of its account mid-session.
     let access_branch = state.read().await.active_branch.clone();
-    renew_session_with(state, move |profile, storage| async move {
-        crate::session::rotate(&profile, &storage, &access_branch).await
+    renew_session_with(state, move |profile| async move {
+        crate::session::rotate(&profile, &access_branch).await
     })
     .await
 }
 
 async fn renew_session_with<F, Fut>(state: &AppState, build: F) -> Result<(), TonkWorkerError>
 where
-    F: FnOnce(
-        dialog_operator::Profile,
-        dialog_storage::provider::storage::Storage<crate::worker::DefaultSpace>,
-    ) -> Fut,
+    F: FnOnce(DefaultPeer) -> Fut,
     Fut: std::future::Future<Output = Result<crate::session::Session, TonkWorkerError>>,
 {
     let now = crate::session::now();
-    let (profile, storage, expires_at) = {
+    let (profile, expires_at) = {
         let tonk = state.read().await;
-        (
-            tonk.profile.clone(),
-            tonk.storage.clone(),
-            tonk.session_expires_at,
-        )
+        (tonk.profile.clone(), tonk.session_expires_at)
     };
 
     if !crate::session::needs_renewal(expires_at, now) {
@@ -1463,7 +1457,7 @@ where
 
     // Signing happens outside the write lock; existing readers finish
     // before the new operator and expiry are installed together.
-    let session = build(profile, storage).await?;
+    let session = build(profile).await?;
 
     let mut tonk = state.write().await;
     // A concurrent drain may have rotated while this one was minting.
@@ -1782,7 +1776,7 @@ mod renewal_tests {
 
     async fn revision(state: &AppState) -> Option<dialog_repository::Revision> {
         let tonk = state.read().await;
-        dialog_repository::Repository::from(tonk.profile.signer().clone())
+        dialog_repository::Repository::from(tonk.profile.credential().clone())
             .branch(dialog_repository::ACCESS_BRANCH)
             .open()
             .perform(&tonk.operator)
@@ -1831,7 +1825,7 @@ mod renewal_tests {
         let head = revision(&state).await;
         let due = crate::session::now();
         state.write().await.session_expires_at = due;
-        let result = renew_session_with(&state, |_, _| async {
+        let result = renew_session_with(&state, |_| async {
             Err(crate::TonkWorkerError::Internal(
                 "injected session construction failure".into(),
             ))
@@ -1851,14 +1845,9 @@ mod renewal_tests {
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
         let (installed_tx, installed_rx) = tokio::sync::oneshot::channel();
         let winner = async {
-            renew_session_with(&state, |profile, storage| async move {
+            renew_session_with(&state, |profile| async move {
                 ready_rx.await.unwrap();
-                crate::session::rotate(
-                    &profile,
-                    &storage,
-                    crate::router::repository::PROFILE_BRANCH,
-                )
-                .await
+                crate::session::rotate(&profile, crate::router::repository::PROFILE_BRANCH).await
             })
             .await
             .unwrap();
@@ -1866,14 +1855,11 @@ mod renewal_tests {
             installed_tx.send(installed.clone()).unwrap();
             installed
         };
-        let loser = renew_session_with(&state, |profile, storage| async move {
-            let candidate = crate::session::rotate(
-                &profile,
-                &storage,
-                crate::router::repository::PROFILE_BRANCH,
-            )
-            .await
-            .unwrap();
+        let loser = renew_session_with(&state, |profile| async move {
+            let candidate =
+                crate::session::rotate(&profile, crate::router::repository::PROFILE_BRANCH)
+                    .await
+                    .unwrap();
             ready_tx.send(()).unwrap();
             let installed = installed_rx.await.unwrap();
             assert_ne!(candidate.operator.did().to_string(), installed);

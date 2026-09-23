@@ -1,9 +1,9 @@
 //! Attach optional provider services to the provider-neutral local root, and
 //! name the account repository that root owns.
 
+use crate::worker::DefaultPeer;
 use axum::{Extension, Json, extract::State};
 use axum_wasm_macros::wasm_compat;
-use dialog_operator::Profile;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_account::AccountProviderRecord;
@@ -39,12 +39,12 @@ async fn load_provider(
 }
 
 async fn load_provider_from(
-    profile: &Profile,
+    profile: &DefaultPeer,
     operator: &DefaultOperator,
     branch: &str,
 ) -> Result<Option<AccountProviderRecord>, TonkWorkerError> {
     let bytes = match profile
-        .credential()
+        .secrets()
         .site(crate::credential::branch_site(ACCOUNT_PROVIDER_SITE, branch).as_str())
         .load::<Vec<u8>>()
         .perform(operator)
@@ -75,7 +75,7 @@ async fn save_provider(
     })?;
     state
         .profile
-        .credential()
+        .secrets()
         .site(crate::credential::branch_site(ACCOUNT_PROVIDER_SITE, &state.active_branch).as_str())
         .save(bytes)
         .perform(&state.operator)
@@ -211,7 +211,7 @@ pub(crate) async fn detach_test_account(
 ) -> Result<(), TonkWorkerError> {
     state
         .profile
-        .credential()
+        .secrets()
         .site(crate::credential::branch_site(ACCOUNT_PROVIDER_SITE, &state.active_branch).as_str())
         .save(Vec::<u8>::new())
         .perform(&state.operator)
@@ -447,7 +447,7 @@ pub(crate) async fn disconnect(
     // account meanwhile.
     state
         .profile
-        .credential()
+        .secrets()
         .site(crate::credential::branch_site(ACCOUNT_PROVIDER_SITE, &state.active_branch).as_str())
         .save(Vec::<u8>::new())
         .perform(&state.operator)

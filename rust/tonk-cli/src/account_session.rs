@@ -5,11 +5,12 @@ use std::io::Write as _;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use dialog_operator::{Operator, Profile};
+use dialog_peer::Peer;
 use dialog_storage::provider::storage::NativeSpace;
 use dialog_varsig::Did;
 use serde::{Deserialize, Serialize};
 
+use crate::peer::NativePeer;
 use crate::space::SpaceStore;
 
 /// Credential site containing the sole native remote-account authority state.
@@ -242,7 +243,7 @@ pub fn exclusive_transition_guard(store: &SpaceStore) -> Result<AccountSessionWr
     })
 }
 
-fn state_path(profile: &Profile, store: &SpaceStore) -> Result<PathBuf> {
+fn state_path(profile: &NativePeer, store: &SpaceStore) -> Result<PathBuf> {
     let profile_key = blake3::hash(profile.did().as_ref().as_bytes()).to_hex();
     Ok(store
         .account_dir()
@@ -260,8 +261,8 @@ fn legacy_provider_bytes(
 }
 
 async fn load_raw(
-    profile: &Profile,
-    _operator: &Operator<NativeSpace>,
+    profile: &NativePeer,
+    _operator: &Peer<NativeSpace>,
     store: &SpaceStore,
 ) -> Result<Option<AccountSessionState>> {
     let path = state_path(profile, store)?;
@@ -280,8 +281,8 @@ async fn load_raw(
 }
 
 async fn save_raw(
-    profile: &Profile,
-    _operator: &Operator<NativeSpace>,
+    profile: &NativePeer,
+    _operator: &Peer<NativeSpace>,
     store: &SpaceStore,
     state: &AccountSessionState,
 ) -> Result<()> {
@@ -326,8 +327,8 @@ async fn save_raw(
 /// when both are present. This is used only to migrate legacy installs that
 /// predate canonical account-session state.
 async fn projected_active(
-    profile: &Profile,
-    operator: &Operator<NativeSpace>,
+    profile: &NativePeer,
+    operator: &Peer<NativeSpace>,
 ) -> Result<Option<ActiveAccount>> {
     let Some(root) = crate::identity::local_root_with_operator(profile, operator).await? else {
         return Ok(None);
@@ -338,7 +339,7 @@ async fn projected_active(
         .context("stored root DID is invalid")?;
     let Some(bytes) = legacy_provider_bytes(
         profile
-            .credential()
+            .secrets()
             .site(crate::account::ACCOUNT_LINK_SITE)
             .load::<Vec<u8>>()
             .perform(operator)
@@ -369,8 +370,8 @@ async fn projected_active(
 /// Initialize canonical state once, migrating the legacy root/provider
 /// projection while the caller holds the exclusive lock.
 pub async fn ensure_initialized(
-    profile: &Profile,
-    operator: &Operator<NativeSpace>,
+    profile: &NativePeer,
+    operator: &Peer<NativeSpace>,
     guard: &AccountSessionWriteGuard,
 ) -> Result<()> {
     if let Some(mut state) = load_raw(profile, operator, &guard.store).await? {
@@ -421,8 +422,8 @@ pub async fn ensure_initialized(
 
 /// Read one canonical generation after finishing interrupted projections.
 pub async fn snapshot(
-    profile: &Profile,
-    operator: &Operator<NativeSpace>,
+    profile: &NativePeer,
+    operator: &Peer<NativeSpace>,
     store: &SpaceStore,
 ) -> Result<AccountSessionState> {
     let guard = exclusive_transition_guard(store)?;
@@ -434,8 +435,8 @@ pub async fn snapshot(
 
 /// Replace an exact active generation while retaining recovery material.
 pub(crate) async fn replace_with_checkpoint(
-    profile: &Profile,
-    operator: &Operator<NativeSpace>,
+    profile: &NativePeer,
+    operator: &Peer<NativeSpace>,
     store: &SpaceStore,
     previous: &ActiveAccount,
     replacement: &ActiveAccount,
@@ -484,8 +485,8 @@ pub(crate) async fn replace_with_checkpoint(
 /// Persist the exact post-callback account generation before compatibility
 /// projection writes begin, retaining the exclusive transition lock.
 pub async fn stage_activation(
-    profile: &Profile,
-    operator: &Operator<NativeSpace>,
+    profile: &NativePeer,
+    operator: &Peer<NativeSpace>,
     store: &SpaceStore,
     account: ActiveAccount,
 ) -> Result<AccountActivationGuard> {
@@ -515,8 +516,8 @@ pub async fn stage_activation(
 
 /// Atomically promote the exact staged callback generation to active.
 pub async fn finalize_activation(
-    profile: &Profile,
-    operator: &Operator<NativeSpace>,
+    profile: &NativePeer,
+    operator: &Peer<NativeSpace>,
     guard: AccountActivationGuard,
     account: &ActiveAccount,
 ) -> Result<()> {
@@ -543,8 +544,8 @@ pub async fn finalize_activation(
 
 /// Strictly read canonical state while the caller retains a shared lock.
 pub async fn load_guarded(
-    profile: &Profile,
-    operator: &Operator<NativeSpace>,
+    profile: &NativePeer,
+    operator: &Peer<NativeSpace>,
     guard: &AccountSessionReadGuard,
 ) -> Result<AccountSessionState> {
     load_raw(profile, operator, &guard.store)
@@ -554,8 +555,8 @@ pub async fn load_guarded(
 
 /// Read the sole active attachment under an existing shared guard.
 pub async fn active_guarded(
-    profile: &Profile,
-    operator: &Operator<NativeSpace>,
+    profile: &NativePeer,
+    operator: &Peer<NativeSpace>,
     guard: &AccountSessionReadGuard,
 ) -> Result<Option<ActiveAccount>> {
     Ok(load_guarded(profile, operator, guard).await?.active)
@@ -566,8 +567,8 @@ pub async fn active_guarded(
 /// Logout is local-first: the durable transition never depends on a provider
 /// being reachable. The returned attachments are notified best-effort.
 pub async fn logout_transition_for_store(
-    profile: &Profile,
-    operator: &Operator<NativeSpace>,
+    profile: &NativePeer,
+    operator: &Peer<NativeSpace>,
     store: &SpaceStore,
 ) -> Result<Vec<ActiveAccount>> {
     let guard = exclusive_transition_guard(store)?;
@@ -588,7 +589,7 @@ pub async fn logout_transition_for_store(
         save_raw(profile, operator, store, &state).await?;
         // Compatibility only: canonical state is already authoritative.
         let _ = profile
-            .credential()
+            .secrets()
             .site(crate::account::ACCOUNT_LINK_SITE)
             .save(Vec::<u8>::new())
             .perform(operator)
@@ -599,7 +600,7 @@ pub async fn logout_transition_for_store(
 
 #[cfg(feature = "integration-tests")]
 pub(crate) async fn install_for_integration_test(
-    profile: &Profile,
+    profile: &NativePeer,
     operator: &crate::account_authority::AccountBoundOperator,
     state: &AccountSessionState,
 ) -> Result<()> {
@@ -610,37 +611,33 @@ pub(crate) async fn install_for_integration_test(
 
 #[cfg(test)]
 mod tests {
-    use dialog_capability::Subject;
     use dialog_effects::storage::Directory;
-    use dialog_operator::DeriveOperator as _;
+
     use dialog_storage::provider::storage::Storage;
 
     use super::*;
 
-    async fn isolated_session() -> (
-        tempfile::TempDir,
-        SpaceStore,
-        Profile,
-        Operator<NativeSpace>,
-    ) {
+    async fn isolated_session() -> (tempfile::TempDir, SpaceStore, NativePeer, Peer<NativeSpace>) {
         let temp = tempfile::tempdir().unwrap();
         let store = SpaceStore::at(temp.path().join("state"));
         let profile_dir = Directory::At(temp.path().join("profiles").to_string_lossy().into());
         let storage = Storage::<NativeSpace>::default();
-        let profile = Profile::open(format!("account-session-test-{}", rand::random::<u64>()))
-            .at(profile_dir)
-            .perform(&storage)
-            .await
-            .unwrap();
+        let profile = dialog_peer::OpenPeer::open(dialog_effects::storage::Location::new(
+            profile_dir,
+            format!("account-session-test-{}", rand::random::<u64>()),
+        ))
+        .perform(&storage)
+        .await
+        .unwrap();
         std::fs::create_dir_all(store.account_dir()).unwrap();
         let account_dir = store.account_dir().canonicalize().unwrap();
-        let operator = profile
-            .derive(b"tonk/account-session-test/v1")
-            .allow(Subject::any())
-            .base(Directory::At(account_dir.to_string_lossy().into()))
-            .build(storage)
-            .await
-            .unwrap();
+        let operator = crate::peer::session_for(
+            &profile,
+            Directory::At(account_dir.to_string_lossy().into()),
+            b"tonk/account-session-test/v1",
+        )
+        .await
+        .unwrap();
         (temp, store, profile, operator)
     }
 

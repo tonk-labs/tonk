@@ -1,11 +1,10 @@
-//! Actual browser Profile/Operator proof path, without browser network/UI.
+//! Actual browser peer and session proof path, without browser network/UI.
 use dialog_capability::{
     Subject,
     access::{Access, Authorization as _, Proof as _, Prove, TimeRange},
 };
 use dialog_credentials::{Ed25519Signer, Signer};
 use dialog_effects::Use;
-use dialog_operator::{DeriveOperator as _, Profile};
 use dialog_storage::provider::storage::Storage;
 use dialog_ucan::{Ucan, UcanDelegation};
 use dialog_ucan_core::{DelegationBuilder, DelegationChain, time::Timestamp};
@@ -19,17 +18,22 @@ use url::Url;
 #[dialog_common::test]
 async fn connection_browser_profile_issues_long_grants_without_operator_suffix()
 -> anyhow::Result<()> {
-    let storage = Storage::volatile();
-    let profile = Profile::open("browser-durable-connection")
-        .perform(&storage)
-        .await?;
+    let profile = dialog_peer::OpenPeer::open(dialog_effects::storage::Location::profile(
+        "browser-durable-connection",
+    ))
+    .perform(&Storage::volatile())
+    .await?;
     let now = Timestamp::now();
     let deadline = Timestamp::try_from((now.to_unix() + DEFAULT_GRANT_TTL_SECONDS) as i128)?;
     let operator_deadline = Timestamp::try_from((now.to_unix() + 3600) as i128)?;
     let operator = profile
-        .derive(b"one-hour-browser-operator")
-        .allow_until(Subject::any(), operator_deadline)
-        .build(storage)
+        .worker(b"one-hour-browser-operator")
+        .allow(
+            profile
+                .access()
+                .claim(Subject::any())
+                .expires(operator_deadline),
+        )
         .await?;
     // The space owner is external: the profile retains a shared-space delegation,
     // and never installs the owner's secret in its credentials.
@@ -66,7 +70,7 @@ async fn connection_browser_profile_issues_long_grants_without_operator_suffix()
             .perform(&operator)
             .await?;
         let grant = proof
-            .claim(profile.signer().signer().clone())?
+            .claim(profile.credential().signer().clone())?
             .expires(deadline.to_unix())?
             .meta(home_address_meta(&remote))
             .delegate(invitation.did())

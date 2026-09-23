@@ -55,7 +55,7 @@ async fn it_answers_local_reads_promptly_after_this_device_is_revoked(
     // Revoke this device's own grant and record it with the service.
     let target = fixture.link.proof_cids()[0];
     let artifact = tonk_identity::revocation::mint_self_revocation(
-        fixture.profile.signer().signer().clone(),
+        fixture.profile.credential().signer().clone(),
         &fixture.link,
         &target,
     )
@@ -305,7 +305,7 @@ async fn it_republishes_explicit_device_revocation_after_the_row_is_gone(
         "an absent row is not evidence that the service has an effective revocation"
     );
     let artifact = tonk_identity::revocation::mint_delegated_revocation(
-        fixture.profile.signer().signer().clone(),
+        fixture.profile.credential().signer().clone(),
         &grant,
         &grant.proof_cids()[0],
         &fixture.link,

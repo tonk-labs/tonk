@@ -124,7 +124,7 @@ impl ProfileRow {
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
-    use dialog_operator::helpers;
+    use dialog_peer::helpers;
     use dialog_query::{Output as _, Query, Term};
     use dialog_varsig::did;
     #[cfg(target_arch = "wasm32")]
@@ -139,7 +139,7 @@ mod tests {
     /// open it with.
     #[dialog_common::test]
     async fn it_finds_a_profile_entry_by_its_did() -> Result<()> {
-        let (operator, profile) = helpers::test_operator_with_profile().await;
+        let (operator, profile) = helpers::test_session_with_peer().await;
         let repository = helpers::test_repo(&operator, &profile).await;
         let branch = repository.branch("main").open().perform(&operator).await?;
         let subject = did!("test:profile-one");
@@ -171,7 +171,7 @@ mod tests {
     /// returns both — the switcher's own read.
     #[dialog_common::test]
     async fn it_lists_every_profile_this_device_can_open() -> Result<()> {
-        let (operator, profile) = helpers::test_operator_with_profile().await;
+        let (operator, profile) = helpers::test_session_with_peer().await;
         let repository = helpers::test_repo(&operator, &profile).await;
         let branch = repository.branch("main").open().perform(&operator).await?;
 
@@ -205,7 +205,7 @@ mod tests {
     /// so `name` is cardinality-one on it.
     #[dialog_common::test]
     async fn it_keeps_one_entry_per_profile_when_the_handle_changes() -> Result<()> {
-        let (operator, profile) = helpers::test_operator_with_profile().await;
+        let (operator, profile) = helpers::test_session_with_peer().await;
         let repository = helpers::test_repo(&operator, &profile).await;
         let branch = repository.branch("main").open().perform(&operator).await?;
         let subject = did!("test:profile-one");

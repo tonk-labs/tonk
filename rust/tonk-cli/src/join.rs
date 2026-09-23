@@ -150,18 +150,19 @@ pub async fn ensure_ordinary_recipient(
     prepared: &PreparedOrdinary,
     config: &crate::site::SiteConfig,
 ) -> Result<()> {
-    use dialog_operator::Profile;
     use dialog_storage::provider::storage::{NativeSpace, Storage};
 
     let Some(expected) = prepared.expected_root() else {
         return Ok(());
     };
     let storage = Storage::<NativeSpace>::default();
-    let profile = Profile::load(config.profile_name.clone())
-        .at(config.profile_directory.clone())
-        .perform(&storage)
-        .await
-        .map_err(|_| targeted_recipient_error(expected))?;
+    let profile = dialog_peer::OpenPeer::load(dialog_effects::storage::Location::new(
+        config.profile_directory.clone(),
+        config.profile_name.clone(),
+    ))
+    .perform(&storage)
+    .await
+    .map_err(|_| targeted_recipient_error(expected))?;
     let operator = crate::account_state::store_operator_with_config(
         &profile,
         &config.account_store,

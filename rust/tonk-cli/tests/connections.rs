@@ -7,7 +7,6 @@ use dialog_capability::Subject;
 use dialog_credentials::{Credential, Ed25519Signer, Ed25519Verifier, Signer};
 use dialog_effects::space::{Space, SpaceExt as _};
 use dialog_effects::storage::Directory;
-use dialog_operator::{DeriveOperator, Profile};
 use dialog_repository::SiteAddress;
 use dialog_storage::provider::storage::{NativeSpace, Storage};
 use dialog_ucan::UcanDelegation;
@@ -27,17 +26,20 @@ async fn scoped_site(
     let unrelated = TonkSite::init_at_with(&root.join("unrelated"), config.clone()).await?;
     let unrelated_subject = unrelated.repository.did();
     let storage = Storage::<NativeSpace>::default();
-    let profile = Profile::load(config.profile_name.clone())
-        .at(config.profile_directory.clone())
-        .perform(&storage)
-        .await?;
+    let profile = dialog_peer::OpenPeer::load(dialog_effects::storage::Location::new(
+        config.profile_directory.clone(),
+        config.profile_name.clone(),
+    ))
+    .perform(&storage)
+    .await?;
     let replica = root.join("replica");
     std::fs::create_dir_all(&replica)?;
-    let operator = profile
-        .derive("connection-mount")
-        .base(Directory::At(replica.to_string_lossy().into_owned()))
-        .build(storage)
-        .await?;
+    let peer = tonk_cli::peer::peer_for(
+        &profile,
+        Directory::At(replica.to_string_lossy().into_owned()),
+    )
+    .await?;
+    let operator = peer.worker("connection-mount").await?;
     let expiry = Timestamp::new(SystemTime::now() + Duration::from_secs(90 * 86400))?;
     // The profile already owns an unrelated local space. No target-space signer
     // or wider target-space grant is installed.
@@ -52,6 +54,7 @@ async fn scoped_site(
             .try_build()
             .await?;
         profile
+            .access()
             .save(UcanDelegation(DelegationChain::new(grant)))
             .perform(&operator)
             .await?;

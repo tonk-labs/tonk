@@ -82,7 +82,7 @@ impl RecoveryPasskey {
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
-    use dialog_operator::helpers;
+    use dialog_peer::helpers;
     use dialog_query::{Output as _, Query, Term};
     use dialog_varsig::did;
     #[cfg(target_arch = "wasm32")]
@@ -98,7 +98,7 @@ mod tests {
     /// credential id an assertion needs to select it.
     #[dialog_common::test]
     async fn it_finds_a_passkey_by_the_custody_it_derives() -> Result<()> {
-        let (operator, profile) = helpers::test_operator_with_profile().await;
+        let (operator, profile) = helpers::test_session_with_peer().await;
         let repository = helpers::test_repo(&operator, &profile).await;
         let branch = repository.branch("main").open().perform(&operator).await?;
         let custody = did!("test:custody-one");
@@ -145,7 +145,7 @@ mod tests {
     /// label.
     #[dialog_common::test]
     async fn it_keeps_one_row_per_passkey() -> Result<()> {
-        let (operator, profile) = helpers::test_operator_with_profile().await;
+        let (operator, profile) = helpers::test_session_with_peer().await;
         let repository = helpers::test_repo(&operator, &profile).await;
         let branch = repository.branch("main").open().perform(&operator).await?;
 
@@ -206,7 +206,7 @@ mod tests {
     /// account on every row.
     #[dialog_common::test]
     async fn it_reaches_the_account_through_the_sealed_envelope() -> Result<()> {
-        let (operator, profile) = helpers::test_operator_with_profile().await;
+        let (operator, profile) = helpers::test_session_with_peer().await;
         let repository = helpers::test_repo(&operator, &profile).await;
         let branch = repository.branch("main").open().perform(&operator).await?;
         let account = did!("test:account");

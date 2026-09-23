@@ -1,7 +1,7 @@
 use dialog_capability::Subject;
 use dialog_credentials::{Credential, Ed25519Signer, Ed25519Verifier};
 use dialog_effects::space::{Space, SpaceExt as _};
-use dialog_operator::helpers::test_operator_with_profile;
+use dialog_peer::helpers::test_session_with_peer;
 use dialog_repository::Repository;
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::subject::Subject as UcanSubject;
@@ -15,7 +15,7 @@ wasm_bindgen_test_configure!(run_in_browser);
 
 #[dialog_common::test]
 async fn it_commits_a_root_subject_revision_without_storing_the_root_key() -> anyhow::Result<()> {
-    let (operator, profile) = test_operator_with_profile().await;
+    let (operator, profile) = test_session_with_peer().await;
     let root = Ed25519Signer::generate().await?;
     let root_did = root.did();
 

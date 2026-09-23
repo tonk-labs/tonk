@@ -4,12 +4,12 @@
 //! private native credential store. Repository data is nested so legacy clients
 //! cannot load it with their ambient profile. No account ceremony runs here.
 
+use crate::peer::NativePeer;
 use anyhow::{Context, Result, ensure};
 use dialog_capability::{Subject, did};
 use dialog_credentials::{Credential, Ed25519Signer, Ed25519Verifier, SignerCredential};
 use dialog_effects::space::{Space, SpaceExt as _};
 use dialog_effects::storage::{self as storage_fx, Directory, Location, LocationExt as _};
-use dialog_operator::{DeriveOperator as _, Profile};
 use dialog_reactor::Reactor;
 use dialog_repository::{RepositoryExt as _, SiteAddress};
 use dialog_storage::provider::storage::{NativeSpace, Storage};
@@ -354,12 +354,14 @@ async fn load_profile(
     root: &Path,
     storage: &Storage<NativeSpace>,
     binding: &ConnectionBinding,
-) -> Result<Profile> {
-    let profile = Profile::load(PROFILE_NAME)
-        .at(profile_directory(root))
-        .perform(storage)
-        .await
-        .context("connection credential is missing or corrupt; no account fallback is permitted")?;
+) -> Result<NativePeer> {
+    let profile = dialog_peer::OpenPeer::load(dialog_effects::storage::Location::new(
+        profile_directory(root),
+        PROFILE_NAME,
+    ))
+    .perform(storage)
+    .await
+    .context("connection credential is missing or corrupt; no account fallback is permitted")?;
     ensure!(
         profile.did().to_string() == binding.recipient,
         "connection credential does not match its binding"
@@ -534,7 +536,6 @@ pub async fn import_at(
         &root,
         &manifest,
         profile,
-        storage,
         store,
         manifest.phase != Phase::Ready,
     )
@@ -578,7 +579,7 @@ pub async fn open_bound(
     let storage = Storage::<NativeSpace>::default();
     let profile = load_profile(&root, &storage, binding).await?;
     let incomplete = manifest.phase != Phase::Ready;
-    let site = assemble(&root, &manifest, profile, storage, store, incomplete).await?;
+    let site = assemble(&root, &manifest, profile, store, incomplete).await?;
     if incomplete {
         sync_private_tree(&root.join(CREDENTIAL_DIRECTORY))?;
         sync_private_tree(&root.join(DATA_DIRECTORY))?;
@@ -591,23 +592,23 @@ pub async fn open_bound(
 async fn assemble(
     root: &Path,
     manifest: &Manifest,
-    profile: Profile,
-    storage: Storage<NativeSpace>,
+    profile: NativePeer,
     store: crate::space::SpaceStore,
     initialize: bool,
 ) -> Result<crate::site::TonkSite> {
     let data = root.join(DATA_DIRECTORY);
     let expires = Timestamp::try_from((Timestamp::now().to_unix() + 3600) as i128)?;
-    let operator = profile
-        .derive(b"tonk-scoped-connection")
-        .base(Directory::At(data.to_string_lossy().into_owned()))
-        .allow_until(Subject::any(), expires)
-        .build(storage)
+    let peer =
+        crate::peer::peer_for(&profile, Directory::At(data.to_string_lossy().into_owned())).await?;
+    let operator = peer
+        .worker(b"tonk-scoped-connection")
+        .allow(peer.access().claim(Subject::any()).expires(expires))
         .await?;
     let grants = validate_manifest(manifest).await?;
     if initialize {
         for chain in grants.chains() {
             profile
+                .access()
                 .save(UcanDelegation(chain.clone()))
                 .perform(&operator)
                 .await?;
@@ -627,7 +628,7 @@ async fn assemble(
         }
     }
     let repository = profile
-        .repository(crate::site::REPO_NAME)
+        .space(crate::site::REPO_NAME)
         .load()
         .perform(&operator)
         .await?;
@@ -658,7 +659,7 @@ async fn assemble(
         profile: profile.clone(),
         operator: wrapper,
         repository,
-        reactor: Reactor::new(profile),
+        reactor: Reactor::new(profile.credential().clone()),
         account_store: store,
     };
     if initialize {

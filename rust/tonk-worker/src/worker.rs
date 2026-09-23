@@ -18,7 +18,7 @@ use axum::{
     body::Body,
     http::{HeaderValue, header::HeaderName},
 };
-use dialog_operator::{Operator, Profile};
+use dialog_peer::Peer;
 use dialog_storage::provider::storage::Storage;
 use js_sys::Promise;
 use send_wrapper::SendWrapper;
@@ -355,12 +355,15 @@ pub type DefaultSpace = dialog_storage::provider::storage::WebSpace;
 pub type DefaultSpace = dialog_storage::provider::storage::NativeSpace;
 
 /// Concrete operator type for the default storage backend.
-pub type DefaultOperator = Operator<DefaultSpace>;
+pub type DefaultOperator = Peer<DefaultSpace>;
+
+/// The worker's peer over its default storage.
+pub type DefaultPeer = Peer<DefaultSpace>;
 
 /// Application state containing the profile and operator.
 pub struct TonkState {
     /// The user's persistent profile.
-    pub profile: Profile,
+    pub profile: DefaultPeer,
     /// The operator derived from the profile — the key that signs
     /// presign invocations. Rotated by
     /// [`session`](crate::session) before its delegation lapses, so it
@@ -1723,7 +1726,7 @@ const SYNC_HIDDEN_MAX_MS: i32 = 3_600_000;
 pub(crate) async fn boot_state(
     storage: Storage<DefaultSpace>,
     profile_name: String,
-    profile: Profile,
+    profile: DefaultPeer,
     registry: crate::device::Registry,
 ) -> Result<TonkState, crate::TonkWorkerError> {
     boot_state_with_profile_library(storage, profile_name, profile, registry, Default::default())
@@ -1735,16 +1738,16 @@ pub(crate) async fn boot_state(
 pub(crate) async fn boot_state_with_profile_library(
     storage: Storage<DefaultSpace>,
     profile_name: String,
-    profile: Profile,
+    profile: DefaultPeer,
     registry: crate::device::Registry,
     profile_library: crate::router::ProfileLibraryCache,
 ) -> Result<TonkState, crate::TonkWorkerError> {
-    let reactor = crate::Reactor::new(profile.clone());
+    let reactor = crate::Reactor::new(profile.credential().clone());
     // Session construction reads branch reference cells, but no longer
     // walks or retains delegation content. Hydrating after a construction
     // failure cannot repair entropy, signing, or local reference errors;
     // surface them without touching the profile's durable contents.
-    let session = crate::session::open(&profile, &storage).await?;
+    let session = crate::session::open(&profile).await?;
     // Which branch the profile is on. Reading `meta` takes an operator,
     // so the bootstrap session opens on `main`; a profile that is on
     // another branch gets a session whose authority is that branch's.
@@ -1754,7 +1757,7 @@ pub(crate) async fn boot_state_with_profile_library(
     let session = if active_branch == crate::router::repository::PROFILE_BRANCH {
         session
     } else {
-        crate::session::open_on(&profile, &storage, &active_branch).await?
+        crate::session::open_on(&profile, &active_branch).await?
     };
 
     let state = TonkState {
@@ -1863,7 +1866,7 @@ impl TonkServiceWorker {
             .open_active(&storage)
             .await
             .map_err(|e| JsError::new(&format!("Failed to open profile: {}", e)))?;
-        log!("Profile DID: {}", profile.did());
+        log!("DefaultPeer DID: {}", profile.did());
 
         // 3–4. Open a signing session, build state, and bootstrap the
         // profile repo's meta branch — shared with profile activation,

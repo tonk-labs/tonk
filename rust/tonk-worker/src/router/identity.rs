@@ -1,5 +1,6 @@
 //! Persist and validate the provider-neutral local passkey root.
 
+use crate::worker::DefaultPeer;
 use axum::{Json, extract::State};
 use axum_wasm_macros::wasm_compat;
 use dialog_ucan::UcanDelegation;
@@ -12,7 +13,6 @@ use tonk_worker_api::{PasskeyMetadata, RootStatus, SaveRootRequest};
 use super::AppState;
 use crate::TonkWorkerError;
 use crate::worker::{DefaultOperator, TonkState};
-use dialog_operator::Profile;
 
 const LOCAL_ROOT_SITE: &str = "tonk-local-root-v1";
 
@@ -94,12 +94,12 @@ pub(crate) async fn load_record(
 /// profile. Account routing uses this without constructing a full TonkState
 /// for every inactive roster entry.
 async fn load_record_from(
-    profile: &Profile,
+    profile: &DefaultPeer,
     operator: &DefaultOperator,
     branch: &str,
 ) -> Result<Option<LocalRootRecord>, TonkWorkerError> {
     let bytes = match profile
-        .credential()
+        .secrets()
         .site(crate::credential::branch_site(LOCAL_ROOT_SITE, branch).as_str())
         .load::<Vec<u8>>()
         .perform(operator)
@@ -192,7 +192,7 @@ pub(crate) async fn forget_encryption_key(state: &TonkState) -> Result<(), TonkW
     })?;
     state
         .profile
-        .credential()
+        .secrets()
         .site(crate::credential::branch_site(LOCAL_ROOT_SITE, &state.active_branch).as_str())
         .save(encoded)
         .perform(&state.operator)
@@ -208,7 +208,7 @@ pub(crate) async fn forget_encryption_key(state: &TonkState) -> Result<(), TonkW
 pub(crate) async fn forget_root(state: &TonkState) -> Result<(), TonkWorkerError> {
     state
         .profile
-        .credential()
+        .secrets()
         .site(crate::credential::branch_site(LOCAL_ROOT_SITE, &state.active_branch).as_str())
         .retract()
         .perform(&state.operator)
@@ -326,7 +326,7 @@ pub(crate) async fn persist_root(
     })?;
     state
         .profile
-        .credential()
+        .secrets()
         .site(crate::credential::branch_site(LOCAL_ROOT_SITE, &state.active_branch).as_str())
         .save(encoded)
         .perform(&state.operator)

@@ -498,7 +498,7 @@ async fn existing_space_labels(state: &AppState) -> Vec<String> {
         let key = did.repo_key().to_owned();
         match tonk
             .profile
-            .repository(&key)
+            .space(&key)
             .load()
             .perform(&tonk.operator)
             .await
@@ -1088,7 +1088,7 @@ async fn run_connection_invite(
         let tonk = env.state().read().await;
         let repository = tonk
             .profile
-            .repository(repo)
+            .space(repo)
             .load()
             .perform(&tonk.operator)
             .await
@@ -1374,7 +1374,7 @@ async fn run_connection_invite(
             };
             let current_repository = tonk
                 .profile
-                .repository(repo)
+                .space(repo)
                 .load()
                 .perform(&tonk.operator)
                 .await
@@ -1439,7 +1439,7 @@ async fn agent_invitations_unavailable(
     let tonk = env.state().read().await;
     let repository = tonk
         .profile
-        .repository(repo)
+        .space(repo)
         .load()
         .perform(&tonk.operator)
         .await
@@ -1601,7 +1601,7 @@ async fn run_invite(
 
     let repository = tonk
         .profile
-        .repository(repo_name)
+        .space(repo_name)
         .load()
         .perform(&tonk.operator)
         .await
@@ -3068,13 +3068,7 @@ async fn enable_sync_for_repository(
     // stale key (e.g. an enable-sync form whose hidden repo field didn't
     // populate). The create path always runs `create_space_inner` first,
     // so the repo is present by the time this is reached on that path.
-    let repository = match tonk
-        .profile
-        .repository(key)
-        .load()
-        .perform(&tonk.operator)
-        .await
-    {
+    let repository = match tonk.profile.space(key).load().perform(&tonk.operator).await {
         Ok(repository) => repository,
         Err(error) => {
             log!(
@@ -3141,13 +3135,7 @@ pub(super) async fn attach_account_remote_if_local(
     key: &str,
     remote: &str,
 ) -> Result<bool, RepositoryError> {
-    let repository = match tonk
-        .profile
-        .repository(key)
-        .load()
-        .perform(&tonk.operator)
-        .await
-    {
+    let repository = match tonk.profile.space(key).load().perform(&tonk.operator).await {
         Ok(repository) => repository,
         Err(error) => {
             log!(
@@ -4375,7 +4363,7 @@ pub(super) fn repository_name_body(
 ///
 /// Runs the full create-side pipeline in a single pass:
 ///
-/// 1. `profile.repository(name).create()` — allocate a new
+/// 1. `profile.space(name).create()` — allocate a new
 ///    signer-owned repository in dialog-db.
 /// 2. Delegate repository access to the profile and save the
 ///    delegation, so future operations authenticated by the
@@ -4554,7 +4542,7 @@ pub async fn create_repository(
         ))
     })?;
     tonk.profile
-        .credential()
+        .secrets()
         .site(format!("{SPACE_ROOT_SITE_PREFIX}{}", repository.did()))
         .save(prefix_bytes)
         .perform(&tonk.operator)
@@ -4648,7 +4636,7 @@ pub(crate) async fn space_root_prefix(
 ) -> Result<DelegationChain, TonkWorkerError> {
     let bytes = tonk
         .profile
-        .credential()
+        .secrets()
         .site(format!("{SPACE_ROOT_SITE_PREFIX}{subject}"))
         .load::<Vec<u8>>()
         .perform(&tonk.operator)
@@ -5181,7 +5169,7 @@ async fn record_replica_visibility(
     let status = SpaceStatus::new(replica.this().clone(), status);
 
     // Write through the *reactor's* profile-repository handle, not a
-    // fresh `Repository::from(&tonk.profile)`. The reactor caches the
+    // fresh `tonk.profile.repository()`. The reactor caches the
     // profile repo and its meta-branch handle (opened the first time
     // the Hub queried, at boot); a commit through a separate handle
     // leaves that cached handle pinned at its old head, so the Hub —
@@ -5300,7 +5288,7 @@ pub async fn bootstrap_profile(tonk: &TonkState) -> Result<(), RepositoryError> 
         .map_err(|e| {
             RepositoryError::Internal(format!("Failed to bootstrap profile branch: {}", e))
         })?;
-    log!("Profile branch bootstrapped");
+    log!("DefaultPeer branch bootstrapped");
 
     // Seed the lean profile library onto the profile meta branch so a
     // `<tonk-display>` reading the profile (the Hub at `/`) can resolve
@@ -5939,7 +5927,7 @@ pub async fn get_repository(
     };
     let repository = tonk
         .profile
-        .repository(&name)
+        .space(&name)
         .load()
         .perform(&tonk.operator)
         .await
@@ -6781,7 +6769,7 @@ pub async fn attach_remote(
 
     let repository = tonk
         .profile
-        .repository(&name)
+        .space(&name)
         .load()
         .perform(&tonk.operator)
         .await
@@ -7990,11 +7978,14 @@ route!: &foreign-profile-route
         );
         let storage =
             dialog_storage::provider::storage::Storage::<crate::worker::DefaultSpace>::default();
-        let profile = dialog_operator::Profile::open(&name)
-            .perform(&storage)
-            .await
-            .expect("test profile opens");
-        let session = crate::session::open(&profile, &storage)
+        let profile = dialog_peer::OpenPeer::open(dialog_effects::storage::Location::new(
+            dialog_effects::storage::Directory::Profile,
+            &name,
+        ))
+        .perform(&storage)
+        .await
+        .expect("test profile opens");
+        let session = crate::session::open(&profile)
             .await
             .expect("test session opens");
         TonkState {
@@ -8005,7 +7996,7 @@ route!: &foreign-profile-route
             session_expires_at: session.expires_at,
             profile_name: name.clone(),
             active_branch: crate::router::repository::PROFILE_BRANCH.to_owned(),
-            reactor: crate::Reactor::new(profile),
+            reactor: crate::Reactor::new(profile.credential().clone()),
             admission: Default::default(),
             reject_admission_content_reads: Default::default(),
             retiring: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -8824,7 +8815,7 @@ mod tests {
         let tonk = state.read().await;
         let repository: dialog_repository::Repository = tonk
             .profile
-            .repository(&key)
+            .space(&key)
             .load()
             .perform(&tonk.operator)
             .await
@@ -9063,7 +9054,7 @@ mod tests {
             use dialog_repository::RepositoryExt as _;
             let repository: dialog_repository::Repository = tonk
                 .profile
-                .repository(&key)
+                .space(&key)
                 .load()
                 .perform(&tonk.operator)
                 .await
@@ -9119,7 +9110,7 @@ mod tests {
             use dialog_repository::RepositoryExt as _;
             let repository: dialog_repository::Repository = tonk
                 .profile
-                .repository(&key)
+                .space(&key)
                 .load()
                 .perform(&tonk.operator)
                 .await
@@ -9456,7 +9447,7 @@ mod tests {
         use dialog_repository::RepositoryExt as _;
         let repository: dialog_repository::Repository = tonk
             .profile
-            .repository(key)
+            .space(key)
             .load()
             .perform(&tonk.operator)
             .await
@@ -9951,7 +9942,7 @@ block/insert!:
             let tonk = state.read().await;
             let repository: dialog_repository::Repository = tonk
                 .profile
-                .repository(repo)
+                .space(repo)
                 .load()
                 .perform(&tonk.operator)
                 .await
@@ -10860,7 +10851,7 @@ block/insert!:
         );
         let repository: dialog_repository::Repository = tonk
             .profile
-            .repository(&repo)
+            .space(&repo)
             .load()
             .perform(&tonk.operator)
             .await
@@ -11336,7 +11327,7 @@ block/insert!:
         let tonk = state.read().await;
         let Ok(repository) = tonk
             .profile
-            .repository(repo)
+            .space(repo)
             .load()
             .perform(&tonk.operator)
             .await
@@ -11393,7 +11384,7 @@ block/insert!:
             use dialog_repository::RepositoryExt as _;
             let repository: dialog_repository::Repository = tonk
                 .profile
-                .repository(&key)
+                .space(&key)
                 .load()
                 .perform(&tonk.operator)
                 .await
@@ -11665,7 +11656,7 @@ mod seed_tests {
             use dialog_repository::RepositoryExt as _;
             let repository: dialog_repository::Repository = tonk
                 .profile
-                .repository(&key)
+                .space(&key)
                 .load()
                 .perform(&tonk.operator)
                 .await
@@ -12243,7 +12234,7 @@ mod connection_invite_overlay_tests {
             let tonk = state.read().await;
             let repository = tonk
                 .profile
-                .repository(&repo)
+                .space(&repo)
                 .load()
                 .perform(&tonk.operator)
                 .await
@@ -12299,7 +12290,7 @@ mod connection_invite_overlay_tests {
                 tonk_account::AccountProviderRecord::attach("https://example.test/ucan/", 1)
                     .unwrap();
             tonk.profile
-                .credential()
+                .secrets()
                 .site(tonk_account::ACCOUNT_PROVIDER_CREDENTIAL_SITE)
                 .save(provider.encode().unwrap())
                 .perform(&tonk.operator)
@@ -12329,7 +12320,7 @@ mod connection_invite_overlay_tests {
             let tonk = state.read().await;
             let repository = tonk
                 .profile
-                .repository(&repo)
+                .space(&repo)
                 .load()
                 .perform(&tonk.operator)
                 .await
@@ -12350,7 +12341,7 @@ mod connection_invite_overlay_tests {
         let tonk = state.read().await;
         assert_eq!(
             tonk.profile
-                .repository(&repo)
+                .space(&repo)
                 .load()
                 .perform(&tonk.operator)
                 .await
@@ -12391,7 +12382,7 @@ mod connection_invite_overlay_tests {
                 tonk_account::AccountProviderRecord::attach("https://example.test/ucan/", 1)
                     .unwrap();
             tonk.profile
-                .credential()
+                .secrets()
                 .site(tonk_account::ACCOUNT_PROVIDER_CREDENTIAL_SITE)
                 .save(provider.encode().unwrap())
                 .perform(&tonk.operator)
@@ -12408,7 +12399,7 @@ mod connection_invite_overlay_tests {
             let tonk = state.read().await;
             let repository = tonk
                 .profile
-                .repository(&repo)
+                .space(&repo)
                 .load()
                 .perform(&tonk.operator)
                 .await

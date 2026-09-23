@@ -44,7 +44,7 @@ async fn it_pushes_a_space_whose_account_prefix_was_never_stored(
     let prefix_site = space_root_site(&site.repository.did(), fixture.link.issuer());
     fixture
         .profile
-        .credential()
+        .secrets()
         .site(prefix_site.clone())
         .save(Vec::<u8>::new())
         .perform(&site.operator)
@@ -59,7 +59,7 @@ async fn it_pushes_a_space_whose_account_prefix_was_never_stored(
 
     let restored = fixture
         .profile
-        .credential()
+        .secrets()
         .site(prefix_site)
         .load::<Vec<u8>>()
         .perform(&site.operator)
@@ -287,7 +287,7 @@ async fn it_installs_authority_from_a_callback_authorization(
         "the account root must be the issuer"
     );
     let union = tonk_account::delegations::mint_account_union(
-        &fixture.profile.signer().signer().clone(),
+        &fixture.profile.credential().signer().clone(),
         &root.did(),
     )
     .await?;
@@ -491,7 +491,8 @@ async fn it_discovers_a_space_through_the_account(env: AccessServiceAddress) -> 
         command: dialog_ucan_core::command::Command::parse("/").expect("root command"),
         parameters: dialog_ucan::Parameters::default(),
     };
-    let joiner_access = dialog_repository::Repository::from(&joiner_profile)
+    let joiner_access = joiner_profile
+        .repository()
         .branch(dialog_repository::ACCESS_BRANCH)
         .open()
         .perform(joiner_operator)
@@ -550,7 +551,8 @@ async fn it_discovers_a_space_through_the_account(env: AccessServiceAddress) -> 
     );
 
     // Re-open the access branch: linking advanced its head.
-    let joiner_access = dialog_repository::Repository::from(&joiner_profile)
+    let joiner_access = joiner_profile
+        .repository()
         .branch(dialog_repository::ACCESS_BRANCH)
         .open()
         .perform(joiner_operator)
@@ -586,7 +588,7 @@ async fn it_discovers_a_space_through_the_account(env: AccessServiceAddress) -> 
     .await?
     .expect("linking hydrates the joiner's account");
     let union = tonk_account::delegations::mint_account_union(
-        &joiner_profile.signer().signer().clone(),
+        &joiner_profile.credential().signer().clone(),
         &account_root,
     )
     .await?;
@@ -687,12 +689,16 @@ async fn it_recovers_space_access_on_a_second_device(env: AccessServiceAddress) 
     // account's, so pulling the account is not enough on its own: the access
     // branch has to adopt the account as its upstream and pull too. That is
     // what makes recovered authority usable rather than merely present.
-    let second_access = dialog_repository::Repository::from(&second.profile)
+    let second_access = second
+        .profile
+        .repository()
         .branch(dialog_repository::ACCESS_BRANCH)
         .open()
         .perform(second_operator)
         .await?;
-    let second_remote = dialog_repository::Repository::from(&second.profile)
+    let second_remote = second
+        .profile
+        .repository()
         .remote("account")
         .create(dialog_repository::SiteAddress::from(
             dialog_remote_ucan::UcanAddress::new(&remote),
@@ -755,10 +761,12 @@ async fn it_migrates_delegations_idempotently() -> Result<()> {
     // Mount the fixture's profile so migration has a provider for its
     // subject: it commits as the profile, and an unmounted one errors.
     let storage = Storage::<NativeSpace>::default();
-    let profile = dialog_operator::Profile::load(&fixture.config.profile_name)
-        .at(fixture.config.profile_directory.clone())
-        .perform(&storage)
-        .await?;
+    let profile = dialog_peer::OpenPeer::load(dialog_effects::storage::Location::new(
+        fixture.config.profile_directory.clone(),
+        &fixture.config.profile_name,
+    ))
+    .perform(&storage)
+    .await?;
 
     let first = tonk_cli::account_state::migrate_delegations(
         &profile,
@@ -1037,7 +1045,9 @@ async fn replacement_does_not_hydrate_previous_account_facts(
         .perform(&guarded_site.operator)
         .await?;
 
-    let previous_branch = dialog_repository::Repository::from(&fixture.profile)
+    let previous_branch = fixture
+        .profile
+        .repository()
         .branch(tonk_account::MAIN_BRANCH)
         .open()
         .perform(&operator)

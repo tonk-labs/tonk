@@ -4,8 +4,8 @@
 //! the profile meta branch, or a deterministic `petname(profile_did)`
 //! when no override exists. This is what every `MemberName` write uses.
 
+use crate::worker::DefaultPeer;
 use dialog_query::{Output as _, Query, Term};
-use dialog_repository::Repository;
 use tonk_common::log;
 use tonk_schema::prelude::DidExt as _;
 use tonk_schema::{ProfileName, petname};
@@ -15,7 +15,6 @@ use tonk_schema::{ProfileName, petname};
 #[cfg(target_arch = "wasm32")]
 use crate::RepositoryError;
 use crate::worker::{DefaultOperator, TonkState};
-use dialog_operator::Profile;
 #[cfg(target_arch = "wasm32")]
 use tonk_schema::{MemberName, Membership};
 
@@ -47,13 +46,14 @@ pub(crate) async fn resolve_display_name(tonk: &TonkState) -> String {
 /// carries its own name, so a fixed branch would answer with another
 /// account's.
 pub(crate) async fn stored_display_name_from(
-    profile: &Profile,
+    profile: &DefaultPeer,
     operator: &DefaultOperator,
     branch: &str,
 ) -> Option<String> {
     let profile_entity = profile.did().this();
 
-    let branch = match Repository::from(profile)
+    let branch = match profile
+        .repository()
         .branch(branch)
         .open()
         .perform(operator)
@@ -232,7 +232,6 @@ mod tests {
     wasm_bindgen_test_configure!(run_in_service_worker);
 
     use crate::worker::{DefaultSpace, TonkState};
-    use dialog_operator::Profile;
     use dialog_storage::provider::storage::Storage;
     use tonk_schema::petname;
 
@@ -242,14 +241,17 @@ mod tests {
     async fn isolated_state(name: &str) -> TonkState {
         crate::patch_idb_versionchange();
         let storage = Storage::<DefaultSpace>::default();
-        let profile = Profile::open(name)
-            .perform(&storage)
-            .await
-            .expect("profile opens");
-        let session = crate::session::open(&profile, &storage)
+        let profile = dialog_peer::OpenPeer::open(dialog_effects::storage::Location::new(
+            dialog_effects::storage::Directory::Profile,
+            name,
+        ))
+        .perform(&storage)
+        .await
+        .expect("profile opens");
+        let session = crate::session::open(&profile)
             .await
             .expect("signing session opens");
-        let reactor = crate::Reactor::new(profile.clone());
+        let reactor = crate::Reactor::new(profile.credential().clone());
         TonkState {
             seed_upgrades: Default::default(),
             profile,

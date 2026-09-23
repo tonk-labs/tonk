@@ -40,7 +40,7 @@ pub(crate) struct ReadyAccountBranch {
 async fn trusted_marker(tonk: &TonkState) -> Result<Option<Vec<u8>>, TonkWorkerError> {
     match tonk
         .profile
-        .credential()
+        .secrets()
         .site(
             crate::credential::branch_site(
                 tonk_account::TRUSTED_BASE_CREDENTIAL_SITE,
@@ -65,7 +65,7 @@ async fn mark_trusted(
     subject: &dialog_varsig::Did,
 ) -> Result<(), TonkWorkerError> {
     tonk.profile
-        .credential()
+        .secrets()
         .site(
             crate::credential::branch_site(
                 tonk_account::TRUSTED_BASE_CREDENTIAL_SITE,
@@ -314,7 +314,7 @@ async fn configure_account_upstream(
     let subject = subject.clone();
     let key = subject.repo_key().to_owned();
     let remote_name = tonk_account::account_remote_name(subject.as_str());
-    let repository = Repository::from(&tonk.profile);
+    let repository = tonk.profile.repository();
 
     let address = SiteAddress::from(UcanAddress::new(account_remote(tonk).await?.as_str()));
     let remote = match repository
@@ -542,7 +542,9 @@ async fn hydrate_untrusted(tonk: &TonkState) -> Result<(), TonkWorkerError> {
             ));
         }
     };
-    let remote = Repository::from(&tonk.profile)
+    let remote = tonk
+        .profile
+        .repository()
         .remote(remote_name.as_str())
         .load()
         .perform(&tonk.operator)
@@ -1168,7 +1170,7 @@ pub(crate) async fn adopt_account_access(tonk: &TonkState) -> bool {
     };
     let subject = root.root_did.clone();
     let remote_name = tonk_account::account_access_remote_name(subject.as_str());
-    let repository = Repository::from(&tonk.profile);
+    let repository = tonk.profile.repository();
     let access = match repository
         .branch(tonk.active_branch.as_str())
         .open()
@@ -2028,7 +2030,7 @@ pub(crate) mod tests {
                 .await
                 .unwrap();
             tonk.profile
-                .credential()
+                .secrets()
                 .site(
                     crate::credential::branch_site(
                         tonk_account::TRUSTED_BASE_CREDENTIAL_SITE,
@@ -2213,7 +2215,6 @@ pub(crate) mod tests {
         Ed25519Signer,
         String,
     ) {
-        use dialog_operator::Profile;
         use dialog_storage::provider::storage::Storage;
         use dialog_varsig::Principal as _;
         use tonk_access_service::helpers::AccessServiceAddress;
@@ -2223,9 +2224,15 @@ pub(crate) mod tests {
             .unwrap();
         let storage = Storage::<crate::worker::DefaultSpace>::default();
         let name = format!("account-state-worker-test-{}", rand::random::<u64>());
-        let profile = Profile::open(&name).perform(&storage).await.unwrap();
-        let session = crate::session::open(&profile, &storage).await.unwrap();
-        let reactor = crate::Reactor::new(profile.clone());
+        let profile = dialog_peer::OpenPeer::open(dialog_effects::storage::Location::new(
+            dialog_effects::storage::Directory::Profile,
+            &name,
+        ))
+        .perform(&storage)
+        .await
+        .unwrap();
+        let session = crate::session::open(&profile).await.unwrap();
+        let reactor = crate::Reactor::new(profile.credential().clone());
         let state = TonkState {
             profile,
             operator: session.operator,
@@ -2319,7 +2326,7 @@ pub(crate) mod tests {
         if activated {
             state
                 .profile
-                .credential()
+                .secrets()
                 .site(
                     crate::credential::branch_site(
                         tonk_account::TRUSTED_BASE_CREDENTIAL_SITE,
@@ -2450,7 +2457,7 @@ pub(crate) mod tests {
         // A remote of its own: dialog keeps a remote branch's last-seen
         // head under the remote's name, so a shared `origin` would hand
         // the second account the first one's head.
-        let repository = dialog_repository::Repository::from(&state.profile);
+        let repository = state.profile.repository();
         let mut followed = Vec::new();
         for name in ["main", landing.as_str()] {
             let branch = repository

@@ -776,7 +776,7 @@ async fn save_custodian(
 async fn load(state: &TonkState, site: &str) -> Result<Option<Vec<u8>>, TonkWorkerError> {
     match state
         .profile
-        .credential()
+        .secrets()
         .site(crate::credential::branch_site(site, &state.active_branch).as_str())
         .load::<Vec<u8>>()
         .perform(&state.operator)
@@ -794,7 +794,7 @@ async fn load(state: &TonkState, site: &str) -> Result<Option<Vec<u8>>, TonkWork
 async fn save(state: &TonkState, site: &str, bytes: Vec<u8>) -> Result<(), TonkWorkerError> {
     state
         .profile
-        .credential()
+        .secrets()
         .site(crate::credential::branch_site(site, &state.active_branch).as_str())
         .save(bytes)
         .perform(&state.operator)

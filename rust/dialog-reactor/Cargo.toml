@@ -15,11 +15,12 @@ dialog-capability = { workspace = true }
 dialog-common = { workspace = true }
 dialog-credentials = { workspace = true }
 dialog-effects = { workspace = true }
-dialog-operator = { workspace = true }
+dialog-peer = { workspace = true }
 dialog-query = { workspace = true }
 dialog-repository = { workspace = true }
 dialog-search-tree = { workspace = true }
 dialog-storage = { workspace = true }
+dialog-varsig = { workspace = true }
 futures-util = { workspace = true }
 ipld-core = { workspace = true }
 parking_lot = { workspace = true }

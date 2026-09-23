@@ -1793,10 +1793,10 @@ mod tests {
     /// inverted lookup once the resolver is rewired.)
     #[dialog_common::test]
     async fn it_returns_concept_with_source_from_concept_query() -> anyhow::Result<()> {
-        use dialog_operator::helpers::{test_operator_with_profile, test_repo};
+        use dialog_peer::helpers::{test_repo, test_session_with_peer};
         use dialog_query::{Any, Output as _, Parameters, Term};
 
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -1896,9 +1896,9 @@ mod tests {
     /// required, optional field stays optional).
     #[dialog_common::test]
     async fn it_reconstructs_optional_flag_from_branch() -> anyhow::Result<()> {
-        use dialog_operator::helpers::{test_operator_with_profile, test_repo};
+        use dialog_peer::helpers::{test_repo, test_session_with_peer};
 
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -1975,10 +1975,10 @@ mod tests {
     /// same branch must carry `Boolean(false)`.
     #[dialog_common::test]
     async fn it_returns_transient_marker_on_transient_concept_rows() -> anyhow::Result<()> {
-        use dialog_operator::helpers::{test_operator_with_profile, test_repo};
+        use dialog_peer::helpers::{test_repo, test_session_with_peer};
         use dialog_query::{Any, Output as _, Parameters, Term};
 
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -2118,10 +2118,10 @@ mod tests {
     /// durable concept on the same branch does not.
     #[dialog_common::test]
     async fn it_queries_command_returns_only_transient_concepts() -> anyhow::Result<()> {
-        use dialog_operator::helpers::{test_operator_with_profile, test_repo};
+        use dialog_peer::helpers::{test_repo, test_session_with_peer};
         use dialog_query::{Any, Output as _, Parameters, Term};
 
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -2239,9 +2239,9 @@ mod tests {
     /// the target.
     #[dialog_common::test]
     async fn it_resolves_published_name_to_target_entity() -> anyhow::Result<()> {
-        use dialog_operator::helpers::{test_operator_with_profile, test_repo};
+        use dialog_peer::helpers::{test_repo, test_session_with_peer};
 
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -2265,9 +2265,9 @@ mod tests {
     /// and for "the prior assertion was retracted."
     #[dialog_common::test]
     async fn it_returns_none_for_unknown_published_name() -> anyhow::Result<()> {
-        use dialog_operator::helpers::{test_operator_with_profile, test_repo};
+        use dialog_peer::helpers::{test_repo, test_session_with_peer};
 
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -2299,7 +2299,7 @@ mod tests {
     /// is in `dialog` itself.
     #[dialog_common::test]
     async fn it_supersedes_cardinality_one_across_transactions() -> anyhow::Result<()> {
-        use dialog_operator::helpers::{test_operator_with_profile, test_repo};
+        use dialog_peer::helpers::{test_repo, test_session_with_peer};
         use dialog_query::Output as _;
 
         // A minimal one-attribute concept whose only field is
@@ -2319,7 +2319,7 @@ mod tests {
             pub target: pointer::Target,
         }
 
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -2386,7 +2386,7 @@ mod tests {
     /// twice in the same batch, the second call should win.
     #[dialog_common::test]
     async fn it_supersedes_cardinality_one_within_transaction() -> anyhow::Result<()> {
-        use dialog_operator::helpers::{test_operator_with_profile, test_repo};
+        use dialog_peer::helpers::{test_repo, test_session_with_peer};
         use dialog_query::Output as _;
 
         mod pointer {
@@ -2402,7 +2402,7 @@ mod tests {
             pub target: pointer::Target,
         }
 
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -2460,11 +2460,11 @@ mod tests {
     /// direction, so v1 disappears.
     #[dialog_common::test]
     async fn it_resolves_only_latest_name_target_via_name_concept() -> anyhow::Result<()> {
-        use dialog_operator::helpers::{test_operator_with_profile, test_repo};
+        use dialog_peer::helpers::{test_repo, test_session_with_peer};
         use dialog_query::Output as _;
         use tonk_core::meta::{Name, name};
 
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 

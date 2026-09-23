@@ -593,7 +593,7 @@ pub async fn get_profile(
 
     // Read through the reactor's cached profile-repository handle so
     // reads see exactly what writes (which also go through the reactor)
-    // committed — a separate `Repository::from(&tonk.profile)` handle
+    // committed — a separate `tonk.profile.repository()` handle
     // would resolve a different cached branch state and could disagree.
     let profile_repository = tonk
         .reactor

@@ -651,7 +651,7 @@ async fn evaluate_on_branch_with<'a>(
                 };
                 let repository = tonk_state
                     .profile
-                    .repository(name)
+                    .space(name)
                     .load()
                     .perform(&tonk_state.operator)
                     .await

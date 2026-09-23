@@ -97,7 +97,7 @@ pub(crate) async fn enroll_customer(
                 )
             })?,
     };
-    let device = state.profile.signer().signer().clone();
+    let device = state.profile.credential().signer().clone();
 
     let body = build_enroll_invocation(device, &link, &email, custody)
         .await
@@ -209,7 +209,7 @@ impl dialog_capability::Provider<tonk_schema::command::ResendActivation>
                 return;
             }
         };
-        let device = state.profile.signer().signer().clone();
+        let device = state.profile.credential().signer().clone();
         let body = match tonk_identity::request::build_resend_invocation(device, &account).await {
             Ok(body) => body,
             Err(error) => {
@@ -583,7 +583,7 @@ pub(crate) async fn provision_consumer(
     let link = super::account::account_link(state).await.ok_or_else(|| {
         TonkWorkerError::NotFound("this profile is not linked to an account".to_string())
     })?;
-    let device = state.profile.signer().signer().clone();
+    let device = state.profile.credential().signer().clone();
     let body = build_provider_add_invocation(device, &link, consumer, consent, kind)
         .await
         .map_err(|error| {
@@ -755,7 +755,7 @@ pub(crate) async fn deprovision_consumer(
     let link = super::account::account_link(state).await.ok_or_else(|| {
         TonkWorkerError::NotFound("this profile is not linked to an account".to_string())
     })?;
-    let device = state.profile.signer().signer().clone();
+    let device = state.profile.credential().signer().clone();
     let body = build_provider_remove_invocation(device, &link, consumer)
         .await
         .map_err(|error| {
@@ -797,7 +797,7 @@ async fn load_customer(
 ) -> Result<Option<CustomerRecord>, TonkWorkerError> {
     let bytes = match state
         .profile
-        .credential()
+        .secrets()
         .site(
             crate::credential::branch_site(CUSTOMER_CREDENTIAL_SITE, &state.active_branch).as_str(),
         )
@@ -1211,7 +1211,7 @@ pub(super) async fn save_customer(
     })?;
     state
         .profile
-        .credential()
+        .secrets()
         .site(
             crate::credential::branch_site(CUSTOMER_CREDENTIAL_SITE, &state.active_branch).as_str(),
         )
@@ -1226,7 +1226,7 @@ pub(super) async fn save_customer(
 async fn load_pending(state: &crate::worker::TonkState) -> Result<PendingQueue, TonkWorkerError> {
     let bytes = match state
         .profile
-        .credential()
+        .secrets()
         .site(PENDING_WORK_CREDENTIAL_SITE)
         .load::<Vec<u8>>()
         .perform(&state.operator)
@@ -1265,7 +1265,7 @@ async fn save_pending(
     })?;
     state
         .profile
-        .credential()
+        .secrets()
         .site(PENDING_WORK_CREDENTIAL_SITE)
         .save(bytes)
         .perform(&state.operator)
@@ -1466,7 +1466,7 @@ pub(crate) async fn clear_customer(
 ) -> Result<(), TonkWorkerError> {
     state
         .profile
-        .credential()
+        .secrets()
         .site(
             crate::credential::branch_site(CUSTOMER_CREDENTIAL_SITE, &state.active_branch).as_str(),
         )

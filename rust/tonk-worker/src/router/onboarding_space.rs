@@ -1,4 +1,5 @@
 //! One local welcome space per browser, requested only by the root UI visit.
+use crate::worker::DefaultPeer;
 use axum::{
     Json,
     extract::{Path, State},
@@ -6,7 +7,6 @@ use axum::{
 use axum_wasm_macros::wasm_compat;
 use base64::Engine as _;
 use dialog_artifacts::{Artifact, ArtifactSelector, Changes, Update};
-use dialog_operator::Profile;
 use dialog_query::{Output as _, Query, Term};
 use dialog_repository::{Blob, RepositoryExt as _};
 use futures_util::StreamExt as _;
@@ -86,11 +86,11 @@ fn internal(error: impl std::fmt::Display) -> TonkWorkerError {
 
 async fn save(
     tonk: &TonkState,
-    registry: &Profile,
+    registry: &DefaultPeer,
     progress: &Progress,
 ) -> Result<(), TonkWorkerError> {
     registry
-        .credential()
+        .secrets()
         .site(JOURNAL)
         .save(serde_json::to_vec(progress).map_err(internal)?)
         .perform(&tonk.storage)
@@ -110,7 +110,7 @@ pub async fn welcome(
         .open_profile(&tonk.storage, tonk.registry.initial_profile())
         .await?;
     let mut progress: Progress = match registry
-        .credential()
+        .secrets()
         .site(JOURNAL)
         .load::<Vec<u8>>()
         .perform(&tonk.storage)
@@ -261,7 +261,7 @@ pub(super) async fn has_welcome_snapshot(
 async fn imported(tonk: &TonkState, key: &str, shard: &str) -> Result<bool, TonkWorkerError> {
     let repository = tonk
         .profile
-        .repository(key)
+        .space(key)
         .load()
         .perform(&tonk.operator)
         .await
@@ -296,7 +296,7 @@ async fn import_snapshot(
 ) -> Result<(), TonkWorkerError> {
     let repository = tonk
         .profile
-        .repository(key)
+        .space(key)
         .load()
         .perform(&tonk.operator)
         .await
@@ -376,7 +376,7 @@ pub async fn prepare(
         .open_profile(&tonk.storage, tonk.registry.initial_profile())
         .await?;
     let bytes = match registry
-        .credential()
+        .secrets()
         .site(JOURNAL)
         .load::<Vec<u8>>()
         .perform(&tonk.storage)
@@ -409,7 +409,7 @@ pub async fn prepare(
     }
     let repository = tonk
         .profile
-        .repository(&path.repo)
+        .space(&path.repo)
         .load()
         .perform(&tonk.operator)
         .await
@@ -478,7 +478,7 @@ pub(super) async fn hydrate_media(
     let tonk = state.write().await;
     let repository = tonk
         .profile
-        .repository(key)
+        .space(key)
         .load()
         .perform(&tonk.operator)
         .await
@@ -587,7 +587,7 @@ mod tests {
     async fn values(tonk: &TonkState, key: &str, attribute: &str) -> Vec<Artifact> {
         let repository = tonk
             .profile
-            .repository(key)
+            .space(key)
             .load()
             .perform(&tonk.operator)
             .await
@@ -782,7 +782,7 @@ mod tests {
         let tonk = state.read().await;
         let repository = tonk
             .profile
-            .repository(key)
+            .space(key)
             .load()
             .perform(&tonk.operator)
             .await

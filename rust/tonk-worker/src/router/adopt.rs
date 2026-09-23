@@ -348,7 +348,7 @@ async fn reconcile_mounted_configuration(
     };
     let repository = tonk
         .profile
-        .repository(key)
+        .space(key)
         .load()
         .perform(&tonk.operator)
         .await
@@ -604,7 +604,7 @@ pub(crate) async fn reconcile_account_spaces(tonk: &TonkState) {
 
         let repository = match tonk
             .profile
-            .repository(&key)
+            .space(&key)
             .load()
             .perform(&tonk.operator)
             .await
@@ -731,7 +731,7 @@ mod tests {
         );
         let repository: dialog_repository::Repository = tonk
             .profile
-            .repository(&key)
+            .space(&key)
             .load()
             .perform(&tonk.operator)
             .await
@@ -753,7 +753,7 @@ mod tests {
         let tonk = state.read().await;
         let repository: dialog_repository::Repository = tonk
             .profile
-            .repository(&key)
+            .space(&key)
             .load()
             .perform(&tonk.operator)
             .await
@@ -1200,7 +1200,7 @@ mod tests {
             assert!(ensure_space_mounted(&tonk, key).await.unwrap());
             let repository: dialog_repository::Repository = tonk
                 .profile
-                .repository(key)
+                .space(key)
                 .load()
                 .perform(&tonk.operator)
                 .await
@@ -1229,7 +1229,7 @@ mod tests {
         let (first_revision, ()) = futures_util::join!(leader, waiters);
         let repository: dialog_repository::Repository = tonk
             .profile
-            .repository(key)
+            .space(key)
             .load()
             .perform(&tonk.operator)
             .await
@@ -1480,7 +1480,7 @@ mod tests {
 
         let repository: dialog_repository::Repository = tonk
             .profile
-            .repository(&key)
+            .space(&key)
             .load()
             .perform(&tonk.operator)
             .await
@@ -1566,7 +1566,7 @@ mod tests {
         assert!(ensure_space_mounted(&tonk, &key).await.unwrap());
         let repository: dialog_repository::Repository = tonk
             .profile
-            .repository(&key)
+            .space(&key)
             .load()
             .perform(&tonk.operator)
             .await

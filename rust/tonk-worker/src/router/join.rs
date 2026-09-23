@@ -526,7 +526,7 @@ async fn joined_response(
 ) -> Result<(StatusCode, Json<JoinResponse>), TonkWorkerError> {
     let repository = tonk
         .profile
-        .repository(outcome.key.as_str())
+        .space(outcome.key.as_str())
         .load()
         .perform(&tonk.operator)
         .await
@@ -732,7 +732,7 @@ async fn perform_join(
         })?
     } else {
         tonk.profile
-            .repository(prepared.key.as_str())
+            .space(prepared.key.as_str())
             .load()
             .perform(&tonk.operator)
             .await
@@ -957,7 +957,7 @@ async fn save_authority(
             JoinFailure::claim_failed(format!("failed to save the accepted authority: {error}"))
         })?;
     tonk.profile
-        .credential()
+        .secrets()
         .site(format!("{SPACE_ROOT_SITE_PREFIX}{subject}"))
         .save(prefix_bytes)
         .perform(&tonk.operator)
@@ -1272,7 +1272,7 @@ pub(crate) async fn mount_replica(
     // identity). An earlier attempt may already have done this.
     let repository = match tonk
         .profile
-        .repository(key.as_str())
+        .space(key.as_str())
         .load()
         .perform(&tonk.operator)
         .await
@@ -1352,7 +1352,7 @@ pub(crate) async fn mount_replica_with_configuration(
     }
     let repository = match tonk
         .profile
-        .repository(key.as_str())
+        .space(key.as_str())
         .load()
         .perform(&tonk.operator)
         .await
@@ -2381,7 +2381,7 @@ pub(crate) mod tests {
             let root = crate::router::identity::root_did(&tonk).await.unwrap();
             let bytes = tonk
                 .profile
-                .credential()
+                .secrets()
                 .site(format!("{SPACE_ROOT_SITE_PREFIX}{subject}"))
                 .load::<Vec<u8>>()
                 .perform(&tonk.operator)
@@ -2483,7 +2483,7 @@ pub(crate) mod tests {
             use dialog_repository::RepositoryExt as _;
             let repository: dialog_repository::Repository = tonk
                 .profile
-                .repository(&key)
+                .space(&key)
                 .load()
                 .perform(&tonk.operator)
                 .await
@@ -2717,7 +2717,7 @@ pub(crate) mod tests {
             use dialog_repository::RepositoryExt as _;
             let repository: dialog_repository::Repository = tonk
                 .profile
-                .repository(&key)
+                .space(&key)
                 .load()
                 .perform(&tonk.operator)
                 .await
@@ -3170,7 +3170,7 @@ pub(crate) mod tests {
             );
             let tonk = state.read().await;
             let account = crate::onboarding::did(&tonk).await.unwrap().unwrap();
-            let branch = dialog_repository::Repository::from(tonk.profile.signer().clone())
+            let branch = dialog_repository::Repository::from(tonk.profile.credential().clone())
                 .branch(dialog_repository::ACCESS_BRANCH)
                 .open()
                 .perform(&tonk.operator)
@@ -3189,14 +3189,17 @@ pub(crate) mod tests {
         };
         let storage =
             dialog_storage::provider::storage::Storage::<crate::worker::DefaultSpace>::default();
-        let profile = dialog_operator::Profile::open(&name)
-            .perform(&storage)
-            .await
-            .unwrap();
+        let profile = dialog_peer::OpenPeer::open(dialog_effects::storage::Location::new(
+            dialog_effects::storage::Directory::Profile,
+            &name,
+        ))
+        .perform(&storage)
+        .await
+        .unwrap();
         assert_eq!(profile.did(), profile_did);
         // Isolate session construction from boot's legitimate meta work.
-        let session = crate::session::open(&profile, &storage).await.unwrap();
-        let branch = dialog_repository::Repository::from(profile.signer().clone())
+        let session = crate::session::open(&profile).await.unwrap();
+        let branch = dialog_repository::Repository::from(profile.credential().clone())
             .branch(dialog_repository::ACCESS_BRANCH)
             .open()
             .perform(&session.operator)
@@ -3321,7 +3324,7 @@ pub(crate) mod tests {
             let tonk = state.read().await;
             let repository: Repository = tonk
                 .profile
-                .repository(&repo)
+                .space(&repo)
                 .load()
                 .perform(&tonk.operator)
                 .await
@@ -3378,7 +3381,7 @@ name!:
         let tonk = state.read().await;
         let repository: Repository = tonk
             .profile
-            .repository(&repo)
+            .space(&repo)
             .load()
             .perform(&tonk.operator)
             .await

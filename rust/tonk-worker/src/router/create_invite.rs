@@ -22,7 +22,8 @@ use ::axum::{
 };
 use axum_wasm_macros::wasm_compat;
 use dialog_capability::Subject;
-use dialog_credentials::{Ed25519Signer, key::KeyExport};
+use dialog_credentials::Ed25519Signer;
+use dialog_credentials::key::KeyExport;
 use dialog_effects::Use;
 use dialog_query::{Output as _, Query, Term};
 use dialog_repository::{
@@ -160,7 +161,7 @@ async fn mint_invite(
 
     let repository = tonk
         .profile
-        .repository(&repo_name)
+        .space(&repo_name)
         .load()
         .perform(&tonk.operator)
         .await
@@ -357,7 +358,7 @@ pub(super) async fn retain_invite_authority(
     let mut chains = vec![UcanDelegation(chain.clone())];
     match super::identity::local_root(tonk).await {
         Ok(root) => {
-            let signer = tonk.profile.signer().signer().clone();
+            let signer = tonk.profile.credential().signer().clone();
             match tonk_account::delegations::mint_account_union(&signer, &root.root_did).await {
                 Ok(union) => chains.push(UcanDelegation(union)),
                 Err(e) => log!("invite union edge was not minted: {e}"),
@@ -958,7 +959,7 @@ mod tests {
         let tonk = state.read().await;
         let repository = tonk
             .profile
-            .repository(&key)
+            .space(&key)
             .load()
             .perform(&tonk.operator)
             .await
@@ -1062,7 +1063,7 @@ mod tests {
         let tonk = state.read().await;
         let repository = tonk
             .profile
-            .repository(&key)
+            .space(&key)
             .load()
             .perform(&tonk.operator)
             .await

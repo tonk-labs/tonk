@@ -25,7 +25,7 @@ url = { workspace = true }
 
 [dev-dependencies]
 dialog-effects = { workspace = true }
-dialog-operator = { workspace = true }
+dialog-peer = { workspace = true }
 dialog-storage = { workspace = true }
 dialog-common = { workspace = true, features = ["helpers"] }
 tokio = { workspace = true, features = ["macros", "rt"] }

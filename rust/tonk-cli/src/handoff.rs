@@ -119,8 +119,7 @@ impl HandoffMetadata {
             claimed == self.invitation,
             "handoff metadata does not match this replica's invitation claim"
         );
-        let bytes: Vec<u8> = site.profile.credential()
-            .site(tonk_account::prefix::space_root_site(&self.subject, &self.expected_root))
+        let bytes: Vec<u8> = site.profile.secrets().site(tonk_account::prefix::space_root_site(&self.subject, &self.expected_root))
             .load().perform(&site.operator).await
             .context("this replica has no installed authority for the handoff account; reclaim the URL with a fresh --name")?;
         let prefix = tonk_account::prefix::validate_prefix(&bytes, &self.expected_root).await
