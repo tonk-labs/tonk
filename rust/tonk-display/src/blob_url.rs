@@ -1,6 +1,9 @@
 //! Shared helpers for building blob route URLs from a `<tonk-display>`/
 //! `<tonk-upload>` `with="{branch}@{repo}"` context attribute.
 
+#[cfg(target_arch = "wasm32")]
+use tonk_host::bridge::context_field;
+
 /// Parse a `with="{branch}@{repo}"` context into `(branch, repo)`. Returns
 /// `None` if `with` is empty or still an unsubstituted `{…}` template. A bare
 /// token with no `@` is a repo on the default branch `main`.
@@ -27,18 +30,24 @@ pub(crate) fn blob_read_url(with: &str, entity: &str) -> Option<String> {
     ))
 }
 
-/// Fetch a worker blob URL through the (relayed) `window.fetch` and wrap the
-/// bytes in an object URL.
+/// A URL an `<img src>` can load a worker blob from.
 ///
-/// Blob content renders inside the sealed guest (`about:srcdoc`), whose native
-/// `<img src>` loads bypass the relayed fetch and the service worker and hit
-/// the dev server's SPA fallback. So the bytes have to arrive via `fetch`
-/// (which IS relayed) and be handed to the `<img>` as a `blob:` object URL.
-/// Returns `None` on any transport/decode failure. The caller owns the URL and
-/// should `Url::revoke_object_url` it once it's no longer referenced.
+/// A space rendered on its own origin has its own worker, which answers the
+/// blob route natively, so the route itself is the URL.
+///
+/// Elsewhere blob content renders inside a sealed guest (`about:srcdoc`),
+/// whose native `<img src>` loads bypass the relayed fetch and the service
+/// worker and hit the dev server's SPA fallback. So the bytes have to arrive
+/// via `fetch` (which IS relayed) and be handed to the `<img>` as a `blob:`
+/// object URL. Returns `None` on any transport/decode failure. The caller owns
+/// the URL and should `Url::revoke_object_url` it once it's no longer
+/// referenced, which does nothing for a route URL.
 #[cfg(target_arch = "wasm32")]
 pub(crate) async fn fetch_object_url(url: &str) -> Option<String> {
     use wasm_bindgen::JsCast as _;
+    if served_natively(url) {
+        return Some(url.to_owned());
+    }
     let win = web_sys::window()?;
     let resp = wasm_bindgen_futures::JsFuture::from(win.fetch_with_str(url))
         .await
@@ -52,6 +61,19 @@ pub(crate) async fn fetch_object_url(url: &str) -> Option<String> {
         .ok()?;
     let blob: web_sys::Blob = blob.dyn_into().ok()?;
     web_sys::Url::create_object_url_with_blob(&blob).ok()
+}
+
+/// Whether `url` is a route of the space this frame renders on its own origin
+/// (`siteHost` in its context), which that space's own worker answers.
+#[cfg(target_arch = "wasm32")]
+fn served_natively(url: &str) -> bool {
+    let on_origin = web_sys::window()
+        .and_then(|window| window.location().origin().ok())
+        .is_some_and(|origin| origin != "null");
+    on_origin
+        && context_field("siteHost").is_some()
+        && context_field("repo")
+            .is_some_and(|repo| url.starts_with(&format!("/api/repository/{repo}/")))
 }
 
 #[cfg(test)]

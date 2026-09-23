@@ -59,7 +59,7 @@
       this.observer?.disconnect();
       this.controller?.abort();
       window.removeEventListener('online', this.retry);
-      if (this.objectUrl) URL.revokeObjectURL(this.objectUrl);
+      if (this.objectUrl?.startsWith('blob:')) URL.revokeObjectURL(this.objectUrl);
       this.objectUrl = null;
       this.loading = false;
       this.querySelector('img')?.removeAttribute('src');
@@ -83,6 +83,17 @@
       try {
         const url = '/api/repository/' + scope.slice(at + 1) + '/branch/' +
           scope.slice(0, at) + '/blob/' + this.getAttribute('entity');
+        // A space on its own origin has a worker of its own that answers the
+        // blob route natively, so the route itself loads.
+        const context = globalThis.tonk?.context || {};
+        if (location.origin !== 'null' && context.siteHost &&
+            url.startsWith('/api/repository/' + context.repo + '/')) {
+          this.objectUrl = url;
+          img.src = url;
+          await img.decode();
+          this.observer.disconnect();
+          return;
+        }
         const response = await fetch(url, {signal:controller.signal});
         if (!response.ok) throw Error('Image unavailable');
         const blob = await response.blob();

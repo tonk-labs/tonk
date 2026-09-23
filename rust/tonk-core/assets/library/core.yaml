@@ -2199,9 +2199,16 @@ view!:
                 disconnectedCallback() { this.#generation++; delete this.dataset.rendered; this.revoke(); }
                 revoke() {
                   if (this.#objectUrl) {
-                    URL.revokeObjectURL(this.#objectUrl);
+                    if (this.#objectUrl.startsWith("blob:")) URL.revokeObjectURL(this.#objectUrl);
                     this.#objectUrl = null;
                   }
+                }
+                // A space on its own origin has a worker of its own that
+                // answers the blob route natively, so the route itself loads.
+                native(url) {
+                  const context = (window.tonk && window.tonk.context) || {};
+                  return location.origin !== "null" && !!context.siteHost &&
+                    url.startsWith("/api/repository/" + context.repo + "/");
                 }
                 url() {
                   const scope = this.getAttribute("with") || "";
@@ -2214,6 +2221,7 @@ view!:
                 async objectUrl() {
                   const url = this.url();
                   if (!url) return null;
+                  if (this.native(url)) return url;
                   const resp = await window.fetch(url);
                   if (!resp.ok) return null;
                   return URL.createObjectURL(await resp.blob());
@@ -2243,7 +2251,7 @@ view!:
                         return;
                       }
                       if (generation !== this.#generation) {
-                        URL.revokeObjectURL(u);
+                        if (u.startsWith("blob:")) URL.revokeObjectURL(u);
                         return;
                       }
                       this.#objectUrl = u;
@@ -2278,7 +2286,7 @@ view!:
                     a.href = u;
                     a.download = name;
                     a.click();
-                    URL.revokeObjectURL(u);
+                    if (u.startsWith("blob:")) URL.revokeObjectURL(u);
                   });
                 }
               });

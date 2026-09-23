@@ -91,36 +91,54 @@
       var base=document.createElement("style");
       base.textContent="html{color-scheme:light dark}html,body{height:100%;margin:0}body{display:flex;flex-direction:column;min-height:100%}";
       document.head.appendChild(base);
-      if (d.css) {
-        var style=document.createElement("style");
-        // Tag the injected app CSS so a NESTED guest (whose parent is THIS guest,
-        // not the top document) can discover it: the parent has no
-        // `<link rel=stylesheet href=/styles-*.css>` to read the href from — its
-        // app CSS lives in this inline `<style>` — so `app_stylesheet_css()`
-        // reads the content back off `[data-tonk-app-css]`.
-        style.setAttribute("data-tonk-app-css","");
-        style.textContent=d.css;
-        document.head.appendChild(style);
+      if (d.fromOrigin) {
+        // On its own origin the guest loads the runtime itself, from the
+        // build the parent names: the stylesheets as links (fonts then
+        // resolve against them) and the modules as ordinary imports. Its
+        // worker and the HTTP cache keep them, and nothing crosses the frame.
+        var link=function(href){
+          var l=document.createElement("link");
+          l.rel="stylesheet"; l.href=href;
+          document.head.appendChild(l);
+        };
+        link("/guest/"+d.manifest.waCss);
+        if (d.cssHref) link(d.cssHref);
+        await import("/guest/"+d.manifest.waJs);
+        var mod=await import("/guest/"+d.manifest.js);
+        await mod.default({ module_or_path: "/guest/"+d.manifest.wasm });
+        mod.start();
+      } else {
+        if (d.css) {
+          var style=document.createElement("style");
+          // Tag the injected app CSS so a NESTED guest (whose parent is THIS guest,
+          // not the top document) can discover it: the parent has no
+          // `<link rel=stylesheet href=/styles-*.css>` to read the href from — its
+          // app CSS lives in this inline `<style>` — so `app_stylesheet_css()`
+          // reads the content back off `[data-tonk-app-css]`.
+          style.setAttribute("data-tonk-app-css","");
+          style.textContent=d.css;
+          document.head.appendChild(style);
+        }
+        // Web Awesome component bundle: a self-contained ESM (no dynamic or
+        // relative imports). `d.wa` is the transferred ArrayBuffer (ownership
+        // moved, no copy); wrap it in a Blob (a zero-copy view over the bytes)
+        // and import the URL so the <wa-*> elements upgrade with no network.
+        if (d.wa) {
+          var waUrl=URL.createObjectURL(new Blob([d.wa],{type:"text/javascript"}));
+          await import(waUrl);
+        }
+        // Rewrite each snippet import statement to a guest-minted blob URL.
+        var glue=d.glue;
+        for (var i=0;i<d.snippets.length;i++){
+          var s=d.snippets[i];
+          var url=URL.createObjectURL(new Blob([s.src],{type:"text/javascript"}));
+          glue=glue.replace(s.stmt, s.stmt.replace(/from\s*['"][^'"]*['"]/, 'from "'+url+'"'));
+        }
+        var glueUrl=URL.createObjectURL(new Blob([glue],{type:"text/javascript"}));
+        var mod=await import(glueUrl);
+        await mod.default({ module_or_path: d.wasm });
+        mod.start();
       }
-      // Web Awesome component bundle: a self-contained ESM (no dynamic or
-      // relative imports). `d.wa` is the transferred ArrayBuffer (ownership
-      // moved, no copy); wrap it in a Blob (a zero-copy view over the bytes)
-      // and import the URL so the <wa-*> elements upgrade with no network.
-      if (d.wa) {
-        var waUrl=URL.createObjectURL(new Blob([d.wa],{type:"text/javascript"}));
-        await import(waUrl);
-      }
-      // Rewrite each snippet import statement to a guest-minted blob URL.
-      var glue=d.glue;
-      for (var i=0;i<d.snippets.length;i++){
-        var s=d.snippets[i];
-        var url=URL.createObjectURL(new Blob([s.src],{type:"text/javascript"}));
-        glue=glue.replace(s.stmt, s.stmt.replace(/from\s*['"][^'"]*['"]/, 'from "'+url+'"'));
-      }
-      var glueUrl=URL.createObjectURL(new Blob([glue],{type:"text/javascript"}));
-      var mod=await import(glueUrl);
-      await mod.default({ module_or_path: d.wasm });
-      mod.start();
       // Code-split editor bundles load sibling chunks via RELATIVE imports,
       // dead at this opaque origin. Mint a blob per file in DEPENDENCY ORDER
       // so each file's relative imports rewrite to the FINAL blob URLs of
