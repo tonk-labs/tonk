@@ -3463,7 +3463,8 @@ pub(crate) mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     fn stale_profile_library() -> String {
         const CURRENT: &str = include_str!("../../../tonk-core/assets/library/profile.yaml");
-        let marker = "<div class=\"stack chrome\" data-spaces-view aria-label=\"spaces\">";
+        let marker =
+            "<hub-collection class=\"stack chrome\" data-spaces-view aria-label=\"spaces\">";
         let stale = format!("{marker}\n          <div class=\"sempty\">no spaces yet</div>");
         let historical = CURRENT.replacen(marker, &stale, 1);
         assert_ne!(historical, CURRENT, "the historical fixture must differ");

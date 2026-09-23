@@ -2515,6 +2515,108 @@ mod tests {
     }
 
     #[dialog_common::test]
+    async fn it_renders_the_responsive_hub_collection(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        wait_for_service_worker(&driver).await?;
+        goto(&driver, env.tonk_web.as_str()).await?;
+        enter_hub(&driver).await?;
+        hub_style_applied(&driver).await?;
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let count = driver
+                .execute(
+                    "return document.querySelectorAll('[data-new-space]').length;",
+                    Vec::new(),
+                )
+                .await?
+                .json()
+                .as_u64()
+                .unwrap_or_default();
+            if count == 3 {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the Hub never rendered all three create controls; found {count}",
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        driver.set_window_rect(0, 0, 1200, 900).await?;
+        let desktop = driver
+            .execute(
+                r#"const header = document.querySelector('.hub-header').getBoundingClientRect();
+                   const main = document.querySelector('.hubcol').getBoundingClientRect();
+                   const mobile = getComputedStyle(document.querySelector('.mobile-nav'));
+                   const logo = document.querySelector('.hub-logo');
+                   const account = document.querySelector('.mobile-nav a[href="/settings"]');
+                   return {
+                     headerWidth: Math.round(header.width),
+                     mainWidth: Math.round(main.width),
+                     mobileDisplay: mobile.display,
+                     logoHref: logo?.getAttribute('href'),
+                     accountHref: account?.getAttribute('href'),
+                     newSpaceForms: document.querySelectorAll('[data-new-space]').length,
+                     overflow: document.documentElement.scrollWidth > innerWidth,
+                   };"#,
+                Vec::new(),
+            )
+            .await?;
+        let desktop = desktop.json();
+        assert_eq!(desktop["headerWidth"], 1152);
+        assert_eq!(desktop["mainWidth"], 1152);
+        assert_eq!(desktop["mobileDisplay"], "none");
+        assert_eq!(desktop["logoHref"], "/");
+        assert_eq!(desktop["accountHref"], "/settings");
+        assert_eq!(desktop["newSpaceForms"], 3);
+        assert_eq!(desktop["overflow"], false);
+
+        driver.set_window_rect(0, 0, 390, 844).await?;
+        let mobile = driver
+            .execute(
+                r#"const viewport = innerWidth;
+                   const nav = document.querySelector('.mobile-nav');
+                   const navRect = nav.getBoundingClientRect();
+                   const card = document.querySelector('.space-card .srow');
+                   const cardStyle = card ? getComputedStyle(card) : null;
+                   const visibleNew = [...document.querySelectorAll('[data-new-space]')]
+                     .filter(element => element.getClientRects().length > 0);
+                   return {
+                     viewport,
+                     viewportHeight: innerHeight,
+                     navDisplay: getComputedStyle(nav).display,
+                     navBottom: Math.round(navRect.bottom),
+                     navItems: nav.querySelectorAll(':scope > a, :scope > space-create').length,
+                     cardColumns: cardStyle?.gridTemplateColumns ?? null,
+                     visibleNew: visibleNew.length,
+                     overflow: document.documentElement.scrollWidth > innerWidth,
+                   };"#,
+                Vec::new(),
+            )
+            .await?;
+        let mobile = mobile.json();
+        if mobile["viewport"].as_i64().unwrap_or_default() <= 600 {
+            assert_eq!(mobile["navDisplay"], "grid");
+            assert_eq!(mobile["navBottom"], mobile["viewportHeight"]);
+            assert_eq!(mobile["navItems"], 3);
+            assert_eq!(mobile["visibleNew"], 2);
+            assert_eq!(mobile["overflow"], false);
+            if !mobile["cardColumns"].is_null() {
+                assert!(
+                    mobile["cardColumns"]
+                        .as_str()
+                        .is_some_and(|columns| columns.starts_with("64px ")),
+                    "mobile cards must place a 64px preview beside the caption: {mobile}"
+                );
+            }
+        }
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
     async fn it_returns_bare_join_visits_home(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
         wait_for_service_worker(&driver).await?;
@@ -3253,7 +3355,12 @@ mod tests {
         );
 
         let before = space_keys(&driver).await?;
-        submit_hub_wizard(&driver).await?;
+        submit_hub_wizard_with(
+            &driver,
+            "Offline notes",
+            "Created locally before account registration",
+        )
+        .await?;
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         let key = loop {
@@ -3267,6 +3374,7 @@ mod tests {
             );
             tokio::time::sleep(Duration::from_millis(250)).await;
         };
+        await_url_containing(&driver, &format!("/space/{key}")).await?;
 
         // Give the handler's post-navigation attach step room to run, so
         // "no remote" means it declined rather than that we looked early.
@@ -3305,21 +3413,22 @@ mod tests {
         await_share_action(&driver, "account").await?;
         open_register_dialog(&driver).await?;
 
-        // No ceremony can run until the lookup answers. A ceremony
-        // started before that runs creation against an address that
-        // might already have an account, which fails at the end and
-        // leaves an orphan passkey.
+        // The contained FABB task starts with a disabled Continue action.
+        // It must not become actionable until the lookup replaces it with
+        // the account-specific step; starting a ceremony before that can
+        // create an orphan passkey for an address that already has one.
         let idle = register_action_label(&driver).await?;
-        let action_disabled = driver
+        assert_eq!(idle, "continue");
+        let disabled = driver
             .execute(
-                r#"return document.querySelector('#tonk-register-action')?.disabled ?? false;"#,
+                r#"return document.querySelector('#tonk-register-action')?.disabled ?? null;"#,
                 Vec::new(),
             )
             .await?;
-        assert!(
-            idle.is_empty() || (idle == "continue" && action_disabled.json() == true),
-            "the account action must stay unavailable until the answer, got {idle:?} (disabled: {})",
-            action_disabled.json(),
+        assert_eq!(
+            disabled.json(),
+            &serde_json::Value::Bool(true),
+            "the initial Continue action must stay disabled until the lookup answers",
         );
 
         type_into_register_dialog(&driver, "nobody@example.com").await?;
@@ -3346,7 +3455,7 @@ mod tests {
         // listened for that request the dialog still reported success,
         // so the credential count is what tells the difference.
         click_register_action(&driver).await?;
-        type_into_settled_row(&driver, "display name", "Nobody").await?;
+        type_into_settled_row(&driver, "what should people call you?", "Nobody").await?;
         let after = await_credential_count(&driver, &authenticator, 1).await?;
         assert_eq!(after, 1, "the ceremony mints a passkey");
 
@@ -3431,6 +3540,38 @@ mod tests {
     }
 
     #[dialog_common::test]
+    async fn it_renames_a_space_from_the_hub(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        driver.goto(env.tonk_web.as_str()).await?;
+        let before = space_keys(&driver).await?;
+        submit_hub_wizard_with(&driver, "Before rename", "A retained description").await?;
+        let key = await_new_space(&driver, &before).await?;
+
+        goto(&driver, env.tonk_web.as_str()).await?;
+        enter_hub(&driver).await?;
+        hub_style_applied(&driver).await?;
+        let card = format!(".space-card[data-space-subject='{key}']");
+        click(&driver, &format!("{card} [data-space-actions-open]")).await?;
+        wait_for_displayed(&driver, &format!("{card} .space-menu")).await?;
+        click(&driver, &format!("{card} [data-space-rename-open]")).await?;
+        wait_for_displayed(&driver, &format!("{card} [data-space-rename-dialog]")).await?;
+
+        let input = element(&driver, &format!("{card} [data-space-rename-input]")).await?;
+        let select_all = if cfg!(target_os = "macos") {
+            Key::Command + "a"
+        } else {
+            Key::Control + "a"
+        };
+        input.send_keys(select_all).await?;
+        input.send_keys("After rename").await?;
+        click(&driver, &format!("{card} [data-space-rename-submit]")).await?;
+        wait_for_text(&driver, &format!("{card} .n"), "After rename").await?;
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
     async fn it_removes_a_space_without_letting_focus_escape_the_sealed_guest(
         env: TestEnvironment,
     ) -> Result<()> {
@@ -3477,6 +3618,11 @@ mod tests {
             .move_to_element_center(&row)
             .perform()
             .await?;
+        click(
+            &driver,
+            &format!(".srow-wrap:has({remove}) [data-space-actions-open]"),
+        )
+        .await?;
         let opener = match wait_for_displayed(&driver, &opener_selector).await {
             Ok(opener) => opener,
             Err(error) => {
@@ -5125,8 +5271,39 @@ mod tests {
                 return Ok(());
             }
             if tokio::time::Instant::now() >= deadline {
+                let url = driver.current_url().await.ok().map(|url| url.to_string());
+                enter_guest(driver).await?;
+                let guest = driver
+                    .execute(
+                        r#"const bars = [...document.querySelectorAll('tonk-fab')];
+                        return {
+                            hub: !!document.querySelector('.hub-page'),
+                            site: !!document.querySelector('tonk-site'),
+                            fabDefined: !!customElements.get('tonk-fab'),
+                            bars: bars.map((bar) => ({
+                                connected: bar.isConnected,
+                                attributes: Object.fromEntries([...bar.attributes].map(({name, value}) => [name, value])),
+                                children: bar.childElementCount,
+                                html: bar.innerHTML.slice(0, 500),
+                                parent: bar.parentElement?.tagName ?? null,
+                                ancestors: (() => {
+                                    const tags = [];
+                                    for (let node = bar.parentElement; node; node = node.parentElement) {
+                                        tags.push(node.tagName.toLowerCase());
+                                    }
+                                    return tags;
+                                })(),
+                            })),
+                            text: (document.body?.innerText || '').slice(0, 500),
+                        };"#,
+                        Vec::new(),
+                    )
+                    .await
+                    .map(|value| value.json().clone())
+                    .unwrap_or(serde_json::Value::Null);
+                driver.enter_default_frame().await?;
                 return Err(anyhow!(
-                    "the bar never offered {expected:?}; it is showing {last:?}",
+                    "the bar never offered {expected:?}; it is showing {last:?}; url={url:?}; guest={guest}",
                 ));
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
@@ -5314,11 +5491,31 @@ mod tests {
     /// document at all — a reach-in returns `no guest frame` and says
     /// nothing about the app.
     async fn submit_hub_wizard(driver: &WebDriver) -> Result<()> {
+        submit_hub_wizard_with(driver, "Untitled", "").await
+    }
+
+    async fn submit_hub_wizard_with(
+        driver: &WebDriver,
+        name: &str,
+        description: &str,
+    ) -> Result<()> {
         enter_hub(driver).await?;
-        // Through `click`: the form's `space/create` binding must be wired
+        click(driver, ".header-new [data-space-create-open]").await?;
+        wait_for_displayed(driver, ".header-new [data-space-create-dialog]").await?;
+        element(driver, ".header-new input[name=name]")
+            .await?
+            .send_keys(name)
+            .await?;
+        if !description.is_empty() {
+            element(driver, ".header-new textarea[name=description]")
+                .await?
+                .send_keys(description)
+                .await?;
+        }
+        // Through `click`: the dialog's `space/create` binding must be wired
         // before the press, or the display resolves nothing and the space
         // is never asked for.
-        click(driver, ".snew").await?;
+        click(driver, ".header-new [data-space-create-submit]").await?;
         // Back to the top document: everything after this — the space
         // page, the bar, the cluster — lives there.
         driver.enter_default_frame().await?;

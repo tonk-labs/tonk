@@ -244,6 +244,39 @@ fn it_carries_the_menu_element_on_the_branch_that_renders_it() {
         PROFILE_LIBRARY.contains("concept!: &element"),
         "the element concept must be seeded on the profile branch, not only in core.yaml",
     );
+    assert!(
+        PROFILE_LIBRARY.contains("element!: &hub-menu"),
+        "the menu's behaviour must be defined as branch data",
+    );
+    assert!(
+        PROFILE_LIBRARY.contains("<hub-menu"),
+        "and the account menu must actually be one",
+    );
+}
+
+/// The menu's methods do not shadow a view's `show`.
+///
+/// One word meaning a dictionary of templates in one half of the file
+/// and "reveal the menu" in the other is a trap for whoever reads it
+/// next.
+#[dialog_common::test]
+fn it_names_the_menu_methods_open_and_close() {
+    let menu = PROFILE_LIBRARY
+        .split("element!: &hub-menu")
+        .nth(1)
+        .map(|rest| rest.split("\nelement!:").next().unwrap_or(rest))
+        .and_then(|rest| rest.split("\nview!:").next())
+        .expect("the hub-menu definition");
+    assert!(menu.contains("    open: |"), "the menu opens with `open`");
+    assert!(menu.contains("    close: |"), "and closes with `close`");
+    assert!(
+        menu.contains("event.target?.closest?.('tonk-dialog')?.open"),
+        "an open nested modal must own Escape before its menu ancestor",
+    );
+    assert!(
+        !menu.contains("    show: |") && !menu.contains("    hide: |"),
+        "`show` belongs to views; the menu must not borrow it",
+    );
 }
 
 /// The account bar renders its name and switcher from facts.
@@ -648,20 +681,24 @@ fn it_keeps_the_hub_on_the_shared_theme_tokens() {
 }
 
 #[dialog_common::test]
-fn it_builds_one_centered_hub_launcher_with_a_settings_route() {
+fn it_builds_a_responsive_hub_collection_with_a_settings_route() {
     for contract in [
+        ".hub-header",
         ".hubcol",
-        "width:min(576px, calc(100vw - 32px))",
-        ".hc-view",
+        "width:min(1250px, calc(100vw - 48px))",
+        "grid-template-columns:repeat(auto-fill,minmax(min(100%, 260px),1fr))",
+        "<hub-collection class=\"stack chrome\"",
+        "<nav class=\"mobile-nav\"",
+        "<a class=\"hub-logo\" href=\"/\" aria-label=\"Tonk home\"",
     ] {
         assert!(
             PROFILE_LIBRARY.contains(contract),
-            "the centered Hub launcher must contain `{contract}`",
+            "the responsive Hub collection must contain `{contract}`",
         );
     }
     assert!(
         PROFILE_LIBRARY.contains("create new space"),
-        "the centered Hub launcher must contain `create new space`",
+        "the responsive Hub collection must contain `create new space`",
     );
     let hubbar = PROFILE_LIBRARY
         .split(".hubbar {")
@@ -671,19 +708,13 @@ fn it_builds_one_centered_hub_launcher_with_a_settings_route() {
     for rejected in ["position:fixed", "right:", "border-radius"] {
         assert!(
             !hubbar.contains(rejected),
-            "the centered Hub bar must reject `{rejected}`",
-        );
-    }
-    for (selector, width) in [(".hc-acct {", "width:144px"), (".hc-view {", "width:432px")] {
-        assert!(
-            css_rule(PROFILE_LIBRARY, selector).contains(width),
-            "the proportional desktop Hub cell `{selector}` must contain `{width}`",
+            "the desktop Hub bar must reject `{rejected}`",
         );
     }
     let rejected = "class=\"shead";
     assert!(
         !PROFILE_LIBRARY.contains(rejected),
-        "the centered Hub launcher must reject `{rejected}`",
+        "the responsive Hub collection must reject `{rejected}`",
     );
     // The empty stack carries NO words. An account with no spaces and an
     // account whose spaces are still downloading are indistinguishable
@@ -708,11 +739,46 @@ fn it_builds_one_centered_hub_launcher_with_a_settings_route() {
         // which tag draws it.
         "<hub-bar",
         "href=\"/space/{subject}\"",
-        "class=\"snew-form\"",
+        "<space-create",
+        "data-space-create-open",
+        "description: \".currentTarget.elements.description.value\"",
+        "the: xyz.tonk.command.create-space/description",
+        "form=\"create-space-header\"",
     ] {
         assert!(
             PROFILE_LIBRARY.contains(contract),
             "provider-free Hub access must preserve `{contract}`",
+        );
+    }
+    assert!(
+        !PROFILE_LIBRARY.contains("html:form=\"create-space"),
+        "fixed create-form IDs must use the native form-owner attribute",
+    );
+}
+
+#[dialog_common::test]
+fn it_deals_stable_weighted_frames_from_space_identity() {
+    let collection = PROFILE_LIBRARY
+        .split("element!: &hub-collection")
+        .nth(1)
+        .and_then(|rest| rest.split("\n\n# The hub bar").next())
+        .expect("the hub collection element");
+    for contract in [
+        "self.hash(subject)",
+        "data-space-subject",
+        "const stepDown = { 15: 7, 7: 3, 3: 1, 1: 1 }",
+        "--fr-r-mobile",
+        "attributeFilter: ['data-space-subject']",
+    ] {
+        assert!(
+            collection.contains(contract),
+            "stable weighted frames must preserve `{contract}`",
+        );
+    }
+    for rejected in ["Math.random", "dataset.index", "childElementCount"] {
+        assert!(
+            !collection.contains(rejected),
+            "frame identity must not depend on `{rejected}`",
         );
     }
 }
@@ -725,7 +791,7 @@ fn it_mints_an_invite_when_copying_a_hub_space_link() {
     );
     assert!(
         PROFILE_LIBRARY
-            .contains(r#"<tonk-share space={subject}><button type="button" class="copy-verb">"#),
+            .contains(r#"<tonk-share space={subject}><button type="button" role="menuitem">"#),
         "the copy verb is a plain button inside the share, never a form submit"
     );
     for (state, label) in [
@@ -745,14 +811,35 @@ fn it_mints_an_invite_when_copying_a_hub_space_link() {
 }
 
 #[dialog_common::test]
+fn it_renames_a_space_from_the_hub_menu() {
+    for contract in [
+        "event!: &on/repository-rename-submit",
+        "on:repository-rename-submit=tonk/rename-repository",
+        "data-space={subject}",
+        "the: xyz.tonk.command.rename-repository/name",
+        "the: xyz.tonk.rename-repository/space",
+        "data-space-rename-open",
+    ] {
+        assert!(
+            PROFILE_LIBRARY.contains(contract),
+            "the Hub rename path must preserve `{contract}`"
+        );
+    }
+}
+
+#[dialog_common::test]
 fn it_aligns_the_hub_space_actions_in_one_flex_context() {
     assert!(
-        css_rule(PROFILE_LIBRARY, ".verbs tonk-share {").contains("display:contents"),
-        "the share host must not offset its button from delete or leave"
+        css_rule(
+            PROFILE_LIBRARY,
+            ".space-menu tonk-share, .space-menu space-remove {"
+        )
+        .contains("display:contents"),
+        "share and authority-aware removal must remain direct rows in the card menu"
     );
     assert!(
-        css_rule(PROFILE_LIBRARY, ".verbs {").contains("gap:18px"),
-        "desktop Hub actions must remain a close visual group"
+        PROFILE_LIBRARY.contains("data-space-actions-open aria-haspopup=\"menu\""),
+        "the card menu opener must expose its menu semantics"
     );
 }
 
@@ -867,13 +954,13 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
     // The acts are commands the click asserts, not fetches an element
     // makes: nothing here names an `/api/` path.
     assert!(panel.contains("on:sign-out=tonk:sign-out"));
-    assert!(panel.contains("on:add-passkey=tonk:add-passkey"));
+    assert!(PROFILE_LIBRARY.contains("on:add-passkey=tonk:add-passkey"));
     assert!(panel.contains("on:authorize-device=tonk:authorize-device"));
     assert!(!panel.contains("/api/"));
     assert!(panel.contains("data-delete-account-open"));
     assert!(panel.contains("data-sign-out-open"));
-    assert!(panel.contains("<div class=\"sect\">sign out</div>"));
-    assert!(panel.contains("disconnect this account; keep local spaces on this device"));
+    assert!(panel.contains("<h2>Sign out</h2>"));
+    assert!(panel.contains("Disconnect this account. Keep local spaces on this device."));
     assert!(panel.contains("sign out on this device"));
     assert!(panel.contains("heading=\"confirm sign out\""));
     assert!(panel.contains(
@@ -883,7 +970,7 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
     assert!(!panel.contains("remove this device"));
     assert!(!panel.contains("confirm device removal"));
     assert!(!panel.contains("remove all data associated with this account from this device"));
-    assert!(panel.contains("data-add-passkey"));
+    assert!(PROFILE_LIBRARY.contains("data-add-passkey"));
     // The account page's one link out is to its settings, and that is
     // the panel's own row.
     assert!(panel.contains("href=\"/settings\" data-open-settings"));
@@ -911,15 +998,26 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
         "what the deletion deletes is listed from the owned-space facts",
     );
     // Editable settings fields use native text inputs and native carets.
-    let name_row = PROFILE_LIBRARY
-        .split("<span>display name</span>")
+    let name_form = PROFILE_LIBRARY
+        .split("<form class=\"details-form\" data-profile-rename-form")
         .nth(1)
-        .and_then(|rest| rest.split("</div>").next())
-        .expect("the display-name row");
+        .and_then(|rest| rest.split("</form>").next())
+        .expect("the display-name form");
     assert!(
-        !name_row.contains("<i class=\"cur\""),
+        !name_form.contains("<i class=\"cur\""),
         "an unfocused display-name field must not draw an editing cursor",
     );
+    for contract in [
+        "name=\"name\" type=\"text\"",
+        "required maxlength=\"50\" autocomplete=\"name\"",
+        "on:profile-rename-submit=profile/rename",
+        "data-profile-rename-submit>save changes",
+    ] {
+        assert!(
+            name_form.contains(contract),
+            "the explicit display-name form must preserve `{contract}`",
+        );
+    }
     assert!(
         registered.contains("data-delete-confirm type=\"text\""),
         "the deletion confirm is a native text input",
@@ -1132,8 +1230,9 @@ fn it_sizes_the_join_route_to_the_dynamic_mobile_viewport() {
 #[dialog_common::test]
 fn it_declares_mobile_target_and_input_floors_for_hub_and_join() {
     for contract in [
-        ".hubbar, .hcell { height:44px; min-height:44px; }",
-        ".account-menu__row, .srow, .snew { min-height:44px; }",
+        ".mobile-nav > a, .mobile-nav > space-create { min-width:0; min-height:54px; }",
+        ".mobile-nav > a, .mobile-nav button { display:flex; width:100%; min-height:54px;",
+        ".account-menu__row { min-height:44px; }",
     ] {
         assert!(
             PROFILE_LIBRARY.contains(contract),

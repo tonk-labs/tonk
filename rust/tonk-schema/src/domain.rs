@@ -221,6 +221,13 @@ pub mod space {
     #[domain("xyz.tonk.space")]
     pub struct Name(pub String);
 
+    /// The optional short description mirrored into the account directory.
+    /// The repository-authored `xyz.tonk.repo/description` remains the source
+    /// of truth; this copy lets the Hub render without mounting every space.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.space")]
+    pub struct Description(pub String);
+
     /// When this space was founded, unix seconds.
     ///
     /// Written once at creation and never updated, so it records the
@@ -1731,6 +1738,11 @@ pub mod repo {
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.repo")]
     pub struct Name(pub String);
+
+    /// A short description authored with the repository.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.repo")]
+    pub struct Description(pub String);
 
     /// Markdown agent context carried by the repository subject.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]

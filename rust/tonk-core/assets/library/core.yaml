@@ -1120,6 +1120,12 @@ concept!: &tonk/repository
       the: xyz.tonk.repo/name
       cardinality: one
       as: text
+  maybe:
+    description:
+      description: A short description written by the space owner.
+      the: xyz.tonk.repo/description
+      cardinality: one
+      as: text
 
 # Agent working context carried by the repository itself. The instance is keyed
 # by the same stable repository subject DID as `tonk/repository`, so it syncs
