@@ -349,20 +349,19 @@ fn dispatch_handoff(host: &HtmlElement, state: &Rc<RefCell<AgentState>>, fresh: 
         fail("Agent invitation is unavailable. Try again.");
         return;
     };
-    // The FAB lives on the profile branch. Its agent state is subscribed on
-    // the space branch, so the command must explicitly use that same route.
-    let Some(route) = host.get_attribute("with").filter(|route| !route.is_empty()) else {
+    // App chrome sends the command from the profile branch. The worker uses
+    // the explicit space to target the handoff, while the response remains
+    // subscribed on that space's content branch.
+    let Some(space) = host
+        .get_attribute("space")
+        .filter(|space| !space.is_empty())
+    else {
         fail("Agent invitation is unavailable. Try again.");
         return;
     };
-    let context = Object::new();
-    if Reflect::set(&context, &"with".into(), &route.into()).is_err() {
-        fail("Agent invitation is unavailable. Try again.");
-        return;
-    }
-    let claim = agent_handoff_claim_json(js_sys::Date::now(), fresh);
+    let claim = agent_handoff_claim_json(&space, js_sys::Date::now(), fresh);
     if let Ok(value) = JSON::parse(&claim.to_string()) {
-        match transact.call2(&tonk, &value, &context) {
+        match transact.call1(&tonk, &value) {
             Ok(result) => {
                 if let Ok(promise) = result.dyn_into::<Promise>() {
                     let host = host.clone();

@@ -1491,11 +1491,12 @@ pub fn agent_handoff_query_body(subject: &str) -> Result<String, String> {
 }
 
 /// Build the inline transient understood by the worker's agent handoff provider.
-pub fn agent_handoff_claim_json(time: f64, fresh: bool) -> serde_json::Value {
+pub fn agent_handoff_claim_json(space: &str, time: f64, fresh: bool) -> serde_json::Value {
     let mut with = json!({
-        "time": { "the": "xyz.tonk.agent-handoff/time", "as": "Float" }
+        "time": { "the": "xyz.tonk.agent-handoff/time", "as": "Float" },
+        "space": { "the": "xyz.tonk.agent-handoff/space", "as": "Entity" }
     });
-    let mut parameters = json!({ "time": time });
+    let mut parameters = json!({ "time": time, "space": space });
     if fresh {
         with["fresh"] = json!({ "the": "xyz.tonk.agent-handoff/fresh", "as": "Text" });
         parameters["fresh"] = json!("new");
@@ -1539,11 +1540,13 @@ mod agent_handoff {
 
     #[test]
     fn it_marks_only_explicit_retries_as_fresh() {
-        let initial = agent_handoff_claim_json(1.0, false).to_string();
-        let retry = agent_handoff_claim_json(2.0, true).to_string();
+        let initial = agent_handoff_claim_json("did:key:space", 1.0, false).to_string();
+        let retry = agent_handoff_claim_json("did:key:space", 2.0, true).to_string();
         assert!(!initial.contains("agent-handoff/fresh"));
         assert!(retry.contains("agent-handoff/fresh"));
         assert!(retry.contains("\"new\""));
+        assert!(initial.contains("xyz.tonk.agent-handoff/space"));
+        assert!(initial.contains("did:key:space"));
     }
 
     #[test]

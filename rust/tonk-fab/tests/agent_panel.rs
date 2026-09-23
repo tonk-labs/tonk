@@ -176,18 +176,14 @@ async fn signed_out_agent_uses_the_account_gate_without_minting() {
 
 #[dialog_common::test]
 async fn explicit_open_mints_once_and_a_ready_frame_renders_the_complete_prompt() {
-    let calls = Rc::new(RefCell::new(Vec::<(String, String)>::new()));
+    let calls = Rc::new(RefCell::new(Vec::<(String, bool)>::new()));
     let sink = calls.clone();
     let transact = Closure::<dyn FnMut(wasm_bindgen::JsValue, wasm_bindgen::JsValue)>::new(
-        move |request, context| {
+        move |request, context: wasm_bindgen::JsValue| {
             let request = js_sys::JSON::stringify(&request)
                 .map(String::from)
                 .unwrap_or_default();
-            let route = Reflect::get(&context, &"with".into())
-                .ok()
-                .and_then(|value| value.as_string())
-                .unwrap_or_default();
-            sink.borrow_mut().push((request, route));
+            sink.borrow_mut().push((request, context.is_undefined()));
         },
     );
     let tonk = Object::new();
@@ -208,12 +204,15 @@ async fn explicit_open_mints_once_and_a_ready_frame_renders_the_complete_prompt(
         1,
         "an in-flight mint is not duplicated"
     );
-    assert_eq!(
+    assert!(
         calls.borrow()[0].1,
-        "main@did:key:zAgentSpace",
-        "the profile-mounted FAB must send the command to the space branch"
+        "the command must use app chrome's profile route"
     );
     let claim: serde_json::Value = serde_json::from_str(&calls.borrow()[0].0).unwrap();
+    assert_eq!(
+        claim["claims"][0]["application"]["parameters"]["space"], "did:key:zAgentSpace",
+        "the profile-mounted FAB must name the target space"
+    );
     assert_eq!(
         claim["claims"][0]["application"]["parameters"]["fresh"], "new",
         "opening Connect Agent explicitly asks for a fresh invitation"
