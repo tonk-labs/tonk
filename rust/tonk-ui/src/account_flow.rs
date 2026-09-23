@@ -6926,47 +6926,62 @@ mod tests {
         let key = create_space_awaiting_remote(&browser, "Before signup", false).await?;
         await_url_containing(&browser, &format!("/space/{key}")).await?;
         let original = browser.current_url().await?;
-        enter_space_view(&browser).await?;
-        wait_for_displayed(&browser, "[data-invite-account]").await?;
-        click(&browser, "[data-invite-account]")
-            .await
-            .context("open invite account setup")?;
+        enter_guest(&browser).await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let opened = browser
+                .execute(
+                    r#"const bar=document.querySelector('tonk-fab');
+                       const root=bar?.shadowRoot;
+                       const actions=root?.querySelector('.run');
+                       if (!bar?.hasAttribute('data-account-required') || !actions) return false;
+                       if (actions.hidden) root.querySelector('.space')?.click();
+                       const panel=root.querySelector('#agent-panel');
+                       if (panel?.hidden) root.querySelector('.agent')?.click();
+                       const gate=root.querySelector('.agent-continue');
+                       if (panel?.hidden || !gate) return false;
+                       gate.click();
+                       return true;"#,
+                    vec![],
+                )
+                .await?;
+            if opened.json() == true {
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "agent account gate did not open"
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
         browser.enter_default_frame().await?;
         run_cluster_ceremony(&browser, "agent-recovery@example.com").await?;
         activate_in_another_tab(&browser, &env, "agent-recovery@example.com").await?;
         wait_for_absent(&browser, "#tonk-register").await?;
-        enter_space_view(&browser).await?;
+        assert_eq!(browser.current_url().await?, original);
         let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
-        let copy = "[data-agent-mode=scoped] .agent-prompt__copy";
-        let mut sync_requested = false;
         loop {
-            if let Ok(button) = browser.find(By::Css(copy)).await
-                && button.is_displayed().await.unwrap_or(false)
-            {
+            let info = get_json(&browser, &format!("/api/repository/{key}")).await?;
+            let info = successful_body("read recovered space", &info);
+            if info["remote"]["origin"].is_object() {
                 break;
             }
-            if !sync_requested {
-                let clicked = browser.execute(
-                    r#"const controls=document.querySelector('tonk-agent-invite-controls');
-                       const button=controls?.querySelector('[data-invite-action=sync]');
-                       if (controls?.getAttribute('mode') !== 'sync' || !button || button.hidden) return false;
-                       button.click();
-                       return true;"#,
-                    vec![],
-                ).await?;
-                sync_requested = clicked.json() == true;
-            }
-            if tokio::time::Instant::now() >= deadline {
-                let state = browser.execute("return {mode:document.querySelector('tonk-agent-invite-controls')?.getAttribute('mode'),status:document.querySelector('[data-agent-handoff-status]')?.textContent,buttons:[...document.querySelectorAll('[data-invite-action]')].map(b=>({action:b.dataset.inviteAction,hidden:b.hidden}))}", vec![]).await?;
-                anyhow::bail!(
-                    "invitation did not become ready after signup: {}",
-                    state.json()
-                );
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the recovered space never attached a remote: {info}"
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
         }
-        assert_eq!(browser.current_url().await?, original);
-        let invite = copied_agent_bearer(&browser)
+        let pushed = post_json(
+            &browser,
+            &format!("/api/repository/{key}/branch/main/sync/push"),
+            serde_json::json!({}),
+        )
+        .await?;
+        successful_body("publish recovered space", &pushed);
+        click_tool_connection_action(&browser).await?;
+        await_tool_connection_ready(&browser, &key).await?;
+        let invite = copy_tool_connection(&browser, "[data-tool-copy-link]")
             .await
             .context("copy recovered invitation")?;
         let profile = tempfile::tempdir()?;
@@ -7262,59 +7277,6 @@ mod tests {
             "browser logs disclosed an agent invitation"
         );
         Ok(())
-    }
-
-    #[cfg(feature = "connection-invites")]
-    async fn copied_agent_bearer(browser: &WebDriver) -> Result<String> {
-        let copy = "[data-agent-mode=scoped] .agent-prompt__copy";
-        wait_for_displayed(browser, copy).await?;
-        // WebAwesome ignores clicks while its previous success feedback runs.
-        // Wait for the real control to become ready before exercising clipboard.
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-        loop {
-            let ready = browser.execute(r#"const node=document.querySelector('[data-agent-mode=scoped] .agent-prompt__copy');
-                return !!customElements.get('wa-copy-button') && !!node?.shadowRoot?.querySelector('button')
-                    && !node.disabled && node.isCopying === false;"#, vec![]).await?;
-            if ready.json().as_bool() == Some(true) {
-                break;
-            }
-            anyhow::ensure!(
-                tokio::time::Instant::now() < deadline,
-                "copy control never became ready"
-            );
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        watch_clipboard(browser).await?;
-        click(browser, copy).await?;
-        let prompt = match copied_text(browser).await {
-            Ok(prompt) => prompt,
-            Err(error) => {
-                let state = browser.execute(r#"const node=document.querySelector('[data-agent-mode=scoped] .agent-prompt__copy');
-                    return { defined:!!customElements.get('wa-copy-button'), present:!!node,
-                        shadow:!!node?.shadowRoot, button:!!node?.shadowRoot?.querySelector('button'),
-                        disabled:node?.disabled, isCopying:node?.isCopying, status:node?.status, valueLength:node?.value?.length,
-                        innerDisabled:node?.shadowRoot?.querySelector('button')?.disabled,
-                        copiedLength:window.__tonkCopied?.length };"#, vec![]).await;
-                return Err(error.context(format!(
-                    "sanitized copy state: {:?}",
-                    state.map(|state| state.json().clone())
-                )));
-            }
-        };
-        let link = prompt
-            .split_whitespace()
-            .map(|part| part.trim_matches('\''))
-            .find(|part| part.contains("#tonk-agent-v2="))
-            .context("scoped prompt has no connection URL")?;
-        anyhow::ensure!(
-            link.contains("#tonk-agent-v2="),
-            "copy did not contain a scoped bearer"
-        );
-        anyhow::ensure!(
-            !prompt.contains("--switch-account"),
-            "scoped prompt requested account switching"
-        );
-        Ok(link.to_owned())
     }
 
     #[cfg(feature = "connection-invites")]
