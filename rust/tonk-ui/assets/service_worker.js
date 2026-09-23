@@ -25,6 +25,10 @@ const ASSET_MANIFEST_HASH = "dev";
 // it proved complete before publishing an offline generation.
 const ASSET_PATHS = ["dev"];
 const ASSET_PATH_SET = new Set(ASSET_PATHS);
+// Identity of the top-level document's own resources, excluding the guest
+// runtime and library data. A document whose `tonk-page-build` matches this
+// can stay open under this worker and remount only its guests.
+const PAGE_BUILD = "dev";
 
 const log = (...args) => console.log("[Tonk Service Worker]", ...args);
 
@@ -82,6 +86,7 @@ function healthResponse() {
     return new Response(
         JSON.stringify({
             build: BUILD_ID,
+            page: PAGE_BUILD,
             worker: workerHealth.state,
             workerWasm: workerHealth.workerWasm,
             error: workerHealth.error,

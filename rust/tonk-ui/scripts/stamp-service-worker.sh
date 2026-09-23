@@ -94,6 +94,7 @@ MANIFEST_BACKUP="$MANIFEST.stamp-backup.$$"
 ASSET_LIST_UNSORTED="$LOCK/assets.unsorted"
 ASSET_LIST="$LOCK/assets"
 ASSET_GRAPH="$LOCK/graph"
+PAGE_GRAPH="$LOCK/page-graph"
 ASSET_FILES_UNSORTED="$LOCK/files.unsorted"
 ASSET_FILES="$LOCK/files"
 NORMALIZED_INDEX="$LOCK/index.normalized"
@@ -127,7 +128,7 @@ cleanup() {
         fi
     fi
     rm -f "$SW_TMP" "$INDEX_TMP" "$VERSION_TMP" "$MANIFEST_TMP"
-    rm -f "$ASSET_LIST_UNSORTED" "$ASSET_LIST" "$ASSET_GRAPH"
+    rm -f "$ASSET_LIST_UNSORTED" "$ASSET_LIST" "$ASSET_GRAPH" "$PAGE_GRAPH"
     rm -f "$ASSET_FILES_UNSORTED" "$ASSET_FILES"
     rm -f "$NORMALIZED_INDEX" "$NORMALIZED_SW" "$BUILD_INPUT"
     if [ "$RESTORE_FAILED" -eq 0 ]; then
@@ -160,8 +161,16 @@ grep -q '^const ASSET_PATHS = ' "$SW" || {
     echo "stamp-service-worker: $SW has no ASSET_PATHS declaration" >&2
     exit 1
 }
+grep -q '^const PAGE_BUILD = ' "$SW" || {
+    echo "stamp-service-worker: $SW has no PAGE_BUILD declaration" >&2
+    exit 1
+}
 if [ "$(grep -c '<meta name="tonk-worker-build" content="' "$INDEX")" -ne 1 ]; then
     echo "stamp-service-worker: $INDEX must have one tonk-worker-build meta tag" >&2
+    exit 1
+fi
+if [ "$(grep -c '<meta name="tonk-page-build" content="' "$INDEX")" -ne 1 ]; then
+    echo "stamp-service-worker: $INDEX must have one tonk-page-build meta tag" >&2
     exit 1
 fi
 
@@ -211,7 +220,8 @@ grep -q '^/|index.html$' "$ASSET_LIST" || {
 
 while IFS='|' read -r ROUTE REL; do
     if [ "$REL" = "index.html" ]; then
-        sed '/<meta name="tonk-worker-build" content="/ s/content="[^"]*"/content="dev"/' \
+        sed -e '/<meta name="tonk-worker-build" content="/ s/content="[^"]*"/content="dev"/' \
+            -e '/<meta name="tonk-page-build" content="/ s/content="[^"]*"/content="dev"/' \
             "$DIST/$REL" > "$NORMALIZED_INDEX"
         ASSET_HASH=$(hash_file_full "$NORMALIZED_INDEX")
     else
@@ -223,6 +233,15 @@ done < "$ASSET_LIST" > "$ASSET_GRAPH"
 WASM_HASH=$(hash_file "$WORKER_WASM")
 GLUE_HASH=$(hash_file "$WORKER_GLUE")
 ASSET_GRAPH_HASH=$(hash_file "$ASSET_GRAPH")
+# The page identity covers everything the top-level document runs or reads by
+# a name it holds, which is every published resource except the sealed-guest
+# runtime and editor bundles (the portal fetches those afresh for each guest it
+# mounts) and library data (seeded by the worker). Two builds with the same
+# page identity differ only in worker and guest code, so an open document can
+# keep running and just remount its guests under the new worker.
+grep -v -e '^/guest/' -e '^/tonk-code/' -e '^/tonk-prose/' -e '^/tonk-table/' -e '^/library/' \
+    "$ASSET_GRAPH" > "$PAGE_GRAPH" || true
+PAGE_BUILD=$(hash_file "$PAGE_GRAPH")
 ASSET_PATHS_DECL='const ASSET_PATHS = ['
 FIRST=1
 while IFS='|' read -r ROUTE REL; do
@@ -242,6 +261,7 @@ sed -e 's|^const BUILD_ID = .*|const BUILD_ID = "dev";|' \
     -e 's|^const WORKER_WASM_HASH = .*|const WORKER_WASM_HASH = "dev";|' \
     -e 's|^const ASSET_MANIFEST_HASH = .*|const ASSET_MANIFEST_HASH = "dev";|' \
     -e 's|^const ASSET_PATHS = .*|const ASSET_PATHS = ["dev"];|' \
+    -e 's|^const PAGE_BUILD = .*|const PAGE_BUILD = "dev";|' \
     "$SW" > "$NORMALIZED_SW"
 SW_HASH=$(hash_file "$NORMALIZED_SW")
 printf '%s\n' "$SW_HASH" "$WASM_HASH" "$GLUE_HASH" "$ASSET_GRAPH_HASH" > "$BUILD_INPUT"
@@ -257,10 +277,15 @@ case "$BUILD_ID" in
         ;;
 esac
 
-sed '/<meta name="tonk-worker-build" content="/ s/content="[^"]*"/content="'"$BUILD_ID"'"/' \
+sed -e '/<meta name="tonk-worker-build" content="/ s/content="[^"]*"/content="'"$BUILD_ID"'"/' \
+    -e '/<meta name="tonk-page-build" content="/ s/content="[^"]*"/content="'"$PAGE_BUILD"'"/' \
     "$INDEX" > "$INDEX_TMP"
 grep -q "name=\"tonk-worker-build\" content=\"$BUILD_ID\"" "$INDEX_TMP" || {
     echo "stamp-service-worker: document build verification failed" >&2
+    exit 1
+}
+grep -q "name=\"tonk-page-build\" content=\"$PAGE_BUILD\"" "$INDEX_TMP" || {
+    echo "stamp-service-worker: document page build verification failed" >&2
     exit 1
 }
 
@@ -288,6 +313,7 @@ sed -e "s|^const BUILD_ID = .*|const BUILD_ID = \"$BUILD_ID\";|" \
     -e "s|^const WORKER_WASM_HASH = .*|const WORKER_WASM_HASH = \"$WASM_HASH\";|" \
     -e "s|^const ASSET_MANIFEST_HASH = .*|const ASSET_MANIFEST_HASH = \"$MANIFEST_HASH\";|" \
     -e "s|^const ASSET_PATHS = .*|$ASSET_PATHS_SED|" \
+    -e "s|^const PAGE_BUILD = .*|const PAGE_BUILD = \"$PAGE_BUILD\";|" \
     "$SW" > "$SW_TMP"
 grep -q "^const BUILD_ID = \"$BUILD_ID\";$" "$SW_TMP" || {
     echo "stamp-service-worker: BUILD_ID verification failed" >&2
@@ -301,6 +327,10 @@ grep -q "^const ASSET_MANIFEST_HASH = \"$MANIFEST_HASH\";$" "$SW_TMP" || {
     echo "stamp-service-worker: ASSET_MANIFEST_HASH verification failed" >&2
     exit 1
 }
+grep -q "^const PAGE_BUILD = \"$PAGE_BUILD\";$" "$SW_TMP" || {
+    echo "stamp-service-worker: PAGE_BUILD verification failed" >&2
+    exit 1
+}
 # BSD grep runs out of memory taking the multi-thousand-route ASSET_PATHS
 # line as a fixed pattern; extract the stamped line and compare in the
 # shell instead.
@@ -309,8 +339,8 @@ grep -q "^const ASSET_MANIFEST_HASH = \"$MANIFEST_HASH\";$" "$SW_TMP" || {
     exit 1
 }
 
-printf '{ "build": "%s", "serviceWorker": "%s", "workerWasm": "%s", "assetManifest": "%s" }\n' \
-    "$BUILD_ID" "$SW_HASH" "$WASM_HASH" "$MANIFEST_HASH" > "$VERSION_TMP"
+printf '{ "build": "%s", "page": "%s", "serviceWorker": "%s", "workerWasm": "%s", "assetManifest": "%s" }\n' \
+    "$BUILD_ID" "$PAGE_BUILD" "$SW_HASH" "$WASM_HASH" "$MANIFEST_HASH" > "$VERSION_TMP"
 
 # All outputs are complete and validated before publication. POSIX cannot
 # rename four files as one operation, so retain originals and roll back every
@@ -337,4 +367,4 @@ grep -q "\"build\": \"$BUILD_ID\"" "$MANIFEST"
 grep -q "\"build\": \"$BUILD_ID\"" "$VERSION"
 COMMITTED=1
 
-echo "stamp-service-worker: build=$BUILD_ID sw=$SW_HASH wasm=$WASM_HASH manifest=$MANIFEST_HASH"
+echo "stamp-service-worker: build=$BUILD_ID page=$PAGE_BUILD sw=$SW_HASH wasm=$WASM_HASH manifest=$MANIFEST_HASH"

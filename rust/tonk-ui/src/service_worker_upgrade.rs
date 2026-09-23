@@ -377,17 +377,10 @@ pub(crate) mod tests {
                 .open(root.join("worker.js"))?,
             "// integration generation B worker glue"
         )?;
-        let guest_glue = std::fs::read_dir(root.join("guest"))?
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .find(|path| {
-                path.file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.starts_with("guest-") && name.ends_with(".js"))
-            })
-            .ok_or_else(|| anyhow!("generation has no guest glue"))?;
         writeln!(
-            std::fs::OpenOptions::new().append(true).open(guest_glue)?,
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(guest_glue(root)?)?,
             "// integration generation B guest glue"
         )?;
         Ok(())
@@ -537,6 +530,141 @@ pub(crate) mod tests {
             );
         }
         Ok((generation_a_contract, generation_b_contract))
+    }
+
+    /// The guest glue of `root`, which the portal injects into every guest.
+    fn guest_glue(root: &Path) -> Result<std::path::PathBuf> {
+        std::fs::read_dir(root.join("guest"))?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("guest-") && name.ends_with(".js"))
+            })
+            .ok_or_else(|| anyhow!("generation has no guest glue"))
+    }
+
+    /// Record `generation` in the guest realm, so a test can tell which
+    /// guest runtime a mounted site is running.
+    fn mark_guest_generation(root: &Path, generation: &str) -> Result<()> {
+        let glue = guest_glue(root)?;
+        let source = std::fs::read_to_string(&glue)?;
+        let marker = "globalThis.__tonkTestGuestGeneration = ";
+        let unmarked = source
+            .split_once(&format!("\n{marker}"))
+            .map_or(source.as_str(), |(before, _)| before);
+        std::fs::write(&glue, format!("{unmarked}\n{marker}{generation:?};\n"))?;
+        Ok(())
+    }
+
+    /// A and B whose top-level documents are identical and whose guest
+    /// runtimes differ, the shape of a deploy that changed only guest code.
+    fn prepare_guest_only_generation(
+        env: &TestEnvironment,
+    ) -> Result<(GenerationContract, GenerationContract)> {
+        let generation_a = env.deployment_root.join("generation-a");
+        let generation_b = env.deployment_root.join("generation-b");
+        instrument_generation_documents(&generation_a)?;
+        mark_guest_generation(&generation_a, "A")?;
+        stamp_generation(&generation_a)?;
+        let generation_a_contract = generation_contract(&generation_a)?;
+        copy_artifact_tree(&generation_a, &generation_b)?;
+        mark_guest_generation(&generation_b, "B")?;
+        stamp_generation(&generation_b)?;
+        let generation_b_contract = generation_contract(&generation_b)?;
+        ensure!(
+            generation_a_contract.build != generation_b_contract.build,
+            "A and B must have distinct build ids"
+        );
+        let page = |root: &Path| -> Result<Value> {
+            let version = std::fs::read_to_string(root.join("version.json"))?;
+            Ok(serde_json::from_str::<Value>(&version)?["page"].clone())
+        };
+        ensure!(
+            page(&generation_a)? == page(&generation_b)?,
+            "a guest-only change must keep the page build"
+        );
+        Ok((generation_a_contract, generation_b_contract))
+    }
+
+    /// Which guest runtime the mounted top-level site is running.
+    async fn wait_for_guest_generation(driver: &WebDriver, generation: &str) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+        let mut last = Value::Null;
+        loop {
+            driver.enter_default_frame().await?;
+            if let Ok(frame) = driver.find(By::Css("tonk-site > iframe")).await
+                && frame.enter_frame().await.is_ok()
+                && let Ok(value) = driver
+                    .execute(
+                        "return globalThis.__tonkTestGuestGeneration ?? null;",
+                        vec![],
+                    )
+                    .await
+            {
+                last = value.json().clone();
+                if last == generation {
+                    driver.enter_default_frame().await?;
+                    return Ok(());
+                }
+            }
+            ensure!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for guest generation {generation}; last={last}"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    /// The mounted top-level guest's rendered text, once it is non-empty and
+    /// unchanged across two reads.
+    async fn settled_guest_text(driver: &WebDriver) -> Result<String> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        let mut last = String::new();
+        loop {
+            driver.enter_default_frame().await?;
+            let mut current = String::new();
+            if let Ok(frame) = driver.find(By::Css("tonk-site > iframe")).await
+                && frame.enter_frame().await.is_ok()
+                && let Ok(text) = driver
+                    .execute(
+                        r#"
+                        const skipped = new Set(["STYLE", "SCRIPT", "TEMPLATE"]);
+                        const text = node => [...node.childNodes].map(child =>
+                            child.nodeType === Node.TEXT_NODE
+                                ? child.textContent
+                                : child.nodeType === Node.ELEMENT_NODE && !skipped.has(child.tagName)
+                                    ? (child.shadowRoot ? text(child.shadowRoot) + " " : "") + text(child)
+                                    : "").join(" ");
+                        return document.body ? text(document.body).replace(/\s+/g, " ") : "";
+                        "#,
+                        vec![],
+                    )
+                    .await
+            {
+                current = text.json().as_str().unwrap_or_default().trim().to_owned();
+            }
+            driver.enter_default_frame().await?;
+            if !current.is_empty() && current == last {
+                return Ok(current);
+            }
+            ensure!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for settled guest text; last={last:?} html={html}",
+                html = driver
+                    .execute(
+                        r#"const frame = document.querySelector("tonk-site > iframe");
+                           return frame?.contentDocument?.body?.innerHTML?.slice(0, 1500) ?? null;"#,
+                        vec![],
+                    )
+                    .await
+                    .map(|value| value.json().to_string())
+                    .unwrap_or_default()
+            );
+            last = current;
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
     }
 
     pub(crate) fn prepare_profile_library_generations(
@@ -1463,6 +1591,80 @@ pub(crate) mod tests {
             held < 10_000,
             "the installed successor waited {held}ms for the busy incumbent to release it: {states}"
         );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    /// A deploy that changed only worker and guest code keeps the open
+    /// document: the new worker takes over, the page remounts its guest from
+    /// it, and nothing reloads.
+    #[dialog_common::test]
+    async fn it_remounts_guests_without_reloading_when_the_page_is_unchanged(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let (generation_a, generation_b) = prepare_guest_only_generation(&env)?;
+        let driver = env.driver().await?;
+        wait_for_complete_generation(&driver, &generation_a, None, None).await?;
+        driver.refresh().await?;
+        wait_for_mounted_build(&driver, &generation_a.build).await?;
+        wait_for_guest_generation(&driver, "A").await?;
+        let rendered = settled_guest_text(&driver).await?;
+        let documents = |driver: &WebDriver| {
+            let driver = driver.clone();
+            async move {
+                driver.enter_default_frame().await?;
+                let count = driver
+                    .execute(
+                        r#"return Number(sessionStorage.getItem("tonk:test:sw-documents")) || 0;"#,
+                        vec![],
+                    )
+                    .await?;
+                anyhow::Ok(count.json().as_u64().unwrap_or(0))
+            }
+        };
+        let before = documents(&driver).await?;
+
+        promote_second_generation(&env)?;
+        let started = driver
+            .execute_async(
+                r#"
+                const done = arguments[arguments.length - 1];
+                navigator.serviceWorker.getRegistration()
+                    .then(registration => registration.update())
+                    .then(() => done({ ok: true }))
+                    .catch(error => done({ error: String(error) }));
+                "#,
+                vec![],
+            )
+            .await?;
+        ensure!(
+            started.json()["ok"] == true,
+            "failed to start the update: {}",
+            started.json()
+        );
+
+        wait_for_guest_generation(&driver, "B").await?;
+        let health = worker_health(&driver).await?;
+        assert_eq!(
+            health["body"]["build"].as_str(),
+            Some(generation_b.build.as_str()),
+            "{health}"
+        );
+        assert_eq!(
+            documents(&driver).await?,
+            before,
+            "the document must not reload"
+        );
+        let guard = driver
+            .execute(
+                r#"return sessionStorage.getItem("tonk:sw-upgrade-reload");"#,
+                vec![],
+            )
+            .await?;
+        assert!(guard.json().is_null(), "no alignment reload was requested");
+        // The remounted guest renders the same live data from the new worker.
+        assert_eq!(settled_guest_text(&driver).await?, rendered);
 
         driver.quit().await?;
         Ok(())

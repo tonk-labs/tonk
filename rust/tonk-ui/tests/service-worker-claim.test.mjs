@@ -285,9 +285,18 @@ function pageHarness({
   alignmentReload = false,
   updateFails = false,
   updatePending = false,
+  pageBuild,
+  successorPageBuild,
+  healthFails = false,
 } = {}) {
   const messages = [];
   const fetched = [];
+  const remounts = [];
+  const sitesParent = {
+    removeChild(site) { remounts.push(`remove:${site.id}`); },
+    insertBefore(site) { remounts.push(`insert:${site.id}`); },
+  };
+  const sites = [{ id: "site", parentNode: sitesParent, nextSibling: null }];
   const storage = new Map();
   if (alignmentReload) storage.set("tonk:sw-upgrade-reload", "1");
   let reloads = 0;
@@ -344,7 +353,15 @@ function pageHarness({
   let nextRepeat = 0;
   const document = eventTarget({
     visibilityState: "visible",
-    querySelector() { return { textContent: "", setAttribute() {} }; },
+    querySelector(selector) {
+      if (selector === 'meta[name="tonk-page-build"]') {
+        return pageBuild ? { content: pageBuild } : null;
+      }
+      return { textContent: "", setAttribute() {} };
+    },
+    querySelectorAll(selector) {
+      return selector === "tonk-site" ? sites : [];
+    },
     createElement(tag) {
       const frame = eventTarget({ tag, attributes: {}, removed: false });
       frame.setAttribute = (name, value) => { frame.attributes[name] = value; };
@@ -353,12 +370,19 @@ function pageHarness({
     },
     documentElement: { append(frame) { frames.push(frame); } },
   });
+  const fetch = async (url) => {
+    assert.equal(url, "/api/health");
+    if (healthFails) throw new TypeError("worker unreachable");
+    return new Response(JSON.stringify({ page: successorPageBuild ?? "0".repeat(16) }));
+  };
   vm.runInNewContext(
     activationBlock(),
     {
       self,
       window: self,
       document,
+      fetch,
+      Response,
       navigator: { serviceWorker: serviceWorkers },
       BroadcastChannel: FakeBroadcastChannel,
       sessionStorage: {
@@ -411,6 +435,7 @@ function pageHarness({
       for (const [, callback] of due) callback();
     },
     fetch: (...args) => self.fetch(...args),
+    remounts,
     reloads: () => reloads,
     updates: () => updates,
     releaseUpdate: () => resolveUpdate?.(),
@@ -788,6 +813,63 @@ test("a page without a waiting successor opens its IO at once", async () => {
   for (let turn = 0; turn < 3; turn++) await new Promise(setImmediate);
   assert.equal(gate.open, true);
   assert.equal(result.frames.length, 0);
+});
+
+test("a successor with the same page build remounts guests instead of reloading", async () => {
+  const page = "a".repeat(16);
+  const result = pageHarness({ mode: "warm-update", pageBuild: page, successorPageBuild: page });
+  await new Promise(setImmediate);
+  await result.activateWarmWorker();
+  await result.ready();
+  for (let turn = 0; turn < 5; turn++) await new Promise(setImmediate);
+  assert.equal(result.reloads(), 0);
+  assert.deepEqual(result.remounts, ["remove:site", "insert:site"]);
+  assert.equal(result.storage.has("tonk:sw-upgrade-reload"), false);
+});
+
+test("a successor with a different page build reloads once", async () => {
+  const result = pageHarness({
+    mode: "warm-update",
+    pageBuild: "a".repeat(16),
+    successorPageBuild: "b".repeat(16),
+  });
+  await new Promise(setImmediate);
+  await result.activateWarmWorker();
+  for (let turn = 0; turn < 5; turn++) await new Promise(setImmediate);
+  assert.equal(result.reloads(), 1);
+  assert.deepEqual(result.remounts, []);
+  assert.equal(result.storage.get("tonk:sw-upgrade-reload"), "1");
+});
+
+test("an unreadable successor page build falls back to one reload", async () => {
+  const page = "a".repeat(16);
+  const result = pageHarness({
+    mode: "warm-update",
+    pageBuild: page,
+    successorPageBuild: page,
+    healthFails: true,
+  });
+  await new Promise(setImmediate);
+  await result.activateWarmWorker();
+  for (let turn = 0; turn < 5; turn++) await new Promise(setImmediate);
+  assert.equal(result.reloads(), 1);
+  assert.deepEqual(result.remounts, []);
+});
+
+test("a first-install document adopts a later successor", async () => {
+  const page = "a".repeat(16);
+  const result = pageHarness({ mode: "cold", pageBuild: page, successorPageBuild: page });
+  await new Promise(setImmediate);
+  result.activateColdWorker();
+  await result.ready();
+  assert.deepEqual(result.remounts, [], "first control is not a replacement");
+
+  const successor = eventTarget({ state: "activated", postMessage() {} });
+  result.serviceWorkers.controller = successor;
+  await result.serviceWorkers.dispatch("controllerchange");
+  for (let turn = 0; turn < 5; turn++) await new Promise(setImmediate);
+  assert.equal(result.reloads(), 0);
+  assert.deepEqual(result.remounts, ["remove:site", "insert:site"]);
 });
 
 test("an installed successor asks the incumbent to release its streams", async () => {
