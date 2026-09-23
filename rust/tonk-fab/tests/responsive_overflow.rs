@@ -81,10 +81,7 @@ fn mount(width: i32) -> (HtmlElement, HtmlElement) {
 }
 
 async fn resize(parent: &HtmlElement, width: i32) {
-    parent
-        .style()
-        .set_property("width", &format!("{width}px"))
-        .expect("parent width");
+    let previous_width = parent.client_width();
     let fab = parent.query_selector("tonk-fab").unwrap().expect("fab");
     let wrapper = fab
         .shadow_root()
@@ -92,13 +89,30 @@ async fn resize(parent: &HtmlElement, width: i32) {
         .query_selector(".w")
         .unwrap()
         .expect("wrapper");
-    // The v0.17 shell deliberately morphs its geometry over 400ms.
-    // A fixed sleep can wake before Chrome's delayed animation frames finish.
+    let wrapper_style = wrapper.unchecked_ref::<HtmlElement>().style();
+    let previous_room = wrapper_style.get_property_value("--_room").unwrap();
+    parent
+        .style()
+        .set_property("width", &format!("{width}px"))
+        .expect("parent width");
+    // The ResizeObserver updates --_room before the width transition starts.
+    // Wait for that update and two settled samples so an idle frame before
+    // the observer callback cannot report the old rail as the new size.
+    let mut settled_samples = 0;
     for _ in 0..60 {
         yield_for(50).await;
         let _ = wrapper.get_bounding_client_rect();
-        if active_animations(&fab) == 0 && active_animations(&wrapper) == 0 {
-            return;
+        let room = wrapper_style.get_property_value("--_room").unwrap();
+        if (previous_width == width || room != previous_room)
+            && active_animations(&fab) == 0
+            && active_animations(&wrapper) == 0
+        {
+            settled_samples += 1;
+            if settled_samples == 2 {
+                return;
+            }
+        } else {
+            settled_samples = 0;
         }
     }
     panic!("the {width}px rail did not finish resizing");
