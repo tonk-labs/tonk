@@ -209,7 +209,7 @@ pub const STACKS_HTML: &str = r#"<ui-sync-status headless with="main@{space}"></
 <ui-space-name headless space="{space}"></ui-space-name>
 <tonk-share headless space="{space}"></tonk-share>
 <tonk-tool-connection headless space="{space}"></tonk-tool-connection>
-<tonk-agent-panel headless space="{space}"></tonk-agent-panel>
+<tonk-agent-panel headless space="{space}" with="main@{space}"></tonk-agent-panel>
 <ui-member-roster headless space="{space}"></ui-member-roster>"#;
 
 /// Styles for the slotted stack content.
@@ -336,6 +336,7 @@ pub const SPACE_BINDINGS: &[(&str, &str, &str)] = &[
     ("tonk-share", "space", ""),
     ("tonk-tool-connection", "space", ""),
     ("tonk-agent-panel", "space", ""),
+    ("tonk-agent-panel", "with", "main@"),
     ("ui-member-roster", "space", ""),
 ];
 
@@ -457,6 +458,9 @@ mod tests {
         // child is pointed at nothing.
         assert!(html.contains(r#"<ui-space-name headless space="did:key:z6Mk""#));
         assert!(html.contains(r#"<ui-member-roster headless space="did:key:z6Mk""#));
+        assert!(html.contains(
+            r#"<tonk-agent-panel headless space="did:key:z6Mk" with="main@did:key:z6Mk""#
+        ));
         assert!(!html.contains("ui-space-switcher"));
         // The sync disc's contract is branch@repo, not a bare DID.
         assert!(html.contains(r#"with="main@did:key:z6Mk""#));
