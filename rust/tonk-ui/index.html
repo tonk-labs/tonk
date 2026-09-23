@@ -742,11 +742,21 @@
 
             // Tell the worker when this page becomes visible so sync
             // drops its hidden interval without waiting for the next
-            // keepalive to age past it.
+            // keepalive to age past it. When it is hidden or leaving, the
+            // worker may soon go idle and be stopped without notice, so it
+            // saves its session first. Posted to the controller directly:
+            // awaiting `ready` could outlast a leaving page.
+            const sendFlush = () => {
+                navigator.serviceWorker?.controller?.postMessage({ type: "flush" });
+            };
             document.addEventListener("visibilitychange", () => {
-                if (document.visibilityState !== "visible") return;
+                if (document.visibilityState !== "visible") {
+                    sendFlush();
+                    return;
+                }
                 sendVisibility().catch(() => {});
             });
+            self.addEventListener("pagehide", sendFlush);
             }
         </script>
 

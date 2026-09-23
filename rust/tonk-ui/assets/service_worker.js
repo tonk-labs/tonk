@@ -895,7 +895,8 @@ async function activateWorker() {
                 return init({ module_or_path });
             })
             .then(() => activate(BUILD_ID, ASSET_PATHS))
-            .then(worker => {
+            .then(async worker => {
+                await restoreSession(worker);
                 workerHealth.state = "ok";
                 workerHealth.error = null;
                 return worker;
@@ -994,6 +995,8 @@ async function retire(reason) {
         log(`Retiring — ${reason}`);
         try {
             const worker = await activateWorker();
+            // The successor makes its site stamps from what is saved.
+            await flushSession();
             // Stop the sync loop and release long-lived streams so this
             // instance winds down. Serving can overlap briefly with successor
             // activation while the browser settles in-flight work, which storage
@@ -1338,6 +1341,108 @@ async function rustFetch(event) {
     return (await activateWorker()).onfetch(event);
 }
 
+// ---- The session, across restarts -------------------------------------
+//
+// The browser stops an idle worker without telling it, and an update replaces
+// it. Either way the next instance starts with no sites stamped, and each page
+// would have to notice and claim its site again. So this worker saves what its
+// stamps were made from, and the next one makes them again before it serves
+// anything.
+//
+// Saving on every change would cost a cache write per request. A change marks
+// the session dirty instead, and one write follows once changes pause. The
+// request that made the change holds this worker alive until that write
+// lands, so an idle stop never loses it. A page that is hidden or leaving asks
+// for the write at once, and so does handing over to a successor.
+//
+// The cache is not named after a build: the successor reads what this build
+// saved, and the saved form carries its own version.
+
+const SESSION_CACHE = "TONK_SESSION";
+const SESSION_KEY = new URL("./__tonk/session", self.location.href).href;
+const SAVE_DELAY_MS = 1_000;
+
+let sessionDirty = false;
+let sessionSaving = null;
+// The bytes last saved, so an unchanged session is not written again.
+let sessionSaved = null;
+
+async function restoreSession(worker) {
+    try {
+        const held = await caches.match(SESSION_KEY, { cacheName: SESSION_CACHE });
+        if (!held) return;
+        const bytes = new Uint8Array(await held.arrayBuffer());
+        const live = (await self.clients.matchAll({ type: "window" })).map(client => client.id);
+        if (await worker.restoreSession(bytes, live)) {
+            sessionSaved = bytes;
+            log("Restored the saved session");
+        }
+    } catch (error) {
+        log("Could not restore the saved session:", error);
+    }
+}
+
+// Mark the session changed; resolves once the change is saved.
+function sessionChanged() {
+    sessionDirty = true;
+    sessionSaving ??= new Promise(resolve => setTimeout(resolve, SAVE_DELAY_MS))
+        .then(saveWhileDirty)
+        .finally(() => {
+            sessionSaving = null;
+        });
+    return sessionSaving;
+}
+
+// Save now, and wait for any save already under way.
+async function flushSession() {
+    if (tonkServiceWorkerResolves == null) return;
+    sessionDirty = true;
+    await Promise.all([sessionSaving, saveWhileDirty()]);
+}
+
+async function saveWhileDirty() {
+    while (sessionDirty) {
+        sessionDirty = false;
+        try {
+            const worker = await activateWorker();
+            const bytes = await worker.savedSession();
+            if (sessionSaved && sameBytes(bytes, sessionSaved)) continue;
+            const cache = await caches.open(SESSION_CACHE);
+            await cache.put(SESSION_KEY, new Response(bytes));
+            sessionSaved = bytes;
+        } catch (error) {
+            log("Could not save the session:", error);
+        }
+    }
+}
+
+function sameBytes(a, b) {
+    return a.length === b.length && a.every((byte, index) => byte === b[index]);
+}
+
+// Serve a request that may change the session, and save once it has: the
+// response and every task it left running (a `tonk:load` stamps its site
+// after the commit answers) have settled.
+function rustFetchChanging(event) {
+    const work = [];
+    const view = {
+        request: event.request,
+        clientId: event.clientId,
+        resultingClientId: event.resultingClientId,
+        waitUntil(promise) {
+            work.push(promise);
+            event.waitUntil(promise);
+        },
+    };
+    const response = rustFetch(view);
+    event.waitUntil(
+        response
+            .then(() => Promise.allSettled(work))
+            .then(sessionChanged, () => {}),
+    );
+    return response;
+}
+
 // A registered guest's subresource may have the same URL as a top-level
 // immutable asset. Its client identity, not its pathname, decides whether the
 // Rust worker rewrites it into the guest's repository/branch. A missing or
@@ -1378,7 +1483,10 @@ async function routeFetch(event, path) {
         return serveNavigation();
     }
     if (!isShellCacheable(event.request, path)) {
-        return rustFetch(event);
+        // Only a write can stamp a site.
+        return path.startsWith("/api/") && event.request.method !== "GET"
+            ? rustFetchChanging(event)
+            : rustFetch(event);
     }
     return await isNestedClientRequest(event) ? rustFetch(event) : serveAsset(event);
 }
@@ -1559,6 +1667,11 @@ self.onmessage = event => {
     if (event.data?.type === "content-ready") {
         contentReady = true;
         extendOfflineGeneration(event);
+        return;
+    }
+    // A page is hidden or leaving: this worker may soon be idle and stopped.
+    if (event.data?.type === "flush") {
+        event.waitUntil?.(flushSession());
         return;
     }
     if (event.data && event.data.type === "claim") {
