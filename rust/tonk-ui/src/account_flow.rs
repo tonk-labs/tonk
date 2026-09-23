@@ -4538,18 +4538,31 @@ mod tests {
     async fn copy_tool_connection(driver: &WebDriver, selector: &str) -> Result<String> {
         enter_guest(driver).await?;
         watch_clipboard(driver).await?;
-        let result = driver
-            .execute(
-                r#"const host=document.querySelector(arguments[0]);
-                   const button=host?.shadowRoot?.querySelector('button');
-                   if (!button) return 'missing';
-                   button.click();
-                   return 'clicked';"#,
-                vec![serde_json::json!(selector)],
-            )
-            .await?;
-        anyhow::ensure!(result.json() == "clicked", "tool copy control was missing");
-        let copied = copied_text(driver).await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let result = driver
+                .execute(
+                    r#"const host=document.querySelector(arguments[0]);
+                       const button=host?.shadowRoot?.querySelector('button');
+                       if (!host || !customElements.get(host.localName) ||
+                           host.hasAttribute('disabled') || !button || button.disabled) return false;
+                       button.click();
+                       return true;"#,
+                    vec![serde_json::json!(selector)],
+                )
+                .await?;
+            if result.json() == true {
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "tool copy control {selector} did not become ready"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let copied = copied_text(driver)
+            .await
+            .with_context(|| format!("tool copy control {selector} produced no clipboard write"))?;
         driver.enter_default_frame().await?;
         Ok(copied)
     }
@@ -6664,16 +6677,23 @@ mod tests {
         enter_space_view(&browser).await?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
         let copy = "[data-agent-mode=scoped] .agent-prompt__copy";
+        let mut sync_requested = false;
         loop {
             if let Ok(button) = browser.find(By::Css(copy)).await
                 && button.is_displayed().await.unwrap_or(false)
             {
                 break;
             }
-            if let Ok(button) = browser.find(By::Css("[data-invite-action=sync]")).await
-                && button.is_displayed().await.unwrap_or(false)
-            {
-                button.click().await.context("enable invitation sync")?;
+            if !sync_requested {
+                let clicked = browser.execute(
+                    r#"const controls=document.querySelector('tonk-agent-invite-controls');
+                       const button=controls?.querySelector('[data-invite-action=sync]');
+                       if (controls?.getAttribute('mode') !== 'sync' || !button || button.hidden) return false;
+                       button.click();
+                       return true;"#,
+                    vec![],
+                ).await?;
+                sync_requested = clicked.json() == true;
             }
             if tokio::time::Instant::now() >= deadline {
                 let state = browser.execute("return {mode:document.querySelector('tonk-agent-invite-controls')?.getAttribute('mode'),status:document.querySelector('[data-agent-handoff-status]')?.textContent,buttons:[...document.querySelectorAll('[data-invite-action]')].map(b=>({action:b.dataset.inviteAction,hidden:b.hidden}))}", vec![]).await?;
@@ -7057,9 +7077,9 @@ mod tests {
             }
         };
         let link = prompt
-            .split("join '")
-            .nth(1)
-            .and_then(|part| part.split('\'').next())
+            .split_whitespace()
+            .map(|part| part.trim_matches('\''))
+            .find(|part| part.contains("#tonk-agent-v2="))
             .context("scoped prompt has no connection URL")?;
         anyhow::ensure!(
             link.contains("#tonk-agent-v2="),
