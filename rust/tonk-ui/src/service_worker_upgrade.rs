@@ -1352,6 +1352,110 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// Chrome activates a `skipWaiting` successor only once the outgoing
+    /// worker has no pending events. A busy incumbent page (the boot
+    /// `connectivity` nudge, steady asset traffic) used to leave a deferred
+    /// offline fill on the incumbent's `waitUntil` for up to a minute, holding
+    /// the installed successor out of activation that whole time.
+    #[dialog_common::test]
+    async fn it_activates_a_successor_while_the_incumbent_page_is_busy(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let (generation_a, generation_b) = prepare_second_generation(&env)?;
+        let driver = env.driver().await?;
+        wait_for_complete_generation(&driver, &generation_a, None, None).await?;
+        // A returning visit: only a document that loaded under a controller
+        // performs the alignment reload onto a successor.
+        driver.refresh().await?;
+        wait_for_mounted_build(&driver, &generation_a.build).await?;
+        let asset = generation_a
+            .probes
+            .keys()
+            .find(|path| path.as_str() != "/")
+            .cloned()
+            .context("generation A exposes no static asset probe")?;
+
+        promote_second_generation(&env)?;
+        let started = driver
+            .execute_async(
+                r#"
+                const asset = arguments[0];
+                const done = arguments[arguments.length - 1];
+                (async () => {
+                    const key = "tonk:test:successor-states";
+                    const record = state => {
+                        const states = JSON.parse(sessionStorage.getItem(key) || "{}");
+                        states[state] ??= Date.now();
+                        sessionStorage.setItem(key, JSON.stringify(states));
+                    };
+                    const registration = await navigator.serviceWorker.getRegistration();
+                    // The ordinary work of a live incumbent page. The busy
+                    // loop ends with the document's alignment reload.
+                    navigator.serviceWorker.controller.postMessage({ type: "connectivity" });
+                    (async () => {
+                        for (;;) {
+                            try { await (await fetch(asset)).arrayBuffer(); } catch {}
+                            await new Promise(resolve => setTimeout(resolve, 250));
+                        }
+                    })();
+                    registration.addEventListener("updatefound", () => {
+                        const incoming = registration.installing;
+                        const observe = () => record(incoming.state);
+                        incoming.addEventListener("statechange", observe);
+                        observe();
+                    }, { once: true });
+                    await registration.update();
+                    done({ ok: true });
+                })().catch(error => done({ error: String(error) }));
+                "#,
+                vec![asset.into()],
+            )
+            .await?;
+        ensure!(
+            started.json()["ok"] == true,
+            "failed to start the update: {}",
+            started.json()
+        );
+
+        if let Err(error) = wait_for_mounted_build(&driver, &generation_b.build).await {
+            let states = driver
+                .execute(
+                    r#"return {
+                        states: JSON.parse(sessionStorage.getItem("tonk:test:successor-states") || "{}"),
+                        controller: navigator.serviceWorker.controller?.scriptURL || null,
+                    };"#,
+                    vec![],
+                )
+                .await
+                .map(|value| value.json().clone())
+                .unwrap_or(Value::Null);
+            let health = worker_health(&driver).await.unwrap_or(Value::Null);
+            return Err(error.context(format!("successor={states}, health={health}")));
+        }
+        let states = driver
+            .execute(
+                r#"return JSON.parse(sessionStorage.getItem("tonk:test:successor-states") || "{}");"#,
+                vec![],
+            )
+            .await?
+            .json()
+            .clone();
+        let installed = states["installed"]
+            .as_u64()
+            .context(format!("successor never reported installed: {states}"))?;
+        let activating = states["activating"]
+            .as_u64()
+            .context(format!("successor never reported activating: {states}"))?;
+        let held = activating.saturating_sub(installed);
+        assert!(
+            held < 10_000,
+            "the installed successor waited {held}ms for the busy incumbent to release it: {states}"
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
     #[dialog_common::test]
     async fn it_keeps_the_active_worker_when_the_load_time_update_check_is_offline(
         env: TestEnvironment,

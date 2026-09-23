@@ -817,13 +817,15 @@ let offlineGenerationResolves;
 /// prerequisite. The shared promise prevents duplicate fills within one worker
 /// lifetime; the durable marker makes later worker instances return cheaply.
 function ensureOfflineGeneration() {
-    if (offlineGenerationStopped) return Promise.resolve();
+    if (offlineFillSuperseded()) return Promise.resolve();
     if (offlineGenerationResolves == null) {
         offlineGenerationResolves = (async () => {
             const marker = await readGenerationMarker();
-            if (offlineGenerationStopped) return;
+            if (offlineFillSuperseded()) return;
             if (marker?.state !== "adopted") await installGeneration();
-            if (!offlineGenerationStopped) await pruneObsoleteGenerationCaches();
+            // Pruning keeps only this build's caches. Once a successor is on
+            // the way that would delete the caches it is installing into.
+            if (!offlineFillSuperseded()) await pruneObsoleteGenerationCaches();
         })().catch(error => {
             offlineGenerationResolves = null;
             log("Offline generation fill failed; it will retry later:", error);
@@ -846,8 +848,18 @@ function stopOfflineGeneration() {
     cancelOfflineDelay?.();
 }
 
+/// Whether this worker's generation is on its way out, so filling its offline
+/// graph is wasted work. Chrome activates a `skipWaiting` successor only after
+/// the outgoing worker's events settle, so a fill held on an event's
+/// `waitUntil` would keep the incumbent alive and the successor waiting.
+function offlineFillSuperseded() {
+    return offlineGenerationStopped ||
+        self.registration.installing != null ||
+        self.registration.waiting != null;
+}
+
 function extendOfflineGeneration(event) {
-    if (offlineGenerationStopped || typeof event.waitUntil !== "function") return;
+    if (offlineFillSuperseded() || typeof event.waitUntil !== "function") return;
     if (!offlineFillScheduled) {
         offlineFillScheduled = (async () => {
             const started = Date.now();
@@ -865,11 +877,13 @@ function extendOfflineGeneration(event) {
                         finish();
                     };
                 });
-                if (offlineGenerationStopped) return;
+                if (offlineFillSuperseded()) return;
             } while ((!contentReady || foregroundAssets > 0 || Date.now() - lastForegroundAssetAt < OFFLINE_QUIET_MS) &&
                 Date.now() - started < OFFLINE_MAX_DELAY_MS);
             await ensureOfflineGeneration();
-        })().finally(() => { offlineFillScheduled = null; });
+        })().finally(() => {
+            offlineFillScheduled = null;
+        });
     }
     event.waitUntil(offlineFillScheduled);
 }
@@ -1108,6 +1122,11 @@ function watchSuccessor(candidate) {
 // teardown begins only after its state proves installation succeeded.
 watchSuccessor(self.registration.installing);
 self.registration.addEventListener?.("updatefound", () => {
+    // Even a candidate that may still fail makes this generation's deferred
+    // offline fill pointless; wake its pending delay so it sees the candidate
+    // and releases its hold on this worker's lifetime now. Not a stop: if the
+    // candidate fails, a later nudge may still fill this generation.
+    cancelOfflineDelay?.();
     return watchSuccessor(self.registration.installing);
 });
 

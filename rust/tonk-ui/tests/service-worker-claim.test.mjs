@@ -29,6 +29,9 @@ function eventTarget(initial = {}) {
 }
 
 class FakeCacheStorage {
+  constructor() {
+    this.markerReads = 0;
+  }
   async open() {
     return {
       async add() {},
@@ -39,7 +42,10 @@ class FakeCacheStorage {
     };
   }
   async keys() { return []; }
-  async match() {}
+  async match(request) {
+    const raw = typeof request === "string" ? request : request?.url;
+    if (raw?.includes(".tonk-generation-")) this.markerReads += 1;
+  }
   async delete() { return false; }
 }
 
@@ -83,6 +89,7 @@ function loadServiceWorker({
     /^import init, \{ activate \} from "\.\/worker\.js";$/m,
     "const init = async () => {}; const activate = async () => ({ onactivate: async () => {}, onupdatefound: async () => recordRetirement(), onfetch: async () => recordDataFetch() });",
   );
+  const cacheStorage = new FakeCacheStorage();
   const quietConsole = {
     log(...args) { logs.push(args.join(" ")); },
     warn(...args) { logs.push(args.join(" ")); },
@@ -92,7 +99,7 @@ function loadServiceWorker({
     source,
     {
       self: scope,
-      caches: new FakeCacheStorage(),
+      caches: cacheStorage,
       fetch: async (input) => {
         const raw = typeof input === "string" ? input : input.url;
         if (new URL(raw, "https://tonk.test").pathname === "/worker_bg.wasm") {
@@ -132,8 +139,25 @@ function loadServiceWorker({
     timers,
     retirements: () => retirements,
     dataFetches: () => dataFetches,
+    markerReads: () => cacheStorage.markerReads,
     logs,
   };
+}
+
+/// Whether every promise settles before `ms` elapses. An outgoing worker's
+/// pending `waitUntil` is exactly what holds a `skipWaiting` successor out of
+/// activation, so a lifetime that outlasts this window is the regression.
+async function settlesWithin(promises, ms) {
+  let timer;
+  const held = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(false), ms);
+  });
+  const settled = Promise.allSettled(promises).then(() => true);
+  try {
+    return await Promise.race([settled, held]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function activationBlock() {
@@ -526,6 +550,51 @@ test("a failed stream release is retried on the next incumbent fetch", async () 
   assert.equal(result.retirementAttempts(), 2);
   assert.equal(result.retirements(), 1);
   assert.equal(result.dataFetches(), 1);
+});
+
+test("a successor's arrival releases the incumbent's deferred offline fill at once", async () => {
+  const result = loadServiceWorker();
+  const pending = [];
+  const waitUntil = (promise) => { pending.push(promise); };
+  result.scope.onmessage({ data: { type: "content-ready" }, waitUntil });
+  result.scope.onfetch({
+    request: {
+      method: "GET",
+      mode: "navigate",
+      url: "https://tonk.test/",
+      headers: new Headers(),
+    },
+    clientId: "",
+    resultingClientId: "incumbent-document",
+    waitUntil,
+    respondWith(promise) { Promise.resolve(promise).catch(() => {}); },
+  });
+  assert.ok(pending.length > 0, "a navigation defers the offline fill onto its lifetime");
+
+  const candidate = eventTarget({ state: "installing" });
+  result.scope.registration.installing = candidate;
+  await result.scope.registration.dispatch("updatefound");
+
+  assert.equal(
+    await settlesWithin(pending, 1_000),
+    true,
+    "the outgoing worker must not keep its lifetime extended for its own offline fill",
+  );
+  assert.equal(result.markerReads(), 0, "a superseded generation must not fill or prune caches");
+});
+
+test("an incumbent with a successor on the way schedules no offline fill", async () => {
+  for (const slot of ["installing", "waiting"]) {
+    const result = loadServiceWorker();
+    result.scope.registration[slot] = eventTarget({ state: slot === "waiting" ? "installed" : "installing" });
+    const pending = [];
+    result.scope.onmessage({
+      data: { type: "connectivity" },
+      waitUntil(promise) { pending.push(promise); },
+    });
+    assert.equal(await settlesWithin(pending, 1_000), true, slot);
+    assert.equal(result.markerReads(), 0, slot);
+  }
 });
 
 test("only the restarted active incumbent retires for a waiting successor", async () => {
