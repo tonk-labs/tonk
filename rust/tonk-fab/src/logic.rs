@@ -1863,13 +1863,22 @@ pub fn tool_connection_state_query_body(subject: &str) -> Result<String, String>
 /// Secondary convenience copy for handing the same scoped link to an agent.
 /// The direct link action and this prompt never mint separate identities.
 pub fn tool_connection_prompt(link: &str, origin: &str) -> String {
+    let loopback = reqwest::Url::parse(origin)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .is_some_and(|host| matches!(host.as_str(), "localhost" | "127.0.0.1" | "[::1]"));
+    let executable = if loopback {
+        "tonk"
+    } else {
+        "npx --yes @tonk/cli"
+    };
     let via = if origin.is_empty() || origin == "https://tonk.network" {
         String::new()
     } else {
         format!(" --via \"{origin}\"")
     };
     format!(
-        "Connect to this Tonk space with the scoped tool link below:\n\n  tonk join{via} '{link}'\n\nKeep the link private. Only report connected after the command prints \"Agent connection confirmed\". If interrupted, resume with `tonk --space NAME join`."
+        "Connect to this Tonk space with the scoped tool link below:\n\n  {executable} join{via} '{link}'\n\nKeep the link private. Only report connected after the command prints \"Agent connection confirmed\". If interrupted, resume with `{executable} --space NAME join`."
     )
 }
 
@@ -1985,9 +1994,16 @@ mod invite {
         let prompt = tool_connection_prompt(link, "https://staging.tonk.xyz");
         assert!(prompt.contains(link));
         assert!(prompt.contains("Agent connection confirmed"));
-        assert!(prompt.contains("tonk join --via \"https://staging.tonk.xyz\""));
+        assert!(prompt.contains("npx --yes @tonk/cli join --via \"https://staging.tonk.xyz\""));
         assert_eq!(prompt.matches(link).count(), 1);
-        assert!(!tool_connection_prompt(link, "https://tonk.network").contains("--via"));
+        let production = tool_connection_prompt(link, "https://tonk.network");
+        assert!(production.contains("npx --yes @tonk/cli join"));
+        assert!(!production.contains("--via"));
+        assert!(production.contains("`npx --yes @tonk/cli --space NAME join`"));
+        assert!(
+            tool_connection_prompt(link, "https://localhost:8080")
+                .contains("tonk join --via \"https://localhost:8080\"")
+        );
     }
 }
 

@@ -3239,7 +3239,7 @@ mod tests {
             .text()
             .await?;
         assert!(
-            canvas.contains("Create an account or sign in to connect an agent")
+            canvas.contains("create an account or sign in to connect a tool")
                 || canvas.contains("Agent invitations are not enabled on this deployment yet."),
             "the settled refusal must explain the failure: {canvas:?}"
         );
@@ -6583,8 +6583,7 @@ mod tests {
         let prompt = copy_tool_connection(&browser, "[data-tool-copy-prompt]").await?;
         anyhow::ensure!(
             prompt.matches(&tool_link).count() == 1
-                && prompt.contains("Agent connection confirmed")
-                && prompt.contains("tonk join"),
+                && prompt.contains("Agent connection confirmed"),
             "tool prompt did not retain the one scoped link"
         );
         assert_prompt_command(&prompt, &env.tonk_web, &tool_link)?;
