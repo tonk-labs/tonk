@@ -125,6 +125,7 @@ impl CustomElement for TonkFab {
     fn connected_callback(&mut self, this: &HtmlElement) {
         float(this);
         ensure_stacks_stylesheet();
+        let _ = crate::tool_connection::ensure_cluster();
         // Safe before the asynchronous account answer: never flash a live
         // copy action on a profile that may not have an account.
         apply_account_ready(this, false);

@@ -276,7 +276,7 @@ fn native_dialog(cluster: &Element) -> Option<HtmlDialogElement> {
         .ok()
 }
 
-fn ensure_cluster() -> Option<Element> {
+pub(crate) fn ensure_cluster() -> Option<Element> {
     if let Some(cluster) = cluster() {
         return Some(cluster);
     }
