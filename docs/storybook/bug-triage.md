@@ -9,7 +9,7 @@ stale design contract before implementation work begins.
 ## Summary
 
 Four findings remain after merging related observations: two high and two
-medium; `B-02` and `B-07` are fixed and kept for their history. `B-06` is gone with the
+medium; `B-02`, `B-07`, and `B-08` are fixed and kept for their history. `B-06` is gone with the
 account service it described. The high findings share one theme: a
 user-visible account transition can cross an irreversible authority or
 durability boundary without a tested, monotonic recovery state. The medium findings make real service errors or
@@ -24,6 +24,7 @@ behavior remain in the verification backlog rather than this file.
 | `B-03` | Browser account reads can hide service errors as JSON decoder errors | medium | Browser API/error UX | fix | — |
 | `B-05` | Activation accepts concurrent duplicate submissions | medium | Activation page | fix | — |
 | `B-07` | Renamed account retains an old founder membership in a space | medium | Account and space membership | fixed | — |
+| `B-08` | Returning device cannot open a space with old branch facts | high | Space adoption and sync | fixed in source | — |
 
 ## High
 
@@ -147,6 +148,32 @@ behavior remain in the verification backlog rather than this file.
 - **Raised by:** [account lifecycle](accounts/lifecycle.md#cancel-and-interrupt),
   [failure checkpoints](cross-cutting/failure-and-recovery.md#account-fault-checkpoints).
 - **Status:** Not run. Source-audit finding at `a3f8670b1`.
+
+### B-08: Returning device cannot open a space with old branch facts
+
+- **Where the user meets it:** Opening an account-listed space on staging after
+  a worker update; the page stays on “downloading” through reloads.
+- **Observed evidence:** On 2026-09-23, the affected space's repository response
+  had a configured `origin` remote but only a `meta` branch. Its profile
+  directory on `main-2` had `main` and its upstream under
+  `xyz.tonk.branch/origin`, with no matching `/replica` branch. The worker
+  logged `SKIPPED: no route match for rest="/"` and never selected the space's
+  `main` branch for sync.
+- **Root cause:** The directory reader switched to `/replica` without reading
+  existing `/origin` branch and tracking facts. The branch entity derivation
+  also changed, so the old upstream link cannot be reconstructed by renaming
+  one attribute alone.
+- **Severity:** `high`. An existing space is inaccessible on this device until
+  its mount configuration is repaired; the evidence does not show lost remote
+  data.
+- **Resolution:** Read the old directory branch and tracking facts when no
+  current branch set exists, reconcile them into current local metadata, and
+  pull content before the page stamps its route. Preserve the old facts.
+- **Raised by:** `UI-04` (open a space route), `SPACE-11` (account directory).
+- **Status:** Fixed in source. A schema test restores `main → origin/main` from
+  old facts, and a service-worker test verifies the repaired branch enters the
+  sync sweep; both passed locally. A deployed staging build and reopening the
+  affected space remain unverified.
 
 ## Medium
 

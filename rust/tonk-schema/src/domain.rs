@@ -1901,6 +1901,12 @@ pub mod join {
 pub mod branch {
     use super::{Attribute, Entity};
 
+    /// Ownership attribute on branch records written before the
+    /// `branch/replica` rename. Kept for reading existing mount records.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.branch")]
+    pub struct Origin(pub Entity);
+
     /// The branch's name on its replica. Tonk's own spelling for the
     /// same reason as `replica::Subject`: `dialog.branch/*` is reserved
     /// for dialog's own rows. The entity is dialog's derivation, so a

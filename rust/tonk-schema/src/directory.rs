@@ -9,9 +9,11 @@
 //! consumer can list spaces cheaply and fetch one space's full mount
 //! record when it needs to replicate.
 
-use crate::domain::branch::Replica as BranchReplica;
+use crate::branch::LegacyBranch;
+use crate::domain::branch::{Origin as BranchOrigin, Replica as BranchReplica};
 use crate::domain::remote::{Address as RemoteAddress, Origin as RemoteOrigin};
 use crate::prelude::DidExt as _;
+use crate::tracking_branch::LegacyTrackingBranch;
 use crate::{
     Branch as BranchConcept, Remote, RemoteExecution, Replica, Space, SpaceName, TrackingBranch,
 };
@@ -420,6 +422,35 @@ where
             .await,
         strict,
     )?;
+    let legacy_locals: Vec<LegacyBranch> = auxiliary(
+        account
+            .query()
+            .select(Query::<LegacyBranch> {
+                this: Term::var("this"),
+                name: Term::var("name"),
+                origin: Term::from(BranchOrigin::from(anchor.clone())),
+            })
+            .perform(env)
+            .try_vec()
+            .await,
+        strict,
+    )?;
+    // A Remote also has `name` and `origin`; exclude those entities
+    // from the old branch projection before assembling local branches.
+    // A current branch set supersedes the old one as a whole. Merging by
+    // name could resurrect a branch later removed from a migrated record.
+    let local_by_name: std::collections::HashMap<String, (Entity, bool)> = if locals.is_empty() {
+        legacy_locals
+            .into_iter()
+            .filter(|row| !remote_names.contains_key(&row.this.to_string()))
+            .map(|row| (row.name.0, (row.this, true)))
+            .collect()
+    } else {
+        locals
+            .into_iter()
+            .map(|row| (row.name.0, (row.this, false)))
+            .collect()
+    };
     // Upstream branch entities are anchored on their remote concept.
     let mut remote_branches: std::collections::HashMap<String, (String, String)> =
         std::collections::HashMap::new();
@@ -433,13 +464,29 @@ where
                 .select(Query::<BranchConcept> {
                     this: Term::var("this"),
                     name: Term::var("name"),
-                    replica: Term::from(BranchReplica::from(origin)),
+                    replica: Term::from(BranchReplica::from(origin.clone())),
                 })
                 .perform(env)
                 .try_vec()
                 .await,
             strict,
         )?;
+        let legacy_rows: Vec<LegacyBranch> = auxiliary(
+            account
+                .query()
+                .select(Query::<LegacyBranch> {
+                    this: Term::var("this"),
+                    name: Term::var("name"),
+                    origin: Term::from(BranchOrigin::from(origin)),
+                })
+                .perform(env)
+                .try_vec()
+                .await,
+            strict,
+        )?;
+        for row in legacy_rows {
+            remote_branches.insert(row.this.to_string(), (remote_name.clone(), row.name.0));
+        }
         for row in rows {
             remote_branches.insert(
                 row.this.to_string(),
@@ -447,27 +494,43 @@ where
             );
         }
     }
-    let mut branches = Vec::with_capacity(locals.len());
-    for local in locals {
-        let tracking: Vec<TrackingBranch> = auxiliary(
-            account
-                .query()
-                .select(Query::<TrackingBranch> {
-                    this: Term::from(local.this.clone()),
-                    upstream: Term::var("upstream"),
-                    replica: Term::var("replica"),
-                })
-                .perform(env)
-                .try_vec()
-                .await,
-            strict,
-        )?;
+    let mut branches = Vec::with_capacity(local_by_name.len());
+    for (name, (this, legacy)) in local_by_name {
+        let upstream = if legacy {
+            let tracking: Vec<LegacyTrackingBranch> = auxiliary(
+                account
+                    .query()
+                    .select(Query::<LegacyTrackingBranch> {
+                        this: Term::from(this),
+                        upstream: Term::var("upstream"),
+                        origin: Term::var("origin"),
+                    })
+                    .perform(env)
+                    .try_vec()
+                    .await,
+                strict,
+            )?;
+            tracking.into_iter().next().map(|link| link.upstream.0)
+        } else {
+            let tracking: Vec<TrackingBranch> = auxiliary(
+                account
+                    .query()
+                    .select(Query::<TrackingBranch> {
+                        this: Term::from(this),
+                        upstream: Term::var("upstream"),
+                        replica: Term::var("replica"),
+                    })
+                    .perform(env)
+                    .try_vec()
+                    .await,
+                strict,
+            )?;
+            tracking.into_iter().next().map(|link| link.upstream.0)
+        };
         branches.push(MountBranch {
-            name: local.name.0.clone(),
-            upstream: tracking
-                .into_iter()
-                .next()
-                .and_then(|link| remote_branches.get(&link.upstream.0.to_string()).cloned()),
+            name,
+            upstream: upstream
+                .and_then(|upstream| remote_branches.get(&upstream.to_string()).cloned()),
         });
     }
     Ok(Some(MountRecord { remotes, branches }))
@@ -488,6 +551,102 @@ fn auxiliary<T: Default>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[dialog_common::test]
+    async fn old_branch_facts_recover_the_mount_upstream() {
+        use crate::domain::branch::{Name, Upstream};
+        use crate::prelude::EntityExt as _;
+        use dialog_operator::helpers;
+        use dialog_varsig::did;
+
+        #[derive(serde::Serialize)]
+        enum OldHash<'a> {
+            Branch { origin: &'a Entity, name: &'a str },
+        }
+        let old_branch = |owner: &Entity, name: &str| LegacyBranch {
+            this: Entity::of(&OldHash::Branch {
+                origin: owner,
+                name,
+            }),
+            name: Name(name.to_owned()),
+            origin: BranchOrigin(owner.clone()),
+        };
+
+        let (operator, profile) = helpers::test_operator_with_profile().await;
+        let repository = helpers::test_repo(&operator, &profile).await;
+        let account = repository
+            .branch("main")
+            .open()
+            .perform(&operator)
+            .await
+            .unwrap();
+        let subject = did!("key:z6MkOldDirectoryBranchTest");
+        let address: SiteAddress = serde_json::from_value(serde_json::json!({
+            "Ucan": {"endpoint": "https://example.test/ucan/"}
+        }))
+        .unwrap();
+        let remote = Remote::at(
+            &subject.this(),
+            subject.clone(),
+            RemoteAddress::encode(&address),
+            "origin",
+        );
+        let local = old_branch(&subject.this(), "main");
+        let upstream = old_branch(&remote.this, "main");
+        assert_ne!(
+            local.this,
+            BranchConcept::new(&DirectoryAnchor(subject.this()), "main").this
+        );
+        account
+            .transaction()
+            .assert(remote)
+            .assert(local.clone())
+            .assert(upstream.clone())
+            .assert(LegacyTrackingBranch {
+                this: local.this,
+                upstream: Upstream(upstream.this),
+                origin: BranchOrigin(subject.this()),
+            })
+            .commit()
+            .publish()
+            .perform(&operator)
+            .await
+            .unwrap();
+
+        let record = mount_record_strict(&account, &subject, &operator)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.remotes.len(), 1);
+        assert_eq!(
+            record.branches,
+            vec![MountBranch {
+                name: "main".to_owned(),
+                upstream: Some(("origin".to_owned(), "main".to_owned())),
+            }]
+        );
+
+        account
+            .transaction()
+            .assert(BranchConcept::new(&DirectoryAnchor(subject.this()), "main"))
+            .commit()
+            .publish()
+            .perform(&operator)
+            .await
+            .unwrap();
+        let current = mount_record_strict(&account, &subject, &operator)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            current.branches,
+            vec![MountBranch {
+                name: "main".to_owned(),
+                upstream: None,
+            }],
+            "current branch facts supersede the old tracking link"
+        );
+    }
 
     #[test]
     fn strict_auxiliary_reads_distinguish_absence_from_failure() {

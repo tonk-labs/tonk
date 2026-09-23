@@ -42,6 +42,13 @@ window.STORYBOOK_DATA = {
       "id": "B-07",
       "severity": "medium",
       "title": "Renamed account retains an old founder membership in a space"
+    },
+    {
+      "area": "Space adoption and sync",
+      "decision": "fixed in source",
+      "id": "B-08",
+      "severity": "high",
+      "title": "Returning device cannot open a space with old branch facts"
     }
   ],
   "coverage": [
