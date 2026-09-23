@@ -21,6 +21,19 @@ async fn yield_for(ms: i32) {
         .expect("timeout resolves");
 }
 
+fn active_animations(element: &Element) -> u32 {
+    let get_animations = Reflect::get(element, &"getAnimations".into())
+        .expect("getAnimations")
+        .dyn_into::<js_sys::Function>()
+        .expect("getAnimations is callable");
+    get_animations
+        .call0(element)
+        .expect("read animations")
+        .dyn_into::<js_sys::Array>()
+        .expect("animation list")
+        .length()
+}
+
 fn shadow(fab: &HtmlElement, selector: &str) -> Element {
     fab.shadow_root()
         .expect("shadow root")
@@ -72,8 +85,23 @@ async fn resize(parent: &HtmlElement, width: i32) {
         .style()
         .set_property("width", &format!("{width}px"))
         .expect("parent width");
-    // The v0.17 shell deliberately morphs its outer geometry over 400ms.
-    yield_for(450).await;
+    let fab = parent.query_selector("tonk-fab").unwrap().expect("fab");
+    let wrapper = fab
+        .shadow_root()
+        .unwrap()
+        .query_selector(".w")
+        .unwrap()
+        .expect("wrapper");
+    // The v0.17 shell deliberately morphs its geometry over 400ms.
+    // A fixed sleep can wake before Chrome's delayed animation frames finish.
+    for _ in 0..60 {
+        yield_for(50).await;
+        let _ = wrapper.get_bounding_client_rect();
+        if active_animations(&fab) == 0 && active_animations(&wrapper) == 0 {
+            return;
+        }
+    }
+    panic!("the {width}px rail did not finish resizing");
 }
 
 #[dialog_common::test]
