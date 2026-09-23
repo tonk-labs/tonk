@@ -120,8 +120,16 @@ namespace_id = "1001"
 ACCOUNT_SERVICE_URL = "https://accounts.tonk.xyz"
 EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 
+# Staging also owns `tonk.spot`, where each site renders on an origin of its
+# own (`{label}.tonk.spot`). Listing the zone routes here keeps them: a deploy
+# replaces a worker's whole set of zone routes with the ones it names, so a
+# route added here later would otherwise drop them.
 [env.staging]
-routes = [{ pattern = "staging.tonk.xyz", custom_domain = true }]
+routes = [
+  { pattern = "staging.tonk.xyz", custom_domain = true },
+  { pattern = "tonk.spot/*", zone_name = "tonk.spot" },
+  { pattern = "*.tonk.spot/*", zone_name = "tonk.spot" },
+]
 
 # Keep Wrangler's rebuild on the invitation-enabled staging artifact.
 [env.staging.build]
@@ -174,6 +182,10 @@ namespace_id = "1001"
 [env.staging.vars]
 ACCOUNT_SERVICE_URL = "https://accounts-staging.tonk.xyz"
 EMAIL_FROM = "tonk <accounts@tonk.xyz>"
+# Sites render at `{label}.tonk.spot`, framed by the app at staging.tonk.xyz.
+# Production and previews leave these unset and keep sites in sealed frames.
+SITE_HOST = "tonk.spot"
+APP_ORIGIN = "https://staging.tonk.xyz"
 
 # Preview. Every pull request uploads a version of this environment under a
 # `--preview-alias` and is reached at its own workers.dev URL, so the
