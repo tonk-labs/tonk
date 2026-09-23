@@ -153,6 +153,34 @@ test("the page build tracks top-level document resources and ignores guest code"
   assert.notEqual(page.page, base.page, "top-level code changes the page");
 });
 
+test("trunk's unordered module preloads do not change the build identity", () => {
+  const preloads = (order) =>
+    order
+      .map((name) => `<link rel="modulepreload" href="/snippets/${name}.js" crossorigin="anonymous">`)
+      .join("");
+  const stamp = (order) => {
+    const dist = fixtureDist();
+    try {
+      const index = readFileSync(join(dist, "index.html"), "utf8");
+      writeFileSync(
+        join(dist, "index.html"),
+        index.replace("</head>", `    ${preloads(order)}</head>`),
+      );
+      const result = spawnSync("sh", [STAMP, dist], { encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      return JSON.parse(readFileSync(join(dist, "version.json"), "utf8"));
+    } finally {
+      rmSync(dist, { recursive: true, force: true });
+    }
+  };
+  const first = stamp(["a", "b", "c"]);
+  const shuffled = stamp(["c", "a", "b"]);
+  const changed = stamp(["a", "b", "d"]);
+  assert.equal(shuffled.page, first.page, "reordered preloads keep the page build");
+  assert.equal(shuffled.build, first.build, "reordered preloads keep the build");
+  assert.notEqual(changed.page, first.page, "a different preload set changes the page");
+});
+
 test("the Cloudflare browser tree excludes local documentation tools", () => {
   const flake = readFileSync(join(UI, "..", "..", "flake.nix"), "utf8");
   const packageStart = flake.indexOf("tonk-cloudflare-artifacts =");

@@ -98,6 +98,7 @@ PAGE_GRAPH="$LOCK/page-graph"
 ASSET_FILES_UNSORTED="$LOCK/files.unsorted"
 ASSET_FILES="$LOCK/files"
 NORMALIZED_INDEX="$LOCK/index.normalized"
+CANONICAL_INDEX="$LOCK/index.canonical"
 NORMALIZED_SW="$LOCK/service-worker.normalized"
 BUILD_INPUT="$LOCK/build-input"
 BACKED_UP=0
@@ -130,7 +131,7 @@ cleanup() {
     rm -f "$SW_TMP" "$INDEX_TMP" "$VERSION_TMP" "$MANIFEST_TMP"
     rm -f "$ASSET_LIST_UNSORTED" "$ASSET_LIST" "$ASSET_GRAPH" "$PAGE_GRAPH"
     rm -f "$ASSET_FILES_UNSORTED" "$ASSET_FILES"
-    rm -f "$NORMALIZED_INDEX" "$NORMALIZED_SW" "$BUILD_INPUT"
+    rm -f "$NORMALIZED_INDEX" "$CANONICAL_INDEX" "$NORMALIZED_SW" "$BUILD_INPUT"
     if [ "$RESTORE_FAILED" -eq 0 ]; then
         rm -f "$SW_BACKUP" "$INDEX_BACKUP" "$VERSION_BACKUP" "$MANIFEST_BACKUP"
         rmdir "$LOCK" 2>/dev/null
@@ -218,11 +219,21 @@ grep -q '^/|index.html$' "$ASSET_LIST" || {
     exit 1
 }
 
+# Trunk emits the root document's `modulepreload` links in a different order
+# on every build. Identity hashes a canonical form: one tag per line without
+# indentation, preload links sorted after the rest, whose order is kept
+# because it is meaningful.
+canonical_index() {
+    sed -e '/<meta name="tonk-worker-build" content="/ s/content="[^"]*"/content="dev"/' \
+        -e '/<meta name="tonk-page-build" content="/ s/content="[^"]*"/content="dev"/' \
+        "$1" | awk '{ gsub(/></, ">\n<"); print }' | sed 's/^[[:space:]]*//' > "$CANONICAL_INDEX"
+    grep -v 'rel="modulepreload"' "$CANONICAL_INDEX" || true
+    grep 'rel="modulepreload"' "$CANONICAL_INDEX" | LC_ALL=C sort || true
+}
+
 while IFS='|' read -r ROUTE REL; do
     if [ "$REL" = "index.html" ]; then
-        sed -e '/<meta name="tonk-worker-build" content="/ s/content="[^"]*"/content="dev"/' \
-            -e '/<meta name="tonk-page-build" content="/ s/content="[^"]*"/content="dev"/' \
-            "$DIST/$REL" > "$NORMALIZED_INDEX"
+        canonical_index "$DIST/$REL" > "$NORMALIZED_INDEX"
         ASSET_HASH=$(hash_file_full "$NORMALIZED_INDEX")
     else
         ASSET_HASH=$(hash_file_full "$DIST/$REL")
