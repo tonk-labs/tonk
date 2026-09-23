@@ -252,6 +252,7 @@ pub(crate) fn scalar_to_value(
         Scalar::Integer(i) => Value::SignedInt(*i),
         Scalar::UnsignedInteger(u) => Value::UnsignedInt(*u),
         Scalar::Float(f) => Value::Float(*f),
+        Scalar::Bytes(bytes) => Value::Bytes(bytes.clone()),
         Scalar::Null => {
             return Err(AnalyzeErrorKind::UnsupportedFieldValue {
                 field: "<scalar>".into(),
@@ -287,6 +288,16 @@ pub(crate) fn scalar_to_string(scalar: &Scalar) -> Result<String, AnalyzeError> 
         Scalar::Integer(i) => i.to_string(),
         Scalar::UnsignedInteger(u) => u.to_string(),
         Scalar::Float(f) => f.to_string(),
+        // Bytes have no text reading. Re-encoding as base64 here
+        // would put the transfer encoding back into a value that
+        // asked to be binary, so a slot wanting text refuses it.
+        Scalar::Bytes(_) => {
+            return Err(AnalyzeErrorKind::UnsupportedFieldValue {
+                field: "<scalar>".into(),
+                form: "binary literal",
+            }
+            .into());
+        }
         Scalar::Null => {
             return Err(AnalyzeErrorKind::UnsupportedFieldValue {
                 field: "<scalar>".into(),

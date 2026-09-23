@@ -16,23 +16,17 @@ mod analytics;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod ancestors;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-mod binder;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-mod default_remote;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod editable;
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 mod hub_account;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-mod invite_link;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-mod join_retry;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-mod origin;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod page;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-mod sheet;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod space_login;
 // Declared on every target: the pure sync-state/preference logic is
@@ -46,7 +40,6 @@ mod ui_account_settings;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod ui_copy_link;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-mod ui_dropdown;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod ui_hub_account;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -54,26 +47,18 @@ mod ui_space_remove;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod ui_sync_status;
 
-/// `<tonk-sheet-binder>`, `<tonk-page>`, `<tonk-origin>`,
-/// `<tonk-sync-state>` — the status pill that doubles as the pause/resume
-/// button — `<tonk-default-remote>`, and `<tonk-editable>`) with the page.
+/// `<tonk-page>`, `<tonk-sync-state>` — the status pill that doubles as
+/// the pause/resume button — and `<tonk-editable>`) with the page.
 /// Idempotent — calling more than once is harmless.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub fn register() {
-    sheet::register();
     space_login::register();
-    binder::register();
-    origin::register();
     page::register();
     sync::register();
     ui_sync_status::register();
-    ui_dropdown::register();
     ui_copy_link::register();
     ui_hub_account::register();
     ui_account_settings::register();
     ui_space_remove::register();
-    default_remote::register();
     editable::register();
-    join_retry::register();
-    invite_link::register();
 }

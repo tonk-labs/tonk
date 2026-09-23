@@ -289,6 +289,10 @@ pub enum Scalar {
     Float(f64),
     /// A boolean literal.
     Boolean(bool),
+    /// Binary content, written as `!!binary` base64 (YAML 1.1's
+    /// standard tag). Carried decoded so nothing downstream has to
+    /// know the transfer encoding.
+    Bytes(Vec<u8>),
     /// A `null` literal.
     Null,
 }
