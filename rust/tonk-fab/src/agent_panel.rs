@@ -180,16 +180,16 @@ impl subscribing::Subscribing for AgentBehaviour {
 
     fn render_reset(&self, _host: &HtmlElement, payload: &wasm_bindgen::JsValue) {
         let rows = js_sys::Array::from(payload);
-        if let Some((status, link)) = read_row(&rows.get(rows.length().saturating_sub(1))) {
-            apply(&self.state, &self.host, status, link);
+        if let Some((mode, status, link)) = read_row(&rows.get(rows.length().saturating_sub(1))) {
+            apply(&self.state, &self.host, mode, status, link);
         }
     }
 
     fn render_update(&self, _host: &HtmlElement, payload: &wasm_bindgen::JsValue) {
         let asserted = Reflect::get(payload, &"asserted".into()).unwrap_or_default();
         let rows = js_sys::Array::from(&asserted);
-        if let Some((status, link)) = read_row(&rows.get(rows.length().saturating_sub(1))) {
-            apply(&self.state, &self.host, status, link);
+        if let Some((mode, status, link)) = read_row(&rows.get(rows.length().saturating_sub(1))) {
+            apply(&self.state, &self.host, mode, status, link);
         }
     }
 
@@ -219,22 +219,32 @@ fn target(this: &HtmlElement) -> Option<Target> {
     })
 }
 
-fn read_row(row: &wasm_bindgen::JsValue) -> Option<(String, String)> {
+fn read_row(row: &wasm_bindgen::JsValue) -> Option<(String, String, String)> {
     let fields = Reflect::get(row, &"fields".into()).ok()?;
+    let mode = Reflect::get(&fields, &"mode".into())
+        .ok()
+        .and_then(|value| value.as_string())
+        .unwrap_or_default();
     let status = Reflect::get(&fields, &"status".into()).ok()?.as_string()?;
     let link = Reflect::get(&fields, &"link".into())
         .ok()
         .and_then(|value| value.as_string())
         .unwrap_or_default();
-    Some((status, link))
+    Some((mode, status, link))
 }
 
-fn apply(state: &Rc<RefCell<AgentState>>, host: &HtmlElement, status: String, link: String) {
+fn apply(
+    state: &Rc<RefCell<AgentState>>,
+    host: &HtmlElement,
+    mode: String,
+    status: String,
+    link: String,
+) {
     let attempt = state.borrow().attempt;
     *state.borrow_mut() = AgentState {
         status,
         link,
-        pending: false,
+        pending: mode == "busy",
         attempt,
         uncertain: false,
     };
