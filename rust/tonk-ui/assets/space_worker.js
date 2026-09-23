@@ -40,6 +40,9 @@ const BLOB_PATH = /^\/blob\/([1-9A-HJ-NP-Za-km-z]+)$/;
 // before reading anything, so a large blob does not trip this.
 const PORT_TIMEOUT_MS = 5_000;
 const ACK_TIMEOUT_MS = 3_000;
+// The contract between this worker and the shell (`space-origin.html`). The
+// shell replaces a worker that does not answer with the same number.
+const PROTOCOL = 1;
 
 const log = (...args) => console.log("[Space Worker]", ...args);
 
@@ -64,6 +67,10 @@ let nextId = 1;
 const pending = new Map();
 
 self.addEventListener("message", event => {
+    if (event.data?.type === "protocol") {
+        event.ports[0]?.postMessage({ protocol: PROTOCOL });
+        return;
+    }
     if (event.data?.type === "flush") {
         event.waitUntil(flushSession());
         return;

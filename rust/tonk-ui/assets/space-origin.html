@@ -55,12 +55,59 @@
                     document.close();
                 });
 
+                // The contract between this shell and the site's worker. The
+                // worker must answer with the same number; bump both together
+                // when the contract changes.
+                var PROTOCOL = 1;
+                var RECOVERY_KEY = "tonk-space-worker-recovery";
+
+                // Whether `worker` answers the protocol check in time. A worker
+                // from an older build does not answer at all.
+                function speaks(worker) {
+                    return new Promise(function (resolve) {
+                        var channel = new MessageChannel();
+                        var timer = setTimeout(function () {
+                            resolve(false);
+                        }, 3000);
+                        channel.port1.onmessage = function (event) {
+                            clearTimeout(timer);
+                            resolve(event.data && event.data.protocol === PROTOCOL);
+                        };
+                        worker.postMessage({ type: "protocol" }, [channel.port2]);
+                    });
+                }
+
+                // A worker the browser cannot update keeps control of this
+                // origin for good. That happens when its registration can no
+                // longer load the current script: one registered as a classic
+                // script cannot become a module. Unregister it and load again,
+                // so the next load registers a worker that works. At most once
+                // a minute, so a worker that still fails cannot loop the frame.
+                async function recover() {
+                    try {
+                        var last = Number(sessionStorage.getItem(RECOVERY_KEY) || 0);
+                        if (Date.now() - last < 60000) return false;
+                        sessionStorage.setItem(RECOVERY_KEY, String(Date.now()));
+                    } catch (error) {
+                        return false;
+                    }
+                    var registration = await navigator.serviceWorker.getRegistration();
+                    if (!registration) return false;
+                    await registration.unregister();
+                    location.reload();
+                    return true;
+                }
+
                 // Registers only when nothing controls the frame yet: once the
                 // worker serves this shell, its `worker-src` refuses a second
                 // `register()`, and the browser checks for updates on its own.
                 async function control() {
                     var container = navigator.serviceWorker;
-                    if (container.controller) return;
+                    if (container.controller) {
+                        if (await speaks(container.controller)) return;
+                        if (await recover()) return new Promise(function () {});
+                        throw new Error("the site's worker is out of date and could not be replaced");
+                    }
                     await container.register("/space_worker.js", {
                         scope: "/",
                         type: "module",
