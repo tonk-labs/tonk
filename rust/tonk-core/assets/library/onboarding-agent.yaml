@@ -156,34 +156,75 @@ view!:
               static observedAttributes = ["link"];
               connectedCallback() {
                 this.observer = new MutationObserver(() => this.render());
-                this.observer.observe(this, { childList: true, subtree: true });
+                this.observer.observe(this, {
+                  childList: true,
+                  subtree: true,
+                  attributes: true,
+                  attributeFilter: ["value"],
+                });
                 this.render();
               }
               disconnectedCallback() { this.observer?.disconnect(); }
               attributeChangedCallback() { if (this.isConnected) this.render(); }
               render() {
+                const link = this.getAttribute("link") || "";
                 let mode = "";
                 try {
-                  const hash = new URL(this.getAttribute("link")).hash;
+                  const hash = new URL(link).hash;
                   mode = /^#tonk-agent-v[12]=/.test(hash) ? "scoped" : "unsupported";
                 } catch (_) {}
                 for (const block of this.querySelectorAll("[data-agent-mode]")) {
                   block.hidden = block.dataset.agentMode !== mode;
                 }
                 let page;
-                try { page = new URL(this.getAttribute("link")); } catch (_) {}
+                try { page = new URL(link); } catch (_) {}
                 const local = page && ["localhost", "127.0.0.1", "[::1]"].includes(page.hostname);
                 const copy = this.querySelector(".agent-prompt__copy");
-                const prompt = copy?.getAttribute("value") || "";
-                if (local && prompt.includes("npx --yes @tonk/cli")) {
-                  const localPrompt = prompt
+                const currentValue = copy?.getAttribute("value") || "";
+                if (currentValue && currentValue !== this.appliedPrompt) {
+                  this.sourcePrompt = currentValue;
+                }
+                const sourcePrompt = this.sourcePrompt || "";
+                const current = !!copy && mode === "scoped" && sourcePrompt.includes(link);
+                let prompt = sourcePrompt;
+                if (current && local && prompt.includes("npx --yes @tonk/cli")) {
+                  prompt = prompt
                     .replaceAll("npx --yes @tonk/cli", "tonk")
                     .replace(
                       "tonk join '",
                       `TONK_CONNECTION_ORIGIN=${JSON.stringify(page.origin)} tonk join '`,
                     );
-                  copy.setAttribute("value", localPrompt);
                 }
+                if (copy) {
+                  if (copy.hasAttribute("disabled") === current) {
+                    copy.toggleAttribute("disabled", !current);
+                  }
+                  if (current && copy.getAttribute("value") !== prompt) {
+                    copy.setAttribute("value", prompt);
+                  }
+                  this.appliedPrompt = current ? prompt : currentValue;
+                }
+                let codex = "";
+                let claude = "";
+                if (current && prompt.length <= 12000) {
+                  try {
+                    const encoded = encodeURIComponent(prompt);
+                    codex = `codex://new?prompt=${encoded}`;
+                    claude = `claude://code/new?q=${encoded}`;
+                  } catch (_) {}
+                }
+                for (const launch of this.querySelectorAll("[data-agent-launch]")) {
+                  const href = launch.dataset.agentLaunch === "codex" ? codex : claude;
+                  if (href) {
+                    if (launch.getAttribute("href") !== href) launch.setAttribute("href", href);
+                  } else if (launch.hasAttribute("href")) {
+                    launch.removeAttribute("href");
+                  }
+                  launch.hidden = !href;
+                }
+                const tooLong = current && prompt.length > 12000;
+                const long = this.querySelector("[data-agent-launch-long]");
+                if (long) long.hidden = !tooLong;
               }
             });
         </script>
@@ -195,7 +236,27 @@ view!:
           tonk-agent-prompt [data-agent-mode] { display: flex; flex-direction: column; gap: var(--wa-space-m); }
           .agent-prompt { padding: var(--wa-space-l); border-radius: var(--wa-border-radius-l); background: var(--wa-color-surface-lowered); display: flex; flex-direction: column; gap: var(--wa-space-m); }
           .agent-prompt p { margin: 0; line-height: var(--wa-line-height-normal); text-wrap: pretty; }
-          .agent-prompt__action { display: flex; align-items: stretch; }
+          .agent-prompt__action { display: flex; flex-wrap: wrap; align-items: stretch; gap: var(--wa-space-xs); }
+          .agent-prompt__launch {
+            display: inline-flex;
+            box-sizing: border-box;
+            min-height: 44px;
+            padding: 0 16px;
+            align-items: center;
+            justify-content: center;
+            border: 0;
+            border-radius: 0;
+            background: transparent;
+            color: var(--wa-color-text-normal);
+            box-shadow: inset 0 0 0 1px currentColor;
+            font: 600 13px/1 'IBM Plex Sans Condensed', 'Bahnschrift', 'Arial Narrow', sans-serif;
+            letter-spacing: .02em;
+            text-decoration: none;
+            text-transform: lowercase;
+          }
+          .agent-prompt__launch:hover { background: color-mix(in srgb, currentColor 6%, transparent); }
+          .agent-prompt__launch:active { scale: .96; }
+          .agent-prompt__launch:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
           .agent-prompt__copy {
             display: inline-flex;
             align-self: flex-start;
@@ -264,25 +325,41 @@ view!:
           <button class="agent-prompt__new" on:new-agent-invite=tonk:new-agent-invite>new invite</button>
         </div>
         <div data-agent-mode="scoped" hidden>
-        <p>copy the prompt and give it to your agent. then tell it what you want to build on the Agent playground page.</p>
-        <p class="agent-prompt__note">anyone with this link can read and change this space until it expires or you revoke it. keep it private. the prompt asks your agent to work on the Agent playground page, but the link gives access to the whole space. you can close tonk after copying.</p>
+        <p>open this prompt in your agent or copy it. review it before sending, then tell it what you want to build on the Agent playground page.</p>
+        <p class="agent-prompt__note">anyone with this link can read and change this space until it expires or you revoke it. keep it private. the prompt asks your agent to work on the Agent playground page, but the link gives access to the whole space. you can close tonk after opening or copying the prompt.</p>
         <div class="agent-prompt__action">
           <wa-copy-button class="agent-prompt__copy" copy-label="copy prompt" success-label="prompt copied" error-label="could not copy" value="You're helping build only the &quot;Agent playground&quot; page in the &quot;{name}&quot; Tonk space.
 
-      Connect to the exact space this prompt came from:
+      Follow these steps:
+
+      1. From your current working directory, run:
 
         npx --yes @tonk/cli join '{link}'
 
-      This reusable bearer link contains the invitation key and grants for this space. Keep it private. Run the command without CLI account login, browser approval, or account-switch flags. The command prints the chosen local name; use --name if you need a different local alias. Only report connected after it prints &quot;Agent connection confirmed&quot;, which follows a successful pull and acknowledged receipt push. If interrupted, resume without the link using `npx --yes @tonk/cli --space NAME join`. If access expires or is revoked, ask me for a fresh invite. Local data and offline edits remain available. Multiple holders of this link share the same invitation authority and receipt; the receipt does not establish exclusive use or online presence.
+      This reusable link grants access to the space. Keep it private. Add `--name NAME` if you want a different local name.
 
-      Then run `npx --yes @tonk/cli --space NAME status` and `npx --yes @tonk/cli help tutorial`. The command binds your original working directory to the connected space; elsewhere, pass --space with the printed local name. Ask me what I want to build on the Agent playground page. Use `npx --yes @tonk/cli` for each CLI command that changes data, schemas, or views; changes sync directly into this space. Scope all work to the existing Agent playground page (entity did:key:z6MkF65VFoAVjUMUBsQ7uMzEe5cfxPeJ2M6WZi2ENNqXi4fo, concept playground-page / concept:CzJUmTs4SBYNXhePYAZGdumwKeg5rnnK4oVv74utdNHd). Inspect that page and its playground/* concepts first. Change only its page-specific view, components, and data; use new playground-specific concepts when needed. Preserve the page entity and its place in the navigation. Do not change the space home, other pages, shared components, shared schemas, or space-wide settings. Render the result inside the Agent playground page, not on the space home. If the requested work needs changes outside this page, explain why and ask me first.
+      2. Wait for `Agent connection confirmed`. Do not report that you are connected before this appears; it means the initial pull and receipt push succeeded. Save the local space name printed by the command.
+
+      3. Check the connection and read the tutorial:
+
+        npx --yes @tonk/cli --space NAME status
+        npx --yes @tonk/cli help tutorial
+
+      The join command binds your current working directory to the space. From another directory, add `--space NAME` to each Tonk command. Use `npx --yes @tonk/cli` for commands that change data, schemas, or views; changes sync directly to this space.
+
+      If the join is interrupted, resume with `npx --yes @tonk/cli --space NAME join`. If access expires or is revoked, ask me for a fresh invite. Local data and offline edits remain available. Other holders of this link share its authority and receipt, so the receipt proves a successful connection, not exclusive use or current presence.
+
+      Ask me what I want to build on the Agent playground page. Scope all work to the existing Agent playground page (entity did:key:z6MkF65VFoAVjUMUBsQ7uMzEe5cfxPeJ2M6WZi2ENNqXi4fo, concept playground-page / concept:CzJUmTs4SBYNXhePYAZGdumwKeg5rnnK4oVv74utdNHd). Inspect that page and its playground/* concepts first. Change only its page-specific view, components, and data; use new playground-specific concepts when needed. Preserve the page entity and its place in the navigation. Do not change the space home, other pages, shared components, shared schemas, or space-wide settings. Render the result inside the Agent playground page, not on the space home. If the requested work needs changes outside this page, explain why and ask me first.
 
       While working here, you may use playground/agent to report your status and playground/deed to record activity. Read their schemas before writing. Their time fields use epoch milliseconds as float literals. The playground checklist is optional; follow what I ask you to build.">
             <span slot="copy-icon" aria-hidden="true">copy prompt</span>
             <span slot="success-icon" aria-hidden="true">prompt copied</span>
             <span slot="error-icon" aria-hidden="true">could not copy</span>
           </wa-copy-button>
+          <a class="agent-prompt__launch" data-agent-launch="codex" aria-label="open prompt in Codex" hidden>open in Codex</a>
+          <a class="agent-prompt__launch" data-agent-launch="claude" aria-label="open prompt in Claude Code" hidden>open in Claude Code</a>
         </div>
+        <p class="agent-prompt__note" data-agent-launch-long hidden>this prompt is too long to open in an app. copy and paste it instead.</p>
         </div>
       </div>
       </tonk-agent-prompt>

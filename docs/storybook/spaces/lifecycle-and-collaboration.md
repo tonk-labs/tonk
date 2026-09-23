@@ -98,6 +98,33 @@ by a focused Safari shadow-root reproduction and FABB browser regression on
 2026-09-17. No screenshot was recaptured because the resting FABB and prompt
 geometry are unchanged.
 
+### Agent desktop prompt handoff decision
+
+A ready agent invitation offers the full prompt through copy, Codex, and Claude
+Code desktop links. Each link opens a new unsent composer for review and carries
+the same final prompt as copy, including localhost's linked `tonk` command and
+connection origin. It has no workspace parameter because a Tonk space name is
+not a local directory. Replacing or withdrawing the invitation removes the
+destination before a new prompt can become available.
+
+Copy leads the action row, followed by Codex and Claude Code; the row wraps in
+that order when the card narrows. The prompt presents connection, confirmation,
+and verification as three steps, then gives recovery and working-directory
+guidance before asking what to build.
+
+Prompts above 12,000 UTF-16 code units retain their full copy value and offer
+paste as the fallback; Tonk never truncates an invitation-bearing prompt. The
+browser host accepts only the fixed
+Codex and Claude new-composer routes rather than allowing either scheme in
+general.
+
+The standard-library and browser contracts cover `DATA-02` on 2026-09-21.
+Codex warm-launch evidence comes from the separate inert protocol spike;
+running-product app launch, Codex cold launch, Chrome, Claude Code composer, and
+the disposable-space connection remain manual release checks. The older
+space-home screenshot was not recaptured and is not visual evidence for these
+controls.
+
 ### Space-switcher and absent-space presentation decision
 
 The FABB space switcher reads the convergent account space directory, not the

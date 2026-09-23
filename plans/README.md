@@ -4,6 +4,7 @@ Existing cold-start and Welcome plans are preserved. The CLI review plan below i
 
 | Plan | Priority | Status | Execution order |
 | --- | --- | --- | --- |
+| [004: Agent desktop deep links](004-agent-desktop-deeplinks.md) | P2 | IMPLEMENTED | Codex and Claude Code links enabled; exact prompt, stale-invite, length, and responsive contracts verified; external app launch remains manual |
 | [001: CLI join review fixes](001-cli-join-review-fixes.md) | P1 / P2 | DONE | Browser ownership handoff, local-space linking, space-only status, and browser integration verified |
 | [003: Both invitation types through join](003-cli-join-both-invite-types.md) | P1 | DONE | Commits `01da82175`..`d755e9c5f`; native gates and local-service integration passed; live browser and external hosted checks not run |
 
