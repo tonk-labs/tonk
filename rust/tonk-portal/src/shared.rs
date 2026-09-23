@@ -17,6 +17,7 @@ use web_sys::{Element, HtmlElement, HtmlIFrameElement, window};
 
 use crate::bridge::{self, PortalState};
 use crate::site_content::head_markup as build_head_markup;
+use crate::space_origin::{SANDBOX, SHELL_PATH, site_origin, wants_origin};
 
 /// The tags an embedder may place in a portal's light DOM to style its
 /// guest. Anything else a caller nests is ignored: the head is not a
@@ -93,7 +94,18 @@ pub(crate) fn connect_portal(
     // silently blocks the download. We deliberately withhold
     // `allow-top-navigation` and `allow-same-origin` — the guest still
     // can't reach the parent or a real origin.
-    let _ = iframe.set_attribute("sandbox", "allow-scripts allow-forms allow-downloads");
+    //
+    // A `<tonk-site>` on a real origin keeps `allow-same-origin` instead (see
+    // `space_origin`).
+    let origin = wants_origin(&host)
+        .then(|| with.as_ref().and_then(site_origin))
+        .flatten();
+    let sandbox = if origin.is_some() {
+        SANDBOX
+    } else {
+        "allow-scripts allow-forms allow-downloads"
+    };
+    let _ = iframe.set_attribute("sandbox", sandbox);
 
     // Delegate the `clipboard-write` Permissions Policy into the guest so
     // its copy buttons (e.g. the share dialog's invite-link copy) can call
@@ -127,13 +139,27 @@ pub(crate) fn connect_portal(
     // `<link>` children belong in the guest's head.
     let head = head_markup(&host);
     let _ = host.append_child(&iframe);
-    let base = space_base(&state.borrow());
+    let base = match origin.as_deref() {
+        Some(origin) => format!("{origin}/"),
+        None => space_base(&state.borrow()),
+    };
     let srcdoc = if runtime {
         bridge::bootstrap_srcdoc_with_runtime(&content, &base, &head)
     } else {
         bridge::bootstrap_srcdoc(&content, &base, &head)
     };
-    let _ = iframe.set_attribute("srcdoc", &srcdoc);
+    match origin {
+        // The frame loads its origin's shell, which asks for this document
+        // once the space worker is in control.
+        Some(origin) => {
+            let shell = format!("{origin}{SHELL_PATH}");
+            state.borrow_mut().set_origin_document(origin, srcdoc);
+            let _ = iframe.set_attribute("src", &shell);
+        }
+        None => {
+            let _ = iframe.set_attribute("srcdoc", &srcdoc);
+        }
+    }
 
     state.borrow_mut().iframe = Some(iframe);
     *inner.borrow_mut() = Some(state);
@@ -148,19 +174,34 @@ pub(crate) fn reload_portal(host: &Element, state: &Rc<RefCell<PortalState>>) {
     bridge::disconnect_task(state);
     let mut s = state.borrow_mut();
     s.clear_subs();
-    if let Some(iframe) = s.iframe.as_ref() {
-        let content = host.get_attribute("content").unwrap_or_default();
-        let base = space_base(&s);
-        // Re-read the children rather than reusing the mount-time markup: a
-        // reload rebuilds the whole document, and the embedder may have
-        // changed its styles since.
-        let head = head_markup(host);
-        let srcdoc = if host.has_attribute("runtime") {
-            bridge::bootstrap_srcdoc_with_runtime(&content, &base, &head)
-        } else {
-            bridge::bootstrap_srcdoc(&content, &base, &head)
-        };
-        let _ = iframe.set_attribute("srcdoc", &srcdoc);
+    let Some(iframe) = s.iframe.clone() else {
+        return;
+    };
+    let content = host.get_attribute("content").unwrap_or_default();
+    let origin = s.origin().map(str::to_owned);
+    let base = match origin.as_deref() {
+        Some(origin) => format!("{origin}/"),
+        None => space_base(&s),
+    };
+    // Re-read the children rather than reusing the mount-time markup: a
+    // reload rebuilds the whole document, and the embedder may have
+    // changed its styles since.
+    let head = head_markup(host);
+    let srcdoc = if host.has_attribute("runtime") {
+        bridge::bootstrap_srcdoc_with_runtime(&content, &base, &head)
+    } else {
+        bridge::bootstrap_srcdoc(&content, &base, &head)
+    };
+    match origin {
+        // Re-navigate to the shell; it asks for the fresh document.
+        Some(origin) => {
+            let shell = format!("{origin}{SHELL_PATH}");
+            s.set_origin_document(origin, srcdoc);
+            let _ = iframe.set_attribute("src", &shell);
+        }
+        None => {
+            let _ = iframe.set_attribute("srcdoc", &srcdoc);
+        }
     }
 }
 

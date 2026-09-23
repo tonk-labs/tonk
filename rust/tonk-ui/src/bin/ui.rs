@@ -253,6 +253,9 @@ fn render_root(shell: &web_sys::Element) {
         };
         let _ = site.set_attribute("with", &with);
         let _ = site.set_attribute("allow", "*");
+        // The profile renders on an origin of its own, so the space it nests
+        // can too: a frame nested in an opaque one is opaque as well.
+        let _ = site.set_attribute("origin", "");
         // The path may have moved while the branch was being read.
         let path = web_sys::window()
             .and_then(|window| window.location().pathname().ok())
