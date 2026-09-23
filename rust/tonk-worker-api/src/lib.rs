@@ -39,7 +39,7 @@ pub use account::{
 pub use analytics::{ANALYTICS_MESSAGE, AnalyticsEvent, AnalyticsMessage};
 pub use claim::{ClaimResponse, QueryResponse};
 pub use conclusion::{Conclusion, Frame};
-pub use deployment::DeploymentConfig;
+pub use deployment::{DeploymentConfig, SiteOrigins};
 pub use evaluate::{CommitSummary, EvaluateResponse, QueryMatchBlock, QueryResult};
 pub use identify::IdentifyResponse;
 pub use identity::{

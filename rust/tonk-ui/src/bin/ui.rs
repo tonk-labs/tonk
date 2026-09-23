@@ -5,6 +5,8 @@
 //! (see the `data-bin="ui"` link tag).
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use tonk_worker_api::DeploymentConfig;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use wasm_bindgen::{JsCast, prelude::*};
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -243,6 +245,7 @@ fn render_root(shell: &web_sys::Element) {
     let shell = shell.clone();
     wasm_bindgen_futures::spawn_local(async move {
         let with = tonk_host::bridge::resolve_profile_with().await;
+        let site_host = site_host().await;
         let _ = shell.remove_attribute("data-mounting");
         shell.set_inner_html("");
         let Some(document) = shell.owner_document() else {
@@ -253,9 +256,12 @@ fn render_root(shell: &web_sys::Element) {
         };
         let _ = site.set_attribute("with", &with);
         let _ = site.set_attribute("allow", "*");
-        // The profile renders on an origin of its own, so the space it nests
-        // can too: a frame nested in an opaque one is opaque as well.
-        let _ = site.set_attribute("origin", "");
+        // Where the deployment names a site host, the profile renders on an
+        // origin of its own, so the space it nests can too: a frame nested in
+        // an opaque one is opaque as well.
+        if let Some(site_host) = site_host {
+            let _ = site.set_attribute("origin", &site_host);
+        }
         // The path may have moved while the branch was being read.
         let path = web_sys::window()
             .and_then(|window| window.location().pathname().ok())
@@ -264,6 +270,21 @@ fn render_root(shell: &web_sys::Element) {
         let _ = site.set_attribute("path", &path);
         let _ = shell.append_child(&site);
     });
+}
+
+/// The authority this deployment renders sites under, from its
+/// `/.well-known/tonk`. `None` when it names none, or the configuration cannot
+/// be read: sites then stay in sealed frames.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn site_host() -> Option<String> {
+    let origin = web_sys::window()?.location().origin().ok()?;
+    let config: DeploymentConfig = reqwest::get(format!("{origin}/.well-known/tonk"))
+        .await
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+    config.sites.map(|sites| sites.host)
 }
 
 /// Keep the top-document root in sync with client-side navigation.

@@ -107,6 +107,9 @@ pub(crate) struct PortalState {
     /// The bootstrap document a real-origin frame asks for once its space
     /// worker is in control: the markup a sealed frame gets as `srcdoc`.
     document: Option<String>,
+    /// The authority real-origin sites render under, handed down to the
+    /// guest so the sites it nests render on origins of their own too.
+    pub(crate) site_host: Option<String>,
 }
 
 /// One live subscription: the iframe's correlation id (so frames are
@@ -135,14 +138,21 @@ impl PortalState {
             allow: Allow::none(),
             origin: None,
             document: None,
+            site_host: None,
         }
     }
 
     /// Render this portal's space at `origin`, handing the frame `document`
     /// once it asks. Called host-side by `connect_portal` and on reload.
-    pub(crate) fn set_origin_document(&mut self, origin: String, document: String) {
+    pub(crate) fn set_origin_document(
+        &mut self,
+        origin: String,
+        document: String,
+        site_host: Option<String>,
+    ) {
         self.origin = Some(origin);
         self.document = Some(document);
+        self.site_host = site_host;
     }
 
     /// The space's real origin, when this portal renders it there.
@@ -2599,6 +2609,9 @@ fn build_context(host: &Element, state: &Rc<RefCell<PortalState>>) -> Object {
         None => tonk_host::space_origin::space_origin_for(&repo).unwrap_or_default(),
     };
     let _ = Reflect::set(&context, &"base".into(), &JsValue::from_str(&base));
+    if let Some(site_host) = state.borrow().site_host.as_deref() {
+        let _ = Reflect::set(&context, &"siteHost".into(), &JsValue::from_str(site_host));
+    }
     let _ = Reflect::set(&context, &"path".into(), &JsValue::from_str(&path));
     let _ = Reflect::set(&context, &"search".into(), &JsValue::from_str(&search));
     let _ = Reflect::set(&context, &"hash".into(), &JsValue::from_str(&hash));

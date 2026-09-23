@@ -1,8 +1,8 @@
 //! Sites on their own origin (proof of concept).
 //!
-//! A `<tonk-site>` renders in an iframe at a real origin of its own instead of
-//! an opaque `srcdoc` frame: a space at `{label}.{host}`, the profile at
-//! `profile.{host}`. The frame keeps `allow-same-origin`, which is safe only
+//! Where the deployment configures a site host, a `<tonk-site>` renders in an
+//! iframe at a real origin of its own instead of an opaque `srcdoc` frame: a
+//! space at `{label}.{site host}`, the profile at `profile.{site host}`. The frame keeps `allow-same-origin`, which is safe only
 //! because that origin is never its parent's: the guest cannot reach into its
 //! parent to lift its own sandbox. What it gains is storage and a service
 //! worker of its own.
@@ -26,7 +26,7 @@
 use std::str::FromStr;
 
 use js_sys::{Array, Object, Reflect};
-use tonk_host::bridge::context_origin;
+use tonk_host::bridge::{context_field, context_origin};
 use tonk_host::location::Location;
 use tonk_host::space_origin::encode_label;
 use wasm_bindgen::JsValue;
@@ -46,41 +46,41 @@ const PROFILE_LABEL: &str = "profile";
 /// `allow-forms` and `allow-downloads` match the sealed frame.
 pub(crate) const SANDBOX: &str = "allow-scripts allow-same-origin allow-forms allow-downloads";
 
-/// Whether `host` renders at a real origin: a `<tonk-site>` that asks for one
-/// (the top document's), or any `<tonk-site>` inside a guest that is itself
-/// on a real origin. Other portals (`<tonk-portal>`, the FAB's) stay sealed.
-pub(crate) fn wants_origin(host: &Element) -> bool {
+/// The authority `host` renders its site under, or `None` to keep it in a
+/// sealed frame. Only a `<tonk-site>` renders on an origin of its own: the top
+/// document's names the authority in its `origin` attribute (from the
+/// deployment's configuration), and a site inside a real-origin guest takes
+/// the one its parent handed it (`siteHost` in its context). Other portals
+/// (`<tonk-portal>`, the FAB's) stay sealed.
+pub(crate) fn site_host(host: &Element) -> Option<String> {
     if host.tag_name() != "TONK-SITE" {
-        return false;
+        return None;
     }
-    if host.has_attribute("origin") {
-        return true;
+    if let Some(site_host) = host
+        .get_attribute("origin")
+        .filter(|value| !value.is_empty())
+    {
+        return Some(site_host);
     }
-    let Some(window) = window() else {
-        return false;
-    };
-    let in_guest = Reflect::has(&window, &"tonk".into()).unwrap_or(false);
-    let own = window.location().origin().unwrap_or_default();
-    in_guest && own != "null"
+    let own = window()?.location().origin().ok()?;
+    (own != "null").then(|| context_field("siteHost")).flatten()
 }
 
-/// The real origin a site at `with` renders at: its label prepended to the
-/// host's own authority, so a host at `http://localhost:8080` puts a space at
-/// `http://{label}.localhost:8080` and the profile at
-/// `http://profile.localhost:8080`. The host is the top document's origin,
-/// which every guest is handed in its context.
+/// The real origin a site at `with` renders at: its label under `site_host`,
+/// with the app's scheme. A space renders at `{label}.{site_host}` and the
+/// profile at `profile.{site_host}`.
 ///
 /// `None` for a location with no label, and for one that would share this
 /// document's origin: a frame on its parent's origin, with
 /// `allow-same-origin`, could lift its own sandbox.
-pub(crate) fn site_origin(with: &Location) -> Option<String> {
+pub(crate) fn site_origin(with: &Location, site_host: &str) -> Option<String> {
     let label = match with.space() {
         Some(space) => encode_label(space)?,
         None if with.profile() => PROFILE_LABEL.to_owned(),
         None => return None,
     };
-    let host = Url::new(&context_origin()?).ok()?;
-    let origin = format!("{}//{label}.{}", host.protocol(), host.host());
+    let app = Url::new(&context_origin()?).ok()?;
+    let origin = format!("{}//{label}.{site_host}", app.protocol());
     let own = window()?.location().origin().ok()?;
     (origin != own).then_some(origin)
 }

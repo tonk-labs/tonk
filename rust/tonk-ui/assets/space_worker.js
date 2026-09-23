@@ -38,7 +38,9 @@ const log = (...args) => console.log("[Space Worker]", ...args);
 
 self.addEventListener("install", event => {
     self.skipWaiting();
-    event.waitUntil(caches.open(SHELL_CACHE).then(cache => cache.add(SHELL_PATH)));
+    event.waitUntil(
+        caches.open(SHELL_CACHE).then(cache => Promise.all([cache.add(SHELL_PATH), siteOrigins()])),
+    );
 });
 
 // Claim right away: the shell waits for control before it asks the host for
@@ -127,20 +129,41 @@ function within(promise, ms, message) {
 
 // ---- Responses ----------------------------------------------------------
 
-// The site origin's policy. The host frames the profile, and the profile
-// frames the spaces, so both may be ancestors and sites may frame sites. Author
+// Where this deployment renders sites, from its `/.well-known/tonk`: the
+// authority sites sit under and the app that frames them. The app is not
+// derivable from this origin (staging's app is staging.tonk.xyz, its sites
+// `{label}.tonk.spot`), so the server says. Kept in the shell cache so a
+// restart does not wait on the network.
+const CONFIG_PATH = "/.well-known/tonk";
+let sites;
+
+async function siteOrigins() {
+    if (sites) return sites;
+    const cache = await caches.open(SHELL_CACHE);
+    try {
+        const response = await fetch(CONFIG_PATH, { cache: "no-cache" });
+        if (response.ok) await cache.put(CONFIG_PATH, response.clone());
+        sites = (await response.json()).sites;
+    } catch {
+        sites = (await (await cache.match(CONFIG_PATH))?.json())?.sites;
+    }
+    return sites;
+}
+
+// The site origin's policy. The app frames the profile, and the profile frames
+// the spaces, so both may be ancestors and sites may frame sites. Author
 // code gets no network beyond this origin, which this worker answers alone;
 // `worker-src blob:` stops `register()` of any other service worker, since a
 // service worker script must be same-origin. `'unsafe-inline'` and
 // `'wasm-unsafe-eval'` carry the injected runtime until it loads from this
 // origin instead. `'unsafe-eval'` is for author views and element shims,
 // which are compiled from strings; space code is untrusted by design, so the
-// boundary is this origin and its lack of network, not `script-src`.
-function spacePolicy() {
-    const host = self.location.host.split(".").slice(1).join(".");
-    const parent = `${self.location.protocol}//${host}`;
-    const profile = `${self.location.protocol}//profile.${host}`;
-    const sites = `${self.location.protocol}//*.${host}`;
+// boundary is this origin and its lack of network, not `script-src`. Without
+// the deployment's site origins nothing may frame this origin at all.
+function spacePolicy(sites) {
+    const scheme = sites ? new URL(sites.app).protocol : null;
+    const ancestors = sites ? `${sites.app} ${scheme}//profile.${sites.host}` : "'none'";
+    const framed = sites ? ` ${scheme}//*.${sites.host}` : "";
     return [
         "default-src 'none'",
         "script-src 'self' blob: 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'",
@@ -149,11 +172,11 @@ function spacePolicy() {
         "media-src 'self' blob:",
         "font-src 'self' data:",
         "connect-src 'self' blob: data:",
-        `frame-src 'self' blob: ${sites}`,
+        `frame-src 'self' blob:${framed}`,
         "worker-src blob:",
         "form-action 'none'",
         "base-uri 'self'",
-        `frame-ancestors ${parent} ${profile}`,
+        `frame-ancestors ${ancestors}`,
     ].join("; ");
 }
 
@@ -170,7 +193,7 @@ async function serveShell() {
     }
     if (!response) return new Response("offline", { status: 503 });
     const headers = new Headers(response.headers);
-    headers.set("content-security-policy", spacePolicy());
+    headers.set("content-security-policy", spacePolicy(await siteOrigins()));
     headers.set("x-content-type-options", "nosniff");
     return new Response(response.body, { status: response.status, headers });
 }
