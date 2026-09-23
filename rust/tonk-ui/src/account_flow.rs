@@ -3658,7 +3658,7 @@ mod tests {
         await_narrator_containing(&driver, "confirmation link").await?;
 
         // The label flips from the offer to the member's name without a
-        // reload, and the trigger becomes the account-menu button.
+        // reload, and the cell stays the account tab: no menu grows on it.
         enter_hub(&driver).await?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
@@ -3679,8 +3679,8 @@ mod tests {
             if !label.is_empty() && label != "add an account" {
                 assert_eq!(
                     state.json()["haspopup"].as_str(),
-                    Some("menu"),
-                    "a linked trigger is the account-menu button again",
+                    None,
+                    "a linked trigger is still the account tab, not a menu button",
                 );
                 break;
             }
