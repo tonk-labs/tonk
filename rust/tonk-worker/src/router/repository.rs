@@ -5885,6 +5885,7 @@ async fn reconcile_prepared_profile_library(
         &tonk.active_branch,
         library,
         &plan,
+        &assertions,
         &record,
     )
     .await
@@ -7764,6 +7765,162 @@ mod profile_library_tests {
     wasm_bindgen_test_configure!(run_in_service_worker);
 
     const CURRENT: &str = include_str!("../../../tonk-core/assets/library/profile.yaml");
+
+    // Storybook UI-03: legacy account views migrate without resetting data.
+    // Exact shipped bytes at staging 95fea7462, before the account-view stack.
+    const BEFORE_ACCOUNT_VIEWS: &str =
+        include_str!("../../tests/fixtures/profile-before-account-views.yaml");
+
+    #[dialog_common::test]
+    async fn profile_library_upgrades_before_account_views() {
+        let tonk = test_state().await;
+        install_recorded(&tonk, PROFILE_LIBRARY_URL, BEFORE_ACCOUNT_VIEWS).await;
+        assert_account_views_migrate(&tonk).await;
+    }
+
+    #[dialog_common::test]
+    async fn profile_library_upgrades_unrecorded_account_views() {
+        let tonk = test_state().await;
+        evaluate_authored(&tonk, BEFORE_ACCOUNT_VIEWS).await;
+        assert_account_views_migrate(&tonk).await;
+    }
+
+    #[dialog_common::test]
+    async fn profile_library_upgrades_retained_account_schemas() {
+        let tonk = test_state().await;
+        install_recorded(&tonk, PROFILE_LIBRARY_URL, BEFORE_ACCOUNT_VIEWS).await;
+        // Unchanged definitions are absent from this installation's delta.
+        // The next upgrade therefore encounters the old schemas even though
+        // it successfully withdraws everything in the latest install record.
+        reconcile_profile_library_from(
+            &tonk,
+            format!("{BEFORE_ACCOUNT_VIEWS}\n# intermediate release\n"),
+        )
+        .await
+        .expect("intermediate release installs");
+        assert_account_views_migrate(&tonk).await;
+    }
+
+    #[dialog_common::test]
+    async fn profile_library_upgrades_account_views_with_unusable_provenance() {
+        let tonk = test_state().await;
+        install_recorded(&tonk, PROFILE_LIBRARY_URL, BEFORE_ACCOUNT_VIEWS).await;
+        let session = tonk
+            .reactor
+            .profile_repository()
+            .branch(&tonk.active_branch)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let installation = profile_library_installations(&tonk, &session)
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        let mut broken = installation.installed.clone();
+        broken.version.0 = "unavailable-legacy-version".to_owned();
+        session
+            .handle()
+            .transaction()
+            .retract(installation.installed)
+            .assert(broken)
+            .commit()
+            .publish()
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        assert_account_views_migrate(&tonk).await;
+    }
+
+    async fn assert_account_views_migrate(tonk: &TonkState) {
+        let (profile_name, space) = install_sentinels(tonk).await;
+        evaluate_authored(tonk, AUTHORED).await;
+        reconcile_profile_library_from(tonk, CURRENT.to_owned())
+            .await
+            .expect("pre-refactor account library upgrades");
+        let session = tonk
+            .reactor
+            .profile_repository()
+            .branch(&tonk.active_branch)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        assert!(
+            assertions_are_current(
+                tonk,
+                &session,
+                &prepare_profile_library(CURRENT.to_owned())
+                    .unwrap()
+                    .assertions
+            )
+            .await
+            .unwrap()
+        );
+        assert!(!view_snapshot(tonk).await.contains("ui-hub-account"));
+        // Exercise the renderer's actual stylesheet-binding query, not just
+        // the new HTML. Missing embeds leave the hub completely unstyled.
+        let query = tonk_template::resolve::view_embeds_query("tonk:hub")
+            .unwrap()
+            .into_concept_query()
+            .unwrap();
+        let embeds = tonk
+            .reactor
+            .profile_repository()
+            .branch(&tonk.active_branch)
+            .query(query)
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        let rows = serde_json::to_value(&embeds).unwrap();
+        let bytes: Vec<u8> = serde_json::from_value(rows[0]["fields"]["embeds"].clone())
+            .expect("the renderer receives compiled embed bytes");
+        let embeds = tonk_template::embed::Embeds::decode(&bytes)
+            .expect("the renderer can decode the migrated embeds");
+        assert_eq!(embeds.embeds["ui@space"].entity, "tonk:space");
+        assert_eq!(embeds.embeds["ui@space"].name, "ui");
+        assert!(
+            route_paths(tonk)
+                .await
+                .iter()
+                .any(|path| path == "/authored-profile")
+        );
+        let names: Vec<tonk_schema::ProfileName> = session
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::ProfileName> {
+                this: Term::from(profile_name.this.clone()),
+                name: Term::var("name"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        assert_eq!(names, vec![profile_name]);
+        let spaces: Vec<tonk_schema::Space> = session
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::Space> {
+                this: Term::from(space.this.clone()),
+                subject: Term::var("subject"),
+                status: Term::var("status"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        assert_eq!(spaces, vec![space]);
+        let revision = session.handle().revision();
+        // Discard the worker's receipt to exercise persisted idempotence.
+        let fresh = prepare_profile_library(CURRENT.to_owned()).unwrap();
+        tonk.profile_library.receipt.lock().unwrap().clear();
+        assert_eq!(
+            reconcile_prepared_profile_library(tonk, fresh)
+                .await
+                .unwrap(),
+            ProfileLibraryOutcome::Unchanged
+        );
+        assert_eq!(session.handle().revision(), revision);
+    }
 
     // Reduced from rust/tonk-core/assets/library/profile.yaml at
     // eff85b2ab^ (the last revision before the account-model reland removed

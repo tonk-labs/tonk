@@ -1,0 +1,2076 @@
+# Tonk profile library — the minimal standard library seeded onto the
+# profile repository's meta branch.
+#
+# The profile branch only backs the Tonk Hub at `/`: a picker over the
+# spaces this profile can open. It does NOT render workspaces, boards,
+# sheets, inspectors, or any artifact view — those live on each space's
+# own content branch and are seeded from the full `core.yaml`. This
+# document carries what the Hub needs rather than the whole standard
+# library, whose 60+ expressions the profile never uses.
+#
+# Lowering runs `analyze_local` (no running system), so every
+# `&anchor` / bare-name reference must resolve within this file. Both
+# definitions below are self-contained: the directory view's
+# `model: space` resolves to the `&space` anchor here.
+
+# A space the account has access to. These convergent directory records live
+# on the profile repository's main branch — one per repository across the
+# account, with `local` overlaid by each device. The Hub queries them in the
+# top site's `with="main@profile:tonk"` context so the user can pick which
+# space to open or replicate locally.
+concept!: &space
+  this: tonk:space
+  description: A space on this account.
+  with:
+    subject:
+      description: >
+        The repository's subject DID (its stable identity). The Hub card
+        links to `/space/{subject}`; the route reads the routing key as
+        the suffix after the last `:`.
+
+        These `xyz.tonk.space/*` attributes hang on the repository's own
+        entity — NOT on a per-device replica row. Replica rows key on
+        (device profile, subject), and profile main now syncs through
+        the account, so listing them would show one card per device per
+        space. The directory entry is asserted once per space and every
+        device converges on it.
+      the: xyz.tonk.space/subject
+      cardinality: one
+      as: entity
+  maybe:
+    presence:
+      description: >
+        Where this space stands ON THIS DEVICE: case:remote when no
+        replica is held here, case:seeding while its content branch is
+        still being seeded, case:replicated once it is. A remote row
+        renders as a hollow space that replicates on first visit.
+
+        Derived by the rules below from this device's replica rather
+        than stored, so it cannot drift from it. The remote case is a
+        negated premise (`unless: space/replica`) rather than an absent
+        fact, so every row carries a presence and a view can select on
+        it. The Hub card reflects this via [data-presence].
+      the: xyz.tonk.space/presence
+      cardinality: one
+      as: entity
+    name:
+      description: >
+        The directory mirror of the space's display name — written at
+        create and kept current by the rename command — so a device
+        that has not replicated the space can still label its card.
+      the: xyz.tonk.space/name
+      cardinality: one
+      as: text
+    provider:
+      description: >
+        The account providing this space with the access service. Its
+        presence records that the space is provisioned (its remote is
+        served): `/provider/add` runs when the upstream is attached,
+        never per share, and this fact is what a share consults. The
+        sync engine retracts it when the service answers that the
+        subject is no longer served, returning the space to local-only.
+        The value is the providing account's DID entity — identical
+        from every replica, so the record converges where per-device
+        timestamps would not.
+      the: xyz.tonk.space/provider
+      cardinality: one
+      as: entity
+    home-address:
+      description: >
+        The sync endpoint this space is served from — the UCAN address
+        `main`'s upstream syncs through. The queryable twin of the
+        `home.address` the space's grants carry in their signed meta,
+        which rides inside the delegation envelope and cannot be
+        queried. Written wherever the mount configuration is mirrored
+        into the directory: attaching an upstream, creating with a
+        remote, and mounting a joined space. Absent for a local-only
+        space.
+      the: xyz.tonk.space/home-address
+      cardinality: one
+      as: text
+    founded-at:
+      description: >
+        When this account created the space. Its presence distinguishes a
+        local-only space made here from a space joined through somebody
+        else's invite; hosted ownership is still decided by `provider`.
+      the: xyz.tonk.space/founded-at
+      cardinality: one
+      as: unsigned-integer
+
+# The Add Space command. Asserted by the Hub's two create forms (the bar's
+# `new space` rung and the stack's ghost) and by the FAB's `new` row; the
+# worker's `create_space` handler decodes it and does the work (record the
+# replica, create + seed the repository, flip the status, navigate the
+# creator into the new space). `name` reads from the form on submit:
+# the hidden `<input name="name" value="Untitled">` inside the create
+# form. The command is transient: it fires the handler once and is swept
+# before the durable commit.
+#
+# How a submit fills it. `prevent-default` stops the page reloading;
+# without it the browser falls through to a GET submit and reloads with
+# the fields in the query string. It lives here rather than in the
+# command's `with:` map, where it used to be: a side effect declared as a
+# command field stores no value, so a rule premise over it matches zero
+# rows however successfully the command transacted.
+event!: &on/space-create
+  type: "submit"
+  prevent-default: true
+  where:
+    name: ".currentTarget.elements.name.value"
+    open: ".currentTarget.elements.open.value"
+
+command!: &space/create
+  description: A request to create a new space.
+  with:
+    name:
+      description: >
+        The space name. Nothing asks for one: every create carries the
+        "Untitled" sentinel, which the worker's
+        CreateSpaceHandler uniquifies against the existing space labels
+        ("Untitled", "Untitled 2", …), and the user renames the space in
+        place on arrival. The sentinel must be non-empty — the event
+        extractor omits blank fields, and with no `name` fact the
+        transient would never trigger the handler.
+      the: xyz.tonk.command.create-space/name
+      as: text
+    open:
+      description: >
+        Whether to navigate into the space once it exists. Absent means
+        create only — the space appears in the Hub and the person stays
+        where they are; the Hub's own form passes `true` because that IS
+        what clicking "create new space" asks for. Creating and opening
+        are separate wants: an agent or script creating a space in the
+        background must not yank the page out from under whoever is
+        using it.
+      the: xyz.tonk.command.create-space/open
+      as: text
+
+# Pull a space the account has but this device does not. The Hub's
+# remote rows are hollow — the directory names them but no replica is
+# held here — and replication used to be implicit: the first data-plane
+# request naming an unmounted repo tripped the mount as a side effect.
+# This makes it something you can ASK for. The worker's provider runs
+# the SAME routine the lazy path does, so both report identical state.
+#
+# Carries its target `space` rather than firing on the dispatch origin:
+# the affordance is a Hub card on the profile branch, naming precisely
+# the space this device has no replica of.
+command!: &space/replicate
+  this: tonk:space/replicate
+  description: Pull a space this device holds no replica of.
+  with:
+    space:
+      description: The space to pull, as its subject DID.
+      the: xyz.tonk.command.replicate-space/space
+      as: entity
+
+# The device-local Remove Space command. A joined-space leave or local-only
+# delete submits this transient; the worker's `RemoveSpaceHandler` retracts
+# the replica record from this branch, evicts the space from the reactor
+# (stopping background sync), and deletes its local storage. An owned hosted
+# space does NOT submit it: `<ui-space-remove>` routes that verb through the
+# reviewed account-space deletion flow instead.
+# The command is transient: it fires the handler once and is swept before
+# the durable commit.
+#
+# The COMMAND's field used to be `dataset/remove` too, deliberately NOT
+# `dataset/subject`: `tonk/rename-repository` transients already carried
+# `dataset/subject`, and a remove matched on that attribute alone would
+# have decoded every rename — turning each rename into a deletion. The
+# distinct DOM read path doubled as the command's unique shape.
+# `xyz.tonk.command.remove-space/subject` is that distinctness by
+# construction, so the field is named for what it is. The DOM attribute
+# it is read FROM keeps its name: `<ui-space-remove>` locates this form
+# by it.
+#
+# How the confirm's submit fills it.
+#
+# The source is the form's `data-remove`, not a `{subject}` template
+# field, because that attribute is load-bearing for something else:
+# `<ui-space-remove>` finds this form by `form[data-remove]` to write the
+# confirm copy into it. Stamping a second attribute carrying the same DID
+# just to feed the command would be two names for one fact. Reading the
+# one that already exists is what an `event!:` declaration is for —
+# platform specifics live here so the command stays domain-shaped.
+event!: &on/space-remove
+  type: "submit"
+  prevent-default: true
+  where:
+    subject: ".currentTarget.dataset.remove"
+
+command!: &space/remove
+  description: A request to remove a space from this device (its list entry and local data).
+  with:
+    subject:
+      description: The subject DID of the space to remove.
+      the: xyz.tonk.command.remove-space/subject
+      as: entity
+
+# Load the requesting tab's site for its current path. Mirrors core.yaml's
+# `&tonk/load` — seeded here too because the top-level `<tonk-site>` stamps onto
+# the PROFILE branch (its ancestors resolve no named repo, so the claim routes
+# here). The worker's `LoadHandler` matches `path` against this branch's `route!`
+# table and stamps `tonk:site` onto the element-supplied `this`.
+command!: &tonk/load
+  this: tonk:load
+  description: Stamp the requesting tab's site for its current path on this branch.
+  with:
+    path:
+      description: The route path the tab is at, matched against the route table.
+      the: xyz.tonk.site/path
+      as: text
+
+# `view` is a BUILT-IN concept (tonk-schema's registry, beside
+# `concept`, `command`, `event` and `rule`). It is declared there
+# rather than here because the analyzer has to understand a view
+# structurally: a `show:` template can bind `on:<name>=<command>`,
+# and those are resolved at lowering into the view's `bindings`
+# rather than re-queried per name on every refresh.
+#
+# An in-document declaration SHADOWS a builtin, so declaring it
+# here again would silently restore runtime resolution. What lives
+# in the libraries are its INSTANCES: the `view!:` blocks below.
+
+# The Hub directory view: the picker shown at `/`. One card per space,
+# linking to its `/space/{subject}` page. A space is identified by its
+# subject did:key; the route reads the routing key as the suffix after
+# the last `:`, so `{subject}` (a full did:key) resolves to that key.
+# The card's name is NOT read from this profile-side record — it is read
+# from the listed space's OWN repository: the row's `with={subject}`
+# context opens that space's routing context and a
+# `<tonk-display model=tonk:repository view=label>` inside it
+# shows the repo's current name (the cross-device source of truth).
+# Rendered as a directory (no entity) over the `space` model on the
+# profile meta branch.
+view!:
+  this: space
+  show:
+    directory: |
+      <div class="hub-page">
+        <!-- The hub chrome's CSS lives in `tonk-ui/styles.css` (the "hub
+             page" block), NOT here: the /settings route renders the same
+             chrome from its own view, and a style block scoped to this
+             view would leave that page bare. One file styles both. -->
+
+        <div class="hub-logo" role="img" aria-label="tonk"><svg viewBox="0 0 1024 343" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M337.41 169.57C337.41 136.215 363.983 109.171 396.764 109.171C429.539 109.171 456.112 136.215 456.112 169.57C456.112 202.932 429.539 229.975 396.764 229.975C363.983 229.975 337.41 202.932 337.41 169.57ZM643.51 54C614.396 54 589.91 61.6682 572.703 77.2353C563.913 85.1861 557.227 94.8795 552.759 105.986C552.206 97.3086 549.67 85.1977 540.937 75.1754C530.712 63.4453 515.039 55.8233 494.461 56.2041C488.76 56.3253 484.229 61.045 484.345 66.7514C484.46 72.3886 489.06 76.8833 494.668 76.8833C494.737 76.8833 494.812 76.8833 494.881 76.8833C509.044 76.6006 519.252 81.8339 525.282 88.6654C534.084 98.6415 532.072 113.834 532.02 114.197C531.167 119.817 535.012 125.079 540.626 125.962C541.168 126.048 545.537 126.602 547.612 124.565C546.673 130.203 546.171 136.076 546.171 142.192C546.171 183.349 531.225 224.038 507.39 247.764C488.403 266.66 465.219 275.805 434.911 279.382C479.549 263.671 511.569 221.038 511.569 170.874C511.569 107.365 460.262 55.8868 396.966 55.8868C333.675 55.8868 282.368 107.365 282.368 170.874C282.368 234.383 333.675 285.868 396.966 285.868C399.121 285.868 401.254 285.793 403.375 285.677C451.126 285.1 484.569 276.722 510.508 250.902C535.196 226.328 550.592 184.555 550.592 142.192C550.592 90.1771 586.197 57.8658 643.51 57.8658C737.703 57.8658 741.576 107.169 741.657 113.96C731.477 116.378 708.795 127.093 708.795 147.247V284.702H742.314C745.744 284.702 746.107 282.556 746.107 281.333V114.209C746.107 107.983 743.208 54 643.51 54Z" fill="currentColor"/><path d="M144.171 58.5683L129.662 58.5856C106.081 58.6318 91.4574 69.3695 83.3356 77.9031C72.9486 88.8081 67 103.873 67 119.221C67 148.151 86.5636 179.285 133.299 179.285V155.658C100.513 155.658 90.6043 136.029 90.6043 119.221C90.6043 104.029 99.7116 81.7516 130.135 81.7516L144.171 81.7458V261.448C131.691 261.448 124.786 248.968 124.786 238.08L104.974 238.092C104.974 267.316 130.095 284.383 143.98 284.706H170.432C195.829 284.706 215.053 259.717 215.053 196.924V107.306H225.924V155.658H274.164V58.5683H144.171Z" fill="currentColor"/><path d="M926.713 197.694L895.344 197.463C903.656 193.101 910.337 187.937 915.461 183.073C941.844 158.049 955.222 116.16 955.222 58.5828H938.99C938.99 111.527 927.318 149.447 904.302 171.286C893.817 181.227 875.475 192.721 847.444 191.544V58.5828H776.988V211.663C776.988 244.701 754.468 249.9 754.468 249.9C754.474 249.9 754.468 284.715 754.468 284.715H847.444V216.815C847.444 211.703 856.764 211.721 856.764 216.815C856.764 225.54 856.741 239.803 856.741 248.977C856.741 275.98 879.85 289.735 907.633 289.735C932.039 289.735 955.43 274.601 956.098 248.977C956.536 232.186 960.612 197.694 926.713 197.694Z" fill="currentColor"/></svg></div>
+
+        <main class="hubcol">
+          <ui-hub-account></ui-hub-account>
+
+        <div class="stack chrome" data-spaces-view aria-label="spaces">
+          <!-- No empty-state bar. An account with no spaces and an
+               account whose spaces are still arriving look identical
+               from here, so any words this row could carry are wrong in
+               one of those two cases. The waiting is stated where the
+               waiting is known: the account cell, which holds a skeleton
+               while the link runs. An empty stack simply shows the one
+               row that is always true — "create new space". -->
+          <!-- `data-id={this}` designates the repeat row — the WRAPPER, not the
+               link, so the verbs and the confirm cluster travel with the row
+               while staying outside it: reaching for the action never opens the space.
+               Each per-space consumer carries its OWN subject; the routing
+               helpers read an element's own attribute and never walk ancestors. -->
+          <div class="srow-wrap" data-presence={presence} data-id={this}>
+            <a class="srow blk" href="/space/{subject}"><span class="n">{name}</span></a>
+            <!-- Both verbs sit outside the anchor and are laid over it: a
+                 <button> inside an <a> is invalid markup the parser reshapes,
+                 and a <label for> inside one navigates rather than opening the
+                 confirm. Hovering the row reveals them (`.srow-wrap:hover`),
+                 so the reveal still follows the row and not just the verbs. -->
+            <ui-space-remove data-space-subject={subject} data-space-name={name}
+              data-space-provider={provider} data-space-founded={founded-at}>
+              <span class="verbs">
+                <ui-copy-link space={subject} label="copy link"></ui-copy-link>
+                <button class="verb-remove" type="button" data-space-remove-open disabled>checking&hellip;</button>
+              </span>
+              <tonk-dialog data-space-remove-dialog heading="confirm leaving space">
+                <form id="remove-{subject}" class="remove-form" on:space-remove=space/remove data-remove={subject}>
+                  Leave {name}? This removes the space and its local data from this
+                  device. You'll need another invite link to join again. Other
+                  members keep access.
+                </form>
+                <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
+                <button class="m-go" slot="actions" type="submit" html:form="remove-{subject}" data-space-remove-submit>leave space</button>
+              </tonk-dialog>
+            </ui-space-remove>
+          </div>
+          <!-- Creating asks nothing up front: the space starts "Untitled" (the
+               worker uniquifies the sentinel) and is renamed in place with the
+               bar's block cursor the moment you land in it. No remote is
+               carried: the worker resolves where a space syncs from the
+               account's own registration, so a space created before anyone
+               registers stays local until it is shared. -->
+          <form class="snew-form" on:space-create=space/create>
+            <input type="hidden" name="name" value="Untitled">
+            <input type="hidden" name="open" value="true">
+            <button class="snew chrome" type="submit">create new space<span class="g" aria-hidden="true">+</span></button>
+          </form>
+        </div>
+
+        </main>
+      </div>
+    # The space page's waiting room. Reached only when the space's own
+    # content has not arrived but the account's DIRECTORY ROW for it has
+    # — so this device knows the space exists and is entitled to it, and
+    # the bytes are simply still coming. Named `downloading` because
+    # that is the whole message: no error, no invitation advice.
+    #
+    # The name is the directory mirror (`xyz.tonk.space/name`), written
+    # at create and kept current by rename, which exists so a device
+    # that has not replicated a space can still label it.
+    downloading: |
+      <div class="space-unknown">
+        <tonk-title text="{name} — Tonk"></tonk-title>
+        <a class="space-unknown-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
+        <div class="space-unknown-wall">
+          <h1 class="space-unknown-statement">downloading {name}</h1>
+          <p class="space-unknown-narrator">This space is on its way to this device. It opens as soon as enough of it has arrived.</p>
+        </div>
+      </div>
+
+
+# ============================================================
+# FAB — floating action button view (rendered in the FAB portal iframe)
+# ============================================================
+#
+# These declarations live on the profile branch because the FAB portal is
+# scoped to it (`with="main@profile:tonk"`). The
+# guest renders `tonk:profile/fab` via a `<tonk-display>` mounted
+# by the shell's FAB portal content string.
+#
+# Identity note (V1 — not yet wired): the FAB portal `content` string in
+# core.yaml embeds only `data-space`; `data-did` and `data-name` are NOT
+# embedded. The `did={dom.host/data-did}` and `{dom.host/data-name}`
+# template slots below are placeholders that render empty until a follow-up
+# wires the worker to stamp `state:self` identity onto the profile/meta
+# branch and the shell to embed those values in the portal content string.
+
+# The member's display name, read directly from THIS (profile meta) branch —
+# the durable `ProfileName` override the worker stamps on `profile/rename`
+# (attribute `xyz.tonk.profile/display-name`, keyed by the profile DID). The
+# FAB is sealed to the profile/meta branch, so unlike the space roster's names
+# (which live in each space's own repo and are unreachable from the sealed
+# guest) this one is an ordinary in-branch read. Absent until the user renames
+# (the worker's `petname` fallback is computed, not persisted), so the bar's
+# name slot renders empty until a name is set.
+concept!: &profile/name
+  this: tonk:profile/name
+  description: The member's display-name override on the profile meta branch.
+  with:
+    name:
+      description: The chosen display name (xyz.tonk.profile/display-name).
+      the: xyz.tonk.profile/display-name
+      cardinality: one
+      as: text
+
+# Rename the signed-in member (set their display name). Lives here as well as
+# in core.yaml because the FAB is sealed to the profile/meta branch: the
+# guest's `<tonk-display>` resolves the command's concept descriptor by a
+# phase-1 lookup against THIS branch (seeded from the lean profile.yaml), so
+# the command must be present here for the editable's rename binding to
+# fire. The worker's globally-registered `ProfileRenameHandler` does the
+# work (persist `ProfileName`, restamp `MemberName` across every space's
+# roster, republish self-identity) — this descriptor only has to decode
+# the new name.
+#
+# It used to carry a `tonk:profile` marker as well, because this and
+# `tonk/rename-repository` both read `currentTarget.value` and a shape
+# matched on that attribute alone made every space rename also rename the
+# profile. Each command's own attribute namespace keeps them disjoint now.
+command!: &profile/rename
+  description: Rename the signed-in member (set their display name).
+  with:
+    name:
+      description: The new name, read from the editable's value on commit.
+      the: xyz.tonk.command.profile-rename/name
+      as: text
+
+# Toggle auto-sync (pause ⇄ resume) for a space. Dispatched by the FAB's
+# `<ui-sync-status onpause=…>` cap on alt/option-click. Defined here on the
+# PROFILE branch (not on each space's branch) and dispatched on the profile
+# context, so the FAB's pause affordance depends on nothing seeded per-space —
+# older spaces missing a `fab-pause` view no longer break it. The `space` field
+# names WHICH replica to flip; the worker's PauseSyncHandler reads it in place
+# of the dispatch origin. `time` makes each click a distinct transient so the
+# toggle reliably re-fires.
+#
+# It used to carry a marker field too, whose only job was to keep this
+# shape distinct from `tonk:invite`'s identical {this, time}. Each
+# command now owns its attribute namespace, so the two cannot collide.
+
+# Ask whether a newer seed is waiting for a space, without installing it.
+# The command fetches the space's own seed source, compares the bytes
+# against what it is running, and asserts the answer as an OVERLAY fact:
+# the result is this device's observation at this moment, not something
+# true of the space, so it must not replicate. `time` makes each ask a
+# distinct transient.
+command!: &tonk/check-update
+  this: tonk:check-update
+  description: Ask whether a newer seed is waiting for a space.
+  with:
+    time:
+      description: The click's timestamp; makes each ask a distinct transient.
+      the: xyz.tonk.command.check-update/time
+      as: float
+    space:
+      description: The space to check, as its subject DID.
+      the: xyz.tonk.command.check-update/space
+      as: entity
+
+# A seed-update check IN FLIGHT on this device, keyed on the replica —
+# the entity that already pairs this profile with this subject, so a
+# check on one device says nothing about another. Replica records live
+# on the profile meta branch and never replicate, which is exactly the
+# scope of "am I checking right now".
+#
+# Presence IS the state: the attribute is asserted before the fetch and
+# retracted when the check settles, so a view asks whether it exists
+# rather than comparing against a `case:` value. It holds the check's
+# own transient entity rather than a boolean, so a marker stranded by a
+# crashed worker is identifiable and a second check cannot silently
+# clobber the first.
+concept!: &replica/checking
+  this: tonk:replica/checking
+  description: A seed-update check in flight on this device.
+  with:
+    checking:
+      description: The dispatched check's transient entity.
+      the: xyz.tonk.replica/checking
+      cardinality: one
+      as: entity
+
+# When the last check COMPLETED on this device. Separate from the
+# in-flight marker above so it survives the next check starting: a
+# single status field would have to overwrite the previous result to
+# say "pending", losing the answer the view is showing.
+concept!: &replica/checked
+  this: tonk:replica/checked
+  description: When this device last completed a seed-update check.
+  with:
+    checked:
+      description: The completing check's timestamp.
+      the: xyz.tonk.replica/checked
+      cardinality: one
+      as: float
+
+# Why the last check FAILED, asserted only on failure and retracted on
+# the next success. Text rather than a case: an unreachable source and
+# a malformed document are different problems and the message is the
+# useful part. A space that never recorded a seed is NOT a failure —
+# it simply has no installed-seed fact, and that absence is the answer.
+concept!: &replica/check-failure
+  this: tonk:replica/check-failure
+  description: Why this device's last seed-update check failed.
+  with:
+    failure:
+      description: What went wrong, as reported to the person.
+      the: xyz.tonk.replica/check-failure
+      cardinality: one
+      as: text
+
+# A seed that EXISTS and where its bytes came from — global, durable,
+# and silent about whether anything installed it. The entity is the
+# content hash of the bytes, so two devices fetching the same library
+# converge on one entity without coordinating.
+#
+# `seed/installed` below adds the install-specific fields on this same
+# entity. Keeping them apart means a fetched-but-uninstalled seed can
+# never look half-installed, and `version` never has an absent case a
+# reader has to interpret.
+concept!: &seed/available
+  this: tonk:seed/available
+  description: A seed that exists, and where its bytes came from.
+  with:
+    source:
+      description: >
+        Where these bytes were fetched from. The entity is the content
+        hash alone, so the source rides alongside because a custom seed
+        is a different URL at the same shape.
+      the: xyz.tonk.seed/source
+      cardinality: one
+      as: text
+    replaces:
+      description: >
+        The installed seed this one would supersede — the backlink that
+        makes an available seed answerable on its own ("this is an
+        update to what you are running") rather than only by joining it
+        against the space's install record.
+      the: xyz.tonk.seed/replaces
+      cardinality: one
+      as: entity
+
+command!: &tonk/pause-sync
+  this: tonk:pause-sync
+  description: Toggle auto-sync (pause ⇄ resume) for a space.
+  with:
+    time:
+      description: The click's timestamp; makes each dispatch a distinct transient.
+      the: xyz.tonk.command.pause-sync/time
+      as: float
+    space:
+      description: The target space DID — the replica whose auto-sync is flipped.
+      the: xyz.tonk.pause-sync/space
+      as: entity
+
+# The FAB fallback seat — the nearest corner restored on the next page load,
+# stored on `state:fab`. The live page keeps the exact point along the nearest
+# edge; element.rs persists this compatible corner after every pointer-up drop.
+concept!: &fab/dock
+  this: tonk:fab/dock
+  description: Persisted FAB dock (profile-meta claim).
+  with:
+    dock:
+      description: The fallback corner restored on the next page load.
+      the: xyz.tonk.fab/dock
+      cardinality: one
+      as: entity
+
+# ============================================================
+# JOIN — redeem an invite at /join (runs on the profile meta branch)
+# ============================================================
+
+# Redeem an invite URL. Fired by `<tonk-page on:join=tonk:join>` on the
+# /join view: the element reads the page location (the service worker can't
+# see the `#fragment`, where an open invite's seed rides) and delivers it in
+# the mount event's `detail` (a flat, URL-shaped record). The worker's
+# `JoinHandler` reads the complete `href`, claims the
+# invite, and drives the overlay-only `tonk:join/status` (pending → failed,
+# or retract + durable replica on success). Lives here, not in core.yaml:
+# the join happens on the PROFILE meta branch (it records a replica), so
+# the command + view must resolve there.
+# How the page element's mount fills it: the complete href, fragment and
+# all, off the mount event's `detail`.
+event!: &on/join
+  type: "mount"
+  where:
+    url: ".detail.href"
+
+command!: &tonk/join
+  this: tonk:join
+  description: Redeem an invite URL and join its space.
+  with:
+    url:
+      description: The complete invite URL, including any fragment.
+      the: xyz.tonk.command.join/url
+      as: text
+
+# The in-flight join, overlay-only, at the fixed `tonk:join/status` entity.
+# Just `status` (`tonk:pending` while claiming, `tonk:failed` on error) so it
+# resolves the moment a join starts — a concept also requiring reason/kind
+# would only resolve once those exist (never in pending). On success the
+# handler retracts this and asserts the durable replica instead; the Hub
+# (durable replicas) never shows in-flight or failed joins.
+concept!: &join/status
+  this: tonk:join/status
+  description: An in-flight join attempt's state (overlay-only).
+  with:
+    status:
+      description: The attempt state, either pending or failed.
+      the: xyz.tonk.join/status
+      cardinality: one
+      as: entity
+
+# The failure detail for a join, at the same `tonk:join/status` entity —
+# asserted alongside `status: tonk:failed`. A separate concept so the
+# pending state (status only) still resolves; the view reads this for the
+# message when failed.
+concept!: &join/failure
+  this: tonk:join/failure
+  description: Why a join attempt failed (overlay-only).
+  with:
+    reason:
+      description: Human-readable failure message.
+      the: xyz.tonk.join/reason
+      cardinality: one
+      as: text
+    kind:
+      description: >
+        The failure class: malformed, audience-mismatch, revoked,
+        unavailable, refused, or claim-failed.
+      the: xyz.tonk.join/kind
+      cardinality: one
+      as: text
+
+# The /join view — a directory view for `tonk:join/status`, mounted by a
+# no-entity `<tonk-display model=tonk:join/status>` (see the Leptos /join
+# route). Directory chrome renders even with zero instances, so the
+# `<tonk-page>` trigger mounts and fires `tonk:join` on load before any
+# status exists. The per-instance repeat shows the shared pulse while pending and
+# the failure callout (`model=tonk:join/failure`) once a join fails. On
+# success there is no status to show: the worker posts a navigate message
+# to the originating client (see the host's navigate provider), which redirects into
+# `/space/<subject>` while the chrome's "Joining…" stands until the page
+# leaves.
+view!:
+  this: tonk:join/status
+  show:
+    directory: |
+      <div class="join-card-wrap">
+        <!-- `data-id={this}` marks the repeat row, so the opening and
+             failure surfaces are per-status. -->
+        <div class="join-status" data-id={this}>
+          <div class="join-opening" aria-live="polite">
+            <span class="join-opening-status">opening this space</span>
+            <span class="tonk-pulse" aria-hidden="true"></span>
+          </div>
+          <tonk-display entity={this} model=tonk:join/failure>
+            <span slot="no-entity"></span>
+            <span slot="no-model"></span>
+            <span slot="loading"></span>
+          </tonk-display>
+        </div>
+      </div>
+
+# The failure view — the default view for `tonk:join/failure`, so the join
+# directory's per-instance `<tonk-display model=tonk:join/failure>` renders
+# it only when a failure exists (i.e. status: failed). Shows the reason.
+view!:
+  this: tonk:join/failure
+  show:
+    ui: |
+      <!-- Revoked and deleted intentionally share this one screen. The
+           diagnostic reason remains in the console/worker status; rendering it
+           here would reveal whether the space still exists. Bind the wall to
+           the failure row: static chrome renders even on an empty frame while
+           the join is pending or the entity query is still resolving. -->
+      <section class="edge-wall edge-wall--closed" data-id={this} role="status" aria-labelledby="edge-closed-title" aria-describedby="edge-closed-guidance">
+        <h1 class="edge-statement" id="edge-closed-title">this share link expired</h1>
+        <div class="edge-narrator" id="edge-closed-guidance">ask the person who shared this space to send you a new link</div>
+        <div class="edge-run">
+          <a class="ebtn solid" href="/">go to home</a>
+        </div>
+      </section>
+
+# ============================================================
+# ROUTING (profile branch) — mirrors core.yaml, scoped to the profile
+# ============================================================
+#
+# The profile is itself a routable target: `<tonk-site path=…>` posts to
+# `/api/profile/branch/main/site`, the SW asserts this tab's `tonk:site` on this
+# branch (matching the path against the `route!` table below), and the element
+# renders `<tonk-display entity=site:… model=tonk:site>`. The site view nests the
+# matched `{concept}` on the same site entity — the same indirection a space uses.
+
+# A tab's location + the route concept it renders. Mirrors core.yaml's `&site`.
+concept!: &site
+  this: tonk:site
+  description: A tab's location and the route concept it renders.
+  with:
+    path:
+      description: Currently active path on this site.
+      the: xyz.tonk.site/path
+      cardinality: one
+      as: text
+    anchor:
+      description: Currently active anchor (URL hash) on this site.
+      the: xyz.tonk.site/anchor
+      cardinality: one
+      as: text
+    space:
+      description: The space (repository name) on this site.
+      the: xyz.tonk.site/space
+      cardinality: one
+      as: text
+    branch:
+      description: The active branch name on this site (defaults to "main").
+      the: xyz.tonk.site/branch
+      cardinality: one
+      as: text
+    replica:
+      description: Currently active replica on this site.
+      the: xyz.tonk.site/replica
+      cardinality: one
+      as: entity
+    route:
+      description: Matched route of this site.
+      the: xyz.tonk.site/route
+      cardinality: one
+      as: entity
+    concept:
+      description: Matched route's concept (the model the shell mounts).
+      the: xyz.tonk.site/concept
+      cardinality: one
+      as: entity
+
+# The site view: render the matched route concept on this same site entity.
+view!:
+  this: tonk:site
+  show:
+    ui: |
+      <tonk-display entity={this} model={concept} />
+
+# The route table concept. Mirrors core.yaml's `&route`.
+concept!: &route
+  this: tonk:route
+  description: A route — maps a path pattern to the model the SW mounts.
+  with:
+    path:
+      description: The axum/matchit path pattern.
+      the: xyz.tonk.route/path
+      cardinality: one
+      as: text
+    concept:
+      description: The route model to render when this path matches.
+      the: xyz.tonk.route/concept
+      cardinality: one
+      as: entity
+
+# What a seed version seeded, one attribute per component kind, on the
+# seed version's own entity. The kinds are split rather than folded into
+# one `component` because retraction differs by kind (a view retracts from
+# a pin, a concept must already be on the branch, a rule wants its effect
+# URI) and the order matters — a concept retracted before the views naming
+# it would dangle. `route` doubles as the router's precedence signal: a
+# route named here came from the seed, and one that is not came from the
+# space, which wins an equal-specificity tie.
+concept!: &seed/installed
+  this: tonk:seed/installed
+  description: The seed a space is running — what an upgrade withdraws.
+  with:
+    prior:
+      description: >
+        The seed this one replaced, or `seed:none` on a first install —
+        present on every seed rather than absent on the first, so the
+        chain reads uniformly.
+      the: xyz.tonk.seed/prior
+      cardinality: one
+      as: entity
+    version:
+      description: >
+        The version of the commit that installed this seed. A version,
+        not a revision: a revision includes the tree its commit produces,
+        so a fact inside a commit can never name it, while a version is
+        knowable before the batch is written — which is what lets this
+        record ride the same commit as the claims it describes.
+
+        This is the whole upgrade mechanism: nothing tags individual
+        definitions, so an upgrade reads THIS commit's history, inverts
+        its assertions into retractions, and applies them alongside the
+        new library in one atomic commit.
+      the: xyz.tonk.seed/version
+      cardinality: one
+      as: text
+
+# The profile's only route for now: `/` renders the Hub.
+route!: &route/home
+  this: id:tonk:route/home
+  path: "/"
+  concept: tonk:hub
+
+# The Hub route model + its view: the space directory over this (profile) branch.
+# `tonk:hub` is the concept the `/` route resolves to; its view renders the
+# `space` directory view, the same picker the legacy `<tonk-hub>` element mounted.
+concept!: &hub
+  this: tonk:hub
+  description: The Tonk Hub — a picker over the profile's spaces.
+  with:
+    # Picked off the site entity. The hub view renders the `space`
+    # directory and doesn't read it, but a `concept!` must declare at
+    # least one field, and `path` is the natural one a route model carries.
+    path:
+      description: The active path, picked off the site.
+      the: xyz.tonk.site/path
+      cardinality: one
+      as: text
+
+view!:
+  this: tonk:hub
+  show:
+    ui: |
+      <div class="display-view-slot">
+        <tonk-title text="Tonk"></tonk-title>
+        <tonk-display model="space"></tonk-display>
+      </div>
+
+# The /settings route — the account settings page, per the fabb wireframes:
+# the same hub chrome (logo, two-cell bar) with the settings section open
+# under it. `<ui-hub-account view="settings">` opens its settings page on
+# mount; its spaces cell navigates home rather than swapping in place,
+# because on this route there is no spaces stack behind it.
+route!: &route/settings
+  this: id:tonk:route/settings
+  path: "/settings"
+  concept: tonk:settings
+
+# `/settings/link` is the same page: a terminal opened it to ask for
+# access, and the settings panel reads the request off the location.
+route!: &route/settings/link
+  this: id:tonk:route/settings/link
+  path: "/settings/link"
+  concept: tonk:settings
+
+concept!: &settings-route
+  this: tonk:settings
+  description: The account settings page.
+  with:
+    path:
+      description: The active path, picked off the site.
+      the: xyz.tonk.site/path
+      cardinality: one
+      as: text
+
+view!:
+  this: tonk:settings
+  show:
+    ui: |
+      <div class="hub-page">
+        <tonk-title text="settings — Tonk"></tonk-title>
+        <div class="hub-logo" role="img" aria-label="tonk"><svg viewBox="0 0 1024 343" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M337.41 169.57C337.41 136.215 363.983 109.171 396.764 109.171C429.539 109.171 456.112 136.215 456.112 169.57C456.112 202.932 429.539 229.975 396.764 229.975C363.983 229.975 337.41 202.932 337.41 169.57ZM643.51 54C614.396 54 589.91 61.6682 572.703 77.2353C563.913 85.1861 557.227 94.8795 552.759 105.986C552.206 97.3086 549.67 85.1977 540.937 75.1754C530.712 63.4453 515.039 55.8233 494.461 56.2041C488.76 56.3253 484.229 61.045 484.345 66.7514C484.46 72.3886 489.06 76.8833 494.668 76.8833C494.737 76.8833 494.812 76.8833 494.881 76.8833C509.044 76.6006 519.252 81.8339 525.282 88.6654C534.084 98.6415 532.072 113.834 532.02 114.197C531.167 119.817 535.012 125.079 540.626 125.962C541.168 126.048 545.537 126.602 547.612 124.565C546.673 130.203 546.171 136.076 546.171 142.192C546.171 183.349 531.225 224.038 507.39 247.764C488.403 266.66 465.219 275.805 434.911 279.382C479.549 263.671 511.569 221.038 511.569 170.874C511.569 107.365 460.262 55.8868 396.966 55.8868C333.675 55.8868 282.368 107.365 282.368 170.874C282.368 234.383 333.675 285.868 396.966 285.868C399.121 285.868 401.254 285.793 403.375 285.677C451.126 285.1 484.569 276.722 510.508 250.902C535.196 226.328 550.592 184.555 550.592 142.192C550.592 90.1771 586.197 57.8658 643.51 57.8658C737.703 57.8658 741.576 107.169 741.657 113.96C731.477 116.378 708.795 127.093 708.795 147.247V284.702H742.314C745.744 284.702 746.107 282.556 746.107 281.333V114.209C746.107 107.983 743.208 54 643.51 54Z" fill="currentColor"/><path d="M144.171 58.5683L129.662 58.5856C106.081 58.6318 91.4574 69.3695 83.3356 77.9031C72.9486 88.8081 67 103.873 67 119.221C67 148.151 86.5636 179.285 133.299 179.285V155.658C100.513 155.658 90.6043 136.029 90.6043 119.221C90.6043 104.029 99.7116 81.7516 130.135 81.7516L144.171 81.7458V261.448C131.691 261.448 124.786 248.968 124.786 238.08L104.974 238.092C104.974 267.316 130.095 284.383 143.98 284.706H170.432C195.829 284.706 215.053 259.717 215.053 196.924V107.306H225.924V155.658H274.164V58.5683H144.171Z" fill="currentColor"/><path d="M926.713 197.694L895.344 197.463C903.656 193.101 910.337 187.937 915.461 183.073C941.844 158.049 955.222 116.16 955.222 58.5828H938.99C938.99 111.527 927.318 149.447 904.302 171.286C893.817 181.227 875.475 192.721 847.444 191.544V58.5828H776.988V211.663C776.988 244.701 754.468 249.9 754.468 249.9C754.474 249.9 754.468 284.715 754.468 284.715H847.444V216.815C847.444 211.703 856.764 211.721 856.764 216.815C856.764 225.54 856.741 239.803 856.741 248.977C856.741 275.98 879.85 289.735 907.633 289.735C932.039 289.735 955.43 274.601 956.098 248.977C956.536 232.186 960.612 197.694 926.713 197.694Z" fill="currentColor"/></svg></div>
+        <main class="hubcol">
+          <ui-hub-account view="settings"></ui-hub-account>
+        </main>
+      </div>
+
+# The /join route: redeem an invite. The shell's top-level `<tonk-site>`
+# routes every path against this table, so without an entry `/join` matched
+# nothing and the site rendered an empty `tonk:site` ("required attribute
+# missing"). Mirrors the Hub: `/join` → `tonk:join/route`, whose entity view
+# (on the site entity) mounts the no-entity `<tonk-display
+# model="tonk:join/status">` directory. That directory's chrome carries the
+# `<tonk-page on:join=tonk:join>` trigger, which reads the page location
+# (the SW can't see the `#fragment` seed) and fires `tonk:join`.
+route!: &route/join
+  this: id:tonk:route/join
+  path: "/join"
+  concept: tonk:join/route
+
+concept!: &join/route
+  this: tonk:join/route
+  description: The /join page — redeem an invite on the profile meta branch.
+  with:
+    # The hub carries `path` for the same reason: a route model must declare
+    # at least one field, and the view doesn't read it (the join trigger
+    # reads the location itself).
+    path:
+      description: The active path, picked off the site.
+      the: xyz.tonk.site/path
+      cardinality: one
+      as: text
+
+view!:
+  this: tonk:join/route
+  show:
+    ui: |
+      <div class="display-view-slot">
+        <tonk-title text="Tonk"></tonk-title>
+        <main class="join-view">
+          <style>
+            .join-view {
+              --edge-page:#e8e6e4; --edge-ink:#38182a; --edge-on:#f7f6f5;
+              --edge-soft:#5b4953; --edge-card:#f7f6f5;
+              --edge-ring:rgba(56,24,42,.85); --edge-wash:rgba(56,24,42,.12);
+              min-height:100vh; min-height:100dvh; padding:48px 16px 80px;
+              box-sizing:border-box; color:var(--edge-ink);
+              background:var(--edge-page); font-family:'IBM Plex Sans Condensed',
+                'Bahnschrift','Arial Narrow',system-ui,sans-serif;
+              font-weight:600; letter-spacing:.02em; -webkit-font-smoothing:antialiased;
+            }
+            :root.wa-dark .join-view {
+              --edge-page:#161313; --edge-ink:#e2dfdd; --edge-on:#221c1d;
+              --edge-soft:#c8c3bf; --edge-card:#1b1718;
+              --edge-ring:rgba(226,223,221,.55); --edge-wash:rgba(226,223,221,.15);
+            }
+            .edge-mast { position:relative; display:block; width:132px;
+              margin:0 auto 56px; color:var(--edge-ink); z-index:2; }
+            .edge-mast img { display:block; width:100%; height:auto; }
+            :root.wa-dark .edge-mast img { filter:invert(1); }
+            .edge-wall { width:min(576px, 100%); margin:0 auto;
+              display:flex; flex-direction:column; gap:7px; }
+            .edge-statement, .edge-narrator { min-height:36px;
+              background:var(--edge-card); box-shadow:0 0 0 1px var(--edge-ring); }
+            .edge-statement { margin:0; padding:10px 14px; display:flex; align-items:flex-end;
+              color:var(--edge-ink); font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:13.5px;
+              line-height:1.55; text-wrap:balance; }
+            .edge-narrator { padding:10px 14px; color:var(--edge-soft);
+              font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:13px;
+              font-weight:400; line-height:1.55; text-wrap:pretty; }
+            .edge-run { display:flex; gap:0; }
+            .ebtn { height:40px; min-height:40px; flex:1 1 0; box-sizing:border-box;
+              padding:8px 10px; display:flex; align-items:flex-end; justify-content:flex-end;
+              appearance:none; border:0; border-radius:0; color:var(--edge-ink);
+              background:transparent; font:inherit; line-height:1; white-space:normal;
+              text-decoration:none; text-transform:lowercase; cursor:pointer; }
+            .ebtn.solid { color:var(--edge-on); background:var(--edge-ink); }
+            .ebtn:active { scale:.96; }
+            .join-view:has(.join-status-slot[data-state="ready"]):not(:has(.edge-wall--closed))
+              .edge-mast { display:none; }
+            /* Match the destination-neutral boot shell: only the shared pulse
+               is visible, centred over the whole route. Keep the status text
+               in the live region for assistive technology. */
+            .join-opening { position:fixed; inset:0; z-index:3;
+              display:flex; align-items:center; justify-content:center;
+              color:var(--edge-ink); background:var(--edge-page); }
+            .join-opening-status { position:absolute; width:1px; height:1px;
+              margin:-1px; padding:0; overflow:hidden; clip:rect(0,0,0,0);
+              white-space:nowrap; border:0; }
+            .join-status:has(tonk-display[data-state="ready"]) .join-opening { display:none; }
+            /* A reconnect keeps the last good failure view mounted while its
+               display returns to loading. Prefer the rendered terminal state
+               over that transient lifecycle attribute, or both rows appear. */
+            .join-status:has(.edge-wall--closed) .join-opening { display:none; }
+            @media (max-width:680px) {
+              .join-view { padding-top:20px; }
+              .edge-mast { width:98px; min-height:44px; margin-bottom:40px;
+                display:flex; align-items:center; }
+              .edge-run { flex-direction:column; }
+              .ebtn { height:44px; min-height:44px; }
+            }
+          </style>
+          <a class="edge-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
+          <tonk-page on:join=tonk:join></tonk-page>
+          <!-- Invite URLs are opened directly in the browser. Bare /join
+               visits return home through the join handler. -->
+          <tonk-display class="join-status-slot" model="tonk:join/status">
+            <span slot="empty"></span>
+            <span slot="loading"></span>
+            <span slot="no-entity"></span>
+          </tonk-display>
+        </main>
+      </div>
+
+# The /inspector and /diagnose routes: the same query-inspector and
+# search-tree views a space exposes, but pinned to the PROFILE branch so
+# you can explore the profile DB (the hub's replicas, the member name,
+# sync state) directly. `<tonk-inspector>` and `<tonk-tree>` resolve their
+# repository from their own `with` — here the profile endpoint — so they
+# query `/api/profile/branch/main/query` rather than a named space.
+#
+# Both take that `with` from the SITE, exactly as core.yaml's route views do,
+# rather than naming the profile endpoint literally. The site's `repo` is a
+# LOCATION TOKEN (`profile:<name>` here, a bare repository key in a space), so
+# `{branch}@{repo}` is the one spelling that resolves in either context — which
+# is what lets the same view be written once. The literal it replaces also
+# pinned the profile NAME, so it addressed the wrong endpoint outright for any
+# profile not called `tonk`.
+route!: &route/inspector
+  this: id:tonk:route/inspector
+  path: "/inspector"
+  concept: tonk:inspector/route
+
+concept!: &inspector/route
+  this: tonk:inspector/route
+  description: The /inspector page — a query inspector over the profile DB.
+  with:
+    # The inspector needs no entity — it inspects the whole branch — but it
+    # does need the branch, so `repo`/`branch` are what the model declares.
+    path:
+      description: The active path, picked off the site.
+      the: xyz.tonk.site/path
+      cardinality: one
+      as: text
+    repo:
+      description: The repository location token, picked off the site entity.
+      the: xyz.tonk.site/repo
+      cardinality: one
+      as: text
+    branch:
+      description: The branch, picked off the site entity.
+      the: xyz.tonk.site/branch
+      cardinality: one
+      as: text
+
+view!:
+  this: tonk:inspector/route
+  show:
+    ui: |
+      <div class="display-view-slot">
+        <tonk-title text="Tonk"></tonk-title>
+        <tonk-inspector with="{branch}@{repo}"></tonk-inspector>
+      </div>
+
+route!: &route/diagnose
+  this: id:tonk:route/diagnose
+  path: "/diagnose"
+  concept: tonk:diagnose/route
+
+concept!: &diagnose/route
+  this: tonk:diagnose/route
+  description: The /diagnose page — the search-tree inspector over the profile DB.
+  with:
+    path:
+      description: The active path, picked off the site.
+      the: xyz.tonk.site/path
+      cardinality: one
+      as: text
+    repo:
+      description: The repository location token, picked off the site entity.
+      the: xyz.tonk.site/repo
+      cardinality: one
+      as: text
+    branch:
+      description: The branch, picked off the site entity.
+      the: xyz.tonk.site/branch
+      cardinality: one
+      as: text
+
+view!:
+  this: tonk:diagnose/route
+  show:
+    ui: |
+      <div class="display-view-slot">
+        <tonk-title text="Tonk"></tonk-title>
+        <tonk-tree with="{branch}@{repo}"></tonk-tree>
+      </div>
+
+# The space route: the profile routes ANY `/space/{id}/...` to the same UI — a
+# full-size repo portal with the FAB floating on top — and hands the rest of the
+# path to a NESTED `<tonk-site>` inside the portal, which routes it against the
+# space's own route table. So `/space/{id}`, `/space/{id}/inspector`, etc. all
+# render the same chrome; only the nested router's path differs.
+# Two routes, same concept: the bare space root (`/space/{id}`, no sub-path) and
+# any sub-path (`/space/{id}/{*rest}`). A `{*rest}` span may not capture nothing,
+# so the bare form is its own route; it leaves `rest` unstamped, and the nested
+# `<tonk-site>` defaults its absent `path` to `/`.
+#
+# The view keeps `<tonk-site path={rest}>` even when `rest` is absent because
+# `rest` is a `cardinality: one` (scalar) field: `<tonk-display>` stamps the
+# concept's scalar field names onto the `<tonk-view>` (`data-scalar-fields`), so
+# the planner renders them as plain substitutions rather than iteration axes that
+# would clone the host zero times — and drop it — when the value is empty.
+route!: &route/space-root
+  this: id:tonk:route/space-root
+  path: "/space/{id}"
+  concept: tonk:space/chrome
+
+route!: &route/space-sub
+  this: id:tonk:route/space-sub
+  path: "/space/{id}/{*rest}"
+  concept: tonk:space/chrome
+
+# The space chrome model. `{id}` (the repository) and `{rest}` (the sub-path) are
+# captured from the path and stamped on the site; the view reads them. `rest` is
+# optional — the bare space route does not capture it, and the nested `<tonk-site>`
+# defaults its absent `path` to `/`.
+concept!: &space-chrome
+  this: tonk:space/chrome
+  description: The space chrome — repo portal with the FAB on top.
+  with:
+    id:
+      description: The space repository id, picked off the site entity.
+      the: xyz.tonk.site/id
+      cardinality: one
+      as: text
+  maybe:
+    rest:
+      description: The sub-path within the space, picked off the site entity.
+      the: xyz.tonk.site/rest
+      cardinality: one
+      as: text
+
+view!:
+  this: tonk:space/chrome
+  show:
+    ui: |
+      <style>
+        /* The absent-space state is profile chrome, not space content. It uses
+           the same edge wall, palette, typography, and compact geometry as the
+           `/join` ceremony instead of inheriting Web Awesome's pill skin. */
+        .space-unknown {
+          --edge-page:#e8e6e4; --edge-ink:#38182a; --edge-on:#f7f6f5;
+          --edge-soft:#5b4953; --edge-card:#f7f6f5;
+          --edge-ring:rgba(56,24,42,.85); --edge-wash:rgba(56,24,42,.12);
+          position:fixed; inset:0;
+          overflow:auto; padding:48px 16px 80px; box-sizing:border-box;
+          background:var(--edge-page);
+          color:var(--edge-ink); font-family:'IBM Plex Sans Condensed',
+            'Bahnschrift','Arial Narrow',system-ui,sans-serif;
+          font-weight:600; letter-spacing:.02em; -webkit-font-smoothing:antialiased; }
+        :root.wa-dark .space-unknown {
+          --edge-page:#161313; --edge-ink:#e2dfdd; --edge-on:#221c1d;
+          --edge-soft:#c8c3bf; --edge-card:#1b1718;
+          --edge-ring:rgba(226,223,221,.55); --edge-wash:rgba(226,223,221,.15); }
+        .space-unknown *, .space-unknown *::before, .space-unknown *::after {
+          box-sizing:border-box; }
+        .space-unknown ::selection { background:var(--edge-ink); color:var(--edge-on); }
+        .space-unknown :focus-visible { outline:none;
+          box-shadow:inset 0 0 0 2px var(--edge-on),
+            inset 0 0 0 4px var(--edge-ink); }
+        .space-unknown-mast { position:relative; display:block; width:132px;
+          margin:0 auto 56px; color:var(--edge-ink); z-index:2; }
+        .space-unknown-mast img { display:block; width:100%; height:auto; }
+        :root.wa-dark .space-unknown-mast img { filter:invert(1); }
+        .space-unknown-wall { width:min(576px, 100%); margin:0 auto;
+          display:flex; flex-direction:column; gap:7px; }
+        .space-unknown-statement, .space-unknown-narrator { min-height:36px;
+          margin:0; background:var(--edge-card);
+          box-shadow:0 0 0 1px var(--edge-ring); }
+        .space-unknown-statement { padding:10px 14px; display:flex; align-items:flex-end;
+          color:var(--edge-ink);
+          font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:13.5px;
+          font-weight:600; line-height:1.55; text-wrap:balance; }
+        .space-unknown-narrator { padding:10px 14px; color:var(--edge-soft);
+          font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:13px;
+          font-weight:400; line-height:1.55; text-wrap:pretty; }
+        .space-unknown-run { display:flex; }
+        .space-unknown-run tonk-space-login { display:block; width:100%; }
+        .space-unknown-back { align-self:flex-start; min-height:44px;
+          display:flex; align-items:center; color:var(--edge-ink);
+          text-underline-offset:3px; }
+        .space-unknown-home { width:100%; min-height:44px; padding:8px 10px;
+          border:0; border-radius:0; font:inherit; letter-spacing:inherit;
+          display:flex; align-items:flex-end; justify-content:flex-end; gap:8px;
+          background:var(--edge-ink); color:var(--edge-on); text-decoration:none;
+          text-transform:lowercase; cursor:pointer; transition-property:scale;
+          transition-duration:150ms; transition-timing-function:ease-out; }
+        .space-unknown-home:hover {
+          background:linear-gradient(var(--edge-wash),var(--edge-wash)), var(--edge-ink); }
+        .space-unknown-home:active { scale:.96; }
+        @media (max-width:680px) {
+          .space-unknown { padding-top:20px; }
+          .space-unknown-mast { width:98px; min-height:44px; margin-bottom:40px;
+            display:flex; align-items:center; }
+          .space-unknown-home { min-height:44px; }
+        }
+        @media (prefers-reduced-motion:reduce) {
+          .space-unknown-home { transition:none; }
+          .space-unknown-home:active { scale:none; }
+        }
+        @media (forced-colors:active) {
+          .space-unknown :focus-visible { outline:2px solid Highlight; }
+        }
+        /* Keyed off the display's own state, NOT a wrapper element: wrapping
+           these siblings in a container changed which element the template
+           engine picks as the repeat node (the outermost subject-referencing
+           element), so `<tonk-site>` became the repeat node and `<tonk-fab>`
+           was dropped from the output entirely. `:has()` reaches the sibling
+           display without adding an element. */
+        tonk-view:has(> tonk-display[data-state="no-model"]) > tonk-site,
+        tonk-view:has(> tonk-display[data-state="no-model"]) > tonk-fab { display: none; }
+      </style>
+      <tonk-site with="main@{id}" allow="main@{id}" path={rest}></tonk-site>
+      <tonk-fab with="main@profile:tonk" space={id}></tonk-fab>
+      <tonk-display with={id} entity={id} model=tonk:repository view=title>
+        <!-- `no-model` is now the absent-space panel below, which sets its
+             own title; a second `no-model` child would render alongside it
+             and fight over `document.title` (update_slot_children shows
+             EVERY matching child, not the first). `no-entity` keeps the
+             quiet placeholder: the concept resolved, the row just is not
+             here yet. -->
+        <tonk-title slot="no-entity" hidden text="Untitled — Tonk"></tonk-title>
+        <!-- The absent-space case. A repository this device has not
+             replicated answers every query with the EMPTY SET, so
+             `tonk:repository` resolves to nothing and this display lands
+             in `no-model`.
+
+             That state has TWO causes and they need opposite words: a
+             space the account knows and is still pulling, and a space
+             this person was never invited to. The DIRECTORY ROW tells
+             them apart. It hangs on the repository's own entity, is
+             asserted once per space and converges on every device, and
+             lives on the profile branch — so it is readable here even
+             though the space's own content is not. A row means the
+             account has this space and the bytes are on their way; no
+             row means the link opens nothing this account holds.
+
+             So the panel is a nested single-entity display over
+             `tonk:space`, and the access guidance owns both absence
+             states that display can report. `no-entity` is the normal
+             empty-row result; `no-model` covers an older profile whose
+             `space` concept has not arrived yet. -->
+        <!-- Light-DOM slots must be hidden in the template too: before the
+             display initializes they otherwise paint as ordinary content. -->
+        <div slot="no-model" hidden class="space-unknown">
+          <tonk-display with="main@profile:tonk" entity={id} model=space view=downloading>
+            <!-- The account has this space: it is arriving, not missing.
+                 When it lands, the OUTER display's standing subscription
+                 delivers a real frame and this whole panel is replaced. -->
+            <!-- No directory row: this account does not hold the space.
+                 A single-entity query normally reports `no-entity`; keep
+                 `no-model` as the same recovery for an older profile whose
+                 directory concept has not arrived yet. -->
+            <div slot="no-model" hidden>
+              <tonk-title text="Open this space — Tonk"></tonk-title>
+              <a class="space-unknown-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
+              <div class="space-unknown-wall">
+                <h1 class="space-unknown-statement">open this space</h1>
+                <p class="space-unknown-narrator">Already use this space? Sign in with your account. If you added Tonk to your Home Screen, you may need to sign in again here.</p>
+                <!-- The recovery control opens the top-page account ceremony. -->
+                <div class="space-unknown-run">
+                  <tonk-space-login><button type="button" class="space-unknown-home">sign in<span aria-hidden="true">&#9656;</span></button></tonk-space-login>
+                </div>
+                <p class="space-unknown-narrator">New to this space? Ask someone in it to send you an invite link from <strong>share</strong>.</p>
+                <a class="space-unknown-back" href="/">go to home</a>
+              </div>
+            </div>
+            <div slot="no-entity" hidden>
+              <tonk-title text="Open this space — Tonk"></tonk-title>
+              <a class="space-unknown-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
+              <div class="space-unknown-wall">
+                <h1 class="space-unknown-statement">open this space</h1>
+                <p class="space-unknown-narrator">Already use this space? Sign in with your account. If you added Tonk to your Home Screen, you may need to sign in again here.</p>
+                <!-- The recovery control opens the top-page account ceremony. -->
+                <div class="space-unknown-run">
+                  <tonk-space-login><button type="button" class="space-unknown-home">sign in<span aria-hidden="true">&#9656;</span></button></tonk-space-login>
+                </div>
+                <p class="space-unknown-narrator">New to this space? Ask someone in it to send you an invite link from <strong>share</strong>.</p>
+                <a class="space-unknown-back" href="/">go to home</a>
+              </div>
+            </div>
+            <!-- A space seeded before the `downloading` facet existed
+                 resolves no view. Stay quiet rather than firing the
+                 built-in red callout at someone whose space is merely
+                 still arriving: `update_slot_children` toggles `hidden`
+                 on matching children, so an inert one suppresses it. -->
+            <span slot="no-view" hidden></span>
+          </tonk-display>
+        </div>
+        <!-- A space created before the title facet existed has no
+             `show: {title: …}` entry on its branch, so `view=title`
+             resolves nothing and the display enters `no-view` — a `danger`
+             state. `update_slot_children` toggles `hidden`, it never adds
+             or removes children, so with no matching slot child the
+             built-in red `<wa-callout>` fires. This inert child suppresses
+             that callout while pushing no title, leaving the tab exactly
+             as it was — the behavior for older spaces. -->
+        <span slot="no-view" hidden></span>
+      </tonk-display>
+
+# The catch-all: any path no static/`/space/…` route claims lands here. The
+# router matches most-specific-first, so this `{*rest}` span never shadows `/`,
+# `/join`, `/inspector`, `/diagnose`, or `/space/{id}` — it only catches what
+# nothing else does (a mistyped `/board`, a stale deep link). Without it such a
+# path matches no route, the site is never stamped, and the shell spins forever.
+route!: &route/not-found
+  this: id:tonk:route/not-found
+  path: "/{*rest}"
+  concept: tonk:not-found
+
+concept!: &not-found
+  this: tonk:not-found
+  description: The 404 page — a path the profile has no route for.
+  with:
+    # The attempted path, picked off the site, shown back to the user.
+    path:
+      description: The active path, picked off the site.
+      the: xyz.tonk.site/path
+      cardinality: one
+      as: text
+
+view!:
+  this: tonk:not-found
+  show:
+    ui: |
+      <div class="display-view-slot">
+        <style>
+          .nf { display: flex; flex-direction: column; align-items: center;
+                justify-content: center; gap: 8px; height: 100%; padding: 32px;
+                text-align: center; color: var(--wa-color-text-normal); }
+          .nf__code { font-size: 3rem; font-weight: 600; line-height: 1;
+                      color: var(--wa-color-text-quiet); }
+          .nf__msg { font-size: 1rem; color: var(--wa-color-text-quiet); }
+          .nf__path { font-family: var(--wa-font-family-code, monospace);
+                      color: var(--wa-color-text-normal); }
+          .nf__home { margin-top: 8px; text-decoration: none; }
+        </style>
+        <tonk-title text="Tonk"></tonk-title>
+        <div class="nf">
+          <div class="nf__code">404</div>
+          <div class="nf__msg">No page at <span class="nf__path">{path}</span></div>
+          <a class="nf__home" href="/"><wa-button variant="brand">Back to Hub</wa-button></a>
+        </div>
+      </div>
+
+# ════════════════════════════════════════════════════════════════════
+# Account facts
+#
+# Everything below is true about the ACCOUNT rather than about one space
+# or one device: who the account is, which devices may act for it, what
+# holds its secret, how it is registered with an access service, and
+# which profiles this device can open. These live on the account branch
+# and replicate with it, so a new device learns them by pulling rather
+# than by asking a service.
+#
+# Not every concept here is read through its declaration today — the FAB
+# subscribes to the raw `xyz.tonk.*` attributes instead, deliberately, so
+# a space seeded from an older library does not break the read (see
+# `tonk-fab/src/member_roster.rs`). That is a fine reason to query by
+# attribute. It is not a reason to leave the schema undocumented: the
+# declaration is what says a fact exists and what it means.
+# ════════════════════════════════════════════════════════════════════
+
+# The account-wide display name, keyed by the immutable account subject.
+#
+# Cardinality-one, so two devices renaming concurrently converge on one
+# deterministic value. No wall-clock ordering is implied: this is
+# dialog's merge, not last-write-wins.
+concept!: &account/name
+  this: tonk:account/name
+  description: The account's display name.
+  # ENTITY: the account's own DID.
+  with:
+    name:
+      description: >
+        The authoritative account display name
+        (xyz.tonk.account/display-name). Distinct from
+        `tonk:profile/name`, which is one device's own override.
+      the: xyz.tonk.account/display-name
+      cardinality: one
+      as: text
+
+# The account's registration with an access service.
+#
+# Registration state as a FACT, not as a cached HTTP answer: every
+# device reads it with an ordinary query and converges through sync, so
+# a device that never ran the enrollment still knows whether the account
+# is servable. Written when enrollment records `Registered` and again
+# when activation promotes it to `Active`.
+# Registration, activation and suspension are three INDEPENDENT facts,
+# each written once by the act that proves it and never rewritten.
+#
+# They compose rather than replace: a suspended account is still a
+# registered one, and an activated account keeps its registration. That
+# is why each is its own concept with every field required, instead of
+# optional fields on one row — absence of the concept is the signal, so
+# nothing needs a field that is sometimes missing.
+#
+# This replaces a single cardinality-one `status` string, which had two
+# faults. String variants are unvalidated: `is_active()` was a `==
+# "Active"` match that a typo defeats silently. And one slot written by
+# both enrollment and activation is a race — dialog's merge picks a
+# winner, so an account that IS activated could converge back to
+# registered. Adding a fact only ever narrows, so concurrent writers
+# converge instead of fighting.
+concept!: &account/registered
+  this: tonk:account/registered
+  description: The account enrolled an address with an access service.
+  # ENTITY: the account's own DID.
+  with:
+    registered-at:
+      description: When enrollment recorded the address, unix seconds.
+      the: xyz.tonk.account/registered-at
+      cardinality: one
+      as: unsigned-integer
+    email:
+      description: The address enrollment named.
+      the: xyz.tonk.account/customer-email
+      cardinality: one
+      as: text
+    provider:
+      description: >
+        Where this account syncs: the UCAN endpoint its spaces attach
+        their remotes to. Known at enrollment and unchanged by
+        activation, so it belongs here rather than on the activation
+        fact — a client can attach its remote immediately and let the
+        gate answer.
+
+        That is what makes activation observable without asking: the
+        remote answers 403 while the customer is unconfirmed and 200
+        once the emailed link is opened, so a device learns it was
+        activated from the sync it was already doing.
+      the: xyz.tonk.account/provider-address
+      cardinality: one
+      as: text
+
+# Activation. Its PRESENCE is what makes an account served; nothing has
+# to overwrite the registration to say so.
+# The account is being LINKED on this device right now — overlay-only.
+# Login finishes as soon as custody is recovered, so between then and the
+# account branch arriving there is a real window where the person is
+# signed in but their spaces are not here yet. Without this the Hub had
+# nothing to say in that window: it offered "link an account" (a door
+# already walked through) over an empty stack (a claim nobody had
+# established).
+#
+# Presence is the whole signal, and overlay because the window is
+# temporary: a worker that dies mid-link leaves nothing to clear.
+concept!: &account/linking
+  this: tonk:account/linking
+  description: This device is linking the account right now.
+  # ENTITY: the account's own DID.
+  with:
+    linking:
+      description: Always true while the link runs; dropped when it settles.
+      the: xyz.tonk.account/linking
+      cardinality: one
+      as: boolean
+
+concept!: &account/active
+  this: tonk:account/active
+  description: The account confirmed its address and is served.
+  # ENTITY: the account's own DID.
+  with:
+    activated-at:
+      description: >
+        When the emailed link was opened and the service confirmed it,
+        unix seconds.
+      the: xyz.tonk.account/activated-at
+      cardinality: one
+      as: unsigned-integer
+
+# Suspension: the service withdrew.
+concept!: &account/suspended
+  this: tonk:account/suspended
+  description: The service withdrew from serving this account.
+  # ENTITY: the account's own DID.
+  with:
+    suspended-at:
+      description: >
+        When the withdrawal took effect, unix seconds. A support
+        conversation starts with when service stopped.
+      the: xyz.tonk.account/suspended-at
+      cardinality: one
+      as: unsigned-integer
+    reason:
+      description: Why the service withdrew, in words a person can act on.
+      the: xyz.tonk.account/suspension-reason
+      cardinality: one
+      as: text
+
+# The onboarding account: a real account this device minted for itself,
+# custodied locally, before anyone signed up.
+#
+# ENTITY: the onboarding account's own DID.
+#
+# It exists so a device can create and own spaces immediately — signup is
+# not a precondition for using Tonk. Its secret is sealed to a keypair on
+# this device rather than to a passkey, which is exactly what makes it
+# INTERIM: nothing recovers it elsewhere, and signing up rotates every
+# custodied seed onto the real account and retires this one.
+#
+# Recorded as a fact so it can be seen. The secret itself stays in a
+# credential site; this is only the DID and the moment, so an inspector can
+# answer "which account am I acting as, and is it the real one?".
+#
+# This account HAS custody before any passkey exists: a custodian keypair
+# on this device, a KEK sealed to it, and the account secret sealed under
+# that. All three live in credential sites, so unlike a passkey's envelope
+# there is no `secret:message` to find — the custodian is a local key, not
+# a principal anything else can address. `custodian` names it so the
+# arrangement is at least visible.
+concept!: &account/onboarding
+  this: tonk:account/onboarding
+  description: A locally custodied account, held until a real one replaces it.
+  with:
+    minted-at:
+      description: When this device minted the onboarding account, unix seconds.
+      the: xyz.tonk.account/onboarding-minted-at
+      cardinality: one
+      as: unsigned-integer
+  maybe:
+    custodian:
+      description: >
+        The local keypair holding this account: what its secret is sealed
+        under before a passkey exists. A device-local key, so nothing
+        addresses it and no sealed message names it as recipient — this is
+        the only record that it is what currently holds the account.
+      the: xyz.tonk.account/onboarding-custodian
+      cardinality: one
+      as: entity
+    retired-at:
+      description: >
+        When a real account took over, unix seconds. Its presence is what
+        says this account is no longer the one in use — the row stays so
+        the handover is visible rather than silently gone.
+      the: xyz.tonk.account/onboarding-retired-at
+      cardinality: one
+      as: unsigned-integer
+
+# The account's status, DERIVED from the facts above.
+#
+# ENTITY: the account's own DID.
+#
+# Deductive (`assert:`, no bang), so it is computed on read and never
+# stored. A stored status would be a writable slot that could disagree with
+# the facts it summarises; deriving it means the summary cannot drift from
+# what actually happened.
+#
+# The four cases are mutually exclusive, and each rule below states the
+# whole condition rather than relying on rule order:
+#
+#   case:onboarding  a locally custodied account, not yet registered
+#   case:registered  enrolled, and neither activated nor suspended
+#   case:active      activated and not suspended
+#   case:suspended   the service withdrew
+concept!: &account/status
+  this: tonk:account/status
+  description: The account's status, derived from its registration facts.
+  with:
+    status:
+      description: >
+        `case:onboarding`, `case:registered`, `case:active`, or
+        `case:suspended` — an entity label rather than text, so a typo
+        cannot silently read as a different state.
+      the: xyz.tonk.account/status
+      cardinality: one
+      as: entity
+
+# An onboarding account that has not been handed over is interim.
+# ---------------------------------------------------------------
+# PRESENCE — where a space stands on THIS device
+# ---------------------------------------------------------------
+#
+# Derived rather than stored so they cannot drift from the replica they
+# describe.
+#
+# The replica is resolved FORWARD from the session: a replica entity is
+# derived from `(profile, subject)`, so binding the space and the session's
+# profile determines the row. Both rules therefore bind `?replica` in
+# `when:`, which is what lets the second one negate over it — a negated
+# premise may not introduce bindings, its own entity included.
+#
+# There is no `remote` rule for that reason: remote is the ABSENCE of a
+# replica row, and negating it would have to introduce the very entity it
+# is testing for. Absence of `presence` carries that case instead.
+#
+# Seeding is genuinely per-replica: only the device that CREATED a space
+# ever sees it mid-seed, since any other device holding it pulled content
+# that already carries the seed.
+
+concept!: &db/session:
+  this: concept:session
+  description: Database session information
+  with:
+    profile:
+      description: >
+        Profile entity (as did:key) representing persistent identity on
+        this device.
+      the: dialog.session/profile
+      as: entity
+
+concept!: &space/replica
+  this: tonk:space/replica
+  description: A device profile's replica of a space.
+  with:
+    subject:
+      description: The space this replica is a view of.
+      the: xyz.tonk.replica/subject
+      cardinality: one
+      as: entity
+    profile:
+      description: The device profile holding it.
+      the: xyz.tonk.replica/profile
+      cardinality: one
+      as: entity
+
+concept!: &space/replica-status
+  this: tonk:space/replica-status
+  description: A replica's seeding status.
+  with:
+    status:
+      description: '`tonk:blank` while seeding, `tonk:initialized` after.'
+      the: xyz.tonk.replica/status
+      cardinality: one
+      as: entity
+
+# A pull IN FLIGHT on this device, overlay-only. Asserted before the
+# mount starts and retracted when it settles, so its PRESENCE is the
+# state — which is why it is overlay rather than durable: a worker
+# killed mid-pull leaves nothing to clear, and the row falls back to
+# remote ready to retry. A durable marker would strand it forever.
+concept!: &space/replicating
+  this: tonk:space/replicating
+  description: A replication in flight on this device, keyed on the replica.
+  with:
+    subject:
+      description: >
+        The space being pulled. Carried so a rule can join this marker
+        to the directory row: during the pull that CREATES the replica
+        there is no replica record to join through yet.
+      the: xyz.tonk.replica/subject
+      cardinality: one
+      as: entity
+    replicating:
+      description: Always true while a pull runs; retracted when it settles.
+      the: xyz.tonk.space/replicating
+      cardinality: one
+      as: boolean
+
+concept!: &space/presence
+  this: tonk:space/presence
+  description: Where a space stands on this device.
+  with:
+    presence:
+      description: '`case:remote`, `case:replicating`, `case:seeding`, or `case:replicated`.'
+      the: xyz.tonk.space/presence
+      cardinality: one
+      as: entity
+
+rule!:
+  description: A space this device holds no replica of and is not pulling is remote
+  assert: space/presence
+  when:
+    - assert: space
+      where:
+        this: ?this
+        subject: ?subject
+    - assert: db/session
+      where:
+        profile: ?profile
+    - assert: ==
+      where:
+        this: ?presence
+        is: case:remote
+  unless:
+    - assert: space/replica
+      where:
+        subject: ?subject
+        profile: ?profile
+    - assert: space/replicating
+      where:
+        subject: ?subject
+
+# A pull in flight, whether an explicit `space/replicate` asked for it or
+# the lazy first-use path tripped it. Distinct from `case:seeding`: that
+# is the CREATING device writing its own first content, this is pulling
+# content someone else authored. They fail differently and mean different
+# things to the person watching the row.
+rule!:
+  description: A space being pulled onto this device is replicating
+  assert: space/presence
+  when:
+    - assert: space
+      where:
+        this: ?this
+        subject: ?subject
+    - assert: db/session
+      where:
+        profile: ?profile
+    - assert: space/replicating
+      where:
+        subject: ?subject
+    - assert: ==
+      where:
+        this: ?presence
+        is: case:replicating
+
+rule!:
+  description: A replica still seeding its content branch
+  assert: space/presence
+  when:
+    - assert: space
+      where:
+        this: ?this
+        subject: ?subject
+    - assert: db/session
+      where:
+        profile: ?profile
+    - assert: space/replica
+      where:
+        this: ?replica
+        subject: ?subject
+        profile: ?profile
+    - assert: space/replica-status
+      where:
+        this: ?replica
+        status: tonk:blank
+    - assert: ==
+      where:
+        this: ?presence
+        is: case:seeding
+
+rule!:
+  description: A replica that is no longer seeding is replicated
+  assert: space/presence
+  when:
+    - assert: space
+      where:
+        this: ?this
+        subject: ?subject
+    - assert: db/session
+      where:
+        profile: ?profile
+    - assert: space/replica
+      where:
+        this: ?replica
+        subject: ?subject
+        profile: ?profile
+    - assert: ==
+      where:
+        this: ?presence
+        is: case:replicated
+  unless:
+    - assert: space/replica-status
+      where:
+        this: ?replica
+        status: tonk:blank
+
+rule!:
+  description: A live onboarding account is interim
+  assert: account/status
+  when:
+    - assert: account/onboarding
+      where: { this: ?this }
+    - assert: ==
+      where:
+        this: ?status
+        is: case:onboarding
+  unless:
+    - assert: account/registered
+      where: { this: ?this }
+    - assert: account/onboarding
+      where: { this: ?this, retired-at: _ }
+
+# Registered is the fallback: enrolled, and neither later fact has
+# arrived. Both are excluded, not just activation — a suspended account
+# still carries its registration, so testing activation alone would derive
+# two cases at once.
+rule!:
+  description: An account that is neither active nor suspended is registered
+  assert: account/status
+  when:
+    - assert: account/registered
+      where:
+        this: ?this
+    - assert: ==
+      where:
+        this: ?status
+        is: case:registered
+  unless:
+    - assert: account/active
+      where: { this: ?this }
+    - assert: account/suspended
+      where: { this: ?this }
+
+# Activated and not withdrawn.
+rule!:
+  description: An activated account that is not suspended is active
+  assert: account/status
+  when:
+    - assert: account/active
+      where: { this: ?this }
+    - assert: ==
+      where:
+        this: ?status
+        is: case:active
+  unless:
+    - assert: account/suspended
+      where: { this: ?this }
+
+# Suspension wins outright.
+rule!:
+  description: A suspended account is suspended
+  assert: account/status
+  when:
+    - assert: account/suspended
+      where: { this: ?this }
+    - assert: ==
+      where:
+        this: ?status
+        is: case:suspended
+
+# Where anything sealed for this account is addressed.
+#
+# A device that holds a space seed seals it to this address and publishes
+# the result as a `secret:message`, which a `secret:principal` names as
+# its seed; only a live passkey ceremony derives the private half and can
+# open one. So every device can deposit
+# and none can read, which is what lets a seed reach a new device without
+# any device holding the account's secret.
+#
+# An address, not a store: nothing is kept here. The X25519 `did:key` is
+# what `conceal` is aimed at, and the sealed bytes land in their own rows.
+#
+# Written by the ceremony that creates the account secret, and again at
+# rotation.
+concept!: &account/sealed-inbox
+  this: tonk:account/sealed-inbox
+  description: The address anything sealed for this account is sent to.
+  # ENTITY: the account's own DID.
+  with:
+    address:
+      description: >
+        The X25519 `did:key:z6LS…` as an entity — the public half of the
+        account secret, derived from it, so rotation publishes a new one.
+        Cardinality-one: sealed rows name their own recipient, so no
+        history is needed here.
+      the: xyz.tonk.account/sealed-inbox
+      cardinality: one
+      as: entity
+
+# A passkey that can recover this account.
+#
+# ENTITY: the custody DID — the principal the passkey's PRF output
+# derives. The same entity that is the `to` of the `secret:message`
+# holding that passkey's sealed envelope, so the two join on `this`.
+#
+# One row per passkey, which is the point. This used to hang off the
+# ACCOUNT, so an account with three passkeys had one creation record and
+# dialog's per-attribute merge could pair one device's timestamp with
+# another's label.
+#
+# No `account` field: the envelope already says which account this
+# recovers. Its `secret:message` names this custody DID as `to` and the
+# account as `sender`, so the link is a join, not a second copy.
+#
+# Enumerating an account's passkeys therefore means querying
+# `secret:message` by `sender` and reading the `to`s — the custody DID is
+# PRF-derived, so nothing can compute it without a live assertion.
+concept!: &recovery/passkey
+  this: recovery:passkey
+  description: A passkey that can recover this account.
+  with:
+    credential-id:
+      description: >
+        The credential id the authenticator returns, at creation and on
+        every assertion. What an assertion names to select this
+        credential.
+      the: xyz.tonk.recovery/credential-id
+      cardinality: one
+      as: text
+    created-at:
+      description: Unix seconds at credential creation.
+      the: xyz.tonk.recovery/created-at
+      cardinality: one
+      as: unsigned-integer
+    created-on:
+      description: Browser and operating-system label, e.g. "Chrome on macOS".
+      the: xyz.tonk.recovery/created-on
+      cardinality: one
+      as: text
+  maybe:
+    name:
+      description: >
+        The WebAuthn `user.name` this credential was created with — the
+        address, where one was given. What a passkey manager lists the
+        entry under, so it is what a person recognises their own passkey
+        by. Absent for a credential created without one, which the
+        ceremony names with an opaque random string instead.
+      the: xyz.tonk.recovery/name
+      cardinality: one
+      as: text
+    display-name:
+      description: >
+        The WebAuthn `user.displayName`. Usually the same address as
+        `name`; kept separately because WebAuthn keeps them separately
+        and an authenticator may show either.
+      the: xyz.tonk.recovery/display-name
+      cardinality: one
+      as: text
+
+# ── Device links ────────────────────────────────────────────────────
+
+# A device link: the authorization one device holds to act for this
+# account, and what the linked-device list renders.
+#
+# Named for what it actually is rather than for the general case. Every
+# authorization minted today is a device link, so a general
+# `account/authorization` would be a shape with one instance. A broader
+# concept can be added when a second purpose exists, with a rule
+# projecting this into it — that is cheaper than a general name whose
+# rows are all one kind.
+#
+# `this` IS THE DELEGATION — its blob hash, as dialog keyed it when the
+# chain was retained. Not a device DID, not an id of ours. That is the
+# whole design: the delegation is the authorization, it is signed, and it
+# confers the authority, so a record keyed by anything else would be a
+# second source of truth that could disagree with the proof.
+#
+# Dialog decomposes the proof onto that same entity — `dialog.ucan/issuer`,
+# `/audience`, `/subject`, `/command`, `/expiration` — so the row and the
+# proof share one subject. Joining them is `this`; there is deliberately no
+# `proof:` field, because a copy of the chain beside it is exactly the
+# second source this shape avoids. `xyz.tonk.device/*` below are only the
+# fields dialog does not carry.
+#
+# Revoking the delegation takes this row with it: an authorization cannot
+# linger in a list after the authority it describes is gone.
+#
+# The attributes stay in the `xyz.tonk.device` namespace rather than
+# `xyz.tonk.authorization`, which already means an invite's access proof —
+# one namespace holding both would make "authorization" ambiguous between
+# a device link and a share link.
+concept!: &account/device-link
+  this: tonk:account/device-link
+  description: One device's authorization to act for this account.
+  # ENTITY: THE DELEGATION — its blob hash, as dialog keyed it when
+  # the chain was retained. Not a device DID and not an id of ours.
+  with:
+    created-at:
+      description: >
+        When the authorization was minted, unix seconds. Distinct from
+        the delegation's `notBefore`, which bounds validity: this records
+        the act, so a re-issued grant with the same window still gets a
+        new time.
+      the: xyz.tonk.device/created-at
+      cardinality: one
+      as: unsigned-integer
+    title:
+      description: >
+        Human label, e.g. "Chrome on macOS". Kept here so a list renders
+        offline rather than requiring a round trip.
+      the: xyz.tonk.device/title
+      cardinality: one
+      as: text
+    reason:
+      description: >
+        Why the delegation exists — `case:device-link` for a device. An
+        entity label rather than text, so a typo cannot silently read as
+        a different reason.
+
+        Duplicated from the delegation's signed `meta` because `meta` is
+        NOT decomposed into facts: it rides inside the envelope and
+        cannot be queried. The signed copy stays authoritative; this one
+        lets a list filter without opening envelopes.
+      the: xyz.tonk.device/reason
+      cardinality: one
+      as: entity
+
+# ── Sealed messages ─────────────────────────────────────────────────
+
+# A sealed message: ciphertext only its recipient can open.
+#
+# ENTITY: derived from the MESSAGE itself, not from the parties. Sealing
+# is randomized (fresh ephemeral key and nonce per call), so sealing the
+# same plaintext twice yields different bytes and therefore a different
+# entity. That is deliberate: the row identifies THIS envelope, so a
+# re-seal adds a row rather than silently replacing what it supersedes,
+# and rotation retracts the old one explicitly.
+#
+# Deliberately general — nothing here is about accounts or seeds. What a
+# particular envelope CONTAINS is said by whatever points at it: a
+# `secret:principal` names its seed this way, and the account's own
+# secret sealed under a passkey is the same shape with `to` set to the
+# custody DID that passkey derives.
+concept!: &secret/message
+  this: secret:message
+  description: Ciphertext only its recipient can open.
+  with:
+    to:
+      description: >
+        Who can open it — the recipient the bytes were sealed to. For a
+        passkey envelope, the custody DID that passkey derives: only a
+        fresh assertion of that passkey opens it.
+      the: xyz.tonk.secret/to
+      cardinality: one
+      as: entity
+    message:
+      description: The sealed bytes.
+      the: xyz.tonk.secret/message
+      cardinality: one
+      as: bytes
+  maybe:
+    from:
+      description: >
+        Who sealed it, when that is known and worth recording. Optional
+        because most sealing has no meaningful sender: a seed sealed to a
+        recipient is just custody, and naming a sender would invent an
+        author the seal does not bind. Set it only where provenance is
+        real — the seal itself binds recipient and subject as associated
+        data, so this is description, never authority.
+      the: xyz.tonk.secret/sender
+      cardinality: one
+      as: entity
+
+# A principal whose ed25519 seed is held sealed, so it can be re-derived.
+#
+# ENTITY: the principal's own DID. One row per principal, which is the
+# thing being described — `seed` points at the envelope carrying it, and
+# that envelope already names its recipient. Sealing the same seed to a
+# second recipient (an admin as recovery custodian) adds a second
+# `secret:message` and a second `seed` relation here, rather than needing
+# the entity to carry a recipient of its own.
+concept!: &secret/principal
+  this: secret:principal
+  description: A principal whose ed25519 seed is held sealed.
+  with:
+    kind:
+      description: >
+        What this principal is: `tonk:space` for a space's signing key,
+        `tonk:invite` for an invite principal's.
+      the: xyz.tonk.secret/kind
+      cardinality: one
+      as: entity
+    seed:
+      description: >
+        The `secret:message` whose plaintext is this principal's ed25519
+        seed. Recovery reads it, opens it with the recipient's key, and
+        re-derives the principal this entity names.
+      the: xyz.tonk.secret/seed
+      cardinality: one
+      as: entity
+
+# ── Delegations ─────────────────────────────────────────────────────
+
+# A delegation this branch retained: the proof itself, as dialog stores it.
+#
+# ENTITY: the delegation's blob hash — the same entity `tonk:account/
+# device-link` and `secret:principal` hang their own fields on, so those
+# concepts join to this one on `this`.
+#
+# NOT a tonk concept in the usual sense: every field here is dialog's own
+# decomposition, written when the chain was retained (`dialog.ucan/*`).
+# Declared so an inspector can see them at all — without a concept the
+# facts exist and nothing can name them, which is why "who can act on
+# what" was queryable only by hand-rolling attribute selectors.
+#
+# `expiration` and `not-before` are optional because dialog omits them
+# entirely for a delegation that never expires or has no lower bound; a
+# required field would hide exactly the powerlines that matter most.
+concept!: &ucan/delegation
+  this: ucan:delegation
+  description: A delegation retained on this branch.
+  with:
+    issuer:
+      description: Who signed it.
+      the: dialog.ucan/issuer
+      cardinality: one
+      as: text
+    audience:
+      description: Who receives the authority.
+      the: dialog.ucan/audience
+      cardinality: one
+      as: text
+    subject:
+      description: >
+        What the authority is over. A powerline — authority over anything —
+        carries the any-subject DID rather than being absent, which keeps
+        the lookup a plain equality.
+      the: dialog.ucan/subject
+      cardinality: one
+      as: text
+    command:
+      description: The delegated command path, e.g. `/use/get`.
+      the: dialog.ucan/command
+      cardinality: one
+      as: text
+  maybe:
+    expiration:
+      description: Unix seconds, absent when the delegation never expires.
+      the: dialog.ucan/expiration
+      cardinality: one
+      as: unsigned-integer
+      # `dialog.ucan/notBefore` is deliberately not declared: the notation's
+      # attribute parser rejects a camelCase last segment, and that is the
+      # name dialog writes. A lower validity bound is therefore readable
+      # only by attribute, not through this concept.
+
+# ── Profiles this device knows ──────────────────────────────────────
+
+# One profile this browser can open.
+#
+# ENTITY: the profile's own DID, like every other identity in this file.
+# The storage name is not part of it and does not need to be: a profile
+# is opened by name (`Profile::open(name)`), so the name determines the
+# DID and the pair would carry no more information than the DID alone.
+#
+# DEVICE-LOCAL. Alone in this file, this never replicates — it is the
+# list of profiles that exist on THIS browser, which is not a fact about
+# any account.
+#
+# One field, because one is all that is original here. The handle to
+# open exists nowhere else; everything a switcher row shows about a
+# profile already exists on that profile's own account branch —
+# `tonk:account/name` for the label, `tonk:account/registered` for the
+# address — and is read from there rather than copied.
+#
+# Nothing here says whether the profile is SIGNED IN, and nothing
+# should. Being signed in is a delegation that exists and verifies: the
+# `account -> profile` device link, whose `dialog.ucan/audience` is this
+# profile and whose `dialog.ucan/issuer` is an account that is itself
+# active (`tonk:account/active`). Signing out REVOKES that delegation
+# and retracts it, so the authority is gone rather than merely
+# unrecorded — which is what makes the question answerable from the
+# proof instead of from a stamp that can disagree with it.
+concept!: &device/profile
+  this: device:profile
+  description: A profile this device can open.
+  with:
+    name:
+      description: >
+        The storage name the profile opens under — its activation
+        handle. What the switcher passes to open this profile, and the
+        only fact about a profile that lives here rather than on the
+        profile's own account branch.
+      the: xyz.tonk.roster/name
+      cardinality: one
+      as: text
