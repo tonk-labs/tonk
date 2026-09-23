@@ -81,7 +81,7 @@ view!:
     playground-agent: |
       <div class="playground-agent">
         <style>.playground-agent tonk-display > [slot][hidden] { display: none !important; }</style>
-        <tonk-page on:invite=tonk:agent-handoff></tonk-page>
+        <page-mount on:invite=tonk:agent-handoff></page-mount>
         <tonk-origin>
           <tonk-display entity={subject} model=tonk:onboarding/agent-invite>
             <tonk-display slot="no-entity" entity={subject} model=tonk:agent-handoff-state>

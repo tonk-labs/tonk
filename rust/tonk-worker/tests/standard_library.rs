@@ -1632,6 +1632,7 @@ fn it_offers_only_scoped_agent_prompts_without_account_approval() {
         assert!(!scoped.contains("requires account {account}"));
     }
     let playground = include_str!("../../tonk-core/assets/library/onboarding-agent.yaml");
+    assert!(playground.contains("<page-mount on:invite=tonk:agent-handoff></page-mount>"));
     let scoped = playground
         .split("<div data-agent-mode=\"scoped\" hidden>")
         .nth(1)
