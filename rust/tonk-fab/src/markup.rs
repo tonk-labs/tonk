@@ -625,12 +625,12 @@ mod tests {
 
     #[test]
     fn it_draws_its_marks_as_geometry() {
-        assert_eq!(BAR_HTML.matches("<svg").count(), 6);
+        assert_eq!(BAR_HTML.matches("<svg").count(), 7);
         assert_eq!(
             BAR_HTML
                 .matches(r#"stroke-linejoin="round" aria-hidden="true""#)
                 .count(),
-            6
+            7
         );
         assert!(BAR_HTML.contains("stroke=\"currentColor\""));
         assert!(BAR_HTML.contains(r#"<rect x="1.5" y="9.5" width="21" height="13" rx="4"/>"#));
