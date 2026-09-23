@@ -34,7 +34,7 @@ use wasm_bindgen_futures::future_to_promise;
 use web_sys::{FetchEvent, Request, Response};
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use crate::router::space_worker;
+use crate::router::{Saved, space_worker};
 
 /// The fetch event whose lifetime owns background work started by one of its
 /// routed handlers.
@@ -2214,6 +2214,39 @@ impl TonkServiceWorker {
                 .await
                 .map_err(|e| JsError::new(&e.to_string()))?;
             Ok(JsValue::UNDEFINED)
+        })
+    }
+
+    /// The site stamps this worker holds, as bytes for the next instance to
+    /// [`restore_session`](Self::restore_session) from. Equal state yields
+    /// equal bytes, so the caller can skip saving what has not changed.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "savedSession")]
+    pub fn saved_session(&self) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            let clients = state.read().await.clients.clone();
+            let saved = Saved::of(&clients).await;
+            let bytes = serde_json::to_vec(&saved).map_err(|e| JsError::new(&e.to_string()))?;
+            Ok(js_sys::Uint8Array::from(bytes.as_slice()).into())
+        })
+    }
+
+    /// Make again the site stamps a previous instance saved, for the clients
+    /// in `live` (the ids `clients.matchAll()` lists now). Saved state this
+    /// worker cannot read is ignored: its pages claim their sites again.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "restoreSession")]
+    pub fn restore_session(&self, bytes: js_sys::Uint8Array, live: Vec<String>) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            let live: std::collections::HashSet<String> = live.into_iter().collect();
+            let Some(saved) = Saved::read(&bytes.to_vec(), |client| live.contains(client)) else {
+                return Ok(JsValue::FALSE);
+            };
+            let tonk = state.read().await;
+            saved.restore(&tonk).await;
+            Ok(JsValue::TRUE)
         })
     }
 

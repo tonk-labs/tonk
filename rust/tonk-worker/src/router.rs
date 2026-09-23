@@ -135,7 +135,7 @@ pub use query::QueryPath;
 pub use tonk_schema::{DEFAULT_BRANCH, SpaceRef, parse_space};
 
 mod session;
-pub use session::{ClientRegistry, ClientState, SiteResponse};
+pub use session::{ClientRegistry, ClientState, Saved, SiteResponse, Stamp};
 
 mod transact;
 pub use transact::{ProfileTransactPath, TransactPath, TransactResponse};

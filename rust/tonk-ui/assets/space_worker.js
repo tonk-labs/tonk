@@ -64,6 +64,10 @@ let nextId = 1;
 const pending = new Map();
 
 self.addEventListener("message", event => {
+    if (event.data?.type === "flush") {
+        event.waitUntil(flushSession());
+        return;
+    }
     if (event.data?.type !== "port") return;
     const [port] = event.ports;
     if (!port) return;
@@ -112,6 +116,7 @@ function spaceWorker() {
         .then(() => activate("space", []))
         .then(async worker => {
             await ensureGrant(worker);
+            await restoreSession(worker);
             return worker;
         })
         .catch(error => {
@@ -229,6 +234,104 @@ function within(promise, ms, message) {
     return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
+// ---- The session, across restarts ---------------------------------------
+//
+// The browser stops an idle worker without telling it, and an update replaces
+// it. Either way the next instance starts with no sites stamped, and each page
+// would have to notice and claim its site again. So this worker saves what its
+// stamps were made from, and the next one makes them again before it serves
+// anything.
+//
+// Saving on every change would cost a cache write per request. A change marks
+// the session dirty instead, and one write follows once changes pause. The
+// request that made the change holds this worker alive until that write
+// lands, so an idle stop never loses it. A page that is hidden or leaving asks
+// for the write at once, and so does handing over to a successor.
+
+const SESSION_KEY = "/__space/session";
+const SAVE_DELAY_MS = 1_000;
+
+let dirty = false;
+let saving = null;
+// The bytes last saved, so an unchanged session is not written again.
+let saved = null;
+
+async function restoreSession(worker) {
+    const held = await caches.match(SESSION_KEY, { cacheName: SHELL_CACHE });
+    if (!held) return;
+    const bytes = new Uint8Array(await held.arrayBuffer());
+    const live = (await self.clients.matchAll({ type: "window" })).map(client => client.id);
+    if (await worker.restoreSession(bytes, live)) {
+        saved = bytes;
+        log("restored the saved session");
+    }
+}
+
+// Mark the session changed; resolves once the change is saved.
+function sessionChanged() {
+    dirty = true;
+    saving ??= delay(SAVE_DELAY_MS)
+        .then(saveWhileDirty)
+        .finally(() => {
+            saving = null;
+        });
+    return saving;
+}
+
+// Save now, and wait for any save already under way.
+async function flushSession() {
+    if (!rust) return;
+    dirty = true;
+    await Promise.all([saving, saveWhileDirty()]);
+}
+
+async function saveWhileDirty() {
+    while (dirty) {
+        dirty = false;
+        try {
+            const worker = await rust;
+            const bytes = await worker.savedSession();
+            if (saved && sameBytes(bytes, saved)) continue;
+            const cache = await caches.open(SHELL_CACHE);
+            await cache.put(SESSION_KEY, new Response(bytes));
+            saved = bytes;
+        } catch (error) {
+            log("could not save the session:", error);
+        }
+    }
+}
+
+function sameBytes(a, b) {
+    return a.length === b.length && a.every((byte, index) => byte === b[index]);
+}
+
+function delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Serve a request that may change the session, and save once it has: the
+// response and every task it left running (a `tonk:load` stamps its site
+// after the commit answers) have settled.
+function serveChanging(event) {
+    const work = [];
+    const view = {
+        request: event.request,
+        clientId: event.clientId,
+        resultingClientId: event.resultingClientId,
+        waitUntil(promise) {
+            work.push(promise);
+            event.waitUntil(promise);
+        },
+    };
+    const response = spaceWorker().then(worker => worker.onfetch(view));
+    event.waitUntil(
+        response
+            .then(() => Promise.allSettled(work))
+            .then(sessionChanged, () => {}),
+    );
+    return response;
+}
+
 // ---- Handing over to a successor ----------------------------------------
 //
 // A subscription is a fetch whose response never ends. While one is open this
@@ -254,6 +357,8 @@ async function retire(reason) {
     log(`handing over: ${reason}`);
     try {
         const worker = await rust;
+        // The successor makes its stamps from what is saved: save first.
+        await flushSession();
         await worker.onupdatefound?.();
     } catch (error) {
         retired = false;
@@ -429,7 +534,12 @@ self.addEventListener("fetch", event => {
         return;
     }
     if (url.pathname.startsWith("/api/")) {
-        event.respondWith(spaceWorker().then(worker => worker.onfetch(event)));
+        // Only a write can stamp a site.
+        event.respondWith(
+            event.request.method === "GET"
+                ? spaceWorker().then(worker => worker.onfetch(event))
+                : serveChanging(event),
+        );
         // A worker kept alive past its delegation's window would otherwise
         // hold a lapsed one: check it as it serves, and ask again when due.
         event.waitUntil(renewIfDue());

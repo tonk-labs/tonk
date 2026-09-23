@@ -809,7 +809,7 @@ async fn reap_dead_clients(
             return true;
         }
         // Born, then died.
-        dead.sites.extend(entry.sites.iter().cloned());
+        dead.sites.extend(entry.sites.keys().cloned());
         dead.clients.insert(client.clone());
         false
     });
