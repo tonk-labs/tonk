@@ -1556,6 +1556,14 @@ self.onfetch = event => {
 // `controllerchange` on the page side, which the shell's
 // `serviceWorkerActivates()` Promise awaits.
 self.onmessage = event => {
+    if (event.data?.type === "activate-if-installed") {
+        // A fully installed successor may still be waiting after its
+        // install-time skipWaiting request. Only that successor can repeat it.
+        if (self.registration.waiting === self.serviceWorker) {
+            event.waitUntil?.(self.skipWaiting());
+        }
+        return;
+    }
     if (event.data?.type === "content-ready") {
         contentReady = true;
         extendOfflineGeneration(event);

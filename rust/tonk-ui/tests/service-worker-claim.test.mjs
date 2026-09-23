@@ -450,6 +450,25 @@ test("an update-aware page can wake the incumbent to retire for a waiting succes
   assert.equal(result.retirements(), 1);
 });
 
+test("only an installed successor repeats the activation request", async () => {
+  const result = loadServiceWorker();
+  const pending = [];
+  const request = () => result.scope.onmessage({
+    data: { type: "activate-if-installed" },
+    waitUntil(promise) { pending.push(promise); },
+  });
+  request();
+  assert.equal(result.activationRequests(), 0);
+  result.scope.registration.waiting = {};
+  request();
+  assert.equal(result.activationRequests(), 0);
+  result.scope.registration.active = {};
+  result.scope.registration.waiting = result.scope.serviceWorker;
+  request();
+  await Promise.all(pending);
+  assert.equal(result.activationRequests(), 1);
+});
+
 test("a failed stream release is retried on the next incumbent fetch", async () => {
   const result = loadServiceWorker({ retirementFailures: 1 });
   const candidate = eventTarget({ state: "installing" });
@@ -547,7 +566,7 @@ test("an installed successor asks the incumbent to release its streams", async (
   await result.incoming.dispatch("statechange");
   assert.deepEqual(
     result.messages.map((message) => message.type),
-    ["connectivity", "retire-if-superseded"],
+    ["connectivity", "activate-if-installed", "retire-if-superseded"],
   );
 });
 
