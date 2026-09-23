@@ -13,9 +13,18 @@
                 // a port to the host worker, now and whenever the worker asks
                 // for one (it loses its port on every restart). The host mints
                 // the port bound to this space, so nothing here names one.
+                // It also tells the worker when the page is hidden or leaving,
+                // the moment the worker is about to go idle and be stopped, so
+                // it saves its session first: a worker hears nothing before
+                // the browser stops it.
                 var BROKER =
                     "<script>(function(){" +
                     "var sw=navigator.serviceWorker;" +
+                    "function flush(){if(sw.controller)sw.controller.postMessage({type:'flush'});}" +
+                    "window.addEventListener('pagehide',flush);" +
+                    "document.addEventListener('visibilitychange',function(){" +
+                    "if(document.visibilityState==='hidden')flush();" +
+                    "});" +
                     "function ask(){parent.postMessage({__tonkOrigin:'need-port'},'*');}" +
                     "window.addEventListener('message',function(e){" +
                     "if(e.source!==parent||!e.data||e.data.__tonkOrigin!=='port')return;" +
