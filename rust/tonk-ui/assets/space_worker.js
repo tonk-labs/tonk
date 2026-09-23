@@ -12,9 +12,10 @@
 // - `/api/*` is answered by the space's own database: the Rust worker the
 //   host runs, opened on this origin's storage (see "The space's own
 //   database" below).
-// - The app's own static assets (`/images/`, `/fonts/`) pass through to the
-//   server, which serves them on every host. A sealed frame used to reach
-//   them on the host origin; this origin is where relative URLs land now.
+// - The app's own static assets (the guest runtime, stylesheet, images and
+//   fonts) pass through to the server, which serves them on every host. A
+//   sealed frame received the runtime as injected bytes and reached the rest
+//   on the host origin; this origin now loads them itself.
 // - Everything else is a 404. Author code has no network through this worker.
 //
 // The port to the host worker carries what only the host has: the space's
@@ -28,8 +29,10 @@ import init, { activate } from "./worker.js";
 
 const SHELL_PATH = "/space-origin.html";
 const SHELL_CACHE = "tonk-space-shell";
-// The app's static assets, served by the server on every host.
-const STATIC_PREFIXES = ["/images/", "/fonts/"];
+// The app's static assets, served by the server on every host: the runtime a
+// guest loads from its own origin (`/guest/`), the app stylesheet, images and
+// fonts.
+const STATIC_PREFIXES = ["/guest/", "/styles-", "/images/", "/fonts/"];
 // A base58btc blob hash: the only thing a `/blob/` path may carry.
 const BLOB_PATH = /^\/blob\/([1-9A-HJ-NP-Za-km-z]+)$/;
 // How long a client may take to broker a port, and the host to acknowledge a

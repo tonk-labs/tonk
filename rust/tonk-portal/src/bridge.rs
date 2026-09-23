@@ -330,13 +330,22 @@ pub(crate) fn bootstrap_srcdoc_with_runtime(content: &str, base: &str, head: &st
 /// and post an `inject` envelope to the sealed `iframe`'s window. Called
 /// when the guest signals `runtime-ready`. The guest fetches nothing; every
 /// byte crosses here.
+///
+/// A frame `on_origin` fetches for itself instead: it is told which build to
+/// load and where the app stylesheet is, and loads them from its own origin,
+/// where its worker and the HTTP cache keep them.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) fn inject_runtime(iframe: &HtmlIFrameElement) {
+pub(crate) fn inject_runtime(iframe: &HtmlIFrameElement, on_origin: bool) {
     let Some(content_window) = iframe.content_window() else {
         return;
     };
     spawn_local(async move {
-        let (payload, transfer) = match build_inject_payload().await {
+        let built = if on_origin {
+            build_origin_payload().await
+        } else {
+            build_inject_payload().await
+        };
+        let (payload, transfer) = match built {
             Ok(p) => p,
             Err(e) => {
                 tonk_common::log!("portal runtime: failed to assemble payload: {e}");
@@ -364,6 +373,38 @@ struct GuestManifest {
     wa_js: String,
     #[serde(rename = "waCss")]
     wa_css: String,
+}
+
+/// Build the envelope for a guest on its own origin: which build's assets to
+/// load (the guest manifest), the app stylesheet's URL, and the root classes.
+/// The `<tonk-prose>` and `<tonk-table>` registration shells still ride along,
+/// as in [`build_inject_payload`]; the lazy editor cores stay on `need-*`.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn build_origin_payload() -> Result<(JsValue, JsValue), String> {
+    let manifest = fetch_text("/guest/manifest.json").await?;
+    let manifest = js_sys::JSON::parse(&manifest).map_err(|e| format!("guest manifest: {e:?}"))?;
+    let payload = Object::new();
+    let _ = Reflect::set(&payload, &"__tonkRuntime".into(), &"inject".into());
+    let _ = Reflect::set(&payload, &"fromOrigin".into(), &JsValue::TRUE);
+    let _ = Reflect::set(&payload, &"manifest".into(), &manifest);
+    if let Some(href) = app_stylesheet_href() {
+        let _ = Reflect::set(&payload, &"cssHref".into(), &JsValue::from_str(&href));
+    }
+    let prose = bundle_graph_entries(fetch_tonk_prose_shell().await);
+    let table = bundle_graph_entries(fetch_tonk_table_shell().await);
+    let _ = Reflect::set(&payload, &"prose".into(), &prose);
+    let _ = Reflect::set(&payload, &"table".into(), &table);
+    let root_class = window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.document_element())
+        .map(|e| e.class_name())
+        .unwrap_or_default();
+    let _ = Reflect::set(
+        &payload,
+        &"rootClass".into(),
+        &JsValue::from_str(&root_class),
+    );
+    Ok((payload.into(), js_sys::Array::new().into()))
 }
 
 /// Build the runtime-inject envelope by fetching the served guest bundle +
@@ -868,6 +909,22 @@ fn bundle_graph_entries(files: Vec<(String, String)>) -> js_sys::Array {
     array
 }
 
+/// The app stylesheet's URL, from this document's own
+/// `<link rel=stylesheet href=/styles-*.css>`: the top document's, or the one
+/// a guest on its own origin linked when it loaded.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn app_stylesheet_href() -> Option<String> {
+    let links = window()?
+        .document()?
+        .query_selector_all("link[rel=stylesheet]")
+        .ok()?;
+    (0..links.length()).find_map(|i| {
+        let el: Element = links.item(i)?.dyn_into().ok()?;
+        el.get_attribute("href")
+            .filter(|href| href.contains("/styles-") || href.ends_with("styles.css"))
+    })
+}
+
 /// The app stylesheet CSS to inject into a guest, read from the document that is
 /// bringing the guest up.
 ///
@@ -1043,11 +1100,12 @@ pub(crate) fn install_message_listener() {
                     "runtime-ready" => {
                         let matched = registry.borrow().iter().find_map(|entry| {
                             let cw: JsValue = entry.iframe.content_window()?.into();
-                            (cw == source).then(|| entry.iframe.clone())
+                            let on_origin = entry.state.borrow().origin().is_some();
+                            (cw == source).then(|| (entry.iframe.clone(), on_origin))
                         });
                         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-                        if let Some(iframe) = matched {
-                            inject_runtime(&iframe);
+                        if let Some((iframe, on_origin)) = matched {
+                            inject_runtime(&iframe, on_origin);
                         }
                     }
                     // Lazy `<tonk-prose>` editor core: the boot payload only
