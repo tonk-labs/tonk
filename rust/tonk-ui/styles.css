@@ -3324,6 +3324,12 @@ tonk-notebook-index {
     text-transform: none;
     background: var(--wash);
   }
+  /* Keep these rows in the DOM for the activation wait, but let the
+     instruction below the saved email and name carry the visible message. */
+  #tonk-register[data-fabb-task] #tonk-register-passkey-row,
+  #tonk-register[data-fabb-task] #tonk-register-confirm-row {
+    display: none;
+  }
   #tonk-register[data-fabb-task] .orow.editing {
     min-height: 104px;
     height: auto;
@@ -3362,12 +3368,14 @@ tonk-notebook-index {
     flex: 0 0 50%;
     min-height: 48px;
     height: 48px;
-    padding: 12px 18px;
+    padding: 4px 12px;
     align-items: center;
     justify-content: flex-end;
     border-top: 0;
     font: 600 17px/1.1 var(--cond);
     letter-spacing: 0;
+    text-align: right;
+    white-space: normal;
     opacity: 1;
   }
   #tonk-register[data-fabb-task] .oexp {

@@ -69,6 +69,169 @@ fn px(style: &web_sys::CssStyleDeclaration, property: &str) -> f64 {
 }
 
 #[dialog_common::test]
+async fn drawer_cycles_keep_the_header_at_each_corner() {
+    tonk_fab::register();
+    let document = window().unwrap().document().unwrap();
+    for (horizontal, vertical) in [
+        ("left", "top"),
+        ("right", "top"),
+        ("left", "bottom"),
+        ("right", "bottom"),
+    ] {
+        let fab = document
+            .create_element("tonk-fab")
+            .unwrap()
+            .dyn_into::<HtmlElement>()
+            .unwrap();
+        fab.set_attribute("label", "Corner anchor").unwrap();
+        document.body().unwrap().append_child(&fab).unwrap();
+        yield_for(30).await;
+        fab.style().set_property(horizontal, "16px").unwrap();
+        fab.style()
+            .set_property(
+                if horizontal == "left" {
+                    "right"
+                } else {
+                    "left"
+                },
+                "auto",
+            )
+            .unwrap();
+        fab.style().set_property(vertical, "16px").unwrap();
+        fab.style()
+            .set_property(if vertical == "top" { "bottom" } else { "top" }, "auto")
+            .unwrap();
+        yield_for(450).await;
+        let root = fab.shadow_root().unwrap();
+        root.query_selector(".space")
+            .unwrap()
+            .unwrap()
+            .dyn_into::<HtmlElement>()
+            .unwrap()
+            .click();
+        yield_for(450).await;
+        let header = root.query_selector(".header").unwrap().unwrap();
+        let initial = header.get_bounding_client_rect();
+        let (left, right, top, bottom) = (
+            initial.left(),
+            initial.right(),
+            initial.top(),
+            initial.bottom(),
+        );
+        let agent = root
+            .query_selector(".agent")
+            .unwrap()
+            .unwrap()
+            .dyn_into::<HtmlElement>()
+            .unwrap();
+        for cycle in 0..3 {
+            agent.click();
+            yield_for(450).await;
+            agent.click();
+            yield_for(450).await;
+            let rect = header.get_bounding_client_rect();
+            for (edge, start, end) in [
+                ("left", left, rect.left()),
+                ("right", right, rect.right()),
+                ("top", top, rect.top()),
+                ("bottom", bottom, rect.bottom()),
+            ] {
+                assert!(
+                    (start - end).abs() < 0.75,
+                    "{horizontal}/{vertical} cycle {cycle}: {edge} moved from {start} to {end}"
+                );
+            }
+        }
+        fab.remove();
+    }
+}
+
+#[dialog_common::test]
+async fn an_edge_docked_open_panel_stays_inside_the_viewport() {
+    tonk_fab::register();
+    let win = window().expect("window");
+    let document = win.document().expect("document");
+    let vw = win.inner_width().unwrap().as_f64().unwrap();
+    let vh = win.inner_height().unwrap().as_f64().unwrap();
+    for (x, y, bottom) in [(vw * 0.78, 40.0, false), (vw * 0.22, vh - 40.0, true)] {
+        let fab = document
+            .create_element("tonk-fab")
+            .unwrap()
+            .dyn_into::<HtmlElement>()
+            .unwrap();
+        fab.set_attribute("label", "Viewport fit").unwrap();
+        document.body().unwrap().append_child(&fab).unwrap();
+        yield_for(30).await;
+        let root = fab.shadow_root().unwrap();
+        let circle = root.query_selector(".fab").unwrap().unwrap();
+        let circle_rect = circle.get_bounding_client_rect();
+        circle
+            .dispatch_event(&pointer_event(
+                "pointerdown",
+                circle_rect.left() + circle_rect.width() / 2.0,
+                circle_rect.top() + circle_rect.height() / 2.0,
+                1,
+            ))
+            .unwrap();
+        win.dispatch_event(&pointer_event("pointermove", x, y, 1))
+            .unwrap();
+        win.dispatch_event(&pointer_event("pointerup", x, y, 0))
+            .unwrap();
+        yield_for(500).await;
+        assert_eq!(fab.has_attribute("up"), bottom);
+        root.query_selector(".space")
+            .unwrap()
+            .unwrap()
+            .dyn_into::<HtmlElement>()
+            .unwrap()
+            .click();
+        root.query_selector(".agent")
+            .unwrap()
+            .unwrap()
+            .dyn_into::<HtmlElement>()
+            .unwrap()
+            .click();
+        yield_for(450).await;
+        let outer = fab.get_bounding_client_rect();
+        let header = root
+            .query_selector(".header")
+            .unwrap()
+            .unwrap()
+            .get_bounding_client_rect();
+        let actions = root
+            .query_selector(".run")
+            .unwrap()
+            .unwrap()
+            .get_bounding_client_rect();
+        assert_eq!(fab.has_attribute("up"), bottom);
+        if bottom {
+            assert!(
+                actions.bottom() <= header.top() + 1.0,
+                "bottom seat must open upward"
+            );
+        } else {
+            assert!(
+                actions.top() >= header.bottom() - 1.0,
+                "top seat must open downward"
+            );
+        }
+        assert!(outer.left() >= 15.0, "left overflow: {}", outer.left());
+        assert!(
+            outer.right() <= vw - 15.0,
+            "right overflow: {}",
+            outer.right()
+        );
+        assert!(outer.top() >= 15.0, "top overflow: {}", outer.top());
+        assert!(
+            outer.bottom() <= vh - 15.0,
+            "bottom overflow: {}",
+            outer.bottom()
+        );
+        fab.remove();
+    }
+}
+
+#[dialog_common::test]
 async fn release_glides_to_the_nearest_edge_without_losing_its_free_coordinate() {
     tonk_fab::register();
     let document = window().expect("window").document().expect("document");

@@ -48,8 +48,6 @@ use crate::shadow::{self, Bound, Edit};
 const INPLACE_MAX_WIDTH_PX: f64 = 640.0;
 const MENU_VIEWPORT_MARGIN_PX: f64 = 8.0;
 
-pub(crate) const CONNECT_BANNER_ID: &str = "fabb-connect-banner";
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Cell {
     Sync,
@@ -198,11 +196,35 @@ pub(crate) fn build(this: &HtmlElement, state: &Shared) -> Vec<Bound> {
         listeners.push(shadow::on_click(&button, move || {
             open_panel(&host, &shared, panel, Cell::Space, None);
             if panel == Panel::Agent
+                && shared
+                    .borrow()
+                    .open_panel
+                    .is_some_and(|open| open.panel == Panel::Agent)
+                && !host.has_attribute("data-account-required")
                 && let Ok(Some(agent)) = host.query_selector("tonk-agent-panel")
                 && let Ok(agent) = agent.dyn_into::<HtmlElement>()
             {
                 shadow::emit(&agent, "fabb-agent-open", &wasm_bindgen::JsValue::NULL);
             }
+        }));
+    }
+    if let Some(w) = wrapper(this) {
+        let host = this.clone();
+        let target = w.clone();
+        listeners.push(shadow::bind(&w, "transitionend", move |event| {
+            if event
+                .target()
+                .and_then(|node| node.dyn_into::<Element>().ok())
+                != Some(target.clone())
+                || Reflect::get(event.as_ref(), &"propertyName".into())
+                    .ok()
+                    .and_then(|value| value.as_string())
+                    .as_deref()
+                    != Some("width")
+            {
+                return;
+            }
+            finish_panel_collapse(&host);
         }));
     }
     if let Ok(backs) = root.query_selector_all(".back") {
@@ -229,6 +251,15 @@ pub(crate) fn build(this: &HtmlElement, state: &Shared) -> Vec<Bound> {
         listeners.push(shadow::on_click(&tool, move || {
             close(&host, &shared);
             crate::tool_connection::open(&host);
+        }));
+    }
+    if let Ok(Some(condition)) = root.query_selector("[data-action=condition]") {
+        let host = this.clone();
+        listeners.push(shadow::on_click(&condition, move || {
+            match host.get_attribute("data-customer-status").as_deref() {
+                Some("Registered") => crate::activation::open_cluster(&host),
+                _ => crate::share::open_enable_sync_from_bar(),
+            }
         }));
     }
     for (selector, event_name) in [
@@ -380,15 +411,35 @@ fn open_panel_v017(this: &HtmlElement, state: &Shared, panel: Panel, anchor: Cel
     } else {
         panel
     };
-    let requested = OpenPanel {
+    let mut requested = OpenPanel {
         panel,
         anchor,
         return_to: None,
     };
+    let mut collapsing_panel = None;
     if state.borrow().open_panel == Some(requested) {
-        close_v017(this, state, true);
-        return;
+        if panel_selector(panel).is_none() {
+            close_v017(this, state, true);
+            return;
+        }
+        // A second press on a drawer action dismisses that drawer, while
+        // keeping the space actions available for the next choice.
+        requested = OpenPanel {
+            panel: Panel::Space,
+            anchor: Cell::Space,
+            return_to: None,
+        };
+        collapsing_panel = Some(panel);
     }
+    let no_drawer_width = collapsing_panel.is_some()
+        && wrapper(this)
+            .zip(query(this, ".bar"))
+            .is_some_and(|(wrapper, bar)| {
+                wrapper.get_bounding_client_rect().width() - bar.get_bounding_client_rect().width()
+                    <= 4.0
+            });
+    crate::element::fit_open_panel(this, state);
+    let panel = requested.panel;
     state.borrow_mut().open_panel = Some(requested);
 
     if let Some(run) = query(this, ".run") {
@@ -398,7 +449,11 @@ fn open_panel_v017(this: &HtmlElement, state: &Shared, panel: Panel, anchor: Cel
     if let Some(wrapper) = wrapper(this) {
         let classes = wrapper.class_list();
         let _ = classes.add_1("menu-open");
-        let _ = classes.toggle_with_force("has-panel", panel_selector(panel).is_some());
+        let _ = classes.toggle_with_force("closing-panel", collapsing_panel.is_some());
+        let _ = classes.toggle_with_force(
+            "has-panel",
+            panel_selector(panel).is_some() || collapsing_panel.is_some(),
+        );
     }
     for (candidate, selector) in [
         (Panel::Share, "#share-panel"),
@@ -406,14 +461,46 @@ fn open_panel_v017(this: &HtmlElement, state: &Shared, panel: Panel, anchor: Cel
         (Panel::Members, "#members-panel"),
     ] {
         if let Some(element) = query(this, selector) {
-            if candidate == panel {
+            if candidate == panel || collapsing_panel == Some(candidate) {
                 let _ = element.remove_attribute("hidden");
+                let _ =
+                    element.set_attribute("aria-hidden", &collapsing_panel.is_some().to_string());
             } else {
                 let _ = element.set_attribute("hidden", "");
             }
         }
     }
     sync_expanded_v017(this, state);
+    if collapsing_panel.is_some()
+        && (no_drawer_width
+            || wrapper(this).is_some_and(|w| w.class_list().contains("stacked"))
+            || window()
+                .and_then(|win| {
+                    win.match_media("(prefers-reduced-motion: reduce)")
+                        .ok()
+                        .flatten()
+                })
+                .is_some_and(|query| query.matches()))
+    {
+        finish_panel_collapse(this);
+    }
+}
+
+fn finish_panel_collapse(this: &HtmlElement) {
+    let Some(wrapper) = wrapper(this) else {
+        return;
+    };
+    let classes = wrapper.class_list();
+    if !classes.contains("closing-panel") {
+        return;
+    }
+    let _ = classes.remove_1("closing-panel");
+    let _ = classes.remove_1("has-panel");
+    for selector in ["#share-panel", "#agent-panel", "#members-panel"] {
+        if let Some(panel) = query(this, selector) {
+            let _ = panel.set_attribute("hidden", "");
+        }
+    }
 }
 
 fn close_v017(this: &HtmlElement, state: &Shared, restore_focus: bool) {
@@ -431,6 +518,7 @@ fn close_v017(this: &HtmlElement, state: &Shared, restore_focus: bool) {
         let classes = wrapper.class_list();
         let _ = classes.remove_1("menu-open");
         let _ = classes.remove_1("has-panel");
+        let _ = classes.remove_1("closing-panel");
     }
     sync_expanded_v017(this, state);
     if restore_focus
@@ -564,6 +652,18 @@ pub(crate) fn open(this: &HtmlElement, state: &Shared, cell: &str) {
         }
         _ => {}
     }
+}
+
+/// Return to the action menu without toggling it closed if it is already open.
+pub(crate) fn show_actions(this: &HtmlElement, state: &Shared) {
+    if state
+        .borrow()
+        .open_panel
+        .is_some_and(|open| open.panel == Panel::Space)
+    {
+        return;
+    }
+    open(this, state, "space");
 }
 
 /// Open one canonical stack from the cell that currently exposes it.
@@ -1020,35 +1120,26 @@ pub(crate) fn update(this: &HtmlElement) {
 }
 
 fn update_sync_condition(this: &HtmlElement) {
-    let Some(document) = window().and_then(|window| window.document()) else {
+    let Some(condition) = query(this, ".condition") else {
         return;
     };
-    let local_only = this.get_attribute("data-sync-status").as_deref() == Some("sync:local")
-        && this.get_attribute("data-customer-status").as_deref() != Some("Registered");
+    let pending_email = this.get_attribute("data-customer-status").as_deref() == Some("Registered");
+    let local_only = this.get_attribute("data-sync-status").as_deref() == Some("sync:local");
+    let _ = condition.toggle_attribute_with_force("hidden", !pending_email && !local_only);
+    if let Ok(Some(label)) = condition.query_selector("span") {
+        label.set_text_content(Some(if pending_email {
+            "confirm your email"
+        } else {
+            "connect this space"
+        }));
+    }
     if !local_only {
-        if let Some(cluster) = document.get_element_by_id("fabb-connect-cluster") {
+        if let Some(cluster) = window()
+            .and_then(|window| window.document())
+            .and_then(|document| document.get_element_by_id("fabb-connect-cluster"))
+        {
             let _ = cluster.set_attribute("hidden", "");
         }
-        if let Some(banner) = document.get_element_by_id(CONNECT_BANNER_ID) {
-            retire_banner(&banner);
-        }
-        return;
-    }
-    if document.get_element_by_id(CONNECT_BANNER_ID).is_some() {
-        return;
-    }
-    let Ok(banner) = document.create_element("tonk-banner") else {
-        return;
-    };
-    banner.set_id(CONNECT_BANNER_ID);
-    banner.set_inner_html("connect this space<span slot=\"door\">connect</span>");
-    let on_open = wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
-        crate::share::open_enable_sync_from_banner();
-    });
-    let _ = banner.add_event_listener_with_callback("fabb-open", on_open.as_ref().unchecked_ref());
-    on_open.forget();
-    if let Some(body) = document.body() {
-        let _ = body.append_child(&banner);
     }
 }
 
@@ -1056,23 +1147,12 @@ pub(crate) fn refresh_sync_condition(this: &HtmlElement) {
     update_sync_condition(this);
 }
 
-fn retire_banner(banner: &Element) {
-    let retire = Reflect::get(banner, &"retire".into())
-        .ok()
-        .and_then(|value| value.dyn_into::<js_sys::Function>().ok());
-    if let Some(retire) = retire {
-        let _ = retire.call0(banner);
-    } else {
-        banner.remove();
-    }
-}
-
 pub(crate) fn remove_conditions() {
-    let Some(document) = window().and_then(|window| window.document()) else {
-        return;
-    };
-    if let Some(banner) = document.get_element_by_id(CONNECT_BANNER_ID) {
-        banner.remove();
+    if let Some(cluster) = window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.get_element_by_id("fabb-connect-cluster"))
+    {
+        cluster.remove();
     }
 }
 

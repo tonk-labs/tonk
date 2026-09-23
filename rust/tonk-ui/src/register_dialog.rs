@@ -1292,7 +1292,7 @@ pub(crate) fn action_label(state: &str) -> Option<&'static str> {
     use tonk_schema::email_state as answer;
     match state {
         answer::UNREGISTERED => Some("create a passkey"),
-        answer::ACTIVE | answer::PENDING => Some("log in with your passkey"),
+        answer::ACTIVE | answer::PENDING => Some("log in with passkey"),
         // Checking, or an answer nothing can act on.
         _ => None,
     }
@@ -1738,7 +1738,7 @@ pub(crate) fn run_signup_ceremony() {
     // While the platform holds the ceremony, the action row says so
     // rather than looking clickable. It blinks rather than spinning:
     // attention is earned by blinking, never by hue.
-    set_action("waiting for your device", false);
+    set_action("waiting for device", false);
 
     let account_action = if existing {
         AccountAction::LogIn
@@ -1822,7 +1822,7 @@ pub(crate) fn run_signup_ceremony() {
                 // refuses every later attempt.
                 set_action(
                     if existing {
-                        "log in with your passkey"
+                        "log in with passkey"
                     } else {
                         "create a passkey"
                     },
@@ -2031,7 +2031,7 @@ fn poll_lookup_until_active(email: String) {
                     // is one tap and a fresh assertion.
                     settle_named_row(CONFIRM_ROW, "email", "verified");
                     set_status("Your email is confirmed. Log in with your passkey to continue.");
-                    set_action("log in with your passkey", true);
+                    set_action("log in with passkey", true);
                     focus_action();
                     return;
                 }
@@ -2400,13 +2400,17 @@ fn ask_for_name(host: &Element) {
         }
     ));
     let action = host.query_selector(ACTION).ok().flatten();
-    match action {
-        Some(action) => {
-            let _ = stack.insert_before(&row, Some(&action));
-        }
-        None => {
-            let _ = stack.append_child(&row);
-        }
+    let inserted = if contained {
+        // The contained task moved the action into its footer, so it is no
+        // longer a child of this stack and cannot be an insertBefore anchor.
+        stack.append_child(&row)
+    } else if let Some(action) = action {
+        stack.insert_before(&row, Some(&action))
+    } else {
+        stack.append_child(&row)
+    };
+    if inserted.is_err() {
+        return;
     }
     unfold(&row);
     set_action(SAVE_NAME, true);
@@ -2873,7 +2877,7 @@ pub fn describe(payload: &str) {
         request.reason.as_str(),
         "agent-invite-account" | "agent-invite-activation"
     );
-    if agent_invite || request.reason == "space-login" {
+    if agent_invite || matches!(request.reason.as_str(), "space-login" | "fabb-account") {
         if let Some(window) = web_sys::window()
             && let Some(host) = window
                 .document()
@@ -2895,9 +2899,16 @@ pub fn describe(payload: &str) {
             request.reason = tonk_worker_api::share::BLOCKED_NEEDS_ACTIVATION.into();
         }
     }
-    // Tool connection keeps its target in the FAB and retries when this
-    // dialog closes. Its space must not become a pending person share.
-    if !agent_invite {
+    // Agent and tool connections keep their targets in the FAB. Account
+    // setup from those actions must not become a pending person share.
+    if agent_invite || matches!(request.reason.as_str(), "space-login" | "fabb-account") {
+        if let Some(host) = web_sys::window()
+            .and_then(|window| window.document())
+            .and_then(|document| document.get_element_by_id(DIALOG_ID))
+        {
+            let _ = host.remove_attribute(PENDING_SHARE);
+        }
+    } else {
         remember_space(&request.space);
     }
     let Some(document) = web_sys::window().and_then(|window| window.document()) else {
@@ -3056,14 +3067,23 @@ mod tests {
             "agent-invite-account",
             "agent-invite-activation",
             "space-login",
+            "fabb-account",
         ] {
             history
                 .replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(target))
                 .unwrap();
             let host = document.create_element("dialog").unwrap();
             host.set_id(super::DIALOG_ID);
+            host.set_attribute(super::PENDING_SHARE, "did:key:stale-share")
+                .unwrap();
             document.body().unwrap().append_child(&host).unwrap();
-            super::describe(&format!(r#"{{"reason":"{reason}"}}"#));
+            super::describe(&format!(
+                r#"{{"reason":"{reason}","space":"did:key:example"}}"#
+            ));
+            assert!(
+                super::pending_share().is_none(),
+                "{reason} must not finish with a person share link"
+            );
             assert_eq!(
                 host.get_attribute(super::RETURN_PATH).as_deref(),
                 Some(target)
@@ -3192,7 +3212,7 @@ mod tests {
         for state in [answer::ACTIVE, answer::PENDING] {
             assert_eq!(
                 action_label(state),
-                Some("log in with your passkey"),
+                Some("log in with passkey"),
                 "{state} has an account already",
             );
         }
@@ -3399,6 +3419,33 @@ mod space_login_tests {
         );
         document.body().unwrap().append_child(&host).unwrap();
         host
+    }
+
+    #[wasm_bindgen_test]
+    fn contained_account_places_the_display_name_field_above_its_footer() {
+        let document = web_sys::window().unwrap().document().unwrap();
+        let host = document.create_element("dialog").unwrap();
+        host.set_id(DIALOG_ID);
+        host.set_inner_html(DIALOG_HTML);
+        host.set_attribute("data-fabb-task", "").unwrap();
+        document.body().unwrap().append_child(&host).unwrap();
+        prepare_fabb_task_ui(&host);
+        let stack = host
+            .query_selector("#tonk-register-stack")
+            .unwrap()
+            .unwrap();
+        let action = host.query_selector(ACTION).unwrap().unwrap();
+        assert_ne!(action.parent_element(), Some(stack.clone()));
+
+        ask_for_name(&host);
+        let row = host
+            .query_selector(NAME_ROW)
+            .unwrap()
+            .expect("display name row");
+        assert_eq!(row.parent_element(), Some(stack));
+        assert!(row.query_selector("#tonk-register-name").unwrap().is_some());
+        assert_eq!(action.text_content().as_deref(), Some(SAVE_NAME));
+        host.remove();
     }
 
     #[wasm_bindgen_test]

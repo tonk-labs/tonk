@@ -14,19 +14,22 @@
 //! row) — see [`crate::logic::member_roster_query_body`]. No concept is
 //! named, so nothing seeded on the space's branch is consulted.
 //!
-//! Renders a live count and names in the FABB's attached members panel.
+//! Renders names in the FABB's attached members panel.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use custom_elements::CustomElement;
-use js_sys::{Function, Object, Reflect};
+use js_sys::Reflect;
 use tonk_common::log;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::{JsFuture, spawn_local};
-use web_sys::{HtmlElement, window};
+use web_sys::{CustomEvent, HtmlElement, Response, window};
 
-use crate::logic::{member_roster_query_body, self_did_from_conclusions, self_did_query_body};
+use crate::logic::{
+    member_roster_query_body, repository_endpoint, self_member_did_from_repository,
+};
+use crate::shadow::{self, Bound};
 use crate::subscribing;
 
 const SUB_TAG: &str = "ui-member-roster";
@@ -38,8 +41,10 @@ pub struct UiMemberRosterElement {
     /// delta can upsert/retract individual rows rather than needing a full
     /// snapshot every time. Order is insertion order.
     members: Rc<RefCell<Vec<Member>>>,
-    /// The signed-in profile DID, used to mark their row as "you".
+    /// The current membership DID, used to mark its row as "you".
     viewer: Rc<RefCell<Option<String>>>,
+    viewer_request: Rc<Cell<u64>>,
+    listeners: Vec<Bound>,
 }
 
 impl CustomElement for UiMemberRosterElement {
@@ -64,8 +69,29 @@ impl CustomElement for UiMemberRosterElement {
             self.viewer.borrow().as_deref(),
         );
         self.scaffold.connect(this, behaviour);
-        if self.viewer.borrow().is_none() {
-            resolve_viewer(this, self.members.clone(), self.viewer.clone());
+        resolve_viewer(
+            this,
+            self.members.clone(),
+            self.viewer.clone(),
+            self.viewer_request.clone(),
+        );
+        if let Some(win) = window() {
+            let host = this.clone();
+            let members = self.members.clone();
+            let viewer = self.viewer.clone();
+            let request = self.viewer_request.clone();
+            self.listeners
+                .push(shadow::bind(&win, "tonk:task-closed", move |event| {
+                    if event
+                        .dyn_ref::<CustomEvent>()
+                        .and_then(|event| Reflect::get(&event.detail(), &"result".into()).ok())
+                        .and_then(|value| value.as_string())
+                        .as_deref()
+                        == Some("completed")
+                    {
+                        resolve_viewer(&host, members.clone(), viewer.clone(), request.clone());
+                    }
+                }));
         }
     }
 
@@ -84,15 +110,25 @@ impl CustomElement for UiMemberRosterElement {
         // Drop it and subscribe against the space that is actually here.
         self.scaffold.disconnect();
         self.members.borrow_mut().clear();
-        render_rows(this, &[], self.viewer.borrow().as_deref());
+        self.viewer.borrow_mut().take();
+        render_rows(this, &[], None);
         let behaviour: Rc<dyn subscribing::Subscribing> = Rc::new(MemberRosterBehaviour {
             members: self.members.clone(),
             viewer: self.viewer.clone(),
         });
         self.scaffold.connect(this, behaviour);
+        resolve_viewer(
+            this,
+            self.members.clone(),
+            self.viewer.clone(),
+            self.viewer_request.clone(),
+        );
     }
 
     fn disconnected_callback(&mut self, _this: &HtmlElement) {
+        self.viewer_request
+            .set(self.viewer_request.get().wrapping_add(1));
+        self.listeners.clear();
         self.scaffold.disconnect();
         if let Some(panel) = member_panel(_this) {
             panel.set_text_content(None);
@@ -205,12 +241,6 @@ fn render_rows(host: &HtmlElement, members: &[Member], viewer: Option<&str>) {
         return;
     };
     panel.set_text_content(None);
-    if let Some(bar) = host.closest("tonk-fab").ok().flatten()
-        && let Some(root) = bar.shadow_root()
-        && let Ok(Some(label)) = root.query_selector(".members span")
-    {
-        label.set_text_content(Some(&format!("view members ({})", members.len())));
-    }
     let Some(document) = window().and_then(|window| window.document()) else {
         return;
     };
@@ -243,77 +273,78 @@ fn render_rows(host: &HtmlElement, members: &[Member], viewer: Option<&str>) {
             "tonk:admin" => "admin",
             _ => "",
         };
-        let label = match (is_self, role.is_empty()) {
-            (true, false) => format!("you, {role}"),
-            (true, true) => "you".to_owned(),
-            (false, _) => role.to_owned(),
-        };
-        if !label.is_empty()
-            && let Ok(tag) = document.create_element("span")
-        {
-            tag.set_class_name("mem-you");
-            tag.set_text_content(Some(&label));
+        for (label, class) in [
+            (is_self.then_some("you"), "mem-you"),
+            ((!role.is_empty()).then_some(role), "mem-role"),
+        ] {
+            let Some(label) = label else { continue };
+            let Ok(tag) = document.create_element("span") else {
+                continue;
+            };
+            tag.set_class_name(&format!("mem-tag {class}"));
+            tag.set_text_content(Some(label));
             let _ = row.append_child(&tag);
         }
         let _ = panel.append_child(&row);
     }
 }
 
-/// Resolve the signed-in profile DID once, then repaint any roster rows that
-/// arrived while the profile query was in flight.
+/// Resolve the current member from the repository's `is_self` projection.
+/// Its DID is the account principal that owns the membership, which need not
+/// be this device's profile DID. Repaint rows delivered during the request.
 fn resolve_viewer(
     host: &HtmlElement,
     members: Rc<RefCell<Vec<Member>>>,
     viewer: Rc<RefCell<Option<String>>>,
+    request: Rc<Cell<u64>>,
 ) {
     let Some(win) = window() else { return };
-    let Some(tonk) = Reflect::get(&win, &"tonk".into())
-        .ok()
-        .and_then(|value| value.dyn_into::<Object>().ok())
-    else {
+    let Some(space) = host.get_attribute("space") else {
         return;
     };
-    let Some(query) = Reflect::get(&tonk, &"query".into())
-        .ok()
-        .and_then(|value| value.dyn_into::<Function>().ok())
-    else {
+    let Ok(endpoint) = repository_endpoint(&space) else {
         return;
     };
-    let Ok(body) = js_sys::JSON::parse(&self_did_query_body()) else {
-        return;
-    };
-    let Ok(result) = query.call1(&tonk, &body) else {
-        return;
-    };
-    let Ok(promise) = result.dyn_into::<js_sys::Promise>() else {
-        return;
-    };
+    let current = request.get().wrapping_add(1);
+    request.set(current);
+    viewer.borrow_mut().take();
+    render_rows(host, &members.borrow(), None);
 
     let host = host.clone();
     spawn_local(async move {
-        let rows = match JsFuture::from(promise).await {
-            Ok(rows) => rows,
+        let response = match JsFuture::from(win.fetch_with_str(&endpoint)).await {
+            Ok(response) => response.dyn_into::<Response>().ok(),
             Err(error) => {
-                log!("ui-member-roster profile query failed: {error:?}");
+                log!("ui-member-roster repository lookup failed: {error:?}");
                 return;
             }
         };
-        let Some(json) = js_sys::JSON::stringify(&rows)
+        let Some(response) = response.filter(Response::ok) else {
+            return;
+        };
+        let Ok(promise) = response.json() else {
+            return;
+        };
+        let Ok(info) = JsFuture::from(promise).await else {
+            return;
+        };
+        let Some(json) = js_sys::JSON::stringify(&info)
             .ok()
             .and_then(|json| json.as_string())
         else {
             return;
         };
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(&json) else {
+        let Ok(info) = serde_json::from_str::<serde_json::Value>(&json) else {
             return;
         };
-        let Some(did) = self_did_from_conclusions(&value) else {
+        if request.get() != current
+            || !host.is_connected()
+            || host.get_attribute("space").as_deref() != Some(space.as_str())
+        {
             return;
-        };
-        *viewer.borrow_mut() = Some(did);
-        if host.is_connected() {
-            render_rows(&host, &members.borrow(), viewer.borrow().as_deref());
         }
+        *viewer.borrow_mut() = self_member_did_from_repository(&info);
+        render_rows(&host, &members.borrow(), viewer.borrow().as_deref());
     });
 }
 
@@ -332,7 +363,7 @@ mod tests {
     use crate::subscribing::Subscribing;
 
     #[wasm_bindgen_test::wasm_bindgen_test]
-    fn roster_updates_count_names_and_viewer_labels() {
+    fn roster_updates_names_and_viewer_labels() {
         crate::register();
         let document = window().unwrap().document().unwrap();
         let bar: HtmlElement = document
@@ -373,7 +404,7 @@ mod tests {
                 .unwrap()
                 .text_content()
                 .as_deref(),
-            Some("view members (1)")
+            Some("view members")
         );
         assert_eq!(
             panel
@@ -391,7 +422,16 @@ mod tests {
                 .unwrap()
                 .text_content()
                 .as_deref(),
-            Some("you, owner")
+            Some("you")
+        );
+        assert_eq!(
+            panel
+                .query_selector(".mem-role")
+                .unwrap()
+                .unwrap()
+                .text_content()
+                .as_deref(),
+            Some("owner")
         );
         assert!(
             panel.query_selector("owner").unwrap().is_none(),
@@ -409,14 +449,55 @@ mod tests {
                 .unwrap()
                 .text_content()
                 .as_deref(),
-            Some("view members (2)")
+            Some("view members")
+        );
+        *behaviour.viewer.borrow_mut() = Some("did:key:member".into());
+        render_rows(
+            &host,
+            &behaviour.members.borrow(),
+            behaviour.viewer.borrow().as_deref(),
+        );
+        assert_eq!(
+            panel
+                .query_selector(".mem-self")
+                .unwrap()
+                .unwrap()
+                .text_content()
+                .as_deref(),
+            Some("Member")
+        );
+        assert_eq!(
+            panel
+                .query_selector(".mem-you")
+                .unwrap()
+                .unwrap()
+                .text_content()
+                .as_deref(),
+            Some("you")
         );
         behaviour.render_update(
             &host,
             &js(serde_json::json!({ "asserted": [], "retracted": [owner] })),
         );
         assert_eq!(panel.query_selector_all(".mem-row").unwrap().length(), 1);
-        assert_eq!(panel.text_content().as_deref(), Some("Member"));
+        assert_eq!(
+            panel
+                .query_selector(".mem-self")
+                .unwrap()
+                .unwrap()
+                .text_content()
+                .as_deref(),
+            Some("Member")
+        );
+        assert_eq!(
+            panel
+                .query_selector(".mem-you")
+                .unwrap()
+                .unwrap()
+                .text_content()
+                .as_deref(),
+            Some("you")
+        );
         bar.remove();
     }
 }

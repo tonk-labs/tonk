@@ -1399,15 +1399,6 @@ fn open_enable_sync_ceremony(detail: &str, repair: Option<Repair>, wants_share: 
                 wasm_bindgen_futures::spawn_local(async move {
                     let _ = wasm_bindgen_futures::JsFuture::from(completion).await;
                     content.remove();
-                    if let Some(banner) =
-                        window()
-                            .and_then(|window| window.document())
-                            .and_then(|document| {
-                                document.get_element_by_id(crate::bar::CONNECT_BANNER_ID)
-                            })
-                    {
-                        let _ = banner.remove_attribute("hidden");
-                    }
                 });
             }
             Err(_) => dialog.remove(),
@@ -1415,17 +1406,11 @@ fn open_enable_sync_ceremony(detail: &str, repair: Option<Repair>, wants_share: 
     } else {
         let _ = dialog.remove_attribute("hidden");
     }
-    if let Some(banner) = window()
-        .and_then(|window| window.document())
-        .and_then(|document| document.get_element_by_id(crate::bar::CONNECT_BANNER_ID))
-    {
-        let _ = banner.set_attribute("hidden", "");
-    }
 }
 
 /// Open the same editable connect ceremony from the local-only condition
-/// banner. Unlike the share refusal, this attaches without minting a link.
-pub(crate) fn open_enable_sync_from_banner() {
+/// action in the FAB. Unlike the share refusal, this attaches without minting a link.
+pub(crate) fn open_enable_sync_from_bar() {
     open_enable_sync_ceremony(
         "This space only exists on this device.",
         Repair::for_code(BLOCKED_NOT_SYNCED),
@@ -1449,12 +1434,6 @@ fn close_enable_sync_dialog() {
         return;
     }
     let _ = dialog.set_attribute("hidden", "");
-    if let Some(banner) = window()
-        .and_then(|window| window.document())
-        .and_then(|document| document.get_element_by_id(crate::bar::CONNECT_BANNER_ID))
-    {
-        let _ = banner.remove_attribute("hidden");
-    }
 }
 
 fn enable_sync_dialog() -> Option<Element> {

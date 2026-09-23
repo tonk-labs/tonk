@@ -196,7 +196,7 @@ mod tests {
           }
           throw Error('offline generation was not adopted');
         })()"#,
-                vec![],
+                Vec::new(),
             )
             .await?;
         let devtools = ChromeDevTools::new(driver.handle.clone());
@@ -1392,7 +1392,7 @@ mod tests {
     pub(crate) async fn run_cluster_login(driver: &WebDriver, email: &str) -> Result<()> {
         await_register_dialog(driver).await?;
         type_into_register_dialog(driver, email).await?;
-        await_register_action(driver, "log in with your passkey").await?;
+        await_register_action(driver, "log in with passkey").await?;
         let before = driver
             .execute("return performance.timeOrigin", Vec::new())
             .await?
@@ -1750,7 +1750,7 @@ mod tests {
         graft_prf_outputs(&device_b, &key_output, &kek_output).await?;
         raise_cluster_from_hub(&device_b, &env).await?;
         type_into_register_dialog(&device_b, email).await?;
-        await_register_action(&device_b, "log in with your passkey").await?;
+        await_register_action(&device_b, "log in with passkey").await?;
         click_register_action(&device_b).await?;
         // Refused by the gate, and parked rather than failed.
         await_row_value(&device_b, "email", "awaiting confirmation").await?;
@@ -1928,7 +1928,7 @@ mod tests {
         type_into_register_dialog(&second, EMAIL).await?;
         // The address is taken, so the offer is to sign in rather than
         // create — that much already worked.
-        await_register_action(&second, "log in with your passkey").await?;
+        await_register_action(&second, "log in with passkey").await?;
         click_register_action(&second).await?;
 
         // What this test exists for: a row naming the outstanding step,
@@ -2673,7 +2673,7 @@ mod tests {
 
         // The taken address offers sign-in...
         type_into_register_dialog(&driver, existing_email).await?;
-        await_register_action(&driver, "log in with your passkey").await?;
+        await_register_action(&driver, "log in with passkey").await?;
         assert_eq!(
             credential_count(&driver, &authenticator_id).await?,
             0,
@@ -3643,7 +3643,7 @@ mod tests {
         let before = credential_count(&driver, &authenticator).await?;
         click_register_action(&driver).await?;
         type_into_settled_row(&driver, "display name", "Alice").await?;
-        await_register_action(&driver, "waiting for your device").await?;
+        await_register_action(&driver, "waiting for device").await?;
 
         // 12–13. The ceremony settles into a record naming the device.
         await_credential_count(&driver, &authenticator, before + 1).await?;
@@ -4016,9 +4016,9 @@ mod tests {
 
         open_register_dialog_from_a_space(&driver, &env, "Signed In").await?;
         type_into_register_dialog(&driver, taken).await?;
-        let label = await_register_action(&driver, "log in with your passkey").await?;
+        let label = await_register_action(&driver, "log in with passkey").await?;
         assert_eq!(
-            label, "log in with your passkey",
+            label, "log in with passkey",
             "a registered address must offer sign-in, not a second signup",
         );
 
@@ -4043,7 +4043,7 @@ mod tests {
         driver.goto(env.tonk_web.as_str()).await?;
         open_register_dialog_from_a_space(&driver, &env, "Tap Bound").await?;
         type_into_register_dialog(&driver, taken).await?;
-        await_register_action(&driver, "log in with your passkey").await?;
+        await_register_action(&driver, "log in with passkey").await?;
 
         let started_in_click = driver
             .execute(
@@ -4102,7 +4102,7 @@ mod tests {
         wait_for_service_worker(&second).await?;
         raise_cluster_from_hub(&second, &env).await?;
         type_into_register_dialog(&second, EMAIL).await?;
-        await_register_action(&second, "log in with your passkey").await?;
+        await_register_action(&second, "log in with passkey").await?;
         click_register_action(&second).await?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
         while second.find(By::Css("#tonk-register")).await.is_ok() {
@@ -4295,7 +4295,7 @@ mod tests {
         wait_for_service_worker(&driver).await?;
         raise_cluster_from_hub(&driver, &env).await?;
         type_into_register_dialog(&driver, EMAIL).await?;
-        await_register_action(&driver, "log in with your passkey").await?;
+        await_register_action(&driver, "log in with passkey").await?;
 
         driver
             .execute(
@@ -5250,7 +5250,7 @@ mod tests {
     ///
     /// The row is hidden until the lookup answers, and its label IS the
     /// routing decision: "create a passkey" for an address nobody has,
-    /// "log in with your passkey" for one that is taken. Waiting on it
+    /// "log in with passkey" for one that is taken. Waiting on it
     /// asserts the whole loop — command dispatched, answer written,
     /// subscription delivered, cluster rendered.
     async fn await_register_action(driver: &WebDriver, expected: &str) -> Result<String> {
@@ -5802,11 +5802,17 @@ mod tests {
         await_url_containing(&driver, &format!("/space/{key}")).await?;
 
         enter_guest(&driver).await?;
-        let banner = wait_for_displayed(&driver, "#fabb-activation-banner").await?;
-        let banner_text = banner.text().await?;
+        let condition = driver
+            .execute(
+                r#"const action = document.querySelector('tonk-fab')?.shadowRoot?.querySelector('.condition');
+                   return { hidden: action?.hasAttribute('hidden'), text: action?.textContent?.trim() };"#,
+                vec![],
+            )
+            .await?;
         assert!(
-            banner_text.contains(email) && banner_text.contains("waiting for email confirmation"),
-            "the space must name the existing account's pending step: {banner_text:?}",
+            condition.json()["hidden"] == false && condition.json()["text"] == "confirm your email",
+            "the FAB must name the existing account's pending step: {}",
+            condition.json(),
         );
         driver.enter_default_frame().await?;
 
@@ -6816,6 +6822,53 @@ mod tests {
             "space switch exposed a stale tool bearer"
         );
 
+        browser.quit().await?;
+        Ok(())
+    }
+
+    #[cfg(feature = "connection-invites")]
+    #[dialog_common::test]
+    async fn fabb_connect_agent_receives_a_minted_invitation(env: TestEnvironment) -> Result<()> {
+        let browser = driver_with_prf(&env).await?;
+        sign_up(&browser, &env, "fabb-agent@example.com").await?;
+        let key = create_space_awaiting_remote(&browser, "FAB agent", true).await?;
+        await_url_containing(&browser, &format!("/space/{key}")).await?;
+        enter_guest(&browser).await?;
+        browser
+            .execute(
+                r#"const bar = document.querySelector('tonk-fab');
+                   bar.shadowRoot.querySelector('.space').click();
+                   bar.shadowRoot.querySelector('.agent').click();"#,
+                Vec::new(),
+            )
+            .await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
+        loop {
+            let state = browser
+                .execute(
+                    r#"const bar = document.querySelector('tonk-fab');
+                       const root = bar?.shadowRoot;
+                       return {
+                         status: root?.querySelector('.agent-status')?.textContent,
+                         copyHidden: root?.querySelector('#agent-panel .panel-copy')?.hidden,
+                         retryHidden: root?.querySelector('#agent-panel .agent-retry')?.hidden,
+                         agentSpace: bar?.querySelector('tonk-agent-panel')?.getAttribute('space'),
+                         accountRequired: bar?.hasAttribute('data-account-required')
+                       };"#,
+                    Vec::new(),
+                )
+                .await?;
+            if state.json()["copyHidden"] == false {
+                break;
+            }
+            if state.json()["retryHidden"] == false || tokio::time::Instant::now() >= deadline {
+                anyhow::bail!(
+                    "FAB agent invitation did not become ready: {}",
+                    state.json()
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
         browser.quit().await?;
         Ok(())
     }

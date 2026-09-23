@@ -153,18 +153,26 @@ async fn registered_customer_can_resend_and_retires_when_active() {
     assert!(!invite.has_attribute("hidden"));
     assert!(!tool.has_attribute("hidden"));
 
-    let banner = wait_for("#fabb-activation-banner").await;
-    assert!(banner.text_content().unwrap_or_default().contains(
-        "jack@example.test is waiting for email confirmation — nothing syncs until you confirm it"
-    ));
-    banner
+    assert!(
+        document
+            .get_element_by_id("fabb-activation-banner")
+            .is_none()
+    );
+    let condition = bar
         .shadow_root()
-        .expect("banner shadow")
-        .query_selector(".door")
-        .expect("door selector")
-        .expect("door")
+        .expect("FAB shadow")
+        .query_selector(".condition")
+        .expect("condition selector")
+        .expect("condition action");
+    assert!(!condition.has_attribute("hidden"));
+    assert_eq!(
+        condition.text_content().as_deref(),
+        Some("confirm your email")
+    );
+    condition
+        .clone()
         .dyn_into::<HtmlElement>()
-        .expect("door html")
+        .expect("condition button")
         .click();
 
     let cluster = wait_for("#fabb-activation-cluster").await;
@@ -205,6 +213,7 @@ async fn registered_customer_can_resend_and_retires_when_active() {
             .get_element_by_id("fabb-activation-cluster")
             .is_none()
     );
+    assert!(condition.has_attribute("hidden"));
     yield_for(180).await;
     assert!(
         document

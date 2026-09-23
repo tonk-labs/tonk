@@ -372,7 +372,7 @@ fn deliver_roster(el: &web_sys::HtmlElement, method: &str, payload: &JsValue) {
 }
 
 /// Read the attached members action label.
-fn rendered_count(el: &web_sys::HtmlElement) -> Option<String> {
+fn rendered_members_label(el: &web_sys::HtmlElement) -> Option<String> {
     el.closest("tonk-fab")
         .expect("closest bar")
         .and_then(|bar| bar.shadow_root())
@@ -414,7 +414,7 @@ async fn it_renders_the_roster_from_delivered_frames() {
     // on the element. An element that subscribes and never renders is the
     // bug this whole scaffolding exists to catch.
     let el = mount_roster();
-    assert_eq!(rendered_count(&el).as_deref(), Some("view members"));
+    assert_eq!(rendered_members_label(&el).as_deref(), Some("view members"));
     assert!(rendered_names(&el).is_empty());
 
     deliver_roster(
@@ -422,7 +422,7 @@ async fn it_renders_the_roster_from_delivered_frames() {
         "reset",
         &roster_reset_payload(&[("member:1", "Alice"), ("member:2", "Bob")]),
     );
-    assert_eq!(rendered_count(&el).as_deref(), Some("view members (2)"));
+    assert_eq!(rendered_members_label(&el).as_deref(), Some("view members"));
     assert_eq!(
         rendered_names(&el),
         vec!["Alice".to_string(), "Bob".to_string()],
@@ -436,7 +436,7 @@ async fn it_renders_the_roster_from_delivered_frames() {
         "update",
         &roster_update_payload(&[("member:3", "Carol")], &["member:1"]),
     );
-    assert_eq!(rendered_count(&el).as_deref(), Some("view members (2)"));
+    assert_eq!(rendered_members_label(&el).as_deref(), Some("view members"));
     assert_eq!(
         rendered_names(&el),
         vec!["Bob".to_string(), "Carol".to_string()],

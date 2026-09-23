@@ -192,6 +192,75 @@ pub struct EdgeSnap {
     pub top: f64,
 }
 
+/// The available seat for an attached panel, measured from its 48px header.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PanelFit {
+    pub left: f64,
+    pub top: f64,
+    pub right: f64,
+    pub bottom: f64,
+    pub width: f64,
+    pub height: f64,
+    pub rail_height: f64,
+    pub flip: bool,
+    pub up: bool,
+}
+
+pub fn fit_panel(
+    header: FabBox,
+    viewport: (f64, f64),
+    insets: EdgeInsets,
+    parent_width: f64,
+    visible_actions: u32,
+    was_flipped: bool,
+) -> PanelFit {
+    let (vw, vh) = viewport;
+    let left = header.left.clamp(
+        insets.left,
+        (vw - insets.right - header.width).max(insets.left),
+    );
+    let top = header.top.clamp(
+        insets.top,
+        (vh - insets.bottom - header.height).max(insets.top),
+    );
+    let right_edge = left + header.width;
+    let bottom_edge = top + header.height;
+    let room_left = right_edge - insets.left;
+    let room_right = vw - insets.right - left;
+    let flip = if (room_left - room_right).abs() < 1.0 {
+        was_flipped
+    } else {
+        room_left > room_right
+    };
+
+    let rail_height = (48.0 * f64::from(visible_actions + 1)).max(240.0);
+    let room_up = bottom_edge - insets.top;
+    let room_down = vh - insets.bottom - top;
+    let up = if room_up >= rail_height && room_down < rail_height {
+        true
+    } else if room_down >= rail_height && room_up < rail_height {
+        false
+    } else if room_up < rail_height && room_down < rail_height {
+        room_up > room_down
+    } else {
+        top + header.height / 2.0 >= vh / 2.0
+    };
+
+    PanelFit {
+        left,
+        top,
+        right: vw - right_edge,
+        bottom: vh - bottom_edge,
+        width: (parent_width - insets.left - insets.right)
+            .min(if flip { room_left } else { room_right })
+            .max(0.0),
+        height: if up { room_up } else { room_down },
+        rail_height,
+        flip,
+        up,
+    }
+}
+
 /// Settle a released FAB against its nearest viewport edge while preserving
 /// the free coordinate along that edge.
 pub fn snap_to_nearest_edge(
@@ -887,6 +956,80 @@ mod edge_snap {
 }
 
 #[cfg(test)]
+mod panel_fit {
+    use super::*;
+
+    const INSETS: EdgeInsets = EdgeInsets {
+        top: 16.0,
+        right: 16.0,
+        bottom: 16.0,
+        left: 16.0,
+    };
+
+    #[test]
+    fn a_bottom_seat_grows_up_from_its_header() {
+        let fit = fit_panel(
+            FabBox {
+                left: 250.0,
+                top: 736.0,
+                width: 360.0,
+                height: 48.0,
+            },
+            (1000.0, 800.0),
+            INSETS,
+            1000.0,
+            6,
+            false,
+        );
+        assert!(fit.up);
+        assert_eq!(fit.bottom, 16.0);
+        assert_eq!(fit.height, 768.0);
+        assert_eq!(fit.rail_height, 336.0);
+    }
+
+    #[test]
+    fn a_free_top_seat_caps_width_to_the_opening_side() {
+        let fit = fit_panel(
+            FabBox {
+                left: 500.0,
+                top: 16.0,
+                width: 360.0,
+                height: 48.0,
+            },
+            (1000.0, 800.0),
+            INSETS,
+            1000.0,
+            5,
+            false,
+        );
+        assert!(fit.flip);
+        assert!(!fit.up);
+        assert_eq!(fit.right, 140.0);
+        assert_eq!(fit.width, 844.0);
+    }
+
+    #[test]
+    fn a_seat_left_outside_a_narrowed_viewport_is_clamped_before_expansion() {
+        let fit = fit_panel(
+            FabBox {
+                left: 900.0,
+                top: 16.0,
+                width: 360.0,
+                height: 48.0,
+            },
+            (800.0, 600.0),
+            INSETS,
+            800.0,
+            5,
+            true,
+        );
+        assert_eq!(fit.left, 424.0);
+        assert_eq!(fit.right, 16.0);
+        assert_eq!(fit.width, 768.0);
+    }
+}
+
+#[cfg(test)]
 mod geometry {
     use super::*;
 
@@ -1412,33 +1555,15 @@ mod agent_handoff {
     }
 }
 
-/// The one-shot query body for the signed-in member's own profile DID.
-///
-/// Reads the PROFILE branch's replica records by raw attribute: every
-/// replica there carries `xyz.tonk.replica/profile`, the profile that owns
-/// it, so any row answers. Directory mode (`this` unbound). Routeless from
-/// the FAB, whose host mounts `with="main@profile:tonk"`.
-pub fn self_did_query_body() -> String {
-    json!({
-        "predicate": { "with": {
-            "profile": { "the": "xyz.tonk.replica/profile", "as": "Entity", "cardinality": "one" }
-        } },
-        "terms": {
-            "this":    { "?": { "name": "this" } },
-            "profile": { "?": { "name": "profile" } }
+/// The member DID marked `is_self` by the repository read model. Memberships
+/// are keyed to the account root, which can differ from this device's profile.
+pub fn self_member_did_from_repository(info: &Value) -> Option<String> {
+    info.get("members")?.as_array()?.iter().find_map(|member| {
+        if member.get("is_self").and_then(Value::as_bool) == Some(true) {
+            member.get("did").and_then(Value::as_str).map(str::to_owned)
+        } else {
+            None
         }
-    })
-    .to_string()
-}
-
-/// The profile DID from a `Conclusion[]` answer to [`self_did_query_body`]:
-/// the first row's `profile` field. `None` for an empty answer.
-pub fn self_did_from_conclusions(rows: &Value) -> Option<String> {
-    rows.as_array()?.iter().find_map(|row| {
-        row.get("fields")
-            .and_then(|fields| fields.get("profile"))
-            .and_then(Value::as_str)
-            .map(str::to_owned)
     })
 }
 
@@ -1450,28 +1575,23 @@ pub fn role_manages_members(role: &str) -> bool {
 }
 
 #[cfg(test)]
-mod self_did {
+mod self_member_did {
     use super::*;
 
     #[test]
-    fn it_queries_the_replica_profile_by_raw_attribute() {
-        let body = self_did_query_body();
-        assert!(body.contains("xyz.tonk.replica/profile"));
-        assert!(body.contains("\"this\":{\"?\""));
-        assert!(!body.contains("tonk:profile"));
-    }
-
-    #[test]
-    fn it_reads_the_profile_off_the_first_row() {
-        let rows = json!([
-            { "this": "r1", "fields": { "profile": "did:key:zMe" } },
-            { "this": "r2", "fields": { "profile": "did:key:zMe" } }
-        ]);
+    fn it_uses_the_repository_member_identity_instead_of_the_device_profile() {
+        let rows = json!({ "profile": "did:key:zDevice", "members": [
+            { "did": "did:key:zOther", "is_self": false },
+            { "did": "did:key:zAccount", "is_self": true }
+        ] });
         assert_eq!(
-            self_did_from_conclusions(&rows).as_deref(),
-            Some("did:key:zMe")
+            self_member_did_from_repository(&rows).as_deref(),
+            Some("did:key:zAccount")
         );
-        assert_eq!(self_did_from_conclusions(&json!([])), None);
+        assert_eq!(
+            self_member_did_from_repository(&json!({ "members": [] })),
+            None
+        );
     }
 
     #[test]

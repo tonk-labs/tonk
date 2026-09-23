@@ -2,10 +2,11 @@
 
 #![cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 
-use js_sys::{Array, Function, Object, Reflect};
+use js_sys::{Array, Function, Object, Promise, Reflect};
 use wasm_bindgen::JsCast;
+use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_test::wasm_bindgen_test_configure;
-use web_sys::{Element, HtmlElement, window};
+use web_sys::{CustomEvent, CustomEventInit, Element, HtmlElement, window};
 
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -53,6 +54,110 @@ fn member(id: &str, name: &str) -> serde_json::Value {
     })
 }
 
+async fn settle() {
+    let promise = Promise::new(&mut |resolve, _| {
+        window()
+            .unwrap()
+            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 20)
+            .unwrap();
+    });
+    JsFuture::from(promise).await.unwrap();
+}
+
+#[dialog_common::test]
+async fn repository_self_member_gets_a_separate_you_marker_and_refreshes_after_account_change() {
+    let win = window().unwrap();
+    let original_fetch = Reflect::get(&win, &"fetch".into()).unwrap();
+    let stub = |self_did: &str| {
+        Function::new_with_args(
+            "url",
+            &format!(
+                "return Promise.resolve(new Response(JSON.stringify({{members:[{{did:'did:key:owner',is_self:{}}},{{did:'did:key:member',is_self:{}}}]}}),{{status:200}}))",
+                self_did == "did:key:owner",
+                self_did == "did:key:member"
+            ),
+        )
+    };
+    Reflect::set(&win, &"fetch".into(), &stub("did:key:owner")).unwrap();
+    let (bar, roster) = mount();
+    deliver(
+        &roster,
+        "reset",
+        serde_json::json!([
+            { "this": "owner", "fields": { "name": "Owner", "member": "did:key:owner", "role": "tonk:founder" } },
+            { "this": "member", "fields": { "name": "Member", "member": "did:key:member", "role": "tonk:member" } }
+        ]),
+    );
+    settle().await;
+    let panel = shadow(&bar, ".members-list");
+    assert_eq!(
+        panel
+            .query_selector(".mem-self")
+            .unwrap()
+            .unwrap()
+            .text_content()
+            .as_deref(),
+        Some("Owner")
+    );
+    assert_eq!(
+        panel
+            .query_selector(".mem-you")
+            .unwrap()
+            .unwrap()
+            .text_content()
+            .as_deref(),
+        Some("you")
+    );
+    assert_eq!(
+        panel
+            .query_selector(".mem-role")
+            .unwrap()
+            .unwrap()
+            .text_content()
+            .as_deref(),
+        Some("owner")
+    );
+
+    Reflect::set(&win, &"fetch".into(), &stub("did:key:member")).unwrap();
+    let detail = Object::new();
+    Reflect::set(&detail, &"result".into(), &"completed".into()).unwrap();
+    let init = CustomEventInit::new();
+    init.set_detail(&detail);
+    win.dispatch_event(&CustomEvent::new_with_event_init_dict("tonk:task-closed", &init).unwrap())
+        .unwrap();
+    settle().await;
+    assert_eq!(
+        panel
+            .query_selector(".mem-self")
+            .unwrap()
+            .unwrap()
+            .text_content()
+            .as_deref(),
+        Some("Member")
+    );
+    assert_eq!(
+        panel
+            .query_selector(".mem-you")
+            .unwrap()
+            .unwrap()
+            .text_content()
+            .as_deref(),
+        Some("you")
+    );
+    assert_eq!(
+        panel
+            .query_selector(".mem-role")
+            .unwrap()
+            .unwrap()
+            .text_content()
+            .as_deref(),
+        Some("owner")
+    );
+
+    bar.remove();
+    Reflect::set(&win, &"fetch".into(), &original_fetch).unwrap();
+}
+
 #[dialog_common::test]
 async fn reset_update_and_retract_render_inside_the_attached_panel() {
     let (bar, roster) = mount();
@@ -77,7 +182,7 @@ async fn reset_update_and_retract_render_inside_the_attached_panel() {
     assert_eq!(panel.query_selector_all(".mem-row").unwrap().length(), 2);
     assert_eq!(
         shadow(&bar, ".members span").text_content().as_deref(),
-        Some("view members (2)")
+        Some("view members")
     );
 
     deliver(

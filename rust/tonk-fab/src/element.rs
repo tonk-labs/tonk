@@ -49,9 +49,9 @@ use web_sys::{
 
 use crate::bar;
 use crate::logic::{
-    DEFAULT_DOCK, DOCK_CLASSES, Dock, Edge, EdgeInsets, EdgeSnap, clamp_position,
+    DEFAULT_DOCK, DOCK_CLASSES, Dock, Edge, EdgeInsets, EdgeSnap, FabBox, clamp_position,
     collapsed_claim_json, collapsed_from_conclusions, dock_claim_json, dock_from_conclusions,
-    nearest_dock, pause_claim_json, repository_endpoint, snap_to_nearest_edge,
+    fit_panel, nearest_dock, pause_claim_json, repository_endpoint, snap_to_nearest_edge,
 };
 use crate::shadow::Bound;
 
@@ -148,6 +148,17 @@ impl CustomElement for TonkFab {
         let (observer, callback) = attach_responsive(this, &self.state);
         self.responsive_observer = observer;
         self.responsive_callback = callback;
+        if let Some(win) = window() {
+            let host = this.clone();
+            let shared = self.state.clone();
+            self.listeners
+                .borrow_mut()
+                .push(crate::shadow::bind(&win, "resize", move |_| {
+                    if panel_is_open(&host) {
+                        fit_open_panel(&host, &shared);
+                    }
+                }));
+        }
         self.listeners
             .borrow_mut()
             .extend(attach_keyboard_lift(this));
@@ -210,6 +221,7 @@ fn attach_account_actions(this: &HtmlElement, tasks: &crate::trusted_tasks::Shar
     for (selector, resume) in [
         (".login", crate::trusted_tasks::Resume::None),
         (".share-continue", crate::trusted_tasks::Resume::Share),
+        (".agent-continue", crate::trusted_tasks::Resume::Agent),
     ] {
         let Ok(Some(button)) = root.query_selector(selector) else {
             continue;
@@ -220,7 +232,13 @@ fn attach_account_actions(this: &HtmlElement, tasks: &crate::trusted_tasks::Shar
             let _ = crate::trusted_tasks::open_account(
                 &host,
                 &shared,
-                tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT,
+                match resume {
+                    crate::trusted_tasks::Resume::Agent => "agent-invite-account",
+                    crate::trusted_tasks::Resume::Share => {
+                        tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT
+                    }
+                    crate::trusted_tasks::Resume::None => "fabb-account",
+                },
                 resume,
             );
         }));
@@ -1000,6 +1018,10 @@ fn attach_responsive(
     let host = this.clone();
     let shared = state.clone();
     let callback = Closure::<dyn FnMut(JsValue, JsValue)>::new(move |_: JsValue, _: JsValue| {
+        if panel_is_open(&host) {
+            fit_open_panel(&host, &shared);
+            return;
+        }
         let parent_width = host
             .parent_element()
             .map(|p| p.client_width() as f64)
@@ -1024,6 +1046,92 @@ fn attach_responsive(
         state,
     );
     (observer, Some(callback))
+}
+
+fn panel_is_open(this: &HtmlElement) -> bool {
+    this.shadow_root()
+        .and_then(|root| root.query_selector(".w.menu-open").ok().flatten())
+        .is_some()
+}
+
+/// Keep the header at its resting seat while the attached surface grows.
+/// The available width is measured from that seat, since a freely snapped
+/// top or bottom edge may leave much less room than the parent width implies.
+pub(crate) fn fit_open_panel(this: &HtmlElement, state: &bar::Shared) {
+    let Some(root) = this.shadow_root() else {
+        return;
+    };
+    let Ok(Some(header)) = root.query_selector(".header") else {
+        return;
+    };
+    let Some(wrapper) = root.query_selector(".w").ok().flatten() else {
+        return;
+    };
+    let rect = header.get_bounding_client_rect();
+    if rect.width() == 0.0 || rect.height() == 0.0 {
+        return;
+    }
+    let (vw, vh) = (viewport_width(), viewport_height());
+    let insets = float_insets(this);
+    let visible_actions = root
+        .query_selector_all(".run .action:not([hidden])")
+        .map(|actions| actions.length())
+        .unwrap_or(5);
+    let fit = fit_panel(
+        FabBox {
+            left: rect.left(),
+            top: rect.top(),
+            width: rect.width(),
+            height: rect.height(),
+        },
+        (vw, vh),
+        insets,
+        this.parent_element()
+            .map(|parent| parent.client_width() as f64)
+            .unwrap_or(vw),
+        visible_actions,
+        this.has_attribute("flip"),
+    );
+
+    set_flip(this, fit.flip);
+    if fit.up {
+        let _ = this.set_attribute("up", "");
+    } else {
+        let _ = this.remove_attribute("up");
+    }
+    // The measured seat belongs to the header, which sits inside the host's
+    // bordered wrapper. Positioning the host at that same coordinate adds
+    // the inset again on every open/close cycle. Re-measure after flip/up,
+    // since either can move the header to the opposite side of the host.
+    let positioned_header = header.get_bounding_client_rect();
+    let host_rect = this.get_bounding_client_rect();
+    let header_left_in_host = positioned_header.left() - host_rect.left();
+    let header_right_in_host = host_rect.right() - positioned_header.right();
+    let header_top_in_host = positioned_header.top() - host_rect.top();
+    let header_bottom_in_host = host_rect.bottom() - positioned_header.bottom();
+    invalidate_edge_anchor(this);
+    let style = this.style();
+    if fit.flip {
+        let _ = style.set_property("right", &format!("{}px", fit.right - header_right_in_host));
+        let _ = style.set_property("left", "auto");
+    } else {
+        let _ = style.set_property("left", &format!("{}px", fit.left - header_left_in_host));
+        let _ = style.set_property("right", "auto");
+    }
+    if fit.up {
+        let _ = style.set_property(
+            "bottom",
+            &format!("{}px", fit.bottom - header_bottom_in_host),
+        );
+        let _ = style.set_property("top", "auto");
+    } else {
+        let _ = style.set_property("top", &format!("{}px", fit.top - header_top_in_host));
+        let _ = style.set_property("bottom", "auto");
+    }
+    let wrapper_style = wrapper.unchecked_ref::<HtmlElement>().style();
+    let _ = wrapper_style.set_property("--_height", &format!("{}px", fit.height));
+    let _ = wrapper_style.set_property("--_rail-height", &format!("{}px", fit.rail_height));
+    bar::apply_responsive(this, fit.width, state);
 }
 
 /// The viewport height in CSS px, defaulting if unavailable.
@@ -1418,3 +1526,81 @@ pub(crate) fn apply_account_ready(this: &HtmlElement, ready: bool) {
         }
     }
     bar::update(this);
+}
+
+/// Return this bar's repository endpoint once its space binding is resolved.
+fn host_repository_endpoint(this: &HtmlElement) -> Option<String> {
+    repository_endpoint(&this.get_attribute("space")?).ok()
+}
+
+/// Ask the worker whether this device holds the space.
+async fn check_presence(this: HtmlElement, endpoint: String) {
+    let Some(win) = window() else { return };
+    let Ok(value) = JsFuture::from(win.fetch_with_str(&endpoint)).await else {
+        return;
+    };
+    let Ok(response) = value.dyn_into::<Response>() else {
+        return;
+    };
+    if response.status() == 404 {
+        apply_unknown_space(&this);
+    } else if response.ok() {
+        apply_present(&this);
+    }
+}
+
+/// Probe presence now and whenever this tab returns to the foreground.
+fn attach_presence(this: &HtmlElement) -> Vec<Bound> {
+    if let Some(endpoint) = host_repository_endpoint(this) {
+        spawn_local(check_presence(this.clone(), endpoint));
+    }
+    let Some(document) = window().and_then(|window| window.document()) else {
+        return Vec::new();
+    };
+    let host = this.clone();
+    vec![crate::shadow::bind(
+        document.unchecked_ref(),
+        "visibilitychange",
+        move |_| {
+            let hidden = window()
+                .and_then(|window| window.document())
+                .is_some_and(|document| document.visibility_state() == VisibilityState::Hidden);
+            if !hidden && host.is_connected() {
+                if let Some(endpoint) = host_repository_endpoint(&host) {
+                    spawn_local(check_presence(host.clone(), endpoint));
+                }
+            }
+        },
+    )]
+}
+
+/// Ask the top page to mint a root-signed delegation hop for `audience`.
+async fn delegate(subject: &str, command: &str, audience: &str) -> Result<String, JsValue> {
+    let win = window().ok_or_else(|| JsValue::from_str("no window"))?;
+    let tonk = Reflect::get(&win, &"tonk".into())?
+        .dyn_into::<Object>()
+        .map_err(|_| JsValue::from_str("no window.tonk"))?;
+    let delegate = Reflect::get(&tonk, &"delegate".into())?
+        .dyn_into::<Function>()
+        .map_err(|_| JsValue::from_str("window.tonk.delegate is missing"))?;
+    let request = Object::new();
+    Reflect::set(&request, &"subject".into(), &JsValue::from_str(subject))?;
+    Reflect::set(&request, &"command".into(), &JsValue::from_str(command))?;
+    Reflect::set(&request, &"audience".into(), &JsValue::from_str(audience))?;
+    let promise: Promise = delegate.call1(&tonk, &request)?.dyn_into()?;
+    JsFuture::from(promise)
+        .await?
+        .as_string()
+        .ok_or_else(|| JsValue::from_str("the page answered without a chain"))
+}
+
+/// Register `<tonk-fab>` with the page's custom element registry. Idempotent.
+pub fn register() {
+    let Some(win) = window() else {
+        return;
+    };
+    if !win.custom_elements().get("tonk-fab").is_undefined() {
+        return;
+    }
+    TonkFab::define("tonk-fab");
+}

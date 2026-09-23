@@ -4,8 +4,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use custom_elements::CustomElement;
-use js_sys::{Function, JSON, Object, Reflect};
+use js_sys::{Function, JSON, Object, Promise, Reflect};
 use wasm_bindgen::JsCast;
+use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::{JsFuture, spawn_local};
 use web_sys::{Element, HtmlElement, Url, window};
 
@@ -20,6 +21,18 @@ struct AgentState {
     status: String,
     link: String,
     pending: bool,
+    attempt: u64,
+    uncertain: bool,
+}
+
+impl AgentState {
+    fn begin_retry(&mut self) -> bool {
+        self.pending = true;
+        self.attempt += 1;
+        let fresh = !self.uncertain;
+        self.uncertain = false;
+        fresh
+    }
 }
 
 #[derive(Clone)]
@@ -65,10 +78,15 @@ impl CustomElement for TonkAgentPanel {
             .push(shadow::bind(this, "fabb-agent-open", move |_| {
                 let should_request = {
                     let mut state = state.borrow_mut();
-                    if !state.link.is_empty() || !state.status.is_empty() || state.pending {
+                    if !state.link.is_empty()
+                        || state.pending
+                        || (!state.status.is_empty() && !needs_new_invite(&state.status))
+                    {
                         false
                     } else {
                         state.pending = true;
+                        state.attempt += 1;
+                        state.status.clear();
                         true
                     }
                 };
@@ -76,7 +94,10 @@ impl CustomElement for TonkAgentPanel {
                     render(&view, &state.borrow());
                 }
                 if should_request {
-                    dispatch_handoff(false);
+                    // Opening this drawer is an explicit request. Replacing a
+                    // lost prior bearer needs a new grant, without an extra
+                    // recovery click.
+                    dispatch_handoff(&host, &state, true);
                 }
             }));
 
@@ -101,11 +122,14 @@ impl CustomElement for TonkAgentPanel {
                     shadow::emit(&host, "fabb-account-needed", &wasm_bindgen::JsValue::NULL);
                     return;
                 }
-                state.borrow_mut().pending = true;
+                let fresh = {
+                    let mut state = state.borrow_mut();
+                    state.begin_retry()
+                };
                 if let Some(view) = target(&host) {
                     render(&view, &state.borrow());
                 }
-                dispatch_handoff(true);
+                dispatch_handoff(&host, &state, fresh);
             }));
     }
 
@@ -206,10 +230,13 @@ fn read_row(row: &wasm_bindgen::JsValue) -> Option<(String, String)> {
 }
 
 fn apply(state: &Rc<RefCell<AgentState>>, host: &HtmlElement, status: String, link: String) {
+    let attempt = state.borrow().attempt;
     *state.borrow_mut() = AgentState {
         status,
         link,
         pending: false,
+        attempt,
+        uncertain: false,
     };
     if let Some(target) = target(host) {
         render(&target, &state.borrow());
@@ -219,6 +246,7 @@ fn apply(state: &Rc<RefCell<AgentState>>, host: &HtmlElement, status: String, li
 fn render(target: &Target, state: &AgentState) {
     let ready = !state.link.is_empty();
     let _ = target.copy.toggle_attribute_with_force("hidden", !ready);
+    clear_copy_feedback(&target.copy);
     let retryable = !ready && !state.pending && !state.status.is_empty();
     let _ = target
         .retry
@@ -235,7 +263,7 @@ fn render(target: &Target, state: &AgentState) {
             }));
     }
     let message = if ready {
-        "copy the complete prompt and keep its bearer link private"
+        "copy the prompt and only share the link with the agent"
     } else if state.pending {
         "creating an agent invitation…"
     } else if state.status.is_empty() {
@@ -264,6 +292,11 @@ fn needs_account(status: &str) -> bool {
     status.contains("account") || status.contains("sign in") || status.contains("email")
 }
 
+fn needs_new_invite(status: &str) -> bool {
+    status.starts_with("an invite was already issued for this space")
+        || status.starts_with("invite link is no longer in this session")
+}
+
 fn localized_prompt(name: &str, link: &str) -> String {
     let prompt = agent_prompt(name, link);
     let Ok(url) = Url::new(link) else {
@@ -283,23 +316,115 @@ fn localized_prompt(name: &str, link: &str) -> String {
     )
 }
 
-fn dispatch_handoff(fresh: bool) {
-    let Some(win) = window() else { return };
+fn dispatch_handoff(host: &HtmlElement, state: &Rc<RefCell<AgentState>>, fresh: bool) {
+    let attempt = state.borrow().attempt;
+    let fail = |message: &str| {
+        let mut current = state.borrow_mut();
+        if current.attempt != attempt || !current.pending {
+            return;
+        }
+        current.pending = false;
+        current.status = message.into();
+        current.uncertain = false;
+        drop(current);
+        if let Some(view) = target(host) {
+            render(&view, &state.borrow());
+        }
+    };
+    let Some(win) = window() else {
+        fail("Agent invitation is unavailable. Try again.");
+        return;
+    };
     let Some(tonk) = Reflect::get(&win, &"tonk".into())
         .ok()
         .and_then(|value| value.dyn_into::<Object>().ok())
     else {
+        fail("Agent invitation is unavailable. Try again.");
         return;
     };
     let Some(transact) = Reflect::get(&tonk, &"transact".into())
         .ok()
         .and_then(|value| value.dyn_into::<Function>().ok())
     else {
+        fail("Agent invitation is unavailable. Try again.");
         return;
     };
+    // The FAB lives on the profile branch. Its agent state is subscribed on
+    // the space branch, so the command must explicitly use that same route.
+    let Some(route) = host.get_attribute("with").filter(|route| !route.is_empty()) else {
+        fail("Agent invitation is unavailable. Try again.");
+        return;
+    };
+    let context = Object::new();
+    if Reflect::set(&context, &"with".into(), &route.into()).is_err() {
+        fail("Agent invitation is unavailable. Try again.");
+        return;
+    }
     let claim = agent_handoff_claim_json(js_sys::Date::now(), fresh);
     if let Ok(value) = JSON::parse(&claim.to_string()) {
-        let _ = transact.call1(&tonk, &value);
+        match transact.call2(&tonk, &value, &context) {
+            Ok(result) => {
+                if let Ok(promise) = result.dyn_into::<Promise>() {
+                    let host = host.clone();
+                    let state = state.clone();
+                    spawn_local(async move {
+                        if JsFuture::from(promise).await.is_err() {
+                            fail_handoff(
+                                &host,
+                                &state,
+                                attempt,
+                                "Agent invitation failed. Try again.",
+                                false,
+                            );
+                        }
+                    });
+                }
+            }
+            Err(_) => fail("Agent invitation failed. Try again."),
+        }
+    } else {
+        fail("Agent invitation is unavailable. Try again.");
+    }
+    if !state.borrow().pending {
+        return;
+    }
+    // Command providers report their result through the subscription. If
+    // delivery fails, leave a recoverable action instead of a permanent spinner.
+    let host = host.clone();
+    let state = state.clone();
+    let timeout = Closure::<dyn FnMut()>::once(move || {
+        fail_handoff(
+            &host,
+            &state,
+            attempt,
+            "Agent invitation is taking too long. Try again.",
+            true,
+        );
+    });
+    let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(
+        timeout.as_ref().unchecked_ref(),
+        30_000,
+    );
+    timeout.forget();
+}
+
+fn fail_handoff(
+    host: &HtmlElement,
+    state: &Rc<RefCell<AgentState>>,
+    attempt: u64,
+    message: &str,
+    uncertain: bool,
+) {
+    let mut current = state.borrow_mut();
+    if current.attempt != attempt || !current.pending || !host.is_connected() {
+        return;
+    }
+    current.pending = false;
+    current.status = message.into();
+    current.uncertain = uncertain;
+    drop(current);
+    if let Some(view) = target(host) {
+        render(&view, &state.borrow());
     }
 }
 
@@ -317,16 +442,60 @@ fn copy_prompt(target: &Target, link: &str) {
             let promise = clipboard.write_text(&prompt);
             spawn_local(async move {
                 if JsFuture::from(promise).await.is_ok() {
-                    view.status.set_text_content(Some("agent prompt copied"));
+                    show_copy_feedback(&view.copy, 1_800);
                 } else {
+                    clear_copy_feedback(&view.copy);
                     view.status
                         .set_text_content(Some("could not copy the prompt; try again"));
                 }
             });
         }
-        None => target
-            .status
-            .set_text_content(Some("clipboard unavailable; select and copy the prompt")),
+        None => {
+            clear_copy_feedback(&target.copy);
+            target
+                .status
+                .set_text_content(Some("clipboard unavailable; select and copy the prompt"));
+        }
+    }
+}
+
+fn clear_copy_feedback(button: &Element) {
+    button.set_text_content(Some("copy prompt"));
+}
+
+fn show_copy_feedback(button: &Element, duration_ms: i32) {
+    let sequence = button
+        .get_attribute("data-copy-feedback")
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0)
+        .wrapping_add(1)
+        .to_string();
+    let _ = button.set_attribute("data-copy-feedback", &sequence);
+    button.set_text_content(Some("copied"));
+    let Some(win) = window() else {
+        clear_copy_feedback(button);
+        return;
+    };
+    let pending_button = button.clone();
+    let timeout = Closure::<dyn FnMut()>::once(move || {
+        if pending_button
+            .get_attribute("data-copy-feedback")
+            .as_deref()
+            == Some(sequence.as_str())
+        {
+            clear_copy_feedback(&pending_button);
+        }
+    });
+    if win
+        .set_timeout_with_callback_and_timeout_and_arguments_0(
+            timeout.as_ref().unchecked_ref(),
+            duration_ms,
+        )
+        .is_ok()
+    {
+        timeout.forget();
+    } else {
+        clear_copy_feedback(&button);
     }
 }
 
@@ -341,6 +510,40 @@ pub fn register() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn copied_button_feedback_resets_after_the_latest_copy() {
+        let document = window().unwrap().document().unwrap();
+        let button = document.create_element("button").unwrap();
+        document.body().unwrap().append_child(&button).unwrap();
+        show_copy_feedback(&button, 25);
+        assert_eq!(button.text_content().as_deref(), Some("copied"));
+        show_copy_feedback(&button, 200);
+        let wait = |ms| {
+            Promise::new(&mut |resolve, _| {
+                window()
+                    .unwrap()
+                    .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms)
+                    .unwrap();
+            })
+        };
+        JsFuture::from(wait(60)).await.unwrap();
+        assert_eq!(button.text_content().as_deref(), Some("copied"));
+        JsFuture::from(wait(200)).await.unwrap();
+        assert_eq!(button.text_content().as_deref(), Some("copy prompt"));
+        button.remove();
+    }
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn uncertain_retry_reuses_the_invitation_request() {
+        let mut state = AgentState {
+            uncertain: true,
+            ..AgentState::default()
+        };
+        assert!(!state.begin_retry(), "timeout must not mint a fresh bearer");
+        assert!(state.pending);
+        assert_eq!(state.attempt, 1);
+    }
 
     #[test]
     fn localhost_prompts_use_the_linked_cli_and_connection_origin() {

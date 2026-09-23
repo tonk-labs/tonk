@@ -21,7 +21,6 @@ use web_sys::{Element, HtmlElement, window};
 
 use tonk_host::consumer::{self, Subscription};
 
-const BANNER_ID: &str = "fabb-activation-banner";
 const CLUSTER_ID: &str = "fabb-activation-cluster";
 
 /// Distinguishes this element's account subscriptions from its others.
@@ -161,7 +160,7 @@ fn apply(host: &HtmlElement, payload: &JsValue, is_delta: bool) {
     // carries `activated_at`, and its PRESENCE is the whole signal —
     // there is no provider on it any more. The reader once looked for
     // `provider` here after the query had moved on, so every activation
-    // frame read as not-activated and the banner lingered for the life
+    // frame read as not-activated and the pending action lingered for the life
     // of the page. [`crate::logic::ACTIVATION_FIELD`] is what the query
     // binds, pinned to this reader by a test.
     if let Some(email) = read("email") {
@@ -221,75 +220,18 @@ fn render(this: &HtmlElement, email: Option<&str>, activated: bool) {
         }
     }
 
-    // The banner is for exactly one state: registered and waiting.
     if email.is_none() || activated {
         retire_condition();
         crate::bar::refresh_sync_condition(this);
         return;
     }
-
-    if let Some(document) = window().and_then(|window| window.document()) {
-        if let Some(connect) = document.get_element_by_id(crate::bar::CONNECT_BANNER_ID) {
-            connect.remove();
-        }
-    }
-    ensure_banner(this, email.unwrap_or("your email address"));
+    crate::bar::refresh_sync_condition(this);
     repaint_cluster(email.unwrap_or("your email address"));
 }
-
-fn ensure_banner(this: &HtmlElement, email: &str) {
+pub(crate) fn open_cluster(this: &HtmlElement) {
     let Some(document) = window().and_then(|window| window.document()) else {
         return;
     };
-    if let Some(banner) = document.get_element_by_id(BANNER_ID) {
-        set_banner_copy(&banner, email);
-        return;
-    }
-    let Ok(banner) = document.create_element("tonk-banner") else {
-        return;
-    };
-    banner.set_id(BANNER_ID);
-    let Ok(message) = document.create_element("span") else {
-        return;
-    };
-    let _ = message.set_attribute("data-activation-message", "");
-    let Ok(door) = document.create_element("span") else {
-        return;
-    };
-    let _ = door.set_attribute("slot", "door");
-    door.set_text_content(Some("activate"));
-    let _ = banner.append_child(&message);
-    let _ = banner.append_child(&door);
-    set_banner_copy(&banner, email);
-
-    let host = this.clone();
-    // No refresh on open: the subscription is already current, which is
-    // the point of it.
-    let on_open = Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
-        open_cluster(&host);
-    });
-    let _ = banner.add_event_listener_with_callback("fabb-open", on_open.as_ref().unchecked_ref());
-    on_open.forget();
-    if let Some(body) = document.body() {
-        let _ = body.append_child(&banner);
-    }
-}
-
-fn set_banner_copy(banner: &Element, email: &str) {
-    if let Ok(Some(message)) = banner.query_selector("[data-activation-message]") {
-        message.set_text_content(Some(&format!(
-            "{email} is waiting for email confirmation — nothing syncs until you confirm it"
-        )));
-    }
-}
-
-fn open_cluster(this: &HtmlElement) {
-    let Some(document) = window().and_then(|window| window.document()) else {
-        return;
-    };
-    if let Some(banner) = document.get_element_by_id(BANNER_ID) {
-        let _ = banner.set_attribute("hidden", "");
-    }
     if let Some(cluster) = document.get_element_by_id(CLUSTER_ID) {
         let _ = cluster.remove_attribute("hidden");
         return;
@@ -363,18 +305,9 @@ fn open_cluster(this: &HtmlElement) {
         Ok(completion) => spawn_local(async move {
             let _ = wasm_bindgen_futures::JsFuture::from(completion).await;
             content.remove();
-            if let Some(banner) = window()
-                .and_then(|window| window.document())
-                .and_then(|document| document.get_element_by_id(BANNER_ID))
-            {
-                let _ = banner.remove_attribute("hidden");
-            }
         }),
         Err(_) => {
             cluster.remove();
-            if let Some(banner) = document.get_element_by_id(BANNER_ID) {
-                let _ = banner.remove_attribute("hidden");
-            }
         }
     }
 }
@@ -416,16 +349,6 @@ fn retire_condition() {
     };
     if let Some(cluster) = document.get_element_by_id(CLUSTER_ID) {
         cluster.remove();
-    }
-    if let Some(banner) = document.get_element_by_id(BANNER_ID) {
-        let retire = js_sys::Reflect::get(&banner, &"retire".into())
-            .ok()
-            .and_then(|value| value.dyn_into::<js_sys::Function>().ok());
-        if let Some(retire) = retire {
-            let _ = retire.call0(&banner);
-        } else {
-            banner.remove();
-        }
     }
 }
 

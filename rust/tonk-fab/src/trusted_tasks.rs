@@ -135,8 +135,28 @@ fn finish(this: &HtmlElement, state: &Shared, bar_state: &bar::Shared, result: &
     restore_surface(this);
     match active.resume {
         Resume::None => {}
-        Resume::Share => bar::open(this, bar_state, "share"),
-        Resume::Agent => bar::open(this, bar_state, "agent"),
+        // The account gate was the share drawer's only purpose. Once the
+        // task returns, the share action copies in place on the next click.
+        Resume::Share => bar::show_actions(this, bar_state),
+        Resume::Agent => {
+            restore_panel(this, bar_state, "agent", "#agent-panel");
+            if result == "completed"
+                && let Ok(Some(agent)) = this.query_selector("tonk-agent-panel")
+                && let Ok(agent) = agent.dyn_into::<HtmlElement>()
+            {
+                shadow::emit(&agent, "fabb-agent-open", &wasm_bindgen::JsValue::NULL);
+            }
+        }
+    }
+}
+
+fn restore_panel(this: &HtmlElement, bar_state: &bar::Shared, name: &str, selector: &str) {
+    let hidden = this
+        .shadow_root()
+        .and_then(|root| root.query_selector(selector).ok().flatten())
+        .is_none_or(|panel| panel.has_attribute("hidden"));
+    if hidden {
+        bar::open(this, bar_state, name);
     }
 }
 
