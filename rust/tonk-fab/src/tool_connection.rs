@@ -276,6 +276,18 @@ fn native_dialog(cluster: &Element) -> Option<HtmlDialogElement> {
         .ok()
 }
 
+fn ensure_cluster() -> Option<Element> {
+    if let Some(cluster) = cluster() {
+        return Some(cluster);
+    }
+    let document = window()?.document()?;
+    let holder = document.create_element("div").ok()?;
+    holder.set_inner_html(crate::markup::REFUSAL_DIALOGS_HTML);
+    let cluster = holder.query_selector(&format!("#{CLUSTER_ID}")).ok()??;
+    document.body()?.append_child(&cluster).ok()?;
+    Some(cluster)
+}
+
 fn clear_surface(hide: bool) {
     let Some(cluster) = cluster() else { return };
     let _ = cluster.remove_attribute("data-tool-link");
@@ -323,12 +335,13 @@ fn dispatch(space: &str) {
 
 /// Open the app-owned surface and request a fresh link for this exact space.
 pub(crate) fn open(bar: &HtmlElement) {
-    crate::element::mount_refusal_dialogs();
     let Some(space) = bar.get_attribute("space").filter(|space| !space.is_empty()) else {
         return;
     };
+    let Some(cluster) = ensure_cluster() else {
+        return;
+    };
     clear_surface(false);
-    let Some(cluster) = cluster() else { return };
     let _ = cluster.set_attribute("data-tool-space", &space);
     let _ = cluster.remove_attribute("hidden");
     if let Ok(host) = cluster.dyn_into::<HtmlElement>() {

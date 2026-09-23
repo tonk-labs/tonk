@@ -4687,6 +4687,36 @@ mod tests {
     }
 
     #[cfg(feature = "connection-invites")]
+    async fn click_tool_connection_action(driver: &WebDriver) -> Result<()> {
+        enter_guest(driver).await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let opened = driver
+                .execute(
+                    r#"const root = document.querySelector('tonk-fab')?.shadowRoot;
+                       const actions = root?.querySelector('.run');
+                       const tool = root?.querySelector('.tool');
+                       if (!actions || !tool || tool.hidden) return false;
+                       if (actions.hidden) root.querySelector('.space')?.click();
+                       if (actions.hidden) return false;
+                       tool.click();
+                       return true;"#,
+                    Vec::new(),
+                )
+                .await?;
+            if opened.json() == true {
+                driver.enter_default_frame().await?;
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                driver.enter_default_frame().await?;
+                return Err(anyhow!("the bar never offered its tool connection action"));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    #[cfg(feature = "connection-invites")]
     async fn await_tool_connection_ready_after(
         driver: &WebDriver,
         space: &str,
@@ -6731,12 +6761,13 @@ mod tests {
         let key = create_space_awaiting_remote(&browser, "Tool connection", true).await?;
         await_url_containing(&browser, &format!("/space/{key}")).await?;
 
-        // The existing row remains an ordinary person invite. Exercise the
+        // The share action remains an ordinary person invite. Exercise the
         // actual clipboard handoff, then prove the CLI refuses it without
         // producing its registry.
         watch_guest_clipboard(&browser).await?;
-        click_share_row(&browser, "[data-share-link]").await?;
-        let _ = await_share_row_working(&browser).await?;
+        await_share_action(&browser, "link").await?;
+        click_share_action(&browser, "link").await?;
+        let _ = await_share_action_working(&browser).await?;
         let person_link = guest_copied_text(&browser).await?;
         let profile = tempfile::tempdir()?;
         let rejected = run_cli(
@@ -6769,7 +6800,7 @@ mod tests {
 
         // The separate app-owned action issues one scoped link. Both copy
         // buttons must expose that exact identity, not mint one per copy.
-        click_share_row(&browser, "[data-tool-connection]").await?;
+        click_tool_connection_action(&browser).await?;
         await_tool_connection_ready(&browser, &key).await?;
         let tool_link = copy_tool_connection(&browser, "[data-tool-copy-link]").await?;
         anyhow::ensure!(
@@ -6809,7 +6840,7 @@ mod tests {
         )
         .await?;
         wait_for_service_worker(&browser).await?;
-        click_share_row(&browser, "[data-tool-connection]").await?;
+        click_tool_connection_action(&browser).await?;
         await_tool_connection_ready_after(&browser, &key, Some(&tool_link)).await?;
         let returning = copy_tool_connection(&browser, "[data-tool-copy-link]").await?;
         anyhow::ensure!(
@@ -6822,7 +6853,7 @@ mod tests {
         // the modal that was open on the previous route.
         let second = create_space_awaiting_remote(&browser, "Second tool space", true).await?;
         await_url_containing(&browser, &format!("/space/{second}")).await?;
-        click_share_row(&browser, "[data-tool-connection]").await?;
+        click_tool_connection_action(&browser).await?;
         await_tool_connection_ready(&browser, &second).await?;
         let switched = copy_tool_connection(&browser, "[data-tool-copy-link]").await?;
         anyhow::ensure!(
@@ -7388,7 +7419,7 @@ mod tests {
         sign_up(&browser, &env, "agent-issuer@example.com").await?;
         let key = create_space_awaiting_remote(&browser, "Independent agents", true).await?;
         await_url_containing(&browser, &format!("/space/{key}")).await?;
-        click_share_row(&browser, "[data-tool-connection]").await?;
+        click_tool_connection_action(&browser).await?;
         await_tool_connection_ready(&browser, &key).await?;
         let first = copy_tool_connection(&browser, "[data-tool-copy-link]")
             .await
@@ -7406,7 +7437,7 @@ mod tests {
             .to_owned();
         // Opening the explicit action again requests a separate identity and
         // revocation boundary. Copying does not mint another one.
-        click_share_row(&browser, "[data-tool-connection]").await?;
+        click_tool_connection_action(&browser).await?;
         await_tool_connection_ready(&browser, &key).await?;
         let second = copy_tool_connection(&browser, "[data-tool-copy-link]")
             .await
