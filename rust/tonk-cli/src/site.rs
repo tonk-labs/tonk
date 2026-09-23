@@ -1307,30 +1307,20 @@ async fn derive_operator_for_profile(
         .to_str()
         .with_context(|| format!("non-UTF-8 path: {}", root.display()))?
         .to_owned();
-    let operator = profile
-        .derive(OPERATOR_CONTEXT)
-        .base(Directory::At(root_str))
-        .build(storage)
-        .await
-        .context("failed to build operator")?;
     let expiration = Timestamp::new(
         SystemTime::now() + Duration::from_secs(tonk_identity::session::SESSION_TTL_SECONDS),
     )
     .context("native session expiration is out of range")?;
-    let session = profile
-        .access()
-        .claim(Subject::any())
-        .expires(expiration)
-        .delegate(operator.did())
-        .perform(&operator)
+    // The signing session is held in memory for this process only. Every
+    // CLI invocation opens a site afresh, so a durable grant here would
+    // commit one more certificate to the profile per `tonk pull`.
+    let operator = profile
+        .derive(OPERATOR_CONTEXT)
+        .base(Directory::At(root_str))
+        .allow_until(Subject::any(), expiration)
+        .build(storage)
         .await
-        .context("failed to mint the native signing session")?;
-    profile
-        .access()
-        .save(session)
-        .perform(&operator)
-        .await
-        .context("failed to save the native signing session")?;
+        .context("failed to build operator")?;
     Ok(operator)
 }
 

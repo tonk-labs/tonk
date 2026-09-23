@@ -9,7 +9,16 @@
 use dialog_artifacts::Entity;
 use dialog_query::Concept;
 
-use crate::domain::branch::{Name, Replica};
+use crate::domain::branch::{Name, Origin, Replica};
+
+/// Branch facts written before `branch/replica` replaced `branch/origin`.
+/// Their entity also used a different hash input, so reads must retain it.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LegacyBranch {
+    pub this: Entity,
+    pub name: Name,
+    pub origin: Origin,
+}
 
 /// Hash input for [`Branch::this`].
 ///
