@@ -17,19 +17,20 @@ use std::sync::{Arc, atomic::Ordering};
 
 use axum::{Extension, Json, extract::State};
 use axum_wasm_macros::wasm_compat;
-use dialog_operator::{DeriveOperator as _, Profile};
-use dialog_storage::provider::storage::Storage;
+use dialog_artifacts::Entity;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use dialog_varsig::Did;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use tonk_schema::prelude::DidExt as _;
 use tonk_worker_api::{ActivateProfileRequest, ProfileRosterEntry, ProfilesResponse};
 
 use super::AppState;
 use crate::TonkWorkerError;
 use crate::device::RosterEntry;
-use crate::worker::DefaultOperator;
-use crate::worker::{DefaultSpace, TonkState};
+use crate::worker::TonkState;
 
 /// How account routing selected the profile pinned by an
 /// [`AccountProfileGuard`].
@@ -66,69 +67,6 @@ impl Deref for AccountProfileGuard {
 
     fn deref(&self) -> &Self::Target {
         &self.tonk
-    }
-}
-
-/// The active profile's switcher row, built from live state.
-///
-/// Every field but the storage handle is read where it actually lives: the
-/// provider attachment, the local root, the display name on the account
-/// branch. Nothing is carried forward from the roster, which now stores only
-/// the handle — a copy there could only go stale, since nothing invalidated
-/// it when the source changed.
-///
-/// The account fields all derive from the provider attachment: an unattached
-/// profile is a local workspace whatever root record it still holds, which is
-/// how sign-out demotes a row without deleting anything.
-async fn refreshed_entry(tonk: &TonkState, email: Option<String>) -> RosterEntry {
-    let provider = super::account::provider(tonk).await;
-    let root_did = if provider.is_some() {
-        super::identity::local_root(tonk)
-            .await
-            .ok()
-            .map(|root| root.root_did.to_string())
-    } else {
-        None
-    };
-    RosterEntry {
-        profile_name: tonk.profile_name.clone(),
-        root_did,
-        provider: provider.clone(),
-        email: provider.and(email),
-        // The ACCOUNT's name, not the profile's. The roster feeds the
-        // Hub's account cell, which names the account — and that name
-        // arrives with the account branch, so `None` here is what makes
-        // the cell hold a skeleton until it replicates. The profile-name
-        // override is a per-device legacy and cannot answer for it.
-        display_name: super::account_devices::account_display_name(tonk).await,
-    }
-}
-
-/// Build a switcher row from the profile that owns its facts, without
-/// promoting or booting that profile.
-async fn inspected_entry(
-    profile_name: String,
-    profile: &Profile,
-    operator: &DefaultOperator,
-) -> RosterEntry {
-    let provider = super::account::provider_from(profile, operator).await;
-    let root_did = if provider.is_some() {
-        super::identity::historical_root_did(profile, operator)
-            .await
-            .ok()
-            .flatten()
-            .map(|root| root.to_string())
-    } else {
-        None
-    };
-    RosterEntry {
-        profile_name,
-        root_did,
-        provider,
-        email: None,
-        // The ACCOUNT's name, like the active row — read from this
-        // profile's own repository, since each names its own account.
-        display_name: super::account_devices::account_display_name_for(profile, operator).await,
     }
 }
 
@@ -175,64 +113,57 @@ fn response_from(active: &str, roster: Vec<RosterEntry>) -> ProfilesResponse {
     }
 }
 
-/// Read every switcher row from its owning profile. Opening a profile handle
-/// does not boot or activate it, so labels and attachment state stay current
-/// without changing the active account.
+/// Every branch of this profile as a switcher row: the account it follows
+/// (if any), that account's name read off the branch, and where the
+/// account is served from. Republished to the active branch's overlay so
+/// a sealed guest, which can read only that branch, sees them all.
 async fn refreshed_roster(tonk: &TonkState) -> Result<Vec<RosterEntry>, TonkWorkerError> {
-    let mut roster = tonk
-        .registry
-        .read_roster(&tonk.storage, &tonk.operator)
-        .await?;
-    // Each profile's DID, paired with the row read from it, so the rows can
-    // be republished as overlay facts once the loop has them all. Collected
-    // rather than written per-iteration: one overlay write replaces the whole
-    // set, which is what keeps a profile that has since been removed from
-    // lingering in the switcher.
-    let mut seen: Vec<(Did, usize)> = Vec::new();
-    for (index, slot) in roster.iter_mut().enumerate() {
-        if slot.profile_name == tonk.profile_name {
-            *slot = refreshed_entry(tonk, None).await;
-            seen.push((tonk.profile.did(), index));
-            continue;
-        }
-        let profile = match tonk
-            .registry
-            .open_profile(&tonk.storage, &slot.profile_name)
-            .await
-        {
-            Ok(profile) => profile,
-            Err(error) => {
-                log!(
-                    "profile roster kept fallback data for unreadable handle {}: {error}",
-                    slot.profile_name
-                );
-                continue;
+    let mut roster = Vec::new();
+    let mut rows = Vec::new();
+    for (name, entity) in super::profile::local_branches(tonk).await {
+        let account = super::profile::account_of_branch(tonk, &entity).await;
+        let display_name = match &account {
+            Some(account) => {
+                super::account_devices::account_display_name_on(tonk, &name, account).await
             }
+            None => None,
         };
-        let operator = match inspection_operator(&profile, &tonk.storage).await {
-            Ok(operator) => operator,
-            Err(error) => {
-                log!(
-                    "profile roster kept fallback data for unreadable handle {}: {error}",
-                    slot.profile_name
-                );
-                continue;
-            }
+        let provider = match &account {
+            Some(_) => super::profile::provider_of_branch(tonk, &entity).await,
+            None => None,
         };
-        seen.push((profile.did(), index));
-        *slot = inspected_entry(slot.profile_name.clone(), &profile, &operator).await;
+        roster.push(RosterEntry {
+            profile_name: name.clone(),
+            root_did: account.as_ref().map(ToString::to_string),
+            provider: provider.clone(),
+            email: None,
+            display_name: display_name.clone(),
+        });
+        rows.push(SwitcherRow {
+            branch: entity,
+            name,
+            label: display_name,
+            provider,
+        });
     }
-    publish_roster_overlay(tonk, &roster, &seen).await;
+    publish_roster_overlay(tonk, &rows).await;
     Ok(roster)
 }
 
-/// Republish the switcher rows as overlay facts on the active profile's
-/// branch, so a sealed guest can render the switcher from a query.
+/// One switcher row, keyed on the branch it is for.
+struct SwitcherRow {
+    branch: Entity,
+    name: String,
+    label: Option<String>,
+    provider: Option<String>,
+}
+
+/// Republish the switcher rows as overlay facts on the active branch, so
+/// a sealed guest can render the switcher from a query.
 ///
-/// The guest can only read the ACTIVE profile's branches; every other
-/// profile's name and provider live on branches it cannot reach. The worker
-/// has just read them all, so it stamps what it found where the guest is
-/// looking.
+/// The guest can only read the ACTIVE branch; every other branch's name
+/// and provider live where it cannot reach. The worker has just read
+/// them all, so it stamps what it found where the guest is looking.
 ///
 /// Overlay rather than a durable write, which is the whole point: a
 /// committed copy would be a second home for a name owned elsewhere, free
@@ -241,44 +172,48 @@ async fn refreshed_roster(tonk: &TonkState) -> Result<Vec<RosterEntry>, TonkWork
 ///
 /// Best-effort. The switcher is a convenience; `GET /api/profiles` remains
 /// the authority and is unaffected if this write fails.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn publish_roster_overlay(tonk: &TonkState, roster: &[RosterEntry], seen: &[(Did, usize)]) {
+async fn publish_roster_overlay(tonk: &TonkState, rows: &[SwitcherRow]) {
     use tonk_schema::ProfileRow;
 
     // Cardinality-one fields supersede in place, so re-asserting a row
-    // updates it rather than stacking a second copy. A profile dropped from
-    // the roster keeps a stale row until the session ends; the switcher
-    // renders from `DeviceProfile`, which IS durable and is retracted on
-    // removal, so a row with no matching handle is never shown.
+    // updates it rather than stacking a second copy.
     let mut overlay = tonk
         .reactor
         .profile_repository()
-        .branch(super::repository::PROFILE_BRANCH)
+        .branch(&tonk.active_branch)
         .overlay();
-    for (did, index) in seen {
-        let Some(entry) = roster.get(*index) else {
-            continue;
-        };
+    for row in rows {
         overlay = overlay.assert(ProfileRow::new(
-            did,
-            entry.display_name.as_deref(),
-            entry.provider.as_deref(),
-            entry.profile_name == tonk.profile_name,
+            row.branch.clone(),
+            row.name.clone(),
+            row.label.as_deref(),
+            row.provider.as_deref(),
+            row.name == tonk.active_branch,
         ));
     }
     if let Err(error) = overlay.write().perform(&tonk.operator).await {
-        log!("profile roster overlay not published: {error}");
+        log!("switcher rows not published: {error}");
     }
 }
 
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-async fn publish_roster_overlay(_: &TonkState, _: &[RosterEntry], _: &[(Did, usize)]) {}
+/// Publish the switcher rows for the branch the profile booted onto.
+///
+/// The rows are session overlay facts, so a fresh worker holds none
+/// until a roster read republishes them. The hub renders the account
+/// list from them and nothing on the page reads the roster on its own,
+/// so a worker restart would otherwise show an empty list until the
+/// next `GET /api/profiles`. Best-effort, like the link row beside it.
+pub(crate) async fn publish_roster(tonk: &TonkState) {
+    if let Err(error) = refreshed_roster(tonk).await {
+        log!("switcher rows not published at boot: {error}");
+    }
+}
 
-/// The roster with every profile's live label and account state.
+/// The roster with every branch's live label and account state.
 async fn refreshed_response(tonk: &TonkState) -> Result<ProfilesResponse, TonkWorkerError> {
     try_upsert_active_entry(tonk, None).await?;
     let roster = refreshed_roster(tonk).await?;
-    Ok(response_from(&tonk.profile_name, roster))
+    Ok(response_from(&tonk.active_branch, roster))
 }
 
 /// `GET /api/profiles`.
@@ -303,6 +238,12 @@ pub async fn activate(
         .map(Json)
 }
 
+/// Switch to branch `name`.
+///
+/// Switching away from an account signs out of it: the profile holds at
+/// most one grant, and the branch being left keeps its data for when it
+/// is returned to. The target is validated before anything is withdrawn,
+/// so a mistyped name costs nothing.
 async fn activate_named(
     state: &AppState,
     name: String,
@@ -314,54 +255,50 @@ async fn activate_named(
     };
     let _transition = transition.lock().await;
 
-    let (registry, active, profile_library) = {
+    let (storage, profile_name, profile, registry, profile_library) = {
         let tonk = state.read().await;
-        // Validate before opening anything: `Profile::open` is
-        // open-or-create, so an unvalidated name would silently mint a
-        // garbage key. The initial profile is always a valid target even
-        // when nothing ever wrote its roster entry.
-        if name != tonk.registry.initial_profile()
-            && !tonk
-                .registry
-                .read_roster(&tonk.storage, &tonk.operator)
-                .await?
-                .iter()
-                .any(|entry| entry.profile_name == name)
+        if name == tonk.active_branch {
+            return refreshed_response(&tonk).await;
+        }
+        if !super::profile::local_branches(&tonk)
+            .await
+            .iter()
+            .any(|(known, _)| *known == name)
         {
             return Err(TonkWorkerError::NotFound(format!(
-                "no profile '{name}' on this browser"
+                "no branch '{name}' on this profile"
             )));
         }
-        // Keep the outgoing profile reachable: a switch must not proceed if
-        // its local workspace cannot first be named in the roster.
-        try_upsert_active_entry(&tonk, None).await?;
+        // The branch keeps its link: what this device holds about an
+        // account lives with the branch that follows it, so switching
+        // neither revokes nor forgets it. Only signing out does.
+        super::profile::set_active_branch(&tonk, &name).await?;
         (
-            tonk.registry.clone(),
+            tonk.storage.clone(),
             tonk.profile_name.clone(),
+            tonk.profile.clone(),
+            tonk.registry.clone(),
             tonk.profile_library.clone(),
         )
     };
-    if name == active {
-        let tonk = state.read().await;
-        return refreshed_response(&tonk).await;
-    }
 
     // Build the replacement state WITHOUT holding the state write lock —
-    // opening a profile and bootstrapping its meta branch await storage
-    // IO, and in-flight requests must keep being served meanwhile.
-    let storage = Storage::<DefaultSpace>::default();
-    let profile = registry.open_profile(&storage, &name).await?;
+    // booting onto the branch awaits storage IO, and in-flight requests
+    // must keep being served meanwhile.
     let new_state = crate::worker::boot_state_with_profile_library(
         storage,
-        name.clone(),
+        profile_name,
         profile,
-        registry.clone(),
+        registry,
         profile_library,
     )
     .await?;
-    // Only a target that opened and booted repoints the pointer, so a
-    // failed activation never strands the next SW restart.
-    promote(state, new_state, source).await
+    let response = promote(state, new_state, source).await?;
+    // The tab that asked cannot await a command the way it awaited the
+    // endpoint, so it no longer reloads itself. Its requests are fenced
+    // from here on; reload it once the swap is published.
+    super::navigate::notify_profile_changed_to(source);
+    Ok(response)
 }
 
 /// Run the [`AddProfile`] command.
@@ -384,10 +321,33 @@ impl dialog_capability::Provider<tonk_schema::command::AddProfile> for crate::ro
             log!("AddProfile failed: {error}");
             return;
         }
-        // The rotation already told every OTHER window to reload. This
-        // one is asked to open the ceremony instead, which is why the
-        // client is passed here and withheld there.
-        super::navigate::notify_register(self.client(), "profile-transition");
+        // The ceremony is NOT raised from here. It is a top-page passkey
+        // dialog whose handler lives behind the portal bridge, reachable
+        // only from a guest calling `window.tonk.register`; a worker
+        // message routed through `tonk-host` reaches the top page, where
+        // there is no `window.tonk` to forward to, and intercepting that
+        // path stopped the real handler from ever seeing the request.
+        //
+        // So the rotation is all this command does, and the view raises
+        // the ceremony from the guest as it always has.
+
+        // Report the ask, so the hub can render "a signup is up" from a
+        // fact rather than from element state. The element carried this
+        // on the document body precisely because a re-render replaced it
+        // mid-ceremony; an overlay row survives re-renders by not living
+        // in the DOM at all.
+        //
+        // The worker does not drive this ceremony to completion — the
+        // page's signup does — so the terminal states are written by
+        // whatever finishes it, not here.
+        let tonk = self.state().read().await;
+        super::ceremony::report(
+            &tonk,
+            tonk_schema::ceremony::ADD_PROFILE,
+            tonk_schema::ceremony_state::PENDING_CEREMONY,
+            "",
+        )
+        .await;
     }
 }
 
@@ -434,6 +394,13 @@ pub async fn add(
     add_profile(&state, source).await.map(Json)
 }
 
+/// Start an empty branch to sign a new account in on.
+///
+/// Leaving the current account is what makes room: the profile holds at
+/// most one grant, so the account being added mints its own on a branch
+/// that follows nothing yet. A branch that already follows nothing and
+/// holds no root is that landing pad already, and is handed back rather
+/// than abandoned for another.
 async fn add_profile(
     state: &AppState,
     source: Option<&super::ClientId>,
@@ -444,12 +411,11 @@ async fn add_profile(
     };
     let _transition = transition.lock().await;
 
-    let (registry, profile_library) = {
+    let (storage, name, profile, registry, profile_library) = {
         let tonk = state.read().await;
-        // Abandoned-add reuse: a profile with no persisted root and no
-        // user spaces is already a fresh landing pad — hand it back
-        // rather than minting another orphan key.
-        if super::identity::load_record(&tonk).await?.is_none() {
+        if super::identity::load_record(&tonk).await?.is_none()
+            && super::profile::active_account(&tonk).await.is_none()
+        {
             let fresh = true;
             #[cfg(target_arch = "wasm32")]
             let fresh = fresh && super::profile_name::real_space_keys(&tonk).await.is_empty();
@@ -457,12 +423,16 @@ async fn add_profile(
                 return refreshed_response(&tonk).await;
             }
         }
-        try_upsert_active_entry(&tonk, None).await?;
-        (tonk.registry.clone(), tonk.profile_library.clone())
+        // The branch being left keeps its link (see `activate_named`).
+        super::profile::leave_account(&tonk).await;
+        (
+            tonk.storage.clone(),
+            tonk.profile_name.clone(),
+            tonk.profile.clone(),
+            tonk.registry.clone(),
+            tonk.profile_library.clone(),
+        )
     };
-
-    let storage = Storage::<DefaultSpace>::default();
-    let (name, profile) = registry.create_profile(&storage).await?;
     let new_state = crate::worker::boot_state_with_profile_library(
         storage,
         name,
@@ -471,14 +441,20 @@ async fn add_profile(
         profile_library,
     )
     .await?;
-    promote(state, new_state, source).await
+    let response = promote(state, new_state, source).await?;
+    // The tab that asked cannot await a command the way it awaited the
+    // endpoint, so it no longer reloads itself. Its requests are fenced
+    // from here on; reload it once the swap is published.
+    super::navigate::notify_profile_changed_to(source);
+    Ok(response)
 }
 
-/// Sign the current profile out and promote the next signed-in profile. If no
-/// other account is attached, promote an existing rootless local workspace or
-/// create one. The signed-out profile remains in the roster with its root and
-/// spaces intact, but it can no longer leak those spaces into the default hub
-/// landing view.
+/// Sign out: withdraw this device's grant, forget the provider, and move
+/// to a branch that follows nothing.
+///
+/// The grant goes first, while the operator still holds it and can push
+/// the retraction. The account branch itself is kept, spaces and all:
+/// signing back in returns to it.
 pub(crate) async fn sign_out(
     state: &AppState,
     source: Option<&super::ClientId>,
@@ -489,76 +465,19 @@ pub(crate) async fn sign_out(
     };
     let _transition = transition.lock().await;
 
-    let (registry, storage, active_name, roster, profile_library) = {
-        let current = state.read().await;
-        try_upsert_active_entry(&current, None).await?;
-        let roster = current
-            .registry
-            .read_roster(&current.storage, &current.operator)
-            .await?;
+    let (status, storage, name, profile, registry, profile_library) = {
+        let tonk = state.read().await;
+        super::account_devices::withdraw_own_authority(&tonk).await;
+        let status = super::account::disconnect(&tonk).await?;
+        super::profile::leave_account(&tonk).await;
         (
-            current.registry.clone(),
-            current.storage.clone(),
-            current.profile_name.clone(),
-            roster,
-            current.profile_library.clone(),
+            status,
+            tonk.storage.clone(),
+            tonk.profile_name.clone(),
+            tonk.profile.clone(),
+            tonk.registry.clone(),
+            tonk.profile_library.clone(),
         )
-    };
-
-    // "Next" follows the stable order the switcher renders, wrapping once.
-    let active_index = roster
-        .iter()
-        .position(|entry| entry.profile_name == active_name)
-        .unwrap_or(roster.len());
-    let ordered = roster
-        .iter()
-        .skip(active_index.saturating_add(1))
-        .chain(roster.iter().take(active_index));
-    let mut signed_in = None;
-    let mut local = None;
-    for entry in ordered {
-        let profile = match registry.open_profile(&storage, &entry.profile_name).await {
-            Ok(profile) => profile,
-            Err(error) => {
-                log!(
-                    "sign-out skipped unreadable roster handle {}: {error}",
-                    entry.profile_name
-                );
-                continue;
-            }
-        };
-        let operator = match inspection_operator(&profile, &storage).await {
-            Ok(operator) => operator,
-            Err(error) => {
-                log!(
-                    "sign-out skipped unreadable roster handle {}: {error}",
-                    entry.profile_name
-                );
-                continue;
-            }
-        };
-        if super::account::provider_from(&profile, &operator)
-            .await
-            .is_some()
-        {
-            signed_in = Some((entry.profile_name.clone(), profile));
-            break;
-        }
-        if local.is_none()
-            && matches!(
-                super::identity::historical_root_did(&profile, &operator).await,
-                Ok(None)
-            )
-        {
-            local = Some((entry.profile_name.clone(), profile));
-        }
-    }
-
-    // Prepare the replacement before disconnecting. If a stored profile is
-    // unreadable or cannot boot, the current account remains fully linked.
-    let (name, profile) = match signed_in.or(local) {
-        Some(candidate) => candidate,
-        None => registry.create_profile(&storage).await?,
     };
     let new_state = crate::worker::boot_state_with_profile_library(
         storage,
@@ -568,16 +487,17 @@ pub(crate) async fn sign_out(
         profile_library,
     )
     .await?;
-
-    let status = {
-        let current = state.read().await;
-        super::account::disconnect(&current).await?
-    };
     promote(state, new_state, source).await?;
     Ok(status)
 }
 
-/// Select and pin the profile that historically owns `root`.
+/// Route an account ceremony to the branch for `root`.
+///
+/// Already on that account's branch: nothing moves. A branch already
+/// following it: switch there, spaces and all. Otherwise the branch the
+/// profile is on takes the upstream once the ceremony links — after
+/// leaving whatever account it followed, so the new account starts from
+/// an empty branch and the old one keeps its grant withdrawn.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) async fn for_account(
     state: AppState,
@@ -591,131 +511,53 @@ pub(crate) async fn for_account(
     let _transition = transition.lock().await;
 
     let current = state.clone().read_owned().await;
-    let current_root =
-        super::identity::historical_root_did(&current.profile, &current.operator).await?;
-    match &current_root {
-        Some(historical) if historical == root => {
-            return Ok(AccountProfileGuard {
-                tonk: current,
-                disposition: AccountProfileDisposition::Current,
-            });
-        }
-        Some(_) | None => {}
-    }
-
-    // Routing must not make the outgoing local workspace unreachable.
-    try_upsert_active_entry(&current, None).await?;
-    let registry = current.registry.clone();
-    let storage = current.storage.clone();
-    let profile_library = current.profile_library.clone();
-    let roster = registry
-        .read_roster(&current.storage, &current.operator)
-        .await?;
-    let active_name = current.profile_name.clone();
-    drop(current);
-
-    let mut matched: Option<(String, Profile)> = None;
-    for entry in roster {
-        if entry.profile_name == active_name {
-            continue;
-        }
-        let profile = match registry.open_profile(&storage, &entry.profile_name).await {
-            Ok(profile) => profile,
-            Err(_) => {
-                log!(
-                    "profile routing skipped unreadable roster handle {}",
-                    entry.profile_name
-                );
-                continue;
-            }
-        };
-        let operator = match inspection_operator(&profile, &storage).await {
-            Ok(operator) => operator,
-            Err(_) => {
-                log!(
-                    "profile routing skipped unreadable roster handle {}",
-                    entry.profile_name
-                );
-                continue;
-            }
-        };
-        match super::identity::historical_root_did(&profile, &operator).await {
-            Ok(Some(historical)) if historical == *root => {
-                if matched.is_none() {
-                    matched = Some((entry.profile_name, profile));
-                } else {
-                    log!("profile routing retained a duplicate matching profile handle");
-                }
-            }
-            Ok(_) => {}
-            Err(_) => {
-                log!(
-                    "profile routing skipped unreadable roster handle {}",
-                    entry.profile_name
-                );
-            }
-        }
-    }
-
-    if matched.is_none() && current_root.is_none() {
-        // A genuinely new account keeps the active onboarding/local profile,
-        // but only after proving this browser does not already have a profile
-        // for the discovered root. This is what lets post-sign-out login route
-        // back to the preserved account profile instead of rebinding the
-        // rootless landing profile.
-        let tonk = state.read_owned().await;
+    let on = super::profile::active_account(&current).await;
+    if on.as_ref() == Some(&root.this()) {
         return Ok(AccountProfileGuard {
-            tonk,
+            tonk: current,
+            disposition: AccountProfileDisposition::Current,
+        });
+    }
+    let existing = super::profile::branch_following(&current, root).await;
+    if existing.is_none() && on.is_none() {
+        // An empty branch: the link attaches the upstream here.
+        return Ok(AccountProfileGuard {
+            tonk: current,
             disposition: AccountProfileDisposition::Current,
         });
     }
 
-    let (new_state, disposition) = match matched {
-        Some((name, profile)) => (
-            crate::worker::boot_state_with_profile_library(
-                storage,
-                name,
-                profile,
-                registry,
-                profile_library,
-            )
-            .await?,
-            AccountProfileDisposition::Existing,
-        ),
-        None => {
-            let (name, profile) = registry.create_profile(&storage).await?;
-            (
-                crate::worker::boot_state_with_profile_library(
-                    storage,
-                    name,
-                    profile,
-                    registry,
-                    profile_library,
-                )
-                .await?,
-                AccountProfileDisposition::Created,
-            )
-        }
-    };
+    // The branch being left keeps its link (see `activate_named`).
+    match &existing {
+        Some(branch) => super::profile::set_active_branch(&current, branch).await?,
+        None => super::profile::leave_account(&current).await,
+    }
+    let (storage, name, profile, registry, profile_library) = (
+        current.storage.clone(),
+        current.profile_name.clone(),
+        current.profile.clone(),
+        current.registry.clone(),
+        current.profile_library.clone(),
+    );
+    drop(current);
 
+    let new_state = crate::worker::boot_state_with_profile_library(
+        storage,
+        name,
+        profile,
+        registry,
+        profile_library,
+    )
+    .await?;
     promote(&state, new_state, source).await?;
     let tonk = state.read_owned().await;
-    log!("account profile routing disposition: {disposition:?}");
+    let disposition = if existing.is_some() {
+        AccountProfileDisposition::Existing
+    } else {
+        AccountProfileDisposition::Created
+    };
+    log!("account branch routing disposition: {disposition:?}");
     Ok(AccountProfileGuard { tonk, disposition })
-}
-
-async fn inspection_operator(
-    profile: &Profile,
-    storage: &Storage<DefaultSpace>,
-) -> Result<DefaultOperator, TonkWorkerError> {
-    let context: [u8; 16] = rand::random();
-    profile
-        .derive(context.to_vec())
-        .build(storage.clone())
-        .await
-        .map_err(|error| {
-            TonkWorkerError::Internal(format!("failed to inspect a roster profile: {error}"))
-        })
 }
 
 /// Stamp the incoming profile's roster entry, swap the state in, and
@@ -757,7 +599,7 @@ async fn promote(
         )
         .await?;
     let roster = refreshed_roster(&new_state).await?;
-    let response = response_from(&name, roster);
+    let response = response_from(&new_state.active_branch, roster);
 
     // The roster and candidate are durable before the pointer changes. From
     // here through the in-memory swap there are no fallible operations.
@@ -786,16 +628,42 @@ async fn promote(
     Ok(response)
 }
 
+/// Sign out, as the settings page asks for it.
+///
+/// The same path the `DELETE /api/account` route takes, so the two
+/// cannot drift while the route lives. The originating tab is fenced by
+/// the swap and cannot await a command, so it is reloaded from here once
+/// the empty branch is active.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::SignOut> for crate::router::CommandEnv {
+    async fn execute(&self, _command: tonk_schema::command::SignOut) {
+        match sign_out(self.state(), self.client()).await {
+            Ok(status) => log!("SignOut: {status:?}"),
+            Err(error) => {
+                log!("SignOut failed: {error}");
+                return;
+            }
+        }
+        super::navigate::notify_profile_changed_to(self.client());
+    }
+}
+
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 mod tests {
     use super::*;
     use axum::extract::State;
+    use dialog_credentials::Ed25519Signer;
+    use dialog_varsig::Principal as _;
     use std::sync::Arc;
     use tokio::sync::RwLock;
     use wasm_bindgen_test::wasm_bindgen_test_configure;
 
     use crate::router::account::TEST_ACCOUNT_REMOTE;
-    use crate::router::tests::{persist_test_root, put_repo, test_state, test_state_without_root};
+    use crate::router::profile::{
+        active_account, active_branch_name, branch_following, local_branches,
+    };
+    use crate::router::tests::{put_repo, test_state, test_state_without_root};
     wasm_bindgen_test_configure!(run_in_service_worker);
 
     async fn space_keys(state: &AppState) -> Vec<String> {
@@ -805,31 +673,56 @@ mod tests {
         info.space.into_iter().map(|entry| entry.key).collect()
     }
 
-    /// Reading the roster publishes it where a sealed guest can query it.
-    ///
-    /// The guest reads the ACTIVE profile's branches and nothing else, so
-    /// the switcher could never be a view while every other profile's name
-    /// lived only on its own branch. The worker can open them all, so it
-    /// republishes what it found as overlay facts.
-    ///
-    /// Asserted through a QUERY rather than by inspecting the response: the
-    /// point is that the guest's own read path finds them.
-    /// The add-account command rotates onto a fresh profile.
+    async fn active(state: &AppState) -> String {
+        state.read().await.active_branch.clone()
+    }
+
+    /// The account this profile's root record names.
+    async fn own_root(state: &AppState) -> Did {
+        let tonk = state.read().await;
+        super::super::identity::local_root(&tonk)
+            .await
+            .unwrap()
+            .root_did
+    }
+
+    /// An account nothing on this profile has met.
+    async fn fresh_root() -> Did {
+        Ed25519Signer::generate().await.unwrap().did()
+    }
+
+    /// Record the active branch as following `account`, the way a link
+    /// does: the upstream, the served replica, and where it is served.
+    async fn follow(state: &AppState, account: &Did) {
+        let tonk = state.read().await;
+        let address = dialog_repository::SiteAddress::from(dialog_remote_ucan::UcanAddress::new(
+            TEST_ACCOUNT_REMOTE,
+        ));
+        super::super::account_state::record_account_branch(&tonk, account, &address).await;
+    }
+
+    async fn activate_branch(state: &AppState, name: &str) -> ProfilesResponse {
+        let Json(response) = activate(
+            State(state.clone()),
+            None,
+            Json(ActivateProfileRequest {
+                profile: name.to_owned(),
+            }),
+        )
+        .await
+        .unwrap();
+        response
+    }
+
+    /// The add-account command starts an empty branch.
     ///
     /// Exercised through the Provider, not `add_profile`, so the command
     /// wiring is covered too: a command registered but never reaching its
     /// handler would pass a test that called the inner function.
-    ///
-    /// The ceremony it then asks the page to raise needs a document, so
-    /// only the rotation is asserted here; the notify is a fire-and-forget
-    /// that logs when no client is attached.
     #[dialog_common::test]
-    async fn it_rotates_onto_a_fresh_profile_for_the_add_command() {
+    async fn it_starts_an_empty_branch_for_the_add_command() {
         let state = Arc::new(RwLock::new(test_state().await));
-        let before = {
-            let tonk = state.read().await;
-            tonk.profile_name.clone()
-        };
+        let before = active(&state).await;
 
         let env =
             crate::router::CommandEnv::new(state.clone(), crate::router::CommandOrigin::default());
@@ -844,16 +737,132 @@ mod tests {
         )
         .await;
 
-        let after = {
-            let tonk = state.read().await;
-            tonk.profile_name.clone()
-        };
         assert_ne!(
-            before, after,
-            "adding an account must land on a different profile",
+            before,
+            active(&state).await,
+            "adding an account must land on a different branch",
+        );
+        let tonk = state.read().await;
+        assert!(
+            active_account(&tonk).await.is_none(),
+            "the branch an account is added on follows nothing yet",
         );
     }
 
+    /// The sign-out command leaves the account branch behind.
+    ///
+    /// Through the Provider, as the settings page fires it, so the
+    /// registration is covered along with the handler.
+    #[dialog_common::test]
+    async fn it_leaves_the_account_for_the_sign_out_command() {
+        let state = Arc::new(RwLock::new(test_state().await));
+        let before = active(&state).await;
+        assert!(
+            active_account(&*state.read().await).await.is_some(),
+            "the fixture starts signed in",
+        );
+
+        let env =
+            crate::router::CommandEnv::new(state.clone(), crate::router::CommandOrigin::default());
+        <crate::router::CommandEnv as dialog_capability::Provider<
+            tonk_schema::command::SignOut,
+        >>::execute(
+            &env,
+            tonk_schema::command::SignOut {
+                this: "cmd:sign-out".parse().expect("entity"),
+                time: tonk_schema::domain::command::current::sign_out::Time(1.0),
+            },
+        )
+        .await;
+
+        assert_ne!(
+            before,
+            active(&state).await,
+            "signing out moves onto a branch that follows no account",
+        );
+        let tonk = state.read().await;
+        assert!(
+            active_account(&tonk).await.is_none(),
+            "the active branch follows nothing after sign-out",
+        );
+    }
+
+    /// After a sign-out the top page asks meta which branch is active and
+    /// what it is called, with exactly these two queries
+    /// (`tonk_host::bridge::resolve_profile_branch`). A page that cannot
+    /// read the answer falls back to `main` and boots onto the branch it
+    /// just left.
+    #[dialog_common::test]
+    async fn it_answers_the_page_which_branch_is_active_after_sign_out() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt as _;
+
+        let (app, state, _lsp) = crate::router::api_router_with_state(test_state().await);
+        let env =
+            crate::router::CommandEnv::new(state.clone(), crate::router::CommandOrigin::default());
+        <crate::router::CommandEnv as dialog_capability::Provider<
+            tonk_schema::command::SignOut,
+        >>::execute(
+            &env,
+            tonk_schema::command::SignOut {
+                this: "cmd:sign-out".parse().expect("entity"),
+                time: tonk_schema::domain::command::current::sign_out::Time(1.0),
+            },
+        )
+        .await;
+        let expected = active(&state).await;
+        assert_ne!(
+            expected, "main",
+            "the fixture signs out onto a fresh branch"
+        );
+
+        let ask = |body: String| {
+            let app = app.clone();
+            async move {
+                let mut request = Request::builder()
+                    .method("POST")
+                    .uri("/api/profile/branch/meta/query")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap();
+                request
+                    .extensions_mut()
+                    .insert(crate::router::ClientId("page".to_owned()));
+                let response = app.oneshot(request).await.unwrap();
+                assert_eq!(response.status(), StatusCode::OK);
+                let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()
+            }
+        };
+        let active_query = r#"{"predicate":{"with":{"branch":{"the":"tonk.dialog.replica/active-branch","as":"Entity","cardinality":"one"}}},"terms":{"this":{"?":{"name":"this"}},"branch":{"?":{"name":"branch"}}}}"#;
+        let rows = ask(active_query.to_owned()).await;
+        let entity = rows[0]["fields"]["branch"]
+            .as_str()
+            .unwrap_or_else(|| panic!("the active branch is a string the page can read: {rows}"))
+            .to_owned();
+        let name_query = format!(
+            r#"{{"predicate":{{"with":{{"name":{{"the":"xyz.tonk.branch/name","as":"Text","cardinality":"one"}}}}}},"terms":{{"this":{entity:?},"name":{{"?":{{"name":"name"}}}}}}}}"#
+        );
+        let rows = ask(name_query).await;
+        assert_eq!(
+            rows[0]["fields"]["name"].as_str(),
+            Some(expected.as_str()),
+            "the page must be told the branch it should boot onto: {rows}",
+        );
+    }
+
+    /// Reading the roster publishes it where a sealed guest can query it.
+    ///
+    /// The guest reads the ACTIVE branch and nothing else, so the switcher
+    /// could never be a view while every other branch's name lived only
+    /// on that branch. The worker can read them all, so it republishes
+    /// what it found as overlay facts.
+    ///
+    /// Asserted through a QUERY rather than by inspecting the response: the
+    /// point is that the guest's own read path finds them.
     #[dialog_common::test]
     async fn it_publishes_the_roster_where_a_guest_can_query_it() {
         use dialog_query::{Output as _, Query, Term};
@@ -866,7 +875,7 @@ mod tests {
         let session = tonk
             .reactor
             .profile_repository()
-            .branch(super::super::repository::PROFILE_BRANCH)
+            .branch(&tonk.active_branch)
             .acquire(&tonk.operator)
             .await
             .expect("profile branch opens");
@@ -875,6 +884,7 @@ mod tests {
             .query()
             .select(Query::<ProfileRow> {
                 this: Term::var("this"),
+                name: Term::var("name"),
                 label: Term::var("label"),
                 provider: Term::var("provider"),
                 active: Term::var("active"),
@@ -887,16 +897,62 @@ mod tests {
         assert_eq!(
             rows.len(),
             response.profiles.len(),
-            "every profile the roster lists gets a queryable row",
+            "every branch the roster lists gets a queryable row",
         );
-        assert!(
-            rows.iter().any(|row| row.active.0),
-            "the active profile is marked so the switcher can show which is current",
-        );
+        let current: Vec<_> = rows.iter().filter(|row| row.active.0).collect();
+        assert_eq!(current.len(), 1, "exactly one row is active");
         assert_eq!(
-            rows.iter().filter(|row| row.active.0).count(),
-            1,
-            "exactly one row is active",
+            current[0].name.0, tonk.active_branch,
+            "the active row names the branch the profile is on",
+        );
+    }
+
+    /// A fresh worker holds no overlay, so the rows have to be published
+    /// at boot: the hub reads them and nothing on the page asks for the
+    /// roster, so a worker restart would otherwise empty the account list.
+    #[dialog_common::test]
+    async fn it_publishes_the_roster_when_the_worker_boots() {
+        use dialog_query::{Output as _, Query, Term};
+        use tonk_schema::ProfileRow;
+
+        let state = test_state().await;
+        let tonk = crate::worker::boot_state_with_profile_library(
+            state.storage.clone(),
+            state.profile_name.clone(),
+            state.profile.clone(),
+            state.registry.clone(),
+            state.profile_library.clone(),
+        )
+        .await
+        .expect("the worker boots");
+        drop(state);
+
+        let session = tonk
+            .reactor
+            .profile_repository()
+            .branch(&tonk.active_branch)
+            .acquire(&tonk.operator)
+            .await
+            .expect("profile branch opens");
+        let rows: Vec<ProfileRow> = session
+            .handle()
+            .query()
+            .select(Query::<ProfileRow> {
+                this: Term::var("this"),
+                name: Term::var("name"),
+                label: Term::var("label"),
+                provider: Term::var("provider"),
+                active: Term::var("active"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("roster rows read back");
+
+        assert!(
+            rows.iter()
+                .any(|row| row.active.0 && row.name.0 == tonk.active_branch),
+            "the booted worker published the branch it is on: {rows:?}",
         );
     }
 
@@ -913,7 +969,7 @@ mod tests {
             let session = tonk
                 .reactor
                 .profile_repository()
-                .branch(super::super::repository::PROFILE_BRANCH)
+                .branch(&tonk.active_branch)
                 .acquire(&tonk.operator)
                 .await
                 .expect("profile branch opens");
@@ -922,6 +978,7 @@ mod tests {
                 .query()
                 .select(Query::<ProfileRow> {
                     this: Term::var("this"),
+                    name: Term::var("name"),
                     label: Term::var("label"),
                     provider: Term::var("provider"),
                     active: Term::var("active"),
@@ -945,168 +1002,106 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_lists_the_active_profile_with_its_account_state() {
+    async fn it_lists_the_active_branch_with_its_account_state() {
         let state = Arc::new(RwLock::new(test_state().await));
 
         let Json(response) = list(State(state.clone())).await.unwrap();
 
-        let active = response
+        let current = response
             .profiles
             .iter()
             .find(|entry| entry.active)
-            .expect("the active profile lists itself");
-        assert_eq!(active.profile_name, response.active);
-        assert_eq!(active.provider.as_deref(), Some(TEST_ACCOUNT_REMOTE));
-        assert!(
-            active.root_did.is_some(),
-            "an attached profile names its account root"
+            .expect("the active branch lists itself");
+        assert_eq!(current.profile_name, response.active);
+        assert_eq!(current.profile_name, active(&state).await);
+        assert_eq!(
+            current.provider.as_deref(),
+            Some(TEST_ACCOUNT_REMOTE),
+            "where the account is served from is read off the peer's address",
         );
-        // No name until the ACCOUNT carries one: a fresh profile has not
-        // replicated an account name, and the roster no longer invents a
+        assert!(
+            current.root_did.is_some(),
+            "a branch following an account names it"
+        );
+        // No name until the ACCOUNT carries one: a fresh branch has not
+        // replicated an account name, and the roster does not invent a
         // petname to fill the gap.
         assert!(
-            active.display_name.is_none(),
+            current.display_name.is_none(),
             "an unnamed account reports no name rather than a generated one"
         );
     }
 
+    /// Signing out lands on a branch that follows nothing and keeps the
+    /// account's branch for signing back in. The grant is gone: no root
+    /// record, no provider.
     #[dialog_common::test]
-    async fn it_reads_an_inactive_profiles_current_display_name_and_account_state() {
-        use tonk_schema::{AccountDisplayName, prelude::DidExt as _};
-
+    async fn it_signs_out_onto_an_empty_branch_and_keeps_the_account_branch() {
         let state = Arc::new(RwLock::new(test_state().await));
-        let first = {
-            let tonk = state.read().await;
-            // Keyed on the ACCOUNT root, which is the entity
-            // `account_display_name` queries — not the profile DID. The
-            // roster reports the account's name; the per-device profile
-            // override is a different thing and must not stand in for it.
-            let account = crate::router::identity::root_did(&tonk)
-                .await
-                .expect("the test profile has a root");
-            tonk.reactor
-                .profile_repository()
-                .branch(tonk_account::MAIN_BRANCH)
-                .transaction()
-                .assert(AccountDisplayName::new(account.this(), "jack".into()))
-                .commit()
-                .perform(&tonk.operator)
-                .await
-                .unwrap();
-            tonk.profile_name.clone()
-        };
-        let _ = add(State(state.clone()), None).await.unwrap();
-
-        let Json(response) = list(State(state)).await.unwrap();
-        let inactive = response
-            .profiles
-            .iter()
-            .find(|entry| entry.profile_name == first)
-            .expect("the first profile remains in the roster");
-        assert!(!inactive.active);
-        assert_eq!(inactive.display_name.as_deref(), Some("jack"));
-        assert_eq!(inactive.provider.as_deref(), Some(TEST_ACCOUNT_REMOTE));
-        assert!(inactive.root_did.is_some());
-    }
-
-    #[dialog_common::test]
-    async fn it_signs_out_to_the_next_signed_in_profile() {
-        let state = Arc::new(RwLock::new(test_state().await));
-        let first = state.read().await.profile_name.clone();
-        let _ = add(State(state.clone()), None).await.unwrap();
-        let second = {
-            let tonk = state.read().await;
-            persist_test_root(&tonk).await;
-            super::super::account::attach_test_account(&tonk)
-                .await
-                .unwrap();
-            tonk.profile_name.clone()
-        };
-        let _ = activate(
-            State(state.clone()),
-            None,
-            Json(ActivateProfileRequest { profile: first }),
-        )
-        .await
-        .unwrap();
+        let account_branch = active(&state).await;
+        let root = own_root(&state).await;
 
         let status = sign_out(&state, None).await.unwrap();
 
-        assert!(matches!(
-            status,
-            tonk_worker_api::AccountStatus::Unregistered { .. }
-        ));
-        let tonk = state.read().await;
-        assert_eq!(tonk.profile_name, second);
-        assert_eq!(
-            super::super::account::provider(&tonk).await.as_deref(),
-            Some(TEST_ACCOUNT_REMOTE)
-        );
-    }
-
-    #[dialog_common::test]
-    async fn it_signs_out_to_an_existing_rootless_local_profile() {
-        let state = Arc::new(RwLock::new(test_state().await));
-        let first = state.read().await.profile_name.clone();
-        let Json(before) = add(State(state.clone()), None).await.unwrap();
-        let local = before.active;
-        let count = before.profiles.len();
-        let _ = activate(
-            State(state.clone()),
-            None,
-            Json(ActivateProfileRequest { profile: first }),
-        )
-        .await
-        .unwrap();
-
-        sign_out(&state, None).await.unwrap();
-
-        let tonk = state.read().await;
-        assert_eq!(tonk.profile_name, local);
         assert!(
-            super::super::identity::load_record(&tonk)
-                .await
-                .unwrap()
-                .is_none()
+            matches!(status, tonk_worker_api::AccountStatus::RootMissing { .. }),
+            "the grant is forgotten, so there is no root to report",
         );
-        assert_eq!(
-            tonk.registry
-                .read_roster(&tonk.storage, &tonk.operator)
-                .await
-                .unwrap()
-                .len(),
-            count,
-            "an existing local landing profile must be reused"
-        );
-    }
-
-    #[dialog_common::test]
-    async fn it_creates_a_rootless_local_profile_when_signing_out_alone() {
-        let state = Arc::new(RwLock::new(test_state().await));
-        let first = state.read().await.profile_name.clone();
-
-        sign_out(&state, None).await.unwrap();
-
         let tonk = state.read().await;
-        assert_ne!(tonk.profile_name, first);
+        assert_ne!(tonk.active_branch, account_branch, "sign-out moves branch");
         assert!(
-            super::super::identity::load_record(&tonk)
-                .await
-                .unwrap()
-                .is_none()
+            active_account(&tonk).await.is_none(),
+            "the new branch follows nothing"
         );
         assert!(super::super::account::provider(&tonk).await.is_none());
+        assert!(
+            super::super::identity::load_record(&tonk)
+                .await
+                .unwrap()
+                .is_none(),
+            "the grant is forgotten, so signing back in reopens the passkey",
+        );
+        assert_eq!(
+            branch_following(&tonk, &root).await.as_deref(),
+            Some(account_branch.as_str()),
+            "the account's branch is kept, still following the account",
+        );
+    }
+
+    /// Signing out reuses a branch that already follows nothing rather
+    /// than minting another.
+    #[dialog_common::test]
+    async fn it_reuses_an_empty_branch_when_signing_out() {
+        let state = Arc::new(RwLock::new(test_state().await));
+        let account_branch = active(&state).await;
+        let Json(added) = add(State(state.clone()), None).await.unwrap();
+        let empty = added.active;
+        let count = local_branches(&*state.read().await).await.len();
+        activate_branch(&state, &account_branch).await;
+
+        sign_out(&state, None).await.unwrap();
+
+        let tonk = state.read().await;
+        assert_eq!(
+            tonk.active_branch, empty,
+            "the existing empty branch is reused"
+        );
+        assert_eq!(
+            local_branches(&tonk).await.len(),
+            count,
+            "no branch was created for a sign-out with one free",
+        );
     }
 
     #[dialog_common::test]
-    async fn it_refuses_to_activate_a_profile_the_roster_does_not_name() {
+    async fn it_refuses_to_activate_a_branch_meta_does_not_name() {
         let state = Arc::new(RwLock::new(test_state().await));
 
         let error = activate(
             State(state),
             None,
             Json(ActivateProfileRequest {
-                profile: "no-such-profile".to_string(),
+                profile: "no-such-branch".to_string(),
             }),
         )
         .await
@@ -1114,34 +1109,36 @@ mod tests {
 
         assert!(
             matches!(error, TonkWorkerError::NotFound(_)),
-            "an unvalidated name must never be opened (open-or-create \
-             would mint a garbage key), got {error:?}"
+            "a name meta does not enumerate must never be opened (open-or-create \
+             would mint an empty branch), got {error:?}"
         );
     }
 
+    /// Add Account starts an empty branch on the SAME profile: the device
+    /// keeps its key, and the branch being left stays in the roster.
     #[dialog_common::test]
-    async fn it_rotates_to_a_fresh_profile_for_add_account() {
+    async fn it_starts_an_empty_branch_for_add_account() {
         let state = Arc::new(RwLock::new(test_state().await));
-        let (original_name, original_did) = {
+        let (original, original_did) = {
             let tonk = state.read().await;
-            (tonk.profile_name.clone(), tonk.profile.did())
+            (tonk.active_branch.clone(), tonk.profile.did())
         };
 
         let Json(response) = add(State(state.clone()), None).await.unwrap();
 
         let tonk = state.read().await;
-        assert_ne!(tonk.profile_name, original_name);
-        assert_ne!(
+        assert_ne!(tonk.active_branch, original);
+        assert_eq!(
             tonk.profile.did(),
             original_did,
-            "add-account must land on a fresh key"
+            "add-account keeps the device key; only the branch changes"
         );
-        assert_eq!(response.active, tonk.profile_name);
+        assert_eq!(response.active, tonk.active_branch);
         let fresh = response
             .profiles
             .iter()
             .find(|entry| entry.active)
-            .expect("the fresh profile lists itself");
+            .expect("the fresh branch lists itself");
         assert!(
             fresh.provider.is_none() && fresh.root_did.is_none(),
             "the landing pad starts as a local workspace"
@@ -1150,250 +1147,201 @@ mod tests {
             response
                 .profiles
                 .iter()
-                .any(|entry| entry.profile_name == original_name),
-            "the outgoing profile stays reachable from the roster"
+                .any(|entry| entry.profile_name == original),
+            "the outgoing branch stays reachable from the roster"
         );
     }
 
     #[dialog_common::test]
-    async fn it_reuses_an_unattached_empty_profile_instead_of_rotating_again() {
+    async fn it_reuses_an_empty_branch_instead_of_starting_another() {
         let state = Arc::new(RwLock::new(test_state_without_root().await));
-        let before = state.read().await.profile_name.clone();
+        let before = active(&state).await;
 
         let Json(response) = add(State(state.clone()), None).await.unwrap();
 
         assert_eq!(
             response.active, before,
-            "a rootless, space-less profile is already a fresh landing pad"
+            "a branch following nothing, with no root and no spaces, is already a landing pad"
         );
-        assert_eq!(state.read().await.profile_name, before);
+        assert_eq!(active(&state).await, before);
     }
 
     #[dialog_common::test]
-    async fn it_serves_the_other_profiles_spaces_after_activation() {
+    async fn it_serves_a_branchs_spaces_after_activating_it() {
         let (app, state, _lsp) = crate::api_router_with_state(test_state().await);
-        let original = state.read().await.profile_name.clone();
+        let original = active(&state).await;
         let key = put_repo(&app, "switching-space").await;
         assert!(space_keys(&state).await.contains(&key));
 
         let _ = add(State(state.clone()), None).await.unwrap();
         assert!(
             space_keys(&state).await.is_empty(),
-            "a fresh profile must not see the other account's spaces"
+            "an empty branch must not see the other account's spaces"
         );
 
-        let _ = activate(
-            State(state.clone()),
-            None,
-            Json(ActivateProfileRequest {
-                profile: original.clone(),
-            }),
-        )
-        .await
-        .unwrap();
-        assert_eq!(state.read().await.profile_name, original);
+        activate_branch(&state, &original).await;
+        assert_eq!(active(&state).await, original);
         assert!(
             space_keys(&state).await.contains(&key),
             "switching back must restore the original space list"
         );
     }
 
+    /// `meta` records the active branch only once the target booted, so a
+    /// refused switch leaves both the state and the record where they were.
     #[dialog_common::test]
-    async fn it_repoints_the_active_pointer_only_after_the_target_profile_opens() {
+    async fn it_records_the_active_branch_only_after_the_target_boots() {
         let state = Arc::new(RwLock::new(test_state().await));
-        let registry = state.read().await.registry.clone();
-        let initial = registry.initial_profile().to_string();
+        let before = active(&state).await;
 
-        // A refused activation leaves the pointer untouched.
         let _ = activate(
             State(state.clone()),
             None,
             Json(ActivateProfileRequest {
-                profile: "no-such-profile".to_string(),
+                profile: "no-such-branch".to_string(),
             }),
         )
         .await
         .unwrap_err();
-        let (name, _) = registry
-            .open_active(&Storage::<DefaultSpace>::default())
-            .await
-            .unwrap();
-        assert_eq!(name, initial);
+        {
+            let tonk = state.read().await;
+            assert_eq!(tonk.active_branch, before);
+            assert_eq!(
+                active_branch_name(&tonk.reactor, &tonk.operator)
+                    .await
+                    .as_deref(),
+                Some(before.as_str()),
+                "a refused switch leaves meta untouched",
+            );
+        }
 
-        // A successful swap repoints it at the profile that booted.
         let Json(response) = add(State(state.clone()), None).await.unwrap();
-        let (name, _) = registry
-            .open_active(&Storage::<DefaultSpace>::default())
-            .await
-            .unwrap();
-        assert_eq!(name, response.active);
+        let tonk = state.read().await;
+        assert_eq!(
+            active_branch_name(&tonk.reactor, &tonk.operator).await,
+            Some(response.active),
+            "a switch that booted is what meta records",
+        );
     }
 
     #[dialog_common::test]
     async fn it_keeps_a_rootless_local_workspace_for_its_first_account() {
-        use dialog_credentials::Ed25519Signer;
-        use dialog_varsig::Principal as _;
-
         let state = Arc::new(RwLock::new(test_state_without_root().await));
-        let before = state.read().await.profile_name.clone();
-        let root = Ed25519Signer::generate().await.unwrap().did();
+        let before = active(&state).await;
+        let root = fresh_root().await;
 
         let guard = for_account(state, &root, None).await.unwrap();
 
-        assert_eq!(guard.profile_name, before);
+        assert_eq!(guard.active_branch, before);
         assert_eq!(guard.disposition, AccountProfileDisposition::Current);
     }
 
+    /// Signing back in returns to the branch that followed the account,
+    /// spaces and all, rather than attaching a second one.
     #[dialog_common::test]
-    async fn it_routes_a_rootless_sign_out_landing_back_to_the_matching_profile() {
+    async fn it_routes_a_signed_out_login_back_to_the_matching_branch() {
         let state = Arc::new(RwLock::new(test_state().await));
-        let (account_profile, root) = {
-            let tonk = state.read().await;
-            (
-                tonk.profile_name.clone(),
-                super::super::identity::local_root(&tonk)
-                    .await
-                    .unwrap()
-                    .root_did,
-            )
-        };
+        let account_branch = active(&state).await;
+        let root = own_root(&state).await;
         sign_out(&state, None).await.unwrap();
-        {
-            let tonk = state.read().await;
-            assert!(
-                super::super::identity::load_record(&tonk)
-                    .await
-                    .unwrap()
-                    .is_none()
-            );
-        }
+        assert_ne!(active(&state).await, account_branch);
 
         let guard = for_account(state, &root, None).await.unwrap();
 
-        assert_eq!(guard.profile_name, account_profile);
+        assert_eq!(guard.active_branch, account_branch);
         assert_eq!(guard.disposition, AccountProfileDisposition::Existing);
     }
 
     #[dialog_common::test]
-    async fn it_keeps_the_current_profile_for_the_same_account_root() {
+    async fn it_keeps_the_current_branch_for_the_same_account_root() {
         let state = Arc::new(RwLock::new(test_state().await));
-        let (before, root) = {
-            let tonk = state.read().await;
-            (
-                tonk.profile_name.clone(),
-                super::super::identity::local_root(&tonk)
-                    .await
-                    .unwrap()
-                    .root_did,
-            )
-        };
+        let before = active(&state).await;
+        let root = own_root(&state).await;
 
         let guard = for_account(state, &root, None).await.unwrap();
 
-        assert_eq!(guard.profile_name, before);
+        assert_eq!(guard.active_branch, before);
         assert_eq!(guard.disposition, AccountProfileDisposition::Current);
     }
 
+    /// Which account a branch follows is read off `meta` without
+    /// activating it, which is what lets the switcher name every branch.
     #[dialog_common::test]
-    async fn it_reads_an_inactive_profiles_historical_root_without_booting_it() {
+    async fn it_names_the_account_a_branch_follows_without_activating_it() {
         let state = Arc::new(RwLock::new(test_state().await));
-        let first = state.read().await.profile_name.clone();
+        let account_branch = active(&state).await;
+        let root = own_root(&state).await;
         let _ = add(State(state.clone()), None).await.unwrap();
-        let (profile, storage, root) = {
-            let tonk = state.read().await;
-            (
-                tonk.profile.clone(),
-                tonk.storage.clone(),
-                persist_test_root(&tonk).await,
-            )
-        };
-        let _ = activate(
-            State(state),
-            None,
-            Json(ActivateProfileRequest { profile: first }),
-        )
-        .await
-        .unwrap();
+        assert_ne!(active(&state).await, account_branch);
 
-        let operator = inspection_operator(&profile, &storage).await.unwrap();
+        let tonk = state.read().await;
         assert_eq!(
-            super::super::identity::historical_root_did(&profile, &operator)
-                .await
-                .unwrap(),
-            Some(root)
+            branch_following(&tonk, &root).await.as_deref(),
+            Some(account_branch.as_str()),
         );
     }
 
     #[dialog_common::test]
-    async fn it_reuses_the_roster_profile_with_the_discovered_root() {
+    async fn it_returns_to_the_branch_following_the_discovered_root() {
         let state = Arc::new(RwLock::new(test_state().await));
-        let first = state.read().await.profile_name.clone();
-        let _ = add(State(state.clone()), None).await.unwrap();
-        let (second, second_root) = {
-            let tonk = state.read().await;
-            let second = tonk.profile_name.clone();
-            let root = persist_test_root(&tonk).await;
-            (second, root)
-        };
-        let _ = activate(
-            State(state.clone()),
-            None,
-            Json(ActivateProfileRequest { profile: first }),
-        )
-        .await
-        .unwrap();
+        let first = active(&state).await;
+        let Json(added) = add(State(state.clone()), None).await.unwrap();
+        let second = added.active;
+        let second_root = fresh_root().await;
+        follow(&state, &second_root).await;
+        activate_branch(&state, &first).await;
 
         let guard = for_account(state, &second_root, None).await.unwrap();
 
-        assert_eq!(guard.profile_name, second);
+        assert_eq!(guard.active_branch, second);
         assert_eq!(guard.disposition, AccountProfileDisposition::Existing);
     }
 
+    /// An unknown account while signed in to another: the account branch
+    /// is left (its grant withdrawn) and an empty branch takes the login.
     #[dialog_common::test]
-    async fn it_creates_a_fresh_profile_for_an_unknown_account_root() {
-        use dialog_credentials::Ed25519Signer;
-        use dialog_varsig::Principal as _;
-
+    async fn it_leaves_the_account_branch_for_an_unknown_root() {
         let state = Arc::new(RwLock::new(test_state().await));
-        let before = state.read().await.profile_name.clone();
-        let root = Ed25519Signer::generate().await.unwrap().did();
+        let (before, device) = {
+            let tonk = state.read().await;
+            (tonk.active_branch.clone(), tonk.profile.did())
+        };
+        let root = fresh_root().await;
 
         let guard = for_account(state, &root, None).await.unwrap();
 
-        assert_ne!(guard.profile_name, before);
+        assert_ne!(guard.active_branch, before);
         assert_eq!(guard.disposition, AccountProfileDisposition::Created);
-        let roster = guard
-            .registry
-            .read_roster(&guard.storage, &guard.operator)
-            .await
-            .unwrap();
-        assert!(roster.iter().any(|entry| entry.profile_name == before));
+        assert_eq!(guard.profile.did(), device, "the device keeps its key");
         assert!(
-            roster
-                .iter()
-                .any(|entry| entry.profile_name == guard.profile_name)
+            active_account(&guard).await.is_none(),
+            "the login lands on a branch following nothing",
         );
+        assert!(
+            super::super::identity::load_record(&guard)
+                .await
+                .unwrap()
+                .is_none(),
+            "leaving the other account forgot its grant",
+        );
+        let names: Vec<String> = local_branches(&guard)
+            .await
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert!(names.contains(&before), "the left branch is kept");
+        assert!(names.contains(&guard.active_branch));
     }
 
     #[dialog_common::test]
     async fn it_never_moves_spaces_when_routing_between_accounts() {
         let (app, state, _lsp) = crate::api_router_with_state(test_state().await);
-        let first = state.read().await.profile_name.clone();
+        let first = active(&state).await;
         let retained = put_repo(&app, "retained-by-first-account").await;
         let _ = add(State(state.clone()), None).await.unwrap();
-        let second_root = {
-            let tonk = state.read().await;
-            persist_test_root(&tonk).await
-        };
-        let _ = activate(
-            State(state.clone()),
-            None,
-            Json(ActivateProfileRequest {
-                profile: first.clone(),
-            }),
-        )
-        .await
-        .unwrap();
+        let second_root = fresh_root().await;
+        follow(&state, &second_root).await;
+        activate_branch(&state, &first).await;
 
         let second = for_account(state.clone(), &second_root, None)
             .await
@@ -1405,56 +1353,42 @@ mod tests {
         );
         drop(second);
 
-        let _ = activate(
-            State(state.clone()),
-            None,
-            Json(ActivateProfileRequest { profile: first }),
-        )
-        .await
-        .unwrap();
+        activate_branch(&state, &first).await;
         assert!(space_keys(&state).await.contains(&retained));
     }
 
     #[dialog_common::test]
-    async fn it_holds_the_selected_profile_stable_for_account_writes() {
+    async fn it_holds_the_selected_branch_stable_for_account_writes() {
         let state = Arc::new(RwLock::new(test_state().await));
-        let (first, root) = {
-            let tonk = state.read().await;
-            (
-                tonk.profile_name.clone(),
-                super::super::identity::local_root(&tonk)
-                    .await
-                    .unwrap()
-                    .root_did,
-            )
-        };
+        let first = active(&state).await;
+        let root = own_root(&state).await;
         let second = add_profile(&state, None).await.unwrap().active;
         activate_named(&state, first.clone(), None).await.unwrap();
 
         let guard = for_account(state.clone(), &root, None).await.unwrap();
         assert!(
             state.try_write().is_err(),
-            "profile activation cannot acquire the state write lock while the account guard lives"
+            "a switch cannot acquire the state write lock while the account guard lives"
         );
 
         let switching = state.clone();
         let mut activation = Box::pin(activate_named(&switching, second, None));
         assert!(
             futures_util::FutureExt::now_or_never(activation.as_mut()).is_none(),
-            "a concurrent activation must not finish while account writes are pinned"
+            "a concurrent switch must not finish while account writes are pinned"
         );
-        assert_eq!(state.read().await.profile_name, first);
+        assert_eq!(active(&state).await, first);
 
         drop(guard);
         activation
             .await
-            .expect("activation succeeds after the account guard drops");
+            .expect("the switch succeeds after the account guard drops");
     }
 
     #[dialog_common::test]
     async fn it_serializes_add_activate_and_automatic_account_routing() {
         let state = Arc::new(RwLock::new(test_state().await));
-        let first = state.read().await.profile_name.clone();
+        let first = active(&state).await;
         let transition = state.read().await.profile_transition.clone();
 
         let held = transition.lock().await;
@@ -1465,10 +1399,8 @@ mod tests {
         );
         drop(held);
         let second = adding.await.unwrap().active;
-        let second_root = {
-            let tonk = state.read().await;
-            persist_test_root(&tonk).await
-        };
+        let second_root = fresh_root().await;
+        follow(&state, &second_root).await;
 
         let held = transition.lock().await;
         let mut activating = Box::pin(activate_named(&state, first.clone(), None));
@@ -1487,7 +1419,7 @@ mod tests {
         );
         drop(held);
         let selected = routing.await.unwrap();
-        assert_eq!(selected.profile_name, second);
+        assert_eq!(selected.active_branch, second);
         assert_eq!(selected.disposition, AccountProfileDisposition::Existing);
     }
 }

@@ -640,7 +640,7 @@ async fn mount(
     let remote_name = if legacy {
         tonk_account::ORIGIN_REMOTE.to_owned()
     } else {
-        format!("{local_branch}-origin")
+        tonk_account::account_remote_name(subject.as_str())
     };
     let subject = subject.clone();
     let repository = Repository::from(profile);

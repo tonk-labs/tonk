@@ -117,14 +117,21 @@ async fn read(state: &TonkState) -> Result<Option<AccountSecret>, TonkWorkerErro
         return Ok(None);
     };
     let Some(custodian) = load_custodian(state).await? else {
-        // An envelope outliving its custodian is the shape
-        // accreditation leaves behind. Reporting it as absent would
-        // send `account()` off to mint a second onboarding account on
-        // top of an accredited device, so it is an error: the envelope
-        // is deliberately unopenable, not missing.
-        return Err(TonkWorkerError::Internal(
-            "the onboarding envelope has no custodian; this device is already accredited".into(),
-        ));
+        // An envelope outliving its custodian is the shape accreditation
+        // leaves behind. While the branch follows an account, reporting
+        // it as absent would send `account()` off to mint a second local
+        // account on top of an accredited one, so it is an error: the
+        // envelope is deliberately unopenable, not missing. A branch that
+        // has since left its account acts locally again and needs a local
+        // account of its own; what the retired one sealed was rotated to
+        // the account it joined.
+        if crate::router::identity::load_record(state).await?.is_some() {
+            return Err(TonkWorkerError::Internal(
+                "the onboarding envelope has no custodian; this device is already accredited"
+                    .into(),
+            ));
+        }
+        return Ok(None);
     };
     let envelope = Envelope::decode(&envelope).map_err(|error| {
         TonkWorkerError::Internal(format!("the onboarding envelope is malformed: {error}"))
@@ -322,7 +329,7 @@ async fn existing_grant(state: &TonkState, account: &Did) -> Option<DelegationCh
     let branch = state
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&state.active_branch)
         .acquire(&state.operator)
         .await
         .ok()?;
@@ -403,7 +410,7 @@ pub(crate) async fn describe_device_link(
     let branch = state
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&state.active_branch)
         .acquire(&state.operator)
         .await
         .map_err(|error| format!("open profile branch: {error}"))?;
@@ -420,7 +427,7 @@ pub(crate) async fn describe_device_link(
     let mut transaction = state
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&state.active_branch)
         .transaction();
     let mut asserting = false;
     for entity in entities {
@@ -452,6 +459,51 @@ pub(crate) async fn describe_device_link(
         .await
         .map(|_| ())
         .map_err(|error| format!("commit: {error}"))
+}
+
+/// Retract a device powerline from the branch it was retained into.
+///
+/// The inverse of [`retain_device_delegation`], under the same writer
+/// coordination and for the same reason: a concurrent sweep can advance
+/// the branch between the retract's snapshot and its publish. Retracting
+/// is what makes the prover stop: it resolves proofs from the branch's
+/// `dialog.ucan/*` facts and consults no revocation, so a published
+/// revocation alone would leave this device proving with a grant every
+/// access service refuses.
+pub(crate) async fn retract_device_delegation(
+    state: &TonkState,
+    branch: &dialog_reactor::BranchSession,
+    chain: &DelegationChain,
+) -> Result<(), String> {
+    const RETRY_LIMIT: usize = 4;
+
+    let _transacting = branch.transactor().lock().await;
+    let mut attempt = 0;
+    loop {
+        match branch
+            .handle()
+            .delegations()
+            .retract(UcanDelegation(chain.clone()))
+            .perform(&state.operator)
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(error)
+                if error.to_string().contains("Version mismatch") && attempt < RETRY_LIMIT =>
+            {
+                attempt += 1;
+                log!("device-link retract raced (attempt {attempt}); refreshing and retrying");
+                branch
+                    .handle()
+                    .refresh(&state.operator)
+                    .await
+                    .map_err(|refresh_error| {
+                        format!("retract raced, then branch refresh failed: {refresh_error}")
+                    })?;
+            }
+            Err(error) => return Err(format!("retract: {error}")),
+        }
+    }
 }
 
 /// Retain a device powerline through profile main's writer coordination.
@@ -654,7 +706,9 @@ pub(crate) async fn retire(state: &TonkState) -> Result<(), TonkWorkerError> {
         .profile
         .did()
         .credential()
-        .key(ONBOARDING_CUSTODIAN_KEY)
+        .key(
+            crate::credential::branch_site(ONBOARDING_CUSTODIAN_KEY, &state.active_branch).as_str(),
+        )
         .save(Credential::from(verifier))
         .perform(&state.operator)
         .await
@@ -670,7 +724,9 @@ async fn load_custodian(state: &TonkState) -> Result<Option<Ed25519Signer>, Tonk
         .profile
         .did()
         .credential()
-        .key(ONBOARDING_CUSTODIAN_KEY)
+        .key(
+            crate::credential::branch_site(ONBOARDING_CUSTODIAN_KEY, &state.active_branch).as_str(),
+        )
         .load()
         .perform(&state.operator)
         .await
@@ -706,7 +762,9 @@ async fn save_custodian(
         .profile
         .did()
         .credential()
-        .key(ONBOARDING_CUSTODIAN_KEY)
+        .key(
+            crate::credential::branch_site(ONBOARDING_CUSTODIAN_KEY, &state.active_branch).as_str(),
+        )
         .save(Credential::from(custodian))
         .perform(&state.operator)
         .await
@@ -719,7 +777,7 @@ async fn load(state: &TonkState, site: &str) -> Result<Option<Vec<u8>>, TonkWork
     match state
         .profile
         .credential()
-        .site(site)
+        .site(crate::credential::branch_site(site, &state.active_branch).as_str())
         .load::<Vec<u8>>()
         .perform(&state.operator)
         .await
@@ -737,7 +795,7 @@ async fn save(state: &TonkState, site: &str, bytes: Vec<u8>) -> Result<(), TonkW
     state
         .profile
         .credential()
-        .site(site)
+        .site(crate::credential::branch_site(site, &state.active_branch).as_str())
         .save(bytes)
         .perform(&state.operator)
         .await
@@ -772,7 +830,7 @@ mod tests {
         let branch = tonk
             .reactor
             .profile_repository()
-            .branch(tonk_account::MAIN_BRANCH)
+            .branch(&tonk.active_branch)
             .acquire(&tonk.operator)
             .await
             .expect("profile branch opens");
@@ -821,7 +879,7 @@ mod tests {
         let branch = tonk
             .reactor
             .profile_repository()
-            .branch(tonk_account::MAIN_BRANCH)
+            .branch(&tonk.active_branch)
             .acquire(&tonk.operator)
             .await
             .expect("profile branch opens");

@@ -954,12 +954,11 @@ pub(crate) fn answer_query_body() -> String {
 ///
 /// The host is installed on this page (`tonk_host::install()` in
 /// `bin/ui.rs`), so a plain `consumer::subscribe` works. The routing
-/// context is the fixed profile branch — the overlay row is written to
-/// `main@profile:tonk` — rather than anything derived from an
-/// attribute.
+/// context is the branch the profile is on — the overlay row is written
+/// there — rather than anything derived from an attribute.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn watch_answers(host: &Element) {
-    let _ = host.set_attribute("with", "main@profile:tonk");
+    let _ = host.set_attribute("with", &tonk_host::bridge::profile_with());
     REGISTRATION_WATCH.with(|held| {
         *held.borrow_mut() = Some(crate::account_observability::WebAccountAttempt::start(
             AccountAction::LoadRegistration,
@@ -1409,7 +1408,11 @@ async fn read_invite_link(space: &str) -> Option<String> {
             "url": { "?": { "name": "url" } }
         }
     });
-    let endpoint = format!("{}/api/profile/branch/main/query", crate::api::origin());
+    let endpoint = format!(
+        "{}/api/profile/branch/{}/query",
+        crate::api::origin(),
+        crate::api::profile_branch()
+    );
     let response = reqwest::Client::new()
         .post(endpoint)
         .json(&body)
@@ -1454,7 +1457,11 @@ async fn account_display_name() -> Option<String> {
             "name": { "?": { "name": "name" } }
         }
     });
-    let endpoint = format!("{}/api/profile/branch/main/query", crate::api::origin());
+    let endpoint = format!(
+        "{}/api/profile/branch/{}/query",
+        crate::api::origin(),
+        crate::api::profile_branch()
+    );
     let response = reqwest::Client::new()
         .post(endpoint)
         .json(&body)
@@ -2550,28 +2557,6 @@ pub fn resume() {
 /// The sessionStorage key carrying a blocked share's space across the
 /// navigation to the linking screen.
 const SHARE_STASH: &str = "tonk-pending-share";
-
-/// The anchored registration request to reopen after a profile-transition
-/// reload. Session scope keeps it in this tab and removal makes it one-shot.
-const REOPEN_STASH: &str = "tonk-reopen-registration";
-
-/// Park an account-linking request across the reload that gives the promoted
-/// profile a fresh service-worker client context.
-pub fn stash_reopen(payload: &str) {
-    if let Some(storage) =
-        web_sys::window().and_then(|window| window.session_storage().ok().flatten())
-    {
-        let _ = storage.set_item(REOPEN_STASH, payload);
-    }
-}
-
-/// Consume the account-linking request parked by [`stash_reopen`].
-pub fn take_reopen() -> Option<String> {
-    let storage = web_sys::window()?.session_storage().ok().flatten()?;
-    let payload = storage.get_item(REOPEN_STASH).ok().flatten()?;
-    let _ = storage.remove_item(REOPEN_STASH);
-    Some(payload)
-}
 
 /// Park a blocked share's space so it survives the navigation to
 /// `/settings`, where the linking ceremony picks it up.

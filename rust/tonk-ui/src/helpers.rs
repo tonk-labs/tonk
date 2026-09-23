@@ -145,6 +145,14 @@ mod native {
         }
 
         fn close(self) -> std::io::Result<()> {
+            // Keep the tree for a post-mortem when asked: with
+            // `TONK_E2E_CHROME_LOG` it holds Chrome's own log, console
+            // included, which is the only account of what the page did.
+            if std::env::var_os("TONK_E2E_KEEP_WORKSPACE").is_some() {
+                let kept = self.0.keep();
+                eprintln!("E2E DIAGNOSTIC: workspace kept at {}", kept.display());
+                return Ok(());
+            }
             // A child terminated a moment ago can still be flushing its
             // last writes while removal walks the tree — Chrome in
             // particular outlives `quit` by however long its profile

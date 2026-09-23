@@ -377,6 +377,65 @@ mod tests {
         host.remove();
     }
 
+    /// The hub's link label: one root pinned to `{this}`, so a browser
+    /// with no link renders no marker and no name. A two-root fragment
+    /// (marker beside the name display) repeated as a whole, and the
+    /// synthetic zero-row conclusion rendered it for nobody.
+    #[dialog_common::test]
+    fn it_renders_the_link_label_only_for_a_link_row() {
+        let library = include_str!("../../tonk-core/assets/library/profile.yaml");
+        let template = library
+            .split("view!:\n  this: account/link\n  show:\n    label: |\n")
+            .nth(1)
+            .and_then(|tail| tail.split("\n\n").next())
+            .expect("link label template");
+        let host = mount(template);
+
+        call_draw(&host, &frame(&[("", &[])]));
+        assert!(
+            host.query_selector("[data-account-linked]")
+                .unwrap()
+                .is_none(),
+            "no link, no marker: {}",
+            host.inner_html(),
+        );
+        assert!(
+            host.query_selector("tonk-display").unwrap().is_none(),
+            "no link, no name display either: {}",
+            host.inner_html(),
+        );
+
+        call_draw(
+            &host,
+            &frame(&[("state:account-link", &[("account", "did:key:zAccount")])]),
+        );
+        assert!(
+            host.query_selector("[data-account-linked]")
+                .unwrap()
+                .is_some(),
+            "a link row renders the marker: {}",
+            host.inner_html(),
+        );
+        let name = host
+            .query_selector("tonk-display[model=\"tonk:account/name\"]")
+            .unwrap()
+            .expect("the name renders through the link");
+        assert_eq!(
+            name.get_attribute("entity").as_deref(),
+            Some("did:key:zAccount"),
+            "the name display is bound to the linked account"
+        );
+
+        call_draw(&host, &frame(&[("", &[])]));
+        assert!(
+            host.query_selector("[data-account-linked]")
+                .unwrap()
+                .is_none(),
+            "signing out takes the marker away again"
+        );
+        host.remove();
+    }
+
     /// A connected view advertises the host attributes its template reads
     /// via `{dom.host/<attr>}` on `data-host-bindings`, space-separated —
     /// the owning `<tonk-display>` watches exactly those for changes.

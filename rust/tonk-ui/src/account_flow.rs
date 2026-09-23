@@ -239,25 +239,34 @@ mod tests {
         for page in pages.json().as_array().context("page directory")? {
             let entity = page.as_str().context("page identity")?;
             driver.execute("const tree=document.querySelector('vault-tree'); globalThis.__vaultLib.emit(tree, 'navigate', {open:arguments[0], deviceOpen:arguments[0]});", vec![serde_json::json!(entity)]).await?;
-            if let Err(error) = wait_for_displayed(
-                &driver,
-                &format!("vault-active > tonk-display[entity=\"{entity}\"] > tonk-view"),
-            )
-            .await
-            {
-                // Diagnostic only: keep the original assertion failure while
-                // establishing whether focused navigation replaced its frame.
-                driver.enter_default_frame().await?;
-                let route = driver.current_url().await?.path().to_owned();
-                enter_space_view(&driver).await?;
-                let state = driver.execute(r#"const display=document.querySelector('vault-active > tonk-display');
-                    return { active:display?.getAttribute('entity'), model:display?.getAttribute('model'),
-                        views:display?.querySelectorAll(':scope > tonk-view').length,
-                        visible:!!display?.querySelector(':scope > tonk-view')?.getClientRects().length };"#, vec![]).await?;
-                return Err(error).context(format!(
-                    "offline navigation after reacquiring frame: route={route}, state={}",
-                    state.json()
-                ));
+            let selector = format!("vault-active > tonk-display[entity=\"{entity}\"] > tonk-view");
+            if let Err(error) = wait_for_displayed(&driver, &selector).await {
+                let display = driver
+                    .execute(
+                        "const display = document.querySelector('vault-active > tonk-display');
+                         const active = document.querySelector('vault-active');
+                         const root = active && active.closest('.vault-root');
+                         const vault = active ? {
+                           connected: active.isConnected, navigated: !!active.__navigated, chosen: active.__chosen,
+                           optimistic: active.__optimistic, current: active.__current, landed: !!active.__landed,
+                           awaited: active.__rowsAwaited, nodeRows: root ? root.querySelectorAll('.vault-node-row').length : null,
+                           hereActive: root && root.querySelector('.vault-here-row') && root.querySelector('.vault-here-row').dataset.active,
+                           trees: document.querySelectorAll('vault-tree').length, actives: document.querySelectorAll('vault-active').length,
+                           unselected: !!(active.closest('.vault-doc') && active.closest('.vault-doc').classList.contains('is-unselected')),
+                         } : null;
+                         return display ? { vault,
+                           attributes: [...display.attributes].map((a) => a.name + '=' + a.value),
+                           children: [...display.children].map((c) => c.tagName + (c.getAttribute('slot') ? '[' + c.getAttribute('slot') + ']' : '')),
+                           text: display.textContent.trim().slice(0, 200),
+                         } : null;",
+                        vec![],
+                    )
+                    .await
+                    .map(|value| value.json().clone())
+                    .unwrap_or(serde_json::Value::Null);
+                return Err(error.context(format!(
+                    "the vault never displayed {entity}; display={display}"
+                )));
             }
         }
         devtools.execute_cdp_with_params("Network.emulateNetworkConditions", serde_json::json!({
@@ -337,10 +346,13 @@ mod tests {
     }
 
     fn retryable_element_read_error(error: &thirtyfour::error::WebDriverErrorInner) -> bool {
+        // Not interactable is a race too: a menu row before its menu has
+        // opened, a control before the display it waits on has resolved.
         matches!(
             error,
             thirtyfour::error::WebDriverErrorInner::NoSuchElement(_)
                 | thirtyfour::error::WebDriverErrorInner::StaleElementReference(_)
+                | thirtyfour::error::WebDriverErrorInner::ElementNotInteractable(_)
         )
     }
 
@@ -365,6 +377,9 @@ mod tests {
         ));
         assert!(retryable_element_read_error(
             &WebDriverErrorInner::StaleElementReference(info("stale element reference"))
+        ));
+        assert!(retryable_element_read_error(
+            &WebDriverErrorInner::ElementNotInteractable(info("element not interactable"))
         ));
         assert!(retryable_element_read_error(
             &WebDriverErrorInner::NoSuchElement(info("no such element"))
@@ -443,6 +458,41 @@ mod tests {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
             let found = element(driver, selector).await?;
+            // A row inside a display is clickable before the display has
+            // wired its `on:` bindings; the display marks itself
+            // `data-bound` once they are live, and the library's own
+            // elements wait on that marker before acting. So does this,
+            // for a click that has a binding to reach: the display
+            // resolves a click through the nearest `on:` ancestor, and
+            // one with none to wire never marks itself.
+            let bound = driver
+                .execute(
+                    "const target = arguments[0];
+                     // A library element's handlers arrive with its upgrade; the
+                     // registry watches each such tag, so one it watches must be
+                     // upgraded before a click inside it means anything.
+                     for (let node = target; node; node = node.parentElement) {
+                       const tag = node.tagName.toLowerCase();
+                       if (!tag.includes('-') || !document.querySelector(`tonk-element-watch[data-tag=\"${tag}\"]`)) continue;
+                       const definition = customElements.get(tag);
+                       if (!definition || !(node instanceof definition)) return false;
+                     }
+                     let bound = target;
+                     while (bound && !bound.getAttributeNames().some((name) => name.startsWith('on:'))) {
+                       bound = bound.parentElement;
+                     }
+                     const display = bound && bound.closest('tonk-display');
+                     return !display || display.hasAttribute('data-bound');",
+                    vec![found.to_json()?],
+                )
+                .await?;
+            if bound.json().as_bool() != Some(true) {
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(anyhow!("timed out waiting for `{selector}` to be bound"));
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
             match found.click().await {
                 Ok(()) => return Ok(()),
                 Err(error)
@@ -592,7 +642,28 @@ mod tests {
     async fn enter_hub(driver: &WebDriver) -> Result<()> {
         enter_guest(driver).await?;
         element(driver, ".hub-page").await?;
-        Ok(())
+        // Dressed, not merely present: the chrome's stylesheet is minted
+        // after the views mount, and a row hovered or measured before it
+        // lands moves when it does. Every carrier, since the page and the
+        // stack each declare their own.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let dressed = driver
+                .execute(
+                    r#"const links = [...document.querySelectorAll('link[data-tonk-embed]')];
+                       return links.length > 0 && links.every((link) => link.sheet && link.sheet.cssRules.length);"#,
+                    Vec::new(),
+                )
+                .await?;
+            if dressed.json().as_bool() == Some(true) {
+                return Ok(());
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the hub's stylesheet never loaded"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 
     /// Wait for the view's `with:src` embed to finish resolving.
@@ -851,7 +922,7 @@ mod tests {
     async fn open_hub_settings(driver: &WebDriver, env: &TestEnvironment) -> Result<()> {
         goto(driver, env.tonk_web.join("settings")?.as_str()).await?;
         enter_hub(driver).await?;
-        element(driver, "ui-account-settings").await?;
+        element(driver, "account-settings").await?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
             let email = element(driver, "[data-settings-email]")
@@ -901,6 +972,20 @@ mod tests {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         while tokio::time::Instant::now() < deadline {
             if let Ok(button) = driver.find(By::Css("#tonk-custody-continue")).await {
+                // An anchored card is seated by the guest relay a moment
+                // after it appears, and a click aimed while it moves lands
+                // where it was. Click once its place has held still.
+                let place =
+                    |rect: thirtyfour::ElementRect| (rect.x, rect.y, rect.width, rect.height);
+                let placed = place(button.rect().await?);
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                if button.rect().await.map(place).ok() != Some(placed) {
+                    continue;
+                }
+                println!(
+                    "consent card before the click: {}",
+                    custody_consent_diagnostic(driver).await
+                );
                 button.click().await?;
                 return Ok(());
             }
@@ -920,8 +1005,14 @@ mod tests {
             .execute(
                 r##"const card = document.querySelector("#tonk-custody-consent");
                    const actions = card?.querySelector("#tonk-custody-actions");
+                   const button = card?.querySelector("#tonk-custody-continue");
+                   const rect = button ? button.getBoundingClientRect() : null;
                    return {
                      present: !!card,
+                     cards: document.querySelectorAll("#tonk-custody-consent").length,
+                     anchored: !!card?.hasAttribute("data-anchored"),
+                     visibility: card?.firstElementChild ? getComputedStyle(card.firstElementChild).visibility : null,
+                     continueRect: rect ? [rect.left, rect.top, rect.width, rect.height].map(Math.round) : null,
                      message: card?.querySelector("#tonk-custody-text")?.textContent?.trim() || null,
                      awaitingChoice: !!actions,
                    };"##,
@@ -2184,7 +2275,7 @@ mod tests {
                      color: style.color,
                      dark: window.matchMedia('(prefers-color-scheme: dark)').matches,
                      carriers: carriers.length,
-                     href: carriers.length ? carriers[0].getAttribute('href') : null,
+                     hrefs: [...carriers].map((link) => link.getAttribute('href')),
                      minted: document.querySelectorAll('link[data-tonk-embed-src]').length,
                    };"#,
                 Vec::new(),
@@ -2215,15 +2306,17 @@ mod tests {
         // whose href is not a blob URL means the pass ran and gave it
         // nothing, which is the failure the computed values above
         // would also catch but not name.
-        assert_eq!(
-            hub["carriers"], 1,
-            "the view declares one `<link with:src>`; got {hub}",
+        assert!(
+            hub["carriers"].as_u64().is_some_and(|count| count >= 1),
+            "a view declares its `<link with:src>`; got {hub}",
         );
         assert!(
-            hub["href"]
-                .as_str()
-                .is_some_and(|href| href.starts_with("blob:")),
-            "the embed pass must point the link at minted content; got {hub}",
+            hub["hrefs"].as_array().is_some_and(|hrefs| {
+                hrefs
+                    .iter()
+                    .all(|href| href.as_str().is_some_and(|href| href.starts_with("blob:")))
+            }),
+            "the embed pass must point every carrier at minted content; got {hub}",
         );
         assert_eq!(
             hub["minted"], 1,
@@ -2242,7 +2335,7 @@ mod tests {
                    return {
                      background: style.backgroundColor,
                      carriers: carriers.length,
-                     href: carriers.length ? carriers[0].getAttribute('href') : null,
+                     hrefs: [...carriers].map((link) => link.getAttribute('href')),
                      minted: document.querySelectorAll('link[data-tonk-embed-src]').length,
                    };"#,
                 Vec::new(),
@@ -2254,9 +2347,11 @@ mod tests {
             "/settings embeds the same style as the hub (`ui@space`); got {settings}",
         );
         assert!(
-            settings["href"]
-                .as_str()
-                .is_some_and(|href| href.starts_with("blob:")),
+            settings["hrefs"].as_array().is_some_and(|hrefs| {
+                hrefs
+                    .iter()
+                    .all(|href| href.as_str().is_some_and(|href| href.starts_with("blob:")))
+            }),
             "the cross-view embed must resolve to minted content; got {settings}",
         );
         assert_eq!(
@@ -2945,11 +3040,12 @@ mod tests {
     /// Read the overlay answer for `address`, waiting for the row that
     /// names it rather than whichever row happens to be there.
     async fn await_email_status(driver: &WebDriver, address: &str) -> Result<String> {
+        let endpoint = format!("/api/profile/branch/{}/query", active_branch(driver).await?);
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
             let rows = post_json(
                 driver,
-                "/api/profile/branch/main/query",
+                &endpoint,
                 tonk_worker::helpers::email_status_wire_query(),
             )
             .await?;
@@ -3170,17 +3266,70 @@ mod tests {
 
         goto(&driver, env.tonk_web.as_str()).await?;
         enter_hub(&driver).await?;
-        let remove = format!("ui-space-remove[data-space-subject='{key}']");
+        let remove = format!("space-remove[data-space-subject='{key}']");
         let opener_selector = format!("{remove} [data-space-remove-open]");
         let dialog_selector = format!("{remove} tonk-dialog[data-space-remove-dialog]");
         let submit_selector = format!("{dialog_selector} .m-go");
         let row = wait_for_displayed(&driver, &format!(".srow-wrap:has({remove})")).await?;
+        // Park on the row once it has held still: its stylesheet lands a
+        // beat after it renders, and a pointer aimed at where the row was
+        // hovers nothing once it moves.
+        let measure = |driver: &WebDriver, row: &WebElement| {
+            let driver = driver.clone();
+            let row = row.clone();
+            async move {
+                driver
+                    .execute(
+                        "const r = arguments[0].getBoundingClientRect(); return [r.left, r.top, r.width, r.height].map(Math.round);",
+                        vec![row.to_json()?],
+                    )
+                    .await
+                    .map(|value| value.json().clone())
+            }
+        };
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let parked = loop {
+            let before = measure(&driver, &row).await?;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let after = measure(&driver, &row).await?;
+            if before == after || tokio::time::Instant::now() >= deadline {
+                break after;
+            }
+        };
         driver
             .action_chain()
             .move_to_element_center(&row)
             .perform()
             .await?;
-        let opener = wait_for_displayed(&driver, &opener_selector).await?;
+        let opener = match wait_for_displayed(&driver, &opener_selector).await {
+            Ok(opener) => opener,
+            Err(error) => {
+                // What the pointer is over now, against where the row was
+                // when the pointer parked on it.
+                let hover = driver
+                    .execute(
+                        "const row = arguments[0]; const r = row.getBoundingClientRect();
+                         const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+                         const verbs = row.querySelector('.verbs');
+                         return {
+                           connected: row.isConnected, hovered: row.matches(':hover'),
+                           rect: [r.left, r.top, r.width, r.height].map(Math.round),
+                           under: at ? at.tagName + '.' + at.className : null,
+                           underInRow: !!(at && row.contains(at)),
+                           verbsOpacity: verbs ? getComputedStyle(verbs).opacity : null,
+                           rows: document.querySelectorAll('.srow-wrap').length,
+                           scrollY: window.scrollY,
+                         };",
+                        vec![row.to_json()?],
+                    )
+                    .await
+                    .map(|value| value.json().clone())
+                    .unwrap_or(serde_json::Value::Null);
+                return Err(error.context(format!(
+                    "the remove verb never showed; parked={parked} now={hover}"
+                )));
+            }
+        };
         opener.click().await?;
         wait_for_displayed(&driver, &dialog_selector).await?;
 
@@ -3468,18 +3617,34 @@ mod tests {
             "the account cell draws no dropdown caret",
         );
 
-        // One press. The Hub is a sealed guest, so the cluster it asks
-        // for is raised by the TOP page — which is also why pressing it
-        // must not navigate the Hub anywhere.
-        let before = driver.current_url().await?;
+        // One press. The cell is the account tab: it pushes `/account`
+        // into the same document, and the page the Hub asks for is the
+        // TOP page's cluster — so the press must not reload anything.
+        // The top document's own clock: the hub frame has one of its own.
+        driver.enter_default_frame().await?;
+        let before = driver
+            .execute("return performance.timeOrigin", Vec::new())
+            .await?
+            .json()
+            .clone();
+        enter_hub(&driver).await?;
         click(&driver, "[data-account-trigger]").await?;
         await_register_dialog(&driver).await?;
 
         driver.enter_default_frame().await?;
+        let landed = driver.current_url().await?;
         assert_eq!(
-            driver.current_url().await?,
-            before,
-            "adding an account happens in place, with no page in between",
+            landed.path(),
+            "/account",
+            "the account cell is the account page, got {landed}",
+        );
+        assert_eq!(
+            driver
+                .execute("return performance.timeOrigin", Vec::new())
+                .await?
+                .json(),
+            &before,
+            "adding an account happens in place, with no reload in between",
         );
 
         // Finish the ceremony the cluster raised. The Hub is never
@@ -3493,7 +3658,7 @@ mod tests {
         await_narrator_containing(&driver, "confirmation link").await?;
 
         // The label flips from the offer to the member's name without a
-        // reload, and the trigger becomes the account-menu button.
+        // reload, and the cell stays the account tab: no menu grows on it.
         enter_hub(&driver).await?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
@@ -3514,8 +3679,8 @@ mod tests {
             if !label.is_empty() && label != "add an account" {
                 assert_eq!(
                     state.json()["haspopup"].as_str(),
-                    Some("menu"),
-                    "a linked trigger is the account-menu button again",
+                    None,
+                    "a linked trigger is still the account tab, not a menu button",
                 );
                 break;
             }
@@ -4411,7 +4576,7 @@ mod tests {
                 "url": { "?": { "name": "url" } }
             }
         });
-        let endpoint = "/api/profile/branch/main/query".to_owned();
+        let endpoint = format!("/api/profile/branch/{}/query", active_branch(driver).await?);
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
         loop {
             let rows = post_json(driver, &endpoint, ask.clone()).await?;
@@ -4777,7 +4942,15 @@ mod tests {
                         r##"
                         const bar = document.querySelector("tonk-fab");
                         const row = bar && bar.querySelector("[data-share-account]");
+                        const hub = document.querySelector("hub-bar");
+                        const menu = hub && hub.querySelector("hub-menu");
                         return {
+                            hubBar: !!hub,
+                            hubDefined: !!customElements.get("hub-bar"),
+                            hubUnlinked: hub && typeof hub.unlinked === "function" ? hub.unlinked() : null,
+                            hubTab: hub ? hub.getAttribute("tab") : null,
+                            menuOpen: menu ? menu.getAttribute("open") : null,
+                            addRow: !!document.querySelector("[data-add-profile]"),
                             bar: !!bar,
                             row: !!row,
                             rowHidden: row ? row.hasAttribute("hidden") : null,
@@ -4870,7 +5043,10 @@ mod tests {
     /// nothing about the app.
     async fn submit_hub_wizard(driver: &WebDriver) -> Result<()> {
         enter_hub(driver).await?;
-        wait_for_displayed(driver, ".snew").await?.click().await?;
+        // Through `click`: the form's `space/create` binding must be wired
+        // before the press, or the display resolves nothing and the space
+        // is never asked for.
+        click(driver, ".snew").await?;
         // Back to the top document: everything after this — the space
         // page, the bar, the cluster — lives there.
         driver.enter_default_frame().await?;
@@ -4901,12 +5077,18 @@ mod tests {
         expect_remote: bool,
     ) -> Result<String> {
         wait_for_service_worker(driver).await?;
+        let branch = active_branch(driver).await?;
         let before = space_keys(driver).await?;
         // `name` alone: where a space syncs is the worker's to resolve
         // from the account's registration, and template seeding went
         // with the template libraries.
         let claim = tonk_worker_api::create_space_claim_json(name);
-        let dispatched = post_json(driver, "/api/profile/branch/main/transact", claim).await?;
+        let dispatched = post_json(
+            driver,
+            &format!("/api/profile/branch/{branch}/transact"),
+            claim,
+        )
+        .await?;
         successful_body("dispatch space/create", &dispatched);
 
         // Subscribe for the replica rather than re-reading the profile
@@ -4915,7 +5097,7 @@ mod tests {
         let known = serde_json::to_string(&before).unwrap_or_else(|_| "[]".to_owned());
         await_subscription(
             driver,
-            "/api/profile/branch/main/query",
+            &format!("/api/profile/branch/{branch}/query"),
             tonk_worker::helpers::replica_concept_wire_query(),
             &format!(
                 r#"const before = new Set({known});
@@ -4954,7 +5136,7 @@ mod tests {
             // it the moment it commits.
             await_subscription(
                 driver,
-                "/api/profile/branch/main/query",
+                &format!("/api/profile/branch/{branch}/query"),
                 tonk_worker::helpers::remote_concept_wire_query(),
                 &format!(
                     r#"const rows = frame.conclusions || frame.asserted || [];
@@ -5046,7 +5228,19 @@ mod tests {
     /// off this very branch, so it was a second copy of what a query
     /// returns. Shaped like the old response (`status` + `body` with
     /// camelCase keys) so the assertions that consumed it still read.
+    /// The branch the profile is on, as the worker reports it. Every
+    /// account lives on a branch of its own, so a test that adds, leaves
+    /// or switches accounts asks instead of assuming `main`.
+    async fn active_branch(driver: &WebDriver) -> Result<String> {
+        let profiles = get_json(driver, "/api/profiles").await?;
+        successful_body("active branch", &profiles)["active"]
+            .as_str()
+            .map(str::to_owned)
+            .context("profiles omitted the active branch")
+    }
+
     async fn account_summary(driver: &WebDriver) -> Result<serde_json::Value> {
+        let endpoint = format!("/api/profile/branch/{}/query", active_branch(driver).await?);
         let query = serde_json::json!({
             "predicate": { "with": {
                 "email": {
@@ -5059,7 +5253,7 @@ mod tests {
                 "email": { "?": { "name": "email" } }
             }
         });
-        let rows = post_json(driver, "/api/profile/branch/main/query", query).await?;
+        let rows = post_json(driver, &endpoint, query).await?;
         let email = rows["body"]
             .as_array()
             .and_then(|rows| rows.first())
@@ -5078,7 +5272,7 @@ mod tests {
                 "name": { "?": { "name": "name" } }
             }
         });
-        let rows = post_json(driver, "/api/profile/branch/main/query", query).await?;
+        let rows = post_json(driver, &endpoint, query).await?;
         let display_name = rows["body"]
             .as_array()
             .and_then(|rows| rows.first())
@@ -5102,7 +5296,7 @@ mod tests {
                 "created_at": { "?": { "name": "created_at" } }
             }
         });
-        let rows = post_json(driver, "/api/profile/branch/main/query", query).await?;
+        let rows = post_json(driver, &endpoint, query).await?;
         // Newest first, as the panel lists them.
         let passkey = rows["body"].as_array().and_then(|rows| {
             rows.iter()
@@ -5927,8 +6121,9 @@ mod tests {
                         trigger: document.querySelector('[data-account-trigger]')?.textContent,
                         error: document.querySelector('[data-account-error]')?.textContent,
                         errorHidden: document.querySelector('[data-account-error]')?.hidden,
-                        activeProfile: document.querySelector('ui-hub-account')?.dataset.activeProfile,
-                        activeProvider: document.querySelector('ui-hub-account')?.dataset.activeProvider,
+                        tab: document.querySelector('hub-bar')?.getAttribute('path'),
+                        linking: document.querySelector('hub-bar')?.getAttribute('linking'),
+                        barRegistered: !!customElements.get('hub-bar'),
                         hasTonkFetch: typeof window.tonk?.fetch === 'function'
                     }"#,
                     Vec::new(),
@@ -5963,7 +6158,7 @@ mod tests {
         click(&driver, "[data-open-settings]").await?;
         driver.enter_default_frame().await?;
         enter_hub(&driver).await?;
-        element(&driver, "ui-account-settings").await?;
+        element(&driver, "account-settings").await?;
         wait_for_text(&driver, "[data-settings-email]", "second@example.com").await?;
         wait_for_text(
             &driver,
@@ -5973,12 +6168,12 @@ mod tests {
         .await?;
         assert!(
             driver
-                .find_all(By::Css("ui-account-settings [data-pane=\"devices\"]"))
+                .find_all(By::Css("account-settings [data-pane=\"devices\"]"))
                 .await?
                 .is_empty(),
             "settings must not expose a devices tab or pane"
         );
-        let settings_text = element(&driver, "ui-account-settings")
+        let settings_text = element(&driver, "account-settings")
             .await?
             .text()
             .await?
@@ -6042,7 +6237,11 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+        // The switch was made from the account page and the reload lands
+        // there, where the stack is not shown; the spaces tab is the way
+        // back to it, pushed in place.
         enter_hub(&driver).await?;
+        click(&driver, "[data-return-spaces]").await?;
         wait_for_text_containing(&driver, ".stack", "First Garden").await?;
         driver.enter_default_frame().await?;
         let listed = get_json(&driver, "/api/profile").await?;
@@ -6117,19 +6316,31 @@ mod tests {
         click(&driver, "[data-sign-out-submit]").await?;
         wait_for_top_reload(&driver, &before_sign_out, "sign-out").await?;
 
+        // Signing out lands on a branch that follows no account, minted
+        // for it: the other account is not switched onto, since nothing
+        // on it was asked for, but it stays listed for the switcher.
         let profiles = get_json(&driver, "/api/profiles").await?;
         let profiles = successful_body("profiles after first sign-out", &profiles);
-        assert_eq!(
-            profiles["active"], second_profile,
-            "signing out must switch directly to the next signed-in account"
+        let landing = profiles["active"]
+            .as_str()
+            .context("profiles omitted the active profile")?
+            .to_owned();
+        assert_ne!(
+            landing, first_profile,
+            "sign-out leaves the account's branch"
         );
+        assert_ne!(
+            landing, second_profile,
+            "sign-out does not switch onto another account unasked"
+        );
+        let signed_out_count = profiles["profiles"]
+            .as_array()
+            .context("profile roster is not an array")?
+            .len();
         assert_eq!(
-            profiles["profiles"]
-                .as_array()
-                .context("profile roster is not an array")?
-                .len(),
-            profile_count,
-            "sign-out to an existing account must not create another profile"
+            signed_out_count,
+            profile_count + 1,
+            "sign-out lands on a branch of its own, beside both accounts'"
         );
 
         // The signed-out profile remains explicitly reachable for its local
@@ -6180,8 +6391,8 @@ mod tests {
                 .as_array()
                 .context("profile roster is not an array")?
                 .len(),
-            profile_count,
-            "routing to an existing account must not create a third profile"
+            signed_out_count,
+            "routing to an existing account must not create another branch"
         );
         let summary = account_summary(&driver).await?;
         assert_eq!(
@@ -7229,7 +7440,7 @@ mod tests {
 
         goto(&driver, approval_url.as_str()).await?;
         enter_guest(&driver).await?;
-        wait_for_displayed(&driver, "ui-account-settings [data-pane=\"local-link\"]").await?;
+        wait_for_displayed(&driver, "account-settings [data-pane=\"local-link\"]").await?;
         wait_for_text(&driver, "[data-local-link-name]", "garden").await?;
         assert_eq!(
             element(&driver, "[data-local-link-did]")
@@ -7336,7 +7547,7 @@ mod tests {
                             return {
                               statusText: status?.textContent,
                               statusHidden: status?.hidden,
-                              finishing: document.querySelector('ui-account-settings')
+                              finishing: document.querySelector('account-settings')
                                 ?.hasAttribute('data-local-link-finishing'),
                             };"#,
                                     vec![],
@@ -7505,7 +7716,7 @@ mod tests {
 
         goto(&driver, url_line.trim()).await?;
         enter_guest(&driver).await?;
-        wait_for_displayed(&driver, "ui-account-settings [data-pane=\"local-link\"]").await?;
+        wait_for_displayed(&driver, "account-settings [data-pane=\"local-link\"]").await?;
         assert_eq!(
             element(&driver, "[data-local-link-did]")
                 .await?
@@ -7639,7 +7850,7 @@ mod tests {
         }
         wait_for_service_worker(&driver).await?;
         enter_guest(&driver).await?;
-        wait_for_displayed(&driver, "ui-account-settings [data-pane=\"local-link\"]").await?;
+        wait_for_displayed(&driver, "account-settings [data-pane=\"local-link\"]").await?;
         assert_eq!(
             element(&driver, "[data-local-link-did]")
                 .await?
@@ -7761,7 +7972,7 @@ mod tests {
             .append_pair("expectedAccount", expected);
         goto(&driver, url.as_str()).await?;
         enter_hub(&driver).await?;
-        wait_for_displayed(&driver, "ui-account-settings [data-pane=\"link\"]").await?;
+        wait_for_displayed(&driver, "account-settings [data-pane=\"link\"]").await?;
         assert_eq!(
             element(&driver, "[data-link-account]")
                 .await?
@@ -7818,7 +8029,7 @@ mod tests {
         // The settings page names the device that is waiting, so the
         // user knows what they are approving.
         enter_hub(&driver).await?;
-        wait_for_displayed(&driver, "ui-account-settings [data-pane=\"link\"]").await?;
+        wait_for_displayed(&driver, "account-settings [data-pane=\"link\"]").await?;
         let shown = element(&driver, "[data-link-did]").await?.text().await?;
         assert_eq!(shown, audience, "the page must name the waiting device");
         assert_eq!(
@@ -7901,7 +8112,7 @@ mod tests {
         goto(&driver, url.as_str()).await?;
 
         enter_hub(&driver).await?;
-        wait_for_displayed(&driver, "ui-account-settings [data-pane=\"link\"]").await?;
+        wait_for_displayed(&driver, "account-settings [data-pane=\"link\"]").await?;
         click(&driver, "[data-link-decline]").await?;
 
         let (field, _) = tokio::time::timeout(Duration::from_secs(60), delivered)
@@ -8165,6 +8376,25 @@ mod tests {
                 .context("CDP credential id is not base64")?,
         );
 
+        // The identity bridge installs once the page's wasm is up, a
+        // beat after the document loads.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            let installed = driver
+                .execute(
+                    "return typeof window.tonkIdentity?.authorizeDevice === 'function';",
+                    Vec::new(),
+                )
+                .await?;
+            if installed.json().as_bool() == Some(true) {
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the identity bridge never installed on the page"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
         let ceremony = driver
             .execute_async(
                 r#"
@@ -8266,9 +8496,10 @@ mod tests {
         // Create through the profile branch, the way the FAB does: a
         // transient the worker runs post-commit, with this page as the
         // originating client the worker can ask.
+        let branch = active_branch(&creator).await?;
         let created = post_json(
             &creator,
-            "/api/profile/branch/main/transact",
+            &format!("/api/profile/branch/{branch}/transact"),
             serde_json::json!({
                 "claims": [{
                     "op": "assert",
@@ -8335,10 +8566,11 @@ mod tests {
         // sealed bytes, whose `to` is the recipient. The facts follow the
         // seal, so poll for them rather than assert on the first read.
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        let mut sealed: Vec<serde_json::Value> = Vec::new();
         let recipient = loop {
             let principals = post_json(
                 &creator,
-                "/api/profile/branch/main/query",
+                &format!("/api/profile/branch/{branch}/query"),
                 serde_json::json!({
                     "terms": {
                         "this": { "?": { "name": "this" } },
@@ -8361,7 +8593,7 @@ mod tests {
             if let Some(seed) = seed {
                 let messages = post_json(
                     &creator,
-                    "/api/profile/branch/main/query",
+                    &format!("/api/profile/branch/{branch}/query"),
                     serde_json::json!({
                         "terms": {
                             "this": { "?": { "name": "this" } },
@@ -8376,6 +8608,7 @@ mod tests {
                 )
                 .await?;
                 let messages = messages["body"].as_array().cloned().unwrap_or_default();
+                sealed = messages.clone();
                 if let Some(sealed_to) = messages.iter().find_map(|row| {
                     let envelope = row["fields"]["this"].as_str().unwrap_or_default();
                     let sealed_to = row["fields"]["to"].as_str().unwrap_or_default();
@@ -8386,7 +8619,7 @@ mod tests {
             }
             anyhow::ensure!(
                 tokio::time::Instant::now() < deadline,
-                "the new space's seed was never custodied: {principals:?}"
+                "the new space's seed was never custodied: principals={principals:?} sealed={sealed:?}"
             );
             tokio::time::sleep(Duration::from_millis(250)).await;
         };

@@ -2466,7 +2466,7 @@ branch:
             panic!("expected Concept application");
         };
         assert!(query.terms.contains("name"));
-        assert!(query.terms.contains("origin"));
+        assert!(query.terms.contains("replica"));
     }
 
     /// Built-in `attribute:` empty-body query surfaces every

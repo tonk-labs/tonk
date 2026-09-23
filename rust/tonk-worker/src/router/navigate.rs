@@ -77,83 +77,6 @@ pub(crate) fn notify_navigate(client: Option<&crate::router::ClientId>, href: &s
     });
 }
 
-/// Ask the originating page to open the account-registration ceremony.
-///
-/// The worker has just rotated onto a fresh profile; the ceremony itself
-/// is a top-page dialog with a passkey prompt, which no service worker
-/// can raise. So the page is told to open it and does the DOM work.
-///
-/// No anchor rides this message. Positioning is the guest's to supply —
-/// it alone can measure its own bar, at an opaque origin the top page
-/// cannot reach into — and it already sends that measurement as a
-/// separate `reseat` update whenever the bar moves. An unanchored open
-/// followed by a reseat is the path `request_linking_position_for`
-/// already takes for a profile transition, where the outgoing bar has no
-/// usable rectangle left.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) fn notify_register(client: Option<&crate::router::ClientId>, reason: &str) {
-    use wasm_bindgen::{JsCast, JsValue};
-    use wasm_bindgen_futures::{JsFuture, spawn_local};
-
-    let Some(client) = client else {
-        log!("register: no originating client; skipping ceremony");
-        return;
-    };
-    let client_id = client.0.clone();
-    let reason = reason.to_owned();
-
-    let global: web_sys::ServiceWorkerGlobalScope = match js_sys::global().dyn_into() {
-        Ok(g) => g,
-        Err(_) => {
-            log!("register: not in a service worker scope; skipping ceremony");
-            return;
-        }
-    };
-
-    spawn_local(async move {
-        let client_value = match JsFuture::from(global.clients().get(&client_id)).await {
-            Ok(value) if !value.is_undefined() && !value.is_null() => value,
-            Ok(_) => {
-                log!("register: originating client {client_id} is gone; skipping ceremony");
-                return;
-            }
-            Err(e) => {
-                log!("register: clients.get failed: {e:?}");
-                return;
-            }
-        };
-        let Ok(client) = client_value.dyn_into::<web_sys::Client>() else {
-            log!("register: clients.get did not yield a Client; skipping ceremony");
-            return;
-        };
-
-        // `{ type: "register", reason }` — the same shape a guest posts
-        // over the portal bridge, so the page's existing handler serves
-        // both callers.
-        let message = js_sys::Object::new();
-        let _ = js_sys::Reflect::set(
-            &message,
-            &JsValue::from_str("type"),
-            &JsValue::from_str("register"),
-        );
-        let _ = js_sys::Reflect::set(
-            &message,
-            &JsValue::from_str("reason"),
-            &JsValue::from_str(&reason),
-        );
-        if let Err(e) = client.post_message(&message) {
-            log!("register: post_message(register) failed: {e:?}");
-        }
-    });
-}
-
-/// Registration is a page capability, and this host has no page.
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-pub(crate) fn notify_register(client: Option<&crate::router::ClientId>, reason: &str) {
-    let _ = client;
-    log!("register: no page on this host; the reason was {reason}");
-}
-
 /// Navigation is a page capability, and this host has no page: the
 /// target is logged so a host shell (CLI, TUI) that tails the log can
 /// still present it. The triggering command has already done its work —
@@ -215,6 +138,59 @@ pub(crate) fn notify_profile_changed(except: Option<&crate::router::ClientId>) {
 
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub(crate) fn notify_profile_changed(_except: Option<&crate::router::ClientId>) {}
+
+/// Ask the ORIGINATING document to reload after the active branch changes
+/// under it. Its own requests are fenced from here on (a stale context
+/// generation answers 409), and a command cannot be awaited from the page
+/// the way the old endpoints were, so the worker says when the swap is
+/// done rather than the page guessing.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) fn notify_profile_changed_to(client: Option<&crate::router::ClientId>) {
+    use wasm_bindgen::{JsCast, JsValue};
+    use wasm_bindgen_futures::{JsFuture, spawn_local};
+
+    let Some(client) = client else {
+        log!("profile change: no originating client; nothing to reload");
+        return;
+    };
+    let client_id = client.0.clone();
+    let global: web_sys::ServiceWorkerGlobalScope = match js_sys::global().dyn_into() {
+        Ok(global) => global,
+        Err(_) => {
+            log!("profile change: not in a service worker scope; skipping reload");
+            return;
+        }
+    };
+    spawn_local(async move {
+        let client = match JsFuture::from(global.clients().get(&client_id)).await {
+            Ok(value) if !value.is_undefined() && !value.is_null() => value,
+            Ok(_) => {
+                log!("profile change: originating client {client_id} is gone; skipping reload");
+                return;
+            }
+            Err(error) => {
+                log!("profile change: clients.get failed: {error:?}");
+                return;
+            }
+        };
+        let Ok(client) = client.dyn_into::<web_sys::Client>() else {
+            log!("profile change: clients.get did not yield a Client; skipping reload");
+            return;
+        };
+        let message = js_sys::Object::new();
+        let _ = js_sys::Reflect::set(
+            &message,
+            &JsValue::from_str("type"),
+            &JsValue::from_str("profile-changed"),
+        );
+        if let Err(error) = client.post_message(&message) {
+            log!("profile change: reload message to the origin failed: {error:?}");
+        }
+    });
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub(crate) fn notify_profile_changed_to(_client: Option<&crate::router::ClientId>) {}
 
 /// Post a typed launch-funnel success to the originating page.
 ///

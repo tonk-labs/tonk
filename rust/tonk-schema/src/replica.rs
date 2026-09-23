@@ -372,6 +372,141 @@ impl SpaceStatus {
     }
 }
 
+/// Where a peer is reachable.
+///
+/// Keyed on the PEER entity — the one `dialog.replica/profile` names.
+/// A peer and a profile are the same entity in two roles: this device
+/// in the local role, a serving service in the remote one, so there is
+/// no peer to identify apart from the profile.
+///
+/// Zero or more addresses: a peer may be reachable several ways.
+///
+/// One fact per peer on the profile's `meta` branch, so a changed
+/// address is a single update however many repositories that peer
+/// serves. Supersedes `xyz.tonk.remote/address`, which hangs the
+/// address off a `Remote` entity standing between a branch and the
+/// peer holding it, restating it once per repository.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PeerAddress {
+    /// The peer.
+    pub this: Entity,
+    /// A serialized `SiteAddress` it is reachable at.
+    pub address: crate::domain::peer::Address,
+}
+
+impl PeerAddress {
+    /// Record that `peer` is reachable at `address`.
+    pub fn new(peer: &dialog_varsig::Did, address: &dialog_repository::SiteAddress) -> Self {
+        use crate::prelude::DidExt as _;
+        Self {
+            this: peer.this(),
+            address: crate::domain::peer::Address::encode(address),
+        }
+    }
+
+    /// Record an address for the peer the address itself names.
+    ///
+    /// The serving peer has no DID of its own on the wire yet, but a
+    /// `did:web` follows from where it answers: `https://tonk.network/ucan`
+    /// is served by `did:web:tonk.network`. Deriving it means one peer
+    /// entity per service rather than one per account, so a service
+    /// serving several accounts has ONE address fact.
+    ///
+    /// Returns `None` for an address with no host to name — the caller
+    /// keys on what it does know instead.
+    pub fn served_by(address: &dialog_repository::SiteAddress) -> Option<Self> {
+        use crate::prelude::DidExt as _;
+        Some(Self {
+            this: peer_of(address)?.this(),
+            address: crate::domain::peer::Address::encode(address),
+        })
+    }
+}
+
+/// The peer that answers at `address`, as the `did:web` its endpoint
+/// implies.
+///
+/// `did:web` separates path segments with `:`, so a host carrying a
+/// port percent-encodes it — left raw, `did:web:localhost:8090` reads
+/// `8090` as a path segment and resolves to `https://localhost/8090/`.
+///
+/// Only the authority is used. The path says which service endpoint to
+/// call, not who answers, so `https://tonk.network/ucan` and
+/// `https://tonk.network/sync` are one peer. `None` for an address that
+/// names no host.
+pub fn peer_of(address: &dialog_repository::SiteAddress) -> Option<dialog_varsig::Did> {
+    let endpoint = match address {
+        dialog_repository::SiteAddress::Ucan(ucan) => ucan.endpoint(),
+        _ => return None,
+    };
+    let authority = url::Url::parse(endpoint).ok()?;
+    let host = authority.host_str()?;
+    let authority = match authority.port() {
+        Some(port) => format!("{host}%3A{port}"),
+        None => host.to_string(),
+    };
+    format!("did:web:{authority}").parse().ok()
+}
+
+/// What a branch follows.
+///
+/// Keyed on the LOCAL branch, so retracting the branch retracts its
+/// tracking. The value is another branch entity — one on a replica held
+/// by a different peer, which is all "remote" ever meant.
+///
+/// Lives on `meta` beside the branch enumeration. Dialog keeps the same
+/// relationship in a cell; this is it as a fact, so a rule can walk
+/// from a branch to what it follows and on to the peer serving it.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct BranchUpstream {
+    /// The local branch.
+    pub this: Entity,
+    /// The branch it follows.
+    pub upstream: crate::domain::tonk_branch::Upstream,
+}
+
+impl BranchUpstream {
+    /// Record that `local` follows `upstream`.
+    pub fn new(local: &Branch, upstream: &Branch) -> Self {
+        Self {
+            this: local.this.clone(),
+            upstream: crate::domain::tonk_branch::Upstream(upstream.this.clone()),
+        }
+    }
+}
+
+/// Which branch a replica is currently on.
+///
+/// The one piece of branch bookkeeping dialog does not model: it says
+/// where each branch IS, never which one you are looking at. Stamped
+/// on the replica because that is what branches belong to — a branch's
+/// `dialog.branch/replica` points back here.
+///
+/// Cardinality-one, so switching supersedes rather than accumulating.
+/// This is what the account facts lacked: nothing marked which of the
+/// rows a device had written was current, and a query answered with
+/// all of them.
+///
+/// Lives on the `meta` branch, which never replicates — which branch
+/// this device is on is nobody else's business.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ReplicaActiveBranch {
+    /// The replica being stamped.
+    pub this: Entity,
+    /// The branch it is currently on.
+    pub active_branch: crate::domain::replica::ActiveBranch,
+}
+
+impl ReplicaActiveBranch {
+    /// Point `replica` at `branch`.
+    pub fn new(replica: &Replica, branch: &Branch) -> Self {
+        Self {
+            this: replica.this.clone(),
+            active_branch: crate::domain::replica::ActiveBranch(branch.this.clone()),
+        }
+    }
+}
+
 /// The auto-sync *preference* of a replica as a standalone fact: just
 /// `this` and `enabled`.
 ///

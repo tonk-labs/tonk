@@ -14,7 +14,7 @@
 //! directly (see `tonk-host::ops::deliver_frame`), so a prototype shim forwards
 //! them to per-instance closures.
 //!
-//! Writes go through a child `<tonk-editable>` (defined in `tonk-workspace`,
+//! Writes go through a child `<inline-editable>` (defined in `tonk-workspace`,
 //! registered globally): committing an edit (Enter/blur) fires a `change`
 //! event this element listens for directly — there is no `tonk-display`
 //! delegate here to resolve a declarative `onchange=` binding, since this
@@ -115,7 +115,7 @@ impl CustomElement for UiSpaceNameElement {
             }
             return;
         }
-        let Ok(editable) = document.create_element("tonk-editable") else {
+        let Ok(editable) = document.create_element("inline-editable") else {
             return;
         };
         editable.set_text_content(Some(UNTITLED));
@@ -197,13 +197,13 @@ impl UiSpaceNameElement {
                 *self.change.borrow_mut() = Some(on_rename);
             }
         } else
-        // Attach the commit listener to the `<tonk-editable>` child. There is
+        // Attach the commit listener to the `<inline-editable>` child. There is
         // no `tonk-display` event delegation here (this markup is Rust-owned,
         // not a resolved template), so the `change` binding is wired directly.
         // Guarded: a re-wire from the attribute callback must not stack a
         // second listener on the same child.
         if self.change.borrow().is_none()
-            && let Some(editable) = this.query_selector("tonk-editable").ok().flatten()
+            && let Some(editable) = this.query_selector("inline-editable").ok().flatten()
         {
             let claim_target = editable.clone();
             let current_name = self.current_name.clone();
@@ -260,12 +260,12 @@ fn read_name_field(row: &JsValue) -> Option<String> {
         .and_then(|v| v.as_string())
 }
 
-/// Paint the live name into the chip's `<tonk-editable>` child and remember it
+/// Paint the live name into the chip's `<inline-editable>` child and remember it
 /// as the value a no-op or failed rename reverts to.
 ///
 /// Skips the DOM write while the field is the active (focused) element — a
 /// live frame arriving mid-edit must not clobber in-progress typing, mirroring
-/// `<tonk-editable>`'s own value-setter guard, which this bypasses by writing
+/// `<inline-editable>`'s own value-setter guard, which this bypasses by writing
 /// `textContent` directly.
 fn paint(host: &HtmlElement, name: &str, current_name: &Rc<RefCell<String>>) {
     *current_name.borrow_mut() = name.to_owned();
@@ -287,7 +287,7 @@ fn paint(host: &HtmlElement, name: &str, current_name: &Rc<RefCell<String>>) {
         }
         return;
     }
-    let Some(editable) = host.query_selector("tonk-editable").ok().flatten() else {
+    let Some(editable) = host.query_selector("inline-editable").ok().flatten() else {
         return;
     };
     let editing = window()

@@ -462,7 +462,7 @@ async fn existing_space_labels(state: &AppState) -> Vec<String> {
     let meta = match tonk
         .reactor
         .profile_repository()
-        .branch(PROFILE_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
     {
@@ -2046,7 +2046,7 @@ async fn publish_invite_state(tonk: &TonkState, state: tonk_schema::command::Inv
     let main = match tonk
         .reactor
         .profile_repository()
-        .branch(PROFILE_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
     {
@@ -2243,7 +2243,7 @@ impl dialog_capability::Provider<tonk_schema::command::PauseSync> for crate::rou
 
 /// Run the [`ProfileRename`] command.
 ///
-/// Fired when the topbar identity chip's `<tonk-editable>` commits a
+/// Fired when the topbar identity chip's `<inline-editable>` commits a
 /// transient [`ProfileRename`]. It persists the new display name as a
 /// durable [`ProfileName`] override on the profile's meta branch, then
 /// re-stamps the self member's [`MemberName`] on every space the profile
@@ -2444,7 +2444,7 @@ async fn run_rename_repository(
         && let Err(error) = tonk
             .reactor
             .profile_repository()
-            .branch(PROFILE_BRANCH)
+            .branch(&tonk.active_branch)
             .transaction()
             .assert(tonk_schema::SpaceName::new(&subject, name))
             .commit()
@@ -2637,7 +2637,7 @@ async fn require_real_space(tonk: &TonkState, subject: &Did) -> Result<(), TonkW
     let meta = tonk
         .reactor
         .profile_repository()
-        .branch(PROFILE_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(|error| TonkWorkerError::Internal(format!("open profile meta: {error}")))?;
@@ -2692,7 +2692,7 @@ async fn remove_replica_from_profile(
     let meta = tonk
         .reactor
         .profile_repository()
-        .branch(PROFILE_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(|e| RepositoryError::Internal(format!("open profile meta: {e}")))?;
@@ -2725,7 +2725,7 @@ async fn remove_replica_from_profile(
     let mut transaction = tonk
         .reactor
         .profile_repository()
-        .branch(PROFILE_BRANCH)
+        .branch(&tonk.active_branch)
         .transaction();
     let mut found = false;
     for row_entity in entities {
@@ -2797,7 +2797,7 @@ async fn remove_replica_from_profile(
     broadcast(
         "/api/profile",
         &Notification {
-            branch: PROFILE_BRANCH.to_string(),
+            branch: tonk.active_branch.clone(),
             revision,
         },
     );
@@ -3258,7 +3258,7 @@ async fn replica_still_recorded(tonk: &TonkState, subject: &Did) -> Result<bool,
     let meta = tonk
         .reactor
         .profile_repository()
-        .branch(PROFILE_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(|e| RepositoryError::Internal(format!("open profile meta: {e}")))?;
@@ -3674,7 +3674,7 @@ impl dialog_capability::Provider<tonk_schema::command::ForgetInvite> for crate::
         let main = match tonk
             .reactor
             .profile_repository()
-            .branch(PROFILE_BRANCH)
+            .branch(&tonk.active_branch)
             .acquire(&tonk.operator)
             .await
         {
@@ -3838,7 +3838,7 @@ async fn stamp_checking(
     let transaction = tonk
         .reactor
         .profile_repository()
-        .branch(PROFILE_BRANCH)
+        .branch(&tonk.active_branch)
         .transaction()
         .assert(tonk_schema::ReplicaChecking {
             this: replica,
@@ -3862,7 +3862,7 @@ async fn clear_checking(
     let transaction = tonk
         .reactor
         .profile_repository()
-        .branch(PROFILE_BRANCH)
+        .branch(&tonk.active_branch)
         .transaction()
         .retract(tonk_schema::ReplicaChecking {
             this: replica,
@@ -3876,7 +3876,7 @@ async fn stamp_checked(tonk: &TonkState, replica: dialog_artifacts::Entity) {
     let transaction = tonk
         .reactor
         .profile_repository()
-        .branch(PROFILE_BRANCH)
+        .branch(&tonk.active_branch)
         .transaction()
         .assert(tonk_schema::ReplicaChecked {
             this: replica,
@@ -3894,7 +3894,7 @@ async fn stamp_check_failure(
     let transaction = tonk
         .reactor
         .profile_repository()
-        .branch(PROFILE_BRANCH)
+        .branch(&tonk.active_branch)
         .transaction();
     let transaction = match failure {
         Some(failure) => transaction.assert(tonk_schema::ReplicaCheckFailure {
@@ -3922,7 +3922,7 @@ async fn commit_replica_stamp(
         Ok(revision) => broadcast(
             "/api/profile",
             &Notification {
-                branch: PROFILE_BRANCH.to_string(),
+                branch: tonk.active_branch.clone(),
                 revision,
             },
         ),
@@ -4940,7 +4940,7 @@ async fn record_space_founded(tonk: &TonkState, subject: &Did) {
     let transaction = tonk
         .reactor
         .profile_repository()
-        .branch(PROFILE_BRANCH)
+        .branch(&tonk.active_branch)
         .transaction()
         .assert(tonk_schema::SpaceFounded::new(
             subject,
@@ -4974,7 +4974,7 @@ pub(crate) async fn record_space_name(tonk: &TonkState, subject: &Did, display_n
     let transaction = tonk
         .reactor
         .profile_repository()
-        .branch(PROFILE_BRANCH)
+        .branch(&tonk.active_branch)
         .transaction()
         .assert(tonk_schema::SpaceName::new(subject, display_name));
     if let Err(error) = transaction.commit().perform(&tonk.operator).await {
@@ -5001,7 +5001,7 @@ pub(crate) async fn record_space_mount(
     let mut transaction = tonk
         .reactor
         .profile_repository()
-        .branch(PROFILE_BRANCH)
+        .branch(&tonk.active_branch)
         .transaction();
     if let Some(name) = display_name {
         transaction = transaction.assert(tonk_schema::SpaceName::new(subject, name));
@@ -5191,7 +5191,7 @@ async fn record_replica_visibility(
     let revision = tonk
         .reactor
         .profile_repository()
-        .branch(PROFILE_BRANCH)
+        .branch(&tonk.active_branch)
         .transaction()
         .assert(replica)
         .assert(status)
@@ -5213,7 +5213,7 @@ async fn record_replica_visibility(
     broadcast(
         "/api/profile",
         &Notification {
-            branch: PROFILE_BRANCH.to_string(),
+            branch: tonk.active_branch.clone(),
             revision,
         },
     );
@@ -5245,7 +5245,7 @@ pub(super) async fn set_replica_status(
     let revision = tonk
         .reactor
         .profile_repository()
-        .branch(PROFILE_BRANCH)
+        .branch(&tonk.active_branch)
         .transaction()
         .assert(stamp)
         .assert(directory)
@@ -5261,7 +5261,7 @@ pub(super) async fn set_replica_status(
     broadcast(
         "/api/profile",
         &Notification {
-            branch: PROFILE_BRANCH.to_string(),
+            branch: tonk.active_branch.clone(),
             revision,
         },
     );
@@ -5290,7 +5290,7 @@ pub async fn bootstrap_profile(tonk: &TonkState) -> Result<(), RepositoryError> 
     // `Repository::from` handle would leave the reader stale.
     tonk.reactor
         .profile_repository()
-        .branch(PROFILE_BRANCH)
+        .branch(&tonk.active_branch)
         .transaction()
         .assert(replica.clone())
         .assert(replica.branch(PROFILE_BRANCH))
@@ -5319,6 +5319,11 @@ pub async fn bootstrap_profile(tonk: &TonkState) -> Result<(), RepositoryError> 
     if let Err(error) = reconcile_profile_library(tonk).await {
         log!("profile library reconciliation skipped: {error}");
     }
+    // A fresh state, a fresh overlay: say whether this device is linked
+    // on the branch it booted onto, and which other branches it could
+    // switch to.
+    super::account::publish_link(tonk).await;
+    super::profiles::publish_roster(tonk).await;
 
     // Drain the poll the bootstrap commit scheduled.
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
@@ -5424,7 +5429,7 @@ pub(crate) async fn retract_local_profile_library(
     let session = tonk
         .reactor
         .profile_repository()
-        .branch(PROFILE_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(|error| {
@@ -5468,7 +5473,7 @@ pub(crate) async fn retract_local_profile_library(
     let mut transaction = tonk
         .reactor
         .profile_repository()
-        .branch(PROFILE_BRANCH)
+        .branch(&tonk.active_branch)
         .transaction();
     for claim in claims {
         transaction = transaction.retract(claim);
@@ -5735,7 +5740,7 @@ async fn current_profile_library_retractions(
     let session = tonk
         .reactor
         .profile_repository()
-        .branch(PROFILE_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(|error| {
@@ -5818,7 +5823,7 @@ async fn reconcile_prepared_profile_library(
     let session = tonk
         .reactor
         .profile_repository()
-        .branch(PROFILE_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(|error| {
@@ -5871,9 +5876,13 @@ async fn reconcile_prepared_profile_library(
                 .map_err(|error| TonkWorkerError::Internal(error.to_string()))
         })
     };
+    // Onto the ACTIVE branch, which is the one the session above was
+    // opened on. Every branch carries its own copy of the library: a
+    // branch signed out onto, or added for another account, starts empty
+    // and renders nothing until it is seeded.
     let response = super::evaluate::evaluate_profile_with_retraction_plan(
         tonk,
-        PROFILE_BRANCH,
+        &tonk.active_branch,
         library,
         &plan,
         &record,
@@ -6141,7 +6150,7 @@ where
         .select(Query::<MetaBranch> {
             this: Term::var("this"),
             name: Term::var("name"),
-            origin: Term::var("origin"),
+            replica: Term::var("replica"),
         })
         .perform(&tonk.operator)
         .try_vec()
@@ -6223,7 +6232,7 @@ where
         .select(Query::<TrackingBranch> {
             this: Term::var("this"),
             upstream: Term::var("upstream"),
-            origin: Term::from(replica_entity.clone()),
+            replica: Term::from(replica_entity.clone()),
         })
         .perform(&tonk.operator)
         .try_vec()
@@ -6255,7 +6264,7 @@ where
     // that branch belongs to.
     let mut branches = HashMap::new();
     for branch in &all_branches {
-        if branch.origin.0 != replica_entity {
+        if branch.replica.0 != replica_entity {
             continue;
         }
         if remotes_by_entity.contains_key(&branch.this) {
@@ -6263,7 +6272,7 @@ where
         }
         let upstream = tracking_by_local.get(&branch.this).and_then(|upstream| {
             let tracked_branch = branches_by_entity.get(&upstream.0)?;
-            let remote = remotes_by_entity.get(&tracked_branch.origin.0)?;
+            let remote = remotes_by_entity.get(&tracked_branch.replica.0)?;
             Some(UpstreamConfiguration::new(
                 remote.name.0.clone(),
                 tracked_branch.name.0.clone(),
@@ -7354,7 +7363,7 @@ mod rename_repository_tests {
         let profile_branch = tonk
             .reactor
             .profile_repository()
-            .branch("main")
+            .branch(&tonk.active_branch)
             .acquire(&tonk.operator)
             .await
             .expect("profile branch opens");
@@ -7838,6 +7847,7 @@ route!: &foreign-profile-route
             storage,
             session_expires_at: session.expires_at,
             profile_name: name.clone(),
+            active_branch: crate::router::repository::PROFILE_BRANCH.to_owned(),
             reactor: crate::Reactor::new(profile),
             admission: Default::default(),
             reject_admission_content_reads: Default::default(),
@@ -7905,7 +7915,7 @@ route!: &foreign-profile-route
         );
         tonk.reactor
             .profile_repository()
-            .branch(PROFILE_BRANCH)
+            .branch(&tonk.active_branch)
             .transaction()
             .assert(profile_name.clone())
             .assert(space.clone())
@@ -7924,7 +7934,7 @@ route!: &foreign-profile-route
         let rows = tonk
             .reactor
             .profile_repository()
-            .branch(PROFILE_BRANCH)
+            .branch(&tonk.active_branch)
             .query(query)
             .perform(&tonk.operator)
             .await
@@ -7936,7 +7946,7 @@ route!: &foreign-profile-route
         let session = tonk
             .reactor
             .profile_repository()
-            .branch(PROFILE_BRANCH)
+            .branch(&tonk.active_branch)
             .acquire(&tonk.operator)
             .await
             .expect("profile branch opens");
@@ -7964,7 +7974,7 @@ route!: &foreign-profile-route
         let session = tonk
             .reactor
             .profile_repository()
-            .branch(PROFILE_BRANCH)
+            .branch(&tonk.active_branch)
             .acquire(&tonk.operator)
             .await
             .expect("profile branch opens");
@@ -8005,7 +8015,7 @@ route!: &foreign-profile-route
 
         for (entity, expected) in [
             ("tonk:space", "with:src=\"ui\""),
-            ("tonk:settings", "with:src=\"ui@space\""),
+            ("tonk:hub", "with:src=\"ui@space\""),
         ] {
             let wire = tonk_template::resolve::view_query(entity).expect("view query builds");
             let query = wire
@@ -8014,7 +8024,7 @@ route!: &foreign-profile-route
             let rows = tonk
                 .reactor
                 .profile_repository()
-                .branch(PROFILE_BRANCH)
+                .branch(&tonk.active_branch)
                 .query(query)
                 .perform(&tonk.operator)
                 .await
@@ -8048,7 +8058,7 @@ route!: &foreign-profile-route
         let rows = tonk
             .reactor
             .profile_repository()
-            .branch(PROFILE_BRANCH)
+            .branch(&tonk.active_branch)
             .query(query)
             .perform(&tonk.operator)
             .await
@@ -8069,7 +8079,7 @@ route!: &foreign-profile-route
     /// a name while the query asked a different question. This runs the
     /// real query against a real store holding the real library.
     ///
-    /// `tonk:settings` is the interesting subject: it embeds
+    /// `tonk:hub` is the interesting subject: it embeds
     /// `ui@space`, so the pair it stores names ANOTHER view, and a
     /// renderer that failed to read it would fall back to the bare name
     /// `space` and silently match nothing.
@@ -8078,15 +8088,15 @@ route!: &foreign-profile-route
         let tonk = test_state().await;
         install_recorded(&tonk, PROFILE_LIBRARY_URL, CURRENT).await;
 
-        let wire = tonk_template::resolve::view_embeds_query("tonk:settings")
-            .expect("embeds query builds");
+        let wire =
+            tonk_template::resolve::view_embeds_query("tonk:hub").expect("embeds query builds");
         let query = wire
             .into_concept_query()
             .expect("embeds query is a concept query");
         let rows = tonk
             .reactor
             .profile_repository()
-            .branch(PROFILE_BRANCH)
+            .branch(&tonk.active_branch)
             .query(query)
             .perform(&tonk.operator)
             .await
@@ -8119,7 +8129,7 @@ route!: &foreign-profile-route
         let subscribed_session = tonk
             .reactor
             .profile_repository()
-            .branch(PROFILE_BRANCH)
+            .branch(&tonk.active_branch)
             .acquire(&tonk.operator)
             .await
             .expect("profile branch opens");
@@ -8176,7 +8186,7 @@ route!: &foreign-profile-route
         let session = tonk
             .reactor
             .profile_repository()
-            .branch(PROFILE_BRANCH)
+            .branch(&tonk.active_branch)
             .acquire(&tonk.operator)
             .await
             .expect("profile branch opens");
@@ -8245,7 +8255,7 @@ route!: &foreign-profile-route
         let session = tonk
             .reactor
             .profile_repository()
-            .branch(PROFILE_BRANCH)
+            .branch(&tonk.active_branch)
             .acquire(&tonk.operator)
             .await
             .expect("profile branch opens");
@@ -8339,7 +8349,7 @@ route!: &foreign-profile-route
             let session = tonk
                 .reactor
                 .profile_repository()
-                .branch(PROFILE_BRANCH)
+                .branch(&tonk.active_branch)
                 .acquire(&tonk.operator)
                 .await
                 .expect("profile branch opens");
@@ -8398,7 +8408,7 @@ route!: &foreign-profile-route
         let session = tonk
             .reactor
             .profile_repository()
-            .branch(PROFILE_BRANCH)
+            .branch(&tonk.active_branch)
             .acquire(&tonk.operator)
             .await
             .expect("profile branch opens");
@@ -8465,7 +8475,7 @@ route!: &foreign-profile-route
         let session = tonk
             .reactor
             .profile_repository()
-            .branch(PROFILE_BRANCH)
+            .branch(&tonk.active_branch)
             .acquire(&tonk.operator)
             .await
             .expect("profile branch opens");
@@ -8503,7 +8513,7 @@ route!: &foreign-profile-route
         let session = tonk
             .reactor
             .profile_repository()
-            .branch(PROFILE_BRANCH)
+            .branch(&tonk.active_branch)
             .acquire(&tonk.operator)
             .await
             .expect("profile branch opens");
@@ -8558,7 +8568,7 @@ route!: &foreign-profile-route
         let session = tonk
             .reactor
             .profile_repository()
-            .branch(PROFILE_BRANCH)
+            .branch(&tonk.active_branch)
             .acquire(&tonk.operator)
             .await
             .expect("profile branch opens");
@@ -8679,7 +8689,7 @@ mod tests {
         let branch = tonk
             .reactor
             .profile_repository()
-            .branch(tonk_account::MAIN_BRANCH)
+            .branch(&tonk.active_branch)
             .acquire(&tonk.operator)
             .await
             .unwrap();
@@ -8792,7 +8802,7 @@ mod tests {
         let main = tonk
             .reactor
             .profile_repository()
-            .branch(super::PROFILE_BRANCH)
+            .branch(&tonk.active_branch)
             .acquire(&tonk.operator)
             .await
             .unwrap();
@@ -8837,7 +8847,7 @@ mod tests {
         let main = tonk
             .reactor
             .profile_repository()
-            .branch(super::PROFILE_BRANCH)
+            .branch(&tonk.active_branch)
             .acquire(&tonk.operator)
             .await
             .unwrap();
@@ -8920,7 +8930,7 @@ mod tests {
         let meta = tonk
             .reactor
             .profile_repository()
-            .branch(super::PROFILE_BRANCH)
+            .branch(&tonk.active_branch)
             .acquire(&tonk.operator)
             .await
             .expect("profile meta acquires");
@@ -9000,6 +9010,61 @@ mod tests {
     /// a commit carrying most of the tree, which after sign-in every
     /// worker restart pushed into the account.
     ///
+    /// A branch the profile moves onto (signed out onto, or added for
+    /// another account) starts empty and gets its own copy of the
+    /// library. The reconciliation used to evaluate onto `main` whatever
+    /// branch was active, so every other branch rendered nothing: the
+    /// hub showed a display's fallback instead of its view.
+    #[dialog_common::test]
+    async fn it_seeds_the_library_on_the_branch_that_is_active() {
+        use dialog_query::{Output as _, Query, Term};
+
+        let (_app, state, _key) = fresh_repo("test-seed-active-branch").await;
+        let library = include_str!("../../../tonk-core/assets/library/profile.yaml").to_owned();
+        {
+            let tonk = state.read().await;
+            super::reconcile_profile_library_from(&tonk, library.clone())
+                .await
+                .expect("main is seeded on first boot");
+        }
+        state.write().await.active_branch = "main-2".to_owned();
+        let tonk = state.read().await;
+        super::reconcile_profile_library_from(&tonk, library)
+            .await
+            .expect("the fresh branch is seeded too");
+
+        let session = tonk
+            .reactor
+            .profile_repository()
+            .branch("main-2")
+            .acquire(&tonk.operator)
+            .await
+            .expect("acquire the fresh branch");
+        assert!(
+            super::read_installed_seed(&tonk, &session)
+                .await
+                .expect("read the seed record")
+                .is_some(),
+            "the fresh branch records its own install",
+        );
+        let routes: Vec<tonk_schema::Route> = session
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::Route> {
+                this: Term::var("this"),
+                path: Term::var("path"),
+                concept: Term::var("concept"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("route query");
+        assert!(
+            routes.iter().any(|route| route.path.0 == "/settings"),
+            "the fresh branch carries the library's routes",
+        );
+    }
+
     /// Drives `reconcile_profile_library_from` directly: `bootstrap_profile`
     /// fetches the library over the network, which the harness (no
     /// service-worker registration) cannot serve.
@@ -9021,7 +9086,7 @@ mod tests {
         let session = tonk
             .reactor
             .profile_repository()
-            .branch(super::PROFILE_BRANCH)
+            .branch(&tonk.active_branch)
             .acquire(&tonk.operator)
             .await
             .expect("acquire the profile branch");
@@ -9137,7 +9202,7 @@ mod tests {
             let replica = super::Replica::new(profile_did.clone(), profile_did);
             tonk.reactor
                 .profile_repository()
-                .branch(super::PROFILE_BRANCH)
+                .branch(&tonk.active_branch)
                 .transaction()
                 .assert(replica.clone())
                 .assert(replica.branch(super::PROFILE_BRANCH))
@@ -9177,7 +9242,7 @@ mod tests {
             let tonk = state.read().await;
             tonk.reactor
                 .profile_repository()
-                .branch(super::PROFILE_BRANCH)
+                .branch(&tonk.active_branch)
                 .transaction()
                 .assert(super::Replica::account(tonk.profile.did(), account.clone()))
                 .commit()
@@ -9205,7 +9270,7 @@ mod tests {
     }
 
     /// Build a one-entity transient `ProfileRename{this, name, marker}`
-    /// batch — the facts the identity chip's `<tonk-editable>` commit
+    /// batch — the facts the identity chip's `<inline-editable>` commit
     /// asserts. Mirrors how `command::tests::ping_transient` hand-builds a
     /// command transient via `the!`, carrying both the `name`
     /// (`current-target/value`) and the `marker`
@@ -10185,7 +10250,7 @@ block/insert!:
         let branch = guard
             .reactor
             .profile_repository()
-            .branch(super::PROFILE_BRANCH)
+            .branch(&guard.active_branch)
             .acquire(&guard.operator)
             .await
             .expect("profile branch opens");
@@ -11465,7 +11530,7 @@ mod seed_tests {
             let main = tonk
                 .reactor
                 .profile_repository()
-                .branch(super::PROFILE_BRANCH)
+                .branch(&tonk.active_branch)
                 .acquire(&tonk.operator)
                 .await
                 .expect("profile main acquires");
@@ -11493,7 +11558,7 @@ mod seed_tests {
             let main = tonk
                 .reactor
                 .profile_repository()
-                .branch(super::PROFILE_BRANCH)
+                .branch(&tonk.active_branch)
                 .acquire(&tonk.operator)
                 .await
                 .expect("profile main acquires");

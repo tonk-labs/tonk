@@ -97,8 +97,6 @@ use super::repository::{
 };
 use crate::{TonkWorkerError, worker::TonkState};
 
-use super::repository::PROFILE_BRANCH;
-
 /// Default upstream branch wired up when the invite carries a
 /// `remote=` URL.
 const DEFAULT_BRANCH: &str = "main";
@@ -1409,7 +1407,7 @@ pub(crate) async fn find_replica_for_subject(
     let profile_meta = tonk
         .reactor
         .profile_repository()
-        .branch(PROFILE_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(|e| {
@@ -1444,7 +1442,7 @@ const JOIN_STATUS_URI: &str = "tonk:join/status";
 
 /// Run the [`Join`] command.
 ///
-/// `<tonk-page onmount=tonk/join>` on the `/join` view fires the command
+/// `<page-mount onmount=tonk/join>` on the `/join` view fires the command
 /// with the full page URL in the event detail. This provider runs the same
 /// join operation the HTTP routes do and drives the overlay-only
 /// `tonk:join/status` (pending → failed, or retract + navigate on
@@ -1612,7 +1610,7 @@ async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command
     let session = match tonk
         .reactor
         .profile_repository()
-        .branch(PROFILE_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
     {
@@ -1645,7 +1643,7 @@ async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command
     tonk.reactor.schedule_poll(Arc::clone(&session.state));
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 
-    // Use the exact page URL carried by `<tonk-page>`. In particular, do not
+    // Use the exact page URL carried by `<page-mount>`. In particular, do not
     // round-trip the query through `URLSearchParams`: targeted invites may
     // contain empty or repeated fields whose byte-for-byte form matters.
     let url = command.url.0;
@@ -1887,7 +1885,7 @@ mod invite_name_tests {
         let profile = tonk
             .reactor
             .profile_repository()
-            .branch("main")
+            .branch(&tonk.active_branch)
             .acquire(&tonk.operator)
             .await
             .expect("profile branch opens");
@@ -2204,7 +2202,7 @@ pub(crate) mod tests {
             let profile = tonk
                 .reactor
                 .profile_repository()
-                .branch("main")
+                .branch(&tonk.active_branch)
                 .acquire(&tonk.operator)
                 .await
                 .expect("profile meta opens");
@@ -3093,7 +3091,7 @@ pub(crate) mod tests {
         let branch = tonk
             .reactor
             .profile_repository()
-            .branch(tonk_account::MAIN_BRANCH)
+            .branch(&tonk.active_branch)
             .acquire(&tonk.operator)
             .await
             .unwrap();

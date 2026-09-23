@@ -564,7 +564,7 @@ tonk-display > .site-pending:not([hidden]) {
 /* Space topbar chrome. Hoisted out of the per-instance workspace view so
    it renders on every space — including empty ones with no workspace
    instance — at the space (directory) level. The `<tonk-repo-name>`,
-   `<tonk-sync-state>`, `<tonk-sync-toggle>`, and `<tonk-share>` elements
+   `<tonk-sync-toggle>`, and `<tonk-share>` elements
    render into these classes and resolve their repo from the nearest
    `with="branch@repo"` ancestor, so the bar works wherever it sits.
    In the global stylesheet because the directory view that hosts the bar
@@ -591,7 +591,7 @@ tonk-display > .site-pending:not([hidden]) {
 .workspace__title {
     font-weight: var(--wa-font-weight-semibold);
 }
-/* The repository-name banner is a `<tonk-editable>` (contenteditable)
+/* The repository-name banner is a `<inline-editable>` (contenteditable)
    styled to read as plain title text until focused. Borderless and
    transparent so it sits in the topbar like the old static title; on
    focus it reveals a subtle field affordance so the rename is
@@ -619,82 +619,6 @@ tonk-display > .site-pending:not([hidden]) {
     outline: none;
     border-color: var(--wa-color-brand-fill-loud);
     background: var(--wa-color-surface-default);
-}
-/* The live sync chip (`<tonk-sync-state>` renders this span with one
-   `is-*` modifier). Layout on the base class, colour on the modifier. */
-.workspace__sync {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--wa-space-xs);
-    padding: var(--wa-space-3xs) var(--wa-space-s);
-    font-size: var(--wa-font-size-s);
-    border-radius: var(--wa-border-radius-s);
-}
-.workspace__sync::before {
-    content: "";
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: currentColor;
-    flex: none;
-}
-.workspace__sync.is-synced {
-    color: var(--wa-color-success-on-quiet);
-    background: var(--wa-color-success-fill-quiet);
-}
-.workspace__sync.is-synced::before {
-    background: var(--wa-color-success-fill-loud);
-}
-.workspace__sync.is-syncing {
-    color: var(--wa-color-warning-on-quiet);
-    background: var(--wa-color-warning-fill-quiet);
-}
-.workspace__sync.is-syncing::before {
-    background: var(--wa-color-warning-fill-loud);
-}
-.workspace__sync.is-paused,
-.workspace__sync.is-offline {
-    color: var(--wa-color-text-quiet);
-    background: var(--wa-color-neutral-fill-quiet);
-}
-.workspace__sync.is-offline,
-.workspace__sync.is-revoked,
-.workspace__sync.is-conflict,
-.workspace__sync.is-unavailable,
-.workspace__sync.is-unknown {
-    cursor: default;
-}
-.workspace__sync.is-revoked {
-    color: var(--wa-color-text-quiet);
-    background: var(--wa-color-neutral-fill-quiet);
-}
-.workspace__sync.is-revoked::before {
-    background: currentColor;
-}
-.workspace__sync.is-conflict {
-    color: var(--wa-color-warning-on-quiet);
-    background: var(--wa-color-warning-fill-quiet);
-}
-.workspace__sync.is-conflict::before {
-    border-radius: 0;
-    transform: rotate(45deg);
-    background: var(--wa-color-warning-fill-loud);
-}
-.workspace__sync.is-unavailable {
-    color: var(--wa-color-brand-on-quiet);
-    background: var(--wa-color-brand-fill-quiet);
-}
-.workspace__sync.is-unavailable::before {
-    background: transparent;
-    border: 1px dashed currentColor;
-}
-.workspace__sync.is-unknown {
-    color: var(--wa-color-text-quiet);
-    background: var(--wa-color-neutral-fill-quiet);
-}
-.workspace__sync.is-unknown::before {
-    background: transparent;
-    border: 1px dotted currentColor;
 }
 /* The topbar chips (identity, sync) render through a `<tonk-display>` →
    `<tonk-view>` pair whose line boxes would otherwise sit them above the
@@ -782,32 +706,6 @@ tonk-display > .site-pending:not([hidden]) {
 .workspace__sync-toggle-glyph {
     width: 18px;
     height: 18px;
-}
-/* The enable-sync trigger (`<tonk-sync-state>` renders this in place of
-   the chip when the branch has no upstream). A small "turn sync on" pill
-   sitting where the status chip otherwise would. */
-.workspace__enable-sync {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--wa-space-xs);
-    padding: var(--wa-space-3xs) var(--wa-space-s);
-    font: inherit;
-    font-size: var(--wa-font-size-s);
-    color: var(--wa-color-brand-on-quiet);
-    background: var(--wa-color-brand-fill-quiet);
-    border: none;
-    border-radius: var(--wa-border-radius-s);
-    cursor: pointer;
-}
-.workspace__enable-sync:hover {
-    background: var(--wa-color-brand-fill-normal);
-}
-/* The enable-sync dialog's form: a vertical stack of the URL field and
-   the default-service button. */
-.workspace__sync-form {
-    display: flex;
-    flex-direction: column;
-    gap: var(--wa-space-s);
 }
 /* The Hub title is a plain heading like the mock, independent of the
    explicit headline-cover treatment used by other shell chrome. */
@@ -2167,61 +2065,65 @@ wa-page::part(drawer) {
     flex: 0 0 auto;
 }
 
-/* ── <ui-account-settings> — the account settings panel. One element, two
+/* ── <account-settings> — the account settings panel. One element, two
    seats: the Hub's account tab
    embeds it in-column, and the space route raises it in a <tonk-dialog>
    from the FAB's settings row — so its styling lives here, where both
    documents receive it. */
-ui-account-settings { display: block; }
-ui-account-settings .s-body { min-width: 0; min-height: min(408px, 55vh);
+account-settings { display: block; }
+account-settings .s-body { min-width: 0; min-height: min(408px, 55vh);
     max-height: 60vh; overflow: auto; padding: 8px 18px 18px;
     background: var(--panel); border: 1px solid var(--ring);
     font-family: var(--sans); font-weight: 400; font-size: 13.5px;
     line-height: 1.4; text-transform: none; color: var(--soft); }
-ui-account-settings .pane[hidden] { display: none; }
-ui-account-settings .srowd { display: flex; justify-content: space-between;
+/* the account page's menu is rows under the bar, not a panel: no box */
+account-settings[data-pane="menu"] .s-body { min-height: 0; max-height: none;
+    overflow: visible; padding: 0; background: none; border: 0;
+    font: inherit; text-transform: inherit; color: inherit; }
+account-settings .pane[hidden] { display: none; }
+account-settings .srowd { display: flex; justify-content: space-between;
     align-items: baseline; gap: 16px; padding: 9px 0; }
-ui-account-settings .srowd b { font-family: var(--cond); font-weight: 600;
+account-settings .srowd b { font-family: var(--cond); font-weight: 600;
     font-size: 13.5px; color: var(--ink); text-align: right;
     white-space: nowrap; }
-ui-account-settings .srowd b.lft { min-width: 0; text-align: left;
+account-settings .srowd b.lft { min-width: 0; text-align: left;
     white-space: normal; overflow-wrap: anywhere; }
-ui-account-settings .sect { margin-top: 18px; padding-bottom: 7px;
+account-settings .sect { margin-top: 18px; padding-bottom: 7px;
     font: 600 13px/1 var(--cond); letter-spacing: 0.02em;
     text-transform: lowercase; color: var(--ink);
     border-bottom: 1px solid var(--sep); }
-ui-account-settings .expl { margin: 6px 0 0; font-size: 13px;
+account-settings .expl { margin: 6px 0 0; font-size: 13px;
     line-height: 1.55; max-width: 460px; }
 /* the underline IS the link */
-ui-account-settings .cta { font: 600 13px/1 var(--cond);
+account-settings .cta { font: 600 13px/1 var(--cond);
     letter-spacing: 0.02em; color: var(--ink); text-transform: lowercase;
     white-space: nowrap; display: inline-block; cursor: pointer;
     text-decoration: underline; text-underline-offset: 3px; }
-ui-account-settings .cta:hover { text-decoration-thickness: 2px; }
+account-settings .cta:hover { text-decoration-thickness: 2px; }
 /* a verb is a button for the keyboard's sake; it wears the word alone */
-ui-account-settings button.cta { appearance: none; -webkit-appearance: none;
+account-settings button.cta { appearance: none; -webkit-appearance: none;
     background: none; border: 0; margin: 0; padding: 0; text-align: right; }
-ui-account-settings .srowd > .cta { flex: none; }
-ui-account-settings :is([data-agent-connections], [data-terminal-connections])[hidden] { display: none; }
-ui-account-settings :is([data-agent-connections], [data-terminal-connections]) { margin-top: 18px; }
-ui-account-settings :is([data-connections-list], [data-terminal-connections-list]) { display: grid; gap: 7px; margin-top: 12px; }
-ui-account-settings .connection-record { min-width: 0; padding: 12px;
+account-settings .srowd > .cta { flex: none; }
+account-settings :is([data-agent-connections], [data-terminal-connections])[hidden] { display: none; }
+account-settings :is([data-agent-connections], [data-terminal-connections]) { margin-top: 18px; }
+account-settings :is([data-connections-list], [data-terminal-connections-list]) { display: grid; gap: 7px; margin-top: 12px; }
+account-settings .connection-record { min-width: 0; padding: 12px;
     background: var(--card); box-shadow: 0 0 0 1px var(--ring); }
-ui-account-settings .connection-record .expl { overflow-wrap: anywhere; }
-ui-account-settings :is([data-agent-connections], [data-terminal-connections]) .srowd { align-items: center; flex-wrap: wrap;
+account-settings .connection-record .expl { overflow-wrap: anywhere; }
+account-settings :is([data-agent-connections], [data-terminal-connections]) .srowd { align-items: center; flex-wrap: wrap;
     padding: 0; gap: 8px; }
-ui-account-settings :is([data-agent-connections], [data-terminal-connections]) button.cta { min-width: 44px; min-height: 44px; }
-ui-account-settings :is([data-agent-connections], [data-terminal-connections]) button.cta:disabled { opacity: .5; cursor: default; }
-ui-account-settings :is([data-agent-connections], [data-terminal-connections]) :focus-visible { outline: 2px solid var(--ink);
+account-settings :is([data-agent-connections], [data-terminal-connections]) button.cta { min-width: 44px; min-height: 44px; }
+account-settings :is([data-agent-connections], [data-terminal-connections]) button.cta:disabled { opacity: .5; cursor: default; }
+account-settings :is([data-agent-connections], [data-terminal-connections]) :focus-visible { outline: 2px solid var(--ink);
     outline-offset: 3px; }
 /* A real input with a stable field surface. Keep the fill bounded to the
    editable value so the name reads as a control rather than floating at the
    end of the row. The unlayered rules also beat Web Awesome's
    `@layer wa-native` skin. */
-ui-account-settings .sname-seat {
+account-settings .sname-seat {
     flex: 1; min-width: 0;
     display: flex; align-items: center; justify-content: flex-end; }
-ui-account-settings .sname {
+account-settings .sname {
     appearance: none; -webkit-appearance: none;
     box-sizing: border-box; background: var(--sep);
     border: 0; border-radius: 0;
@@ -2234,7 +2136,7 @@ ui-account-settings .sname {
    stable instead of adding a ring around it. There is deliberately no
    resting block cursor: an unfocused field must read as settled, not as
    though it is still taking input. */
-ui-account-settings .sname:focus-visible { box-shadow: none; }
+account-settings .sname:focus-visible { box-shadow: none; }
 /* the confirm clusters — the page dims, the surface never. the body is
    set in the reading face at weight 600, ink on card, like the hub's
    space-removal confirm; the arming row is the gate: type the displayed
@@ -2243,72 +2145,72 @@ ui-account-settings .sname:focus-visible { box-shadow: none; }
    modal: the page dims, the surface never, and nothing reads through.
    The cluster element wears the FABB skin, pinned light, so its tokens
    are re-pointed at the page's here. */
-ui-account-settings tonk-dialog {
+account-settings tonk-dialog {
     --fabb-panel: var(--card); --fabb-ink: var(--ink);
     --fabb-ink-soft: var(--soft); --fabb-on-ink: var(--on-ink);
     --fabb-ring: var(--ring); --fabb-sep: var(--sep);
     --fabb-hover: var(--wash); --fabb-press: var(--wash);
     --fabb-dim: var(--dim); }
-ui-account-settings .confirm-body { margin: 0; min-width: 0; overflow-wrap: anywhere; font-family: var(--sans);
+account-settings .confirm-body { margin: 0; min-width: 0; overflow-wrap: anywhere; font-family: var(--sans);
     font-weight: 600; font-size: 13.5px; line-height: 1.6;
     text-transform: none; color: var(--ink); }
-ui-account-settings .confirm-body > span { display: block; margin-bottom: 10px; }
-ui-account-settings .confirm-body > span:empty { display: none; }
-ui-account-settings .armrow { margin-top: 14px; font: 600 13px/1.6 var(--cond);
+account-settings .confirm-body > span { display: block; margin-bottom: 10px; }
+account-settings .confirm-body > span:empty { display: none; }
+account-settings .armrow { margin-top: 14px; font: 600 13px/1.6 var(--cond);
     letter-spacing: 0.02em; color: var(--soft);
     display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
-ui-account-settings .armrow b { color: var(--ink); font-weight: 600;
+account-settings .armrow b { color: var(--ink); font-weight: 600;
     text-transform: none; }
-ui-account-settings .armfield { appearance: none; -webkit-appearance: none;
+account-settings .armfield { appearance: none; -webkit-appearance: none;
     display: inline-block; min-width: 14ch; max-width: 100%;
     margin: 0; padding: 0 1px 2px; border: 0;
     border-bottom: 1.5px solid var(--ink); border-radius: 0;
     outline: none; background: transparent; caret-color: var(--ink); color: var(--ink);
     font: inherit; text-transform: none; white-space: nowrap; }
-ui-account-settings .armfield:focus-visible { box-shadow: none; }
+account-settings .armfield:focus-visible { box-shadow: none; }
 /* an unarmed verb stays visibly off, not merely inert */
-ui-account-settings .m-go:disabled { opacity: 0.4; cursor: not-allowed; }
-ui-account-settings .m-go:disabled:hover { background: var(--ink); }
+account-settings .m-go:disabled { opacity: 0.4; cursor: not-allowed; }
+account-settings .m-go:disabled:hover { background: var(--ink); }
 /* the link pane's answer is a fused action run, like a confirm's foot */
-ui-account-settings .link-foot { display: flex; justify-content: flex-end;
+account-settings .link-foot { display: flex; justify-content: flex-end;
     gap: 0; margin-top: 18px; }
-ui-account-settings .link-foot .m-cancel { box-shadow: 0 0 0 1px var(--ring); }
+account-settings .link-foot .m-cancel { box-shadow: 0 0 0 1px var(--ring); }
 /* where a ceremony got to, under the rows that asked for it */
-ui-account-settings [data-ceremony-status] { color: var(--ink); }
-ui-account-settings [data-ceremony-status][hidden] { display: none; }
+account-settings [data-ceremony-status] { color: var(--ink); }
+account-settings [data-ceremony-status][hidden] { display: none; }
 
 /* CLI approval follows the Hub's row stack rather than the settings sheet. */
-ui-account-settings .s-body:has([data-link-approval]:not([hidden])) {
+account-settings .s-body:has([data-link-approval]:not([hidden])) {
     min-height: 0; max-height: none; overflow: visible; padding: 0;
     background: none; border: 0; position: relative;
 }
-ui-account-settings [data-link-approval]:not([hidden]) {
+account-settings [data-link-approval]:not([hidden]) {
     display: flex; flex-direction: column; gap: 7px;
 }
-ui-account-settings [data-link-approval] > :is(.sect, .srowd, .expl),
-ui-account-settings .s-body:has([data-link-approval]:not([hidden])) > [data-ceremony-status]:not([hidden]) {
+account-settings [data-link-approval] > :is(.sect, .srowd, .expl),
+account-settings .s-body:has([data-link-approval]:not([hidden])) > [data-ceremony-status]:not([hidden]) {
     box-sizing: border-box; margin: 0; padding: 10px 16px;
     min-height: 36px; max-width: none; background: var(--card);
     border: 0; box-shadow: 0 0 0 1px var(--ring);
 }
-ui-account-settings [data-link-approval] .srowd b {
+account-settings [data-link-approval] .srowd b {
     min-width: 0; white-space: normal; overflow-wrap: anywhere; text-align: right;
 }
-ui-account-settings [data-link-approval] .link-foot { margin: 0; }
-ui-account-settings [data-link-approval] .link-foot button {
+account-settings [data-link-approval] .link-foot { margin: 0; }
+account-settings [data-link-approval] .link-foot button {
     font: 600 13px/1 var(--cond); letter-spacing: 0.02em;
 }
-ui-account-settings .s-body:has([data-link-approval]:not([hidden])) > [data-ceremony-status]:not([hidden]) {
+account-settings .s-body:has([data-link-approval]:not([hidden])) > [data-ceremony-status]:not([hidden]) {
     margin-top: 7px;
 }
-ui-account-settings [data-custody-seat] { display: none; }
-ui-account-settings[data-passkey-screen] [data-link-approval],
-ui-account-settings[data-passkey-screen] .s-body:has([data-link-approval]:not([hidden])) > [data-ceremony-status]:not([hidden]) { display: none; }
-ui-account-settings[data-passkey-requested] [data-custody-seat] {
+account-settings [data-custody-seat] { display: none; }
+account-settings[data-passkey-screen] [data-link-approval],
+account-settings[data-passkey-screen] .s-body:has([data-link-approval]:not([hidden])) > [data-ceremony-status]:not([hidden]) { display: none; }
+account-settings[data-passkey-requested] [data-custody-seat] {
     display: block; position: absolute; top: 0; left: 0; width: 100%; height: 180px;
     pointer-events: none;
 }
-ui-account-settings[data-passkey-screen] [data-custody-seat] {
+account-settings[data-passkey-screen] [data-custody-seat] {
     display: block; position: static; height: 180px;
 }
 

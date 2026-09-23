@@ -106,16 +106,34 @@ pub fn origin() -> String {
         .expect("Could not read window location")
 }
 
+/// The branch this profile is on, as the top page resolved it at boot.
+/// The bridge that knows it exists only on the page; off wasm the
+/// endpoints are exercised against `main`.
+pub(crate) fn profile_branch() -> String {
+    #[cfg(target_arch = "wasm32")]
+    {
+        tonk_host::bridge::profile_branch()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        "main".to_owned()
+    }
+}
+
 /// Profile-side counterpart to [`evaluate`] — POSTs to
-/// Assert a claim on the profile's main branch.
+/// Assert a claim on the profile's active branch.
 ///
 /// The page's way of causing an effect: a transient lands, its command
 /// runs, and the outcome comes back as facts the page is subscribed to.
 /// Nothing is read from the answer beyond whether the commit landed.
 pub async fn transact_profile(claim: serde_json::Value) -> Result<(), TonkUiError> {
     tonk_host::ready::wait().await;
+    // The branch this profile is on, not `main`: after a sign-out or an
+    // added account the profile is on another branch, and a ceremony's
+    // commands answer on the branch they were asked on.
+    let branch = profile_branch();
     let response = reqwest::Client::new()
-        .post(format!("{}/api/profile/branch/main/transact", origin()))
+        .post(format!("{}/api/profile/branch/{branch}/transact", origin()))
         .json(&claim)
         .send()
         .await
@@ -126,7 +144,7 @@ pub async fn transact_profile(claim: serde_json::Value) -> Result<(), TonkUiErro
         let status = response.status();
         let text = response.text().await.unwrap_or_default();
         Err(TonkUiError::ApiError(format!(
-            "POST /api/profile/branch/main/transact returned {status}: {text}"
+            "POST /api/profile/branch/{branch}/transact returned {status}: {text}"
         )))
     }
 }

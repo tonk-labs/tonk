@@ -477,6 +477,25 @@ impl Command for SwitchProfile {
     type Output = ();
 }
 
+/// Sign this device out of the account on the active branch.
+///
+/// Dispatched from the settings page. The handler withdraws the device's
+/// authority, disconnects, and moves onto an empty branch, retaining the
+/// account's branch for a later sign-in; the originating tab is then
+/// reloaded onto the fresh branch.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct SignOut {
+    /// The command entity (a fresh id per click).
+    pub this: Entity,
+    /// The click's timestamp, so signing out twice re-fires.
+    pub time: crate::domain::command::current::sign_out::Time,
+}
+
+impl Command for SignOut {
+    type Input = Self;
+    type Output = ();
+}
+
 /// Rename a space's repository from the FAB.
 ///
 /// The space-side `tonk/rename-repository` rule (`core.yaml`) cannot
@@ -516,7 +535,7 @@ impl Command for RenameRepository {
 /// Rename the signed-in member (set their display name).
 ///
 /// Asserted transiently when the topbar identity chip's
-/// `<tonk-editable>` commits. The handler persists the override to the
+/// `<inline-editable>` commits. The handler persists the override to the
 /// profile meta branch and re-stamps `MemberName` on the origin space.
 ///
 /// See [`RenameRepository`] for the marker these two used to need.
@@ -548,7 +567,7 @@ impl Command for ProfileRename {
 ///
 /// Removal is device-local: a synced space can be rejoined via an invite
 /// link, and server-side data is untouched. An owned hosted space does
-/// NOT submit this — `<ui-space-remove>` routes that verb through the
+/// NOT submit this — `<space-remove>` routes that verb through the
 /// reviewed account-space deletion flow instead.
 ///
 /// The field is called `subject`, which is what it is. It used to be

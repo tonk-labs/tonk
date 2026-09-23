@@ -197,7 +197,7 @@ const RUNTIME_BOOTSTRAP_JS: &str = include_str!("runtime_bootstrap.js");
 
 /// A `<base href>` element pinning the guest's document base to the
 /// per-space synthetic origin, so the BROWSER resolves every relative URL
-/// (links, forms, `new URL`, `<tonk-page>` location reads) under it. Empty
+/// (links, forms, `new URL`, `<page-mount>` location reads) under it. Empty
 /// when there is no space origin (the profile/Hub), leaving the guest's
 /// inherited base untouched. Prepended before everything so it applies from
 /// the first parsed node.
@@ -1376,7 +1376,7 @@ fn is_top_level_route(rest: &str) -> bool {
 }
 
 /// Set the host page's tab title on the guest's behalf. The guest's
-/// `<tonk-title>` posts `{v:1, type:"title", text}`; this runs in the
+/// `<tab-title>` posts `{v:1, type:"title", text}`; this runs in the
 /// parent document, which is where `document.title` lives.
 /// Raise the host's registration dialog for a share that needs an
 /// account.
@@ -2183,7 +2183,7 @@ fn build_context(host: &Element, state: &Rc<RefCell<PortalState>>) -> Object {
     // The guest's own `window.location` is `about:srcdoc`; its REAL location is
     // the parent's. Pass the parent's path + search + hash so the guest stamps
     // them on its requests (the SW reads them to route/contain) and so a
-    // location-reading guest control (e.g. `<tonk-page>`, which couriers an
+    // location-reading guest control (e.g. `<page-mount>`, which couriers an
     // invite's `?access` + `#seed` into the join command) sees the real URL.
     // `search`/`hash` especially: browsers strip the query only from the
     // fragment, but the guest can't read EITHER off `about:srcdoc`, and the SW
@@ -2927,7 +2927,7 @@ mod tests {
         assert_eq!(get_str(&context, "model").as_deref(), Some("counter"));
         // The host forwards its real `search` (the `?query`) into the guest
         // context — a sealed guest can't read it off its own `about:srcdoc`
-        // location, and `<tonk-page>` needs it to courier an invite's `?access`.
+        // location, and `<page-mount>` needs it to courier an invite's `?access`.
         assert!(
             get_str(&context, "search").is_some(),
             "context carries a `search` field forwarded from the host location",
