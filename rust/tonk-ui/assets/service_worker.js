@@ -1591,6 +1591,13 @@ self.onmessage = event => {
         );
         return;
     }
+    // A page is rendering a space at its own origin and hands us one end of a
+    // port to that origin's worker. The page binds it to the space it renders;
+    // the space worker only ever names a blob.
+    if (event.data?.type === "space-port") {
+        bindSpacePort(event.ports[0], event.data);
+        return;
+    }
     // A page became visible again — wake the worker so sync resumes the
     // active cadence immediately instead of waiting out a hidden interval.
     if (event.data && event.data.type === "visibility") {
@@ -1617,6 +1624,46 @@ self.onmessage = event => {
         })(),
     );
 };
+
+// A base58btc blob hash, the whole of what a space worker may ask for.
+const SPACE_BLOB_HASH = /^[1-9A-HJ-NP-Za-km-z]+$/;
+
+// Serve a space origin's worker over `port`, scoped to `repo` and `branch`.
+// Every request is acknowledged before it is read, so the space worker can
+// tell a restarted (silent) worker from a slow read. The read runs through
+// the same route a page's `/api/.../blob/...` fetch takes.
+function bindSpacePort(port, { repo, branch }) {
+    if (!port || typeof repo !== "string" || typeof branch !== "string") return;
+    port.onmessage = async ({ data }) => {
+        const id = data?.id;
+        if (typeof id !== "number") return;
+        port.postMessage({ id, ack: true });
+        try {
+            if (typeof data.blob !== "string" || !SPACE_BLOB_HASH.test(data.blob)) {
+                throw new Error("malformed blob hash");
+            }
+            // The same shape `blob_url.rs` builds for a page's own reads.
+            const path = `/api/repository/${repo}/branch/${branch}/blob/blob:${data.blob}`;
+            const request = new Request(new URL(path, self.location.origin));
+            const worker = await activateWorker();
+            // Not a real fetch event: no client, and nothing to keep alive
+            // beyond this reply.
+            const response = await worker.onfetch({
+                request,
+                clientId: "",
+                resultingClientId: "",
+                waitUntil() {},
+            });
+            const body = await response.arrayBuffer();
+            port.postMessage(
+                { id, status: response.status, headers: [...response.headers], body },
+                [body],
+            );
+        } catch (error) {
+            port.postMessage({ id, error: String(error?.message ?? error) });
+        }
+    };
+}
 
 // Some engines report a structured-clone failure only to the receiver.
 // Never inspect `event.data` here: it may be unavailable, and custody

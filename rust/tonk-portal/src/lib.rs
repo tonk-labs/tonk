@@ -40,6 +40,8 @@ mod shared;
 mod site;
 mod site_content;
 #[cfg(target_arch = "wasm32")]
+mod space_origin;
+#[cfg(target_arch = "wasm32")]
 pub use element::register;
 #[cfg(target_arch = "wasm32")]
 pub use site::register as register_site;

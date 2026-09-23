@@ -58,6 +58,10 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{AbortController, Element, HtmlIFrameElement, MessageEvent, MessagePort, window};
 
+use crate::space_origin::{
+    broker_port, deliver_document, grant_relayed_port, relay_port, requested_location,
+};
+
 /// Per-portal bridge + iframe state. Held behind `Rc<RefCell<…>>` so
 /// it is reachable from the element lifecycle, the prototype `reset`
 /// delegate, and the page-level message listener.
@@ -94,6 +98,12 @@ pub(crate) struct PortalState {
     /// synced/untrusted content guest's forwarded route is denied with a
     /// typed error. See `forwarded_route`.
     allow: Allow,
+    /// The space's real origin when this portal renders it there (a
+    /// `<tonk-site origin>`), rather than in an opaque `srcdoc` frame.
+    origin: Option<String>,
+    /// The bootstrap document a real-origin frame asks for once its space
+    /// worker is in control: the markup a sealed frame gets as `srcdoc`.
+    document: Option<String>,
 }
 
 /// One live subscription: the iframe's correlation id (so frames are
@@ -119,7 +129,21 @@ impl PortalState {
             _dispatcher: None,
             with: None,
             allow: Allow::none(),
+            origin: None,
+            document: None,
         }
+    }
+
+    /// Render this portal's space at `origin`, handing the frame `document`
+    /// once it asks. Called host-side by `connect_portal` and on reload.
+    pub(crate) fn set_origin_document(&mut self, origin: String, document: String) {
+        self.origin = Some(origin);
+        self.document = Some(document);
+    }
+
+    /// The space's real origin, when this portal renders it there.
+    pub(crate) fn origin(&self) -> Option<&str> {
+        self.origin.as_deref()
     }
 
     /// Set this portal's routing context and reach. Called once, host-side,
@@ -892,6 +916,51 @@ pub(crate) fn install_message_listener() {
         Closure::wrap(Box::new(move |event: MessageEvent| {
             let data = event.data();
 
+            // A real-origin site frame: its shell asks for the document once
+            // its worker is in control, and its broker asks for a port to the
+            // host worker whenever that worker has none. A request naming a
+            // location was relayed up from a frame nested in it, and is granted
+            // only if this portal's `allow` reaches that location. All of it is
+            // answered only for a registered frame, only at its own origin.
+            if let Some(kind) = get_str(&data, "__tonkOrigin") {
+                let source = Reflect::get(&event, &"source".into()).unwrap_or(JsValue::NULL);
+                if kind == "relay-port" {
+                    pass_relayed_port(&registry, &event, &source);
+                    return;
+                }
+                let matched = registry.borrow().iter().find_map(|entry| {
+                    let cw: JsValue = entry.iframe.content_window()?.into();
+                    (cw == source).then(|| (entry.iframe.clone(), entry.state.clone()))
+                });
+                let Some((iframe, state)) = matched else {
+                    return;
+                };
+                let state = state.borrow();
+                let Some(origin) = state.origin().filter(|origin| *origin == event.origin()) else {
+                    return;
+                };
+                match kind.as_str() {
+                    "shell-ready" => {
+                        if let Some(document) = state.document.as_deref() {
+                            deliver_document(&iframe, origin, document);
+                        }
+                    }
+                    "need-port" => match requested_location(&data) {
+                        Some(requested) if state.allow.permits(&requested) => {
+                            grant_relayed_port(&iframe, origin, &requested);
+                        }
+                        Some(_) => {}
+                        None => {
+                            if let Some(with) = state.with.as_ref() {
+                                broker_port(&iframe, origin, with);
+                            }
+                        }
+                    },
+                    _ => {}
+                }
+                return;
+            }
+
             // Runtime-injection handshake: the guest's runtime bootstrap
             // asks for the element runtime; match its source iframe and
             // fetch+post the bundle. Distinct from the `hello`/data-port
@@ -988,6 +1057,43 @@ pub(crate) fn install_message_listener() {
     let _ = win.add_event_listener_with_callback("message", listener.as_ref().unchecked_ref());
     // Lives for the page's lifetime — there is exactly one.
     listener.forget();
+}
+
+/// Pass a port the parent minted down to the real-origin frame rendering the
+/// location it names. Only the parent document, at the host's origin, may send
+/// one.
+fn pass_relayed_port(
+    registry: &Rc<RefCell<Vec<PortalEntry>>>,
+    event: &MessageEvent,
+    source: &JsValue,
+) {
+    let Some(window) = window() else {
+        return;
+    };
+    let from_parent = window
+        .parent()
+        .ok()
+        .flatten()
+        .is_some_and(|parent| JsValue::from(parent) == *source);
+    let from_host = tonk_host::bridge::context_origin().is_some_and(|host| host == event.origin());
+    if !from_parent || !from_host {
+        return;
+    }
+    let (Some(requested), Some(port)) = (requested_location(&event.data()), read_first_port(event))
+    else {
+        return;
+    };
+    let registry = registry.borrow();
+    let target = registry.iter().find_map(|entry| {
+        let state = entry.state.borrow();
+        let with = state.with.as_ref()?;
+        let origin = state.origin()?;
+        with.same_reach(&requested)
+            .then(|| (entry.iframe.clone(), origin.to_owned(), with.clone()))
+    });
+    if let Some((iframe, origin, with)) = target {
+        relay_port(&iframe, &origin, &with, port);
+    }
 }
 
 /// Register `(iframe, host, state)` so the `hello` listener can resolve
@@ -2229,7 +2335,12 @@ fn build_context(host: &Element, state: &Rc<RefCell<PortalState>>) -> Object {
     // origin, which propagates down nesting and keys the `/api` relay strip).
     // Absent for the profile/Hub (no space) — those links are genuinely
     // top-level and want the real origin.
-    let base = tonk_host::space_origin::space_origin_for(&repo).unwrap_or_default();
+    // A space rendered at its real origin resolves against that origin
+    // instead: there is no illusion left to maintain.
+    let base = match state.borrow().origin() {
+        Some(origin) => format!("{origin}/"),
+        None => tonk_host::space_origin::space_origin_for(&repo).unwrap_or_default(),
+    };
     let _ = Reflect::set(&context, &"base".into(), &JsValue::from_str(&base));
     let _ = Reflect::set(&context, &"path".into(), &JsValue::from_str(&path));
     let _ = Reflect::set(&context, &"search".into(), &JsValue::from_str(&search));

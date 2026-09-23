@@ -1,0 +1,76 @@
+<!doctype html>
+<html>
+    <head>
+        <meta charset="utf-8" />
+        <!-- The shell of a space origin (proof of concept). It registers the
+             space worker, waits for it to take control, then asks the host
+             for the space's document and writes it over itself. The host
+             sends the same bootstrap markup a sealed frame gets as `srcdoc`,
+             so everything after this runs exactly as it does there. -->
+        <script>
+            (function () {
+                // Written ahead of the host's markup. It hands the space worker
+                // a port to the host worker, now and whenever the worker asks
+                // for one (it loses its port on every restart). The host mints
+                // the port bound to this space, so nothing here names one.
+                var BROKER =
+                    "<script>(function(){" +
+                    "var sw=navigator.serviceWorker;" +
+                    "function ask(){parent.postMessage({__tonkOrigin:'need-port'},'*');}" +
+                    "window.addEventListener('message',function(e){" +
+                    "if(e.source!==parent||!e.data||e.data.__tonkOrigin!=='port')return;" +
+                    "var port=e.ports&&e.ports[0];" +
+                    "if(port&&sw.controller)sw.controller.postMessage({type:'port'},[port]);" +
+                    "});" +
+                    "sw.addEventListener('message',function(e){" +
+                    "if(e.data&&e.data.type==='need-port')ask();" +
+                    "});" +
+                    "sw.startMessages();" +
+                    "ask();" +
+                    "})();<\/script>";
+
+                function report(error) {
+                    parent.postMessage(
+                        { __tonkRuntime: "error", error: "space origin: " + (error && error.stack || error) },
+                        "*",
+                    );
+                }
+
+                window.addEventListener("message", function onDocument(event) {
+                    if (event.source !== parent) return;
+                    var data = event.data;
+                    if (!data || data.__tonkOrigin !== "document") return;
+                    window.removeEventListener("message", onDocument);
+                    document.open();
+                    document.write(BROKER + data.html);
+                    document.close();
+                });
+
+                // Registers only when nothing controls the frame yet: once the
+                // worker serves this shell, its `worker-src` refuses a second
+                // `register()`, and the browser checks for updates on its own.
+                async function control() {
+                    var container = navigator.serviceWorker;
+                    if (container.controller) return;
+                    await container.register("/space_worker.js", {
+                        scope: "/",
+                        updateViaCache: "none",
+                    });
+                    if (container.controller) return;
+                    await new Promise(function (resolve) {
+                        container.addEventListener("controllerchange", resolve, { once: true });
+                    });
+                }
+
+                // Without a worker the space still renders, only without its
+                // own blobs: say why, and ask for the document regardless.
+                control()
+                    .catch(report)
+                    .then(function () {
+                        parent.postMessage({ __tonkOrigin: "shell-ready" }, "*");
+                    });
+            })();
+        </script>
+    </head>
+    <body></body>
+</html>

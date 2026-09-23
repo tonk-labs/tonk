@@ -38,9 +38,11 @@ web-sys = { workspace = true, features = [
     "Element",
     "HtmlElement",
     "HtmlIFrameElement",
+    "Location",
     "MessageChannel",
     "MessageEvent",
     "MessagePort",
+    "Navigator",
     "Node",
     "NodeList",
     "Headers",
@@ -53,6 +55,9 @@ web-sys = { workspace = true, features = [
     "RequestCache",
     "Response",
     "ResponseInit",
+    "ServiceWorker",
+    "ServiceWorkerContainer",
+    "Url",
     "Window",
 ] }
 
