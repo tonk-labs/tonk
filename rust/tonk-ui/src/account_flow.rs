@@ -6873,14 +6873,35 @@ mod tests {
         let key = create_space_awaiting_remote(&browser, "FAB agent", true).await?;
         await_url_containing(&browser, &format!("/space/{key}")).await?;
         enter_guest(&browser).await?;
-        browser
-            .execute(
-                r#"const bar = document.querySelector('tonk-fab');
-                   bar.shadowRoot.querySelector('.space').click();
-                   bar.shadowRoot.querySelector('.agent').click();"#,
-                Vec::new(),
-            )
-            .await?;
+        let open_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let opened = browser
+                .execute(
+                    r#"const bar = document.querySelector('tonk-fab');
+                       const agent = bar?.querySelector('tonk-agent-panel');
+                       const barClass = customElements.get('tonk-fab');
+                       const agentClass = customElements.get('tonk-agent-panel');
+                       const root = bar?.shadowRoot;
+                       if (!barClass || !agentClass || !(bar instanceof barClass) ||
+                           !(agent instanceof agentClass) ||
+                           agent.getAttribute('space') !== arguments[0] ||
+                           !root?.querySelector('.space') || !root?.querySelector('.agent'))
+                         return false;
+                       root.querySelector('.space').click();
+                       root.querySelector('.agent').click();
+                       return !root.querySelector('#agent-panel').hidden;"#,
+                    vec![serde_json::json!(key)],
+                )
+                .await?;
+            if opened.json() == true {
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < open_deadline,
+                "FAB agent panel did not become ready to open"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
         let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
         loop {
             let state = browser
