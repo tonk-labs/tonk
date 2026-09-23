@@ -1566,7 +1566,7 @@ mod tests {
         assert!(ensure_space_mounted(&tonk, &key).await.unwrap());
         let repository: dialog_repository::Repository = tonk
             .profile
-            .repository(&key)
+            .space(&key)
             .load()
             .perform(&tonk.operator)
             .await
