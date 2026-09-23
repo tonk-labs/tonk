@@ -471,6 +471,16 @@ fn open_panel_v017(this: &HtmlElement, state: &Shared, panel: Panel, anchor: Cel
         }
     }
     sync_expanded_v017(this, state);
+    // On a short viewport the stacked panel can overflow above the rail.
+    // Keep the bottom-docked header visible so closing the panel measures
+    // the same seat instead of the displaced scroll content.
+    if panel_selector(panel).is_some()
+        && this.has_attribute("up")
+        && let Some(wrapper) = wrapper(this)
+        && wrapper.class_list().contains("stacked")
+    {
+        wrapper.set_scroll_top(f64::from(wrapper.scroll_height() - wrapper.client_height()));
+    }
     if collapsing_panel.is_some()
         && (no_drawer_width
             || wrapper(this).is_some_and(|w| w.class_list().contains("stacked"))

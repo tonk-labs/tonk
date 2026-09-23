@@ -151,11 +151,7 @@ async fn drawer_cycles_keep_the_header_at_each_corner() {
             .unwrap()
             .dyn_into::<HtmlElement>()
             .unwrap();
-        for cycle in 0..3 {
-            agent.click();
-            wait_for_corner_settled(&fab, &root, true).await;
-            agent.click();
-            wait_for_corner_settled(&fab, &root, false).await;
+        let assert_header_seat = |stage: &str| {
             let rect = header.get_bounding_client_rect();
             for (edge, start, end) in [
                 ("left", left, rect.left()),
@@ -165,9 +161,17 @@ async fn drawer_cycles_keep_the_header_at_each_corner() {
             ] {
                 assert!(
                     (start - end).abs() < 0.75,
-                    "{horizontal}/{vertical} cycle {cycle}: {edge} moved from {start} to {end}"
+                    "{horizontal}/{vertical} {stage}: {edge} moved from {start} to {end}"
                 );
             }
+        };
+        for cycle in 0..3 {
+            agent.click();
+            wait_for_corner_settled(&fab, &root, true).await;
+            assert_header_seat(&format!("cycle {cycle} opened"));
+            agent.click();
+            wait_for_corner_settled(&fab, &root, false).await;
+            assert_header_seat(&format!("cycle {cycle} closed"));
         }
         fab.remove();
     }
