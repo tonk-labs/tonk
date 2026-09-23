@@ -55,14 +55,13 @@ impl Request {
             }
             _ => Ok(()),
         }?;
-        if let Some(account) = &self.account {
-            if self.purpose != Purpose::Account
+        if let Some(account) = &self.account
+            && (self.purpose != Purpose::Account
                 || account.reason.is_empty()
                 || account.reason.len() > 128
-                || account.space.len() > 1024
-            {
-                return Err(ParseError::AccountContext);
-            }
+                || account.space.len() > 1024)
+        {
+            return Err(ParseError::AccountContext);
         }
         Ok(())
     }
