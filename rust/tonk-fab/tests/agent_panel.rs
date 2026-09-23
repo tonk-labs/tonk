@@ -36,14 +36,10 @@ fn shadow(bar: &HtmlElement, selector: &str) -> Element {
 }
 
 fn deliver_reset(agent: &HtmlElement, status: &str, link: &str) {
-    deliver_reset_with_mode(agent, "", status, link);
-}
-
-fn deliver_reset_with_mode(agent: &HtmlElement, mode: &str, status: &str, link: &str) {
     let row = js_sys::JSON::parse(
         &serde_json::json!({
             "this": "did:key:zAgentSpace",
-            "fields": { "mode": mode, "status": status, "link": link, "account": "did:key:account" }
+            "fields": { "status": status, "link": link, "account": "did:key:account" }
         })
         .to_string(),
     )
@@ -69,14 +65,14 @@ async fn busy_handoff_frame_keeps_the_agent_action_pending() {
         .unwrap()
         .unwrap()
         .unchecked_into();
-    deliver_reset_with_mode(&agent, "busy", "creating agent invitation…", "");
+    deliver_reset(&agent, "creating agent invitation…", "");
     assert_eq!(
         shadow(&bar, ".agent-status").text_content().as_deref(),
         Some("creating an agent invitation…")
     );
     assert!(shadow(&bar, ".agent-retry").has_attribute("hidden"));
 
-    deliver_reset_with_mode(&agent, "retry", "agent invitation failed", "");
+    deliver_reset(&agent, "agent invitation failed", "");
     assert!(!shadow(&bar, ".agent-retry").has_attribute("hidden"));
 
     bar.remove();
