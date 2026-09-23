@@ -2030,6 +2030,7 @@ mod tests {
 
     #[dialog_common::test]
     fn the_visible_share_action_uses_the_real_headless_mint_once() {
+        crate::register();
         let calls = Rc::new(RefCell::new(0_u32));
         let sink = calls.clone();
         let transact = Closure::<dyn FnMut(JsValue)>::new(move |_| {
@@ -2068,20 +2069,20 @@ mod tests {
             "double-click cannot rotate the invite twice"
         );
         assert!(
-            !root
-                .query_selector("#share-panel")
+            root.query_selector("#share-panel")
                 .unwrap()
                 .unwrap()
                 .has_attribute("hidden"),
-            "the attached feedback remains visible until the copy settles"
+            "a ready copy must not open the account gate"
         );
         assert_eq!(
-            root.query_selector(".share-progress")
+            share
+                .query_selector("span")
                 .unwrap()
                 .unwrap()
                 .text_content()
                 .as_deref(),
-            Some("creating and copying the share link…")
+            Some("copying…")
         );
 
         bar.remove();
