@@ -231,6 +231,9 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         // Replication and update checks are the Hub's to ask for: it is
         // the surface that lists spaces this device may not hold, and
         // `ForgetInvite` clears a row that lives on this branch anyway.
+        // Switching profiles is new, so it has no legacy shape to migrate.
+        .command::<tonk_schema::command::AddProfile>()
+        .command::<tonk_schema::command::SwitchProfile>()
         .command::<tonk_schema::command::ReplicateSpace>()
         .command::<tonk_schema::command::ForgetInvite>()
         .command::<tonk_schema::command::CheckUpdate>()

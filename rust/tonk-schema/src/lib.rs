@@ -124,7 +124,7 @@ pub use identity::{ProfileIdentity, ProfileName};
 mod recovery;
 mod roster;
 pub use recovery::RecoveryPasskey;
-pub use roster::DeviceProfile;
+pub use roster::{DeviceProfile, ProfileRow};
 
 mod petname;
 pub use petname::petname;
