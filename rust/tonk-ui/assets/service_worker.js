@@ -1777,7 +1777,8 @@ function bindSpacePort(port, { repo, branch }) {
                 }
                 const content = snapshot.content.buffer;
                 const revision = snapshot.revision.buffer;
-                port.postMessage({ id, content, revision }, [content, revision]);
+                const demosPending = snapshot.demosPending === true;
+                port.postMessage({ id, content, revision, demosPending }, [content, revision]);
                 return;
             }
             if (typeof data.blob !== "string" || !SPACE_BLOB_HASH.test(data.blob)) {

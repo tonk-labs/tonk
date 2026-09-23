@@ -98,6 +98,56 @@ async fn save(
         .map_err(internal)
 }
 
+/// Whether `space` is this profile's onboarding space with its demos still to
+/// be imported. A space's own worker keeps no journal of the host's, so the
+/// host tells it when it hands over the space ([`expect_demos`]).
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn demos_pending(tonk: &TonkState, space: &str) -> Result<bool, TonkWorkerError> {
+    let registry = tonk
+        .registry
+        .open_profile(&tonk.storage, tonk.registry.initial_profile())
+        .await?;
+    let bytes = match registry
+        .credential()
+        .site(JOURNAL)
+        .load::<Vec<u8>>()
+        .perform(&tonk.storage)
+        .await
+    {
+        Ok(bytes) => bytes,
+        Err(error) if crate::credential::is_missing(&error) => return Ok(false),
+        Err(error) => return Err(internal(error)),
+    };
+    let progress: Progress = serde_json::from_slice(&bytes).map_err(internal)?;
+    Ok(!progress.complete
+        && progress.welcome_ready
+        && progress.profile.as_deref() == Some(&tonk.profile_name)
+        && progress
+            .subject
+            .as_ref()
+            .is_some_and(|subject| subject.repo_key() == space))
+}
+
+/// Record that `space`, just seeded into this worker, still has its demos to
+/// import, so [`prepare`] imports them here when the Welcome page asks.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn expect_demos(
+    tonk: &TonkState,
+    space: dialog_varsig::Did,
+) -> Result<(), TonkWorkerError> {
+    let registry = tonk
+        .registry
+        .open_profile(&tonk.storage, tonk.registry.initial_profile())
+        .await?;
+    let progress = Progress {
+        subject: Some(space),
+        complete: false,
+        welcome_ready: true,
+        profile: Some(tonk.profile_name.clone()),
+    };
+    save(tonk, &registry, &progress).await
+}
+
 #[wasm_compat]
 pub async fn welcome(
     State(state): State<AppState>,
@@ -221,7 +271,7 @@ pub async fn welcome(
     }))
 }
 
-async fn locally_mounted(tonk: &TonkState, key: &str) -> Result<bool, TonkWorkerError> {
+pub(super) async fn locally_mounted(tonk: &TonkState, key: &str) -> Result<bool, TonkWorkerError> {
     let session = tonk
         .reactor
         .profile_repository()

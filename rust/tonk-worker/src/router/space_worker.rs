@@ -27,6 +27,8 @@ use tonk_common::log;
 
 use super::create_invite::{ConfiguredRemoteRequirement, resolve_configured_remote_url_with};
 use super::join::mount_replica;
+use super::onboarding_space::{demos_pending, expect_demos};
+use super::repository::record_initialized_replica_in_profile;
 use crate::{TonkWorkerError, worker::TonkState};
 
 /// How long a space worker's delegation lasts. It asks for a new one before
@@ -116,6 +118,12 @@ pub(crate) async fn adopt(
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("failed to save delegation: {e}")))?;
     mount_replica(tonk, space, remote, None).await?;
+    // Listed in this worker's profile, as a joined space is in the host's:
+    // what reads the profile's spaces (the onboarding import among them)
+    // otherwise takes the space for one that was removed.
+    record_initialized_replica_in_profile(tonk, space)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("failed to list {space}: {e}")))?;
     log!("space worker: adopted {space} (remote: {remote:?})");
     Ok(())
 }
@@ -128,6 +136,9 @@ pub(crate) struct Snapshot {
     pub(crate) content: Vec<u8>,
     /// The revision, as JSON.
     pub(crate) revision: Vec<u8>,
+    /// Whether the space is the person's onboarding space with its demos
+    /// still to be imported, which the space's own worker then does.
+    pub(crate) demos_pending: bool,
 }
 
 /// Snapshot `space`'s `main` for its own worker to seed from. Strict: a block
@@ -164,17 +175,25 @@ pub(crate) async fn snapshot(
     .map_err(|e| TonkWorkerError::Internal(format!("failed to snapshot {space}: {e}")))?;
     let revision = serde_json::to_vec(&revision)
         .map_err(|e| TonkWorkerError::Internal(format!("failed to encode revision: {e}")))?;
-    Ok(Some(Snapshot { content, revision }))
+    let demos_pending = demos_pending(tonk, space.as_str()).await?;
+    Ok(Some(Snapshot {
+        content,
+        revision,
+        demos_pending,
+    }))
 }
 
 /// Seed the freshly mounted replica of `space` from the host's snapshot: store
 /// its content, then publish its revision on `main`. A replica that already
-/// has a revision is left alone, so a repeated seed never rewinds it.
+/// has a revision is left alone, so a repeated seed never rewinds it. With
+/// `demos_pending`, this worker imports the onboarding demos when the Welcome
+/// page asks, as the host would have.
 pub(crate) async fn seed(
     tonk: &TonkState,
     space: &Did,
     content: &[u8],
     revision: &[u8],
+    demos_pending: bool,
 ) -> Result<(), TonkWorkerError> {
     let repository = tonk
         .profile
@@ -207,6 +226,9 @@ pub(crate) async fn seed(
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("failed to publish {space}: {e}")))?;
     log!("space worker: seeded {space} ({imported:?})");
+    if demos_pending {
+        expect_demos(tonk, space.clone()).await?;
+    }
     Ok(())
 }
 
@@ -225,9 +247,10 @@ mod tests {
     use dialog_varsig::Did;
     use tower::ServiceExt;
 
-    use super::{adopt, delegate, seed, snapshot};
+    use super::{adopt, delegate, demos_pending, seed, snapshot};
     use crate::TonkWorkerError;
     use crate::helpers::state::{test_state, test_state_without_root};
+    use crate::router::onboarding_space::locally_mounted;
     use crate::router::{RepositoryInfo, api_router_with_state};
     use crate::worker::{DefaultOperator, TonkState};
 
@@ -330,7 +353,11 @@ mod tests {
             .await
             .unwrap()
             .expect("main has content");
-        seed(&worker, &space, &copy.content, &copy.revision)
+        assert!(
+            !copy.demos_pending,
+            "a space made by hand has no demos to come"
+        );
+        seed(&worker, &space, &copy.content, &copy.revision, false)
             .await
             .unwrap();
         assert_eq!(
@@ -362,15 +389,39 @@ mod tests {
             .unwrap();
         adopt(&worker, &space, &grant.chain, None).await.unwrap();
         let copy = snapshot(&host, &space).await.unwrap().unwrap();
-        seed(&worker, &space, &copy.content, &copy.revision)
+        seed(&worker, &space, &copy.content, &copy.revision, false)
             .await
             .unwrap();
         let seeded = main_revision(&worker, &space).await;
 
         // Seeding again with anything at all must not rewind the replica.
-        seed(&worker, &space, b"not a snapshot", b"not a revision")
+        seed(&worker, &space, b"not a snapshot", b"not a revision", true)
             .await
             .unwrap();
         assert_eq!(main_revision(&worker, &space).await, seeded);
+        assert!(
+            !demos_pending(&worker, space.as_str()).await.unwrap(),
+            "a seed that is skipped records nothing"
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_expects_the_demos_the_host_still_owes() {
+        let (host, space) = host_with_space().await;
+        let host = host.read().await;
+        let worker = space_origin().await;
+        let grant = delegate(&host, &space, &worker.profile.did())
+            .await
+            .unwrap();
+        adopt(&worker, &space, &grant.chain, None).await.unwrap();
+        let copy = snapshot(&host, &space).await.unwrap().unwrap();
+        seed(&worker, &space, &copy.content, &copy.revision, true)
+            .await
+            .unwrap();
+        assert!(demos_pending(&worker, space.as_str()).await.unwrap());
+        assert!(
+            locally_mounted(&worker, space.as_str()).await.unwrap(),
+            "the import skips a space its profile does not list"
+        );
     }
 }

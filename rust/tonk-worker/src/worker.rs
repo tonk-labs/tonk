@@ -2167,12 +2167,18 @@ impl TonkServiceWorker {
             let revision = js_sys::Uint8Array::from(snapshot.revision.as_slice());
             let _ = js_sys::Reflect::set(&result, &"content".into(), &content);
             let _ = js_sys::Reflect::set(&result, &"revision".into(), &revision);
+            let _ = js_sys::Reflect::set(
+                &result,
+                &"demosPending".into(),
+                &snapshot.demos_pending.into(),
+            );
             Ok(result.into())
         })
     }
 
     /// Seed this worker's freshly mounted replica of `space` from the host's
-    /// snapshot. A replica that already has content is left alone.
+    /// snapshot. A replica that already has content is left alone. With
+    /// `demos_pending`, this worker imports the onboarding demos later.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     #[wasm_bindgen(js_name = "seedSpace")]
     pub fn seed_space(
@@ -2180,6 +2186,7 @@ impl TonkServiceWorker {
         space: String,
         content: js_sys::Uint8Array,
         revision: js_sys::Uint8Array,
+        demos_pending: bool,
     ) -> Promise {
         let state = self.state.clone();
         future_to_promise(async move {
@@ -2187,9 +2194,15 @@ impl TonkServiceWorker {
                 .parse()
                 .map_err(|e| JsError::new(&format!("space: {e:?}")))?;
             let tonk = state.read().await;
-            space_worker::seed(&tonk, &space, &content.to_vec(), &revision.to_vec())
-                .await
-                .map_err(|e| JsError::new(&e.to_string()))?;
+            space_worker::seed(
+                &tonk,
+                &space,
+                &content.to_vec(),
+                &revision.to_vec(),
+                demos_pending,
+            )
+            .await
+            .map_err(|e| JsError::new(&e.to_string()))?;
             Ok(JsValue::UNDEFINED)
         })
     }

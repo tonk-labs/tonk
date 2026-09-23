@@ -116,7 +116,7 @@ pub use lsp::LspHub;
 
 mod lsp_env;
 
-mod onboarding_space;
+pub(crate) mod onboarding_space;
 pub(crate) mod profile;
 pub use profile::{ProfileInfo, SpaceEntry};
 

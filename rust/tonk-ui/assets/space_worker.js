@@ -170,6 +170,7 @@ async function ensureGrant(worker) {
                 grant.space,
                 new Uint8Array(snapshot.content),
                 new Uint8Array(snapshot.revision),
+                snapshot.demosPending === true,
             );
         }
     }
