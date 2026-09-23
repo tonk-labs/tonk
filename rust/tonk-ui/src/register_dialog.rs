@@ -124,7 +124,10 @@ const PASSKEY_ROW: &str = "#tonk-register-passkey-row";
 const DIALOG_HTML: &str = r##"
 <div class="ocol">
   <div class="ostack" id="tonk-register-stack">
-    <div class="m-head mblk" id="tonk-register-head">add an account</div>
+    <div class="m-head mblk" id="tonk-register-head">
+      <span class="fabb-task-disc" aria-hidden="true"></span>
+      <span class="fabb-task-title">add an account</span>
+    </div>
     <div class="orow mblk editing" id="tonk-register-email-row">
       <span class="k">email</span>
       <span class="v"><input class="ed" id="tonk-register-email" type="email"
@@ -184,10 +187,39 @@ fn prepare_fabb_task_ui(host: &Element) {
     }
     if let Ok(Some(input)) = host.query_selector(EMAIL_INPUT) {
         let _ = input.set_attribute("aria-label", "email address");
+        let _ = input.remove_attribute("placeholder");
+    }
+    if let Ok(Some(dismiss)) = host.query_selector(DISMISS) {
+        dismiss.set_text_content(Some("cancel"));
+    }
+    if let Ok(Some(action)) = host.query_selector(ACTION) {
+        action.set_text_content(Some("continue"));
+        let _ = action.remove_attribute("hidden");
+        let _ = action.class_list().remove_1("pre");
+        if let Some(button) = action.dyn_ref::<HtmlButtonElement>() {
+            button.set_disabled(true);
+        }
+        if let Ok(Some(container)) = host.query_selector(".ocol") {
+            let _ = container.append_child(&action);
+        }
     }
     set_status(
         "Enter your email to continue. We’ll check whether you already have a Tonk account.",
     );
+}
+
+fn set_heading(text: &str) {
+    let Some(head) = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.get_element_by_id("tonk-register-head"))
+    else {
+        return;
+    };
+    if let Ok(Some(title)) = head.query_selector(".fabb-task-title") {
+        title.set_text_content(Some(text));
+    } else {
+        head.set_text_content(Some(text));
+    }
 }
 
 /// Reseat a standing in-space account task without rebuilding its inputs.
@@ -407,7 +439,14 @@ fn add_row(host: &Element, id: &str, noun: &str, value: &str) -> Option<Element>
     row.set_id(id);
     row.set_class_name("orow mblk pre");
     settle(&row, noun, value);
-    // Before the action row, so the button stays at the foot of the stack.
+    // Before the action row, so the button stays at the foot of the ordinary
+    // ceremony stack. A contained FABB task moves that button into its fused
+    // footer, leaving subsequent ceremony rows in this stack.
+    if host.has_attribute("data-fabb-task") {
+        let _ = stack.append_child(&row);
+        unfold(&row);
+        return Some(row);
+    }
     let action = host.query_selector(ACTION).ok().flatten();
     match action {
         Some(action) => {
@@ -2881,9 +2920,7 @@ pub fn describe(payload: &str) {
             );
             let _ = host.set_attribute(RETURN_PATH, &target);
         }
-        if let Ok(Some(head)) = document.query_selector("#tonk-register-head") {
-            head.set_text_content(Some("sign in to open this space"));
-        }
+        set_heading("sign in to open this space");
         set_status("Use the account you use for this space.");
     }
     if let Some(anchor) = &request.anchor
@@ -2921,17 +2958,11 @@ pub fn describe(payload: &str) {
     } else {
         "Your account is waiting on its email. Open the link we sent, then share again."
     });
-    if let Some(head) = document
-        .query_selector("#tonk-register-head")
-        .ok()
-        .flatten()
-    {
-        head.set_text_content(Some(if agent_invite {
-            "verify your email"
-        } else {
-            "confirm your email to share"
-        }));
-    }
+    set_heading(if agent_invite {
+        "verify your email"
+    } else {
+        "confirm your email to share"
+    });
 }
 
 /// A guest's position update: move an open anchored ceremony to the bar's

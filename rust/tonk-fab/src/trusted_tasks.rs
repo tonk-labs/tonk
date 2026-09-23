@@ -125,10 +125,13 @@ fn reseat(this: &HtmlElement, state: &Shared) {
     }
 }
 
-fn finish(this: &HtmlElement, state: &Shared, bar_state: &bar::Shared, _result: &str) {
+fn finish(this: &HtmlElement, state: &Shared, bar_state: &bar::Shared, result: &str) {
     let Some(active) = state.borrow_mut().active.take() else {
         return;
     };
+    if result == "completed" {
+        crate::element::apply_account_ready(this, true);
+    }
     restore_surface(this);
     match active.resume {
         Resume::None => {}

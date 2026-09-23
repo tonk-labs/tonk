@@ -2130,15 +2130,40 @@ mod tests {
                    const input = host?.querySelector('#tonk-register-email');
                    const status = host?.querySelector('#tonk-register-status');
                    const head = host?.querySelector('#tonk-register-head');
+                   const disc = host?.querySelector('.fabb-task-disc');
+                   const title = host?.querySelector('.fabb-task-title');
+                   const dismiss = host?.querySelector('#tonk-register-dismiss');
+                   const action = host?.querySelector('#tonk-register-action');
+                   const explanation = host?.querySelector('.oexp');
                    const inputStyle = input && getComputedStyle(input);
                    const statusStyle = status && getComputedStyle(status);
+                   const explanationStyle = explanation && getComputedStyle(explanation);
+                   const rowStyle = label && getComputedStyle(label.closest('.orow'));
+                   const dismissRect = dismiss?.getBoundingClientRect();
+                   const actionRect = action?.getBoundingClientRect();
                    return {
                      label: label?.textContent?.trim() || '',
                      status: status?.textContent?.trim() || '',
+                     placeholder: input?.getAttribute('placeholder'),
                      inputHeight: input?.getBoundingClientRect().height || 0,
                      inputFontSize: inputStyle?.fontSize || '',
+                     inputBorder: inputStyle?.borderTopWidth || '',
+                     inputOutline: inputStyle?.outlineWidth || '',
+                     inputBackground: inputStyle?.backgroundColor || '',
                      statusFontSize: statusStyle?.fontSize || '',
-                     headHeight: head?.getBoundingClientRect().height || 0
+                     headHeight: head?.getBoundingClientRect().height || 0,
+                     discWidth: disc?.getBoundingClientRect().width || 0,
+                     titleRight: title?.getBoundingClientRect().right || 0,
+                     headRight: head?.getBoundingClientRect().right || 0,
+                     bodyBackground: rowStyle?.backgroundColor || '',
+                     explanationBackground: explanationStyle?.backgroundColor || '',
+                     explanationBorder: explanationStyle?.borderTopWidth || '',
+                     dismiss: dismiss?.textContent?.trim() || '',
+                     action: action?.textContent?.trim() || '',
+                     actionDisabled: action?.disabled ?? false,
+                     footerDomOrder: !!(dismiss?.compareDocumentPosition(action) & Node.DOCUMENT_POSITION_FOLLOWING),
+                     footerAligned: Math.abs((dismissRect?.top || 0) - (actionRect?.top || 0)) < 1,
+                     footerWidthDelta: Math.abs((dismissRect?.width || 0) - (actionRect?.width || 0))
                    };"#,
                 Vec::new(),
             )
@@ -2150,8 +2175,26 @@ mod tests {
                     == "Enter your email to continue. We’ll check whether you already have a Tonk account."
                 && form["inputHeight"].as_f64() == Some(48.0)
                 && form["inputFontSize"] == "18px"
+                && form["placeholder"].is_null()
+                && form["inputBorder"] == "0px"
+                && form["inputOutline"] == "2px"
+                && form["inputBackground"] == form["bodyBackground"]
                 && form["statusFontSize"] == "18px"
-                && form["headHeight"].as_f64() == Some(48.0),
+                && form["headHeight"].as_f64() == Some(48.0)
+                && form["discWidth"].as_f64() == Some(18.0)
+                && (form["headRight"].as_f64().unwrap_or_default()
+                    - form["titleRight"].as_f64().unwrap_or_default()
+                    - 18.0)
+                    .abs()
+                    < 1.0
+                && form["bodyBackground"] == form["explanationBackground"]
+                && form["explanationBorder"] == "0px"
+                && form["dismiss"] == "cancel"
+                && form["action"] == "continue"
+                && form["actionDisabled"] == true
+                && form["footerDomOrder"] == true
+                && form["footerAligned"] == true
+                && form["footerWidthDelta"].as_f64().unwrap_or(f64::MAX) < 1.0,
             "the contained account form drifted from the FABB reference: {form}"
         );
 

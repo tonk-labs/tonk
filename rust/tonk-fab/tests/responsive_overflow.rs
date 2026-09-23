@@ -2,9 +2,10 @@
 
 #![cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 
-use wasm_bindgen::JsCast;
+use js_sys::{Object, Reflect};
+use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_test::wasm_bindgen_test_configure;
-use web_sys::{Element, HtmlElement, window};
+use web_sys::{CustomEvent, CustomEventInit, Element, HtmlElement, window};
 
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -120,6 +121,37 @@ async fn the_rail_uses_the_v017_anatomy_and_real_controls() {
             .is_none()
     );
 
+    parent.remove();
+}
+
+#[dialog_common::test]
+async fn a_completed_account_task_retires_the_add_account_action() {
+    let (parent, fab) = mount(768);
+    yield_for(30).await;
+    assert!(fab.has_attribute("data-account-required"));
+
+    shadow(&fab, ".space")
+        .unchecked_into::<HtmlElement>()
+        .click();
+    shadow(&fab, ".login")
+        .unchecked_into::<HtmlElement>()
+        .click();
+    assert!(fab.has_attribute("data-task-hosted"));
+
+    let detail = Object::new();
+    Reflect::set(&detail, &"result".into(), &"completed".into()).expect("task result");
+    let init = CustomEventInit::new();
+    init.set_detail(&JsValue::from(detail));
+    let event = CustomEvent::new_with_event_init_dict("tonk:task-closed", &init)
+        .expect("task completion event");
+    window()
+        .expect("window")
+        .dispatch_event(&event)
+        .expect("dispatch completion");
+
+    assert!(!fab.has_attribute("data-account-required"));
+    assert!(shadow(&fab, ".login").has_attribute("hidden"));
+    assert!(!fab.has_attribute("data-task-hosted"));
     parent.remove();
 }
 
