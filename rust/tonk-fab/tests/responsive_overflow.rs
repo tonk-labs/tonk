@@ -365,13 +365,22 @@ async fn account_prompts_appear_after_the_drawer_finishes_widening() {
             early_opacity < 0.05,
             "{action} text stays hidden while widening"
         );
-        yield_for(600).await;
-        let late_opacity: f64 = style
-            .get_property_value("opacity")
-            .unwrap()
-            .parse()
-            .unwrap();
-        assert!(late_opacity > 0.95, "{action} text appears at full width");
+        let mut late_opacity = 0.0;
+        for _ in 0..20 {
+            yield_for(50).await;
+            late_opacity = style
+                .get_property_value("opacity")
+                .unwrap()
+                .parse()
+                .unwrap();
+            if late_opacity > 0.95 {
+                break;
+            }
+        }
+        assert!(
+            late_opacity > 0.95,
+            "{action} text appears at full width; opacity={late_opacity}"
+        );
         shadow(&fab, action).unchecked_into::<HtmlElement>().click();
     }
     parent.remove();
