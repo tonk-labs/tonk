@@ -2723,7 +2723,11 @@ pub fn describe(payload: &str) {
             request.reason = tonk_worker_api::share::BLOCKED_NEEDS_ACTIVATION.into();
         }
     }
-    remember_space(&request.space);
+    // Tool connection keeps its target in the FAB and retries when this
+    // dialog closes. Its space must not become a pending person share.
+    if !agent_invite {
+        remember_space(&request.space);
+    }
     let Some(document) = web_sys::window().and_then(|window| window.document()) else {
         return;
     };
@@ -2850,6 +2854,32 @@ fn on_click(host: &Element, selector: &str, handler: impl Fn() + 'static) {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn tool_registration_does_not_queue_a_person_share() {
+        let document = web_sys::window().unwrap().document().unwrap();
+        for reason in ["agent-invite-account", "agent-invite-activation"] {
+            let host = document.create_element("dialog").unwrap();
+            host.set_id(super::DIALOG_ID);
+            document.body().unwrap().append_child(&host).unwrap();
+            super::describe(&format!(
+                r#"{{"reason":"{reason}","space":"did:key:tool-space"}}"#
+            ));
+            assert!(super::pending_share().is_none());
+            host.remove();
+        }
+
+        let host = document.create_element("dialog").unwrap();
+        host.set_id(super::DIALOG_ID);
+        document.body().unwrap().append_child(&host).unwrap();
+        super::describe(r#"{"reason":"needs-account","space":"did:key:person-space"}"#);
+        assert_eq!(
+            super::pending_share().as_deref(),
+            Some("did:key:person-space")
+        );
+        host.remove();
+    }
+
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     #[wasm_bindgen_test::wasm_bindgen_test]
     fn it_returns_agent_invite_setup_to_the_original_space() {

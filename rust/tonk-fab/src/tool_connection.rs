@@ -332,7 +332,7 @@ fn install_surface_listeners() {
                     };
                     let _ = surface.remove_attribute("data-tool-link");
                     tonk_host::request_registration(
-                        &serde_json::json!({ "reason": reason, "space": space }).to_string(),
+                        &serde_json::json!({ "reason": reason }).to_string(),
                     );
                 }
                 _ => {
