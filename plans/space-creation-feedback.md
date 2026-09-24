@@ -85,3 +85,25 @@ lifetime promises and activation requests, sampled from both workers only after
 the existing deadline. It does not alter those promises or consume response
 bodies. Its observation check passes and the instrumented browser test passes
 locally in 50.69 seconds; Linux diagnostics remain necessary.
+
+Run `36045095796` identifies the remaining blocker. Every failed attempt has
+fresh incumbent query `waitUntil` promises; completed ones take exactly 500ms.
+Successor activation requests arrive but remain pending. `schedule_sync_drain`
+checks the stopped latch only after its debounce sleep, so frequent handoff
+queries continuously extend the retired worker's event lifetimes. Check the
+latch before creating a ticket, promise, or `waitUntil` extension.
+
+The new Wasm regression fails before this guard (six lifetimes instead of one)
+and passes after it, including settlement of the existing live-worker timer.
+The guard alone still fails locally. Chromium tracing identifies a subsequent
+profile query restarting the incumbent immediately after the browser stops it,
+before the successor takes control. The page now closes its readiness gate
+during the installed-worker handoff, and the host checks that gate before each
+new IO instead of memoizing initial readiness forever. Existing work settles;
+new requests resume when the handoff outcome resolves.
+
+The previously failing local persisted-upgrade test passes in 56.04 seconds with
+the combined fix. All 58 host Wasm tests, 32 scheduler/routing Wasm tests, and
+136 JavaScript tests pass. The temporary activation retry timer and lifetime
+probe are removed; cache retirement and timeout health diagnostics remain.
+Hosted first-attempt confirmation is still pending.

@@ -427,6 +427,7 @@
             // continue behind it without blocking the pre-mount gate.
             let markServiceWorkerReady;
             let failServiceWorkerReady;
+            let serviceWorkerHandoff = null;
             const serviceWorkerReadiness = new Promise((resolve, reject) => {
                 markServiceWorkerReady = resolve;
                 failServiceWorkerReady = reject;
@@ -550,7 +551,6 @@
 
                 let incoming = null;
                 let retirementRequested = false;
-                let activationTimer = null;
                 let settled = false;
                 let resolveOutcome;
                 const outcome = new Promise((resolve) => {
@@ -562,7 +562,8 @@
                     resolveOutcome(value);
                 };
                 const noteLife = () => self.tonkBootLife?.();
-                const inspectIncoming = () => {
+                const onWorkerState = () => {
+                    noteLife();
                     if (incoming?.state === "redundant") finish("failed");
                     // A long-lived outgoing worker can miss `updatefound` and
                     // never restart, while its open streams keep an installed
@@ -570,22 +571,26 @@
                     // visibility of that state, so wake the incumbent once and
                     // let it verify the waiting worker before releasing.
                     if (
+                        !retirementRequested &&
                         incoming?.state === "installed" &&
                         registration.waiting === incoming &&
                         navigator.serviceWorker.controller === priorController
                     ) {
+                        retirementRequested = true;
+                        // A new fetch can restart the incumbent after Chrome
+                        // stops it but before the successor takes control.
+                        // Let existing work settle and hold new page IO until
+                        // controller replacement (or a failed update).
+                        serviceWorkerHandoff = outcome;
                         // Installation has committed the full generation.
                         // Repeat the activation request from the installed
                         // successor if Chrome left it waiting after install.
                         incoming.postMessage({
                             type: "activate-if-installed",
                         });
-                        if (!retirementRequested) {
-                            retirementRequested = true;
-                            priorController.postMessage({
-                                type: "retire-if-superseded",
-                            });
-                        }
+                        priorController.postMessage({
+                            type: "retire-if-superseded",
+                        });
                     }
                     // Browser activation replaces the incumbent controller;
                     // `controllerchange` below drives the guarded reload.
@@ -595,20 +600,6 @@
                     ) {
                         finish("replaced");
                     }
-                    // Registration properties can catch up after statechange,
-                    // and an installed worker can miss the first activation
-                    // nudge. Recheck the durable state without fetching through
-                    // the incumbent or repeatedly extending its lifetime.
-                    if (!settled && activationTimer === null) {
-                        activationTimer = setTimeout(() => {
-                            activationTimer = null;
-                            inspectIncoming();
-                        }, 1000);
-                    }
-                };
-                const onWorkerState = () => {
-                    noteLife();
-                    inspectIncoming();
                 };
                 const watchIncoming = (worker) => {
                     if (!worker || worker === incoming) return;
@@ -633,8 +624,6 @@
                 };
                 const cleanup = () => {
                     observingInstallLifecycle = false;
-                    if (activationTimer !== null) clearTimeout(activationTimer);
-                    activationTimer = null;
                     registration.removeEventListener(
                         "updatefound",
                         onUpdateFound,
@@ -728,7 +717,8 @@
                 }
                 presentBootFailure(GENERIC_BOOT_FAILURE);
             });
-            self.serviceWorkerActivates = () => serviceWorkerReadiness;
+            self.serviceWorkerActivates = () =>
+                serviceWorkerHandoff || serviceWorkerReadiness;
 
             // Register a one-shot background sync under `tag` so a
             // local commit reaches its upstream even if the tab goes

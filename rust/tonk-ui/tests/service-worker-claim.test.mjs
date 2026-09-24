@@ -259,8 +259,6 @@ function pageHarness({
   updatePending = false,
 } = {}) {
   const messages = [];
-  const timers = new Map();
-  let nextTimer = 0;
   const storage = new Map();
   if (alignmentReload) storage.set("tonk:sw-upgrade-reload", "1");
   let reloads = 0;
@@ -302,8 +300,7 @@ function pageHarness({
     ready,
     async register() { return registration; },
   });
-  let progressSignals = 0;
-  const self = eventTarget({ tonkBootLife() { progressSignals += 1; } });
+  const self = eventTarget({ tonkBootLife() {} });
   const document = eventTarget({
     visibilityState: "visible",
     querySelector() { return { textContent: "", setAttribute() {} }; },
@@ -326,12 +323,8 @@ function pageHarness({
       Event,
       Number,
       Promise,
-      setTimeout(callback) {
-        const id = ++nextTimer;
-        timers.set(id, callback);
-        return id;
-      },
-      clearTimeout(id) { timers.delete(id); },
+      setTimeout,
+      clearTimeout,
     },
     { filename: INDEX },
   );
@@ -341,13 +334,6 @@ function pageHarness({
     serviceWorkers,
     storage,
     messages,
-    timers,
-    progressSignals: () => progressSignals,
-    fireTimeouts() {
-      const callbacks = [...timers.values()];
-      timers.clear();
-      callbacks.forEach(callback => callback());
-    },
     reloads: () => reloads,
     updates: () => updates,
     releaseUpdate: () => resolveUpdate?.(),
@@ -618,28 +604,20 @@ test("an installed successor asks the incumbent to release its streams", async (
   );
 });
 
-test("activation catches up when waiting becomes visible after the installed event", async () => {
+test("new page requests wait while an installed successor replaces the incumbent", async () => {
   const result = pageHarness({ mode: "warm-update" });
-  await new Promise(setImmediate);
-  result.incoming.state = "installed";
-  await result.incoming.dispatch("statechange");
-  assert.deepEqual(result.messages.map(message => message.type), ["connectivity"]);
+  await result.ready();
   result.registration.installing = null;
   result.registration.waiting = result.incoming;
-  const progressSignals = result.progressSignals();
-  result.fireTimeouts();
-  assert.equal(result.progressSignals(), progressSignals, "a recheck is not loading progress");
-  assert.deepEqual(result.messages.map(message => message.type), [
-    "connectivity", "activate-if-installed", "retire-if-superseded",
-  ]);
-  // A lost first activation nudge must not strand the installed successor.
-  result.fireTimeouts();
-  assert.equal(result.messages.filter(message => message.type === "activate-if-installed").length, 2);
-  assert.equal(result.messages.filter(message => message.type === "retire-if-superseded").length, 1);
-  await result.activateWarmWorker();
+  result.incoming.state = "installed";
+  await result.incoming.dispatch("statechange");
+  let resumed = false;
+  const request = result.ready().then(() => { resumed = true; });
   await new Promise(setImmediate);
-  assert.equal(result.reloads(), 1);
-  assert.equal(result.timers.size, 0, "adoption must stop observation");
+  assert.equal(resumed, false, "new requests must not restart the retiring worker");
+  await result.activateWarmWorker();
+  await request;
+  assert.equal(resumed, true);
 });
 
 test("two update-aware documents each reload once on one controller replacement", async () => {
