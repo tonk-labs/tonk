@@ -47,3 +47,12 @@ behavior remain unverified. No measured latency improvement is claimed.
   button no longer counts as enabled. This E2E adjustment awaits hosted validation.
 - The invitation signup test passed on retry; the account aggregate failed because
   the upgrade-test shard failed. Formatting and whitespace checks pass.
+
+The subsequent run on merge `746b50015` advances past Hub readiness but stalls
+with the successor installed and the old document still controlled. The exact
+persisted-upgrade test passes locally on that revision with preview features,
+Chrome 153 and Chrome for Testing 150.0.7871.124, including the exact release
+artifact from the failing CI run (build `6e6da3e4e5665c5d`). This does not establish
+hosted recovery. The timeout now collects incumbent health/logs after the normal
+observation window, without extra fetches during activation or weakened checks,
+to diagnose the remaining CI-only stall.
