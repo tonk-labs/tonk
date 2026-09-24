@@ -562,8 +562,7 @@
                     resolveOutcome(value);
                 };
                 const noteLife = () => self.tonkBootLife?.();
-                const onWorkerState = () => {
-                    noteLife();
+                const inspectIncoming = () => {
                     if (incoming?.state === "redundant") finish("failed");
                     // A long-lived outgoing worker can miss `updatefound` and
                     // never restart, while its open streams keep an installed
@@ -603,9 +602,13 @@
                     if (!settled && activationTimer === null) {
                         activationTimer = setTimeout(() => {
                             activationTimer = null;
-                            onWorkerState();
+                            inspectIncoming();
                         }, 1000);
                     }
+                };
+                const onWorkerState = () => {
+                    noteLife();
+                    inspectIncoming();
                 };
                 const watchIncoming = (worker) => {
                     if (!worker || worker === incoming) return;

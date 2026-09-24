@@ -302,7 +302,8 @@ function pageHarness({
     ready,
     async register() { return registration; },
   });
-  const self = eventTarget({ tonkBootLife() {} });
+  let progressSignals = 0;
+  const self = eventTarget({ tonkBootLife() { progressSignals += 1; } });
   const document = eventTarget({
     visibilityState: "visible",
     querySelector() { return { textContent: "", setAttribute() {} }; },
@@ -341,6 +342,7 @@ function pageHarness({
     storage,
     messages,
     timers,
+    progressSignals: () => progressSignals,
     fireTimeouts() {
       const callbacks = [...timers.values()];
       timers.clear();
@@ -624,7 +626,9 @@ test("activation catches up when waiting becomes visible after the installed eve
   assert.deepEqual(result.messages.map(message => message.type), ["connectivity"]);
   result.registration.installing = null;
   result.registration.waiting = result.incoming;
+  const progressSignals = result.progressSignals();
   result.fireTimeouts();
+  assert.equal(result.progressSignals(), progressSignals, "a recheck is not loading progress");
   assert.deepEqual(result.messages.map(message => message.type), [
     "connectivity", "activate-if-installed", "retire-if-superseded",
   ]);
