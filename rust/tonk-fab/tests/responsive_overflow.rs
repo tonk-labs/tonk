@@ -658,6 +658,8 @@ async fn the_share_stack_opens_a_scrollable_members_dialog() {
     );
 
     let count = light_element(&fab, "[data-share-members]");
+    let tool = light_element(&fab, "[data-tool-connection]");
+    tool.remove_attribute("hidden").expect("show tool row");
     assert_eq!(count.text_content().as_deref(), Some("40 members"));
     assert_eq!(
         menu.query_selector_all("[data-row-owner=ui-member-roster]")
@@ -673,16 +675,17 @@ async fn the_share_stack_opens_a_scrollable_members_dialog() {
         }
         yield_for(20).await;
         let copy_rect = menu_row(&copy).get_bounding_client_rect();
+        let tool_rect = menu_row(&tool).get_bounding_client_rect();
         let members_rect = menu_row(&count).get_bounding_client_rect();
         if up {
             assert!(
-                copy_rect.top() > members_rect.bottom(),
-                "copy is the bottom row when opening upward"
+                members_rect.bottom() < tool_rect.top() && tool_rect.bottom() < copy_rect.top(),
+                "members, tool, and invite lead toward the bar when opening upward"
             );
         } else {
             assert!(
-                copy_rect.bottom() < members_rect.top(),
-                "copy is the top row when opening downward"
+                copy_rect.bottom() < tool_rect.top() && tool_rect.bottom() < members_rect.top(),
+                "invite, tool, and members lead away from the bar when opening downward"
             );
         }
     }

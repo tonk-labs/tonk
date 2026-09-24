@@ -171,7 +171,7 @@ pub const STACKS_HTML: &str = r#"<ui-sync-status headless with="main@{space}"></
     <span class="say say--failed">couldn&rsquo;t copy</span>
     <span class="say say--activation">confirm your email to share</span>
   </tonk-mi>
-  <tonk-mi chrome data-tool-connection>connect a tool</tonk-mi>
+  <tonk-mi chrome data-tool-connection hidden>connect a tool</tonk-mi>
   <ui-member-roster space="{space}"></ui-member-roster>
 </tonk-menu>
 <tonk-menu id="fabb-overflow-menu" slot="menu" data-for="overflow" role="group" aria-label="more actions" hidden>
@@ -203,12 +203,18 @@ tonk-fab ui-space-switcher, tonk-fab ui-member-roster{ display:none; }
 .fabb-members .mem-you{ font-size:11px; opacity:.65; flex-shrink:0; }
 .fabb-members .mem-self{ font-weight:600; }
 tonk-fab [data-share-members]{ font-variant-numeric:tabular-nums; }
+/* The roster is furthest from the bar in either opening direction. */
+tonk-fab [data-share-members]{ order:1; }
+tonk-fab[up] [data-share-members]{ order:-1; }
 /* the share row answers in place: one word at a time, the copy state
    choosing which. idle is the default, so a row that has never been used —
    and one whose element never stamped a state — still reads "copy link". */
 /* Copy always touches the bar side of the stack, including the overflow route. */
 tonk-fab [data-share-link]{ order:-1; }
 tonk-fab[up] [data-share-link]{ order:1; }
+.fabb-tool-connection p{ margin:0; }
+.fabb-tool-connection [data-tool-connection-status]{ margin-top:10px; }
+.fabb-tool-connection tonk-button[hidden]{ display:none !important; }
 tonk-fab [data-share-link] .say{ display:none; }
 /* idle before the element has ever stamped a state, and whenever it says so.
    `blocked` also reads as idle: a prompt is up asking the user a question,
@@ -223,19 +229,18 @@ tonk-fab [data-share-link][data-activation-blocked] .say{ display:none; }
 tonk-fab [data-share-link][data-activation-blocked] .say--activation{ display:inline; }
 "#;
 
-/// The share flow's repairable sync refusal.
+/// The share flow's repairable sync refusal and tool connection dialog.
 ///
 /// Every member can share through its own delegation chain. The remaining
 /// prompt handles a missing sync remote; `share.rs` rewrites its marked lines
 /// per refusal class and drives the dialog's `open` property.
 ///
 /// Mounted on `<body>` rather than inside the bar: these are modals, and an
-/// unslotted light-DOM child of a shadow host never renders, so a dialog
-/// parked there could not be shown at all.
+/// unslotted light-DOM child of a shadow host never renders. The tool
+/// connection uses the same dialog shell as the members roster.
 ///
-/// The action run reads left-to-right as dismiss-then-commit, and the two
-/// fuse flush — the fill boundary between quiet and primary IS the divider
-/// (law 3), which is why there is no gap and no separator between them.
+/// The tool actions read left-to-right as agent prompt then link, and fuse
+/// flush — the fill boundary between quiet and primary is the divider.
 pub const REFUSAL_DIALOGS_HTML: &str = r#"<tonk-cluster id="fabb-connect-cluster" hidden>
   <p slot="statement" data-enable-sync-statement>connect this space</p>
   <tonk-field noun="sync server" value="" data-enable-sync-remote></tonk-field>
@@ -243,15 +248,13 @@ pub const REFUSAL_DIALOGS_HTML: &str = r#"<tonk-cluster id="fabb-connect-cluster
   <tonk-button slot="run" variant="primary" solid data-enable-sync-confirm>connect</tonk-button>
   <span slot="ghost">keep it on this device</span>
 </tonk-cluster>
-<tonk-cluster id="fabb-tool-connection-cluster" hidden data-tool-space="">
-  <p slot="statement">connect a tool</p>
+<tonk-dialog id="fabb-tool-connection-cluster" class="fabb-tool-connection" heading="connect a tool" hidden data-tool-space="">
   <p>give a tool access to this space under your account</p>
-  <p slot="narrator" data-tool-connection-status>creating a private link&hellip;</p>
-  <tonk-button slot="run" variant="primary" solid data-tool-copy-link disabled>copy link</tonk-button>
-  <tonk-button slot="run" solid data-tool-copy-prompt disabled>copy agent prompt</tonk-button>
-  <tonk-button slot="run" solid data-tool-retry hidden>try again</tonk-button>
-  <span slot="ghost">back to share</span>
-</tonk-cluster>"#;
+  <p data-tool-connection-status>creating a private link&hellip;</p>
+  <tonk-button slot="actions" solid data-tool-copy-prompt disabled>copy agent prompt</tonk-button>
+  <tonk-button slot="actions" variant="primary" solid data-tool-copy-link disabled>copy link</tonk-button>
+  <tonk-button slot="actions" solid data-tool-retry hidden>try again</tonk-button>
+</tonk-dialog>"#;
 
 /// Stamp the space DID into [`STACKS_HTML`].
 ///
@@ -583,7 +586,7 @@ mod tests {
         let html = stacks_html("did:key:z6Mk");
         assert!(html.contains("data-share-account>log in to share"));
         assert!(html.contains("data-share-link hidden"));
-        assert!(html.contains("data-tool-connection>connect a tool"));
+        assert!(html.contains("data-tool-connection hidden>connect a tool"));
         assert!(
             html.find("data-share-account").unwrap() < html.find("data-share-link").unwrap(),
             "the safe account action is authored before the gated copy action"
@@ -595,12 +598,16 @@ mod tests {
         let html = stacks_html("did:key:z6Mk");
         assert!(html.contains("data-share-link hidden"));
         assert!(html.contains("say--idle\">invite someone"));
-        assert!(html.contains("data-tool-connection>connect a tool"));
+        assert!(html.contains("data-tool-connection hidden>connect a tool"));
         assert!(
             REFUSAL_DIALOGS_HTML.contains("give a tool access to this space under your account")
         );
         assert!(REFUSAL_DIALOGS_HTML.contains("data-tool-copy-link"));
         assert!(REFUSAL_DIALOGS_HTML.contains("data-tool-copy-prompt"));
+        assert!(REFUSAL_DIALOGS_HTML.contains("<tonk-dialog id=\"fabb-tool-connection-cluster\""));
+        assert!(REFUSAL_DIALOGS_HTML.contains("heading=\"connect a tool\""));
+        assert!(REFUSAL_DIALOGS_HTML.contains("slot=\"actions\" solid data-tool-copy-prompt"));
+        assert!(STACKS_CSS.contains("tonk-fab[up] [data-share-members]{ order:-1; }"));
     }
 
     #[test]
