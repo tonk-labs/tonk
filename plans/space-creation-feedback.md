@@ -35,3 +35,15 @@ was created there; no existing user browser state was accessed. These source
 changes have not been deployed. Full creation timing with an active account,
 frame-by-frame confirmation of the reported flash on staging, CI, and Safari/device
 behavior remain unverified. No measured latency improvement is claimed.
+
+## PR 1002 CI follow-up
+
+- Native CI exposed an analyzer assertion tied to the removed declarative create
+  form. It now verifies the still-declarative remove form; the focused analyzer
+  test passes locally.
+- The persisted-worker upgrade test sampled the roster before the new custom
+  element upgraded, then immediately required an enabled button. Its existing
+  bounded wait now requires both the roster and an enabled create button. A missing
+  button no longer counts as enabled. This E2E adjustment awaits hosted validation.
+- The invitation signup test passed on retry; the account aggregate failed because
+  the upgrade-test shard failed. Formatting and whitespace checks pass.
