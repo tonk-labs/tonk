@@ -1275,7 +1275,7 @@ fn apply_unknown_space(this: &HtmlElement) {
     let _ = this.set_attribute(UNKNOWN_SPACE_ATTR, "");
 }
 
-/// Swap the share menu between its safe account handoff and copy action.
+/// Swap the share menu between its safe account handoff and account actions.
 pub(crate) fn apply_account_ready(this: &HtmlElement, ready: bool) {
     if ready {
         let _ = this.remove_attribute(ACCOUNT_REQUIRED_ATTR);
@@ -1294,6 +1294,13 @@ pub(crate) fn apply_account_ready(this: &HtmlElement, ready: bool) {
             let _ = copy.remove_attribute("hidden");
         } else {
             let _ = copy.set_attribute("hidden", "");
+        }
+    }
+    if let Ok(Some(tool)) = this.query_selector("[data-tool-connection]") {
+        if ready {
+            let _ = tool.remove_attribute("hidden");
+        } else {
+            let _ = tool.set_attribute("hidden", "");
         }
     }
 }
