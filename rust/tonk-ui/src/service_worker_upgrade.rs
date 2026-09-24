@@ -1670,6 +1670,114 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// The join failures on the profile's active branch, as the controlling
+    /// worker reads them. The failure lives only in that worker's session
+    /// overlay.
+    async fn join_failures(driver: &WebDriver) -> Result<Value> {
+        let result = driver
+            .execute_async(
+                r#"
+                const query = arguments[0];
+                const done = arguments[arguments.length - 1];
+                (async () => {
+                    const profiles = await (await fetch("/api/profiles")).json();
+                    const response = await fetch(`/api/profile/branch/${profiles.active}/query`, {
+                        method: "POST",
+                        headers: { "content-type": "application/json" },
+                        body: JSON.stringify(query),
+                    });
+                    done({ status: response.status, rows: await response.json() });
+                })().catch(error => done({ error: String(error) }));
+                "#,
+                vec![tonk_worker::helpers::join_failure_wire_query()],
+            )
+            .await?;
+        Ok(result.json().clone())
+    }
+
+    async fn wait_for_join_failure(driver: &WebDriver) -> Result<Value> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let result = join_failures(driver).await?;
+            if result["rows"]
+                .as_array()
+                .is_some_and(|rows| !rows.is_empty())
+            {
+                return Ok(result);
+            }
+            ensure!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for a join failure: {result}"
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    /// A worker's session overlay outlives the worker. A failed join leaves
+    /// its failure only in the overlay, and nothing re-derives it when a
+    /// worker boots, so the successor answers with it only if the handoff
+    /// carried it across.
+    #[dialog_common::test]
+    async fn it_carries_the_session_overlay_to_a_successor_worker(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let (generation_a, generation_b) = prepare_guest_only_generation(&env)?;
+        let driver = env.driver().await?;
+        wait_for_complete_generation(&driver, &generation_a, None, None).await?;
+
+        // Invite-shaped, so the join runs, but its `access` is not base58:
+        // the join fails as malformed without touching the network.
+        let origin = driver.current_url().await?;
+        driver
+            .goto(
+                origin
+                    .join("/join?access=not-a-delegation&remote=https%3A%2F%2Fexample.invalid#not-a-seed")?
+                    .as_str(),
+            )
+            .await?;
+        let failed = wait_for_join_failure(&driver).await?;
+        // Leave /join, whose view would otherwise re-run the join.
+        driver.goto(origin.join("/")?.as_str()).await?;
+        wait_for_mounted_build(&driver, &generation_a.build).await?;
+        let before = join_failures(&driver).await?;
+        assert_eq!(before["rows"], failed["rows"], "{before}");
+
+        promote_second_generation(&env)?;
+        let started = driver
+            .execute_async(
+                r#"
+                const done = arguments[arguments.length - 1];
+                navigator.serviceWorker.getRegistration()
+                    .then(registration => registration.update())
+                    .then(() => done({ ok: true }))
+                    .catch(error => done({ error: String(error) }));
+                "#,
+                vec![],
+            )
+            .await?;
+        ensure!(
+            started.json()["ok"] == true,
+            "failed to start the update: {}",
+            started.json()
+        );
+        wait_for_guest_generation(&driver, "B").await?;
+        let health = worker_health(&driver).await?;
+        assert_eq!(
+            health["body"]["build"].as_str(),
+            Some(generation_b.build.as_str()),
+            "{health}"
+        );
+
+        let after = join_failures(&driver).await?;
+        assert_eq!(
+            after["rows"], failed["rows"],
+            "the successor restored the predecessor's overlay: {after}"
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
     #[dialog_common::test]
     async fn it_keeps_the_active_worker_when_the_load_time_update_check_is_offline(
         env: TestEnvironment,

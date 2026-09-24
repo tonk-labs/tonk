@@ -8,6 +8,7 @@ pub mod serve;
 pub mod state;
 
 use dialog_query::{ConceptQuery, Query as ConceptPattern};
+use tonk_schema::command::JoinFailure;
 use tonk_schema::meta::Name;
 use tonk_schema::query::Query as WireQuery;
 use tonk_schema::{EmailStatus, Remote, Replica};
@@ -66,4 +67,15 @@ pub fn email_status_wire_query() -> serde_json::Value {
     let query = ConceptQuery::from(pattern);
     let wire = WireQuery::from(&query);
     serde_json::to_value(&wire).expect("EmailStatus query serializes")
+}
+
+/// Wire-form `/query` body selecting the overlay-only [`JoinFailure`] a
+/// failed join leaves on the profile's active branch. Nothing re-derives it
+/// when a worker boots, so it shows whether a worker's session overlay
+/// survived a replacement.
+pub fn join_failure_wire_query() -> serde_json::Value {
+    let pattern = ConceptPattern::<JoinFailure>::default();
+    let query = ConceptQuery::from(pattern);
+    let wire = WireQuery::from(&query);
+    serde_json::to_value(&wire).expect("JoinFailure query serializes")
 }

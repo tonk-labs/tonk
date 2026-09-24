@@ -980,6 +980,48 @@ self.oninstall = event => {
     log(`Installed (build ${BUILD_ID})`);
 };
 
+// ---- Session overlay handoff ----------------------------------------
+//
+// The Rust worker's session overlay lives in memory. When a successor
+// installs, the incumbent announces a handoff; on retirement its Rust side
+// writes a snapshot (see `handoff.rs`, which owns the same cache and key); the
+// successor holds activation until that snapshot exists and restores it while
+// booting, before it serves anything.
+const OVERLAY_HANDOFF_CACHE = "TONK_OVERLAY_HANDOFF";
+const OVERLAY_HANDOFF_URL = "/__tonk/overlay-handoff";
+const OVERLAY_HANDOFF_PENDING_URL = "/__tonk/overlay-handoff-pending";
+// A retiring incumbent writes its snapshot within milliseconds. The bound only
+// matters when it died after announcing, and must not stall activation.
+const OVERLAY_HANDOFF_WAIT_MS = 1_000;
+
+/// Announce that this incumbent's overlay will follow, dropping any snapshot
+/// an earlier, never-completed handoff left behind.
+async function announceOverlayHandoff() {
+    const cache = await caches.open(OVERLAY_HANDOFF_CACHE);
+    await cache.delete(OVERLAY_HANDOFF_URL);
+    await cache.put(OVERLAY_HANDOFF_PENDING_URL, new Response(String(Date.now())));
+}
+
+/// Withdraw an announcement whose successor failed to install.
+async function withdrawOverlayHandoff() {
+    const cache = await caches.open(OVERLAY_HANDOFF_CACHE);
+    await cache.delete(OVERLAY_HANDOFF_PENDING_URL);
+}
+
+/// Wait, bounded, for an announced predecessor's snapshot, then consume the
+/// announcement. Returns at once when nothing was announced.
+async function awaitOverlayHandoff() {
+    // `match` with a cache name creates nothing, so a worker with no
+    // predecessor leaves CacheStorage as it found it.
+    const stored = url => caches.match(url, { cacheName: OVERLAY_HANDOFF_CACHE });
+    if (!(await stored(OVERLAY_HANDOFF_PENDING_URL))) return;
+    const deadline = Date.now() + OVERLAY_HANDOFF_WAIT_MS;
+    while (!(await stored(OVERLAY_HANDOFF_URL)) && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    await (await caches.open(OVERLAY_HANDOFF_CACHE)).delete(OVERLAY_HANDOFF_PENDING_URL);
+}
+
 self.onactivate = event => {
     // Activation replaces this registration's active worker for clients that
     // it already controlled, and those documents receive `controllerchange`.
@@ -991,8 +1033,16 @@ self.onactivate = event => {
     // deadlocks the swap — the outgoing worker cannot die while its
     // in-flight fetches hang, the lock never frees, and this worker pins in
     // `activating` while every page waits on it.
+    //
+    // The predecessor's overlay snapshot is different: waiting for it needs
+    // only CacheStorage, never the lock, so activation holds for it. Booting
+    // after it lets the Rust worker restore the overlay before its first read.
+    const handoff = awaitOverlayHandoff().catch(error => {
+        log("Overlay handoff wait failed:", error);
+    });
     (async () => {
         try {
+            await handoff;
             const worker = await activateWorker();
             await worker.onactivate?.();
         } catch (err) {
@@ -1000,9 +1050,12 @@ self.onactivate = event => {
         }
     })();
     event.waitUntil?.(
-        pruneObsoleteGenerationCaches().catch(error => {
-            log("Generation cache cleanup failed:", error);
-        }),
+        Promise.all([
+            handoff,
+            pruneObsoleteGenerationCaches().catch(error => {
+                log("Generation cache cleanup failed:", error);
+            }),
+        ]),
     );
     log(`Activated (build ${BUILD_ID})`);
 };
@@ -1107,6 +1160,11 @@ function watchSuccessor(candidate) {
         log("Update found — this worker is not the active incumbent; staying live");
         return;
     }
+    if (candidate.state === "installing") {
+        announceOverlayHandoff().catch(error => {
+            log("Overlay handoff announcement failed:", error);
+        });
+    }
 
     const observe = () => {
         if (["installed", "activating", "activated"].includes(candidate.state)) {
@@ -1115,6 +1173,9 @@ function watchSuccessor(candidate) {
         }
         if (candidate.state === "redundant") {
             candidate.removeEventListener?.("statechange", observe);
+            withdrawOverlayHandoff().catch(error => {
+                log("Overlay handoff withdrawal failed:", error);
+            });
             log("Successor install failed — incumbent stays live");
         }
     };

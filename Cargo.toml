@@ -188,24 +188,24 @@ wasm-bindgen-test = "0.3"
 web-sys = { version = "0.3" }
 
 # Dialog DB
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-22" }
-dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-22" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-22" }
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-22" }
-dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-22" }
-dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-22" }
-dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-22" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-22" }
-dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-22" }
-dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-22" }
-dialog-remote-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-22" }
-dialog-did-web = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-22" }
-dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-22" }
-dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-22" }
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-22" }
-dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-22" }
-dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-22" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-09-22" }
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", rev = "ded02314419d1a5f9e75ac6f8dae7aae0f40d657" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", rev = "ded02314419d1a5f9e75ac6f8dae7aae0f40d657" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", rev = "ded02314419d1a5f9e75ac6f8dae7aae0f40d657" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", rev = "ded02314419d1a5f9e75ac6f8dae7aae0f40d657" }
+dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", rev = "ded02314419d1a5f9e75ac6f8dae7aae0f40d657" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", rev = "ded02314419d1a5f9e75ac6f8dae7aae0f40d657" }
+dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", rev = "ded02314419d1a5f9e75ac6f8dae7aae0f40d657" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", rev = "ded02314419d1a5f9e75ac6f8dae7aae0f40d657" }
+dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", rev = "ded02314419d1a5f9e75ac6f8dae7aae0f40d657" }
+dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", rev = "ded02314419d1a5f9e75ac6f8dae7aae0f40d657" }
+dialog-remote-ucan = { git = "https://github.com/dialog-db/dialog-db.git", rev = "ded02314419d1a5f9e75ac6f8dae7aae0f40d657" }
+dialog-did-web = { git = "https://github.com/dialog-db/dialog-db.git", rev = "ded02314419d1a5f9e75ac6f8dae7aae0f40d657" }
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", rev = "ded02314419d1a5f9e75ac6f8dae7aae0f40d657" }
+dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", rev = "ded02314419d1a5f9e75ac6f8dae7aae0f40d657" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", rev = "ded02314419d1a5f9e75ac6f8dae7aae0f40d657" }
+dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", rev = "ded02314419d1a5f9e75ac6f8dae7aae0f40d657" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", rev = "ded02314419d1a5f9e75ac6f8dae7aae0f40d657" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", rev = "ded02314419d1a5f9e75ac6f8dae7aae0f40d657" }
 
 [profile.dev]
 opt-level = 1
