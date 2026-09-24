@@ -77,3 +77,11 @@ before the page rechecks durable registration state and retries activation. The
 recheck never polls the incumbent's data plane, retires it only once, and stops on
 adoption or failure. All 92 service-worker tests and the persisted-upgrade browser
 test pass locally with both fixes; first-attempt CI confirmation remains pending.
+
+Run `36039517272` still fails all three persisted-upgrade attempts after both
+fixes. Streams release promptly, but the successor remains installed/waiting.
+The fix is not yet verified. A test-only worker probe now records pending event
+lifetime promises and activation requests, sampled from both workers only after
+the existing deadline. It does not alter those promises or consume response
+bodies. Its observation check passes and the instrumented browser test passes
+locally in 50.69 seconds; Linux diagnostics remain necessary.

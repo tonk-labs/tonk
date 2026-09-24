@@ -542,6 +542,15 @@ pub(crate) mod tests {
     pub(crate) fn prepare_profile_library_generations(
         env: &TestEnvironment,
     ) -> Result<(GenerationContract, GenerationContract)> {
+        let worker = env.deployment_root.join("generation-a/service_worker.js");
+        let source = std::fs::read_to_string(&worker)?;
+        std::fs::write(
+            worker,
+            format!(
+                "{}\n{source}",
+                include_str!("../tests/worker-lifetime-probe.js")
+            ),
+        )?;
         let (_, generation_b) = prepare_second_generation(env)?;
         let generation_a_root = env.deployment_root.join("generation-a");
         let profile_library = generation_a_root.join("library/profile.yaml");
@@ -673,8 +682,29 @@ pub(crate) mod tests {
                 // Sample only after the observation window: health fetches
                 // during retirement can themselves delay worker activation.
                 let health = worker_health(driver).await;
+                let lifetimes = driver.execute_async(r#"
+                    const done = arguments[arguments.length - 1];
+                    navigator.serviceWorker.getRegistration().then(async registration => {
+                        const result = {};
+                        await Promise.all(["active", "waiting", "installing"].map(async role => {
+                            const worker = registration?.[role];
+                            if (!worker) return;
+                            result[role] = await new Promise(resolve => {
+                                const channel = new MessageChannel();
+                                const timer = setTimeout(() => { channel.port1.close(); resolve("no probe reply"); }, 3000);
+                                channel.port1.onmessage = event => {
+                                    clearTimeout(timer);
+                                    channel.port1.close();
+                                    resolve(event.data);
+                                };
+                                worker.postMessage({ type: "tonk-test-lifetimes" }, [channel.port2]);
+                            });
+                        }));
+                        done(result);
+                    }).catch(error => done({ error: String(error) }));
+                "#, vec![]).await.map(|value| value.json().clone());
                 anyhow::bail!(
-                    "timed out waiting for coherent build {build}: {last}; incumbent health: {health:?}"
+                    "timed out waiting for coherent build {build}: {last}; incumbent health: {health:?}; lifetimes: {lifetimes:?}"
                 );
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
