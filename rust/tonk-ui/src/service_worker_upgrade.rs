@@ -813,10 +813,16 @@ pub(crate) mod tests {
                     .map(|log| {
                         log.iter()
                             .rev()
-                            .take(40)
+                            .take(80)
                             .rev()
-                            .filter_map(|entry| entry["message"].as_str())
-                            .map(|line| line.chars().take(200).collect::<String>())
+                            .filter_map(|entry| {
+                                let message = entry["message"].as_str()?;
+                                let at = entry["t"].as_u64().unwrap_or_default();
+                                Some(format!(
+                                    "{at} {}",
+                                    message.chars().take(200).collect::<String>()
+                                ))
+                            })
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or_default();
