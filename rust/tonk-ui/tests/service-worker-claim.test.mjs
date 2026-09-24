@@ -63,9 +63,12 @@ function loadServiceWorker({
   let retirements = 0;
   let dataFetches = 0;
   const logs = [];
+  const successorMessages = [];
   const executingWorker = {};
   const activeWorker = executingRole === "active" ? executingWorker : {};
-  const waitingWorker = executingRole === "waiting" ? executingWorker : {};
+  const waitingWorker = executingRole === "waiting"
+    ? executingWorker
+    : { postMessage(message) { successorMessages.push(message); } };
   const registration = eventTarget({
     active: activeWorker,
     installing: null,
@@ -139,6 +142,7 @@ function loadServiceWorker({
     timers,
     retirements: () => retirements,
     dataFetches: () => dataFetches,
+    successorMessages,
     markerReads: () => cacheStorage.markerReads,
     logs,
   };
@@ -283,6 +287,7 @@ function pageHarness({
   updatePending = false,
 } = {}) {
   const messages = [];
+  const fetched = [];
   const storage = new Map();
   if (alignmentReload) storage.set("tonk:sw-upgrade-reload", "1");
   let reloads = 0;
@@ -324,10 +329,27 @@ function pageHarness({
     ready,
     async register() { return registration; },
   });
-  const self = eventTarget({ tonkBootLife() {} });
+  const self = eventTarget({
+    tonkBootLife() {},
+    async fetch(input) {
+      fetched.push(String(input));
+      return new Response("ok");
+    },
+  });
+  const frames = [];
+  // The page's repeated activation request, driven by the test.
+  const repeats = new Map();
+  let nextRepeat = 0;
   const document = eventTarget({
     visibilityState: "visible",
     querySelector() { return { textContent: "", setAttribute() {} }; },
+    createElement(tag) {
+      const frame = eventTarget({ tag, attributes: {}, removed: false });
+      frame.setAttribute = (name, value) => { frame.attributes[name] = value; };
+      frame.remove = () => { frame.removed = true; };
+      return frame;
+    },
+    documentElement: { append(frame) { frames.push(frame); } },
   });
   vm.runInNewContext(
     activationBlock(),
@@ -342,13 +364,28 @@ function pageHarness({
         setItem(key, value) { storage.set(key, String(value)); },
         removeItem(key) { storage.delete(key); },
       },
-      location: { reload() { reloads += 1; } },
+      location: {
+        href: "https://tonk.test/",
+        origin: "https://tonk.test",
+        reload() { reloads += 1; },
+      },
+      URL,
+      Request,
+      Response,
       console: { log() {}, warn() {}, error() {} },
       Event,
       Number,
       Promise,
-      setTimeout,
-      clearTimeout,
+      setTimeout(callback, delay) {
+        if (delay !== 1_000) return setTimeout(callback, delay);
+        nextRepeat += 1;
+        repeats.set(`repeat-${nextRepeat}`, callback);
+        return `repeat-${nextRepeat}`;
+      },
+      clearTimeout(id) {
+        if (repeats.delete(id)) return;
+        clearTimeout(id);
+      },
     },
     { filename: INDEX },
   );
@@ -358,6 +395,14 @@ function pageHarness({
     serviceWorkers,
     storage,
     messages,
+    fetched,
+    frames,
+    tickRepeats: () => {
+      const due = [...repeats.entries()];
+      repeats.clear();
+      for (const [, callback] of due) callback();
+    },
+    fetch: (...args) => self.fetch(...args),
     reloads: () => reloads,
     updates: () => updates,
     releaseUpdate: () => resolveUpdate?.(),
@@ -658,6 +703,69 @@ test("successor activation replaces the controller and causes one guarded reload
   );
   assert.equal(result.storage.get("tonk:sw-upgrade-reload"), "1");
   assert.equal(result.reloads(), 1);
+});
+
+test("a page holds its data plane while a successor waits to take over", async () => {
+  const result = pageHarness({ mode: "warm-update" });
+  await new Promise(setImmediate);
+  result.registration.installing = null;
+  result.registration.waiting = result.incoming;
+  result.incoming.state = "installed";
+  await result.incoming.dispatch("statechange");
+  result.fetched.length = 0;
+
+  let answered = false;
+  const held = result.fetch("/api/profile/branch/main/query").then(() => { answered = true; });
+  await result.fetch("/ui.js");
+  await result.fetch("/api/health");
+  for (let turn = 0; turn < 5; turn++) await new Promise(setImmediate);
+  assert.deepEqual(result.fetched, ["/ui.js", "/api/health"], "only the data plane waits");
+  assert.equal(answered, false);
+
+  await result.activateWarmWorker();
+  await held;
+  assert.deepEqual(result.fetched, ["/ui.js", "/api/health", "/api/profile/branch/main/query"]);
+});
+
+test("a page holding its data plane asks Chrome to activate the successor again", async () => {
+  const result = pageHarness({ mode: "warm-update" });
+  await new Promise(setImmediate);
+  result.registration.installing = null;
+  result.registration.waiting = result.incoming;
+  result.incoming.state = "installed";
+  await result.incoming.dispatch("statechange");
+
+  const held = [
+    result.fetch("/api/profile/branch/main/query"),
+    result.fetch("/api/profile/branch/main/query"),
+  ];
+  await new Promise(setImmediate);
+  assert.equal(result.frames.length, 1, "one navigation when the hold starts");
+  const [frame] = result.frames;
+  assert.equal(frame.tag, "iframe");
+  assert.equal(frame.src, "/api/health");
+  assert.equal(frame.hidden, true);
+  await frame.dispatch("load");
+  assert.equal(frame.removed, true);
+
+  // A navigation that lands while the incumbent stops restarts it, so the
+  // request repeats until the successor takes over.
+  result.tickRepeats();
+  assert.equal(result.frames.length, 2);
+
+  await result.activateWarmWorker();
+  await Promise.all(held);
+  result.tickRepeats();
+  assert.equal(result.frames.length, 2, "no navigation after the successor took over");
+});
+
+test("a page without a waiting successor sends its data plane at once", async () => {
+  const result = pageHarness({ mode: "warm" });
+  await result.ready();
+  result.fetched.length = 0;
+  await result.fetch("/api/profile/branch/main/query");
+  assert.deepEqual(result.fetched, ["/api/profile/branch/main/query"]);
+  assert.equal(result.frames.length, 0);
 });
 
 test("an installed successor asks the incumbent to release its streams", async () => {

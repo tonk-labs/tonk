@@ -1356,7 +1356,9 @@ pub(crate) mod tests {
     /// worker has no pending events. A busy incumbent page (the boot
     /// `connectivity` nudge, steady asset traffic) used to leave a deferred
     /// offline fill on the incumbent's `waitUntil` for up to a minute, holding
-    /// the installed successor out of activation that whole time.
+    /// the installed successor out of activation that whole time. Steady data
+    /// traffic did the same: every request scheduled a debounced sync drain on
+    /// its `waitUntil`, even on a retiring worker that would refuse it.
     #[dialog_common::test]
     async fn it_activates_a_successor_while_the_incumbent_page_is_busy(
         env: TestEnvironment,
@@ -1374,12 +1376,13 @@ pub(crate) mod tests {
             .find(|path| path.as_str() != "/")
             .cloned()
             .context("generation A exposes no static asset probe")?;
+        let query = tonk_worker::helpers::named_concept_wire_query();
 
         promote_second_generation(&env)?;
         let started = driver
             .execute_async(
                 r#"
-                const asset = arguments[0];
+                const [asset, query] = arguments;
                 const done = arguments[arguments.length - 1];
                 (async () => {
                     const key = "tonk:test:successor-states";
@@ -1392,9 +1395,18 @@ pub(crate) mod tests {
                     // The ordinary work of a live incumbent page. The busy
                     // loop ends with the document's alignment reload.
                     navigator.serviceWorker.controller.postMessage({ type: "connectivity" });
+                    const profiles = await (await fetch("/api/profiles")).json();
+                    const queryUrl = `/api/profile/branch/${profiles.active}/query`;
                     (async () => {
                         for (;;) {
                             try { await (await fetch(asset)).arrayBuffer(); } catch {}
+                            try {
+                                await (await fetch(queryUrl, {
+                                    method: "POST",
+                                    headers: { "content-type": "application/json" },
+                                    body: JSON.stringify(query),
+                                })).text();
+                            } catch {}
                             await new Promise(resolve => setTimeout(resolve, 250));
                         }
                     })();
@@ -1408,7 +1420,7 @@ pub(crate) mod tests {
                     done({ ok: true });
                 })().catch(error => done({ error: String(error) }));
                 "#,
-                vec![asset.into()],
+                vec![asset.into(), query],
             )
             .await?;
         ensure!(

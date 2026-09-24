@@ -421,6 +421,97 @@
                 } catch {}
             }
 
+            // While a successor waits to take this document over, hold the
+            // document's own /api requests until it does. Chrome activates a
+            // skipWaiting successor only once the outgoing worker goes idle,
+            // and a request that lands as that worker stops restarts it
+            // without the prompt idle deadline, so steady page traffic could
+            // keep the successor waiting for minutes. Bounded: a successor
+            // that has not taken over after the hold is left alone.
+            let handoverRegistration = null;
+            let handover = null;
+            let handoverAbandoned = null;
+            const HANDOVER_HOLD_MS = 10_000;
+            // Chrome asks the outgoing worker to go idle at once only when
+            // activation is requested, and forgets that once the worker
+            // restarts: a request that arrives while it stops restarts it
+            // with the default 30 second idle delay, longer than this hold.
+            // Every in-scope navigation requests activation again, so a
+            // hidden frame load does, repeated through the hold because one
+            // can itself land while the incumbent stops.
+            const ACTIVATION_REQUEST_MS = 1_000;
+            const requestActivation = () => {
+                const frame = document.createElement("iframe");
+                frame.hidden = true;
+                frame.tabIndex = -1;
+                frame.setAttribute("aria-hidden", "true");
+                const remove = () => frame.remove();
+                frame.addEventListener("load", remove, { once: true });
+                setTimeout(remove, HANDOVER_HOLD_MS);
+                frame.src = "/api/health";
+                document.documentElement.append(frame);
+            };
+            const awaitHandover = (waiting) => {
+                handover ??= new Promise((resolve) => {
+                    const settle = (abandoned) => {
+                        clearTimeout(timer);
+                        clearTimeout(repeat);
+                        navigator.serviceWorker.removeEventListener(
+                            "controllerchange",
+                            onControllerChange,
+                        );
+                        if (abandoned) handoverAbandoned = waiting;
+                        handover = null;
+                        resolve();
+                    };
+                    const onControllerChange = () => settle(false);
+                    const timer = setTimeout(() => settle(true), HANDOVER_HOLD_MS);
+                    let repeat;
+                    const request = () => {
+                        requestActivation();
+                        repeat = setTimeout(request, ACTIVATION_REQUEST_MS);
+                    };
+                    request();
+                    navigator.serviceWorker.addEventListener(
+                        "controllerchange",
+                        onControllerChange,
+                    );
+                });
+                return handover;
+            };
+            if (serviceWorkersSupported && typeof self.fetch === "function") {
+                const nativeFetch = self.fetch.bind(self);
+                self.fetch = (input, init) => {
+                    const waiting = handoverRegistration?.waiting;
+                    if (
+                        !waiting ||
+                        waiting === handoverAbandoned ||
+                        !navigator.serviceWorker.controller
+                    ) {
+                        return nativeFetch(input, init);
+                    }
+                    let url;
+                    try {
+                        url = new URL(
+                            input instanceof Request ? input.url : String(input),
+                            location.href,
+                        );
+                    } catch {
+                        return nativeFetch(input, init);
+                    }
+                    if (
+                        url.origin !== location.origin ||
+                        !url.pathname.startsWith("/api/") ||
+                        url.pathname === "/api/health"
+                    ) {
+                        return nativeFetch(input, init);
+                    }
+                    return awaitHandover(waiting).then(() =>
+                        nativeFetch(input, init),
+                    );
+                };
+            }
+
             // Begin registration and update detection eagerly, while the UI
             // Wasm downloads. Page readiness resolves once the current
             // generation controls the document; successor observation may
@@ -489,6 +580,7 @@
                     );
                     throw error;
                 }
+                handoverRegistration = registration;
                 observingInstallLifecycle = Boolean(registration.installing);
 
                 // First install (or an active-but-unclaimed worker) keeps this

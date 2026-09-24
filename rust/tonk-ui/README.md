@@ -113,6 +113,15 @@ The load lifecycle has four cases:
   update check does not unregister the worker or clear CacheStorage, IndexedDB,
   or other local Tonk state.
 
+Chrome activates a waiting `skipWaiting()` successor only once the outgoing
+worker goes idle, and a request that lands while that worker stops restarts
+it without the prompt idle deadline. So while a successor waits, a page holds
+its own `/api/*` requests until `controllerchange` (at most ten seconds per
+successor). A restarted incumbent has lost that deadline and a repeated
+`skipWaiting()` does not restore it, but any in-scope navigation does, so a
+holding page loads `/api/health` in a hidden frame every second. It repeats
+because a navigation that lands while the incumbent stops restarts it too.
+
 Every incoming worker still obtains and verifies its own manifest. For each
 manifest member it may reuse a response from an older final Tonk generation,
 but only after hashing a clone against the incoming full SHA-256 digest. Worker
