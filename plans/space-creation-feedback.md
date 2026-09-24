@@ -56,3 +56,14 @@ artifact from the failing CI run (build `6e6da3e4e5665c5d`). This does not estab
 hosted recovery. The timeout now collects incumbent health/logs after the normal
 observation window, without extra fetches during activation or weakened checks,
 to diagnose the remaining CI-only stall.
+
+The diagnostic run `36026578641` still failed. Its incumbent log confirms startup
+retirement and `Streams are released` immediately, followed by ordinary Hub load
+requests while the successor remains waiting. Offline preparation independently
+extends fetch/message lifetimes and was neither cancelled nor gated by retirement.
+A deterministic test reproduced that scheduled lifetime remaining pending after
+retirement. The fix cancels its idle timer, settles the lifetime, prevents later
+messages from rearming it, and avoids obsolete-worker cache maintenance after stop.
+The new regression passes, all 91 service-worker tests pass, and the exact CI
+release binaries with this JS fix pass the persisted-upgrade browser test on Chrome
+150.0.7871.115. Hosted confirmation of this fix remains pending.

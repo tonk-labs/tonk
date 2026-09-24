@@ -817,11 +817,13 @@ let offlineGenerationResolves;
 /// prerequisite. The shared promise prevents duplicate fills within one worker
 /// lifetime; the durable marker makes later worker instances return cheaply.
 function ensureOfflineGeneration() {
+    if (offlineGenerationStopped) return Promise.resolve();
     if (offlineGenerationResolves == null) {
         offlineGenerationResolves = (async () => {
             const marker = await readGenerationMarker();
+            if (offlineGenerationStopped) return;
             if (marker?.state !== "adopted") await installGeneration();
-            await pruneObsoleteGenerationCaches();
+            if (!offlineGenerationStopped) await pruneObsoleteGenerationCaches();
         })().catch(error => {
             offlineGenerationResolves = null;
             log("Offline generation fill failed; it will retry later:", error);
@@ -831,21 +833,39 @@ function ensureOfflineGeneration() {
 }
 
 let offlineFillScheduled;
+let offlineGenerationStopped = false;
+let cancelOfflineDelay;
 let contentReady = false;
 let lastForegroundAssetAt = 0;
 let foregroundAssets = 0;
 const OFFLINE_QUIET_MS = 5_000;
 const OFFLINE_MAX_DELAY_MS = 60_000;
 
+function stopOfflineGeneration() {
+    offlineGenerationStopped = true;
+    cancelOfflineDelay?.();
+}
+
 function extendOfflineGeneration(event) {
-    if (typeof event.waitUntil !== "function") return;
+    if (offlineGenerationStopped || typeof event.waitUntil !== "function") return;
     if (!offlineFillScheduled) {
         offlineFillScheduled = (async () => {
             const started = Date.now();
             // Leave startup's asset traffic alone. A deadline also permits
             // preparation on pages with continuous foreground activity.
             do {
-                await new Promise(resolve => setTimeout(resolve, OFFLINE_QUIET_MS));
+                await new Promise(resolve => {
+                    const finish = () => {
+                        cancelOfflineDelay = null;
+                        resolve();
+                    };
+                    const timer = setTimeout(finish, OFFLINE_QUIET_MS);
+                    cancelOfflineDelay = () => {
+                        clearTimeout(timer);
+                        finish();
+                    };
+                });
+                if (offlineGenerationStopped) return;
             } while ((!contentReady || foregroundAssets > 0 || Date.now() - lastForegroundAssetAt < OFFLINE_QUIET_MS) &&
                 Date.now() - started < OFFLINE_MAX_DELAY_MS);
             await ensureOfflineGeneration();
@@ -990,6 +1010,10 @@ let retirement = null;
 async function retire(reason) {
     if (retired) return true;
     if (retirement) return retirement;
+    // Offline preparation also extends fetch/message lifetimes. Release its
+    // idle delay and refuse late content/connection nudges, or those events
+    // can keep the incumbent alive after Rust has closed every stream.
+    stopOfflineGeneration();
     retirement = (async () => {
         log(`Retiring — ${reason}`);
         try {

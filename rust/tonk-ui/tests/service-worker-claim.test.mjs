@@ -47,7 +47,10 @@ function loadServiceWorker({
   executingRole = "active",
   waitingAtStartup = false,
   retirementFailures = 0,
+  holdTimers = false,
 } = {}) {
+  const timers = new Map();
+  let nextTimer = 0;
   let claims = 0;
   let activationRequests = 0;
   let retirementAttempts = 0;
@@ -103,8 +106,12 @@ function loadServiceWorker({
       Request,
       URL,
       Date,
-      setTimeout,
-      clearTimeout,
+      setTimeout: holdTimers ? callback => {
+        const id = ++nextTimer;
+        timers.set(id, callback);
+        return id;
+      } : setTimeout,
+      clearTimeout: holdTimers ? id => timers.delete(id) : clearTimeout,
       recordRetirement() {
         retirementAttempts += 1;
         if (retirementAttempts <= retirementFailures) throw new Error("release failed");
@@ -122,6 +129,7 @@ function loadServiceWorker({
     claims: () => claims,
     activationRequests: () => activationRequests,
     retirementAttempts: () => retirementAttempts,
+    timers,
     retirements: () => retirements,
     dataFetches: () => dataFetches,
     logs,
@@ -448,6 +456,32 @@ test("an update-aware page can wake the incumbent to retire for a waiting succes
   });
   await Promise.all(pending);
   assert.equal(result.retirements(), 1);
+});
+
+test("retirement releases scheduled offline work and prevents rearming it", async () => {
+  const result = loadServiceWorker({ holdTimers: true });
+  const lifetimes = [];
+  const ready = {
+    data: { type: "content-ready" },
+    waitUntil(promise) { lifetimes.push(promise); },
+  };
+  result.scope.onmessage(ready);
+  assert.equal(result.timers.size, 1);
+  let settled = false;
+  lifetimes[0].then(() => { settled = true; });
+  result.scope.registration.waiting = {};
+  const retirement = [];
+  result.scope.onmessage({
+    data: { type: "retire-if-superseded" },
+    waitUntil(promise) { retirement.push(promise); },
+  });
+  await Promise.all(retirement);
+  await new Promise(setImmediate);
+  assert.equal(result.timers.size, 0, "retirement must cancel the idle timer");
+  assert.equal(settled, true, "the outgoing event lifetime must settle");
+  result.scope.onmessage(ready);
+  assert.equal(result.timers.size, 0, "late content-ready must not rearm a retired worker");
+  assert.equal(lifetimes.length, 1, "late content-ready must not extend retirement");
 });
 
 test("only an installed successor repeats the activation request", async () => {
