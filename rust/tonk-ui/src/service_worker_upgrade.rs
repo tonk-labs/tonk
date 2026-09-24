@@ -800,9 +800,29 @@ pub(crate) mod tests {
             if tokio::time::Instant::now() >= deadline {
                 // Sample only after the observation window: health fetches
                 // during retirement can themselves delay worker activation.
-                let health = worker_health(driver).await;
+                // The controlling worker's own log says whether it retired,
+                // released its streams, and handed off its overlay, which is
+                // what a successor stuck in `waiting` depends on.
+                let mut health = worker_health(driver).await;
+                let controller_log = health
+                    .as_mut()
+                    .ok()
+                    .and_then(|health| health["body"].as_object_mut())
+                    .and_then(|body| body.remove("log"))
+                    .and_then(|log| log.as_array().cloned())
+                    .map(|log| {
+                        log.iter()
+                            .rev()
+                            .take(40)
+                            .rev()
+                            .filter_map(|entry| entry["message"].as_str())
+                            .map(|line| line.chars().take(200).collect::<String>())
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
                 anyhow::bail!(
-                    "timed out waiting for coherent build {build}: {last}; incumbent health: {health:?}"
+                    "timed out waiting for coherent build {build}: {last}; incumbent health: {health:?}\ncontroller log:\n{}",
+                    controller_log.join("\n")
                 );
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
