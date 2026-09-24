@@ -259,6 +259,8 @@ function pageHarness({
   updatePending = false,
 } = {}) {
   const messages = [];
+  const timers = new Map();
+  let nextTimer = 0;
   const storage = new Map();
   if (alignmentReload) storage.set("tonk:sw-upgrade-reload", "1");
   let reloads = 0;
@@ -323,8 +325,12 @@ function pageHarness({
       Event,
       Number,
       Promise,
-      setTimeout,
-      clearTimeout,
+      setTimeout(callback) {
+        const id = ++nextTimer;
+        timers.set(id, callback);
+        return id;
+      },
+      clearTimeout(id) { timers.delete(id); },
     },
     { filename: INDEX },
   );
@@ -334,6 +340,12 @@ function pageHarness({
     serviceWorkers,
     storage,
     messages,
+    timers,
+    fireTimeouts() {
+      const callbacks = [...timers.values()];
+      timers.clear();
+      callbacks.forEach(callback => callback());
+    },
     reloads: () => reloads,
     updates: () => updates,
     releaseUpdate: () => resolveUpdate?.(),
@@ -602,6 +614,28 @@ test("an installed successor asks the incumbent to release its streams", async (
     result.messages.map((message) => message.type),
     ["connectivity", "activate-if-installed", "retire-if-superseded"],
   );
+});
+
+test("activation catches up when waiting becomes visible after the installed event", async () => {
+  const result = pageHarness({ mode: "warm-update" });
+  await new Promise(setImmediate);
+  result.incoming.state = "installed";
+  await result.incoming.dispatch("statechange");
+  assert.deepEqual(result.messages.map(message => message.type), ["connectivity"]);
+  result.registration.installing = null;
+  result.registration.waiting = result.incoming;
+  result.fireTimeouts();
+  assert.deepEqual(result.messages.map(message => message.type), [
+    "connectivity", "activate-if-installed", "retire-if-superseded",
+  ]);
+  // A lost first activation nudge must not strand the installed successor.
+  result.fireTimeouts();
+  assert.equal(result.messages.filter(message => message.type === "activate-if-installed").length, 2);
+  assert.equal(result.messages.filter(message => message.type === "retire-if-superseded").length, 1);
+  await result.activateWarmWorker();
+  await new Promise(setImmediate);
+  assert.equal(result.reloads(), 1);
+  assert.equal(result.timers.size, 0, "adoption must stop observation");
 });
 
 test("two update-aware documents each reload once on one controller replacement", async () => {

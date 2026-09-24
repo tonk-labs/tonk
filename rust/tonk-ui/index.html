@@ -550,6 +550,7 @@
 
                 let incoming = null;
                 let retirementRequested = false;
+                let activationTimer = null;
                 let settled = false;
                 let resolveOutcome;
                 const outcome = new Promise((resolve) => {
@@ -570,21 +571,22 @@
                     // visibility of that state, so wake the incumbent once and
                     // let it verify the waiting worker before releasing.
                     if (
-                        !retirementRequested &&
                         incoming?.state === "installed" &&
                         registration.waiting === incoming &&
                         navigator.serviceWorker.controller === priorController
                     ) {
-                        retirementRequested = true;
                         // Installation has committed the full generation.
                         // Repeat the activation request from the installed
                         // successor if Chrome left it waiting after install.
                         incoming.postMessage({
                             type: "activate-if-installed",
                         });
-                        priorController.postMessage({
-                            type: "retire-if-superseded",
-                        });
+                        if (!retirementRequested) {
+                            retirementRequested = true;
+                            priorController.postMessage({
+                                type: "retire-if-superseded",
+                            });
+                        }
                     }
                     // Browser activation replaces the incumbent controller;
                     // `controllerchange` below drives the guarded reload.
@@ -593,6 +595,16 @@
                         navigator.serviceWorker.controller !== priorController
                     ) {
                         finish("replaced");
+                    }
+                    // Registration properties can catch up after statechange,
+                    // and an installed worker can miss the first activation
+                    // nudge. Recheck the durable state without fetching through
+                    // the incumbent or repeatedly extending its lifetime.
+                    if (!settled && activationTimer === null) {
+                        activationTimer = setTimeout(() => {
+                            activationTimer = null;
+                            onWorkerState();
+                        }, 1000);
                     }
                 };
                 const watchIncoming = (worker) => {
@@ -618,6 +630,8 @@
                 };
                 const cleanup = () => {
                     observingInstallLifecycle = false;
+                    if (activationTimer !== null) clearTimeout(activationTimer);
+                    activationTimer = null;
                     registration.removeEventListener(
                         "updatefound",
                         onUpdateFound,

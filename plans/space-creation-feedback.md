@@ -67,3 +67,13 @@ messages from rearming it, and avoids obsolete-worker cache maintenance after st
 The new regression passes, all 91 service-worker tests pass, and the exact CI
 release binaries with this JS fix pass the persisted-upgrade browser test on Chrome
 150.0.7871.115. Hosted confirmation of this fix remains pending.
+
+Run `36032615266` passed E2E only after the upgrade test retried: the first attempt
+still showed an installed successor after incumbent stream release. Do not treat
+that green aggregate as proof of deterministic recovery. The page's activation
+nudge was one-shot and could be missed when the waiting registration became
+visible after the installed state event. A new deterministic regression fails
+before the page rechecks durable registration state and retries activation. The
+recheck never polls the incumbent's data plane, retires it only once, and stops on
+adoption or failure. All 92 service-worker tests and the persisted-upgrade browser
+test pass locally with both fixes; first-attempt CI confirmation remains pending.
