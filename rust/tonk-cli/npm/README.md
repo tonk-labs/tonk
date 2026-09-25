@@ -30,17 +30,17 @@ attached to `.github/workflows/cli-npm.yml`; the workflow uses GitHub
 OIDC and `npm publish`, with no repository npm token.
 
 The bump and the tag are separate acts on separate machines, and have to
-be. Rulesets on `staging` require a pull request and forbid
+be. Rulesets on `main` require a pull request and forbid
 non-fast-forward with no bypass, so nobody can push a release commit
 directly; and because merge commits are disabled, merging rewrites the
 SHA, so a tag created locally would point at a commit that never lands.
 So `cargo release` makes only the commit, and `release-tag.yml` creates
-the `v<version>` tag in CI once that commit is on `staging`.
+the `v<version>` tag in CI once that commit is on `main`.
 
-1. Cut the bump on a `release/*` branch off current `staging`:
+1. Cut the bump on a `release/*` branch off current `main`:
 
    ```sh
-   git fetch origin && git switch -c release/0.6.4 origin/staging
+   git fetch origin && git switch -c release/0.6.4 origin/main
    nix develop            # cargo-release lives in the devshell
    cargo release patch --execute   # 0.6.3 -> 0.6.4
    ```
@@ -48,7 +48,7 @@ the `v<version>` tag in CI once that commit is on `staging`.
    Dry-run is the default; `--execute` acts. `release.toml` sets
    `push = false` and `tag = false`, so this writes exactly one commit,
    `chore: release 0.6.4` (`Cargo.toml` plus `Cargo.lock`), and touches
-   nothing else. A release is refused from any branch but `staging` or
+   nothing else. A release is refused from any branch but `main` or
    `release/*`, and refused outright if the tree is dirty.
 
    Which level to use:
@@ -69,7 +69,7 @@ the `v<version>` tag in CI once that commit is on `staging`.
    level-plus-prerelease flag, so if scope grows mid-cycle, re-target
    explicitly: `cargo release 0.7.0-rc.1 --execute`.
 
-2. Open a PR for that one commit and merge it to `staging`. On the
+2. Open a PR for that one commit and merge it to `main`. On the
    merge, `release-tag.yml` notices that `[workspace.package] version`
    changed across the pushed range, creates the annotated tag
    `v0.6.4` at the merged commit. A prerelease tag immediately dispatches
@@ -77,26 +77,40 @@ the `v<version>` tag in CI once that commit is on `staging`.
    unpublished until the same commit reaches `stable`.
 
    It tags on a version *change* only. A missing `v<version>` is never
-   on its own a reason to tag, which is why staging can sit well past
+   on its own a reason to tag, which is why main can sit well past
    0.6.3 with no `v0.6.3` and nothing fires.
 
-3. For a final release, wait for `v<version>` to be created, verify the
+3. To deploy a prerelease to staging, fast-forward `staging` to its exact
+   tag commit after the release checks pass:
+
+   ```sh
+   git fetch origin --tags
+   git merge-base --is-ancestor origin/staging 'v0.6.4-rc.1^{commit}'
+   git push origin 'v0.6.4-rc.1^{commit}:refs/heads/staging'
+   ```
+
+   This starts the staging web deployment and rolling staging CLI build.
+   Ordinary development merges into `main` do not deploy staging.
+
+4. For a final release, wait for `v<version>` to be created, verify the
    version has no prerelease suffix, then fast-forward `stable` **to the
    release commit itself**:
 
    ```sh
-   git push origin v0.6.4:refs/heads/stable
+   git fetch origin --tags
+   git merge-base --is-ancestor origin/stable 'v0.6.4^{commit}'
+   git push origin 'v0.6.4^{commit}:refs/heads/stable'
    ```
 
-   `stable` is always an ancestor of `staging`, so that is a
+   `stable` is always an ancestor of `main`, so that is a
    fast-forward. If it is rejected as non-fast-forward, something put a
-   commit on `stable` that is not on `staging` — sort that out rather
+   commit on `stable` that is not on `main` — sort that out rather
    than forcing it.
 
    The push starts `CLI npm`, which proves that the checkout, the
    immutable version tag, and `origin/stable` are the same commit before
    publishing `latest`. Watch that workflow run through all platform
-   and wrapper packages. A later staging commit is not a valid promotion
+   and wrapper packages. A later main commit is not a valid promotion
    target, even when it is a descendant of the release.
 
 ### Recovery
@@ -125,7 +139,7 @@ version are skipped while missing platform or wrapper packages continue.
 
 | Tag | Points at | Install |
 | --- | --- | --- |
-| `next` | newest explicitly released prerelease from `staging` | `npx @tonk/cli@next` |
+| `next` | newest explicitly released prerelease from `main` | `npx @tonk/cli@next` |
 | `latest` | final release commit held by `stable` | `npx @tonk/cli` |
 
 Bare `npx @tonk/cli` and `npm install -g @tonk/cli` are stable installs.

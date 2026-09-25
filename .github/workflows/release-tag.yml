@@ -5,13 +5,13 @@ name: 'Release tag'
 # fast-forwarded to that exact tag commit.
 #
 # CI owns the tag because a maintainer cannot own it. Two active rulesets
-# cover `staging` (the default branch) and require a pull request, forbid
+# cover `main` (the default branch) and require a pull request, forbid
 # non-fast-forward, and require signed commits and status checks, with no
-# bypass actor -- so nothing pushes a commit straight to `staging`. Merge
+# bypass actor -- so nothing pushes a commit straight to `main`. Merge
 # commits are disabled as well, so a PR merge rewrites the SHA and a
 # locally created tag would point at a commit that never lands on the
 # branch. The rulesets cover branches, not tags, so CI can push the tag
-# once the bump is on `staging`.
+# once the bump is on `main`.
 #
 # The predicate is a *change* to `[workspace.package] version` across the
 # pushed range -- never the mere absence of `v<version>`. Staging has sat
@@ -21,7 +21,7 @@ name: 'Release tag'
 on:
   push:
     branches:
-      - staging
+      - main
 
 concurrency:
   group: release-tag
@@ -135,9 +135,11 @@ jobs:
           set -euo pipefail
           if [[ "$VERSION" != *-* ]]; then
             echo "final v$VERSION is tagged and ready for promotion"
-            echo "authorize npm publication with: git push origin v$VERSION:refs/heads/stable"
+            echo "authorize npm publication with: git push origin v$VERSION^{commit}:refs/heads/stable"
             exit 0
           fi
+
+          echo "promote this prerelease to staging with: git push origin v$VERSION^{commit}:refs/heads/staging"
 
           # `cli-npm.yml` resolves the version from the ref's Cargo
           # workspace version and proves the checkout is the tag commit,

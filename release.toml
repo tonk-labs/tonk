@@ -1,7 +1,7 @@
 # A release is two acts, split across two machines, because it has to be.
 # `cargo release <level>` makes the version bump commit and stops. The
 # tag is created in CI by `.github/workflows/release-tag.yml` once that
-# commit lands on `staging`. A prerelease tag publishes immediately;
+# commit lands on `main`. A prerelease tag publishes immediately;
 # a final tag publishes only after `stable` fast-forwards to that exact
 # commit. That workflow's header explains why the split is forced; the
 # `push` and `tag` settings below say what it means here.
@@ -12,13 +12,13 @@
 # commit for all 34 crates, not one commit each.
 consolidate-commits = true
 
-# The ruleset forbids pushing to `staging`, so cargo-release must not
+# The ruleset forbids pushing to `main`, so cargo-release must not
 # try. It exits non-zero on the rejected push, after the commit exists,
 # leaving a confusing half-done state.
 push = false
 
 # CI owns the tag. A tag cut here would point at the local commit, and
-# the squash merge that lands it on `staging` produces a different SHA.
+# the squash merge that lands it on `main` produces a different SHA.
 tag = false
 
 # Kept even though `tag = false`: it names the tag for the escape hatch
@@ -41,6 +41,6 @@ publish = false
 # The guardrail against the original failure: a release cut from an
 # unrelated feature branch. `release/*` is the normal path -- the bump
 # needs a PR anyway, so it starts life on its own branch -- and
-# `staging` is allowed for the case where a maintainer already has it
+# `main` is allowed for the case where a maintainer already has it
 # checked out. `stable` is absent on purpose: it only fast-forwards.
-allow-branch = ["staging", "release/*"]
+allow-branch = ["main", "release/*"]
