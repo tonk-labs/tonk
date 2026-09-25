@@ -337,8 +337,10 @@ function pageHarness({
     },
   });
   const frames = [];
-  // The page's repeated activation request, driven by the test.
+  // The page's repeated activation request and its hold deadline, driven by
+  // the test.
   const repeats = new Map();
+  const deadlines = new Map();
   let nextRepeat = 0;
   const document = eventTarget({
     visibilityState: "visible",
@@ -377,13 +379,14 @@ function pageHarness({
       Number,
       Promise,
       setTimeout(callback, delay) {
-        if (delay !== 1_000) return setTimeout(callback, delay);
+        const timers = delay === 1_000 ? repeats : delay === 10_000 ? deadlines : null;
+        if (!timers) return setTimeout(callback, delay);
         nextRepeat += 1;
-        repeats.set(`repeat-${nextRepeat}`, callback);
-        return `repeat-${nextRepeat}`;
+        timers.set(`timer-${nextRepeat}`, callback);
+        return `timer-${nextRepeat}`;
       },
       clearTimeout(id) {
-        if (repeats.delete(id)) return;
+        if (repeats.delete(id) || deadlines.delete(id)) return;
         clearTimeout(id);
       },
     },
@@ -400,6 +403,11 @@ function pageHarness({
     tickRepeats: () => {
       const due = [...repeats.entries()];
       repeats.clear();
+      for (const [, callback] of due) callback();
+    },
+    expireHold: () => {
+      const due = [...deadlines.entries()];
+      deadlines.clear();
       for (const [, callback] of due) callback();
     },
     fetch: (...args) => self.fetch(...args),
@@ -705,41 +713,39 @@ test("successor activation replaces the controller and causes one guarded reload
   assert.equal(result.reloads(), 1);
 });
 
-test("a page holds its data plane while a successor waits to take over", async () => {
-  const result = pageHarness({ mode: "warm-update" });
-  await new Promise(setImmediate);
+/// Marks when the page's IO gate opens.
+const watchGate = (result) => {
+  const gate = { open: false };
+  result.ready().then(() => { gate.open = true; });
+  return gate;
+};
+
+const installSuccessor = async (result) => {
   result.registration.installing = null;
   result.registration.waiting = result.incoming;
   result.incoming.state = "installed";
   await result.incoming.dispatch("statechange");
-  result.fetched.length = 0;
+};
 
-  let answered = false;
-  const held = result.fetch("/api/profile/branch/main/query").then(() => { answered = true; });
-  await result.fetch("/ui.js");
-  await result.fetch("/api/health");
+test("a page holds its IO while a successor waits to take over", async () => {
+  const result = pageHarness({ mode: "warm-update" });
+  await new Promise(setImmediate);
+  await installSuccessor(result);
+
+  const gate = watchGate(result);
   for (let turn = 0; turn < 5; turn++) await new Promise(setImmediate);
-  assert.deepEqual(result.fetched, ["/ui.js", "/api/health"], "only the data plane waits");
-  assert.equal(answered, false);
+  assert.equal(gate.open, false, "new IO waits for the successor");
 
   await result.activateWarmWorker();
-  await held;
-  assert.deepEqual(result.fetched, ["/ui.js", "/api/health", "/api/profile/branch/main/query"]);
+  for (let turn = 0; turn < 5; turn++) await new Promise(setImmediate);
+  assert.equal(gate.open, true);
 });
 
-test("a page holding its data plane asks Chrome to activate the successor again", async () => {
+test("a page holding its IO asks Chrome to activate the successor again", async () => {
   const result = pageHarness({ mode: "warm-update" });
   await new Promise(setImmediate);
-  result.registration.installing = null;
-  result.registration.waiting = result.incoming;
-  result.incoming.state = "installed";
-  await result.incoming.dispatch("statechange");
+  await installSuccessor(result);
 
-  const held = [
-    result.fetch("/api/profile/branch/main/query"),
-    result.fetch("/api/profile/branch/main/query"),
-  ];
-  await new Promise(setImmediate);
   assert.equal(result.frames.length, 1, "one navigation when the hold starts");
   const [frame] = result.frames;
   assert.equal(frame.tag, "iframe");
@@ -754,17 +760,33 @@ test("a page holding its data plane asks Chrome to activate the successor again"
   assert.equal(result.frames.length, 2);
 
   await result.activateWarmWorker();
-  await Promise.all(held);
+  for (let turn = 0; turn < 5; turn++) await new Promise(setImmediate);
   result.tickRepeats();
   assert.equal(result.frames.length, 2, "no navigation after the successor took over");
 });
 
-test("a page without a waiting successor sends its data plane at once", async () => {
+test("a successor that never takes over stops holding the page", async () => {
+  const result = pageHarness({ mode: "warm-update" });
+  await new Promise(setImmediate);
+  await installSuccessor(result);
+  const gate = watchGate(result);
+  await new Promise(setImmediate);
+  assert.equal(gate.open, false);
+
+  result.expireHold();
+  const after = watchGate(result);
+  for (let turn = 0; turn < 5; turn++) await new Promise(setImmediate);
+  assert.equal(after.open, true, "new IO proceeds once the hold expires");
+  result.tickRepeats();
+  assert.equal(result.frames.length, 1, "no more activation requests after the hold");
+});
+
+test("a page without a waiting successor opens its IO at once", async () => {
   const result = pageHarness({ mode: "warm" });
   await result.ready();
-  result.fetched.length = 0;
-  await result.fetch("/api/profile/branch/main/query");
-  assert.deepEqual(result.fetched, ["/api/profile/branch/main/query"]);
+  const gate = watchGate(result);
+  for (let turn = 0; turn < 3; turn++) await new Promise(setImmediate);
+  assert.equal(gate.open, true);
   assert.equal(result.frames.length, 0);
 });
 
