@@ -999,10 +999,13 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
         !name_form.contains("<i class=\"cur\""),
         "an unfocused display-name field must not draw an editing cursor",
     );
+    assert!(
+        !name_form.contains("on:profile-rename-submit"),
+        "the receipt-aware submit handler must own dispatch",
+    );
     for contract in [
         "name=\"name\" type=\"text\"",
         "required maxlength=\"50\" autocomplete=\"name\"",
-        "on:profile-rename-submit=profile/rename",
         "data-profile-rename-submit>save changes",
     ] {
         assert!(

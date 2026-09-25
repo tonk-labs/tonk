@@ -768,6 +768,38 @@ async fn report_space_creation(
     }
 }
 
+async fn report_profile_rename(
+    state: &AppState,
+    receipt: &dialog_artifacts::Entity,
+    status: &str,
+    detail: &str,
+) {
+    let tonk = state.read().await;
+    if let Err(error) = tonk
+        .reactor
+        .profile_repository()
+        .branch(&tonk.active_branch)
+        .overlay()
+        .assert(
+            dialog_query::the!("xyz.tonk.profile-rename/status")
+                .of(receipt.clone())
+                .is(status.to_owned())
+                .cardinality(dialog_query::Cardinality::One),
+        )
+        .assert(
+            dialog_query::the!("xyz.tonk.profile-rename/detail")
+                .of(receipt.clone())
+                .is(detail.to_owned())
+                .cardinality(dialog_query::Cardinality::One),
+        )
+        .write()
+        .perform(&tonk.operator)
+        .await
+    {
+        log!("ProfileRename: failed to publish result: {error}");
+    }
+}
+
 /// The FAB's routeless share claim's target-space attribute — the
 /// `xyz.tonk.invite/space` fact asserted alongside the `tonk:invite`
 /// transient. Kept in sync with
@@ -2433,9 +2465,14 @@ impl dialog_capability::Provider<tonk_schema::command::ProfileRename>
         let key = self.origin().repo.clone();
         log!("command ProfileRename repo={} name={}", key, name);
 
-        if let Err(error) = run_profile_rename(self, name).await {
-            log!("ProfileRename for repo '{}' failed: {}", key, error);
-        }
+        let (status, detail) = match run_profile_rename(self, name).await {
+            Ok(()) => ("renamed", "Display name saved."),
+            Err(error) => {
+                log!("ProfileRename for repo '{}' failed: {}", key, error);
+                ("failed", "Couldn't save your display name. Try again.")
+            }
+        };
+        report_profile_rename(self.state(), &command.this, status, detail).await;
     }
 }
 
@@ -7133,6 +7170,37 @@ mod space_creation_feedback_tests {
             String::from_utf8_lossy(&body)
         );
         serde_json::from_slice(&body).unwrap()
+    }
+
+    #[dialog_common::test]
+    async fn profile_rename_reports_completion_for_each_request_including_unchanged_names() {
+        let (app, state, _lsp) =
+            crate::router::api_router_with_state(super::profile_library_tests::test_state().await);
+        let branch = state.read().await.active_branch.clone();
+        for receipt in ["urn:uuid:rename-first", "urn:uuid:rename-unchanged"] {
+            post(
+                &app,
+                &format!("/api/profile/branch/{branch}/transact"),
+                serde_json::json!({
+                    "claims": [{ "op": "assert", "application": {
+                        "predicate": { "kind": "transient", "concept": { "with": {
+                            "name": { "the": "xyz.tonk.command.profile-rename/name", "as": "Text" }
+                        } } },
+                        "parameters": { "this": receipt, "name": "Ada" }
+                    } }]
+                }),
+            )
+            .await;
+            let rows = post(&app, &format!("/api/profile/branch/{branch}/query"), serde_json::json!({
+                "predicate": { "with": {
+                    "status": { "the": "xyz.tonk.profile-rename/status", "as": "Text", "cardinality": "one" },
+                    "detail": { "the": "xyz.tonk.profile-rename/detail", "as": "Text", "cardinality": "one" }
+                } },
+                "terms": { "this": receipt, "status": { "?": { "name": "status" } }, "detail": { "?": { "name": "detail" } } }
+            })).await;
+            assert_eq!(rows[0]["this"], receipt);
+            assert_eq!(rows[0]["fields"]["status"], "renamed", "{rows}");
+        }
     }
 
     #[dialog_common::test]

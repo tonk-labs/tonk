@@ -362,6 +362,9 @@ fn open_when_upgraded(host: &Element) {
     };
     let host = host.clone();
     let raise = Closure::<dyn FnMut()>::new(move || {
+        if !host.is_connected() || host.has_attribute("data-suspended") {
+            return;
+        }
         if let Some(dialog) = host.dyn_ref::<HtmlDialogElement>()
             && !dialog.open()
         {
@@ -2697,15 +2700,17 @@ pub fn is_open() -> bool {
         })
 }
 
-/// Hide the standing cluster without closing it: the account tab it is a
-/// page of went to the background, and everything typed must survive the
-/// switch back. The counterpart of [`resume`].
+/// Release native modal state while retaining the cluster and its inputs
+/// for the account tab's next visit. The counterpart of [`resume`].
 pub fn suspend() {
     if let Some(host) = web_sys::window()
         .and_then(|window| window.document())
         .and_then(|document| document.get_element_by_id(DIALOG_ID))
     {
         let _ = host.set_attribute("data-suspended", "");
+        if let Some(dialog) = host.dyn_ref::<HtmlDialogElement>() {
+            dialog.close();
+        }
     }
 }
 
@@ -2717,6 +2722,11 @@ pub fn resume() {
         .and_then(|document| document.get_element_by_id(DIALOG_ID))
     {
         let _ = host.remove_attribute("data-suspended");
+        if let Some(dialog) = host.dyn_ref::<HtmlDialogElement>()
+            && !dialog.open()
+        {
+            let _ = dialog.show_modal();
+        }
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         focus_address(&host);
         #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
@@ -3009,6 +3019,40 @@ fn on_click(host: &Element, selector: &str, handler: impl Fn() + 'static) {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn suspension_releases_modality_and_resume_preserves_inputs() {
+        let document = web_sys::window().unwrap().document().unwrap();
+        let host = document.create_element("dialog").unwrap();
+        host.set_id(super::DIALOG_ID);
+        host.set_inner_html("<input value='kept@example.com'>");
+        document.body().unwrap().append_child(&host).unwrap();
+        let dialog = host.dyn_ref::<HtmlDialogElement>().unwrap();
+        dialog.show_modal().unwrap();
+        assert!(host.matches(":modal").unwrap());
+
+        // A queued initial opening must not undo a route's suspension.
+        super::open_when_upgraded(&host);
+        super::suspend();
+        super::wait_ms(10).await;
+        assert!(!dialog.open());
+        assert!(!host.matches(":modal").unwrap());
+        assert!(host.is_connected());
+        super::resume();
+        assert!(host.matches(":modal").unwrap());
+        assert_eq!(
+            host.query_selector("input")
+                .unwrap()
+                .unwrap()
+                .dyn_into::<web_sys::HtmlInputElement>()
+                .unwrap()
+                .value(),
+            "kept@example.com"
+        );
+        dialog.close();
+        host.remove();
+    }
+
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     #[wasm_bindgen_test::wasm_bindgen_test]
     fn tool_registration_does_not_queue_a_person_share() {
@@ -3409,7 +3453,7 @@ mod space_login_tests {
         host.set_inner_html(DIALOG_HTML);
         host.set_attribute("data-fabb-task", "").unwrap();
         document.body().unwrap().append_child(&host).unwrap();
-        prepare_fabb_task_ui(&host);
+        prepare_compact_account_ui(&host);
         let stack = host
             .query_selector("#tonk-register-stack")
             .unwrap()

@@ -862,8 +862,7 @@ view!:
           <space-create>
             <button class="snew chrome" type="button" data-new-space data-space-create-open>new space<span class="g" aria-hidden="true">+</span></button>
             <tonk-dialog appearance="hub" data-space-create-dialog heading="New space">
-              <form id="create-space-card" class="space-create-form" data-space-create-form
-                on:space-create=space/create>
+              <form id="create-space-card" class="space-create-form" data-space-create-form>
                 <label class="space-create-field"><span>space name</span><input name="name" type="text" required maxlength="100" autocomplete="off"></label>
                 <label class="space-create-field"><span>a short description <small>/ optional</small></span><textarea name="description" maxlength="240"></textarea></label>
                 <input type="hidden" name="open" value="true">
@@ -1964,7 +1963,7 @@ view!:
   this: tonk:account/name
   show:
     editable: |
-      <form class="details-form" data-profile-rename-form on:profile-rename-submit=profile/rename>
+      <form class="details-form" data-profile-rename-form>
         <label for="account-display-name">display name</label>
         <input class="sname" id="account-display-name" name="name" type="text"
           data-settings-name value={name} required maxlength="50" autocomplete="name"
@@ -2068,9 +2067,8 @@ element!: &hub-collection
     disconnected: |
       (self) => self._observer?.disconnect()
 
-# Owns one New Space opener and its dialog. Validation happens during capture,
-# before the declarative submit binding turns the form into a command, so an
-# invalid or repeated submit cannot mint a partial space.
+# Owns one New Space opener and its dialog. Capture owns dispatch so each
+# submission can subscribe to its exact command receipt before it is sent.
 element!: &space-create
   description: Opens and validates a named space creation dialog.
   method:
@@ -2078,6 +2076,10 @@ element!: &space-create
       (self) => {
         const form = self.querySelector('form[data-space-create-form]');
         const error = self.querySelector('[data-space-create-error]');
+        if (self.hasAttribute('busy')) {
+          self.querySelector('[data-space-create-dialog]')?.show?.();
+          return;
+        }
         form?.reset();
         if (error) error.textContent = '';
         self.removeAttribute('busy');
@@ -2091,6 +2093,8 @@ element!: &space-create
       (self, event) => {
         const form = event.target;
         if (!form?.matches?.('form[data-space-create-form]')) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
         const name = form.elements.name;
         const description = form.elements.description;
         const error = self.querySelector('[data-space-create-error]');
@@ -2113,6 +2117,61 @@ element!: &space-create
         for (const control of self.querySelectorAll('[data-space-create-submit]')) {
           control.disabled = true;
         }
+        self.create(form);
+      }
+    create: |
+      async (self, form) => {
+        let reader;
+        const error = self.querySelector('[data-space-create-error]');
+        const parameters = { name: form.elements.name.value,
+          description: form.elements.description.value, open: form.elements.open.value };
+        try {
+          await window.tonk.ready;
+          if (!self.isConnected) return;
+          const id = 'urn:uuid:' + Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(16).padStart(8, '0')).join('');
+          reader = window.tonk.subscribe({
+            predicate: { with: {
+              status: { the: 'xyz.tonk.space-creation/status', as: 'Text', cardinality: 'one' },
+              detail: { the: 'xyz.tonk.space-creation/detail', as: 'Text', cardinality: 'one' },
+            } },
+            terms: { this: id, status: { '?': { name: 'status' } }, detail: { '?': { name: 'detail' } } },
+          }).getReader();
+          self.__reader = reader;
+          await window.tonk.transact({ claims: [{ op: 'assert', application: {
+            predicate: { kind: 'transient', concept: { with: {
+              name: { the: 'xyz.tonk.command.create-space/name', as: 'Text' },
+              open: { the: 'xyz.tonk.command.create-space/open', as: 'Text' },
+              description: { the: 'xyz.tonk.command.create-space/description', as: 'Text' },
+            } } },
+            parameters: { this: id, ...parameters },
+          } }] });
+          while (self.isConnected) {
+            const { value, done } = await reader.read();
+            if (done) throw new Error('Creation status stream ended');
+            const result = value.find(row => row.this === id)?.fields;
+            if (result?.status === 'failed') {
+              if (error) error.textContent = result.detail;
+              return;
+            }
+            if (result?.status === 'created') {
+              self.querySelector('[data-space-create-dialog]')?.close?.();
+              window.tonk.navigate(result.detail);
+              return;
+            }
+          }
+        } catch (failure) {
+          if (error) error.textContent = "Couldn't confirm creation. Check your spaces before trying again.";
+        } finally {
+          if (reader) await reader.cancel().catch(() => {});
+          if (self.__reader === reader) self.__reader = null;
+          self.removeAttribute('busy');
+          for (const control of self.querySelectorAll('[data-space-create-submit]')) control.disabled = false;
+        }
+      }
+    disconnected: |
+      (self) => {
+        self.__reader?.cancel().catch(() => {});
+        self.__reader = null;
       }
     connected: |
       (self) => {
@@ -2218,8 +2277,7 @@ view!:
             <space-create class="header-new">
               <button class="snew chrome" type="button" data-new-space data-space-create-open>new space<span class="g" aria-hidden="true">+</span></button>
               <tonk-dialog appearance="hub" data-space-create-dialog heading="New space">
-                <form id="create-space-header" class="space-create-form" data-space-create-form
-                  on:space-create=space/create>
+                <form id="create-space-header" class="space-create-form" data-space-create-form>
                   <label class="space-create-field"><span>space name</span><input name="name" type="text" required maxlength="100" autocomplete="off"></label>
                   <label class="space-create-field"><span>a short description <small>/ optional</small></span><textarea name="description" maxlength="240"></textarea></label>
                   <input type="hidden" name="open" value="true">
@@ -2331,8 +2389,7 @@ view!:
           <space-create>
             <button class="mobile-create" type="button" data-new-space data-space-create-open><span class="nav-mark" aria-hidden="true">+</span>new space</button>
             <tonk-dialog appearance="hub" data-space-create-dialog heading="New space">
-              <form id="create-space-mobile" class="space-create-form" data-space-create-form
-                on:space-create=space/create>
+              <form id="create-space-mobile" class="space-create-form" data-space-create-form>
                 <label class="space-create-field"><span>space name</span><input name="name" type="text" required maxlength="100" autocomplete="off"></label>
                 <label class="space-create-field"><span>a short description <small>/ optional</small></span><textarea name="description" maxlength="240"></textarea></label>
                 <input type="hidden" name="open" value="true">
@@ -4536,6 +4593,8 @@ element!: &account-settings
       (self, event) => {
         const form = event.target.closest?.('[data-profile-rename-form]');
         if (!form) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
         const input = form.elements?.name;
         const submit = form.querySelector('[data-profile-rename-submit]');
         const error = form.querySelector('[data-profile-rename-error]');
@@ -4561,8 +4620,58 @@ element!: &account-settings
         input.value = name;
         input.removeAttribute('aria-invalid');
         if (error) { error.textContent = ''; error.hidden = true; }
+        if (name === input.defaultValue.trim()) return;
         form.setAttribute('aria-busy', 'true');
         if (submit) submit.disabled = true;
+        self.profileNameSave(form, name);
+      }
+    profile-name-save: |
+      async (self, form, name) => {
+        let reader;
+        const error = form.querySelector('[data-profile-rename-error]');
+        try {
+          await window.tonk.ready;
+          if (!self.isConnected) return;
+          const id = 'urn:uuid:' + Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(16).padStart(8, '0')).join('');
+          reader = window.tonk.subscribe({
+            predicate: { with: {
+              status: { the: 'xyz.tonk.profile-rename/status', as: 'Text', cardinality: 'one' },
+              detail: { the: 'xyz.tonk.profile-rename/detail', as: 'Text', cardinality: 'one' },
+            } },
+            terms: { this: id, status: { '?': { name: 'status' } }, detail: { '?': { name: 'detail' } } },
+          }).getReader();
+          self._nameReader = reader;
+          await window.tonk.transact({ claims: [{ op: 'assert', application: {
+            predicate: { kind: 'transient', concept: { with: {
+              name: { the: 'xyz.tonk.command.profile-rename/name', as: 'Text' },
+            } } },
+            parameters: { this: id, name },
+          } }] });
+          while (self.isConnected) {
+            const { value, done } = await reader.read();
+            if (done) throw new Error('Rename status stream ended');
+            const result = value.find(row => row.this === id)?.fields;
+            if (result?.status === 'failed') {
+              if (error) { error.textContent = result.detail; error.hidden = false; }
+              return;
+            }
+            if (result?.status === 'renamed') {
+              form.elements.name.defaultValue = name;
+              return;
+            }
+          }
+        } catch (failure) {
+          if (error) {
+            error.textContent = "Couldn't confirm your display name was saved. Try again.";
+            error.hidden = false;
+          }
+        } finally {
+          if (reader) await reader.cancel().catch(() => {});
+          if (self._nameReader === reader) self._nameReader = null;
+          form.removeAttribute('aria-busy');
+          const submit = form.querySelector('[data-profile-rename-submit]');
+          if (submit) submit.disabled = false;
+        }
       }
     # Word the ceremony row. Every write is guarded, because this runs
     # from an observer over the same subtree it writes into.
@@ -4775,6 +4884,8 @@ element!: &account-settings
       }
     disconnected: |
       (self) => {
+        self._nameReader?.cancel().catch(() => {});
+        self._nameReader = null;
         if (self._moved) window.removeEventListener('tonk:context', self._moved);
         self._resolved?.disconnect();
         if (self._torn) window.removeEventListener('tonk:registration-closed', self._torn);
