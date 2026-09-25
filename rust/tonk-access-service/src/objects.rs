@@ -12,14 +12,14 @@
 //! checked against the declared digest.
 
 use base58::ToBase58;
-use dialog_capability::{Capability, Policy, Provider};
+use dialog_capability::{Capability, Did, Provider};
 use dialog_common::Blake3Hash;
 use dialog_effects::archive::prelude::{GetExt, PutExt};
 use dialog_effects::archive::{self, ArchiveError};
 use dialog_effects::blob::prelude::{BlobImportExt as _, BlobReadExt as _};
 use dialog_effects::blob::{self, BlobError, BlobReader, BlobSink, BlobSource, BlobWriter};
-use dialog_effects::memory::prelude::{PublishExt, RetractExt};
-use dialog_effects::memory::{self, Cell, Edition, MemoryError, Space, Version};
+use dialog_effects::memory::prelude::{PublishExt, ResolveExt, RetractExt};
+use dialog_effects::memory::{self, Edition, MemoryError, Version};
 use futures_util::StreamExt as _;
 use sha2_0_10::{Digest, Sha256};
 use worker::js_sys::Uint8Array;
@@ -44,16 +44,9 @@ impl Objects {
     }
 }
 
-fn cell_key<Fx>(capability: &Capability<Fx>) -> String
-where
-    Fx: Policy<Of = Cell>,
-{
-    format!(
-        "{}/{}/{}",
-        capability.subject(),
-        Space::of(capability).space,
-        Cell::of(capability).cell
-    )
+/// The key a memory cell is stored under: `{subject}/{space}/{cell}`.
+fn cell_key(subject: &Did, space: &str, cell: &str) -> String {
+    format!("{subject}/{space}/{cell}")
 }
 
 fn claims(method: Method, key: String, body: Option<&[u8]>, precondition: Precondition) -> Claims {
@@ -102,7 +95,11 @@ impl Provider<archive::Get> for Objects {
         &self,
         capability: Capability<archive::Get>,
     ) -> Result<Option<Vec<u8>>, ArchiveError> {
-        let key = block_key(&capability, capability.digest());
+        let key = block_key(
+            capability.subject(),
+            capability.catalog(),
+            capability.digest(),
+        );
         read(&self.bucket, &key)
             .await
             .map(|found| found.map(|(bytes, _)| bytes))
@@ -114,7 +111,11 @@ impl Provider<archive::Get> for Objects {
 impl Provider<archive::Put> for Objects {
     async fn execute(&self, capability: Capability<archive::Put>) -> Result<(), ArchiveError> {
         let content = capability.content();
-        let key = block_key(&capability, &Blake3Hash::hash(content));
+        let key = block_key(
+            capability.subject(),
+            capability.catalog(),
+            &Blake3Hash::hash(content),
+        );
         let claims = claims(Method::Put, key, Some(content), Precondition::None);
         let value: JsValue = Uint8Array::from(content).into();
         store::put(&self.bucket, &claims, value)
@@ -130,7 +131,7 @@ impl Provider<memory::Resolve> for Objects {
         &self,
         capability: Capability<memory::Resolve>,
     ) -> Result<Option<Edition<Vec<u8>>>, MemoryError> {
-        let key = cell_key(&capability);
+        let key = cell_key(capability.subject(), capability.space(), capability.cell());
         read(&self.bucket, &key)
             .await
             .map(|found| {
@@ -149,7 +150,7 @@ impl Provider<memory::Publish> for Objects {
         &self,
         capability: Capability<memory::Publish>,
     ) -> Result<Version, MemoryError> {
-        let key = cell_key(&capability);
+        let key = cell_key(capability.subject(), capability.space(), capability.cell());
         let precondition = match capability.when() {
             Some(version) => Precondition::IfMatch(version_text(version)),
             None => Precondition::IfNoneMatch,
@@ -171,7 +172,7 @@ impl Provider<memory::Publish> for Objects {
 #[async_trait::async_trait(?Send)]
 impl Provider<memory::Retract> for Objects {
     async fn execute(&self, capability: Capability<memory::Retract>) -> Result<(), MemoryError> {
-        let key = cell_key(&capability);
+        let key = cell_key(capability.subject(), capability.space(), capability.cell());
         let claims = claims(
             Method::Delete,
             key,
