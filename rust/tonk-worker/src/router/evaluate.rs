@@ -1017,53 +1017,25 @@ mod tests {
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_test_configure!(run_in_service_worker);
 
-    #[cfg(target_arch = "wasm32")]
-    use axum::body::Body;
-    #[cfg(target_arch = "wasm32")]
-    use axum::http::{Request, StatusCode};
-    #[cfg(target_arch = "wasm32")]
-    use tower::ServiceExt;
-
     use super::{EvaluateResponse, evaluate_body};
     use crate::router::AppState;
     #[cfg(target_arch = "wasm32")]
-    use crate::router::{RepositoryInfo, api_router_with_state, tests::test_state};
+    use crate::router::tests::test_state;
 
-    /// Create the test repository via `PUT /api/repository/{name}`,
-    /// then hand back the wrapped [`AppState`] so tests can call
-    /// [`evaluate_body`] against the same `TonkState` the route
-    /// would. The reactor only *loads* repositories — it never
-    /// creates them — so the repo must exist before the first
-    /// `evaluate_body` call acquires a branch on it.
+    /// Create the test repository, then hand back the wrapped
+    /// [`AppState`] so tests can call [`evaluate_body`] against it. The
+    /// reactor only *loads* repositories — it never creates them — so the
+    /// repo must exist before the first `evaluate_body` call acquires a
+    /// branch on it.
     ///
     /// `label` is only a display name; the repository is created with a
     /// freshly minted identity and mounted at its routing key. Returns
     /// the state plus that key so callers address the repo by identity.
     #[cfg(target_arch = "wasm32")]
     async fn state_with_repo(label: &str) -> (AppState, String) {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/api/repository/{label}"))
-                    .method("PUT")
-                    .header("content-type", "application/json")
-                    .body(Body::from("{}"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let status = response.status();
-        assert_eq!(
-            status,
-            StatusCode::CREATED,
-            "expected 201 from PUT /api/repository/{label}, got {status}",
-        );
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let info: RepositoryInfo = serde_json::from_slice(&body).unwrap();
-        (state, info.name)
+        let state: AppState = std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
+        let key = crate::router::tests::put_repo(&state, label).await;
+        (state, key)
     }
 
     #[cfg(not(target_arch = "wasm32"))]

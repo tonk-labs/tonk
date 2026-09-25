@@ -1708,6 +1708,22 @@ self.onmessage = event => {
         );
         return;
     }
+    // A page holding live subscriptions says it is still here. The message
+    // event itself extends this worker's lifetime (an SSE body does not); the
+    // worker's answer is the debounced sync drain the beat also paces.
+    if (event.data && event.data.type === "keepalive") {
+        event.waitUntil?.(
+            (async () => {
+                try {
+                    const worker = await activateWorker();
+                    await worker.onkeepalive?.();
+                } catch (err) {
+                    log("keepalive dispatch failed:", err);
+                }
+            })(),
+        );
+        return;
+    }
     // A page became visible again — wake the worker so sync resumes the
     // active cadence immediately instead of waiting out a hidden interval.
     if (event.data && event.data.type === "visibility") {

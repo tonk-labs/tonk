@@ -108,7 +108,7 @@ pub async fn transact(
     };
     // Mark the repo dirty so the next sync drain pushes its new commits — but
     // ONLY if the commit actually moved the tree. The SW owns the sync
-    // work-queue (the page only pokes `POST /api/sync` on a heartbeat); a
+    // work-queue (the page only paces it with a keepalive message); a
     // commit here is the authoritative "this repo has un-pushed changes"
     // signal, and a transact whose data didn't change has none.
     //

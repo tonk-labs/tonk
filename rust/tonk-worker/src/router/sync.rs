@@ -788,7 +788,7 @@ pub(crate) async fn sync(
 
     // Don't touch the network while offline. This is the single chokepoint every
     // sync path flows through (the per-fetch drain, the self-scheduled loop,
-    // `POST /api/sync`, an SSE reconnect), so gating here stops ALL of them from
+    // the page's keepalive, an SSE reconnect), so gating here stops ALL of them from
     // hammering an unreachable upstream — an offline branch would otherwise
     // retry `handle.fetch()` on every tick, re-queue on failure, and retry
     // again. Stamp `offline` so the chip reflects the disconnect and report
@@ -1043,10 +1043,10 @@ pub(crate) fn now_millis() -> f64 {
 
 /// The repositories owed a sync sweep, in two sets.
 ///
-/// The service worker owns *what* needs syncing; the page only polls *when*
-/// (`POST /api/sync`). A commit enqueues its repo in `dirty` (from the transact
+/// The service worker owns *what* needs syncing; the page only paces *when*
+/// (its `keepalive` message). A commit enqueues its repo in `dirty` (from the transact
 /// handler, where the route is known); a successful drain clears it. A failed
-/// sweep moves it to `retrying`. The pull side is not tracked — [`drain`] pulls
+/// sweep moves it to `retrying`. The pull side is not tracked — [`drain_sync`] pulls
 /// every currently-open repository so a read-only viewer receives upstream
 /// edits without ever committing, so both sets are purely push-priority hints.
 ///
@@ -1151,9 +1151,9 @@ impl SyncQueue {
 /// per-repo [`sync_repository`] sweep, which pulls+pushes each upstream branch
 /// and honors the durable pause preference.
 ///
-/// Five callers reach this: the per-fetch `schedule_sync_drain` (debounced,
-/// generation-ticketed — the path the `<tonk-host>` idle poll to `POST
-/// /api/sync` rides on, since `on_fetch` schedules it), the SW's
+/// Six callers reach this: the per-fetch `schedule_sync_drain` (debounced,
+/// generation-ticketed), the `<tonk-host>` keepalive message (the same
+/// debounced drain, for a tab whose only traffic is live subscriptions), the SW's
 /// self-scheduled loop tick, `onconnectivity` (immediate reconcile on
 /// regaining connectivity), `onvisibility` (immediate reconcile on a page
 /// becoming visible), and the SW's own Background-Sync `onsync` (a discrete
@@ -1296,33 +1296,6 @@ where
     tonk.operator = session.operator;
     tonk.session_expires_at = session.expires_at;
     Ok(())
-}
-
-/// `POST /api/sync` — an external sync poke.
-///
-/// Deliberately does NO work of its own: the drain is scheduled by the SW's
-/// `on_fetch`, which runs `schedule_sync_drain` for EVERY request (debounced,
-/// generation-ticketed) before routing. So merely *reaching* this route already
-/// enqueued a coalesced drain on the event's `wait_until`. Draining here too
-/// would fire a second, un-debounced drain and stack it on the scheduled one —
-/// so the poke participates in the same scheduling machinery precisely by
-/// leaving the drain to `on_fetch`.
-///
-/// The steady cadence is SW-owned (the self-scheduled sync loop in
-/// `worker.rs`); this route remains for debug tooling and for the page's
-/// keepalive, which rides it to keep the worker alive.
-///
-/// It is NOT a reliable way to force an immediate reconcile. The drain it
-/// schedules goes through `may_drain` like every other, so on a hidden page
-/// with nothing to push it can be refused for up to the hidden interval —
-/// a poke asks; it does not compel. A caller that genuinely needs a prompt
-/// pull should make the page visible (`onvisibility` drains directly) or
-/// land a local commit, which bypasses the quiet interval. Always `200`
-/// either way: the poke is fire-and-forget and the response says nothing
-/// about whether a drain ran.
-#[wasm_compat]
-pub async fn drain() -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "ok": true }))
 }
 
 /// A millisecond wall-clock stamp for activity priority. `Date.now()` in the SW

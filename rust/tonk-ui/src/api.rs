@@ -226,41 +226,88 @@ pub async fn save_root(
     }
 }
 
-/// Ask the worker for a sync drain now.
+/// Ask the worker for a sync drain soon.
 ///
 /// The registering ceremony's activation signal is the account sweep's
 /// own pull turning from refused to served, so its freshness is the
-/// drain cadence. While the ceremony waits it calls this on its own
-/// clock instead of the background heartbeat's; the drain coalesces
-/// concurrent requests, so an extra ask costs nothing.
-pub async fn kick_sync() -> Result<(), TonkUiError> {
+/// drain cadence. While the ceremony waits it nudges on its own clock
+/// instead of the background heartbeat's; the drain coalesces concurrent
+/// nudges, so an extra one costs nothing.
+pub fn kick_sync() {
+    #[cfg(target_arch = "wasm32")]
+    tonk_host::keepalive();
+}
+
+/// Run a one-shot query against the profile's active branch and return
+/// its rows.
+///
+/// The read half of the page's contract with the worker: commands write
+/// facts, and the page reads them back through the same query any view
+/// uses, not through an endpoint shaped for one caller.
+pub async fn query_profile(body: &serde_json::Value) -> Result<serde_json::Value, TonkUiError> {
     tonk_host::ready::wait().await;
+    let branch = profile_branch();
     let response = reqwest::Client::new()
-        .post(format!("{}/api/sync", origin()))
+        .post(format!("{}/api/profile/branch/{branch}/query", origin()))
+        .json(body)
         .send()
         .await
         .map_err(into_api_error)?;
-    if response.status().is_success() {
-        Ok(())
-    } else {
-        Err(TonkUiError::ApiError(format!(
-            "POST /api/sync returned {}",
-            response.status()
-        )))
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        return Err(TonkUiError::ApiError(format!(
+            "POST /api/profile/branch/{branch}/query returned {status}: {text}"
+        )));
     }
+    response.json().await.map_err(into_api_error)
 }
 
-/// The account's customer registration state: the access service's live
-/// answer joined with the locally recorded enrollment.
-pub async fn customer_state() -> Result<serde_json::Value, TonkUiError> {
-    tonk_host::ready::wait().await;
-    let response = reqwest::Client::new().get(format!("{}/api/customer", origin()));
-    decode_account(
-        send_account(response, "GET", "/api/customer").await?,
-        "GET",
-        "/api/customer",
-    )
-    .await
+/// The `account/check-activation` claim: ask the access service whether
+/// this account is active, answered by the activation fact.
+pub(crate) fn check_activation_claim(at: u64) -> serde_json::Value {
+    serde_json::json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "description": "Ask the access service whether this account is active.",
+                        "with": {
+                            "at": { "the": "xyz.tonk.check-activation/at", "as": "UnsignedInteger" }
+                        }
+                    }
+                },
+                "parameters": { "at": at }
+            }
+        }]
+    })
+}
+
+/// Ask the worker to check activation with the access service. The answer
+/// lands as the account's activation fact; see [`account_activated`].
+pub async fn check_activation() -> Result<(), TonkUiError> {
+    transact_profile(check_activation_claim(js_sys::Date::now() as u64)).await
+}
+
+/// Whether the account's activation fact is on the profile — presence is
+/// the whole answer.
+pub async fn account_activated() -> Result<bool, TonkUiError> {
+    let body = serde_json::json!({
+        "predicate": { "with": {
+            "activated_at": {
+                "the": "xyz.tonk.account/activated-at", "as": "UnsignedInteger",
+                "cardinality": "one"
+            }
+        } },
+        "terms": {
+            "this": { "?": { "name": "account" } },
+            "activated_at": { "?": { "name": "activated_at" } },
+        }
+    });
+    let rows = query_profile(&body).await?;
+    Ok(rows.as_array().is_some_and(|rows| !rows.is_empty()))
 }
 
 /// Return the current profile's persisted account-link state.

@@ -213,8 +213,6 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         )
         .route("/api/account", get(account::get))
         .route("/api/account/display-name", post(account::set_display_name))
-        // Customer registration with the same-origin access service.
-        .route("/api/customer", get(customer::get_state))
         .route("/api/profile", get(profile::get_profile))
         .route(
             "/api/profile/branch/{branch}/query",
@@ -254,10 +252,6 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             "/api/account/connections/{id}/revoke",
             post(agent_connections::revoke),
         )
-        // Sync operations
-        // The single parameterless drain: the page's idle heartbeat pokes this
-        // and the SW's Background-Sync `onsync` reaches the same drain here.
-        .route("/api/sync", post(sync::drain))
         .route(
             "/api/repository/{repo}/branch/{branch}/sync/status",
             get(sync::sync_status),
@@ -842,37 +836,6 @@ pub mod tests {
                 .unwrap();
             assert_eq!(stored.proof_cids()[0], cids[0]);
         }
-    }
-
-    /// `POST /api/sync` is the idle heartbeat's poll target. It must do NO work
-    /// of its own — the drain is scheduled by the SW's `on_fetch` seeing the
-    /// request, so the route only has to exist and ack. Even with no repository
-    /// open it returns `200 {"ok": true}` immediately (it never touches state),
-    /// which is exactly why a poll participates in the debounce instead of
-    /// forcing a fresh drain per call.
-    #[dialog_common::test]
-    async fn it_acks_the_idle_sync_poll_without_draining() {
-        let state = test_state().await;
-        let (app, _lsp) = api_router(state);
-
-        let request = Request::builder()
-            .uri("/api/sync")
-            .method("POST")
-            .body(Body::empty())
-            .expect("Failed to build request");
-
-        let response = app
-            .oneshot(request)
-            .await
-            .expect("Failed to execute request");
-
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("Failed to read response body");
-        let json: serde_json::Value = serde_json::from_slice(&body).expect("response body is JSON");
-        assert_eq!(json, serde_json::json!({ "ok": true }));
     }
 
     #[dialog_common::test]
@@ -1842,19 +1805,17 @@ pub mod tests {
         assert_claim(state, repo, &format!("test:{marker}"), "test/value", marker).await;
     }
 
-    /// Reconcile `main` with its upstream the way the background sweep
-    /// does, asserting it reports success.
+    /// Push `main` to its upstream through the reactor, as the sync sweep
+    /// does once a branch has local commits.
     async fn push_main(state: &super::AppState, repo: &str) {
-        let sync = super::sync::sync(
-            state.clone(),
-            super::sync::SyncPath {
-                repo: repo.to_owned(),
-                branch: "main".to_owned(),
-            },
-        )
-        .await
-        .expect("the sync reconciles");
-        assert!(sync.success, "sync should succeed: {:?}", sync.error);
+        let tonk = state.read().await;
+        tonk.reactor
+            .repository(repo)
+            .branch("main")
+            .push()
+            .perform(&tonk.operator)
+            .await
+            .expect("the push lands on the upstream");
     }
 
     /// GET the sync status of `main` and deserialize the response.
@@ -1928,8 +1889,8 @@ pub mod tests {
         use dialog_remote_ucan::UcanAddress;
         use dialog_repository::SiteAddress;
 
-        let state = test_state().await;
-        let (app, app_state, _lsp) = super::api_router_with_state(state);
+        let app_state: super::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
 
         let (repo, _subject) = put_repo_info(&app_state, "sync-repo-unreachable").await;
 
@@ -1948,23 +1909,9 @@ pub mod tests {
                 "main",
                 BranchConfiguration::default().upstream("origin", "main"),
             );
-        let attach = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/api/repository/{repo}/remote"))
-                    .method("POST")
-                    .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&config).unwrap()))
-                    .unwrap(),
-            )
+        super::repository::attach_remote_config(&app_state, &repo, &config)
             .await
-            .unwrap();
-        assert_eq!(
-            attach.status(),
-            StatusCode::OK,
-            "remote attach should succeed (it never touches the network)"
-        );
+            .expect("remote attach should succeed (it never touches the network)");
 
         let message = super::sync_repository(&app_state, &repo)
             .await

@@ -217,6 +217,7 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         .command::<tonk_schema::command::PromoteMember>()
         .command::<tonk_schema::command::EnrollCustomer>()
         .command::<tonk_schema::command::ResendActivation>()
+        .command::<tonk_schema::command::CheckActivation>()
         .command::<tonk_schema::command::DeleteAccount>()
         .command::<super::ceremony::AuthorizeDeviceRequest>()
         .migrated::<tonk_schema::command::AddPasskey, tonk_schema::command::legacy::AddPasskey>()

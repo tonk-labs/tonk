@@ -418,7 +418,7 @@ pub struct TonkState {
     /// dispatch.
     pub commands: crate::router::CommandProviders,
     /// Repositories with un-pushed local commits. A commit enqueues its repo;
-    /// `POST /api/sync` (the page heartbeat) and the post-commit push drain
+    /// the page's keepalive and the post-commit push drain
     /// reconcile it. See `router::sync::SyncQueue`.
     pub sync_queue: crate::router::SyncQueue,
     /// Liveness ledger: SW client → what it registered (site stamps) and
@@ -2203,7 +2203,7 @@ impl TonkServiceWorker {
     /// The SW owns the sync work-queue (repos with un-pushed commits) and knows
     /// every open repo, so the event needs no per-repo identity: the tag is a
     /// single bare `"sync"`, ignored here. This funnels to the same
-    /// [`drain_sync`](crate::router::drain_sync) as `POST /api/sync` and the
+    /// [`drain_sync`](crate::router::drain_sync) as the page's keepalive and the
     /// per-fetch `event.waitUntil` drain — push the dirty set, pull every open
     /// repo.
     ///
@@ -2305,6 +2305,21 @@ impl TonkServiceWorker {
         })
     }
 
+    /// A page holding live subscriptions says it is still there.
+    ///
+    /// An SSE body does not extend a worker's lifetime, so a page watching
+    /// its subscriptions posts `{type:"keepalive"}` on a beat. The message
+    /// event is what keeps the worker alive; the returned promise, which
+    /// the bootstrap hands to `waitUntil`, rides the same debounced drain
+    /// a fetch schedules, so the beat is also the idle tab's sync cadence.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "onkeepalive")]
+    pub fn on_keepalive(&self) -> Promise {
+        self.ensure_sync_loop();
+        debounced_drain(|| "keepalive".to_owned(), &self.sync_scheduler, &self.state)
+            .unwrap_or_else(|| Promise::resolve(&JsValue::UNDEFINED))
+    }
+
     /// Start the self-scheduled sync loop if it isn't running. The SW owns
     /// the sync cadence: while any cached branch holds a live subscriber
     /// (an open SSE keeps the SW alive, so the timer chain survives), the
@@ -2312,7 +2327,7 @@ impl TonkServiceWorker {
     /// quiet — no subscribers means nothing is watching, and stopping lets
     /// the browser reclaim the worker — or when connectivity drops (after
     /// stamping `sync:offline`); any fetch or the `online` event restarts
-    /// it. This replaces the page-side `POST /api/sync` heartbeat.
+    /// it.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     fn ensure_sync_loop(&self) {
         // A worker being replaced starts no new work — its loop would keep
@@ -2514,17 +2529,9 @@ async fn any_client_visible() -> bool {
 fn schedule_sync_drain(event: &FetchEvent, scheduler: &SyncScheduler, state: &AppState) {
     use wasm_bindgen::JsCast;
 
-    // Handoff queries can arrive faster than the debounce expires. Refusing
-    // the drain only after sleeping still extends every fetch by 500ms and
-    // prevents the incumbent from becoming idle enough to activate its successor.
-    if scheduler.stopped() {
-        return;
-    }
-
-    let ticket = scheduler.next(js_sys::Date::now());
-    // Record the burst-opener (method + path + query — the query carries the
-    // heartbeat's `?why=`), so the coalesced drain can log what initiated it.
-    scheduler.note_cause(|| {
+    // Record the burst-opener (method + path + query), so the coalesced
+    // drain can log what initiated it.
+    let cause = || {
         let request = event.request();
         let raw = request.url();
         let path = url::Url::parse(&raw)
@@ -2534,7 +2541,33 @@ fn schedule_sync_drain(event: &FetchEvent, scheduler: &SyncScheduler, state: &Ap
             })
             .unwrap_or(raw);
         format!("{} {}", request.method(), path)
-    });
+    };
+    // `wait_until` lives on `ExtendableEvent`, the base of `FetchEvent`. Upcast
+    // and extend the event's lifetime to cover the debounced drain.
+    if let Some(promise) = debounced_drain(cause, scheduler, state) {
+        let extendable: &web_sys::ExtendableEvent = event.unchecked_ref();
+        let _ = extendable.wait_until(&promise);
+    }
+}
+
+/// Take a ticket for a debounced drain and return the promise that sleeps
+/// the debounce window and then drains if the ticket is still current — the
+/// work an event extends its lifetime to cover. `None` on a retiring worker.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn debounced_drain(
+    cause: impl FnOnce() -> String,
+    scheduler: &SyncScheduler,
+    state: &AppState,
+) -> Option<Promise> {
+    // A retiring worker drains nothing, and must not even wait to find that
+    // out: the debounce would extend the event's lifetime, and a page's
+    // steady queries would then keep the worker from ever going idle, which
+    // is what its successor's activation waits for.
+    if scheduler.stopped() {
+        return None;
+    }
+    let ticket = scheduler.next(js_sys::Date::now());
+    scheduler.note_cause(cause);
     let scheduler = scheduler.clone();
     let state = state.clone();
 
@@ -2585,11 +2618,7 @@ fn schedule_sync_drain(event: &FetchEvent, scheduler: &SyncScheduler, state: &Ap
         scheduler.end_drain(js_sys::Date::now());
         Ok(JsValue::UNDEFINED)
     });
-
-    // `wait_until` lives on `ExtendableEvent`, the base of `FetchEvent`. Upcast
-    // and extend the event's lifetime to cover the debounced drain.
-    let extendable: &web_sys::ExtendableEvent = event.unchecked_ref();
-    let _ = extendable.wait_until(&promise);
+    Some(promise)
 }
 
 /// Whether the worker reports no network connectivity, read straight from

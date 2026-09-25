@@ -1091,6 +1091,18 @@ pub mod command {
         pub struct At(pub u64);
     }
 
+    /// Attributes of the `account/check-activation` command.
+    pub mod check_activation {
+        use super::Attribute;
+
+        /// When the check was asked for — distinguishes one ask from the
+        /// next so the transient re-fires: derived attribute
+        /// `xyz.tonk.check-activation/at`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.check-activation")]
+        pub struct At(pub u64);
+    }
+
     pub mod promote {
         use super::super::Entity;
         use super::Attribute;

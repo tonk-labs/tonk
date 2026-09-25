@@ -902,19 +902,33 @@ fn clear_state() {
 /// has nothing on screen yet.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn account_is_activated() -> bool {
-    // The registration fact carries the provider from enrollment; the
-    // activation fact is what says the customer confirmed. Presence is the
-    // whole signal, so an absent row means "still waiting".
-    crate::api::customer_state()
-        .await
-        .ok()
-        .and_then(|state| {
-            state
-                .get("status")
-                .and_then(|value| value.as_str().map(str::to_owned))
-        })
-        .is_some_and(|status| status == "Active")
+    // The activation fact is what says the customer confirmed, and its
+    // presence is the whole signal. A device that just signed in may not
+    // hold it yet, so ask the worker to check with the service and give
+    // the answer a moment to land before deciding to wait.
+    if matches!(crate::api::account_activated().await, Ok(true)) {
+        return true;
+    }
+    if let Err(error) = crate::api::check_activation().await {
+        tonk_common::log!("register: activation check was not asked: {error}");
+        return false;
+    }
+    for _ in 0..ACTIVATION_SETTLE_ATTEMPTS {
+        sleep(ACTIVATION_SETTLE_MS).await;
+        if matches!(crate::api::account_activated().await, Ok(true)) {
+            return true;
+        }
+    }
+    false
 }
+
+/// How many beats [`account_is_activated`] gives a check to land, and how
+/// long each is. Long enough for one round trip to the access service;
+/// past it, the waiting row and its subscription take over.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const ACTIVATION_SETTLE_ATTEMPTS: usize = 12;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const ACTIVATION_SETTLE_MS: i32 = 250;
 
 /// crosses.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -1926,25 +1940,22 @@ fn watch_activation_while_waiting() {
             if !still_waiting {
                 return;
             }
-            let state = crate::api::customer_state().await;
+            // Ask the service directly while waiting, in case the
+            // subscription's delivery stalls; the answer is the activation
+            // fact, which the subscription and the read below both see.
+            if let Err(error) = crate::api::check_activation().await {
+                tonk_common::log!("register: activation check was not asked: {error}");
+            }
             // A dismissed dialog must never finish a newer signup after an
             // outstanding request returns. The host is fixed for this watch.
             if !host.is_connected() {
                 return;
             }
-            match state {
-                Ok(state) if state["status"].as_str() == Some("Active") => {
-                    finish_ceremony();
-                    return;
-                }
-                Err(error) => {
-                    tonk_common::log!("register: activation probe failed: {error}");
-                }
-                _ => {}
+            if matches!(crate::api::account_activated().await, Ok(true)) {
+                finish_ceremony();
+                return;
             }
-            if let Err(error) = crate::api::kick_sync().await {
-                tonk_common::log!("register: sync nudge did not run: {error}");
-            }
+            crate::api::kick_sync();
             sleep(EVERY).await;
         }
     });

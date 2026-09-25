@@ -248,10 +248,10 @@ fn bind(host: &HtmlElement, pending: Rc<Cell<bool>>, terminal: Rc<Cell<bool>>) {
                 clear_error(&host);
                 set_status(&host, "");
                 // Tell this browser's worker now rather than at its next
-                // sweep: the probe records the activation and replays the
+                // sweep: the check records the activation and replays the
                 // custody publish and provisioning it deferred, so the
                 // hub this page hands back to is already served.
-                let _ = crate::api::customer_state().await;
+                let _ = crate::api::check_activation().await;
                 show_panel(&host, "#activate-done");
             } else if body["error"]["code"].as_str() == Some("Unauthorized") {
                 attempt.finish(

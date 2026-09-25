@@ -127,12 +127,12 @@ impl ControllerWatch {
 /// lifetime, and SW-internal timers don't either — so without page
 /// events the browser terminates the worker (~30s idle), closing every
 /// stream and forcing an endless reconnect/re-stamp churn the nested
-/// guests heal slower than it repeats. A `POST /api/sync?why=keepalive`
-/// every 10s is a real fetch event: it extends the worker's lifetime and
-/// rides the same debounced drain scheduling as any other request.
-/// Skipped while the page holds no subscriptions (nothing to keep alive
-/// for — the browser may reclaim the worker) or is offline. Top page
-/// only: guests relay through it, so its keepalive covers the tab.
+/// guests heal slower than it repeats. A `{type:"keepalive"}` message
+/// every 10s is a functional event: it extends the worker's lifetime and
+/// rides the same debounced drain scheduling as any request. Skipped
+/// while the page holds no subscriptions (nothing to keep alive for — the
+/// browser may reclaim the worker) or is offline. Top page only: guests
+/// relay through it, so its keepalive covers the tab.
 fn spawn_keepalive(state: Rc<RefCell<HostState>>) {
     wasm_bindgen_futures::spawn_local(async move {
         loop {
@@ -151,17 +151,21 @@ fn spawn_keepalive(state: Rc<RefCell<HostState>>) {
             if update_pending().await {
                 continue;
             }
-            let init = web_sys::RequestInit::new();
-            init.set_method("POST");
-            // Awaiting consumes the rejection: a beat that loses the race
-            // with a navigation or a worker swap fails quietly, and the
-            // next beat covers.
-            let _ = wasm_bindgen_futures::JsFuture::from(
-                win.fetch_with_str_and_init("/api/sync?why=keepalive", &init),
-            )
-            .await;
+            keepalive();
         }
     });
+}
+
+/// Tell the controlling worker this page is still here. A page with no
+/// controller has nothing to keep alive; the beat after the takeover will.
+pub fn keepalive() {
+    let Some(controller) = window().and_then(|win| win.navigator().service_worker().controller())
+    else {
+        return;
+    };
+    let message = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(&message, &"type".into(), &"keepalive".into());
+    let _ = controller.post_message(&message);
 }
 
 /// Whether a newer service worker is installing or waiting to take over.

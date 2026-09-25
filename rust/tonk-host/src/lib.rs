@@ -78,6 +78,8 @@ mod depth;
 #[cfg(target_arch = "wasm32")]
 mod host;
 #[cfg(target_arch = "wasm32")]
+pub use host::keepalive;
+#[cfg(target_arch = "wasm32")]
 mod http;
 #[cfg(target_arch = "wasm32")]
 pub use http::{get_json, post_json};

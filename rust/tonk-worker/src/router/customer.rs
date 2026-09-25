@@ -8,15 +8,8 @@
 //! deployment serving this page — so endpoints derive from the request
 //! origin and the service DID comes from `/.well-known/tonk`.
 
-use axum::{
-    Json,
-    extract::{Extension, State},
-};
-use axum_wasm_macros::wasm_compat;
 use dialog_ucan_core::time::timestamp::Timestamp;
 use serde::{Deserialize, Serialize};
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_account::customer::{CustomerStatus, Receipt};
 use tonk_account::pending::{PendingQueue, PendingWork};
 use tonk_account::{CUSTOMER_CREDENTIAL_SITE, PENDING_WORK_CREDENTIAL_SITE};
@@ -24,10 +17,8 @@ use tonk_common::log;
 use tonk_identity::request::build_enroll_invocation;
 use url::Url;
 
-use super::AppState;
 use super::http::{HttpError, get, post_cbor};
 use crate::TonkWorkerError;
-use crate::axum::RequestOrigin;
 
 /// What this device recorded about its account's customer registration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -237,18 +228,32 @@ impl dialog_capability::Provider<tonk_schema::command::ResendActivation>
     }
 }
 
-/// GET `/api/customer` → the account's registration state: the service's
-/// live answer joined with the locally recorded enrollment.
-#[wasm_compat]
-pub async fn get_state(
-    State(state): State<AppState>,
-    Extension(origin): Extension<RequestOrigin>,
-) -> Result<Json<CustomerState>, TonkWorkerError> {
-    let state = state.read().await;
-    let root = super::identity::root_did(&state).await?;
-    let record = load_customer(&state).await?;
-    let endpoint = origin
-        .url()
+/// Run [`CheckActivation`]: ask the access service about this account and
+/// record the answer as facts.
+///
+/// [`CheckActivation`]: tonk_schema::command::CheckActivation
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::CheckActivation>
+    for crate::router::CommandEnv
+{
+    async fn execute(&self, _command: tonk_schema::command::CheckActivation) {
+        let state = self.state().read().await;
+        if let Err(error) = probe_customer(&state).await {
+            log!("check-activation: {error}");
+        }
+    }
+}
+
+/// Ask the access service for this account's registration state, and
+/// record what it says — the status, the provider, the ledger grant — as
+/// facts on profile main. Joined with the locally recorded enrollment.
+pub(crate) async fn probe_customer(
+    state: &crate::worker::TonkState,
+) -> Result<CustomerState, TonkWorkerError> {
+    let root = super::identity::root_did(state).await?;
+    let record = load_customer(state).await?;
+    let endpoint = service_origin()?
         .join(&format!("customer/{root}"))
         .map_err(|error| TonkWorkerError::Internal(format!("customer probe url: {error}")))?;
     let status = match get(&endpoint).await {
@@ -265,7 +270,7 @@ pub async fn get_state(
                     status: receipt.status,
                     ..record.clone()
                 };
-                save_customer(&state, &refreshed).await?;
+                save_customer(state, &refreshed).await?;
             }
             // Reconcile the FACT on every probe, not only when the
             // status changed. Two guards used to stand in the way: a
@@ -282,18 +287,18 @@ pub async fn get_state(
                 .map(|record| record.email.clone())
                 .unwrap_or_default();
             if let Err(error) =
-                record_customer_status(&state, receipt.status, &email, receipt.provider.as_deref())
+                record_customer_status(state, receipt.status, &email, receipt.provider.as_deref())
                     .await
             {
                 log!("account customer status not recorded: {error}");
             }
             // The probe is also where a device that never enrolled
             // first sees the ledger grant, so it retains here too.
-            retain_ledger(&state, &receipt).await;
+            retain_ledger(state, &receipt).await;
             // This probe is what notices activation, so it is where
             // work deferred during the wait gets replayed.
             if receipt.status == CustomerStatus::Active {
-                drain_pending(&state).await;
+                drain_pending(state).await;
             }
             Some(receipt.status)
         }
@@ -302,13 +307,13 @@ pub async fn get_state(
     };
     // Read after the probe: the probe is where a device that never
     // enrolled first records the provider, so this read sees it.
-    let provider = provider_address(&state).await;
-    Ok(Json(CustomerState {
+    let provider = provider_address(state).await;
+    Ok(CustomerState {
         customer: root.to_string(),
         status,
         email: record.map(|record| record.email),
         provider,
-    }))
+    })
 }
 
 fn decode_custody_consent(

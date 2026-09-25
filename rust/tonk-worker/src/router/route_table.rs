@@ -18,7 +18,6 @@ const ROUTES: &[&str] = &[
     "/api/account/connections",
     "/api/account/connections/{id}/revoke",
     "/api/account/display-name",
-    "/api/customer",
     "/api/identify",
     "/api/identity/root",
     "/api/local-space-link/approve",
@@ -42,7 +41,6 @@ const ROUTES: &[&str] = &[
     "/api/repository/{repo}/branch/{branch}/query",
     "/api/repository/{repo}/branch/{branch}/sync/status",
     "/api/repository/{repo}/branch/{branch}/transact",
-    "/api/sync",
 ];
 
 /// Every path literal passed to `.route(` in `router.rs`, sorted.

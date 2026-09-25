@@ -675,6 +675,26 @@ impl Command for ResendActivation {
     type Output = ();
 }
 
+/// Ask the access service whether this account is active yet.
+///
+/// The answer is not returned: the worker records what the service says as
+/// the account's registration and activation facts, and whoever is waiting
+/// on activation is already subscribed to those. Asserted by a page that is
+/// waiting on an activation email, on its own clock, since nothing else
+/// asks the service while the account is pending.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CheckActivation {
+    /// The command entity (a fresh id per ask).
+    pub this: Entity,
+    /// When the check was asked for, so the next ask re-fires.
+    pub at: crate::domain::command::check_activation::At,
+}
+
+impl Command for CheckActivation {
+    type Input = Self;
+    type Output = ();
+}
+
 /// Revoke a member's access to a space.
 ///
 /// Asserted transiently by the roster row's expel control; the handler
