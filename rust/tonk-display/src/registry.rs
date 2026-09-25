@@ -1313,32 +1313,67 @@ mod tests {
         .call1(&JsValue::NULL, &host_bridge())
         .unwrap();
         let host = document().create_element("space-create").unwrap();
-        host.set_inner_html(r#"<form><button type="submit" disabled><span data-create-label>create new space</span></button></form><p data-create-status role="status" hidden></p>"#);
+        let markup = PROFILE_LIBRARY
+            .split_once("<space-create class=\"header-new\">")
+            .unwrap()
+            .1
+            .split_once("</space-create>")
+            .unwrap()
+            .0;
+        host.set_inner_html(markup);
+        host.query_selector("input[name=name]")
+            .unwrap()
+            .unwrap()
+            .set_attribute("value", "  Test space  ")
+            .unwrap();
+        host.query_selector("textarea[name=description]")
+            .unwrap()
+            .unwrap()
+            .set_text_content(Some("  A test description  "));
         document().body().unwrap().append_child(&host).unwrap();
-        settle_until(|| host.query_selector("button[disabled]").unwrap().is_none()).await;
+        settle_until(|| {
+            Reflect::get(&host, &"validate".into()).is_ok_and(|value| value.is_function())
+        })
+        .await;
         assert!(defined("space-create"), "the library control must upgrade");
         assert!(host.query_selector("button[disabled]").unwrap().is_none());
-        let form = host.query_selector("form").unwrap().unwrap();
+        let form = host
+            .query_selector("form[data-space-create-form]")
+            .unwrap()
+            .unwrap();
         fire(form.unchecked_ref(), "submit");
-        assert_eq!(form.get_attribute("aria-busy").as_deref(), Some("true"));
-        assert_eq!(text_of(&host, "[data-create-label]"), "creating space…");
-        assert!(host.query_selector("button[disabled]").unwrap().is_some());
+        assert!(host.has_attribute("busy"));
+        assert!(
+            host.query_selector("[data-space-create-submit][disabled]")
+                .unwrap()
+                .is_some()
+        );
         fire(form.unchecked_ref(), "submit");
-        settle_briefly().await;
         let claims: js_sys::Array = Reflect::get(&fixture, &"claims".into())
             .unwrap()
             .dyn_into()
             .unwrap();
+        settle_until(|| claims.length() == 1).await;
         assert_eq!(
             claims.length(),
             1,
             "repeat submits cannot mint another space"
         );
-        assert_eq!(
-            form.get_attribute("aria-busy").as_deref(),
-            Some("true"),
+        assert!(
+            host.has_attribute("busy"),
             "accepting the transaction is not completing creation"
         );
+        let claim: serde_json::Value = serde_json::from_str(
+            &js_sys::JSON::stringify(&claims.get(0))
+                .unwrap()
+                .as_string()
+                .unwrap(),
+        )
+        .unwrap();
+        let parameters = &claim["claims"][0]["application"]["parameters"];
+        assert_eq!(parameters["name"], "Test space");
+        assert_eq!(parameters["description"], "A test description");
+        assert_eq!(parameters["open"], "true");
         let finish: js_sys::Function = Reflect::get(&fixture, &"finish".into())
             .unwrap()
             .dyn_into()
@@ -1350,23 +1385,28 @@ mod tests {
                 &"Creation failed; try again.".into(),
             )
             .unwrap();
-        settle_until(|| form.get_attribute("aria-busy").as_deref() == Some("false")).await;
+        settle_until(|| !host.has_attribute("busy")).await;
+        assert!(!host.has_attribute("busy"));
         assert_eq!(
-            text_of(&host, "[data-create-status]"),
+            text_of(&host, "[data-space-create-error]"),
             "Creation failed; try again."
         );
         assert!(host.query_selector("button[disabled]").unwrap().is_none());
         let first_id = Reflect::get(&fixture, &"id".into()).unwrap();
         fire(form.unchecked_ref(), "submit");
-        settle_briefly().await;
+        settle_until(|| claims.length() == 2).await;
         assert_eq!(claims.length(), 2);
         assert_ne!(Reflect::get(&fixture, &"id".into()).unwrap(), first_id);
         finish
             .call2(&fixture, &"created".into(), &"/space/did:key:zNew".into())
             .unwrap();
-        settle_briefly().await;
-        let navigations =
-            js_sys::Array::from(&Reflect::get(&fixture, &"navigations".into()).unwrap());
+        let navigations: js_sys::Array = Reflect::get(&fixture, &"navigations".into())
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        settle_until(|| navigations.length() == 1 && !host.has_attribute("busy")).await;
+        assert!(!host.has_attribute("busy"));
+        assert!(host.query_selector("button[disabled]").unwrap().is_none());
         assert_eq!(navigations.length(), 1);
         assert_eq!(
             navigations.get(0).as_string().as_deref(),
@@ -1386,9 +1426,11 @@ mod tests {
         document().body().unwrap().append_child(&rejected).unwrap();
         let form = rejected.query_selector("form").unwrap().unwrap();
         fire(form.unchecked_ref(), "submit");
-        settle_until(|| text_of(&rejected, "[data-create-status]").contains("Couldn't confirm"))
-            .await;
-        assert!(text_of(&rejected, "[data-create-status]").contains("Couldn't confirm"));
+        settle_until(|| {
+            text_of(&rejected, "[data-space-create-error]").contains("Couldn't confirm")
+        })
+        .await;
+        assert!(text_of(&rejected, "[data-space-create-error]").contains("Couldn't confirm"));
         assert!(
             rejected
                 .query_selector("button[disabled]")
