@@ -120,3 +120,14 @@ the old writer gets this cookie. The unchanged migration assertions pass locally
 with this fixture (288.61s, including debug-artifact generation and upgrade).
 Focus restoration is still under investigation; exact CI artifact reproduction
 also catches Escape before the deferred dialog opening has settled.
+
+The historical-writer fixture also passes against CI's exact immutable preview
+artifact (`d92b617b4a2b9dcc`), in 218.25s locally. The focus investigation found
+that a global Escape action can target the iframe during non-modal opening;
+waiting on automatic focus alone remained intermittent. The test now sends
+Escape to the visible email field, establishing the ceremony as the key target,
+while retaining both original focus-return assertions. No production focus code,
+assertions, timeouts, or retries changed. Three consecutive exact-artifact runs
+pass (5.24s, 3.93s, 3.75s). Temporary tracing and throttling were removed.
+The four test-server artifact checks, Rust formatting, Nix formatting, and
+whitespace checks pass. Fresh hosted E2E confirmation remains required.

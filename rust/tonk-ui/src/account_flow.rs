@@ -2024,10 +2024,11 @@ mod tests {
         await_register_dialog(&driver).await?;
 
         driver.enter_default_frame().await?;
-        driver
-            .action_chain()
+        // Send the dismissal to the visible ceremony. A global action can
+        // still target the sealed guest while the non-modal dialog opens.
+        wait_for_displayed(&driver, "#tonk-register-email")
+            .await?
             .send_keys(Key::Escape)
-            .perform()
             .await?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         loop {
