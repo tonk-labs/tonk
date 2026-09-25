@@ -30,8 +30,8 @@ use dialog_effects::memory::Resolve;
 use dialog_query::concept::descriptor::ConceptConclusion;
 use dialog_query::concept::query::ConceptQuery;
 use dialog_query::{
-    Application, Claim, EvaluationError, Match, Output as _, Parameters, Query, Scope, Selection,
-    Term, the, try_stream,
+    Application, Claim, EvaluationError, Match, Output as _, Parameters, Query, Restriction, Scope,
+    Selection, Term, the, try_stream,
 };
 use dialog_repository::{Hydrate, RemoteSite};
 use thiserror::Error;
@@ -1146,6 +1146,37 @@ impl Application for QueryPlan {
         }
     }
 
+    // A standard concept query supports incremental maintenance, so a
+    // subscription over it re-derives only the entities a change touches.
+    // The metadata and resolver plans keep the default: recompute.
+    fn restrict(&self, entity: &Entity) -> Restriction<Self> {
+        match self {
+            QueryPlan::Standard(q) => match q.restrict(entity) {
+                Restriction::Scoped(q) => Restriction::Scoped(QueryPlan::Standard(q)),
+                Restriction::Unaffected => Restriction::Unaffected,
+                Restriction::Unsupported => Restriction::Unsupported,
+            },
+            _ => Restriction::Unsupported,
+        }
+    }
+
+    fn concept(&self) -> Option<&ConceptDescriptor> {
+        match self {
+            QueryPlan::Standard(q) => q.concept(),
+            _ => None,
+        }
+    }
+
+    // A row the maintainer re-derives through a restriction comes back in
+    // the restriction's shape; the standard query puts it back in its own
+    // (restoring the subject binding). The other plans never restrict.
+    fn adopt(&self, conclusion: ConceptConclusion) -> Result<ConceptConclusion, EvaluationError> {
+        match self {
+            QueryPlan::Standard(q) => q.adopt(conclusion),
+            _ => Ok(conclusion),
+        }
+    }
+
     fn realize(&self, source: Match) -> Result<Self::Conclusion, EvaluationError> {
         match self {
             QueryPlan::Standard(q) => Application::realize(q, source),
@@ -1720,6 +1751,46 @@ mod tests {
             matches!(plan, QueryPlan::Standard(_)),
             "non-sentinel predicate should stay a Standard ConceptQuery",
         );
+    }
+
+    /// A standard plan exposes its concept and scopes to one entity, so a
+    /// subscription over it maintains incrementally instead of recomputing
+    /// on every change. Metadata plans keep recomputing.
+    #[dialog_common::test]
+    fn it_lets_a_standard_plan_be_maintained_incrementally() {
+        let descriptor: ConceptDescriptor =
+            serde_json::from_str(r#"{"with":{"x":{"the":"a/b","as":"Text","cardinality":"one"}}}"#)
+                .unwrap();
+        let alice: Entity = "id:alice".parse().unwrap();
+        let bob: Entity = "id:bob".parse().unwrap();
+
+        let plan = QueryPlan::from(ConceptQuery {
+            terms: dialog_query::Parameters::new(),
+            predicate: descriptor.clone(),
+        });
+        assert_eq!(plan.concept(), Some(&descriptor));
+        let Restriction::Scoped(QueryPlan::Standard(scoped)) = plan.restrict(&alice) else {
+            panic!("an unpinned concept query scopes to the changed entity");
+        };
+        assert_eq!(
+            scoped.terms.get("this"),
+            Some(&Term::Constant(Value::Entity(alice.clone())))
+        );
+
+        let mut pinned = dialog_query::Parameters::new();
+        pinned.insert("this".into(), Term::Constant(Value::Entity(alice)));
+        let plan = QueryPlan::from(ConceptQuery {
+            terms: pinned,
+            predicate: descriptor,
+        });
+        assert!(matches!(plan.restrict(&bob), Restriction::Unaffected));
+
+        let meta = QueryPlan::from(ConceptQuery {
+            terms: dialog_query::Parameters::new(),
+            predicate: concept_of_concept_descriptor().clone(),
+        });
+        assert!(meta.concept().is_none());
+        assert!(matches!(meta.restrict(&bob), Restriction::Unsupported));
     }
 
     /// The command sentinel must not collide with the concept
