@@ -1027,6 +1027,36 @@ async fn start_downstream(
         s.view_sub.take();
         s.entity_sub.take();
         clear_host(host, &mut s);
+        // Subscriptions can deliver their first frame before subscribe returns.
+        // Publish the complete rendering context before opening either stream.
+        s.directory = directory;
+        s.self_render = self_render;
+        s.view_settled = false;
+        // The explicit facet (if any) and the model entity, retained
+        // for the facet pick on each view frame and the `tonk:_`
+        // default fallback.
+        s.view_facet = view.clone();
+        s.model_entity = Some(model_entity.clone());
+        // Advertise the effective facet so the default-view notice can
+        // say WHICH view was not found — a directory's default and its
+        // cards' defaults otherwise read as the same message twice.
+        let facet = view.clone().unwrap_or_else(|| {
+            if directory {
+                DIRECTORY_FACET
+            } else {
+                DETAIL_FACET
+            }
+            .to_owned()
+        });
+        let _ = host.set_attribute("data-view-facet", &facet);
+        // Context handed to a `<tonk-portal>` if a view frame routes
+        // here in portal mode: the subject's model entity (the
+        // bridge's `context.model`) and its descriptor (so the bridge
+        // can build its own entity query). A text/html view's iframe
+        // fetches data itself, so the entity subscription above just
+        // no-ops against the portal (it has no `draw`).
+        s.portal_descriptor = Some(descriptor_json);
+        s.portal_model = Some(model_entity);
     }
 
     // The view query is model-constrained, so it resolves to one
@@ -1058,34 +1088,6 @@ async fn start_downstream(
         }
         s.view_sub = view_sub;
         s.entity_sub = Some(entity_sub);
-        s.directory = directory;
-        s.self_render = self_render;
-        s.view_settled = false;
-        // The explicit facet (if any) and the model entity, retained
-        // for the facet pick on each view frame and the `tonk:_`
-        // default fallback.
-        s.view_facet = view.clone();
-        s.model_entity = Some(model_entity.clone());
-        // Advertise the effective facet so the default-view notice can
-        // say WHICH view was not found — a directory's default and its
-        // cards' defaults otherwise read as the same message twice.
-        let facet = view.clone().unwrap_or_else(|| {
-            if directory {
-                DIRECTORY_FACET
-            } else {
-                DETAIL_FACET
-            }
-            .to_owned()
-        });
-        let _ = host.set_attribute("data-view-facet", &facet);
-        // Context handed to a `<tonk-portal>` if a view frame routes
-        // here in portal mode: the subject's model entity (the
-        // bridge's `context.model`) and its descriptor (so the bridge
-        // can build its own entity query). A text/html view's iframe
-        // fetches data itself, so the entity subscription above just
-        // no-ops against the portal (it has no `draw`).
-        s.portal_descriptor = Some(descriptor_json);
-        s.portal_model = Some(model_entity);
     }
     dispatch_event(host, "tonk-display:connected", None);
     Ok(())
@@ -1477,12 +1479,14 @@ const DEFAULT_MODEL: &str = "tonk:_";
 /// live; a later frame carrying the facet replaces this default (see
 /// the `default_slide` flag).
 fn spawn_default_view(host: &Element, state: &Rc<RefCell<Inner>>) {
-    let (facet, explicit, model) = {
+    let (facet, explicit, model, generation, downstream_generation) = {
         let s = state.borrow();
         (
             effective_facet(&s),
             s.view_facet.is_some(),
             s.model_entity.clone().unwrap_or_default(),
+            s.generation,
+            s.downstream_generation,
         )
     };
     let host = host.clone();
@@ -1504,6 +1508,13 @@ fn spawn_default_view(host: &Element, state: &Rc<RefCell<Inner>>) {
                 .and_then(|c| show_template(c, &facet).map(str::to_owned))
         }
         .await;
+        // Attribute/model changes can restart the flow while the query waits.
+        // A fallback from the previous mode must never paint into the new one.
+        if check_generation(&state, generation).is_err()
+            || check_downstream(&state, downstream_generation).is_err()
+        {
+            return;
+        }
         let Some(display) = resolved else {
             // Neither the model nor `tonk:_` carries the facet. An
             // EXPLICIT facet that resolves nowhere is a config error:
@@ -5191,6 +5202,7 @@ mod tests {
             /// live subscription now, not a one-shot. `None` makes the
             /// model subscription stay empty (the `no-model` state).
             model_frame: Option<JsValue>,
+            initial_frames: BTreeMap<String, JsValue>,
         }
 
         impl FakeHost {
@@ -5215,6 +5227,7 @@ mod tests {
                     subscribe_tags: Vec::new(),
                     model_queries: Vec::new(),
                     model_frame,
+                    initial_frames: BTreeMap::new(),
                 }));
                 let mut listeners = Vec::new();
 
@@ -5268,7 +5281,7 @@ mod tests {
                                         .push(serde_wasm_bindgen::from_value(query).unwrap());
                                     s.model_frame.clone()
                                 } else {
-                                    None
+                                    s.initial_frames.get(&tag).cloned()
                                 }
                             };
                             let sub = Object::new();
@@ -5278,7 +5291,7 @@ mod tests {
                             if let Some(frame) = model_frame {
                                 let opts = Object::new();
                                 let _ =
-                                    Reflect::set(&opts, &"tag".into(), &JsValue::from_str("model"));
+                                    Reflect::set(&opts, &"tag".into(), &JsValue::from_str(&tag));
                                 if let Ok(reset) = Reflect::get(&consumer, &"reset".into())
                                     && let Ok(reset) = reset.dyn_into::<Function>()
                                 {
@@ -6003,6 +6016,72 @@ mod tests {
             display.set_attribute("model", model).unwrap();
             host.container.append_child(&display).unwrap();
             display
+        }
+
+        #[dialog_common::test]
+        async fn it_discards_a_default_view_from_a_superseded_flow() {
+            crate::view::register();
+            let mut answer = None;
+            let pending = Promise::new(&mut |resolve, _| answer = Some(resolve));
+            let host = FakeHost::install(vec![pending.into()]);
+            let display = document().create_element("div").unwrap();
+            display.set_attribute("model", "item").unwrap();
+            host.container.append_child(&display).unwrap();
+            let state = Rc::new(RefCell::new(Inner::new()));
+            state.borrow_mut().directory = true;
+            spawn_default_view(&display, &state);
+            for _ in 0..100 {
+                if host.state.borrow().answered > 0 {
+                    break;
+                }
+                sleep(5).await;
+            }
+            assert_eq!(host.state.borrow().answered, 1);
+            state.borrow_mut().downstream_generation += 1;
+            answer
+                .unwrap()
+                .call1(
+                    &JsValue::NULL,
+                    &show_rows(DEFAULT_MODEL, &[("directory", "<p>Stale fallback</p>")]),
+                )
+                .unwrap();
+            sleep(50).await;
+            assert!(
+                display.query_selector("tonk-view").unwrap().is_none(),
+                "a fallback from an older model frame must not mount"
+            );
+            assert!(display.get_attribute("data-state").is_none());
+        }
+
+        #[dialog_common::test]
+        async fn it_sets_the_directory_facet_before_the_first_subscription_frame() {
+            let host = install_directory();
+            host.state.borrow_mut().initial_frames.insert(
+                "view".into(),
+                show_rows(
+                    "did:key:zModel",
+                    &[("directory", "<p class=\"early-directory\">Ready</p>")],
+                ),
+            );
+            host.state
+                .borrow_mut()
+                .initial_frames
+                .insert("entity".into(), rows(&[]));
+            let display = mount_directory(&host, "item");
+            assert!(
+                await_selector(&display, ".early-directory").await.is_some(),
+                "a view delivered during subscribe must use directory mode immediately"
+            );
+            assert!(
+                display
+                    .query_selector("[data-tonk-display-default-notice]")
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(
+                display.get_attribute("data-state").as_deref(),
+                Some("empty")
+            );
         }
 
         // A directory collection that goes empty -> one instance must

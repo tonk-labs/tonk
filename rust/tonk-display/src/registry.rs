@@ -1285,6 +1285,125 @@ mod tests {
         calls
     }
 
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_reports_space_creation_until_the_command_finishes() {
+        define_from_library(PROFILE_LIBRARY, "space-create");
+        install_fake_host();
+        install();
+        let fixture = js_sys::Function::new_with_args(
+            "bridge",
+            r#"
+            const state = { claims: [], navigations: [], cancelled: 0 };
+            bridge.ready = Promise.resolve();
+            bridge.subscribe = query => {
+                state.id = query.terms.this;
+                return new ReadableStream({
+                    start(controller) { state.controller = controller; },
+                    cancel() { state.cancelled++; },
+                });
+            };
+            bridge.transact = claim => { state.claims.push(claim); return Promise.resolve({}); };
+            bridge.navigate = href => state.navigations.push(href);
+            state.finish = (status, detail) => state.controller.enqueue([
+                { this: state.id, fields: { status, detail } }
+            ]);
+            return state;
+        "#,
+        )
+        .call1(&JsValue::NULL, &host_bridge())
+        .unwrap();
+        let host = document().create_element("space-create").unwrap();
+        host.set_inner_html(r#"<form><button type="submit" disabled><span data-create-label>create new space</span></button></form><p data-create-status role="status" hidden></p>"#);
+        document().body().unwrap().append_child(&host).unwrap();
+        settle_until(|| host.query_selector("button[disabled]").unwrap().is_none()).await;
+        assert!(defined("space-create"), "the library control must upgrade");
+        assert!(host.query_selector("button[disabled]").unwrap().is_none());
+        let form = host.query_selector("form").unwrap().unwrap();
+        fire(form.unchecked_ref(), "submit");
+        assert_eq!(form.get_attribute("aria-busy").as_deref(), Some("true"));
+        assert_eq!(text_of(&host, "[data-create-label]"), "creating space…");
+        assert!(host.query_selector("button[disabled]").unwrap().is_some());
+        fire(form.unchecked_ref(), "submit");
+        settle_briefly().await;
+        let claims: js_sys::Array = Reflect::get(&fixture, &"claims".into())
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        assert_eq!(
+            claims.length(),
+            1,
+            "repeat submits cannot mint another space"
+        );
+        assert_eq!(
+            form.get_attribute("aria-busy").as_deref(),
+            Some("true"),
+            "accepting the transaction is not completing creation"
+        );
+        let finish: js_sys::Function = Reflect::get(&fixture, &"finish".into())
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        finish
+            .call2(
+                &fixture,
+                &"failed".into(),
+                &"Creation failed; try again.".into(),
+            )
+            .unwrap();
+        settle_until(|| form.get_attribute("aria-busy").as_deref() == Some("false")).await;
+        assert_eq!(
+            text_of(&host, "[data-create-status]"),
+            "Creation failed; try again."
+        );
+        assert!(host.query_selector("button[disabled]").unwrap().is_none());
+        let first_id = Reflect::get(&fixture, &"id".into()).unwrap();
+        fire(form.unchecked_ref(), "submit");
+        settle_briefly().await;
+        assert_eq!(claims.length(), 2);
+        assert_ne!(Reflect::get(&fixture, &"id".into()).unwrap(), first_id);
+        finish
+            .call2(&fixture, &"created".into(), &"/space/did:key:zNew".into())
+            .unwrap();
+        settle_briefly().await;
+        let navigations =
+            js_sys::Array::from(&Reflect::get(&fixture, &"navigations".into()).unwrap());
+        assert_eq!(navigations.length(), 1);
+        assert_eq!(
+            navigations.get(0).as_string().as_deref(),
+            Some("/space/did:key:zNew")
+        );
+        assert_eq!(
+            Reflect::get(&fixture, &"cancelled".into())
+                .unwrap()
+                .as_f64(),
+            Some(2.0)
+        );
+        host.remove();
+
+        let rejected: Element = host.clone_node_with_deep(true).unwrap().dyn_into().unwrap();
+        let reject = js_sys::Function::new_no_args("return Promise.reject(new Error('offline'));");
+        Reflect::set(&host_bridge(), &"transact".into(), &reject).unwrap();
+        document().body().unwrap().append_child(&rejected).unwrap();
+        let form = rejected.query_selector("form").unwrap().unwrap();
+        fire(form.unchecked_ref(), "submit");
+        settle_until(|| text_of(&rejected, "[data-create-status]").contains("Couldn't confirm"))
+            .await;
+        assert!(text_of(&rejected, "[data-create-status]").contains("Couldn't confirm"));
+        assert!(
+            rejected
+                .query_selector("button[disabled]")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            Reflect::get(&fixture, &"cancelled".into())
+                .unwrap()
+                .as_f64(),
+            Some(3.0)
+        );
+        rejected.remove();
+    }
+
     fn keydown(host: &Element, key: &str) {
         let make = js_sys::Function::new_with_args(
             "key",

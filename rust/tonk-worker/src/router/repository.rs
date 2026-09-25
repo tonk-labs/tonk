@@ -589,6 +589,7 @@ impl dialog_capability::Provider<CreateSpaceRequest> for crate::router::CommandE
 }
 
 async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpaceRequest) {
+    let receipt = request.command.this.clone();
     let name = request.command.name.0;
     let remote = request.remote;
     if !env.from_profile() {
@@ -619,6 +620,13 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
     // page has saved the key.
     if let Err(error) = super::custody::ensure_recipient(env.state(), env.client()).await {
         log!("CreateSpace '{}' refused: {}", name, error);
+        report_space_creation(
+            env.state(),
+            &receipt,
+            "failed",
+            "Space creation wasn't approved. Try again and complete the passkey prompt.",
+        )
+        .await;
         return;
     }
 
@@ -630,6 +638,13 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
         Ok(key) => key,
         Err(error) => {
             log!("CreateSpace '{}' failed: {}", name, error);
+            report_space_creation(
+                env.state(),
+                &receipt,
+                "failed",
+                "Couldn't finish creating the space. Check your spaces before trying again.",
+            )
+            .await;
             return;
         }
     };
@@ -647,6 +662,13 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
     //    worker regardless.
     let href = format!("/space/{key}");
     crate::router::navigate::notify_navigate(env.client(), &href);
+    report_space_creation(env.state(), &receipt, "created", &href).await;
+    // Navigation must not wait for every Hub subscription to re-query.
+    // The seed and initialized status are already committed at this point.
+    {
+        let tonk = env.state().read().await;
+        tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+    }
 
     // 3. If the form carried a remote, attach it best-effort to
     //    the identity just created. A failure here just leaves it
@@ -685,6 +707,40 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
         && let Err(error) = enable_sync_inner(env.state(), &key, &remote).await
     {
         log!("CreateSpace '{}': remote attach failed: {}", key, error);
+    }
+}
+
+/// Per-command feedback is local overlay state, never account data. A fresh
+/// command entity keeps simultaneous tabs and retries from sharing a result.
+async fn report_space_creation(
+    state: &AppState,
+    receipt: &dialog_artifacts::Entity,
+    status: &str,
+    detail: &str,
+) {
+    let tonk = state.read().await;
+    if let Err(error) = tonk
+        .reactor
+        .profile_repository()
+        .branch(&tonk.active_branch)
+        .overlay()
+        .assert(
+            dialog_query::the!("xyz.tonk.space-creation/status")
+                .of(receipt.clone())
+                .is(status.to_owned())
+                .cardinality(dialog_query::Cardinality::One),
+        )
+        .assert(
+            dialog_query::the!("xyz.tonk.space-creation/detail")
+                .of(receipt.clone())
+                .is(detail.to_owned())
+                .cardinality(dialog_query::Cardinality::One),
+        )
+        .write()
+        .perform(&tonk.operator)
+        .await
+    {
+        log!("CreateSpace: failed to publish result: {error}");
     }
 }
 
@@ -3307,6 +3363,8 @@ fn spawn_seed(
         {
             log!("Background seed for '{}' failed: {}", key, e);
         }
+        let tonk = state.read().await;
+        tonk.reactor.run_scheduled_polls(&tonk.operator).await;
     });
 }
 
@@ -3454,13 +3512,13 @@ async fn seed_and_initialize(
         if bail_if_space_removed(&tonk, subject, key, "status stamp").await? {
             return Ok(());
         }
-        set_replica_status(&tonk, subject, Replica::initialized_status()).await?;
+        write_replica_status(&tonk, subject, Replica::initialized_status()).await?;
     } else {
         let tonk = state.read().await;
         if bail_if_space_removed(&tonk, subject, key, "status stamp").await? {
             return Ok(());
         }
-        set_replica_status(&tonk, subject, Replica::initialized_status()).await?;
+        write_replica_status(&tonk, subject, Replica::initialized_status()).await?;
     }
     log!("Repository '{}' initialized", key);
     Ok(())
@@ -5316,6 +5374,16 @@ pub(super) async fn set_replica_status(
     subject: &Did,
     status: tonk_schema::domain::replica::Status,
 ) -> Result<(), RepositoryError> {
+    write_replica_status(tonk, subject, status).await?;
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+    Ok(())
+}
+
+async fn write_replica_status(
+    tonk: &TonkState,
+    subject: &Did,
+    status: tonk_schema::domain::replica::Status,
+) -> Result<(), RepositoryError> {
     let entity = Replica::new(tonk.profile.did(), subject.clone())
         .this()
         .clone();
@@ -5333,10 +5401,6 @@ pub(super) async fn set_replica_status(
         .perform(&tonk.operator)
         .await
         .map_err(|e| RepositoryError::Internal(format!("Failed to set replica status: {}", e)))?;
-
-    // Drain the poll the status commit scheduled so the Hub's profile
-    // meta subscription reflects the new status.
-    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 
     broadcast(
         "/api/profile",
@@ -6998,6 +7062,80 @@ mod form_attribute_tests {
     }
 }
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod space_creation_feedback_tests {
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+
+    async fn post(app: &axum::Router, path: &str, body: serde_json::Value) -> serde_json::Value {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(path)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(
+            status.is_success(),
+            "{status}: {}",
+            String::from_utf8_lossy(&body)
+        );
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    #[dialog_common::test]
+    async fn space_creation_reports_a_seeded_destination_for_the_submitted_request() {
+        let (app, state, _lsp) =
+            crate::router::api_router_with_state(super::profile_library_tests::test_state().await);
+        let branch = state.read().await.active_branch.clone();
+        let receipt = "urn:uuid:creation-test";
+        let mut claim = tonk_worker_api::create_space_claim_json("Untitled");
+        claim["claims"][0]["application"]["parameters"]["this"] = receipt.into();
+        post(
+            &app,
+            &format!("/api/profile/branch/{branch}/transact"),
+            claim,
+        )
+        .await;
+        let query = serde_json::json!({
+            "predicate": { "with": {
+                "status": { "the": "xyz.tonk.space-creation/status", "as": "Text", "cardinality": "one" },
+                "detail": { "the": "xyz.tonk.space-creation/detail", "as": "Text", "cardinality": "one" }
+            } },
+            "terms": { "this": receipt, "status": { "?": { "name": "status" } }, "detail": { "?": { "name": "detail" } } }
+        });
+        let rows = post(&app, &format!("/api/profile/branch/{branch}/query"), query).await;
+        assert_eq!(rows[0]["this"], receipt);
+        assert_eq!(rows[0]["fields"]["status"], "created", "{rows}");
+        let href = rows[0]["fields"]["detail"].as_str().unwrap();
+        let key = href.strip_prefix("/space/").unwrap();
+        // Read the committed library via the real query endpoint: a creation
+        // result must never point at a destination that still needs seeding.
+        let routes = post(
+            &app,
+            &format!("/api/repository/{key}/branch/main/query"),
+            serde_json::json!({
+                "predicate": { "with": { "path": { "the": "xyz.tonk.route/path", "as": "Text" } } },
+                "terms": { "this": { "?": { "name": "this" } }, "path": "/" }
+            }),
+        )
+        .await;
+        assert!(
+            !routes.as_array().unwrap().is_empty(),
+            "the space home route must be seeded before completion"
+        );
+    }
+}
+
 /// The optional-remote reader the create/enable handler uses. Native.
 #[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
 mod remote_from_facts_tests {
@@ -8059,7 +8197,7 @@ route!: &foreign-profile-route
 "#;
 
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-    async fn test_state() -> TonkState {
+    pub(super) async fn test_state() -> TonkState {
         use std::sync::atomic::{AtomicU64, Ordering};
 
         static NEXT: AtomicU64 = AtomicU64::new(0);
