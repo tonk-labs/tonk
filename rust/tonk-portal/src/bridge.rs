@@ -59,6 +59,14 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{AbortController, Element, HtmlIFrameElement, MessageEvent, MessagePort, window};
 
+#[wasm_bindgen::prelude::wasm_bindgen(module = "/src/microphone.js")]
+extern "C" {
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name = handleMicrophone)]
+    fn handle_microphone(data: &JsValue, port: &MessagePort);
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name = disposeMicrophone)]
+    fn dispose_microphone(port: &MessagePort);
+}
+
 /// Per-portal bridge + iframe state. Held behind `Rc<RefCell<…>>` so
 /// it is reachable from the element lifecycle, the prototype `reset`
 /// delegate, and the page-level message listener.
@@ -166,6 +174,7 @@ impl PortalState {
         // chunk drains terminate via the aborts above and close their own
         // ports.
         if let Some(port) = self.port.take() {
+            dispose_microphone(&port);
             port.close();
         }
     }
@@ -1073,6 +1082,10 @@ pub(crate) fn unregister_portal(iframe: &HtmlIFrameElement) {
 /// Called from the `hello` listener (and directly from tests, which
 /// supply a `MessageChannel` port in place of a real iframe handshake).
 pub(crate) fn bind_port(host: &Element, state: &Rc<RefCell<PortalState>>, port: MessagePort) {
+    if let Some(previous) = state.borrow_mut().port.take() {
+        dispose_microphone(&previous);
+        previous.close();
+    }
     let dispatcher = make_dispatcher(host.clone(), state.clone(), port.clone());
     // Setting onmessage auto-starts the port; no port.start() needed.
     port.set_onmessage(Some(dispatcher.as_ref().unchecked_ref()));
@@ -1119,6 +1132,7 @@ fn make_dispatcher(
             return;
         };
         match kind.as_str() {
+            "mic-start" | "mic-stop" | "mic-cancel" => handle_microphone(&data, &port),
             "query" => handle_query(&host, &state, &port, &data),
             "transact" => handle_transact(&host, &state, &port, &data),
             "evaluate" => handle_evaluate(&host, &port, &data),

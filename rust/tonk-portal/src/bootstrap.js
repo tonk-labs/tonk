@@ -1,5 +1,6 @@
 (function(){
   var nextId=0, pending=new Map(), streams=new Map(), subRows=new Map(), registerFocus=new Map(), taskFocus=new Map();
+  var microphones=new Map();
   var resolveReady; var ready=new Promise(function(r){resolveReady=r;});
   var ch=new MessageChannel(), port=ch.port1;
   function mint(){return "r"+(++nextId);}
@@ -96,9 +97,29 @@
     inflightQ.set(key,p);
     return p;
   }
+  function recordMedia(options,video){
+    options=options||{};
+    return ready.then(function(){
+      return new Promise(function(resolve,reject){
+        var id=mint(), resolveResult, rejectResult;
+        var result=new Promise(function(a,b){resolveResult=a;rejectResult=b;});
+        result.catch(function(){});
+        var cancel=function(){port.postMessage({v:1,type:"mic-cancel",id:id});};
+        var session={result:result,stop:function(){port.postMessage({v:1,type:"mic-stop",id:id});},cancel:cancel};
+        var cleanup=function(){if(options.signal)options.signal.removeEventListener("abort",cancel);};
+        microphones.set(id,{resolve:resolve,reject:reject,resolveResult:resolveResult,rejectResult:rejectResult,session:session,onLevel:options.onLevel,cleanup:cleanup});
+        if(options.signal&&options.signal.aborted){microphones.delete(id);reject(new DOMException("Recording cancelled.","AbortError"));return;}
+        port.postMessage({v:1,type:"mic-start",id:id,seconds:options.maxDurationSeconds||30,video:video,audio:!video||options.audio!==false});
+        if(options.signal)options.signal.addEventListener("abort",cancel,{once:true});
+      });
+    });
+  }
   var tonk={
     context:{this:"",model:""},
     ready:ready,
+    // The trusted page owns capture; only the finished Blob and levels cross.
+    recordAudio:function(options){return recordMedia(options,false);},
+    recordVideo:function(options){return recordMedia(options,true);},
     query:function(body,ctx){return dedupQuery(withRoute({body:body},ctx));},
     transact:function(request,ctx){return call("transact",withRoute({request:request},ctx));},
     // Evaluate an asserted-notation document against the branch. `detail` carries
@@ -203,6 +224,13 @@
   port.onmessage=function(event){
     var env=event.data; if(!env) return;
     switch(env.type){
+      case "mic-started": {var m=microphones.get(env.id);if(m)m.resolve(m.session);return;}
+      case "mic-level": {var m=microphones.get(env.id);if(m&&typeof m.onLevel==="function"){try{m.onLevel(env.value);}catch(e){console.warn(e);}}return;}
+      case "mic-result": case "mic-error": {
+        var m=microphones.get(env.id);if(!m)return;microphones.delete(env.id);m.cleanup();
+        if(env.type==="mic-result")m.resolveResult(env.blob);
+        else {var error=new DOMException(env.error||"Recording failed.",env.name||"Error");m.reject(error);m.rejectResult(error);}return;
+      }
       case "ready": tonk.context=env.context; resolveReady(); return;
       case "context": {
         tonk.context=env.context;
