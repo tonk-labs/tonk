@@ -4321,6 +4321,76 @@ mod tests {
         assert_eq!(get_str(&returned, "result").as_deref(), Some("invalid"));
     }
 
+    /// A render can replace the guest control that opened registration
+    /// before registration is requested, before focus returns, or just
+    /// after. Focus follows the replacement.
+    #[dialog_common::test]
+    async fn it_returns_registration_focus_to_a_replaced_opener() {
+        let scenario = Function::new_with_args(
+            "bootstrap, replaced",
+            r#"return (async () => {
+                const frame = document.createElement("iframe");
+                document.body.append(frame);
+                const port = await new Promise(resolve => {
+                    const hello = event => {
+                        if (event.source !== frame.contentWindow || event.data?.type !== "hello") return;
+                        window.removeEventListener("message", hello);
+                        resolve(event.ports[0]);
+                    };
+                    window.addEventListener("message", hello);
+                    const doc = frame.contentDocument;
+                    doc.open();
+                    doc.write(`<button data-opener="account" data-state="ready">open</button><script>${bootstrap}<\/script>`);
+                    doc.close();
+                });
+                const doc = frame.contentDocument;
+                const requested = new Promise(resolve => {
+                    port.onmessage = event => {
+                        if (event.data?.type === "register") resolve(event.data.focusToken);
+                    };
+                });
+                port.postMessage({ v: 1, type: "ready", context: {} });
+                const replace = () => {
+                    const old = doc.querySelector("[data-opener]");
+                    const next = old.cloneNode(true);
+                    next.setAttribute("data-state", "loading");
+                    old.replaceWith(next);
+                    return next;
+                };
+                const settle = () => new Promise(resolve => setTimeout(resolve, 20));
+                doc.querySelector("[data-opener]").focus();
+                let next = replaced === "before-request" ? replace() : null;
+                frame.contentWindow.tonk.register("needs-account");
+                const token = await requested;
+                if (replaced === "before-return") next = replace();
+                port.postMessage({ v: 1, type: "register-focus", focusToken: token });
+                await settle();
+                if (replaced === "after-return") next = replace();
+                await settle();
+                const focused = doc.activeElement === next;
+                frame.remove();
+                return focused;
+            })();"#,
+        );
+        for replaced in ["before-request", "before-return", "after-return"] {
+            let promise = scenario
+                .call2(
+                    &JsValue::NULL,
+                    &JsValue::from_str(BOOTSTRAP_JS),
+                    &JsValue::from_str(replaced),
+                )
+                .expect("run the scenario");
+            let focused = JsFuture::from(Promise::from(promise))
+                .await
+                .expect("scenario settles");
+            assert_eq!(
+                focused.as_bool(),
+                Some(true),
+                "focus did not follow an opener replaced {replaced}"
+            );
+        }
+    }
+
     #[dialog_common::test]
     async fn it_relays_nested_registration_focus_and_discard_to_the_child_port() {
         for terminal in ["register-focus", "custody-focus", "register-focus-discard"] {

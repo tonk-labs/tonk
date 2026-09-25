@@ -210,10 +210,14 @@ pub async fn sign_custody_consent(
 /// request, and answers with the operation's outcome.
 mod exchange {
     use anyhow::{Context, Result};
+    use dialog_capability::{Capability, Constraint};
     use dialog_capability::{ForkInvocation, Provider, Subject};
     use dialog_credentials::Signer;
-    use dialog_effects::memory::prelude::{CellExt, MemoryExt, MemorySubjectExt, SpaceExt};
-    use dialog_effects::memory::{MemoryError, Version};
+    use dialog_effects::memory::prelude::{
+        CellExt, MemoryExt, PublishCellExt, ResolveCellExt, SpaceExt,
+    };
+    use dialog_effects::memory::{Cell, MemoryError, Version};
+    use dialog_effects::{Method, MethodExt};
     use dialog_remote_ucan::{UcanAddress, UcanAuthorization, UcanSite};
     use dialog_ucan_core::{Invocation, InvocationChain};
     use dialog_varsig::{AnySignature, Principal};
@@ -253,9 +257,12 @@ mod exchange {
             .await
     }
 
-    /// The custody space's secret cell, as the key's own subject.
-    fn cell(custody: &Signer) -> dialog_capability::Capability<dialog_effects::memory::Cell> {
-        Subject::from(custody.did())
+    /// The custody space's secret cell, under `method` (read or write).
+    fn cell<M: Method>(method: Capability<M>) -> Capability<Cell<M>>
+    where
+        M::Of: Constraint,
+    {
+        method
             .memory()
             .space(CUSTODY_SPACE)
             .cell(CUSTODY_SECRET_CELL)
@@ -278,7 +285,8 @@ mod exchange {
             dialog_ucan_core::time::timestamp::Timestamp::five_minutes_from_now(),
         )
         .await?;
-        let capability = cell(&custody).publish(sealed.to_vec(), when.map(Version::from));
+        let capability = cell(Subject::from(custody.did()).writer())
+            .publish(sealed.to_vec(), when.map(Version::from));
         refused(perform(capability, invocation, endpoint).await)
             .map(|_version| ())
             .context("the custody cell was not published")
@@ -301,11 +309,8 @@ mod exchange {
                 }
                 _ => None,
             });
-        let capability = Subject::from(chain.subject().clone())
-            .memory()
-            .space(CUSTODY_SPACE)
-            .cell(CUSTODY_SECRET_CELL)
-            .publish(sealed.to_vec(), when);
+        let capability =
+            cell(Subject::from(chain.subject().clone()).writer()).publish(sealed.to_vec(), when);
         refused(perform(capability, chain.invocation.clone(), endpoint).await)
             .map(|_version| ())
             .context("the custody cell was not published")
@@ -315,7 +320,7 @@ mod exchange {
     /// was ever published there.
     pub async fn resolve_secret(custody: Signer, endpoint: &str) -> Result<Option<Vec<u8>>> {
         let invocation = super::sign_resolve_invocation(custody.clone()).await?;
-        let capability = cell(&custody).resolve();
+        let capability = cell(Subject::from(custody.did()).reader()).resolve();
         let resolved = refused(perform(capability, invocation, endpoint).await)
             .context("the custody cell was not read")?;
         Ok(resolved.map(|edition| edition.content))

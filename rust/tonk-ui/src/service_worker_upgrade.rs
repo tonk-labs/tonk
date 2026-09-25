@@ -377,17 +377,10 @@ pub(crate) mod tests {
                 .open(root.join("worker.js"))?,
             "// integration generation B worker glue"
         )?;
-        let guest_glue = std::fs::read_dir(root.join("guest"))?
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .find(|path| {
-                path.file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.starts_with("guest-") && name.ends_with(".js"))
-            })
-            .ok_or_else(|| anyhow!("generation has no guest glue"))?;
         writeln!(
-            std::fs::OpenOptions::new().append(true).open(guest_glue)?,
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(guest_glue(root)?)?,
             "// integration generation B guest glue"
         )?;
         Ok(())
@@ -539,6 +532,141 @@ pub(crate) mod tests {
         Ok((generation_a_contract, generation_b_contract))
     }
 
+    /// The guest glue of `root`, which the portal injects into every guest.
+    fn guest_glue(root: &Path) -> Result<std::path::PathBuf> {
+        std::fs::read_dir(root.join("guest"))?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("guest-") && name.ends_with(".js"))
+            })
+            .ok_or_else(|| anyhow!("generation has no guest glue"))
+    }
+
+    /// Record `generation` in the guest realm, so a test can tell which
+    /// guest runtime a mounted site is running.
+    fn mark_guest_generation(root: &Path, generation: &str) -> Result<()> {
+        let glue = guest_glue(root)?;
+        let source = std::fs::read_to_string(&glue)?;
+        let marker = "globalThis.__tonkTestGuestGeneration = ";
+        let unmarked = source
+            .split_once(&format!("\n{marker}"))
+            .map_or(source.as_str(), |(before, _)| before);
+        std::fs::write(&glue, format!("{unmarked}\n{marker}{generation:?};\n"))?;
+        Ok(())
+    }
+
+    /// A and B whose top-level documents are identical and whose guest
+    /// runtimes differ, the shape of a deploy that changed only guest code.
+    fn prepare_guest_only_generation(
+        env: &TestEnvironment,
+    ) -> Result<(GenerationContract, GenerationContract)> {
+        let generation_a = env.deployment_root.join("generation-a");
+        let generation_b = env.deployment_root.join("generation-b");
+        instrument_generation_documents(&generation_a)?;
+        mark_guest_generation(&generation_a, "A")?;
+        stamp_generation(&generation_a)?;
+        let generation_a_contract = generation_contract(&generation_a)?;
+        copy_artifact_tree(&generation_a, &generation_b)?;
+        mark_guest_generation(&generation_b, "B")?;
+        stamp_generation(&generation_b)?;
+        let generation_b_contract = generation_contract(&generation_b)?;
+        ensure!(
+            generation_a_contract.build != generation_b_contract.build,
+            "A and B must have distinct build ids"
+        );
+        let page = |root: &Path| -> Result<Value> {
+            let version = std::fs::read_to_string(root.join("version.json"))?;
+            Ok(serde_json::from_str::<Value>(&version)?["page"].clone())
+        };
+        ensure!(
+            page(&generation_a)? == page(&generation_b)?,
+            "a guest-only change must keep the page build"
+        );
+        Ok((generation_a_contract, generation_b_contract))
+    }
+
+    /// Which guest runtime the mounted top-level site is running.
+    async fn wait_for_guest_generation(driver: &WebDriver, generation: &str) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+        let mut last = Value::Null;
+        loop {
+            driver.enter_default_frame().await?;
+            if let Ok(frame) = driver.find(By::Css("tonk-site > iframe")).await
+                && frame.enter_frame().await.is_ok()
+                && let Ok(value) = driver
+                    .execute(
+                        "return globalThis.__tonkTestGuestGeneration ?? null;",
+                        vec![],
+                    )
+                    .await
+            {
+                last = value.json().clone();
+                if last == generation {
+                    driver.enter_default_frame().await?;
+                    return Ok(());
+                }
+            }
+            ensure!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for guest generation {generation}; last={last}"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    /// The mounted top-level guest's rendered text, once it is non-empty and
+    /// unchanged across two reads.
+    async fn settled_guest_text(driver: &WebDriver) -> Result<String> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        let mut last = String::new();
+        loop {
+            driver.enter_default_frame().await?;
+            let mut current = String::new();
+            if let Ok(frame) = driver.find(By::Css("tonk-site > iframe")).await
+                && frame.enter_frame().await.is_ok()
+                && let Ok(text) = driver
+                    .execute(
+                        r#"
+                        const skipped = new Set(["STYLE", "SCRIPT", "TEMPLATE"]);
+                        const text = node => [...node.childNodes].map(child =>
+                            child.nodeType === Node.TEXT_NODE
+                                ? child.textContent
+                                : child.nodeType === Node.ELEMENT_NODE && !skipped.has(child.tagName)
+                                    ? (child.shadowRoot ? text(child.shadowRoot) + " " : "") + text(child)
+                                    : "").join(" ");
+                        return document.body ? text(document.body).replace(/\s+/g, " ") : "";
+                        "#,
+                        vec![],
+                    )
+                    .await
+            {
+                current = text.json().as_str().unwrap_or_default().trim().to_owned();
+            }
+            driver.enter_default_frame().await?;
+            if !current.is_empty() && current == last {
+                return Ok(current);
+            }
+            ensure!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for settled guest text; last={last:?} html={html}",
+                html = driver
+                    .execute(
+                        r#"const frame = document.querySelector("tonk-site > iframe");
+                           return frame?.contentDocument?.body?.innerHTML?.slice(0, 1500) ?? null;"#,
+                        vec![],
+                    )
+                    .await
+                    .map(|value| value.json().to_string())
+                    .unwrap_or_default()
+            );
+            last = current;
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+
     pub(crate) fn prepare_profile_library_generations(
         env: &TestEnvironment,
     ) -> Result<(GenerationContract, GenerationContract)> {
@@ -672,9 +800,35 @@ pub(crate) mod tests {
             if tokio::time::Instant::now() >= deadline {
                 // Sample only after the observation window: health fetches
                 // during retirement can themselves delay worker activation.
-                let health = worker_health(driver).await;
+                // The controlling worker's own log says whether it retired,
+                // released its streams, and handed off its overlay, which is
+                // what a successor stuck in `waiting` depends on.
+                let mut health = worker_health(driver).await;
+                let controller_log = health
+                    .as_mut()
+                    .ok()
+                    .and_then(|health| health["body"].as_object_mut())
+                    .and_then(|body| body.remove("log"))
+                    .and_then(|log| log.as_array().cloned())
+                    .map(|log| {
+                        log.iter()
+                            .rev()
+                            .take(80)
+                            .rev()
+                            .filter_map(|entry| {
+                                let message = entry["message"].as_str()?;
+                                let at = entry["t"].as_u64().unwrap_or_default();
+                                Some(format!(
+                                    "{at} {}",
+                                    message.chars().take(200).collect::<String>()
+                                ))
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
                 anyhow::bail!(
-                    "timed out waiting for coherent build {build}: {last}; incumbent health: {health:?}"
+                    "timed out waiting for coherent build {build}: {last}; incumbent health: {health:?}\ncontroller log:\n{}",
+                    controller_log.join("\n")
                 );
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -1347,6 +1501,304 @@ pub(crate) mod tests {
             .await?;
         assert_eq!(successor.json()["query"]["status"], 200, "{successor:?}");
         assert_eq!(successor.json()["lsp"]["status"], 200, "{successor:?}");
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    /// Chrome activates a `skipWaiting` successor only once the outgoing
+    /// worker has no pending events. A busy incumbent page (the boot
+    /// `connectivity` nudge, steady asset traffic) used to leave a deferred
+    /// offline fill on the incumbent's `waitUntil` for up to a minute, holding
+    /// the installed successor out of activation that whole time. Steady data
+    /// traffic did the same: every request scheduled a debounced sync drain on
+    /// its `waitUntil`, even on a retiring worker that would refuse it.
+    #[dialog_common::test]
+    async fn it_activates_a_successor_while_the_incumbent_page_is_busy(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let (generation_a, generation_b) = prepare_second_generation(&env)?;
+        let driver = env.driver().await?;
+        wait_for_complete_generation(&driver, &generation_a, None, None).await?;
+        // A returning visit: only a document that loaded under a controller
+        // performs the alignment reload onto a successor.
+        driver.refresh().await?;
+        wait_for_mounted_build(&driver, &generation_a.build).await?;
+        let asset = generation_a
+            .probes
+            .keys()
+            .find(|path| path.as_str() != "/")
+            .cloned()
+            .context("generation A exposes no static asset probe")?;
+        let query = tonk_worker::helpers::named_concept_wire_query();
+
+        promote_second_generation(&env)?;
+        let started = driver
+            .execute_async(
+                r#"
+                const [asset, query] = arguments;
+                const done = arguments[arguments.length - 1];
+                (async () => {
+                    const key = "tonk:test:successor-states";
+                    const record = state => {
+                        const states = JSON.parse(sessionStorage.getItem(key) || "{}");
+                        states[state] ??= Date.now();
+                        sessionStorage.setItem(key, JSON.stringify(states));
+                    };
+                    const registration = await navigator.serviceWorker.getRegistration();
+                    // The ordinary work of a live incumbent page. The busy
+                    // loop ends with the document's alignment reload.
+                    navigator.serviceWorker.controller.postMessage({ type: "connectivity" });
+                    const profiles = await (await fetch("/api/profiles")).json();
+                    const queryUrl = `/api/profile/branch/${profiles.active}/query`;
+                    (async () => {
+                        for (;;) {
+                            try { await (await fetch(asset)).arrayBuffer(); } catch {}
+                            try {
+                                await (await fetch(queryUrl, {
+                                    method: "POST",
+                                    headers: { "content-type": "application/json" },
+                                    body: JSON.stringify(query),
+                                })).text();
+                            } catch {}
+                            await new Promise(resolve => setTimeout(resolve, 250));
+                        }
+                    })();
+                    registration.addEventListener("updatefound", () => {
+                        const incoming = registration.installing;
+                        const observe = () => record(incoming.state);
+                        incoming.addEventListener("statechange", observe);
+                        observe();
+                    }, { once: true });
+                    await registration.update();
+                    done({ ok: true });
+                })().catch(error => done({ error: String(error) }));
+                "#,
+                vec![asset.into(), query],
+            )
+            .await?;
+        ensure!(
+            started.json()["ok"] == true,
+            "failed to start the update: {}",
+            started.json()
+        );
+
+        if let Err(error) = wait_for_mounted_build(&driver, &generation_b.build).await {
+            let states = driver
+                .execute(
+                    r#"return {
+                        states: JSON.parse(sessionStorage.getItem("tonk:test:successor-states") || "{}"),
+                        controller: navigator.serviceWorker.controller?.scriptURL || null,
+                    };"#,
+                    vec![],
+                )
+                .await
+                .map(|value| value.json().clone())
+                .unwrap_or(Value::Null);
+            let health = worker_health(&driver).await.unwrap_or(Value::Null);
+            return Err(error.context(format!("successor={states}, health={health}")));
+        }
+        let states = driver
+            .execute(
+                r#"return JSON.parse(sessionStorage.getItem("tonk:test:successor-states") || "{}");"#,
+                vec![],
+            )
+            .await?
+            .json()
+            .clone();
+        let installed = states["installed"]
+            .as_u64()
+            .context(format!("successor never reported installed: {states}"))?;
+        let activating = states["activating"]
+            .as_u64()
+            .context(format!("successor never reported activating: {states}"))?;
+        let held = activating.saturating_sub(installed);
+        assert!(
+            held < 10_000,
+            "the installed successor waited {held}ms for the busy incumbent to release it: {states}"
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    /// A deploy that changed only worker and guest code keeps the open
+    /// document: the new worker takes over, the page remounts its guest from
+    /// it, and nothing reloads.
+    #[dialog_common::test]
+    async fn it_remounts_guests_without_reloading_when_the_page_is_unchanged(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let (generation_a, generation_b) = prepare_guest_only_generation(&env)?;
+        let driver = env.driver().await?;
+        wait_for_complete_generation(&driver, &generation_a, None, None).await?;
+        driver.refresh().await?;
+        wait_for_mounted_build(&driver, &generation_a.build).await?;
+        wait_for_guest_generation(&driver, "A").await?;
+        let rendered = settled_guest_text(&driver).await?;
+        let documents = |driver: &WebDriver| {
+            let driver = driver.clone();
+            async move {
+                driver.enter_default_frame().await?;
+                let count = driver
+                    .execute(
+                        r#"return Number(sessionStorage.getItem("tonk:test:sw-documents")) || 0;"#,
+                        vec![],
+                    )
+                    .await?;
+                anyhow::Ok(count.json().as_u64().unwrap_or(0))
+            }
+        };
+        let before = documents(&driver).await?;
+
+        promote_second_generation(&env)?;
+        let started = driver
+            .execute_async(
+                r#"
+                const done = arguments[arguments.length - 1];
+                navigator.serviceWorker.getRegistration()
+                    .then(registration => registration.update())
+                    .then(() => done({ ok: true }))
+                    .catch(error => done({ error: String(error) }));
+                "#,
+                vec![],
+            )
+            .await?;
+        ensure!(
+            started.json()["ok"] == true,
+            "failed to start the update: {}",
+            started.json()
+        );
+
+        wait_for_guest_generation(&driver, "B").await?;
+        let health = worker_health(&driver).await?;
+        assert_eq!(
+            health["body"]["build"].as_str(),
+            Some(generation_b.build.as_str()),
+            "{health}"
+        );
+        assert_eq!(
+            documents(&driver).await?,
+            before,
+            "the document must not reload"
+        );
+        let guard = driver
+            .execute(
+                r#"return sessionStorage.getItem("tonk:sw-upgrade-reload");"#,
+                vec![],
+            )
+            .await?;
+        assert!(guard.json().is_null(), "no alignment reload was requested");
+        // The remounted guest renders the same live data from the new worker.
+        assert_eq!(settled_guest_text(&driver).await?, rendered);
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    /// The join failures on the profile's active branch, as the controlling
+    /// worker reads them. The failure lives only in that worker's session
+    /// overlay.
+    async fn join_failures(driver: &WebDriver) -> Result<Value> {
+        let result = driver
+            .execute_async(
+                r#"
+                const query = arguments[0];
+                const done = arguments[arguments.length - 1];
+                (async () => {
+                    const profiles = await (await fetch("/api/profiles")).json();
+                    const response = await fetch(`/api/profile/branch/${profiles.active}/query`, {
+                        method: "POST",
+                        headers: { "content-type": "application/json" },
+                        body: JSON.stringify(query),
+                    });
+                    done({ status: response.status, rows: await response.json() });
+                })().catch(error => done({ error: String(error) }));
+                "#,
+                vec![tonk_worker::helpers::join_failure_wire_query()],
+            )
+            .await?;
+        Ok(result.json().clone())
+    }
+
+    async fn wait_for_join_failure(driver: &WebDriver) -> Result<Value> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let result = join_failures(driver).await?;
+            if result["rows"]
+                .as_array()
+                .is_some_and(|rows| !rows.is_empty())
+            {
+                return Ok(result);
+            }
+            ensure!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for a join failure: {result}"
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    /// A worker's session overlay outlives the worker. A failed join leaves
+    /// its failure only in the overlay, and nothing re-derives it when a
+    /// worker boots, so the successor answers with it only if the handoff
+    /// carried it across.
+    #[dialog_common::test]
+    async fn it_carries_the_session_overlay_to_a_successor_worker(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let (generation_a, generation_b) = prepare_guest_only_generation(&env)?;
+        let driver = env.driver().await?;
+        wait_for_complete_generation(&driver, &generation_a, None, None).await?;
+
+        // Invite-shaped, so the join runs, but its `access` is not base58:
+        // the join fails as malformed without touching the network.
+        let origin = driver.current_url().await?;
+        driver
+            .goto(
+                origin
+                    .join("/join?access=not-a-delegation&remote=https%3A%2F%2Fexample.invalid#not-a-seed")?
+                    .as_str(),
+            )
+            .await?;
+        let failed = wait_for_join_failure(&driver).await?;
+        // Leave /join, whose view would otherwise re-run the join.
+        driver.goto(origin.join("/")?.as_str()).await?;
+        wait_for_mounted_build(&driver, &generation_a.build).await?;
+        let before = join_failures(&driver).await?;
+        assert_eq!(before["rows"], failed["rows"], "{before}");
+
+        promote_second_generation(&env)?;
+        let started = driver
+            .execute_async(
+                r#"
+                const done = arguments[arguments.length - 1];
+                navigator.serviceWorker.getRegistration()
+                    .then(registration => registration.update())
+                    .then(() => done({ ok: true }))
+                    .catch(error => done({ error: String(error) }));
+                "#,
+                vec![],
+            )
+            .await?;
+        ensure!(
+            started.json()["ok"] == true,
+            "failed to start the update: {}",
+            started.json()
+        );
+        wait_for_guest_generation(&driver, "B").await?;
+        let health = worker_health(&driver).await?;
+        assert_eq!(
+            health["body"]["build"].as_str(),
+            Some(generation_b.build.as_str()),
+            "{health}"
+        );
+
+        let after = join_failures(&driver).await?;
+        assert_eq!(
+            after["rows"], failed["rows"],
+            "the successor restored the predecessor's overlay: {after}"
+        );
 
         driver.quit().await?;
         Ok(())
