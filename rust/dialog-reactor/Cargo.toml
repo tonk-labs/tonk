@@ -23,6 +23,7 @@ dialog-storage = { workspace = true }
 futures-util = { workspace = true }
 ipld-core = { workspace = true }
 parking_lot = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

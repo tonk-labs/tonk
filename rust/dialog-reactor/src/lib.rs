@@ -53,7 +53,7 @@ pub use error::ReactorError;
 pub use export::{Export, ExportError};
 pub use formula::{FormulaError, resolve_formula};
 pub use import::{Import, ImportError};
-pub use overlay::{OverlayBuilder, OverlayWrite};
+pub use overlay::{OverlayBuilder, OverlaySnapshot, OverlayWrite};
 pub use pull::Pull;
 pub use push::Push;
 pub use query::QueryEffect;
