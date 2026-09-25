@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
-import { agentDebugBundle, bounded, probes, projectWorkerHealth, readProbe, redactDebug, workerAction, workerSnapshot } from "../assets/doctor.mjs";
+import { agentDebugBundle, bounded, probes, profileBranch, projectWorkerHealth, readProbe, readQuery, redactDebug, workerAction, workerSnapshot } from "../assets/doctor.mjs";
 
 test("doctor startup never registers a worker or arms boot recovery", () => {
     const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
@@ -25,30 +25,60 @@ test("doctor startup never registers a worker or arms boot recovery", () => {
     }
 });
 
-test("root and profile projections exclude authority and unknown fields", () => {
-    const project = path => probes.find(probe => probe[1] === path)[2];
-    const root = project("/api/identity/root")({
-        status: "ready", rootDid: "did:root", deviceDid: "did:device",
-        credentialId: "secret", delegationHex: "secret", encryptionKey: "secret",
-        futureSecret: "secret",
-    });
-    assert.deepEqual(root, { status: "ready", rootDid: "did:root", deviceDid: "did:device" });
-    const profile = project("/api/profile")({ profile: { operator: "did:operator", remote: { token: "secret" } }, space: [] });
-    assert.equal(profile.profile.operator, "did:operator");
-    assert.ok(!JSON.stringify(profile).includes("secret"));
-    assert.deepEqual(project("/api/health")({ worker: "failed" }), { worker: "failed", log: null });
+test("query projections keep only public identifiers", () => {
+    const project = title => probes.find(probe => probe[0] === title)[2];
+    const row = fields => ({ this: "state:x", fields });
+    assert.deepEqual(project("Local root")([row({ root: "did:root", credential: "secret" })]), { rootDid: "did:root" });
+    assert.deepEqual(project("Local root")([]), { rootDid: null });
+    assert.deepEqual(project("Account link")([row({ account: "did:root" })]), { account: "did:root" });
+    const spaces = project("Profile & spaces")([
+        row({ subject: "did:profile", kind: "tonk:profile" }),
+        row({ subject: "did:space", kind: "tonk:repository" }),
+        row({ subject: "did:account", kind: "tonk:account" }),
+    ]);
+    assert.deepEqual(spaces, { profile: "did:profile", spaces: ["did:space"] });
+    const profiles = project("Profiles on this browser")([
+        row({ name: "main", label: "Ada", provider: "https://tonk.test/", active: true, token: "secret" }),
+    ]);
+    assert.equal(profiles.active, "main");
+    assert.ok(!JSON.stringify(profiles).includes("secret"));
+    assert.deepEqual(project("Worker health")({ worker: "failed" }), { worker: "failed", log: null });
+});
+
+test("queries read the branch the profile is on, not main", async () => {
+    const asked = [];
+    const env = {
+        navigator: { serviceWorker: { controller: {} } },
+        fetch: async (path, init) => {
+            const body = JSON.parse(init.body);
+            asked.push([path, body]);
+            if (path.endsWith("/meta/query") && body.predicate.with.branch) {
+                return Response.json([{ fields: { branch: "branch:entity" } }]);
+            }
+            if (path.endsWith("/meta/query")) {
+                assert.equal(body.terms.this, "branch:entity");
+                return Response.json([{ fields: { name: "signed-out" } }]);
+            }
+            return Response.json([{ fields: { root: "did:root" } }]);
+        },
+    };
+    assert.equal(await profileBranch(env), "signed-out");
+    const root = probes.find(probe => probe[0] === "Local root");
+    assert.deepEqual(await readQuery(root[1].query, root[2], env), { rootDid: "did:root" });
+    assert.equal(asked.at(-1)[0], "/api/profile/branch/signed-out/query");
+    assert.equal(asked.at(-1)[1].terms.this, "state:local-root");
 });
 
 test("probes reject uncontrolled requests, HTTP failures and SPA fallbacks", async () => {
     const env = { navigator: {}, fetch() { assert.fail("must not fetch without controller"); } };
-    await assert.rejects(readProbe("/api/account", value => value, env), /No controlling/);
+    await assert.rejects(readProbe("/api/health", value => value, env), /No controlling/);
     env.navigator.serviceWorker = { controller: {} };
     env.fetch = async () => new Response("sensitive error body", { status: 503 });
-    await assert.rejects(readProbe("/api/account", value => value, env), /^Error: HTTP 503/);
+    await assert.rejects(readProbe("/api/health", value => value, env), /^Error: HTTP 503/);
     env.fetch = async () => new Response("<html>shell</html>", { headers: { "content-type": "text/html" } });
-    await assert.rejects(readProbe("/api/account", value => value, env), /Expected JSON/);
+    await assert.rejects(readProbe("/api/health", value => value, env), /Expected JSON/);
     env.fetch = async () => Response.json({ status: "rootMissing" });
-    assert.deepEqual(await readProbe("/api/account", value => value, env), { status: "rootMissing" });
+    assert.deepEqual(await readProbe("/api/health", value => value, env), { status: "rootMissing" });
 });
 
 test("a stalled probe times out without blocking successful probes", async () => {

@@ -1,15 +1,10 @@
 //! Persist and validate the provider-neutral local passkey root.
 
-use axum::{Json, extract::State};
-use axum_wasm_macros::wasm_compat;
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
 use serde::{Deserialize, Serialize};
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_worker_api::{PasskeyMetadata, RootStatus, SaveRootRequest};
 
-use super::AppState;
 use crate::TonkWorkerError;
 use crate::worker::{DefaultOperator, TonkState};
 use dialog_operator::Profile;
@@ -166,16 +161,73 @@ fn status(root: LocalRoot) -> RootStatus {
     }
 }
 
-/// `GET /api/identity/root`.
-#[wasm_compat]
-pub async fn get(State(state): State<AppState>) -> Result<Json<RootStatus>, TonkWorkerError> {
-    let state = state.read().await;
-    match load_record(&state).await? {
-        None => Ok(Json(RootStatus::Missing {
+/// This device's local root, or that it holds none.
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn root_status(state: &TonkState) -> Result<RootStatus, TonkWorkerError> {
+    match load_record(state).await? {
+        None => Ok(RootStatus::Missing {
             device_did: state.profile.did().to_string(),
-        })),
-        Some(_) => Ok(Json(status(local_root(&state).await?))),
+        }),
+        Some(_) => Ok(status(local_root(state).await?)),
     }
+}
+
+/// Say on the active branch's overlay whether this device holds a local
+/// root, which root, and which passkey and recipient key it names — the
+/// [`LocalRootState`] and [`LocalRootKey`] rows. The grant itself stays
+/// in the credential store.
+///
+/// [`LocalRootState`]: tonk_schema::LocalRootState
+/// [`LocalRootKey`]: tonk_schema::LocalRootKey
+pub(crate) async fn publish_local_root(state: &TonkState) {
+    use tonk_schema::{LocalRootKey, LocalRootState, prelude::DidExt as _};
+
+    let Ok(this) = LocalRootState::ENTITY.parse::<dialog_artifacts::Entity>() else {
+        return;
+    };
+    let root = match local_root(state).await {
+        Ok(root) => Some(root),
+        Err(TonkWorkerError::RootRequired) => None,
+        Err(error) => {
+            tonk_common::log!("local root row: the record is unreadable: {error}");
+            None
+        }
+    };
+    let branch = match state
+        .reactor
+        .profile_repository()
+        .branch(&state.active_branch)
+        .acquire(&state.operator)
+        .await
+    {
+        Ok(branch) => branch,
+        Err(error) => {
+            tonk_common::log!("local root row: open the active branch: {error}");
+            return;
+        }
+    };
+    // Clear first: a root without a key must not keep a key row a
+    // previous root left behind.
+    branch
+        .state
+        .retain_overlay_entities(|overlaid| overlaid != &this);
+    if let Some(root) = root {
+        branch.state.assert_overlay(LocalRootState {
+            this: this.clone(),
+            root: tonk_schema::domain::local_root::Root(root.root_did.this()),
+            credential: tonk_schema::domain::local_root::Credential(root.credential_id),
+        });
+        if let Some(key) = root.encryption_key {
+            branch.state.assert_overlay(LocalRootKey {
+                this,
+                key: tonk_schema::domain::local_root::EncryptionKey(key.this()),
+            });
+        }
+    }
+    state
+        .reactor
+        .schedule_poll(std::sync::Arc::clone(&branch.state));
+    state.reactor.run_scheduled_polls(&state.operator).await;
 }
 
 /// Rewrite the local root record without its recipient: the shape of a
@@ -213,7 +265,11 @@ pub(crate) async fn forget_root(state: &TonkState) -> Result<(), TonkWorkerError
         .retract()
         .perform(&state.operator)
         .await
-        .map_err(|error| TonkWorkerError::Internal(format!("failed to forget local root: {error}")))
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to forget local root: {error}"))
+        })?;
+    publish_local_root(state).await;
+    Ok(())
 }
 
 pub(crate) async fn persist_root(
@@ -345,6 +401,7 @@ pub(crate) async fn persist_root(
     if let Some(recipient) = &encryption_key {
         super::custody::notify_encryption_key(recipient);
     }
+    publish_local_root(state).await;
     Ok(status(LocalRoot {
         root_did: chain.issuer().clone(),
         device_did: state.profile.did(),
@@ -368,30 +425,62 @@ fn parse_encryption_key(did: &str) -> Result<dialog_varsig::Did, TonkWorkerError
     Ok(did)
 }
 
-/// `POST /api/identity/root`.
-#[wasm_compat]
-pub async fn save(
-    State(state): State<AppState>,
-    Json(request): Json<SaveRootRequest>,
-) -> Result<Json<RootStatus>, TonkWorkerError> {
-    let state = state.read().await;
-    let status = persist_root(&state, request).await?;
+/// Save a verified local root ceremony result.
+pub(crate) async fn save_root(
+    state: &TonkState,
+    request: SaveRootRequest,
+) -> Result<RootStatus, TonkWorkerError> {
+    let status = persist_root(state, request).await?;
     // A save that carries creation metadata is a passkey arriving — at
     // signup or at a later custody enrollment. The passkey's own row is
     // written by the ceremony, which is the only place that holds both
     // the custody DID it keys on and the creation label. Seed the
     // sealed-inbox address now rather than on the next sweep, so the
     // dashboard reflects the enrollment immediately.
-    if super::account_state::seed_sealed_inbox(&state).await {
+    if super::account_state::seed_sealed_inbox(state).await {
         tonk_common::log!("published the account's encryption key in the account space");
     }
-    Ok(Json(status))
+    Ok(status)
+}
+
+/// Run [`SaveEncryptionKey`]: record the key a passkey assertion derived
+/// with the local root this device already holds. The outcome is the
+/// local root's key row.
+///
+/// [`SaveEncryptionKey`]: tonk_schema::command::SaveEncryptionKey
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::SaveEncryptionKey>
+    for crate::router::CommandEnv
+{
+    async fn execute(&self, command: tonk_schema::command::SaveEncryptionKey) {
+        let state = self.state().read().await;
+        let record = match load_record(&state).await {
+            Ok(Some(record)) => record,
+            Ok(None) => {
+                tonk_common::log!("save-encryption-key: no local root to record it with");
+                return;
+            }
+            Err(error) => {
+                tonk_common::log!("save-encryption-key: {error}");
+                return;
+            }
+        };
+        let request = SaveRootRequest {
+            credential_id: record.credential_id,
+            delegation_hex: hex::encode(record.delegation),
+            passkey: record.passkey,
+            encryption_key: Some(command.key.0),
+        };
+        if let Err(error) = save_root(&state, request).await {
+            tonk_common::log!("save-encryption-key: {error}");
+        }
+    }
 }
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 mod tests {
     use super::*;
-    use axum::extract::State;
     use dialog_credentials::Ed25519Signer;
     use dialog_varsig::Principal;
     use std::sync::Arc;
@@ -423,7 +512,7 @@ mod tests {
     #[dialog_common::test]
     async fn it_reports_a_missing_local_root() {
         let state = Arc::new(RwLock::new(test_state_without_root().await));
-        let Json(result) = get(State(state)).await.unwrap();
+        let result = root_status(&*state.read().await).await.unwrap();
         assert!(matches!(result, RootStatus::Missing { .. }));
     }
 
@@ -433,8 +522,8 @@ mod tests {
         let device = state.read().await.profile.did();
         let (request, grant) = request_for(1, &device).await;
 
-        let _ = save(State(state.clone()), Json(request)).await.unwrap();
-        let Json(result) = get(State(state)).await.unwrap();
+        let _ = save_root(&*state.read().await, request).await.unwrap();
+        let result = root_status(&*state.read().await).await.unwrap();
         assert!(matches!(result, RootStatus::Ready { delegation_cid, .. }
             if delegation_cid == grant.proof_cids()[0].to_string()));
     }
@@ -451,8 +540,8 @@ mod tests {
         });
         let request = serde_json::from_value(request).unwrap();
 
-        let _ = save(State(state.clone()), Json(request)).await.unwrap();
-        let Json(result) = get(State(state)).await.unwrap();
+        let _ = save_root(&*state.read().await, request).await.unwrap();
+        let result = root_status(&*state.read().await).await.unwrap();
         let result = serde_json::to_value(result).unwrap();
         assert_eq!(result["passkey"]["createdAt"], 1_754_380_800u64);
         assert_eq!(result["passkey"]["createdOn"], "Chrome on macOS");
@@ -471,7 +560,7 @@ mod tests {
         let recipient = recipient_did(1);
         let (mut request, _) = request_for(1, &device).await;
         request.encryption_key = Some(recipient.to_string());
-        let _ = save(State(state.clone()), Json(request)).await.unwrap();
+        let _ = save_root(&*state.read().await, request).await.unwrap();
         assert_eq!(
             local_root(&*state.read().await)
                 .await
@@ -483,7 +572,7 @@ mod tests {
         // A later ceremony on the same root that did not hold the secret
         // (a re-minted grant) leaves the recorded recipient in place.
         let (again, _) = request_for(1, &device).await;
-        let _ = save(State(state.clone()), Json(again)).await.unwrap();
+        let _ = save_root(&*state.read().await, again).await.unwrap();
         assert_eq!(
             local_root(&*state.read().await)
                 .await
@@ -493,6 +582,103 @@ mod tests {
         );
     }
 
+    fn local_root_query() -> serde_json::Value {
+        serde_json::json!({
+            "predicate": { "with": {
+                "root": { "the": "xyz.tonk.local-root/root", "as": "Entity", "cardinality": "one" },
+                "credential": { "the": "xyz.tonk.local-root/credential", "as": "Text", "cardinality": "one" }
+            } },
+            "terms": {
+                "this": tonk_schema::LocalRootState::ENTITY,
+                "root": { "?": { "name": "root" } },
+                "credential": { "?": { "name": "credential" } }
+            }
+        })
+    }
+
+    fn local_root_key_query() -> serde_json::Value {
+        serde_json::json!({
+            "predicate": { "with": {
+                "key": { "the": "xyz.tonk.local-root/encryption-key", "as": "Entity", "cardinality": "one" }
+            } },
+            "terms": {
+                "this": tonk_schema::LocalRootState::ENTITY,
+                "key": { "?": { "name": "key" } }
+            }
+        })
+    }
+
+    /// Saving a root says so on the overlay — which root and passkey — and
+    /// forgetting it takes the rows away. This is how a page learns the
+    /// device holds a root without the grant ever leaving the worker.
+    #[dialog_common::test]
+    async fn it_publishes_the_local_root_rows() {
+        let state = Arc::new(RwLock::new(test_state_without_root().await));
+        assert!(
+            crate::router::tests::profile_rows(&state, local_root_query())
+                .await
+                .is_empty()
+        );
+
+        let device = state.read().await.profile.did();
+        let (request, grant) = request_for(3, &device).await;
+        save_root(&*state.read().await, request).await.unwrap();
+
+        let rows = crate::router::tests::profile_rows(&state, local_root_query()).await;
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0]["fields"]["root"], grant.issuer().to_string());
+        assert_eq!(rows[0]["fields"]["credential"], "credential-3");
+        assert!(
+            crate::router::tests::profile_rows(&state, local_root_key_query())
+                .await
+                .is_empty(),
+            "a root saved without a key has no key row"
+        );
+
+        forget_root(&*state.read().await).await.unwrap();
+        assert!(
+            crate::router::tests::profile_rows(&state, local_root_query())
+                .await
+                .is_empty()
+        );
+    }
+
+    /// The command records a key with the root already held, keeping the
+    /// grant and passkey metadata it came with, and the key row appears.
+    #[dialog_common::test]
+    async fn it_records_the_encryption_key_through_the_command() {
+        let state = Arc::new(RwLock::new(test_state_without_root().await));
+        let device = state.read().await.profile.did();
+        let (mut request, grant) = request_for(4, &device).await;
+        request.passkey = Some(PasskeyMetadata {
+            created_at: 1_754_380_800,
+            created_on: "Chrome on macOS".to_owned(),
+        });
+        save_root(&*state.read().await, request).await.unwrap();
+
+        let recipient = recipient_did(4);
+        let env = crate::router::CommandEnv::new(state.clone(), Default::default());
+        let command = tonk_schema::command::SaveEncryptionKey {
+            this: "command:save-key".parse().unwrap(),
+            key: tonk_schema::domain::command::save_encryption_key::Key(recipient.to_string()),
+        };
+        dialog_capability::Provider::<tonk_schema::command::SaveEncryptionKey>::execute(
+            &env, command,
+        )
+        .await;
+
+        let root = local_root(&*state.read().await).await.unwrap();
+        assert_eq!(root.encryption_key, Some(recipient.clone()));
+        assert_eq!(root.root_did, grant.issuer().clone());
+        assert_eq!(
+            root.passkey.map(|passkey| passkey.created_on).as_deref(),
+            Some("Chrome on macOS")
+        );
+        let keys = crate::router::tests::profile_rows(&state, local_root_key_query()).await;
+        assert_eq!(keys.len(), 1, "{keys:?}");
+        assert_eq!(keys[0]["fields"]["key"], recipient.to_string());
+    }
+
     #[dialog_common::test]
     async fn it_rejects_an_encryption_key_that_is_not_x25519() {
         let state = Arc::new(RwLock::new(test_state_without_root().await));
@@ -500,7 +686,7 @@ mod tests {
         let (mut request, grant) = request_for(1, &device).await;
         request.encryption_key = Some(grant.issuer().to_string());
         assert!(matches!(
-            save(State(state), Json(request)).await,
+            save_root(&*state.read().await, request).await,
             Err(TonkWorkerError::Router(_))
         ));
     }
@@ -512,7 +698,7 @@ mod tests {
         let (request, _) = request_for(1, &other).await;
 
         assert!(matches!(
-            save(State(state), Json(request)).await,
+            save_root(&*state.read().await, request).await,
             Err(TonkWorkerError::Forbidden(_))
         ));
     }
@@ -524,7 +710,7 @@ mod tests {
         let (second, _) = request_for(2, &device).await;
 
         assert!(matches!(
-            save(State(state), Json(second)).await,
+            save_root(&*state.read().await, second).await,
             Err(TonkWorkerError::Conflict(_))
         ));
     }
@@ -542,7 +728,7 @@ mod tests {
         let device = state.read().await.profile.did();
         let (replacement, _) = request_for(2, &device).await;
 
-        let error = save(State(state.clone()), Json(replacement))
+        let error = save_root(&*state.read().await, replacement)
             .await
             .unwrap_err();
 
@@ -568,7 +754,7 @@ mod tests {
         let _ = crate::router::profiles::sign_out(&state, None)
             .await
             .unwrap();
-        let Json(status) = save(State(state.clone()), Json(replacement)).await.unwrap();
+        let status = save_root(&*state.read().await, replacement).await.unwrap();
 
         assert!(matches!(
             status,
@@ -587,10 +773,10 @@ mod tests {
         let (replacement, _) = request_for(2, &device).await;
         let replacement_credential = replacement.credential_id.clone();
 
-        let status = save(State(state.clone()), Json(replacement)).await.unwrap();
+        let status = save_root(&*state.read().await, replacement).await.unwrap();
         assert!(
             matches!(
-                status.0,
+                status,
                 RootStatus::Ready { credential_id, .. } if credential_id == replacement_credential
             ),
             "the retry's credential must be the persisted one"
@@ -625,7 +811,7 @@ mod tests {
         let _ = crate::router::profiles::sign_out(&state, None)
             .await
             .unwrap();
-        let Json(status) = save(State(state.clone()), Json(request)).await.unwrap();
+        let status = save_root(&*state.read().await, request).await.unwrap();
 
         assert!(matches!(
             status,
@@ -639,9 +825,9 @@ mod tests {
         let device = state.read().await.profile.did();
         let (request, _) = request_for(1, &device).await;
 
-        let _ = save(State(state.clone()), Json(request.clone()))
+        let _ = save_root(&*state.read().await, request.clone())
             .await
             .unwrap();
-        let _ = save(State(state), Json(request)).await.unwrap();
+        let _ = save_root(&*state.read().await, request).await.unwrap();
     }
 }

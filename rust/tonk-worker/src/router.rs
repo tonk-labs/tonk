@@ -96,9 +96,6 @@ pub use sync::{is_sync_enabled, mark_offline};
 // depending on `tonk-schema` directly.
 pub use tonk_schema::SyncState;
 
-mod identify;
-pub use identify::IdentifyResponse;
-
 pub(crate) mod identity;
 
 pub mod lsp;
@@ -108,7 +105,6 @@ mod lsp_env;
 
 mod onboarding_space;
 pub(crate) mod profile;
-pub use profile::{ProfileInfo, SpaceEntry};
 
 pub(crate) mod profiles;
 
@@ -152,7 +148,7 @@ mod wire_compat;
 pub type AppState = Arc<RwLock<TonkState>>;
 
 fn is_profile_scoped_path(path: &str) -> bool {
-    path.starts_with("/api/") && !matches!(path, "/api/identify" | "/api/health")
+    path.starts_with("/api/") && path != "/api/health"
 }
 
 async fn profile_context_fence(
@@ -206,14 +202,6 @@ pub fn api_router_with_state(state: TonkState) -> (Router, AppState, Arc<LspHub>
 pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
     let (lsp_routes, lsp_hub) = lsp::lsp_router(state.clone());
     let router = Router::new()
-        .route("/api/identify", get(identify::identify))
-        .route(
-            "/api/identity/root",
-            get(identity::get).post(identity::save),
-        )
-        .route("/api/account", get(account::get))
-        .route("/api/account/display-name", post(account::set_display_name))
-        .route("/api/profile", get(profile::get_profile))
         .route(
             "/api/profile/branch/{branch}/query",
             post(query::query_profile),
@@ -246,11 +234,6 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .route(
             "/api/local-space-link/complete",
             post(local_space_link::complete),
-        )
-        .route("/api/account/connections", get(agent_connections::list))
-        .route(
-            "/api/account/connections/{id}/revoke",
-            post(agent_connections::revoke),
         )
         .route(
             "/api/repository/{repo}/branch/{branch}/sync/status",
@@ -349,10 +332,20 @@ pub mod tests {
     use tower::ServiceExt;
 
     fn client_request(method: &str, uri: &str, client: &str) -> Request<Body> {
+        // A read the fence must pass or refuse like any other: the local
+        // root row on the profile. The transact is refused before its body
+        // is read, so the same body serves both.
+        let body = serde_json::json!({
+            "predicate": { "with": {
+                "root": { "the": "xyz.tonk.local-root/root", "as": "Entity", "cardinality": "one" }
+            } },
+            "terms": { "this": "state:local-root", "root": { "?": { "name": "root" } } }
+        });
         let mut request = Request::builder()
             .method(method)
             .uri(uri)
-            .body(Body::empty())
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
             .unwrap();
         request
             .extensions_mut()
@@ -364,10 +357,11 @@ pub mod tests {
     async fn it_fences_clients_from_an_old_profile_generation() {
         use std::sync::atomic::Ordering;
 
+        const QUERY: &str = "/api/profile/branch/main/query";
         let (app, state, _lsp) = super::api_router_with_state(test_state().await);
         let first = app
             .clone()
-            .oneshot(client_request("GET", "/api/profile", "old-client"))
+            .oneshot(client_request("POST", QUERY, "old-client"))
             .await
             .unwrap();
         assert_eq!(first.status(), StatusCode::OK);
@@ -379,7 +373,7 @@ pub mod tests {
             .fetch_add(1, Ordering::AcqRel);
 
         for (method, uri) in [
-            ("GET", "/api/profile"),
+            ("POST", QUERY),
             ("POST", "/api/profile/branch/main/transact"),
         ] {
             let stale = app
@@ -395,7 +389,7 @@ pub mod tests {
         }
 
         let fresh = app
-            .oneshot(client_request("GET", "/api/profile", "new-client"))
+            .oneshot(client_request("POST", QUERY, "new-client"))
             .await
             .unwrap();
         assert_eq!(fresh.status(), StatusCode::OK);
@@ -694,6 +688,30 @@ pub mod tests {
         tonk.reactor.run_scheduled_polls(&tonk.operator).await;
     }
 
+    /// Rows of `body` on the profile's `main` branch, overlay included —
+    /// the read a page makes.
+    pub(crate) async fn profile_rows(
+        state: &super::AppState,
+        body: serde_json::Value,
+    ) -> Vec<serde_json::Value> {
+        let (app, _lsp) = super::api_router_from_state(state.clone());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/profile/branch/main/query")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
     /// The stable code the page routes the account gate off, for both shapes
     /// of "not signed in": no root at all, and a root with no account behind
     /// it. Neither may create a space — one that exists without an account is
@@ -836,29 +854,6 @@ pub mod tests {
                 .unwrap();
             assert_eq!(stored.proof_cids()[0], cids[0]);
         }
-    }
-
-    #[dialog_common::test]
-    async fn it_returns_identify() {
-        let state = test_state().await;
-        let (app, _lsp) = api_router(state);
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/api/identify")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let resp: super::IdentifyResponse = serde_json::from_slice(&body).unwrap();
-        assert!(resp.did.starts_with("did:key:"));
     }
 
     #[dialog_common::test]

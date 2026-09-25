@@ -695,6 +695,65 @@ impl Command for CheckActivation {
     type Output = ();
 }
 
+/// Record the account's encryption key with this device's local root.
+///
+/// A device linked before the key existed has a root and no recipient to
+/// seal seeds to. The page derives the key through a passkey assertion —
+/// the only place it can come from — and asserts this; the worker merges
+/// it into the root record it already holds, so the grant never leaves the
+/// worker. The outcome is the local root's key row.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SaveEncryptionKey {
+    /// The command entity.
+    pub this: Entity,
+    /// The X25519 `did:key` to record.
+    pub key: crate::domain::command::save_encryption_key::Key,
+}
+
+impl Command for SaveEncryptionKey {
+    type Input = Self;
+    type Output = ();
+}
+
+/// List this account's agent invite groups on the profile overlay.
+///
+/// Each group becomes an [`AgentConnectionState`] row and the answer an
+/// [`AgentConnectionsState`] row carrying `at`, so the asking page can tell
+/// when its answer has landed.
+///
+/// [`AgentConnectionState`]: crate::AgentConnectionState
+/// [`AgentConnectionsState`]: crate::AgentConnectionsState
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RefreshConnections {
+    /// The command entity.
+    pub this: Entity,
+    /// The asking page's stamp.
+    pub at: crate::domain::command::refresh_connections::At,
+}
+
+impl Command for RefreshConnections {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Withdraw every grant an agent invite group issued, at the space's
+/// access service. The outcome is the group's row, relisted with the
+/// grants the service acknowledged, and the answer row carrying `at`.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RevokeConnection {
+    /// The command entity.
+    pub this: Entity,
+    /// The invite group to withdraw.
+    pub id: crate::domain::command::revoke_connection::Id,
+    /// The asking page's stamp.
+    pub at: crate::domain::command::revoke_connection::At,
+}
+
+impl Command for RevokeConnection {
+    type Input = Self;
+    type Output = ();
+}
+
 /// Revoke a member's access to a space.
 ///
 /// Asserted transiently by the roster row's expel control; the handler

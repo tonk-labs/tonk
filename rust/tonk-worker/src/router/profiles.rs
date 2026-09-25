@@ -612,7 +612,6 @@ impl dialog_capability::Provider<tonk_schema::command::SignOut> for crate::route
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 mod tests {
     use super::*;
-    use axum::extract::State;
     use dialog_credentials::Ed25519Signer;
     use dialog_varsig::Principal as _;
     use std::sync::Arc;
@@ -627,10 +626,7 @@ mod tests {
     wasm_bindgen_test_configure!(run_in_service_worker);
 
     async fn space_keys(state: &AppState) -> Vec<String> {
-        let axum::Json(info) = crate::router::profile::get_profile(State(state.clone()))
-            .await
-            .unwrap();
-        info.space.into_iter().map(|entry| entry.key).collect()
+        crate::router::profile::space_keys(state).await
     }
 
     async fn active(state: &AppState) -> String {

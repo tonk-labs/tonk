@@ -1613,40 +1613,11 @@ async fn account_display_name() -> Option<String> {
     // Leaving `this` unbound matches any account named on the branch,
     // and a browser that has held more than one would answer with
     // whichever row came back first.
-    let root = match crate::api::root_status().await {
-        Ok(tonk_worker_api::RootStatus::Ready { root_did, .. }) => root_did,
+    let root = match crate::api::local_root().await {
+        Ok(Some(root)) => root.root,
         _ => return None,
     };
-    let body = serde_json::json!({
-        "predicate": { "with": {
-            "name": {
-                "the": "xyz.tonk.account/display-name",
-                "as": "Text", "cardinality": "one"
-            }
-        } },
-        "terms": {
-            "this": root,
-            "name": { "?": { "name": "name" } }
-        }
-    });
-    let endpoint = format!(
-        "{}/api/profile/branch/{}/query",
-        crate::api::origin(),
-        crate::api::profile_branch()
-    );
-    let response = reqwest::Client::new()
-        .post(endpoint)
-        .json(&body)
-        .send()
-        .await
-        .ok()?;
-    let rows: serde_json::Value = response.json().await.ok()?;
-    rows.as_array()?
-        .iter()
-        .find_map(|row| row["fields"]["name"].as_str())
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .map(str::to_owned)
+    crate::api::account_display_name(&root).await.ok().flatten()
 }
 
 /// Sleep, for a poll that has no fact to wait on.
@@ -2012,10 +1983,7 @@ fn poll_lookup_until_active(email: String) {
             // The worker finished the login it parked: the account is
             // linked, and nothing needs a second passkey tap. Finish
             // the ceremony the way a completed sign-in would.
-            if matches!(
-                crate::api::account_status().await,
-                Ok(tonk_worker_api::AccountStatus::Registered { .. })
-            ) {
+            if matches!(crate::api::account_linked().await, Ok(true)) {
                 settle_named_row(CONFIRM_ROW, "email", "verified");
                 if host
                     .query_selector("#tonk-register-passkey-row")
@@ -2516,7 +2484,7 @@ fn offer_the_link(name: &str) {
                         tonk_analytics::account::Stage::LocalCommit,
                         tonk_analytics::account::AccountOutcome::success(),
                     );
-                    settle_named_row(NAME_ROW, "display name", &saved.name);
+                    settle_named_row(NAME_ROW, "display name", &saved);
                     conclude("Your account is ready.");
                 }
                 Err(error) => {

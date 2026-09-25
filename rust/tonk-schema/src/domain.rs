@@ -1103,6 +1103,45 @@ pub mod command {
         pub struct At(pub u64);
     }
 
+    /// Attributes of the `account/save-encryption-key` command.
+    pub mod save_encryption_key {
+        use super::Attribute;
+
+        /// The X25519 `did:key` a passkey assertion derived, to record
+        /// with the local root: derived attribute
+        /// `xyz.tonk.save-encryption-key/key`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.save-encryption-key")]
+        pub struct Key(pub String);
+    }
+
+    /// Attributes of the `connections/refresh` command.
+    pub mod refresh_connections {
+        use super::Attribute;
+
+        /// The asking page's stamp, echoed on the answer row: derived
+        /// attribute `xyz.tonk.refresh-connections/at`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.refresh-connections")]
+        pub struct At(pub u64);
+    }
+
+    /// Attributes of the `connections/revoke` command.
+    pub mod revoke_connection {
+        use super::Attribute;
+
+        /// The invite group to withdraw: derived attribute
+        /// `xyz.tonk.revoke-connection/id`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.revoke-connection")]
+        pub struct Id(pub String);
+
+        /// The asking page's stamp, echoed on the answer row.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.revoke-connection")]
+        pub struct At(pub u64);
+    }
+
     pub mod promote {
         use super::super::Entity;
         use super::Attribute;
@@ -1435,6 +1474,34 @@ pub mod account_link {
     #[domain("xyz.tonk.link")]
     #[cardinality(one)]
     pub struct Account(pub Entity);
+}
+
+/// Attributes of the local-root rows: the passkey root this device holds a
+/// grant from on the active branch. Overlay-only — the record itself is a
+/// device-local credential, and these rows say only that it exists and
+/// which passkey and recipient key it names.
+pub mod local_root {
+    use super::{Attribute, Entity};
+
+    /// The passkey-derived account root the device's grant comes from.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.local-root")]
+    #[cardinality(one)]
+    pub struct Root(pub Entity);
+
+    /// The WebAuthn credential id of the passkey that root derives from,
+    /// so an assertion can ask for exactly that passkey.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.local-root")]
+    #[cardinality(one)]
+    pub struct Credential(pub String);
+
+    /// The X25519 `did:key` seeds are sealed to, once a ceremony that held
+    /// the passkey recorded it.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.local-root")]
+    #[cardinality(one)]
+    pub struct EncryptionKey(pub Entity);
 }
 
 pub mod ceremony_status {

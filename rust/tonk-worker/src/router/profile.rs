@@ -1,18 +1,16 @@
-//! Profile route — reports the profile and the spaces (replicas)
-//! it owns.
+//! The profile repository's own bookkeeping: its `meta` branch, the
+//! branches it can be on, and which one it is on.
 
-use ::axum::{Json, extract::State};
-use axum_wasm_macros::wasm_compat;
 use dialog_artifacts::Entity;
 use dialog_query::{Output as _, Query, Term};
 use dialog_varsig::Did;
-use serde::{Deserialize, Serialize};
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_common::log;
-use tonk_schema::{Replica, domain::replica::Profile as ProfileEntity, prelude::DidExt as _};
+use tonk_schema::Replica;
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+use tonk_schema::{domain::replica::Profile as ProfileEntity, prelude::DidExt as _};
 
-use super::{AppState, RepositoryInfo, repository::build_repository_info};
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+use super::AppState;
 use crate::TonkWorkerError;
 
 use super::repository::PROFILE_BRANCH;
@@ -476,23 +474,6 @@ pub(crate) async fn leave_account(tonk: &crate::worker::TonkState) {
     }
 }
 
-/// One space the profile owns, as listed by `GET /api/profile`.
-///
-/// A repository's identity is its credential's `did:key` (`subject`);
-/// the routing/storage key is the DID suffix (`key`). The membership
-/// index carries no display name: the space's name lives in its own
-/// `tonk/repository` concept on its content branch, so the UI resolves
-/// the label from the space's own repo (per-space `<tonk-display
-/// model=tonk:repository>`), not from this listing.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SpaceEntry {
-    /// Routing/storage key — the `subject` DID suffix. The URL segment
-    /// the UI links by.
-    pub key: String,
-    /// The space's identity DID.
-    pub subject: Did,
-}
-
 /// Forget a branch: retract its record and what it follows from
 /// `meta`, so it is no longer listed or offered. The branch's data
 /// stays where dialog keeps it, since there is no branch deletion and
@@ -543,141 +524,35 @@ pub(crate) async fn forget_branch(tonk: &crate::worker::TonkState, name: &str) {
     }
 }
 
-/// Response body for `GET /api/profile`.
-///
-/// `profile` describes the profile "as a repository" (see
-/// [`bootstrap_profile`]) so the UI can render it the same
-/// way it renders any other space — populated by
-/// [`build_repository_info`], which reads the profile's meta
-/// branch and surfaces its branches and remotes. `space` lists every
-/// replica this profile owns — enough to populate the sidebar without
-/// per-repo round-trips.
-///
-/// [`bootstrap_profile`]: super::repository::bootstrap_profile
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ProfileInfo {
-    /// [`RepositoryInfo`] for the profile itself — same shape as
-    /// any other space, including the meta-branch entries for the
-    /// profile's own branches and remotes.
-    pub profile: RepositoryInfo,
-    /// Every replica owned by this profile except the profile's
-    /// own self-replica.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub space: Vec<SpaceEntry>,
-    /// The member's effective display name (override, else petname).
-    /// Lets the shell read identity without going through a space branch.
-    pub display_name: String,
-}
-
-/// Handler for `GET /api/profile`.
-///
-/// The profile itself goes through [`build_repository_info`] so
-/// the UI can render the profile screen with the exact same view
-/// it uses for a space. `space` is populated by a separate
-/// `Query<Replica>` on the profile's meta branch, filtered to
-/// exclude the self replica.
-#[wasm_compat]
-pub async fn get_profile(
-    State(state): State<AppState>,
-) -> Result<Json<ProfileInfo>, TonkWorkerError> {
-    log!("GET /api/profile");
-
+/// The routing keys of the spaces this profile holds on its active branch:
+/// the real-space [`Replica`] rows, as the hub lists them.
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn space_keys(state: &AppState) -> Vec<String> {
     let tonk = state.read().await;
-    let profile_did = tonk.profile.did();
-
-    // A profile created before the content/meta split has no meta
-    // branch. Give it one here — this route is the hub's first touch of
-    // the profile repository — so the branch enumeration exists for
-    // whatever reads it later.
-    ensure_profile_meta_branch(&tonk).await;
-
-    // Read through the reactor's cached profile-repository handle so
-    // reads see exactly what writes (which also go through the reactor)
-    // committed — a separate `Repository::from(&tonk.profile)` handle
-    // would resolve a different cached branch state and could disagree.
-    let profile_repository = tonk
-        .reactor
-        .profile_repository()
-        .acquire(&tonk.operator)
-        .await
-        .map_err(|e| {
-            TonkWorkerError::Internal(format!("Failed to acquire profile repository: {e}"))
-        })?
-        .repository();
-
-    // Full info for the profile-as-repository. This handles the
-    // branches/remotes surfacing — the profile's meta branch is a
-    // real meta branch with the same schema as any other.
-    let profile = build_repository_info(&tonk, &tonk.profile_name, &profile_repository).await;
-
-    // Space list lives on the same meta branch but is specific
-    // to the profile route (regular repositories don't have a
-    // sidebar index to build). Run it through the reactor's cached
-    // branch session for the same coherence reason.
     let session = tonk
         .reactor
         .profile_repository()
         .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
-        .map_err(|e| {
-            TonkWorkerError::Internal(format!("Failed to open profile meta branch: {e}"))
-        })?;
-
+        .expect("the profile branch opens");
     let rows: Vec<Replica> = session
         .handle()
         .query()
         .select(Query::<Replica> {
             this: Term::var("this"),
             subject: Term::var("subject"),
-            profile: Term::from(ProfileEntity(profile_did.this())),
+            profile: Term::from(ProfileEntity(tonk.profile.did().this())),
             kind: Term::var("kind"),
         })
         .perform(&tonk.operator)
         .try_vec()
         .await
-        .map_err(|e| {
-            TonkWorkerError::Internal(format!("Replica query on profile meta failed: {:?}", e))
-        })?;
-
-    // Build the space list from explicitly real-space replicas only.
-    // System replicas (profile and account) never enter user navigation.
-    // Each entry carries the routing
-    // key (the subject DID suffix, what the UI links by) and the
-    // identity DID. The display name is not here: the Hub card resolves
-    // it from the space's own `tonk/repository` concept. An unparseable
-    // subject is a single bad entry; log and skip it rather than failing
-    // the whole response.
-    let mut space = Vec::with_capacity(rows.len());
-
-    for replica in rows {
-        if replica.kind != Replica::repository_kind() {
-            continue;
-        }
-        let did = match replica.subject.0.to_string().parse::<Did>() {
-            Ok(did) => did,
-            Err(e) => {
-                log!(
-                    "Replica subject {:?} is unparseable: {:?}",
-                    replica.subject.0,
-                    e
-                );
-                continue;
-            }
-        };
-        space.push(SpaceEntry {
-            key: did.repo_key().to_owned(),
-            subject: did,
-        });
-    }
-
-    let display_name = crate::router::profile_name::resolve_display_name(&tonk).await;
-
-    Ok(Json(ProfileInfo {
-        profile,
-        space,
-        display_name,
-    }))
+        .expect("the replica query runs");
+    rows.into_iter()
+        .filter(|replica| replica.kind == Replica::repository_kind())
+        .map(|replica| replica.subject.0.to_string())
+        .collect()
 }
 
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
@@ -689,11 +564,6 @@ pub(crate) mod tests {
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_test_configure!(run_in_service_worker);
 
-    use axum::body::Body;
-    use axum::http::Request;
-    use tower::ServiceExt as _;
-
-    use crate::api_router;
     use crate::router::tests::test_state;
 
     /// The account is the subject of the active branch's upstream.
@@ -885,17 +755,8 @@ pub(crate) mod tests {
         use tonk_schema::Branch as MetaBranch;
 
         let state = test_state().await;
-        let (app, state, _lsp) = crate::router::api_router_with_state(state);
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/api/profile")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        ensure_profile_meta_branch(&state).await;
+        let state: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(state));
 
         let tonk = state.read().await;
         let active = active_branch(&tonk).await.expect("an active branch");
@@ -953,18 +814,8 @@ pub(crate) mod tests {
         use tonk_schema::Branch as MetaBranch;
 
         let state = test_state().await;
-        let (app, state, _lsp) = crate::router::api_router_with_state(state);
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/api/profile")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        ensure_profile_meta_branch(&state).await;
+        let state: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(state));
 
         let tonk = state.read().await;
         let session = tonk
@@ -1059,26 +910,7 @@ pub(crate) mod tests {
     async fn it_reports_a_display_name_on_the_profile() {
         let state = test_state().await;
         let expected = tonk_schema::petname(&state.profile.did());
-        let (app, _lsp) = api_router(state);
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/api/profile")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), axum::http::StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        let name = json["display_name"]
-            .as_str()
-            .expect("display_name is a string");
+        let name = crate::router::profile_name::resolve_display_name(&state).await;
         assert_eq!(name, expected);
     }
 
@@ -1088,8 +920,8 @@ pub(crate) mod tests {
         use dialog_varsig::Principal as _;
         use tonk_schema::Replica;
 
-        let state = test_state().await;
-        let (app, state, _lsp) = crate::router::api_router_with_state(state);
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
         let real_key = crate::router::tests::put_repo(&state, "visible-space").await;
         let account = Ed25519Signer::import(&[73; 32]).await.unwrap().did();
         {
@@ -1105,22 +937,8 @@ pub(crate) mod tests {
                 .unwrap();
         }
 
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/api/profile")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let profile: ProfileInfo = serde_json::from_slice(&body).unwrap();
-
-        assert_eq!(profile.space.len(), 1);
-        assert_eq!(profile.space[0].key, real_key);
-        assert_ne!(profile.space[0].subject, account);
+        let spaces = super::space_keys(&state).await;
+        assert_eq!(spaces, vec![real_key]);
+        assert!(!spaces.contains(&account.to_string()));
     }
 }

@@ -559,6 +559,38 @@ impl AccountLink {
     }
 }
 
+/// This device holds a grant from a passkey root on the active branch.
+///
+/// Published on the branch overlay whenever the local root record is saved
+/// or forgotten, and re-published at boot. The record itself is a
+/// device-local credential and stays in the worker; this row says only that
+/// it exists, which root it names, and which passkey that root came from.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LocalRootState {
+    /// Always [`LocalRootState::ENTITY`]: one row per branch overlay.
+    pub this: Entity,
+    /// The account root the grant comes from.
+    pub root: crate::domain::local_root::Root,
+    /// The passkey's WebAuthn credential id.
+    pub credential: crate::domain::local_root::Credential,
+}
+
+impl LocalRootState {
+    /// The single entity the local-root rows live on.
+    pub const ENTITY: &str = "state:local-root";
+}
+
+/// The local root's recorded encryption key — its own row because a root
+/// recorded before the key existed has none, and a missing field would
+/// make the whole [`LocalRootState`] row unresolvable.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LocalRootKey {
+    /// Always [`LocalRootState::ENTITY`].
+    pub this: Entity,
+    /// The X25519 `did:key` seeds are sealed to.
+    pub key: crate::domain::local_root::EncryptionKey,
+}
+
 /// Where a passkey-gated command got to, on the profile overlay.
 ///
 /// The hub's settings page asserts `tonk:delete-account`,

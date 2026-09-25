@@ -1,17 +1,12 @@
 //! Attach optional provider services to the provider-neutral local root, and
 //! name the account repository that root owns.
 
-use axum::{Json, extract::State};
-use axum_wasm_macros::wasm_compat;
 use dialog_operator::Profile;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_account::AccountProviderRecord;
 use tonk_common::log;
-use tonk_worker_api::{
-    AccountDisplayNameRequest, AccountDisplayNameResponse, AccountLinkRequest, AccountStatus,
-};
+use tonk_worker_api::{AccountLinkRequest, AccountStatus};
 
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 use super::AppState;
 use crate::TonkWorkerError;
 use crate::worker::DefaultOperator;
@@ -289,28 +284,6 @@ async fn status(state: &crate::worker::TonkState) -> Result<AccountStatus, TonkW
     }
 }
 
-/// Return local-root and provider attachment state.
-#[wasm_compat]
-pub async fn get(State(state): State<AppState>) -> Result<Json<AccountStatus>, TonkWorkerError> {
-    let state = state.read().await;
-    Ok(Json(status(&state).await?))
-}
-
-/// Commit a display name through the linked-account authority when present.
-#[wasm_compat]
-pub async fn set_display_name(
-    State(state): State<AppState>,
-    Json(request): Json<AccountDisplayNameRequest>,
-) -> Result<Json<AccountDisplayNameResponse>, TonkWorkerError> {
-    let tonk = state.read().await;
-    match super::account_state::rename_display_name(&tonk, &request.name).await? {
-        Some(response) => Ok(Json(response)),
-        None => Ok(Json(AccountDisplayNameResponse {
-            name: crate::router::profile_name::resolve_display_name(&tonk).await,
-        })),
-    }
-}
-
 // Only the browser's account ceremonies reach this now; the CLI links
 // through its own path.
 #[cfg_attr(
@@ -362,7 +335,8 @@ pub(crate) async fn persist_link(
 /// branch, as the `state:account-link` overlay row. The facts on a branch
 /// describe the account and stay after a sign-out there, so a view can
 /// only tell a linked branch by this row: asserted while a link exists,
-/// retracted otherwise, and re-published whenever a state boots.
+/// retracted otherwise, and re-published whenever a state boots. The
+/// local-root rows ride along, since a link and a root change together.
 pub(crate) async fn publish_link(state: &crate::worker::TonkState) {
     use tonk_schema::{AccountLink, prelude::DidExt as _};
 
@@ -394,6 +368,7 @@ pub(crate) async fn publish_link(state: &crate::worker::TonkState) {
         .reactor
         .schedule_poll(std::sync::Arc::clone(&main.state));
     state.reactor.run_scheduled_polls(&state.operator).await;
+    super::identity::publish_local_root(state).await;
 }
 
 // Only the browser's account ceremonies reach this now; the CLI links
@@ -570,7 +545,6 @@ mod link_row_tests {
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 mod tests {
     use super::*;
-    use axum::extract::State;
     use std::sync::Arc;
     use tokio::sync::RwLock;
     use wasm_bindgen_test::wasm_bindgen_test_configure;
@@ -587,14 +561,14 @@ mod tests {
     #[dialog_common::test]
     async fn it_reports_an_unregistered_local_root_without_an_account() {
         let state = Arc::new(RwLock::new(test_state_without_account().await));
-        let Json(status) = get(State(state)).await.unwrap();
+        let status = super::status(&*state.read().await).await.unwrap();
         assert!(matches!(status, AccountStatus::Unregistered { .. }));
     }
 
     #[dialog_common::test]
     async fn it_reports_a_missing_root_separately() {
         let state = Arc::new(RwLock::new(test_state_without_root().await));
-        let Json(status) = get(State(state)).await.unwrap();
+        let status = super::status(&*state.read().await).await.unwrap();
         assert!(matches!(status, AccountStatus::RootMissing { .. }));
     }
 
@@ -712,7 +686,7 @@ mod tests {
 
             assert!(!linked(&tonk).await);
         }
-        let Json(status) = get(State(state.clone())).await.unwrap();
+        let status = super::status(&*state.read().await).await.unwrap();
         assert!(matches!(status, AccountStatus::Registered { .. }));
         let tonk = state.read().await;
         assert!(
@@ -804,11 +778,9 @@ mod tests {
             "sign-out releases hidden account-key routing"
         );
         drop(tonk);
-        let Json(signed_out) = super::super::profile::get_profile(State(state.clone()))
-            .await
-            .unwrap();
+        let signed_out = super::super::profile::space_keys(&state).await;
         assert!(
-            !signed_out.space.iter().any(|space| space.key == key),
+            !signed_out.contains(&key),
             "the post-sign-out hub must not render the signed-out account's spaces"
         );
 
@@ -830,13 +802,8 @@ mod tests {
         );
         drop(tonk);
 
-        let Json(profile) = super::super::profile::get_profile(State(state.clone()))
-            .await
-            .unwrap();
-        assert!(
-            profile.space.iter().any(|space| space.key == key),
-            "the branch kept its spaces"
-        );
+        let spaces = super::super::profile::space_keys(&state).await;
+        assert!(spaces.contains(&key), "the branch kept its spaces");
         let repository = super::super::repository::load_repository_info(&state, &key)
             .await
             .expect("the retained space remains loadable");

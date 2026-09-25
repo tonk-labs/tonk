@@ -5482,6 +5482,10 @@ pub async fn bootstrap_profile(tonk: &TonkState) -> Result<(), RepositoryError> 
     if let Err(error) = reconcile_profile_library(tonk).await {
         log!("profile library reconciliation skipped: {error}");
     }
+    // A profile created before the content/meta split has no meta branch,
+    // and the page reads which branch the profile is on off exactly that.
+    // Idempotent: a profile that already has one pays a no-op.
+    super::profile::ensure_profile_meta_branch(tonk).await;
     // A fresh state, a fresh overlay: say whether this device is linked
     // on the branch it booted onto, and which other branches it could
     // switch to.

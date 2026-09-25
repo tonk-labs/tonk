@@ -2994,6 +2994,119 @@ concept!: &account/link
       cardinality: one
       as: entity
 
+# Whether THIS DEVICE holds a grant from a passkey root on this branch.
+# Overlay-only, published by the worker whenever the root record is saved
+# or forgotten: the record itself is a device-local credential and never
+# leaves the worker, so this row is how a page learns there is one.
+concept!: &account/local-root
+  this: state:local-root
+  description: This device holds a grant from a passkey root on the active branch.
+  with:
+    root:
+      description: The account root the grant comes from.
+      the: xyz.tonk.local-root/root
+      cardinality: one
+      as: entity
+    credential:
+      description: The WebAuthn credential id of the passkey that root derives from.
+      the: xyz.tonk.local-root/credential
+      cardinality: one
+      as: text
+
+# The local root's recorded encryption key: its own row, since a root
+# recorded before the key existed has none.
+concept!: &account/local-root-key
+  this: state:local-root-key
+  description: The X25519 key the account's seeds are sealed to.
+  # ENTITY: `state:local-root`.
+  with:
+    key:
+      description: The recipient `did:key`.
+      the: xyz.tonk.local-root/encryption-key
+      cardinality: one
+      as: entity
+
+# An agent invite this account issued, as the settings page lists it.
+# Overlay-only: republished by the worker each time the page asks
+# (`connections/refresh`) or withdraws one (`connections/revoke`), from
+# the durable grant records and the space's own confirmation.
+concept!: &agent-connection/listed
+  this: tonk:agent-connection/listed
+  description: An agent invite group and how much of its access remains.
+  # ENTITY: `state:agent-connection:{id}`.
+  with:
+    id:
+      description: The group's id, what a withdrawal names.
+      the: xyz.tonk.agent-connection-state/id
+      cardinality: one
+      as: text
+    label:
+      description: What the invite was issued for.
+      the: xyz.tonk.agent-connection-state/label
+      cardinality: one
+      as: text
+    space:
+      description: The space the grants cover.
+      the: xyz.tonk.agent-connection-state/space
+      cardinality: one
+      as: text
+    recipient:
+      description: Who the grants were issued to.
+      the: xyz.tonk.agent-connection-state/recipient
+      cardinality: one
+      as: text
+    expires-at:
+      description: When the grants expire, unix seconds.
+      the: xyz.tonk.agent-connection-state/expires-at
+      cardinality: one
+      as: unsigned-integer
+    status:
+      description: active, expired, partial or revoked.
+      the: xyz.tonk.agent-connection-state/status
+      cardinality: one
+      as: text
+    confirmed:
+      description: Whether the space recorded that setup finished.
+      the: xyz.tonk.agent-connection-state/confirmed
+      cardinality: one
+      as: boolean
+    removed:
+      description: How many grants the service acknowledged withdrawn.
+      the: xyz.tonk.agent-connection-state/removed
+      cardinality: one
+      as: unsigned-integer
+    grants:
+      description: How many grants the group holds.
+      the: xyz.tonk.agent-connection-state/grants
+      cardinality: one
+      as: unsigned-integer
+    failed:
+      description: Whether the last withdrawal left a grant unacknowledged.
+      the: xyz.tonk.agent-connection-state/failed
+      cardinality: one
+      as: boolean
+    request:
+      description: The terminal request the group answered, empty for an invite link.
+      the: xyz.tonk.agent-connection-state/request
+      cardinality: one
+      as: text
+
+# Where the settings page's last ask about agent invites got to.
+concept!: &agent-connection/answer
+  this: state:agent-connections
+  description: The answer to the last listing or withdrawal.
+  with:
+    outcome:
+      description: ready, unavailable (invitations not built in) or failed.
+      the: xyz.tonk.agent-connections/outcome
+      cardinality: one
+      as: text
+    answered-at:
+      description: The asking page's stamp, so it can tell its answer from an earlier one.
+      the: xyz.tonk.agent-connections/answered-at
+      cardinality: one
+      as: unsigned-integer
+
 # The hub bar's account cell: a hidden marker the bar keys on, and the
 # account's name rendered THROUGH the link, so a branch whose link is
 # gone offers "add an account" however much it still knows about the
@@ -4253,13 +4366,57 @@ element!: &account-settings
         });
       }
     # Agent access: the invites this account issued to terminals, each
-    # granting one space, and the removal of that access. The records
-    # come from the worker, which asks the service; a load that the
-    # service answers 404 hides the section, since it has none to list.
+    # granting one space, and the removal of that access. Both are
+    # commands; the worker answers by listing the invite groups as overlay
+    # rows and stamping `state:agent-connections` with the asker's `at`, so
+    # the pane waits for its own stamp and then reads the rows. A build
+    # without invitations answers `unavailable`, which hides the section.
     connections-status: |
       (self, text) => {
         const node = self.querySelector('[data-connections-status]');
         if (node && node.textContent !== text) node.textContent = text;
+      }
+    connections-ask: |
+      (self, description, with_, parameters) => {
+        const one = (the, as) => ({ the, as, cardinality: 'one' });
+        const variable = (name) => ({ '?': { name } });
+        const fields = (rows) => (Array.isArray(rows) ? rows : []).map((row) => row?.fields ?? row ?? {});
+        const answer = {
+          predicate: { with: {
+            outcome: one('xyz.tonk.agent-connections/outcome', 'Text'),
+            at: one('xyz.tonk.agent-connections/answered-at', 'UnsignedInteger'),
+          } },
+          terms: { this: 'state:agent-connections', outcome: variable('outcome'), at: variable('at') },
+        };
+        const names = ['id', 'label', 'space', 'recipient', 'status', 'request'];
+        const groups = {
+          predicate: { with: {
+            ...Object.fromEntries(names.map((name) => [name, one(`xyz.tonk.agent-connection-state/${name}`, 'Text')])),
+            expires: one('xyz.tonk.agent-connection-state/expires-at', 'UnsignedInteger'),
+            removed: one('xyz.tonk.agent-connection-state/removed', 'UnsignedInteger'),
+            grants: one('xyz.tonk.agent-connection-state/grants', 'UnsignedInteger'),
+            confirmed: one('xyz.tonk.agent-connection-state/confirmed', 'Boolean'),
+            failed: one('xyz.tonk.agent-connection-state/failed', 'Boolean'),
+          } },
+          terms: {
+            this: variable('group'),
+            ...Object.fromEntries([...names, 'expires', 'removed', 'grants', 'confirmed', 'failed'].map((name) => [name, variable(name)])),
+          },
+        };
+        const at = parameters.at;
+        const wait = (tries) => window.tonk.query(answer).then((rows) => {
+          const row = fields(rows)[0];
+          if (row && Number(row.at) === at) return row.outcome;
+          if (tries <= 0) throw new Error('the worker did not answer');
+          return new Promise((resolve) => setTimeout(resolve, 250)).then(() => wait(tries - 1));
+        });
+        const claim = { claims: [{ op: 'assert', application: {
+          predicate: { kind: 'transient', concept: { description, with: with_ } },
+          parameters,
+        } }] };
+        return window.tonk.transact(claim)
+          .then(() => wait(120))
+          .then((outcome) => window.tonk.query(groups).then((rows) => ({ outcome, groups: fields(rows) })));
       }
     connections-refresh: |
       (self) => {
@@ -4271,18 +4428,22 @@ element!: &account-settings
         const list = self.querySelector('[data-connections-list]');
         if (list) list.textContent = '';
         self.connectionsStatus('loading access records…');
-        self.api('/api/account/connections').then((groups) => {
+        self.connectionsAsk("List this account's agent invites.",
+          { at: { the: 'xyz.tonk.refresh-connections/at', as: 'UnsignedInteger' } },
+          { at: Date.now() },
+        ).then(({ outcome, groups }) => {
           if (!current()) return;
-          self.querySelector('[data-agent-connections]')?.removeAttribute('hidden');
-          groups = (groups ?? []).filter((group) => !group.requestId);
+          const section = self.querySelector('[data-agent-connections]');
+          if (outcome === 'unavailable') { if (section) section.hidden = true; return; }
+          if (outcome !== 'ready') throw new Error(outcome);
+          section?.removeAttribute('hidden');
+          groups = groups.filter((group) => !group.request);
           self.connectionsStatus(groups.length
             ? 'saved access; permission to sync is checked when the terminal connects'
             : 'no agent invites issued from this account');
           for (const group of groups) list?.append(self.connectionRecord(group));
-        }, (error) => {
+        }).catch(() => {
           if (!current()) return;
-          const section = self.querySelector('[data-agent-connections]');
-          if (section) section.hidden = error.status === 404;
           self.connectionsStatus('access records could not be loaded. refresh to try again.');
         });
       }
@@ -4301,27 +4462,28 @@ element!: &account-settings
         row.setAttribute('aria-label', group.label);
         const heading = el('div', 'srowd', '', row);
         el('b', 'lft', group.label, heading);
-        const count = group.targets.filter((target) => target.acknowledged).length;
-        const all = group.targets.length > 0 && count === group.targets.length;
-        const retry = !all && (group.status === 'partial' || count > 0 || group.targets.some((target) => target.error));
-        const button = el('button', 'cta', retry ? 'retry removing access' : (group.requestId ? 'remove space access' : 'remove invite access'), heading);
+        const count = Number(group.removed) || 0;
+        const total = Number(group.grants) || 0;
+        const all = total > 0 && count === total;
+        const retry = !all && (group.status === 'partial' || count > 0 || group.failed === true);
+        const button = el('button', 'cta', retry ? 'retry removing access' : (group.request ? 'remove space access' : 'remove invite access'), heading);
         button.type = 'button';
         button.dataset.connectionRevoke = group.id;
-        button.setAttribute('aria-label', `${group.requestId ? 'remove space access for' : 'remove invite access'} ${group.label}`);
+        button.setAttribute('aria-label', `${group.request ? 'remove space access for' : 'remove invite access'} ${group.label}`);
         if (all) button.disabled = true;
         const details = el('details', 'expl', '', row);
         el('summary', '', 'access details', details);
-        el('p', 'expl', `space: ${group.subject}`, details);
+        el('p', 'expl', `space: ${group.space}`, details);
         el('p', 'expl', `recipient: ${group.recipient}`, details);
         el('p', 'expl', 'can read and edit this space', row);
-        const date = new Date(group.expiresAt * 1000);
-        el('p', 'expl', `expires: ${Number.isFinite(date.getTime()) ? date.toISOString() : group.expiresAt}`, row);
+        const date = new Date(Number(group.expires) * 1000);
+        el('p', 'expl', `expires: ${Number.isFinite(date.getTime()) ? date.toISOString() : group.expires}`, row);
         if (group.status === 'expired') el('p', 'expl', 'expired; send a new invitation to allow syncing again', row);
-        el('p', 'expl', group.confirmed ? 'setup confirmation received' : 'no setup confirmation recorded', row);
+        el('p', 'expl', group.confirmed === true ? 'setup confirmation received' : 'no setup confirmation recorded', row);
         el('p', 'expl', count === 0 && group.status === 'partial' ? 'access removal requested; waiting for confirmation'
           : count === 0 ? 'access has not been removed'
-          : `access removal confirmed for ${count} of ${group.targets.length} permissions`, row);
-        if (group.targets.some((target) => target.error)) {
+          : `access removal confirmed for ${count} of ${total} permissions`, row);
+        if (group.failed === true) {
           el('p', 'expl', 'some access could not be removed. retry to remove the remaining permissions.', row);
         }
         return row;
@@ -4335,18 +4497,26 @@ element!: &account-settings
         self.connectionsStatus('removing access…');
         const generation = self.getAttribute('data-connections-generation');
         const current = () => self.isConnected && self.getAttribute('data-connections-generation') === generation;
-        self.api(`/api/account/connections/${id}/revoke`, {}).then((group) => {
+        const unconfirmed = 'access removal could not be confirmed. retry or refresh to check progress.';
+        self.connectionsAsk("Withdraw an agent invite's access.",
+          {
+            id: { the: 'xyz.tonk.revoke-connection/id', as: 'Text' },
+            at: { the: 'xyz.tonk.revoke-connection/at', as: 'UnsignedInteger' },
+          },
+          { id, at: Date.now() },
+        ).then(({ outcome, groups }) => {
           if (!current()) return;
-          if (!group || group.id !== id) { self.connectionsStatus('the access record changed. refresh before trying again.'); return; }
+          const group = groups.find((group) => group.id === id);
+          if (!group) { self.connectionsStatus('the access record changed. refresh before trying again.'); return; }
           button.closest('[data-connection-id]')?.replaceWith(self.connectionRecord(group));
-          const count = group.targets.filter((target) => target.acknowledged).length;
-          self.connectionsStatus(`access removal confirmed for ${count} of ${group.targets.length} permissions. downloaded data stays on devices that already have it.`);
+          if (outcome !== 'ready') { self.connectionsStatus(unconfirmed); return; }
+          self.connectionsStatus(`access removal confirmed for ${Number(group.removed) || 0} of ${Number(group.grants) || 0} permissions. downloaded data stays on devices that already have it.`);
           const status = self.querySelector('[data-connections-status]');
           if (status) { status.tabIndex = -1; status.focus(); }
-        }, () => {
+        }).catch(() => {
           if (!current()) return;
           button.disabled = false;
-          self.connectionsStatus('access removal could not be confirmed. retry or refresh to check progress.');
+          self.connectionsStatus(unconfirmed);
         });
       }
     # A terminal asking to attach one local space to this account. The

@@ -381,6 +381,13 @@ impl dialog_capability::Provider<tonk_schema::command::Load> for crate::router::
             String::new(),
         )
         .await;
+        // A space's pages read who is looking at them from `state:self` on
+        // their own branch — the identity chip, a guest signing what it
+        // posts — since they cannot see the profile. Loading the space is
+        // when that has to be true.
+        if !profile {
+            crate::router::sync::publish_self_identity(&tonk, &repo, &branch).await;
+        }
     }
 }
 

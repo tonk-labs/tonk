@@ -66,8 +66,8 @@ pub use sync::*;
 pub mod account;
 pub use account::{
     AccountActive, AccountDisplayName, AccountLink, AccountLinking, AccountRegistered,
-    AccountSealedInbox, AccountSuspended, CeremonyStatus, EmailStatus, ceremony, ceremony_state,
-    email_state,
+    AccountSealedInbox, AccountSuspended, CeremonyStatus, EmailStatus, LocalRootKey,
+    LocalRootState, ceremony, ceremony_state, email_state,
 };
 
 pub mod custody;
@@ -85,7 +85,9 @@ pub mod membership;
 pub use membership::*;
 
 pub mod agent_connection;
-pub use agent_connection::{AgentGrantGroup, AgentGrantRevocation};
+pub use agent_connection::{
+    AgentConnectionState, AgentConnectionsState, AgentGrantGroup, AgentGrantRevocation,
+};
 
 pub mod invitation;
 pub use invitation::*;

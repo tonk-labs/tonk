@@ -14,17 +14,10 @@
 /// invite, and custody operations are commands or are on their way to
 /// becoming ones.
 const ROUTES: &[&str] = &[
-    "/api/account",
-    "/api/account/connections",
-    "/api/account/connections/{id}/revoke",
-    "/api/account/display-name",
-    "/api/identify",
-    "/api/identity/root",
     "/api/local-space-link/approve",
     "/api/local-space-link/complete",
     "/api/local-space-link/describe",
     "/api/local-space-link/provision",
-    "/api/profile",
     "/api/profile/branch/{branch}/evaluate",
     "/api/profile/branch/{branch}/query",
     "/api/profile/branch/{branch}/transact",

@@ -232,10 +232,14 @@ mod tests {
         session.state.assert_overlay(fact.clone());
 
         let exported = tonk.reactor.export_overlays();
+        // The profile's overlay also carries what the worker publishes at
+        // boot (the local-root rows), so the fact is one entry among others.
         assert!(
             exported.iter().any(|snapshot| snapshot.repository.is_none()
                 && snapshot.branch == tonk.active_branch
-                && snapshot.changes.iter().eq(fact.iter())),
+                && fact
+                    .iter()
+                    .all(|entry| snapshot.changes.iter().any(|exported| exported == entry))),
             "the profile branch's overlay is exported: {exported:?}"
         );
 

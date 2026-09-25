@@ -14,9 +14,7 @@
 
 use std::cell::{Cell, RefCell};
 
-use tonk_worker_api::{
-    LINK_ACCOUNT, LinkAccountRequest, RootStatus, WEBAUTHN, WebAuthnKind, WebAuthnRequest,
-};
+use tonk_worker_api::{LINK_ACCOUNT, LinkAccountRequest, WEBAUTHN, WebAuthnKind, WebAuthnRequest};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use web_sys::{Element, MessageEvent};
@@ -71,37 +69,32 @@ const CARD_HTML: &str = r#"
 /// save it with the root. `Ok(false)` when there was nothing to do: no
 /// root on this device, or the key is already recorded.
 pub(crate) async fn publish_encryption_key() -> Result<bool, String> {
-    let RootStatus::Ready {
-        credential_id,
-        delegation_hex,
-        encryption_key,
-        ..
-    } = crate::api::root_status()
+    let Some(root) = crate::api::local_root()
         .await
         .map_err(|error| error.to_string())?
     else {
         return Ok(false);
     };
-    if encryption_key.is_some() {
+    if root.key.is_some() {
         return Ok(false);
     }
     let endpoint = crate::ceremony::proposed_remote()?;
     let published = crate::identity_bridge::publish_encryption_key(
         crate::identity_bridge::PublishEncryptionKeyInput {
             endpoint,
-            credential_id: Some(credential_id.clone()),
+            credential_id: Some(root.credential),
         },
     )
     .await
     .map_err(|error| error.to_string())?;
-    crate::api::save_root(
-        credential_id,
-        delegation_hex,
-        None,
-        Some(published.encryption_key),
-    )
+    crate::api::transact_profile(crate::api::save_encryption_key_claim(
+        &published.encryption_key,
+    ))
     .await
     .map_err(|error| error.to_string())?;
+    if !crate::api::await_encryption_key(&published.encryption_key).await {
+        return Err("the worker did not record the account key".to_owned());
+    }
     Ok(true)
 }
 

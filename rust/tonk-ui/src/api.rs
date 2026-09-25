@@ -1,23 +1,5 @@
-use serde::Deserialize;
-use tonk_worker_api::{AccountStatus, IdentifyResponse, RootStatus, SaveRootRequest};
-
 use crate::error::AccountTransportKind;
 use crate::error::TonkUiError;
-
-/// Mirrors the worker's error envelope so we can decode
-/// structured rejections (analyzer code + range) instead of
-/// stringifying the response body.
-#[derive(Deserialize)]
-struct ErrorBody {
-    error: ErrorDetail,
-}
-
-#[derive(Deserialize)]
-struct ErrorDetail {
-    kind: String,
-    #[serde(default)]
-    code: Option<String>,
-}
 
 fn into_api_error<T>(error: T) -> TonkUiError
 where
@@ -38,62 +20,6 @@ fn account_boundary_error(
         service_code,
         diagnostic: diagnostic.into(),
     }
-}
-
-async fn send_account(
-    request: reqwest::RequestBuilder,
-    method: &'static str,
-    path: &'static str,
-) -> Result<reqwest::Response, TonkUiError> {
-    request.send().await.map_err(|error| {
-        account_boundary_error(
-            AccountTransportKind::Network,
-            None,
-            None,
-            format!("{method} {path} did not receive a response: {error}"),
-        )
-    })
-}
-
-async fn decode_account<T: serde::de::DeserializeOwned>(
-    response: reqwest::Response,
-    method: &'static str,
-    path: &'static str,
-) -> Result<T, TonkUiError> {
-    let status = response.status();
-    let text = response.text().await.map_err(|error| {
-        account_boundary_error(
-            AccountTransportKind::Decode,
-            Some(status.as_u16()),
-            None,
-            format!("{method} {path} response body was unreadable: {error}"),
-        )
-    })?;
-    if status.is_success() {
-        return serde_json::from_str(&text).map_err(|error| {
-            account_boundary_error(
-                AccountTransportKind::Decode,
-                Some(status.as_u16()),
-                None,
-                format!("{method} {path} response did not decode: {error}"),
-            )
-        });
-    }
-    let service_code = serde_json::from_str::<ErrorBody>(&text)
-        .ok()
-        .and_then(|body| body.error.code.or(Some(body.error.kind)))
-        .map(|code| {
-            serde_json::to_value(tonk_analytics::account::ServiceCode::from_wire(&code))
-                .ok()
-                .and_then(|value| value.as_str().map(str::to_owned))
-                .unwrap_or_else(|| "unknown".to_owned())
-        });
-    Err(account_boundary_error(
-        AccountTransportKind::Http,
-        Some(status.as_u16()),
-        service_code,
-        format!("{method} {path} returned {status}: {text}"),
-    ))
 }
 
 /// Returns the page origin (`http://host:port`). Used by API
@@ -171,59 +97,113 @@ impl From<TonkUiError> for JoinError {
     }
 }
 
-/// Fetches the current user's identity (DID) from the service worker.
-pub async fn identify() -> Result<IdentifyResponse, TonkUiError> {
-    tonk_host::ready::wait().await;
-    tonk_common::log!("Fetching identity...");
-
-    let response = reqwest::Client::new()
-        .get(format!("{}/api/identify", origin()))
-        .send()
-        .await
-        .map_err(into_api_error)?;
-
-    response.json().await.map_err(into_api_error)
+/// This profile's DID: the profile's own replica row names it.
+pub async fn profile_did() -> Result<Option<String>, TonkUiError> {
+    let body = serde_json::json!({
+        "predicate": { "with": {
+            "profile": { "the": "xyz.tonk.replica/profile", "as": "Entity", "cardinality": "one" },
+            "kind": { "the": "xyz.tonk.replica/kind", "as": "Entity", "cardinality": "one" }
+        } },
+        "terms": {
+            "this": { "?": { "name": "replica" } },
+            "profile": { "?": { "name": "profile" } },
+            "kind": tonk_schema::Replica::PROFILE
+        }
+    });
+    let rows = query_profile(&body).await?;
+    Ok(first_field(&rows, "profile"))
 }
 
-/// Return the current profile's provider-neutral local root state.
-pub async fn root_status() -> Result<RootStatus, TonkUiError> {
-    tonk_host::ready::wait().await;
-    let response = reqwest::Client::new()
-        .get(format!("{}/api/identity/root", origin()))
-        .send()
-        .await
-        .map_err(into_api_error)?;
-    response.json().await.map_err(into_api_error)
+/// The local root this device holds a grant from, as its overlay rows
+/// describe it. The grant itself never leaves the worker.
+pub struct LocalRoot {
+    /// The account root DID.
+    pub root: String,
+    /// The passkey's WebAuthn credential id.
+    pub credential: String,
+    /// The recorded encryption key, once one is.
+    pub key: Option<String>,
 }
 
-/// Persist a verified local root ceremony result.
-pub async fn save_root(
-    credential_id: String,
-    delegation_hex: String,
-    passkey: Option<tonk_worker_api::PasskeyMetadata>,
-    encryption_key: Option<String>,
-) -> Result<RootStatus, TonkUiError> {
-    tonk_host::ready::wait().await;
-    let response = reqwest::Client::new()
-        .post(format!("{}/api/identity/root", origin()))
-        .json(&SaveRootRequest {
-            credential_id,
-            delegation_hex,
-            passkey,
-            encryption_key,
-        })
-        .send()
-        .await
-        .map_err(into_api_error)?;
-    if response.status().is_success() {
-        response.json().await.map_err(into_api_error)
-    } else {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        Err(TonkUiError::ApiError(format!(
-            "POST /api/identity/root returned {status}: {text}"
-        )))
-    }
+/// Read this device's local root rows; `None` when it holds no root.
+pub async fn local_root() -> Result<Option<LocalRoot>, TonkUiError> {
+    let body = serde_json::json!({
+        "predicate": { "with": {
+            "root": { "the": "xyz.tonk.local-root/root", "as": "Entity", "cardinality": "one" },
+            "credential": { "the": "xyz.tonk.local-root/credential", "as": "Text", "cardinality": "one" }
+        } },
+        "terms": {
+            "this": tonk_schema::LocalRootState::ENTITY,
+            "root": { "?": { "name": "root" } },
+            "credential": { "?": { "name": "credential" } }
+        }
+    });
+    let rows = query_profile(&body).await?;
+    let (Some(root), Some(credential)) =
+        (first_field(&rows, "root"), first_field(&rows, "credential"))
+    else {
+        return Ok(None);
+    };
+    let body = serde_json::json!({
+        "predicate": { "with": {
+            "key": { "the": "xyz.tonk.local-root/encryption-key", "as": "Entity", "cardinality": "one" }
+        } },
+        "terms": {
+            "this": tonk_schema::LocalRootState::ENTITY,
+            "key": { "?": { "name": "key" } }
+        }
+    });
+    let key = first_field(&query_profile(&body).await?, "key");
+    Ok(Some(LocalRoot {
+        root,
+        credential,
+        key,
+    }))
+}
+
+/// Whether this device holds an account's authority on the active branch:
+/// the `state:account-link` row is present.
+pub async fn account_linked() -> Result<bool, TonkUiError> {
+    let body = serde_json::json!({
+        "predicate": { "with": {
+            "account": { "the": "xyz.tonk.link/account", "as": "Entity", "cardinality": "one" }
+        } },
+        "terms": {
+            "this": tonk_schema::AccountLink::ENTITY,
+            "account": { "?": { "name": "account" } }
+        }
+    });
+    Ok(first_field(&query_profile(&body).await?, "account").is_some())
+}
+
+/// The `account/save-encryption-key` claim: record `key` with the local
+/// root the worker already holds.
+pub(crate) fn save_encryption_key_claim(key: &str) -> serde_json::Value {
+    serde_json::json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "description": "Record the account's encryption key with this device's root.",
+                        "with": {
+                            "key": { "the": "xyz.tonk.save-encryption-key/key", "as": "Text" }
+                        }
+                    }
+                },
+                "parameters": { "key": key }
+            }
+        }]
+    })
+}
+
+/// The string value of `field` in the first row that has one.
+fn first_field(rows: &serde_json::Value, field: &str) -> Option<String> {
+    rows.as_array()?
+        .iter()
+        .find_map(|row| row["fields"][field].as_str())
+        .map(str::to_owned)
 }
 
 /// Ask the worker for a sync drain soon.
@@ -310,26 +290,22 @@ pub async fn account_activated() -> Result<bool, TonkUiError> {
     Ok(rows.as_array().is_some_and(|rows| !rows.is_empty()))
 }
 
-/// Return the current profile's persisted account-link state.
-pub async fn account_status() -> Result<AccountStatus, TonkUiError> {
-    tonk_host::ready::wait().await;
-    let request = reqwest::Client::new().get(format!("{}/api/account", origin()));
-    decode_account(
-        send_account(request, "GET", "/api/account").await?,
-        "GET",
-        "/api/account",
-    )
-    .await
-}
-
 /// Poll until this device holds a recovered credential, or give up.
 ///
 /// Custody is the one post-passkey step that can genuinely fail, so it
-/// is the only one whose failure the ceremony reports. `Ready` is the
-/// answer; anything else is not yet.
+/// is the only one whose failure the ceremony reports. A local root row is
+/// the answer; anything else is not yet.
 pub async fn await_custody() -> bool {
     poll_until(RECOVERY_ATTEMPTS, || async {
-        matches!(root_status().await, Ok(RootStatus::Ready { .. }))
+        matches!(local_root().await, Ok(Some(_)))
+    })
+    .await
+}
+
+/// Wait until the local root records `key`, or give up.
+pub async fn await_encryption_key(key: &str) -> bool {
+    poll_until(RECOVERY_ATTEMPTS, || async {
+        matches!(local_root().await, Ok(Some(root)) if root.key.as_deref() == Some(key))
     })
     .await
 }
@@ -365,20 +341,66 @@ where
     false
 }
 
-/// Save the account name and wait for its durable write before reporting success.
-pub async fn set_display_name(
-    name: &str,
-) -> Result<tonk_worker_api::AccountDisplayNameResponse, TonkUiError> {
-    tonk_host::ready::wait().await;
-    let request = reqwest::Client::new()
-        .post(format!("{}/api/account/display-name", origin()))
-        .json(&tonk_worker_api::AccountDisplayNameRequest {
-            name: name.to_owned(),
-        });
-    decode_account(
-        send_account(request, "POST", "/api/account/display-name").await?,
-        "POST",
-        "/api/account/display-name",
-    )
-    .await
+/// Save the account name and wait for its durable write before reporting
+/// success: assert the `profile/rename` command, then wait for the
+/// account's display-name fact to say `name`.
+pub async fn set_display_name(name: &str) -> Result<String, TonkUiError> {
+    let root = local_root().await?.map(|root| root.root).ok_or_else(|| {
+        account_boundary_error(
+            AccountTransportKind::Http,
+            None,
+            None,
+            "there is no account on this device to name",
+        )
+    })?;
+    transact_profile(profile_rename_claim(name)).await?;
+    let saved = poll_until(RECOVERY_ATTEMPTS, || async {
+        account_display_name(&root).await.ok().flatten().as_deref() == Some(name)
+    })
+    .await;
+    if saved {
+        Ok(name.to_owned())
+    } else {
+        Err(account_boundary_error(
+            AccountTransportKind::Http,
+            None,
+            None,
+            "the account display name was not recorded",
+        ))
+    }
+}
+
+/// The account's chosen display name, read off the profile branch.
+pub async fn account_display_name(root: &str) -> Result<Option<String>, TonkUiError> {
+    let body = serde_json::json!({
+        "predicate": { "with": {
+            "name": { "the": "xyz.tonk.account/display-name", "as": "Text", "cardinality": "one" }
+        } },
+        "terms": {
+            "this": root,
+            "name": { "?": { "name": "name" } }
+        }
+    });
+    Ok(first_field(&query_profile(&body).await?, "name"))
+}
+
+/// The `profile/rename` claim, in the shape its command decodes.
+fn profile_rename_claim(name: &str) -> serde_json::Value {
+    serde_json::json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "description": "Rename the signed-in member.",
+                        "with": {
+                            "name": { "the": "xyz.tonk.command.profile-rename/name", "as": "Text" }
+                        }
+                    }
+                },
+                "parameters": { "name": name }
+            }
+        }]
+    })
 }

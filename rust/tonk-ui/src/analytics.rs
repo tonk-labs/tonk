@@ -439,10 +439,11 @@ extern "C" {
 pub(crate) async fn identify() {
     let lookup = Closure::<dyn Fn() -> js_sys::Promise>::new(|| {
         wasm_bindgen_futures::future_to_promise(async {
-            api::identify()
-                .await
-                .map(|response| tonk_analytics::distinct_id(&response.did).into())
-                .map_err(|_| wasm_bindgen::JsValue::NULL)
+            match api::profile_did().await {
+                Ok(Some(did)) => Ok(tonk_analytics::distinct_id(&did).into()),
+                // Not stamped yet, or the worker is not ready: retry.
+                _ => Err(wasm_bindgen::JsValue::NULL),
+            }
         })
     });
     let id = resolve_analytics_identity(lookup.as_ref().unchecked_ref()).await;

@@ -4,11 +4,6 @@ use super::{
     create_invite::{RemoteRequirement, generate_ephemeral, resolve_remote_url},
 };
 use crate::{TonkState, TonkWorkerError, axum::RequestOrigin};
-use axum::{
-    Json,
-    extract::{Path, State},
-};
-use axum_wasm_macros::wasm_compat;
 use dialog_capability::{
     Subject,
     access::{Access, Prove},
@@ -21,8 +16,6 @@ use dialog_ucan::{Ucan, UcanDelegation};
 use dialog_ucan_core::{DelegationBuilder, DelegationChain, time::Timestamp};
 use dialog_varsig::{Did, Principal};
 use serde::{Deserialize, Serialize};
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_invite::connection::{
     AgentInvite, DEFAULT_GRANT_TTL_SECONDS, SpaceGrantBundle, candidate_build_scopes, grant_set_id,
     require_grant_deadline,
@@ -535,17 +528,148 @@ async fn confirmation(tonk: &TonkState, group: &PublicGroup) -> Result<bool, Ton
     Ok(!rows.is_empty())
 }
 
-#[wasm_compat]
-pub async fn list(
-    State(state): State<AppState>,
-) -> Result<Json<Vec<AgentConnectionSummary>>, TonkWorkerError> {
+/// Every invite group this account issued, summarized.
+async fn listing(tonk: &TonkState) -> Result<Vec<AgentConnectionSummary>, TonkWorkerError> {
     enabled()?;
-    let tonk = state.read().await;
     let mut result = Vec::new();
-    for group in groups(&tonk).await? {
-        result.push(summarize(&tonk, &group).await?);
+    for group in groups(tonk).await? {
+        result.push(summarize(tonk, &group).await?);
     }
-    Ok(Json(result))
+    Ok(result)
+}
+
+/// Replace the listed invite groups on the profile overlay with `rows`,
+/// then answer the ask stamped `at` with `outcome`. The answer row goes
+/// last, so a page that sees its stamp sees the rows that answer it.
+async fn publish_listing(
+    tonk: &TonkState,
+    at: u64,
+    rows: &[AgentConnectionSummary],
+    outcome: &str,
+) {
+    use tonk_schema::agent_connection::listed;
+    use tonk_schema::{AgentConnectionState, AgentConnectionsState};
+
+    let branch = match tonk
+        .reactor
+        .profile_repository()
+        .branch(&tonk.active_branch)
+        .acquire(&tonk.operator)
+        .await
+    {
+        Ok(branch) => branch,
+        Err(error) => {
+            tonk_common::log!("agent connections: open the active branch: {error}");
+            return;
+        }
+    };
+    // Both the group rows and the answer row start with the prefix, so a
+    // group withdrawn or gone since the last listing drops out with it.
+    branch.state.retain_overlay_entities(|overlaid| {
+        !overlaid
+            .to_string()
+            .starts_with(AgentConnectionState::PREFIX)
+    });
+    for row in rows {
+        let Ok(this) = AgentConnectionState::entity(&row.id).parse() else {
+            continue;
+        };
+        branch.state.assert_overlay(AgentConnectionState {
+            this,
+            id: listed::Id(row.id.clone()),
+            label: listed::Label(row.label.clone()),
+            space: listed::Space(row.subject.clone()),
+            recipient: listed::Recipient(row.recipient.clone()),
+            expires_at: listed::ExpiresAt(row.expires_at),
+            status: listed::Status(row.status.clone()),
+            confirmed: listed::Confirmed(row.confirmed),
+            removed: listed::Removed(
+                row.targets
+                    .iter()
+                    .filter(|target| target.acknowledged)
+                    .count() as u64,
+            ),
+            grants: listed::Grants(row.targets.len() as u64),
+            failed: listed::Failed(row.targets.iter().any(|target| target.error.is_some())),
+            request: listed::Request(row.request_id.clone().unwrap_or_default()),
+        });
+    }
+    if let Ok(this) = AgentConnectionsState::ENTITY.parse() {
+        branch.state.assert_overlay(AgentConnectionsState {
+            this,
+            outcome: listed::Outcome(outcome.to_owned()),
+            answered_at: listed::AnsweredAt(at),
+        });
+    }
+    tonk.reactor
+        .schedule_poll(std::sync::Arc::clone(&branch.state));
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+}
+
+/// How a listing that could not be made answers: `unavailable` when this
+/// build does not enable invitations, `failed` otherwise.
+fn failed_outcome(error: &TonkWorkerError) -> &'static str {
+    match error {
+        TonkWorkerError::NotFound(_) => "unavailable",
+        error => {
+            tonk_common::log!("agent connections: {error}");
+            "failed"
+        }
+    }
+}
+
+/// Run [`RefreshConnections`]: list the invite groups on the overlay.
+///
+/// [`RefreshConnections`]: tonk_schema::command::RefreshConnections
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::RefreshConnections>
+    for crate::router::CommandEnv
+{
+    async fn execute(&self, command: tonk_schema::command::RefreshConnections) {
+        let tonk = self.state().read().await;
+        match listing(&tonk).await {
+            Ok(rows) => publish_listing(&tonk, command.at.0, &rows, "ready").await,
+            Err(error) => publish_listing(&tonk, command.at.0, &[], failed_outcome(&error)).await,
+        }
+    }
+}
+
+/// Run [`RevokeConnection`]: withdraw a group's grants, then relist with
+/// that group's row carrying what the service acknowledged.
+///
+/// [`RevokeConnection`]: tonk_schema::command::RevokeConnection
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::RevokeConnection>
+    for crate::router::CommandEnv
+{
+    async fn execute(&self, command: tonk_schema::command::RevokeConnection) {
+        let tonk = self.state().read().await;
+        let at = command.at.0;
+        let revoked = revoke(&tonk, &command.id.0).await;
+        let mut rows = match listing(&tonk).await {
+            Ok(rows) => rows,
+            Err(error) => {
+                publish_listing(&tonk, at, &[], failed_outcome(&error)).await;
+                return;
+            }
+        };
+        match revoked {
+            Ok(summary) => {
+                // The withdrawal's own summary carries which deliveries
+                // failed, which a fresh summary of the records cannot.
+                if let Some(row) = rows.iter_mut().find(|row| row.id == summary.id) {
+                    *row = summary;
+                }
+                publish_listing(&tonk, at, &rows, "ready").await;
+            }
+            Err(error) => {
+                tonk_common::log!("agent connections: withdrawal failed: {error}");
+                publish_listing(&tonk, at, &rows, "failed").await;
+            }
+        }
+    }
 }
 
 // The ordinary invitation publisher requires `/` over the space. A member
@@ -595,14 +719,10 @@ async fn publish_target(
     Ok(receipt)
 }
 
-#[wasm_compat]
-pub async fn revoke(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<AgentConnectionSummary>, TonkWorkerError> {
+/// Withdraw every grant the invite group `id` issued.
+async fn revoke(tonk: &TonkState, id: &str) -> Result<AgentConnectionSummary, TonkWorkerError> {
     enabled()?;
-    let tonk = state.read().await;
-    let group = groups(&tonk)
+    let group = groups(tonk)
         .await?
         .into_iter()
         .find(|group| group.id == id)
@@ -619,13 +739,11 @@ pub async fn revoke(
     if repository.did().as_str() != group.subject {
         return Err(failure("space routing changed"));
     }
-    let result = revoke_group(&tonk, &group, |chain, cid| {
-        let tonk = &*tonk;
+    revoke_group(tonk, &group, |chain, cid| {
         let group = &group;
         async move { publish_target(tonk, group, &chain, &cid).await }
     })
-    .await?;
-    Ok(Json(result))
+    .await
 }
 
 async fn revoke_group<F, Fut>(
@@ -1152,5 +1270,55 @@ mod tests {
         drop(reopened);
         std::fs::remove_dir_all(directory)?;
         Ok(())
+    }
+}
+
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+mod listing_tests {
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    wasm_bindgen_test_configure!(run_in_service_worker);
+
+    use crate::router::tests::{profile_rows, test_state};
+    use crate::router::{AppState, CommandEnv};
+
+    fn answer_query() -> serde_json::Value {
+        serde_json::json!({
+            "predicate": { "with": {
+                "outcome": { "the": "xyz.tonk.agent-connections/outcome", "as": "Text", "cardinality": "one" },
+                "at": { "the": "xyz.tonk.agent-connections/answered-at", "as": "UnsignedInteger", "cardinality": "one" }
+            } },
+            "terms": {
+                "this": tonk_schema::AgentConnectionsState::ENTITY,
+                "outcome": { "?": { "name": "outcome" } },
+                "at": { "?": { "name": "at" } }
+            }
+        })
+    }
+
+    /// Asking for the listing answers on the overlay with the asker's own
+    /// stamp — `ready` where invitations are built in, `unavailable` where
+    /// they are not — rather than in a response body.
+    #[dialog_common::test]
+    async fn it_answers_a_listing_with_the_askers_stamp() {
+        let state: AppState = std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
+        let env = CommandEnv::new(state.clone(), Default::default());
+        let command = tonk_schema::command::RefreshConnections {
+            this: "command:refresh-connections".parse().unwrap(),
+            at: tonk_schema::domain::command::refresh_connections::At(41),
+        };
+        dialog_capability::Provider::<tonk_schema::command::RefreshConnections>::execute(
+            &env, command,
+        )
+        .await;
+
+        let rows = profile_rows(&state, answer_query()).await;
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0]["fields"]["at"], 41);
+        let expected = if cfg!(feature = "connection-invites") {
+            "ready"
+        } else {
+            "unavailable"
+        };
+        assert_eq!(rows[0]["fields"]["outcome"], expected);
     }
 }
