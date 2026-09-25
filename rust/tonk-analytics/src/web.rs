@@ -78,7 +78,9 @@ export function ph_init(key, host, version) {
             : "dev";
         window.posthog.register({
             environment: environment,
-            version: version
+            version: version,
+            metrics_version: 2,
+            identity_state: "unresolved"
         });
         return true;
     } catch (e) {
@@ -92,7 +94,12 @@ export function ph_register(props_json) {
     try { window.posthog.register(JSON.parse(props_json)); } catch (e) {}
 }
 export function ph_identify(id) {
-    try { window.posthog.identify(id); } catch (e) {}
+    try {
+        window.posthog.identify(id);
+        if (window.posthog.get_distinct_id() === id) {
+            window.posthog.register({ identity_state: "profile" });
+        }
+    } catch (e) {}
 }
 "#)]
 extern "C" {
