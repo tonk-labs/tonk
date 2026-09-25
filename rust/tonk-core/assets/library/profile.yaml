@@ -345,7 +345,7 @@ view!:
          for the hub to have its colors, and the dark twin is the media
          query above, not a class someone else stamps. ── */
       .hub-page {
-        position:relative; min-height:100dvh; background:var(--page);
+        display:flow-root; position:relative; min-height:100dvh; background:var(--page);
         color:var(--ink); font-family:var(--cond);
       }
       .hub-page *, .hub-page *::before, .hub-page *::after { box-sizing:border-box; }
@@ -2320,14 +2320,6 @@ view!:
                 <div class="pane" data-pane="account">
                   <div class="account-panels">
                     <tonk-display model="tonk:account/registered" view="settings"></tonk-display>
-                    <section class="settings-panel connections-panel" data-agent-connections hidden aria-label="agent access">
-                      <div class="settings-heading"><h2>Agent access</h2>
-                        <button class="cta" type="button" data-connections-refresh>refresh</button></div>
-                      <p class="expl">Each invite grants access to one space. Anyone holding a copy can use it. A confirmation records completed setup, not a currently connected process.</p>
-                      <p class="expl">Revoking an invite affects all its holders and delegated access. Enforcement can take time to reach the service; already downloaded data stays with its holders.</p>
-                      <p class="expl" data-connections-status role="status" aria-live="polite"></p>
-                      <div data-connections-list></div>
-                    </section>
                     <section class="settings-panel signout-panel">
                       <h2>Sign out</h2>
                       <p>Disconnect this account. Keep local spaces on this device.</p>
@@ -4272,7 +4264,8 @@ element!: &account-settings
     connections-refresh: |
       (self) => {
         const generation = String((Number(self.getAttribute('data-connections-generation')) || 0) + 1);
-        if (!self.linked() || self.context().path !== '/settings') return;
+        if (!self.linked() || self.context().path !== '/settings' ||
+            !self.querySelector('[data-connections-list]')) return;
         self.setAttribute('data-connections-generation', generation);
         const current = () => self.isConnected && self.getAttribute('data-connections-generation') === generation;
         const list = self.querySelector('[data-connections-list]');

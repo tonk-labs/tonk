@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::RwLock;
 use tonk_invite::connection::{AgentInvite, candidate_build_scopes};
 
-const WRONG_KIND: &str = "This link invites a person to the space.\nTo connect the CLI, ask for a link from \"connect a tool\" in Tonk.";
+const WRONG_KIND: &str = "This link invites a person to the space.\nTo connect the CLI, ask for a link from \"connect agent\" in Tonk.";
 
 fn cli(home: &std::path::Path, cwd: &std::path::Path) -> std::process::Command {
     let binary = std::env::var_os("NEXTEST_BIN_EXE_tonk")

@@ -4227,20 +4227,20 @@ mod tests {
         wait_for_displayed(&driver, ".details-panel").await?;
         wait_for_displayed(&driver, ".passkeys-panel").await?;
         wait_for_displayed(&driver, "[data-settings-passkey-created]").await?;
-        wait_for_displayed(&driver, ".connections-panel").await?;
+        wait_for_displayed(&driver, ".signout-panel").await?;
         let settings = driver
             .execute(
                 r#"const details = document.querySelector('.details-panel').getBoundingClientRect();
                    const passkeys = document.querySelector('.passkeys-panel').getBoundingClientRect();
-                   const agents = document.querySelector('.connections-panel').getBoundingClientRect();
                    const signout = document.querySelector('.signout-panel').getBoundingClientRect();
                    const email = document.querySelector('[data-settings-email]').getBoundingClientRect();
                    const save = document.querySelector('[data-profile-rename-submit]');
                    return {
                      saveAfterEmail: save.getBoundingClientRect().top >= email.bottom,
                      saveOwnsName: !!save.form?.querySelector('[data-settings-name]'),
-                     agentsLeft: agents.left,
-                     agentsTop: agents.top,
+                     agentAccess: !!document.querySelector('[data-agent-connections]'),
+                     pageBottom: document.querySelector('.hub-page').getBoundingClientRect().bottom,
+                     contentBottom: document.querySelector('.hubcol').getBoundingClientRect().bottom,
                      signoutLeft: signout.left,
                      signoutTop: signout.top,
                      detailsLeft: details.left,
@@ -4261,14 +4261,15 @@ mod tests {
         assert_eq!(settings["saveAfterEmail"], true, "{settings}");
         assert_eq!(settings["saveOwnsName"], true, "{settings}");
         assert_eq!(
-            settings["agentsLeft"], settings["detailsLeft"],
+            settings["signoutLeft"], settings["detailsLeft"],
             "{settings}"
         );
-        assert_eq!(
-            settings["signoutLeft"], settings["passkeysLeft"],
-            "{settings}"
+        assert_eq!(settings["agentAccess"], false, "{settings}");
+        assert!(
+            settings["pageBottom"].as_f64().unwrap()
+                >= settings["contentBottom"].as_f64().unwrap() + 119.0,
+            "the footer margin escaped the page background: {settings}"
         );
-        assert_eq!(settings["agentsTop"], settings["signoutTop"], "{settings}");
         assert!(
             settings["passkeyDate"]
                 .as_str()
@@ -5106,42 +5107,41 @@ mod tests {
     }
 
     #[cfg(feature = "connection-invites")]
-    async fn await_tool_connection_ready(driver: &WebDriver, space: &str) -> Result<()> {
-        await_tool_connection_ready_after(driver, space, None).await
-    }
-
-    #[cfg(feature = "connection-invites")]
-    async fn click_tool_connection_action(driver: &WebDriver) -> Result<()> {
+    async fn click_agent_connection_action(driver: &WebDriver) -> Result<()> {
         enter_guest(driver).await?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
-            let opened = driver
-                .execute(
-                    r#"const root = document.querySelector('tonk-fab')?.shadowRoot;
-                       const actions = root?.querySelector('.run');
-                       const tool = root?.querySelector('.tool');
-                       if (!actions || !tool || tool.hidden) return false;
-                       if (actions.hidden) root.querySelector('.space')?.click();
-                       if (actions.hidden) return false;
-                       tool.click();
-                       return true;"#,
-                    Vec::new(),
-                )
-                .await?;
+            let opened = driver.execute(
+                r#"const bar = document.querySelector('tonk-fab');
+                   const agent = bar?.querySelector('tonk-agent-panel');
+                   const root = bar?.shadowRoot;
+                   if (!agent || typeof agent.__tonkReset !== 'function' ||
+                       bar.hasAttribute('data-account-required') ||
+                       !root?.querySelector('.space') || !root?.querySelector('.agent')) return false;
+                   root.querySelector('.space').click();
+                   root.querySelector('.agent').click();
+                   return !root.querySelector('#agent-panel').hidden;"#,
+                Vec::new(),
+            ).await?;
             if opened.json() == true {
                 driver.enter_default_frame().await?;
                 return Ok(());
             }
-            if tokio::time::Instant::now() >= deadline {
-                driver.enter_default_frame().await?;
-                return Err(anyhow!("the bar never offered its tool connection action"));
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the bar never offered its agent connection action"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
 
     #[cfg(feature = "connection-invites")]
-    async fn await_tool_connection_ready_after(
+    async fn await_agent_connection_ready(driver: &WebDriver, space: &str) -> Result<()> {
+        await_agent_connection_ready_after(driver, space, None).await
+    }
+
+    #[cfg(feature = "connection-invites")]
+    async fn await_agent_connection_ready_after(
         driver: &WebDriver,
         space: &str,
         previous_link: Option<&str>,
@@ -5151,72 +5151,70 @@ mod tests {
             enter_guest(driver).await?;
             let state = driver
                 .execute(
-                    r#"const surface=document.querySelector('#fabb-tool-connection-cluster');
-                       return surface && {
-                         hidden:surface.hidden,
-                         space:surface.dataset.toolSpace,
-                         mode:surface.dataset.toolMode,
-                         hasLink:!!surface.dataset.toolLink,
-                         newLink:!arguments[0] || surface.dataset.toolLink !== arguments[0],
-                         directDisabled:document.querySelector('[data-tool-copy-link]')?.hasAttribute('disabled'),
-                         promptDisabled:document.querySelector('[data-tool-copy-prompt]')?.hasAttribute('disabled'),
-                         status:document.querySelector('[data-tool-connection-status]')?.textContent
-                       };"#,
+                    r#"const bar = document.querySelector('tonk-fab');
+                   const root = bar?.shadowRoot;
+                   const panel = root?.querySelector('#agent-panel');
+                   const prompt = panel?.querySelector('.panel-copytext')?.textContent || '';
+                   return {
+                     visible: !!panel && !panel.hidden,
+                     space: bar?.querySelector('tonk-agent-panel')?.getAttribute('space'),
+                     ready: panel?.querySelector('.panel-copy')?.hidden === false,
+                     scoped: prompt.includes('#tonk-agent-v2='),
+                     fresh: !arguments[0] || !prompt.includes(arguments[0]),
+                     status: panel?.querySelector('.agent-status')?.textContent
+                   };"#,
                     vec![serde_json::json!(previous_link)],
                 )
                 .await?;
             driver.enter_default_frame().await?;
-            let last = state.json().clone();
-            if last["hidden"] == false
+            let last = state.json();
+            if last["visible"] == true
                 && last["space"] == space
-                && last["mode"] == "scoped"
-                && last["hasLink"] == true
-                && last["newLink"] == true
-                && last["directDisabled"] == false
-                && last["promptDisabled"] == false
+                && last["ready"] == true
+                && last["scoped"] == true
+                && last["fresh"] == true
             {
                 return Ok(());
             }
-            if tokio::time::Instant::now() >= deadline {
-                return Err(anyhow!(
-                    "tool connection did not become ready for {space}: {last}"
-                ));
-            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "agent connection did not become ready for {space}: {last}"
+            );
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
 
     #[cfg(feature = "connection-invites")]
-    async fn copy_tool_connection(driver: &WebDriver, selector: &str) -> Result<String> {
+    async fn copy_agent_connection_prompt(driver: &WebDriver) -> Result<String> {
         enter_guest(driver).await?;
         watch_clipboard(driver).await?;
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-        loop {
-            let result = driver
-                .execute(
-                    r#"const host=document.querySelector(arguments[0]);
-                       const button=host?.shadowRoot?.querySelector('button');
-                       if (!host || !customElements.get(host.localName) ||
-                           host.hasAttribute('disabled') || !button || button.disabled) return false;
-                       button.click();
-                       return true;"#,
-                    vec![serde_json::json!(selector)],
-                )
-                .await?;
-            if result.json() == true {
-                break;
-            }
-            anyhow::ensure!(
-                tokio::time::Instant::now() < deadline,
-                "tool copy control {selector} did not become ready"
-            );
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        let copied = copied_text(driver)
-            .await
-            .with_context(|| format!("tool copy control {selector} produced no clipboard write"))?;
+        let clicked = driver
+            .execute(
+                r#"const button = document.querySelector('tonk-fab')?.shadowRoot
+                   ?.querySelector('#agent-panel .panel-copy');
+               if (!button || button.hidden || button.disabled) return false;
+               button.click();
+               return true;"#,
+                Vec::new(),
+            )
+            .await?;
+        anyhow::ensure!(
+            clicked.json() == true,
+            "agent prompt copy control is not ready"
+        );
+        let prompt = copied_text(driver).await?;
         driver.enter_default_frame().await?;
-        Ok(copied)
+        Ok(prompt)
+    }
+
+    #[cfg(feature = "connection-invites")]
+    async fn copy_agent_connection_link(driver: &WebDriver) -> Result<String> {
+        let prompt = copy_agent_connection_prompt(driver).await?;
+        prompt
+            .split("'")
+            .find(|part| part.starts_with("http") && part.contains("#tonk-agent-v2="))
+            .map(str::to_owned)
+            .context("copied agent prompt has no scoped invitation")
     }
 
     /// The cluster's action row label, or empty while it is folded.
@@ -6998,7 +6996,7 @@ mod tests {
         );
         enter_hub(&driver).await?;
         click(&driver, "[data-account-trigger]").await?;
-        wait_for_displayed(&driver, ".connections-panel").await?;
+        wait_for_displayed(&driver, ".signout-panel").await?;
         assert!(driver.find_all(By::Css(".switch-panel")).await?.is_empty());
 
         driver.quit().await?;
@@ -7197,20 +7195,6 @@ mod tests {
         Ok(())
     }
 
-    async fn capture_handoff_page(driver: &WebDriver, name: &str) -> Result<()> {
-        if let Some(directory) = std::env::var_os("TONK_HANDOFF_TEST_ARTIFACTS") {
-            let directory = std::path::PathBuf::from(directory);
-            std::fs::create_dir_all(&directory)?;
-            // Optional review capture waits for the shell's entrance animation;
-            // test readiness and actions do not depend on this delay.
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            driver
-                .screenshot(&directory.join(format!("{name}.png")))
-                .await?;
-        }
-        Ok(())
-    }
-
     /// ACCT-C14 / HANDOFF-21: app chrome keeps person invitations and tool
     /// connections explicit, and the harness-built CLI accepts only the latter.
     #[cfg(feature = "connection-invites")]
@@ -7251,7 +7235,7 @@ mod tests {
             rejected
                 .stderr
                 .contains("This link invites a person to the space.")
-                && rejected.stderr.contains("connect a tool"),
+                && rejected.stderr.contains("connect agent"),
             "wrong-kind error was not actionable: {}",
             rejected.stderr
         );
@@ -7260,16 +7244,16 @@ mod tests {
             "rejected person invite created a space registry"
         );
 
-        // The separate app-owned action issues one scoped link. Both copy
-        // buttons must expose that exact identity, not mint one per copy.
-        click_tool_connection_action(&browser).await?;
-        await_tool_connection_ready(&browser, &key).await?;
-        let tool_link = copy_tool_connection(&browser, "[data-tool-copy-link]").await?;
+        // Connect agent issues one scoped link. Copying the prompt again
+        // must retain that identity rather than minting another grant.
+        click_agent_connection_action(&browser).await?;
+        await_agent_connection_ready(&browser, &key).await?;
+        let tool_link = copy_agent_connection_link(&browser).await?;
         anyhow::ensure!(
             tool_link.contains("#tonk-agent-v2="),
             "tool action copied a non-scoped link"
         );
-        let prompt = copy_tool_connection(&browser, "[data-tool-copy-prompt]").await?;
+        let prompt = copy_agent_connection_prompt(&browser).await?;
         anyhow::ensure!(
             prompt.matches(&tool_link).count() == 1
                 && prompt.contains("Agent connection confirmed"),
@@ -7302,9 +7286,9 @@ mod tests {
         )
         .await?;
         wait_for_service_worker(&browser).await?;
-        click_tool_connection_action(&browser).await?;
-        await_tool_connection_ready_after(&browser, &key, Some(&tool_link)).await?;
-        let returning = copy_tool_connection(&browser, "[data-tool-copy-link]").await?;
+        click_agent_connection_action(&browser).await?;
+        await_agent_connection_ready_after(&browser, &key, Some(&tool_link)).await?;
+        let returning = copy_agent_connection_link(&browser).await?;
         anyhow::ensure!(
             returning != tool_link,
             "returning action reused the old bearer"
@@ -7315,9 +7299,9 @@ mod tests {
         // the modal that was open on the previous route.
         let second = create_space_awaiting_remote(&browser, "Second tool space", true).await?;
         await_url_containing(&browser, &format!("/space/{second}")).await?;
-        click_tool_connection_action(&browser).await?;
-        await_tool_connection_ready(&browser, &second).await?;
-        let switched = copy_tool_connection(&browser, "[data-tool-copy-link]").await?;
+        click_agent_connection_action(&browser).await?;
+        await_agent_connection_ready(&browser, &second).await?;
+        let switched = copy_agent_connection_link(&browser).await?;
         anyhow::ensure!(
             switched != returning && switched != tool_link,
             "space switch exposed a stale tool bearer"
@@ -7464,9 +7448,9 @@ mod tests {
         )
         .await?;
         successful_body("publish recovered space", &pushed);
-        click_tool_connection_action(&browser).await?;
-        await_tool_connection_ready(&browser, &key).await?;
-        let invite = copy_tool_connection(&browser, "[data-tool-copy-link]")
+        click_agent_connection_action(&browser).await?;
+        await_agent_connection_ready(&browser, &key).await?;
+        let invite = copy_agent_connection_link(&browser)
             .await
             .context("copy recovered invitation")?;
         let profile = tempfile::tempdir()?;
@@ -7504,10 +7488,10 @@ mod tests {
         sign_up(&browser, &env, "ordinary-agent@example.com").await?;
         let key = create_space_awaiting_remote(&browser, "Ordinary agent", true).await?;
         await_url_containing(&browser, &format!("/space/{key}")).await?;
-        click_tool_connection_action(&browser).await?;
-        await_tool_connection_ready(&browser, &key).await?;
-        let invite = copy_tool_connection(&browser, "[data-tool-copy-link]").await?;
-        let prompt = copy_tool_connection(&browser, "[data-tool-copy-prompt]").await?;
+        click_agent_connection_action(&browser).await?;
+        await_agent_connection_ready(&browser, &key).await?;
+        let invite = copy_agent_connection_link(&browser).await?;
+        let prompt = copy_agent_connection_prompt(&browser).await?;
         assert!(!prompt.contains("--switch-account"));
         assert_eq!(prompt.matches(&invite).count(), 1);
         assert_prompt_command(&prompt, &env.tonk_web, &invite)?;
@@ -7604,29 +7588,19 @@ mod tests {
         let groups = successful_body("read retained grant group", &groups);
         assert_eq!(groups[0]["id"], group_id);
         assert_eq!(groups[0]["confirmed"], true);
-        enter_hub(&browser).await?;
-        wait_for_displayed(&browser, "[data-connections-refresh]").await?;
-        click(&browser, "[data-connections-refresh]").await?;
-        let row = format!("[data-connection-id='{group_id}']");
-        wait_for_text_containing(&browser, &row, "setup confirmation received").await?;
-        capture_connection_management(&browser, &group_id, "connection").await?;
-        click(&browser, &format!("[data-connection-revoke='{group_id}']")).await?;
-        wait_for_text_containing(
+        let revoked = post_json(
             &browser,
-            &row,
-            "access removal confirmed for 6 of 6 permissions",
+            &format!("/api/account/connections/{group_id}/revoke"),
+            serde_json::json!({}),
         )
         .await?;
-        assert_eq!(
-            browser
-                .execute(
-                    "return document.activeElement?.matches('[data-connections-status]') || false",
-                    vec![]
-                )
-                .await?
-                .json(),
-            &serde_json::json!(true),
-            "revocation result did not receive focus"
+        let revoked = successful_body("revoke issued invitation", &revoked);
+        assert!(
+            revoked["targets"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|target| target["acknowledged"] == true)
         );
         browser.quit().await?;
         let denied = run_cli(
@@ -7645,95 +7619,6 @@ mod tests {
             "--no-sync".into(),
         ]).await?;
         assert!(retained.status.success(), "{}", retained.stderr);
-        Ok(())
-    }
-
-    #[cfg(feature = "connection-invites")]
-    async fn capture_connection_management(
-        browser: &WebDriver,
-        group_id: &str,
-        prefix: &str,
-    ) -> Result<()> {
-        if std::env::var_os("TONK_HANDOFF_TEST_ARTIFACTS").is_some() {
-            for (name, width, height, dark) in [
-                ("desktop", 1200, 900, false),
-                ("narrow", 390, 844, false),
-                ("short-dark", 390, 540, true),
-            ] {
-                browser.enter_default_frame().await?;
-                browser.set_window_rect(0, 0, width, height).await?;
-                ChromeDevTools::new(browser.handle.clone()).execute_cdp_with_params(
-                    "Emulation.setDeviceMetricsOverride", serde_json::json!({
-                        "width": width, "height": height, "deviceScaleFactor": 1, "mobile": false,
-                    })).await?;
-                ChromeDevTools::new(browser.handle.clone()).execute_cdp_with_params(
-                    "Emulation.setEmulatedMedia", serde_json::json!({ "features": [
-                        { "name": "prefers-reduced-motion", "value": "reduce" },
-                        { "name": "prefers-color-scheme", "value": if dark { "dark" } else { "light" } },
-                    ] })).await?;
-                let outer=browser.execute("return {clientWidth:document.documentElement.clientWidth, scrollWidth:document.documentElement.scrollWidth}", vec![]).await?;
-                assert_eq!(outer.json()["clientWidth"], serde_json::json!(width));
-                assert!(
-                    outer.json()["scrollWidth"].as_u64().unwrap() <= u64::from(width),
-                    "outer document overflows: {}",
-                    outer.json()
-                );
-                enter_hub(browser).await?;
-                let before = browser.execute(r#"const node=document.querySelector('[data-connections-refresh]');node.focus();
-                    window.__connectionKeys=[];
-                    document.addEventListener('keydown',event=>{const key={target:event.target.tagName,cls:event.target.className,key:event.key};window.__connectionKeys.push(key);setTimeout(()=>key.prevented=event.defaultPrevented,0);},{once:true});
-                    return {focused:document.activeElement === node, documentFocus:document.hasFocus(),
-                        rect:node.getBoundingClientRect().toJSON(), disabled:node.disabled,
-                        hiddenAncestor:!!node.closest('[hidden]'), activeTag:document.activeElement.tagName,
-                        activeClass:document.activeElement.className,
-                        revokes:[...document.querySelectorAll('[data-connection-revoke]')].map(item=>({disabled:item.disabled,tabIndex:item.tabIndex,rect:item.getBoundingClientRect().toJSON(),hiddenAncestor:!!item.closest('[hidden]')}))};"#, vec![]).await?;
-                browser
-                    .find(By::Css("[data-connections-refresh]"))
-                    .await?
-                    .send_keys(Key::Tab)
-                    .await?;
-                let focused = browser.execute(r#"const node=document.activeElement;const style=getComputedStyle(node);
-                    return {settingsHidden:document.querySelector('[data-settings-view]')?.hidden, accountExpanded:document.querySelector('.account-trigger')?.getAttribute('aria-expanded'), keys:window.__connectionKeys, tag:node.tagName, class:node.className, refresh:node.matches('[data-connections-refresh]'), revoke:node.matches('[data-connection-revoke]'), visible:node.matches(':focus-visible'),
-                        ring:style.outlineStyle !== 'none' || style.boxShadow !== 'none',
-                        height:node.getBoundingClientRect().height, animation:style.animationName,
-                        clientWidth:document.documentElement.clientWidth, scrollWidth:document.documentElement.scrollWidth };"#, vec![]).await?;
-                let state = focused.json();
-                assert_eq!(
-                    state["revoke"],
-                    true,
-                    "keyboard focus did not reach revoke: {state}; before={}",
-                    before.json()
-                );
-                assert_eq!(
-                    state["visible"], true,
-                    "keyboard focus was not visible: {state}"
-                );
-                assert_eq!(
-                    state["ring"], true,
-                    "keyboard focus ring was absent: {state}"
-                );
-                assert!(
-                    state["height"].as_f64().unwrap() >= 44.0,
-                    "small revoke target: {state}"
-                );
-                assert_eq!(
-                    state["animation"], "none",
-                    "reduced-motion control animates: {state}"
-                );
-                assert_eq!(state["clientWidth"], serde_json::json!(width));
-                assert!(
-                    state["scrollWidth"].as_u64().unwrap()
-                        <= state["clientWidth"].as_u64().unwrap(),
-                    "management content overflows horizontally: {state}"
-                );
-                element(browser, &format!("[data-connection-revoke='{group_id}']"))
-                    .await?
-                    .scroll_into_view()
-                    .await?;
-                capture_handoff_page(browser, &format!("{prefix}-{name}")).await?;
-            }
-        }
-
         Ok(())
     }
 
@@ -7836,9 +7721,9 @@ mod tests {
         sign_up(&browser, &env, "agent-issuer@example.com").await?;
         let key = create_space_awaiting_remote(&browser, "Independent agents", true).await?;
         await_url_containing(&browser, &format!("/space/{key}")).await?;
-        click_tool_connection_action(&browser).await?;
-        await_tool_connection_ready(&browser, &key).await?;
-        let first = copy_tool_connection(&browser, "[data-tool-copy-link]")
+        click_agent_connection_action(&browser).await?;
+        await_agent_connection_ready(&browser, &key).await?;
+        let first = copy_agent_connection_link(&browser)
             .await
             .context("copy first tool connection")?;
         let one = poll_json(
@@ -7852,11 +7737,17 @@ mod tests {
             .as_str()
             .context("first id missing")?
             .to_owned();
-        // Opening the explicit action again requests a separate identity and
-        // revocation boundary. Copying does not mint another one.
-        click_tool_connection_action(&browser).await?;
-        await_tool_connection_ready(&browser, &key).await?;
-        let second = copy_tool_connection(&browser, "[data-tool-copy-link]")
+        // Reloading loses the page-only bearer; explicitly opening connect agent
+        // then creates a separate identity. Copying does not mint another one.
+        goto(
+            &browser,
+            env.tonk_web.join(&format!("space/{key}"))?.as_str(),
+        )
+        .await?;
+        wait_for_service_worker(&browser).await?;
+        click_agent_connection_action(&browser).await?;
+        await_agent_connection_ready(&browser, &key).await?;
+        let second = copy_agent_connection_link(&browser)
             .await
             .context("copy second tool connection")?;
         anyhow::ensure!(
@@ -7998,18 +7889,15 @@ mod tests {
         )
         .await?;
         enter_guest(&browser).await?;
-        element(&browser, "#fabb-tool-connection-cluster").await?;
-        let surface = browser
-            .execute(
-                r#"const node=document.querySelector('#fabb-tool-connection-cluster');
-                   return node && { hidden:node.hidden, hasLink:!!node.dataset.toolLink };"#,
-                vec![],
-            )
-            .await?;
+        let surface = browser.execute(
+            r#"const panel=document.querySelector('tonk-fab')?.shadowRoot?.querySelector('#agent-panel');
+               return panel && { hidden:panel.hidden, hasLink:!!panel.querySelector('.panel-copytext')?.textContent };"#,
+            vec![],
+        ).await?;
         browser.enter_default_frame().await?;
         anyhow::ensure!(
             surface.json()["hidden"] == true && surface.json()["hasLink"] == false,
-            "restart exposed a retained tool bearer: {}",
+            "restart exposed a retained agent bearer: {}",
             surface.json()
         );
         let after_restart = get_json(&browser, "/api/account/connections").await?;
@@ -8037,20 +7925,20 @@ mod tests {
                 .iter()
                 .all(|row| row["confirmed"] == true)
         );
-        enter_hub(&browser).await?;
-        wait_for_displayed(&browser, "[data-connections-refresh]").await?;
-        click(&browser, "[data-connections-refresh]").await?;
-        let row = format!("[data-connection-id='{first_id}']");
-        wait_for_text_containing(&browser, &row, "setup confirmation received").await?;
-        capture_connection_management(&browser, &first_id, "connection-two").await?;
-        click(&browser, &format!("[data-connection-revoke='{first_id}']")).await?;
-        wait_for_text_containing(
+        let revoked = post_json(
             &browser,
-            &row,
-            "access removal confirmed for 6 of 6 permissions",
+            &format!("/api/account/connections/{first_id}/revoke"),
+            serde_json::json!({}),
         )
         .await?;
-        browser.enter_default_frame().await?;
+        let revoked = successful_body("revoke issued invitation", &revoked);
+        assert!(
+            revoked["targets"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|target| target["acknowledged"] == true)
+        );
         let groups = get_json(&browser, "/api/account/connections").await?;
         let sibling = successful_body("sibling remains active", &groups)
             .as_array()

@@ -161,7 +161,6 @@ pub const BAR_HTML: &str = r#"<div class="w">
       <button class="action share" data-cell="share" data-panel="share" aria-controls="share-panel" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="5" r="2.5"/><circle cx="18" cy="19" r="2.5"/><path d="m8 11 8-5M8 13l8 5"/></svg><span>copy share link</span></button>
       <button class="action members" data-panel="members" aria-controls="members-panel" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="10" r="2.5"/><circle cx="5" cy="5" r="2"/><circle cx="19" cy="5" r="2"/><path d="M7 21v-2a5 5 0 0 1 10 0v2M2 14v-2a3 3 0 0 1 3-3M22 14v-2a3 3 0 0 0-3-3"/></svg><span>view members</span></button>
       <button class="action agent" data-panel="agent" aria-controls="agent-panel" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 9.5V6.5"/><circle cx="12" cy="4" r="2.5"/><rect x="1.5" y="9.5" width="21" height="13" rx="4"/><circle cx="8" cy="16" r="1.5"/><circle cx="16" cy="16" r="1.5"/></svg><span>connect agent</span></button>
-      <button class="action tool" data-action="tool" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m6 9 4 3-4 3m7 0h5"/></svg><span>connect a tool</span></button>
       <button class="action home" data-action="home"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 20V4m-5 5 5-5 5 5M8 16q0 5 5 5h7"/></svg><span>go to tonk home</span></button>
       <button class="more" data-cell="more" tabindex="-1" hidden></button>
     </nav>
@@ -611,8 +610,9 @@ mod tests {
         let html = stacks_html("did:key:z6Mk");
         assert!(html.contains("<tonk-share headless space=\"did:key:z6Mk\""));
         assert!(html.contains("<tonk-tool-connection headless space=\"did:key:z6Mk\""));
-        assert!(BAR_HTML.contains("data-action=\"tool\""));
-        assert!(BAR_HTML.contains("connect a tool"));
+        assert!(!BAR_HTML.contains("data-action=\"tool\""));
+        assert!(!BAR_HTML.contains("connect a tool"));
+        assert!(BAR_HTML.contains("connect agent"));
         assert!(
             REFUSAL_DIALOGS_HTML.contains("give a tool access to this space under your account")
         );
@@ -633,12 +633,12 @@ mod tests {
 
     #[test]
     fn it_draws_its_marks_as_geometry() {
-        assert_eq!(BAR_HTML.matches("<svg").count(), 7);
+        assert_eq!(BAR_HTML.matches("<svg").count(), 6);
         assert_eq!(
             BAR_HTML
                 .matches(r#"stroke-linejoin="round" aria-hidden="true""#)
                 .count(),
-            7
+            6
         );
         assert!(BAR_HTML.contains("stroke=\"currentColor\""));
         assert!(BAR_HTML.contains(r#"<rect x="1.5" y="9.5" width="21" height="13" rx="4"/>"#));

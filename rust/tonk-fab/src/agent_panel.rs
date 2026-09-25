@@ -305,15 +305,20 @@ fn localized_prompt(name: &str, link: &str) -> String {
     let Ok(url) = Url::new(link) else {
         return prompt;
     };
-    if !matches!(url.hostname().as_str(), "localhost" | "127.0.0.1" | "[::1]") {
+    let loopback = matches!(url.hostname().as_str(), "localhost" | "127.0.0.1" | "[::1]");
+    let prompt = if loopback {
+        prompt.replace("npx --yes @tonk/cli", "tonk")
+    } else {
+        prompt
+    };
+    if url.origin() == "https://tonk.network" {
         return prompt;
     }
-    let local = prompt.replace("npx --yes @tonk/cli", "tonk");
-    local.replacen(
-        "tonk join '",
+    prompt.replacen(
+        " join '",
         &format!(
-            "TONK_CONNECTION_ORIGIN={} tonk join '",
-            serde_json::to_string(&url.origin()).unwrap_or_else(|_| "\"\"".into())
+            " join --via {} '",
+            serde_json::to_string(&url.origin()).unwrap()
         ),
         1,
     )
@@ -547,10 +552,10 @@ mod tests {
         assert_eq!(state.attempt, 1);
     }
 
-    #[test]
-    fn localhost_prompts_use_the_linked_cli_and_connection_origin() {
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn localhost_prompts_use_the_linked_cli_and_explicit_origin() {
         let prompt = localized_prompt("Local", "http://localhost:8080/#tonk-agent-v2=secret");
-        assert!(prompt.contains("TONK_CONNECTION_ORIGIN=\"http://localhost:8080\" tonk join"));
+        assert!(prompt.contains("tonk join --via \"http://localhost:8080\""));
         assert!(!prompt.contains("npx --yes"));
     }
 }
