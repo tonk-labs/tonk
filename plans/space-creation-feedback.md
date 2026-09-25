@@ -107,3 +107,16 @@ the combined fix. All 58 host Wasm tests, 32 scheduler/routing Wasm tests, and
 136 JavaScript tests pass. The temporary activation retry timer and lifetime
 probe are removed; cache retirement and timeout health diagnostics remain.
 Hosted first-attempt confirmation is still pending.
+
+
+Run `36054213400` confirms the persisted worker upgrade passes on its first
+attempt (94.854s). It exposes two other repeated failures: registration focus
+restoration and the competing historical account writer. The latter did not
+actually remain historical: a local reproduction found its generation-A cache
+removed after its login/reload initiated a background upgrade. The test server
+now honors a browser-local fixture cookie selecting generation A for static
+assets, while account endpoints and worker update behavior remain real. Only
+the old writer gets this cookie. The unchanged migration assertions pass locally
+with this fixture (288.61s, including debug-artifact generation and upgrade).
+Focus restoration is still under investigation; exact CI artifact reproduction
+also catches Escape before the deferred dialog opening has settled.
