@@ -106,21 +106,11 @@ concept!: &space
       cardinality: one
       as: unsigned-integer
 
-# The Add Space command. Asserted by the Hub's two create forms (the bar's
-# `new space` rung and the stack's ghost) and by the FAB's `new` row; the
-# worker's `create_space` handler decodes it and does the work (record the
-# replica, create + seed the repository, flip the status, navigate the
-# creator into the new space). `name` reads from the form on submit:
-# the hidden `<input name="name" value="Untitled">` inside the create
-# form. The command is transient: it fires the handler once and is swept
-# before the durable commit.
-#
-# How a submit fills it. `prevent-default` stops the page reloading;
-# without it the browser falls through to a GET submit and reloads with
-# the fields in the query string. It lives here rather than in the
-# command's `with:` map, where it used to be: a side effect declared as a
-# command field stores no value, so a rule premise over it matches zero
-# rows however successfully the command transacted.
+# The Add Space command. The Hub's space-create element sends this shape
+# with a fresh command entity and follows its completion in the local overlay.
+# The worker records the replica, seeds the repository, and navigates the
+# creator. The command is transient and is swept before the durable commit.
+# The event declaration remains available to older declarative create forms.
 event!: &on/space-create
   type: "submit"
   prevent-default: true
@@ -133,20 +123,16 @@ command!: &space/create
   with:
     name:
       description: >
-        The space name. Nothing asks for one: every create carries the
-        "Untitled" sentinel, which the worker's
-        CreateSpaceHandler uniquifies against the existing space labels
-        ("Untitled", "Untitled 2", …), and the user renames the space in
-        place on arrival. The sentinel must be non-empty — the event
-        extractor omits blank fields, and with no `name` fact the
-        transient would never trigger the handler.
+        The space name. The Hub sends "Untitled", which the worker
+        uniquifies against existing space labels ("Untitled", "Untitled 2", …).
+        The user renames the space in place on arrival.
       the: xyz.tonk.command.create-space/name
       as: text
     open:
       description: >
         Whether to navigate into the space once it exists. Absent means
         create only — the space appears in the Hub and the person stays
-        where they are; the Hub's own form passes `true` because that IS
+        where they are; the Hub's create control passes `true` because that IS
         what clicking "create new space" asks for. Creating and opening
         are separate wants: an agent or script creating a space in the
         background must not yank the page out from under whoever is
@@ -525,7 +511,10 @@ view!:
         text-decoration:underline; text-underline-offset:3px; }
       .verbs button:disabled { opacity:.55; cursor:wait; text-decoration:none; }
       /* creation is the stack's final, and only, solid ink row */
-      .snew-form { display:block; }
+      space-create, .snew-form { display:block; }
+      .snew:disabled { cursor:wait; }
+      [data-create-status] { margin:8px 0 0; font:13px/1.5 var(--sans); }
+      [data-create-status][data-announce-only] { position:absolute; width:1px; height:1px; padding:0; margin:0; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
       .snew { display:flex; align-items:flex-end; justify-content:flex-end; gap:8px;
         width:100%; height:36px; padding:0 10px 9px 16px; background:var(--ink);
         color:var(--on-ink); box-shadow:0 0 0 1px var(--ink); cursor:pointer; }
@@ -622,11 +611,12 @@ view!:
                carried: the worker resolves where a space syncs from the
                account's own registration, so a space created before anyone
                registers stays local until it is shared. -->
-          <form class="snew-form" on:space-create=space/create>
-            <input type="hidden" name="name" value="Untitled">
-            <input type="hidden" name="open" value="true">
-            <button class="snew chrome" type="submit">create new space<span class="g" aria-hidden="true">+</span></button>
-          </form>
+          <space-create>
+            <form class="snew-form">
+              <button class="snew chrome" type="submit" disabled><span data-create-label>create new space</span><span class="g" aria-hidden="true">+</span></button>
+            </form>
+            <p data-create-status role="status" aria-live="polite" hidden></p>
+          </space-create>
         </div>
     # The space page's waiting room. Reached only when the space's own
     # content has not arrived but the account's DIRECTORY ROW for it has
@@ -3266,6 +3256,96 @@ element!: &space-login
         self.addEventListener('click', () => {
           window.tonk?.register?.('{"reason":"space-login"}');
         });
+      }
+
+# Creation outlives the accepted transact request. Follow the command's own
+# result so feedback remains visible through seeding and failures allow retry.
+element!: &space-create
+  description: Creates a space with immediate feedback and a per-request result.
+  method:
+    status: |
+      (self, text, announceOnly = false) => {
+        const status = self.querySelector('[data-create-status]');
+        if (status) {
+          status.toggleAttribute('data-announce-only', announceOnly);
+          status.textContent = text;
+          status.hidden = !text;
+        }
+      }
+    busy: |
+      (self, busy) => {
+        self.__busy = busy;
+        self.querySelector('form')?.setAttribute('aria-busy', String(busy));
+        const button = self.querySelector('button[type="submit"]');
+        if (button) button.disabled = busy;
+        const label = self.querySelector('[data-create-label]');
+        if (label) label.textContent = busy ? 'creating space…' : 'create new space';
+      }
+    create: |
+      async (self) => {
+        if (self.__busy) return;
+        self.busy(true);
+        self.status('Creating your space…', true);
+        let reader;
+        try {
+          await window.tonk.ready;
+          const id = 'urn:uuid:' + Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(16).padStart(8, '0')).join('');
+          reader = window.tonk.subscribe({
+            predicate: { with: {
+              status: { the: 'xyz.tonk.space-creation/status', as: 'Text', cardinality: 'one' },
+              detail: { the: 'xyz.tonk.space-creation/detail', as: 'Text', cardinality: 'one' },
+            } },
+            terms: { this: id, status: { '?': { name: 'status' } }, detail: { '?': { name: 'detail' } } },
+          }).getReader();
+          self.__reader = reader;
+          await window.tonk.transact({ claims: [{ op: 'assert', application: {
+            predicate: { kind: 'transient', concept: { with: {
+              name: { the: 'xyz.tonk.command.create-space/name', as: 'Text' },
+              open: { the: 'xyz.tonk.command.create-space/open', as: 'Text' },
+            } } },
+            parameters: { this: id, name: 'Untitled', open: 'true' },
+          } }] });
+          while (self.isConnected) {
+            const { value, done } = await reader.read();
+            if (done) throw new Error('Creation status stream ended');
+            const result = value.find(row => row.this === id)?.fields;
+            if (result?.status === 'failed') {
+              self.status(result.detail);
+              self.busy(false);
+              return;
+            }
+            if (result?.status === 'created') {
+              self.status('Opening your space…', true);
+              window.tonk.navigate(result.detail);
+              return;
+            }
+          }
+        } catch (error) {
+          if (self.isConnected) {
+            console.warn('Space creation:', error);
+            self.status("Couldn't confirm creation. Check your spaces before trying again.");
+            self.busy(false);
+          }
+        } finally {
+          if (reader) await reader.cancel().catch(() => {});
+          if (self.__reader === reader) self.__reader = null;
+        }
+      }
+    connected: |
+      (self) => {
+        if (self.__wired) return;
+        self.__wired = true;
+        self.busy(false);
+        self.addEventListener('submit', event => {
+          event.preventDefault();
+          event.stopPropagation();
+          self.create();
+        });
+      }
+    disconnected: |
+      (self) => {
+        self.__reader?.cancel().catch(() => {});
+        self.__reader = null;
       }
 
 # Names and routes delete or leave for one Hub row. Which verb it is

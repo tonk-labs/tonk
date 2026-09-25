@@ -721,7 +721,9 @@
                       reverse_proxy localhost:$ACCESS_SERVICE_PORT
                   }
                   handle {
+                      @historical header Cookie *tonk-test-generation=a*
                       root * "$TONK_UI_ROOT"
+                      root @historical "$DEPLOYMENT_FIXTURE_ROOT/generation-a"
                       try_files {path} /index.html
                       file_server
                   }

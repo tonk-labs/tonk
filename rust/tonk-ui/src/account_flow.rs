@@ -2024,10 +2024,11 @@ mod tests {
         await_register_dialog(&driver).await?;
 
         driver.enter_default_frame().await?;
-        driver
-            .action_chain()
+        // Send the dismissal to the visible ceremony. A global action can
+        // still target the sealed guest while the non-modal dialog opens.
+        wait_for_displayed(&driver, "#tonk-register-email")
+            .await?
             .send_keys(Key::Escape)
-            .perform()
             .await?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         loop {
@@ -4034,7 +4035,9 @@ mod tests {
             &post_json(&owner, "/api/sync", serde_json::json!({})).await?,
         );
         goto(&owner, env.tonk_web.as_str()).await?;
-        enter_hub(&owner).await?;
+        enter_hub(&owner)
+            .await
+            .context("old-writer scenario: mount owner Hub")?;
         wait_for_text_containing(&owner, "body", "no spaces yet").await?;
         wait_for_text_containing(&owner, "body", SPACE).await?;
         owner.enter_default_frame().await?;
@@ -4053,6 +4056,12 @@ mod tests {
             &generation_a,
         )
         .await?;
+        // This scenario needs a genuinely historical writer even after the
+        // other device upgrades. Pin only this browser's deployment assets;
+        // account traffic and the real worker lifecycle remain untouched.
+        old_writer
+            .add_cookie(Cookie::new("tonk-test-generation", "a"))
+            .await?;
         raise_cluster_from_hub(&old_writer, &env).await?;
         run_cluster_login(&old_writer, EMAIL).await?;
         let old_health = get_json(&old_writer, "/api/health").await?;
@@ -4077,7 +4086,9 @@ mod tests {
         )
         .await?;
         goto(&owner, env.tonk_web.as_str()).await?;
-        enter_hub(&owner).await?;
+        enter_hub(&owner)
+            .await
+            .context("old-writer scenario: mount owner Hub")?;
         wait_for_text_without(&owner, "body", "no spaces yet").await?;
         wait_for_text_containing(&owner, "body", SPACE).await?;
         owner.enter_default_frame().await?;
@@ -4092,7 +4103,9 @@ mod tests {
         )
         .await?;
         goto(&old_writer, env.tonk_web.as_str()).await?;
-        enter_hub(&old_writer).await?;
+        enter_hub(&old_writer)
+            .await
+            .context("old-writer scenario: mount historical writer Hub after current deployment")?;
         wait_for_text_containing(&old_writer, "body", "no spaces yet").await?;
         wait_for_text_containing(&old_writer, "body", SPACE).await?;
         old_writer.enter_default_frame().await?;
@@ -4101,7 +4114,9 @@ mod tests {
             &post_json(&owner, "/api/sync", serde_json::json!({})).await?,
         );
         goto(&owner, env.tonk_web.as_str()).await?;
-        enter_hub(&owner).await?;
+        enter_hub(&owner)
+            .await
+            .context("old-writer scenario: mount owner Hub")?;
         wait_for_text_without(&owner, "body", "no spaces yet").await?;
         wait_for_text_containing(&owner, "body", SPACE).await?;
         owner.enter_default_frame().await?;

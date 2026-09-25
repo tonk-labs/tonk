@@ -669,10 +669,14 @@ pub(crate) mod tests {
                     return Ok(last);
                 }
             }
-            ensure!(
-                tokio::time::Instant::now() < deadline,
-                "timed out waiting for coherent build {build}: {last}"
-            );
+            if tokio::time::Instant::now() >= deadline {
+                // Sample only after the observation window: health fetches
+                // during retirement can themselves delay worker activation.
+                let health = worker_health(driver).await;
+                anyhow::bail!(
+                    "timed out waiting for coherent build {build}: {last}; incumbent health: {health:?}"
+                );
+            }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
@@ -695,23 +699,26 @@ pub(crate) mod tests {
                                 href: link.getAttribute("href"),
                                 name: link.textContent.trim(),
                             })),
-                            createEnabled: !document.querySelector("button.snew")?.disabled,
+                            createEnabled: !!document.querySelector("button.snew:not(:disabled)"),
                         };
                         "#,
                         vec![],
                     )
                     .await?;
                 last = snapshot.json().clone();
+                // The roster can render before branch-defined controls
+                // upgrade. A populated Hub must also be ready to create.
                 if last["spaces"]
                     .as_array()
                     .is_some_and(|spaces| !spaces.is_empty())
+                    && last["createEnabled"] == true
                 {
                     return Ok(last);
                 }
             }
             ensure!(
                 tokio::time::Instant::now() < deadline,
-                "timed out waiting for the populated Hub: {last}"
+                "timed out waiting for the populated, interactive Hub: {last}"
             );
             tokio::time::sleep(Duration::from_millis(100)).await;
         }

@@ -427,6 +427,7 @@
             // continue behind it without blocking the pre-mount gate.
             let markServiceWorkerReady;
             let failServiceWorkerReady;
+            let serviceWorkerHandoff = null;
             const serviceWorkerReadiness = new Promise((resolve, reject) => {
                 markServiceWorkerReady = resolve;
                 failServiceWorkerReady = reject;
@@ -576,6 +577,11 @@
                         navigator.serviceWorker.controller === priorController
                     ) {
                         retirementRequested = true;
+                        // A new fetch can restart the incumbent after Chrome
+                        // stops it but before the successor takes control.
+                        // Let existing work settle and hold new page IO until
+                        // controller replacement (or a failed update).
+                        serviceWorkerHandoff = outcome;
                         // Installation has committed the full generation.
                         // Repeat the activation request from the installed
                         // successor if Chrome left it waiting after install.
@@ -711,7 +717,8 @@
                 }
                 presentBootFailure(GENERIC_BOOT_FAILURE);
             });
-            self.serviceWorkerActivates = () => serviceWorkerReadiness;
+            self.serviceWorkerActivates = () =>
+                serviceWorkerHandoff || serviceWorkerReadiness;
 
             // Register a one-shot background sync under `tag` so a
             // local commit reaches its upstream even if the tab goes

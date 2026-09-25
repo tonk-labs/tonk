@@ -553,6 +553,42 @@ mod route_for_tests {
     // The scheduler's clock is passed in (not `Date::now()`), so these drive it
     // with fixed timestamps — no real time, fully deterministic.
 
+    #[dialog_common::test]
+    async fn it_does_not_extend_fetch_lifetimes_after_retirement() {
+        use wasm_bindgen::JsCast as _;
+
+        let state =
+            std::sync::Arc::new(tokio::sync::RwLock::new(router::tests::test_state().await));
+        let lifetimes = js_sys::Array::new();
+        let captured = lifetimes.clone();
+        let wait_until =
+            wasm_bindgen::closure::Closure::<dyn FnMut(Promise)>::new(move |promise: Promise| {
+                captured.push(&promise);
+            });
+        let event = js_sys::Object::new();
+        js_sys::Reflect::set(&event, &"waitUntil".into(), wait_until.as_ref()).unwrap();
+        let request =
+            Request::new_with_str("https://tonk.test/api/profile/branch/main/query").unwrap();
+        js_sys::Reflect::set(&event, &"request".into(), &request).unwrap();
+        let scheduler = SyncScheduler::default();
+
+        // A live worker still schedules its ordinary debounce lifetime.
+        schedule_sync_drain(event.unchecked_ref(), &scheduler, &state);
+        assert_eq!(lifetimes.length(), 1);
+        scheduler.stop();
+        let ticket = scheduler.generation.get();
+        for _ in 0..5 {
+            schedule_sync_drain(event.unchecked_ref(), &scheduler, &state);
+        }
+        assert_eq!(
+            lifetimes.length(),
+            1,
+            "retired query traffic must not keep rearming the debounce lifetime"
+        );
+        assert_eq!(scheduler.generation.get(), ticket);
+        JsFuture::from(Promise::all(&lifetimes)).await.unwrap();
+    }
+
     /// No repo holds un-pushed local commits: the ordinary reading, and the
     /// one under which the quiet interval applies.
     const CLEAN: usize = 0;
@@ -2455,6 +2491,13 @@ async fn any_client_visible() -> bool {
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn schedule_sync_drain(event: &FetchEvent, scheduler: &SyncScheduler, state: &AppState) {
     use wasm_bindgen::JsCast;
+
+    // Handoff queries can arrive faster than the debounce expires. Refusing
+    // the drain only after sleeping still extends every fetch by 500ms and
+    // prevents the incumbent from becoming idle enough to activate its successor.
+    if scheduler.stopped() {
+        return;
+    }
 
     let ticket = scheduler.next(js_sys::Date::now());
     // Record the burst-opener (method + path + query — the query carries the
