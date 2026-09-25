@@ -841,6 +841,10 @@ describe("immutable generation install", () => {
     let install;
     self.oninstall({ waitUntil: (promise) => { install = promise; } });
     await install;
+    // Activation moves this worker out of the installing slot; only then can a
+    // page ask it to claim.
+    self.registration.active = self.registration.installing;
+    self.registration.installing = null;
 
     const pending = [];
     self.onmessage({

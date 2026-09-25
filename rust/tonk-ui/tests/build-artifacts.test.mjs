@@ -345,6 +345,22 @@ test("the checked-in tonk-code bundle holds reconnect while an update is pending
     const serviceWorker = new EventTarget();
     serviceWorker.ready = Promise.resolve({});
     serviceWorker.controller = {};
+    // The provider holds its reconnect by listening for \`controllerchange\`
+    // once the stream answers update-pending. Fire the event only after that
+    // listener exists: a fixed delay raced the provider on a loaded machine.
+    let armed;
+    const holding = new Promise((resolve) => { armed = resolve; });
+    const listen = serviceWorker.addEventListener.bind(serviceWorker);
+    serviceWorker.addEventListener = (type, ...rest) => {
+      listen(type, ...rest);
+      if (type === "controllerchange" && streamGets.length > 0) armed();
+    };
+    const until = async (done) => {
+      const deadline = Date.now() + 5_000;
+      while (!done() && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+    };
     Object.defineProperty(globalThis, "navigator", {
       configurable: true,
       value: { serviceWorker, platform: "", userAgent: "", vendor: "" },
@@ -382,10 +398,10 @@ test("the checked-in tonk-code bundle holds reconnect while an update is pending
     });
     provider.dispatchEvent(connect);
 
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await holding;
     const beforeControllerChange = streamGets.length;
     serviceWorker.dispatchEvent(new Event("controllerchange"));
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await until(() => streamGets.length > beforeControllerChange);
     const afterControllerChange = streamGets.length;
     provider.disconnectedCallback();
     process.stdout.write(JSON.stringify({ beforeControllerChange, afterControllerChange }));

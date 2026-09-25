@@ -421,6 +421,47 @@
                 } catch {}
             }
 
+            // While an installed successor waits, the page holds its IO on
+            // `serviceWorkerHandoff` (below). Chrome activates a skipWaiting
+            // successor only once the outgoing worker goes idle, and asks it
+            // to go idle at once only when activation is requested; a
+            // request that lands as the incumbent stops restarts it and
+            // forgets that, leaving the default 30 second idle delay (and
+            // none at all with DevTools attached). Every in-scope navigation
+            // requests activation again, so a hidden frame load does,
+            // repeated through the hold because one can itself land while
+            // the incumbent stops. Bounded: a successor that has not taken
+            // over after the hold is left alone rather than holding the page.
+            const HANDOVER_HOLD_MS = 10_000;
+            const ACTIVATION_REQUEST_MS = 1_000;
+            const requestActivation = () => {
+                const frame = document.createElement("iframe");
+                frame.hidden = true;
+                frame.tabIndex = -1;
+                frame.setAttribute("aria-hidden", "true");
+                const remove = () => frame.remove();
+                frame.addEventListener("load", remove, { once: true });
+                setTimeout(remove, HANDOVER_HOLD_MS);
+                frame.src = "/api/health";
+                document.documentElement.append(frame);
+            };
+            const holdForHandoff = (outcome) => {
+                serviceWorkerHandoff = outcome;
+                let repeat;
+                const request = () => {
+                    requestActivation();
+                    repeat = setTimeout(request, ACTIVATION_REQUEST_MS);
+                };
+                const release = () => {
+                    clearTimeout(repeat);
+                    clearTimeout(deadline);
+                    if (serviceWorkerHandoff === outcome) serviceWorkerHandoff = null;
+                };
+                const deadline = setTimeout(release, HANDOVER_HOLD_MS);
+                outcome.then(release);
+                request();
+            };
+
             // Begin registration and update detection eagerly, while the UI
             // Wasm downloads. Page readiness resolves once the current
             // generation controls the document; successor observation may
@@ -551,6 +592,7 @@
 
                 let incoming = null;
                 let retirementChecks = 0;
+                let handoffHeld = false;
                 let settled = false;
                 let resolveOutcome;
                 const outcome = new Promise((resolve) => {
@@ -579,7 +621,10 @@
                         // stops it but before the successor takes control.
                         // Let existing work settle and hold new page IO until
                         // controller replacement (or a failed update).
-                        serviceWorkerHandoff = outcome;
+                        if (!handoffHeld) {
+                            handoffHeld = true;
+                            holdForHandoff(outcome);
+                        }
                         // Installation has committed the full generation.
                         // Repeat the activation request from the installed
                         // successor if Chrome left it waiting after install.
