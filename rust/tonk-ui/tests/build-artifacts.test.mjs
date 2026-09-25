@@ -108,6 +108,79 @@ test("the publisher emits the complete immutable UI and guest resource graph", (
   }
 });
 
+test("the page build tracks top-level document resources and ignores guest code", () => {
+  const stamp = (mutate) => {
+    const dist = fixtureDist();
+    try {
+      mutate(dist);
+      const result = spawnSync("sh", [STAMP, dist], { encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      const version = JSON.parse(readFileSync(join(dist, "version.json"), "utf8"));
+      const document = readFileSync(join(dist, "index.html"), "utf8");
+      const worker = readFileSync(join(dist, "service_worker.js"), "utf8");
+      assert.match(version.page, /^[0-9a-f]{16}$/);
+      assert.match(
+        document,
+        new RegExp(`<meta name="tonk-page-build" content="${version.page}" />`),
+        "the document names the page build it was emitted as",
+      );
+      assert.match(
+        worker,
+        new RegExp(`^const PAGE_BUILD = "${version.page}";$`, "m"),
+        "the worker reports the page build it serves",
+      );
+      return version;
+    } finally {
+      rmSync(dist, { recursive: true, force: true });
+    }
+  };
+  const base = stamp(() => {});
+  const guest = stamp((dist) => {
+    writeFileSync(join(dist, "guest", "guest_bg-a1b2c3.wasm"), "guest wasm B\n");
+    writeFileSync(join(dist, "tonk-prose", "tonk-prose-editor.js"), "editor B\n");
+  });
+  const worker = stamp((dist) => {
+    writeFileSync(join(dist, "worker_bg.wasm"), "worker-wasm B\n");
+  });
+  const page = stamp((dist) => {
+    writeFileSync(join(dist, "ui-a1b2c3.js"), "export const ui = 2;\n");
+  });
+
+  assert.notEqual(guest.build, base.build);
+  assert.equal(guest.page, base.page, "guest and editor code do not change the page");
+  assert.notEqual(worker.build, base.build);
+  assert.equal(worker.page, base.page, "worker code does not change the page");
+  assert.notEqual(page.page, base.page, "top-level code changes the page");
+});
+
+test("trunk's unordered module preloads do not change the build identity", () => {
+  const preloads = (order) =>
+    order
+      .map((name) => `<link rel="modulepreload" href="/snippets/${name}.js" crossorigin="anonymous">`)
+      .join("");
+  const stamp = (order) => {
+    const dist = fixtureDist();
+    try {
+      const index = readFileSync(join(dist, "index.html"), "utf8");
+      writeFileSync(
+        join(dist, "index.html"),
+        index.replace("</head>", `    ${preloads(order)}</head>`),
+      );
+      const result = spawnSync("sh", [STAMP, dist], { encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      return JSON.parse(readFileSync(join(dist, "version.json"), "utf8"));
+    } finally {
+      rmSync(dist, { recursive: true, force: true });
+    }
+  };
+  const first = stamp(["a", "b", "c"]);
+  const shuffled = stamp(["c", "a", "b"]);
+  const changed = stamp(["a", "b", "d"]);
+  assert.equal(shuffled.page, first.page, "reordered preloads keep the page build");
+  assert.equal(shuffled.build, first.build, "reordered preloads keep the build");
+  assert.notEqual(changed.page, first.page, "a different preload set changes the page");
+});
+
 test("the Cloudflare browser tree excludes local documentation tools", () => {
   const flake = readFileSync(join(UI, "..", "..", "flake.nix"), "utf8");
   const packageStart = flake.indexOf("tonk-cloudflare-artifacts =");

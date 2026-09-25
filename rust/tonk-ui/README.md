@@ -106,9 +106,18 @@ The load lifecycle has four cases:
   document, then continues without reloading.
 - An online warm load checks for a newer worker behind the boot overlay.
 - A real warm replacement activates through `skipWaiting()`. Activation
-  replaces the controller of already-controlled documents; each update-aware
-  page observes `controllerchange` and reloads once before the application root
-  mounts so the document, shell, and controller agree.
+  replaces the controller of already-controlled documents, and each
+  update-aware page observes `controllerchange`. A page whose
+  `tonk-page-build` matches the successor's `/api/health` `page` keeps running
+  and remounts each top-level `<tonk-site>`, so its guest boots from the new
+  worker. Any other page reloads once, so the document, shell, and controller
+  agree. A first-install document adopts later successors the same way.
+
+The page build is stamped over every published resource except the guest
+runtime, the lazily fetched editor bundles, and library data. Two builds with
+the same page build therefore differ only in worker and guest code. The host
+side of the host/guest bridge is compiled into the top page, so an unchanged
+page build also means an unchanged bridge.
 - An offline warm load keeps its existing controller and cached shell. A failed
   update check does not unregister the worker or clear CacheStorage, IndexedDB,
   or other local Tonk state.
