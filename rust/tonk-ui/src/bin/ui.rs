@@ -168,21 +168,13 @@ async fn open_welcome_space() -> anyhow::Result<()> {
     if path != "/" {
         return Ok(());
     }
-    #[derive(serde::Deserialize)]
-    struct Welcome {
-        path: Option<String>,
-    }
-    let response = reqwest::Client::new()
-        .post(format!(
-            "{}/api/profile/welcome",
-            window.location().origin().unwrap_or_default()
-        ))
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<Welcome>()
-        .await?;
-    if let Some(destination) = response.path {
+    // The answer lands on the branch the profile is on, which a signed-out
+    // profile may not have as `main`.
+    tonk_host::bridge::resolve_profile_branch().await;
+    let destination = tonk_ui::api::open_welcome()
+        .await
+        .map_err(|error| anyhow::anyhow!("welcome: {error}"))?;
+    if let Some(destination) = destination {
         // A navigation while setup was in flight wins over the automatic visit.
         if window.location().pathname().unwrap_or_default() == "/" {
             window

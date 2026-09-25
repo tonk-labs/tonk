@@ -834,6 +834,70 @@ impl Command for CompleteLocalSpaceLink {
     type Output = ();
 }
 
+/// Import the Welcome space's optional content: its demo pages and the
+/// media they show.
+///
+/// Asserted on the space's own branch once Welcome has painted, or when a
+/// navigation needs the content sooner. Anywhere else — another space, a
+/// Welcome already complete — it is a no-op that still answers. The answer
+/// is the space's [`OnboardingPrepared`] overlay row carrying `at`.
+///
+/// [`OnboardingPrepared`]: crate::OnboardingPrepared
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PrepareOnboarding {
+    /// The command entity.
+    pub this: Entity,
+    /// The asking page's stamp.
+    pub at: crate::domain::command::prepare_onboarding::At,
+}
+
+impl Command for PrepareOnboarding {
+    type Input = Self;
+    type Output = ();
+}
+
+/// A first visit to the root: set up the Welcome space if this browser has
+/// never had one and holds nothing else, and say where to land.
+///
+/// Asserted on the profile before the page mounts anything, since the
+/// answer chooses the first route. The answer is the [`WelcomeAnswer`]
+/// overlay row carrying `at`: the Welcome space's path, or empty.
+///
+/// [`WelcomeAnswer`]: crate::WelcomeAnswer
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct OpenWelcome {
+    /// The command entity.
+    pub this: Entity,
+    /// The asking page's stamp.
+    pub at: crate::domain::command::open_welcome::At,
+}
+
+impl Command for OpenWelcome {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Replace the profile's library with an edited document and reconcile the
+/// profile branch onto it. Development builds only: hot swap asserts it when
+/// `profile.yaml` changes on disk. The answer is the
+/// [`ProfileLibraryReloaded`] overlay row carrying `at`.
+///
+/// [`ProfileLibraryReloaded`]: crate::ProfileLibraryReloaded
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ReloadProfileLibrary {
+    /// The command entity.
+    pub this: Entity,
+    /// The whole edited library.
+    pub library: crate::domain::command::reload_profile_library::Library,
+    /// The asking page's stamp.
+    pub at: crate::domain::command::reload_profile_library::At,
+}
+
+impl Command for ReloadProfileLibrary {
+    type Input = Self;
+    type Output = ();
+}
+
 /// Revoke a member's access to a space.
 ///
 /// Asserted transiently by the roster row's expel control; the handler

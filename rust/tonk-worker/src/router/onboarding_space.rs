@@ -1,9 +1,4 @@
 //! One local welcome space per browser, requested only by the root UI visit.
-use axum::{
-    Json,
-    extract::{Path, State},
-};
-use axum_wasm_macros::wasm_compat;
 use base64::Engine as _;
 use dialog_artifacts::{Artifact, ArtifactSelector, Changes, Update};
 use dialog_operator::Profile;
@@ -11,8 +6,6 @@ use dialog_query::{Output as _, Query, Term};
 use dialog_repository::{Blob, RepositoryExt as _};
 use futures_util::StreamExt as _;
 use serde::{Deserialize, Serialize};
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_schema::{Replica, prelude::DidExt as _};
 
 use super::{AppState, BranchConfiguration, RepositoryConfiguration, repository};
@@ -75,11 +68,6 @@ struct SeedBlob {
     data: String,
 }
 
-#[derive(Debug, Serialize)]
-pub struct WelcomeResponse {
-    path: Option<String>,
-}
-
 fn internal(error: impl std::fmt::Display) -> TonkWorkerError {
     TonkWorkerError::Internal(format!("onboarding space: {error}"))
 }
@@ -98,10 +86,10 @@ async fn save(
         .map_err(internal)
 }
 
-#[wasm_compat]
-pub async fn welcome(
-    State(state): State<AppState>,
-) -> Result<Json<WelcomeResponse>, TonkWorkerError> {
+/// Set up the Welcome space on a first visit, answering where to land: its
+/// path, or `None` when this browser already had one, holds an account or
+/// spaces of its own, or another profile started it.
+pub(crate) async fn welcome(state: &AppState) -> Result<Option<String>, TonkWorkerError> {
     // Hold the write guard through setup: concurrent root visits and profile
     // replacement must observe the completed journal, never create a second copy.
     let tonk = state.write().await;
@@ -127,7 +115,7 @@ pub async fn welcome(
             .as_ref()
             .is_some_and(|profile| profile != &tonk.profile_name)
     {
-        return Ok(Json(WelcomeResponse { path: None }));
+        return Ok(None);
     }
 
     let session = tonk
@@ -158,7 +146,7 @@ pub async fn welcome(
             // Removal while a previous document was interrupted is intentional.
             progress.complete = true;
             save(&tonk, &registry, &progress).await?;
-            return Ok(Json(WelcomeResponse { path: None }));
+            return Ok(None);
         }
     } else {
         let has_account = match super::identity::local_root(&tonk).await {
@@ -173,7 +161,7 @@ pub async fn welcome(
         {
             progress.complete = true;
             save(&tonk, &registry, &progress).await?;
-            return Ok(Json(WelcomeResponse { path: None }));
+            return Ok(None);
         }
     }
 
@@ -216,9 +204,47 @@ pub async fn welcome(
         .map_err(internal)?;
     progress.welcome_ready = true;
     save(&tonk, &registry, &progress).await?;
-    Ok(Json(WelcomeResponse {
-        path: Some(format!("/space/{key}")),
-    }))
+    Ok(Some(format!("/space/{key}")))
+}
+
+/// Run [`OpenWelcome`] and answer on the profile's `state:welcome` row.
+///
+/// A failure answers as nothing to open: the page mounts where it is, which
+/// is where it would have been without Welcome.
+///
+/// [`OpenWelcome`]: tonk_schema::command::OpenWelcome
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::OpenWelcome> for crate::router::CommandEnv {
+    async fn execute(&self, command: tonk_schema::command::OpenWelcome) {
+        use tonk_schema::WelcomeAnswer;
+        use tonk_schema::domain::welcome::{AnsweredAt, Path};
+
+        let path = welcome(self.state()).await.unwrap_or_else(|error| {
+            tonk_common::log!("welcome space not opened: {error}");
+            None
+        });
+        let Ok(this) = WelcomeAnswer::ENTITY.parse() else {
+            return;
+        };
+        let tonk = self.state().read().await;
+        let written = tonk
+            .reactor
+            .profile_repository()
+            .branch(&tonk.active_branch)
+            .overlay()
+            .assert(WelcomeAnswer {
+                this,
+                answered_at: AnsweredAt(command.at.0),
+                path: Path(path.unwrap_or_default()),
+            })
+            .write()
+            .perform(&tonk.operator)
+            .await;
+        if let Err(error) = written {
+            tonk_common::log!("welcome answer not published: {error}");
+        }
+    }
 }
 
 async fn locally_mounted(tonk: &TonkState, key: &str) -> Result<bool, TonkWorkerError> {
@@ -365,11 +391,11 @@ async fn import_snapshot(
 /// One optional shard, requested after Welcome paints or pulled forward by
 /// navigation. Scope and profile checks also make this a no-op in other spaces,
 /// old fully-seeded spaces and copies of the authored application.
-#[wasm_compat]
-pub async fn prepare(
-    State(state): State<AppState>,
-    Path(path): Path<super::evaluate::EvaluatePath>,
-) -> Result<Json<bool>, TonkWorkerError> {
+pub(crate) async fn prepare(
+    state: &AppState,
+    repo: &str,
+    branch: &str,
+) -> Result<(), TonkWorkerError> {
     let tonk = state.write().await;
     let registry = tonk
         .registry
@@ -383,33 +409,33 @@ pub async fn prepare(
         .await
     {
         Ok(bytes) => bytes,
-        Err(error) if crate::credential::is_missing(&error) => return Ok(Json(true)),
+        Err(error) if crate::credential::is_missing(&error) => return Ok(()),
         Err(error) => return Err(internal(error)),
     };
     let mut progress: Progress = serde_json::from_slice(&bytes).map_err(internal)?;
     if progress.complete
         || !progress.welcome_ready
-        || path.branch != "main"
+        || branch != "main"
         || progress.profile.as_deref() != Some(&tonk.profile_name)
         || progress
             .subject
             .as_ref()
-            .is_none_or(|subject| subject.repo_key() != path.repo)
+            .is_none_or(|subject| subject.repo_key() != repo)
     {
-        return Ok(Json(true));
+        return Ok(());
     }
     // Removal must not recreate the space or import late content into it.
-    if !locally_mounted(&tonk, &path.repo).await? {
-        return Ok(Json(true));
+    if !locally_mounted(&tonk, repo).await? {
+        return Ok(());
     }
-    if !imported(&tonk, &path.repo, "demos").await? {
+    if !imported(&tonk, repo, "demos").await? {
         let seed = fetch_snapshot("/library/onboarding-demos.yaml").await?;
         let snapshot = serde_json::from_str(&seed).map_err(internal)?;
-        import_snapshot(&tonk, &path.repo, snapshot, "demos").await?;
+        import_snapshot(&tonk, repo, snapshot, "demos").await?;
     }
     let repository = tonk
         .profile
-        .repository(&path.repo)
+        .repository(repo)
         .load()
         .perform(&tonk.operator)
         .await
@@ -425,7 +451,54 @@ pub async fn prepare(
     }
     progress.complete = true;
     save(&tonk, &registry, &progress).await?;
-    Ok(Json(true))
+    Ok(())
+}
+
+/// Run [`PrepareOnboarding`] on the branch it was asserted on, and answer
+/// on that branch's `state:onboarding` overlay row.
+///
+/// [`PrepareOnboarding`]: tonk_schema::command::PrepareOnboarding
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::PrepareOnboarding>
+    for crate::router::CommandEnv
+{
+    async fn execute(&self, command: tonk_schema::command::PrepareOnboarding) {
+        use tonk_schema::OnboardingPrepared;
+        use tonk_schema::domain::onboarding_prepared::{AnsweredAt, Outcome};
+
+        let origin = self.origin().clone();
+        let outcome = match prepare(self.state(), &origin.repo, &origin.branch).await {
+            Ok(()) => "done",
+            Err(error) => {
+                tonk_common::log!(
+                    "onboarding content for '{}' not prepared: {error}",
+                    origin.repo
+                );
+                "failed"
+            }
+        };
+        let Ok(this) = OnboardingPrepared::ENTITY.parse() else {
+            return;
+        };
+        let tonk = self.state().read().await;
+        let written = tonk
+            .reactor
+            .repository(&origin.repo)
+            .branch(&origin.branch)
+            .overlay()
+            .assert(OnboardingPrepared {
+                this,
+                answered_at: AnsweredAt(command.at.0),
+                outcome: Outcome(outcome.to_owned()),
+            })
+            .write()
+            .perform(&tonk.operator)
+            .await;
+        if let Err(error) = written {
+            tonk_common::log!("onboarding answer not published: {error}");
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -573,15 +646,7 @@ mod tests {
     use super::*;
 
     async fn finish(state: AppState, key: &str) {
-        let _ = prepare(
-            State(state),
-            Path(super::super::evaluate::EvaluatePath {
-                repo: key.to_owned(),
-                branch: "main".to_owned(),
-            }),
-        )
-        .await
-        .unwrap();
+        prepare(&state, key, "main").await.unwrap();
     }
 
     async fn values(tonk: &TonkState, key: &str, attribute: &str) -> Vec<Artifact> {
@@ -612,7 +677,7 @@ mod tests {
     #[dialog_common::test]
     async fn mounting_welcome_never_replays_the_core_seed_over_its_home() {
         let state = crate::router::command::tests::native::test_state().await;
-        let path = welcome(State(state.clone())).await.unwrap().0.path.unwrap();
+        let path = welcome(&state).await.unwrap().unwrap();
         let key = path.strip_prefix("/space/").unwrap();
         let tonk = state.read().await;
         let before = values(&tonk, key, "db.name/referent").await;
@@ -623,7 +688,7 @@ mod tests {
     #[dialog_common::test]
     async fn legacy_welcome_seed_records_do_not_overwrite_authored_home() {
         let state = crate::router::command::tests::native::test_state().await;
-        let path = welcome(State(state.clone())).await.unwrap().0.path.unwrap();
+        let path = welcome(&state).await.unwrap().unwrap();
         let key = path.strip_prefix("/space/").unwrap();
         let tonk = state.read().await;
         let agent = repository::fetch_standard_library("/library/onboarding-agent.yaml")
@@ -665,7 +730,7 @@ mod tests {
     #[dialog_common::test]
     async fn welcome_is_usable_before_demos_and_completion_never_replays_edits() {
         let state = crate::router::command::tests::native::test_state().await;
-        let path = welcome(State(state.clone())).await.unwrap().0.path.unwrap();
+        let path = welcome(&state).await.unwrap().unwrap();
         let key = path.strip_prefix("/space/").unwrap();
         {
             let tonk = state.read().await;
@@ -747,14 +812,7 @@ mod tests {
             .await
             .unwrap();
         }
-        assert!(
-            welcome(State(state.clone()))
-                .await
-                .unwrap()
-                .0
-                .path
-                .is_some()
-        );
+        assert!(welcome(&state).await.unwrap().is_some());
         finish(state.clone(), key).await;
         let tonk = state.read().await;
         assert_eq!(
@@ -777,7 +835,7 @@ mod tests {
     #[dialog_common::test]
     async fn bundled_images_are_hash_checked_and_imported_only_on_demand() {
         let state = crate::router::command::tests::native::test_state().await;
-        let path = welcome(State(state.clone())).await.unwrap().0.path.unwrap();
+        let path = welcome(&state).await.unwrap().unwrap();
         let key = path.strip_prefix("/space/").unwrap();
         let tonk = state.read().await;
         let repository = tonk
@@ -823,9 +881,8 @@ mod tests {
     #[dialog_common::test]
     async fn first_visit_seeds_once_even_with_concurrent_requests() {
         let state = crate::router::command::tests::native::test_state().await;
-        let (first, second) =
-            futures_util::join!(welcome(State(state.clone())), welcome(State(state.clone())));
-        let paths = [first.unwrap().0.path, second.unwrap().0.path];
+        let (first, second) = futures_util::join!(welcome(&state), welcome(&state));
+        let paths = [first.unwrap(), second.unwrap()];
         assert_eq!(paths.iter().filter(|path| path.is_some()).count(), 1);
         let path = paths.into_iter().flatten().next().unwrap();
         let key = path.strip_prefix("/space/").unwrap();
@@ -862,7 +919,7 @@ mod tests {
         finish(state.clone(), key).await;
         assert!(!locally_mounted(&*state.read().await, key).await.unwrap());
         assert!(
-            welcome(State(state)).await.unwrap().0.path.is_none(),
+            welcome(&state).await.unwrap().is_none(),
             "removing the welcome space must not reset first use"
         );
     }
@@ -897,12 +954,9 @@ mod tests {
             .unwrap();
             subject
         };
-        let response = welcome(State(state.clone())).await.unwrap().0;
-        assert_eq!(
-            response.path,
-            Some(format!("/space/{}", subject.repo_key()))
-        );
-        assert!(welcome(State(state)).await.unwrap().0.path.is_none());
+        let path = welcome(&state).await.unwrap();
+        assert_eq!(path, Some(format!("/space/{}", subject.repo_key())));
+        assert!(welcome(&state).await.unwrap().is_none());
     }
 
     #[dialog_common::test]
@@ -916,7 +970,7 @@ mod tests {
                 .await
                 .unwrap();
         }
-        assert!(welcome(State(state)).await.unwrap().0.path.is_none());
+        assert!(welcome(&state).await.unwrap().is_none());
     }
 
     #[dialog_common::test]

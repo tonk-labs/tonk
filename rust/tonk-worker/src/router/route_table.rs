@@ -17,16 +17,9 @@ const ROUTES: &[&str] = &[
     "/api/profile/branch/{branch}/evaluate",
     "/api/profile/branch/{branch}/query",
     "/api/profile/branch/{branch}/transact",
-    "/api/profile/library",
-    // Bootstrap must choose the initial route before the page mounts a site.
-    "/api/profile/welcome",
     "/api/repository/{repo}/branch/{branch}/blob",
     "/api/repository/{repo}/branch/{branch}/blob/{entity}",
     "/api/repository/{repo}/branch/{branch}/evaluate",
-    // Device-local continuation of the bundled snapshot import: hydrates fixed
-    // data/schema bytes before the selected page can resolve its model. This
-    // is data-plane import, not a user-authored operation or command.
-    "/api/repository/{repo}/branch/{branch}/onboarding",
     "/api/repository/{repo}/branch/{branch}/query",
     "/api/repository/{repo}/branch/{branch}/sync/status",
     "/api/repository/{repo}/branch/{branch}/transact",

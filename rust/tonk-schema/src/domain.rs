@@ -1224,6 +1224,42 @@ pub mod command {
         }
     }
 
+    /// Attributes of the `onboarding/prepare` command.
+    pub mod prepare_onboarding {
+        use super::Attribute;
+
+        /// The asking page's stamp, echoed on the answer row: derived
+        /// attribute `xyz.tonk.prepare-onboarding/at`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.prepare-onboarding")]
+        pub struct At(pub u64);
+    }
+
+    /// Attributes of the `onboarding/open-welcome` command.
+    pub mod open_welcome {
+        use super::Attribute;
+
+        /// The asking page's stamp, echoed on the answer row: derived
+        /// attribute `xyz.tonk.open-welcome/at`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.open-welcome")]
+        pub struct At(pub u64);
+    }
+
+    /// Attributes of the development-only `profile/reload-library` command.
+    pub mod reload_profile_library {
+        use super::Attribute;
+
+        /// The whole profile library document, as edited.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.reload-profile-library")]
+        pub struct Library(pub String);
+        /// The asking page's stamp, echoed on the answer row.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.reload-profile-library")]
+        pub struct At(pub u64);
+    }
+
     pub mod promote {
         use super::super::Entity;
         use super::Attribute;
@@ -1633,6 +1669,57 @@ pub mod local_space_link {
     #[domain("xyz.tonk.local-space-link")]
     #[cardinality(one)]
     pub struct Correlation(pub String);
+}
+
+/// Attributes of the `state:onboarding` answer row on a space's overlay.
+pub mod onboarding_prepared {
+    use super::Attribute;
+
+    /// The asking page's stamp.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.onboarding-prepared")]
+    #[cardinality(one)]
+    pub struct AnsweredAt(pub u64);
+    /// `done` or `failed`.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.onboarding-prepared")]
+    #[cardinality(one)]
+    pub struct Outcome(pub String);
+}
+
+/// Attributes of the `state:welcome` answer row on the profile overlay.
+pub mod welcome {
+    use super::Attribute;
+
+    /// The asking page's stamp.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.welcome")]
+    #[cardinality(one)]
+    pub struct AnsweredAt(pub u64);
+    /// Where a first visit should land — the Welcome space — or empty when
+    /// there is nothing to open and the page stays where it is.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.welcome")]
+    #[cardinality(one)]
+    pub struct Path(pub String);
+}
+
+/// Attributes of the `state:profile-library` answer row on the profile
+/// overlay.
+pub mod profile_library {
+    use super::Attribute;
+
+    /// The asking page's stamp.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.profile-library")]
+    #[cardinality(one)]
+    pub struct AnsweredAt(pub u64);
+    /// `unchanged`, `installed`, `repaired`, `unavailable` (not a
+    /// development build) or `failed`.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.profile-library")]
+    #[cardinality(one)]
+    pub struct Outcome(pub String);
 }
 
 pub mod ceremony_status {

@@ -627,6 +627,56 @@ pub struct LocalSpaceLinkRequest {
     pub correlation: crate::domain::local_space_link::Correlation,
 }
 
+/// Whether a space's optional Welcome content is in, on that space's
+/// overlay: the answer to its last `onboarding/prepare`.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct OnboardingPrepared {
+    /// Always [`OnboardingPrepared::ENTITY`].
+    pub this: Entity,
+    /// The asking page's stamp.
+    pub answered_at: crate::domain::onboarding_prepared::AnsweredAt,
+    /// `done` or `failed`.
+    pub outcome: crate::domain::onboarding_prepared::Outcome,
+}
+
+impl OnboardingPrepared {
+    /// The single entity the answer lives on.
+    pub const ENTITY: &str = "state:onboarding";
+}
+
+/// Where a first visit should land: the answer to the last
+/// `onboarding/open-welcome`, on the profile overlay.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct WelcomeAnswer {
+    /// Always [`WelcomeAnswer::ENTITY`].
+    pub this: Entity,
+    /// The asking page's stamp.
+    pub answered_at: crate::domain::welcome::AnsweredAt,
+    /// The Welcome space's path, or empty.
+    pub path: crate::domain::welcome::Path,
+}
+
+impl WelcomeAnswer {
+    /// The single entity the answer lives on.
+    pub const ENTITY: &str = "state:welcome";
+}
+
+/// The answer to the last development `profile/reload-library`.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ProfileLibraryReloaded {
+    /// Always [`ProfileLibraryReloaded::ENTITY`].
+    pub this: Entity,
+    /// The asking page's stamp.
+    pub answered_at: crate::domain::profile_library::AnsweredAt,
+    /// What the reconcile did, or why it did not run.
+    pub outcome: crate::domain::profile_library::Outcome,
+}
+
+impl ProfileLibraryReloaded {
+    /// The single entity the answer lives on.
+    pub const ENTITY: &str = "state:profile-library";
+}
+
 /// Where a passkey-gated command got to, on the profile overlay.
 ///
 /// The hub's settings page asserts `tonk:delete-account`,

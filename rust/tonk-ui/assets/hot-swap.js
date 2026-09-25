@@ -495,6 +495,68 @@
   //
   // If several contexts are mounted, every one is re-seeded — each is
   // a distinct context a view might be rendering against.
+  // The profile library is not seeded by `tonk-evaluate`: the worker
+  // replaces the stored document and reconciles the profile branch onto it.
+  // Hot swap asserts the transient `ReloadProfileLibrary` command stamped
+  // with `at`, and the worker answers on the `state:profile-library`
+  // overlay row carrying the same stamp.
+  const reloadProfileLibrary = async (branch, library) => {
+    const base = `/api/profile/branch/${encodeURIComponent(branch)}`
+    const post = async (path, body) => {
+      const response = await fetch(`${base}/${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      })
+      if (!response.ok) {
+        throw new Error(`POST ${base}/${path} -> ${response.status}: ${await response.text()}`)
+      }
+      return response
+    }
+    const at = Date.now()
+    await post("transact", {
+      claims: [{
+        op: "assert",
+        application: {
+          predicate: {
+            kind: "transient",
+            concept: {
+              description: "Replace the profile library with an edited document.",
+              with: {
+                library: { the: "xyz.tonk.reload-profile-library/library", as: "Text" },
+                at: { the: "xyz.tonk.reload-profile-library/at", as: "UnsignedInteger" },
+              },
+            },
+          },
+          parameters: { library, at },
+        },
+      }],
+    })
+    const answer = {
+      predicate: { with: {
+        at: { the: "xyz.tonk.profile-library/answered-at", as: "UnsignedInteger", cardinality: "one" },
+        outcome: { the: "xyz.tonk.profile-library/outcome", as: "Text", cardinality: "one" },
+      } },
+      terms: {
+        this: "state:profile-library",
+        at: { "?": { name: "at" } },
+        outcome: { "?": { name: "outcome" } },
+      },
+    }
+    for (let attempt = 0; attempt < 240; attempt++) {
+      const rows = await (await post("query", answer)).json()
+      const fields = rows?.[0]?.fields
+      if (fields?.at === at) {
+        if (fields.outcome === "failed" || fields.outcome === "unavailable") {
+          throw new Error(`profile library reload: ${fields.outcome}`)
+        }
+        return fields.outcome
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250))
+    }
+    throw new Error("profile library reload: the worker did not answer")
+  }
+
   const reseed = async (library) => {
     const branches = [...document.querySelectorAll("[with]")]
       .filter((el) => !el.getAttribute("with").includes("{"))
@@ -523,14 +585,7 @@
       if (!document) continue
       if (branch.getAttribute("with").includes("@profile:")) {
         if (profileApplied) continue
-        const response = await fetch("/api/profile/library", {
-          method: "POST",
-          headers: { "content-type": "application/x-tonk-notation" },
-          body: document,
-        })
-        if (!response.ok) {
-          throw new Error(`POST /api/profile/library -> ${response.status}: ${await response.text()}`)
-        }
+        await reloadProfileLibrary(branch.getAttribute("with").split("@")[0], document)
         profileApplied = true
         continue
       }

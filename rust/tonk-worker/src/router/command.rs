@@ -225,6 +225,8 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         .command::<tonk_schema::command::ApproveLocalSpaceLink>()
         .command::<tonk_schema::command::ProvisionLocalSpaceLink>()
         .command::<tonk_schema::command::CompleteLocalSpaceLink>()
+        .command::<tonk_schema::command::OpenWelcome>()
+        .command::<tonk_schema::command::ReloadProfileLibrary>()
         .command::<tonk_schema::command::DeleteAccount>()
         .command::<super::ceremony::AuthorizeDeviceRequest>()
         .migrated::<tonk_schema::command::AddPasskey, tonk_schema::command::legacy::AddPasskey>()
@@ -253,6 +255,9 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
 fn space_commands() -> CommandRegistry<CommandEnv> {
     CommandRegistry::new()
         .command::<tonk_schema::command::Load>()
+        // Welcome asks for its own optional content: the command acts on
+        // the branch it was asserted on and nowhere else.
+        .command::<tonk_schema::command::PrepareOnboarding>()
         // A space may request an invite FOR ITSELF: the space view's
         // blank-canvas share (and the seeded `tonk:invite` descriptor)
         // dispatches on the space's own branch, and the refusal flow

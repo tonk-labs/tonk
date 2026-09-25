@@ -290,6 +290,76 @@ pub async fn account_activated() -> Result<bool, TonkUiError> {
     Ok(rows.as_array().is_some_and(|rows| !rows.is_empty()))
 }
 
+/// Ask the worker where a first visit to the root should land, and wait for
+/// its answer: the Welcome space's path, or `None` to stay put.
+///
+/// Asked before the page mounts anything, so the wait is on a short beat;
+/// setting Welcome up the first time fetches its content, so it is long.
+pub async fn open_welcome() -> Result<Option<String>, TonkUiError> {
+    let at = js_sys::Date::now() as u64;
+    transact_profile(serde_json::json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "description": "Set up the Welcome space on a first visit.",
+                        "with": {
+                            "at": { "the": "xyz.tonk.open-welcome/at", "as": "UnsignedInteger" }
+                        }
+                    }
+                },
+                "parameters": { "at": at }
+            }
+        }]
+    }))
+    .await?;
+    let answer = serde_json::json!({
+        "predicate": { "with": {
+            "at": { "the": "xyz.tonk.welcome/answered-at", "as": "UnsignedInteger", "cardinality": "one" },
+            "path": { "the": "xyz.tonk.welcome/path", "as": "Text", "cardinality": "one" }
+        } },
+        "terms": {
+            "this": tonk_schema::WelcomeAnswer::ENTITY,
+            "at": { "?": { "name": "at" } },
+            "path": { "?": { "name": "path" } }
+        }
+    });
+    for _ in 0..WELCOME_ATTEMPTS {
+        let rows = query_profile(&answer).await?;
+        if let Some(fields) = rows
+            .as_array()
+            .and_then(|rows| rows.first())
+            .map(|row| &row["fields"])
+            && fields["at"].as_u64() == Some(at)
+        {
+            let path = fields["path"].as_str().unwrap_or_default();
+            return Ok((!path.is_empty()).then(|| path.to_owned()));
+        }
+        sleep(WELCOME_BEAT_MS).await;
+    }
+    Err(TonkUiError::ApiError(
+        "the worker did not say where to land".to_owned(),
+    ))
+}
+
+/// The beat [`open_welcome`] polls on, and how many beats it waits: short
+/// enough not to hold a returning visit's first paint, long enough in
+/// total for a first visit to set Welcome up.
+const WELCOME_BEAT_MS: i32 = 25;
+const WELCOME_ATTEMPTS: usize = 2400;
+
+/// Resolve after `millis`.
+async fn sleep(millis: i32) {
+    let sleep = js_sys::Promise::new(&mut |resolve, _| {
+        if let Some(window) = web_sys::window() {
+            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, millis);
+        }
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(sleep).await;
+}
+
 /// Poll until this device holds a recovered credential, or give up.
 ///
 /// Custody is the one post-passkey step that can genuinely fail, so it
@@ -330,13 +400,7 @@ where
         if check().await {
             return true;
         }
-        let sleep = js_sys::Promise::new(&mut |resolve, _| {
-            if let Some(window) = web_sys::window() {
-                let _ = window
-                    .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, POLL_EVERY_MS);
-            }
-        });
-        let _ = wasm_bindgen_futures::JsFuture::from(sleep).await;
+        sleep(POLL_EVERY_MS).await;
     }
     false
 }

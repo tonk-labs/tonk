@@ -11,8 +11,6 @@ use dialog_capability::Subject;
 use dialog_effects::Use;
 use std::collections::HashMap;
 
-use ::axum::{Json, body::Bytes, extract::State};
-use axum_wasm_macros::wasm_compat;
 use dialog_credentials::{Credential, Ed25519Signer, Ed25519Verifier};
 use dialog_effects::space::{Space, SpaceExt as _};
 use dialog_query::{Output as _, Query, Term};
@@ -23,8 +21,6 @@ use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
 use dialog_varsig::{Did, Principal};
 use serde::{Deserialize, Serialize};
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_account::prefix::SPACE_ROOT_SITE_PREFIX;
 use tonk_common::log;
 use tonk_schema::prelude::DidExt as _;
@@ -5942,40 +5938,62 @@ pub(crate) async fn reconcile_profile_library_from(
     reconcile_prepared_profile_library(tonk, prepared).await
 }
 
-/// Development-only asset update boundary used by hot swap. The supplied
-/// document becomes the worker's acquired input before it is reconciled, so a
-/// later account sweep cannot restore bytes cached before the edit.
-#[wasm_compat]
-pub(super) async fn update_profile_library(
-    State(state): State<AppState>,
-    body: Bytes,
-) -> Result<Json<serde_json::Value>, TonkWorkerError> {
-    if !cfg!(debug_assertions) {
-        return Err(TonkWorkerError::NotFound(
-            "profile library development update is unavailable".to_owned(),
-        ));
+/// Run [`ReloadProfileLibrary`], the development-only asset update boundary
+/// hot swap uses. The supplied document becomes the worker's acquired input
+/// before it is reconciled, so a later account sweep cannot restore bytes
+/// cached before the edit. Answers on the profile's `state:profile-library`
+/// row.
+///
+/// [`ReloadProfileLibrary`]: tonk_schema::command::ReloadProfileLibrary
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::ReloadProfileLibrary>
+    for crate::router::CommandEnv
+{
+    async fn execute(&self, command: tonk_schema::command::ReloadProfileLibrary) {
+        use tonk_schema::ProfileLibraryReloaded;
+        use tonk_schema::domain::profile_library::{AnsweredAt, Outcome};
+
+        let tonk = self.state().read().await;
+        let outcome = if !cfg!(debug_assertions) {
+            "unavailable"
+        } else {
+            let reconciled = match tonk.profile_library.replace_input(command.library.0).await {
+                Ok(prepared) => reconcile_prepared_profile_library(&tonk, prepared)
+                    .await
+                    .map_err(|error| error.to_string()),
+                Err(error) => Err(error.to_string()),
+            };
+            match reconciled {
+                Ok(ProfileLibraryOutcome::Unchanged) => "unchanged",
+                Ok(ProfileLibraryOutcome::Installed) => "installed",
+                Ok(ProfileLibraryOutcome::Repaired { .. }) => "repaired",
+                Err(error) => {
+                    log!("profile library not reloaded: {error}");
+                    "failed"
+                }
+            }
+        };
+        let Ok(this) = ProfileLibraryReloaded::ENTITY.parse() else {
+            return;
+        };
+        let written = tonk
+            .reactor
+            .profile_repository()
+            .branch(&tonk.active_branch)
+            .overlay()
+            .assert(ProfileLibraryReloaded {
+                this,
+                answered_at: AnsweredAt(command.at.0),
+                outcome: Outcome(outcome.to_owned()),
+            })
+            .write()
+            .perform(&tonk.operator)
+            .await;
+        if let Err(error) = written {
+            log!("profile library answer not published: {error}");
+        }
     }
-    let library = String::from_utf8(body.to_vec()).map_err(|error| {
-        TonkWorkerError::Router(format!("profile library is not UTF-8: {error}"))
-    })?;
-    let tonk = state.read().await;
-    let prepared = tonk
-        .profile_library
-        .replace_input(library)
-        .await
-        .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
-    let outcome = reconcile_prepared_profile_library(&tonk, prepared)
-        .await
-        .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
-    let (status, deferred_cleanup) = match outcome {
-        ProfileLibraryOutcome::Unchanged => ("unchanged", false),
-        ProfileLibraryOutcome::Installed => ("installed", false),
-        ProfileLibraryOutcome::Repaired { deferred_cleanup } => ("repaired", deferred_cleanup),
-    };
-    Ok(Json(serde_json::json!({
-        "status": status,
-        "deferredCleanup": deferred_cleanup,
-    })))
 }
 
 async fn reconcile_prepared_profile_library(
@@ -8121,6 +8139,46 @@ mod profile_library_tests {
             .await
             .unwrap();
         assert_account_views_migrate(&tonk).await;
+    }
+
+    /// Hot swap's reload is a command: the worker installs the asserted
+    /// document and answers on the `state:profile-library` row with the
+    /// page's stamp, so the page reads the outcome from a query.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[dialog_common::test]
+    async fn reload_profile_library_answers_with_the_stamp() {
+        let state = std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
+        let env = crate::router::CommandEnv::new(state.clone(), Default::default());
+        dialog_capability::Provider::<tonk_schema::command::ReloadProfileLibrary>::execute(
+            &env,
+            tonk_schema::command::ReloadProfileLibrary {
+                this: "command:reload-profile-library".parse().unwrap(),
+                library: tonk_schema::domain::command::reload_profile_library::Library(
+                    CURRENT.to_owned(),
+                ),
+                at: tonk_schema::domain::command::reload_profile_library::At(42),
+            },
+        )
+        .await;
+
+        let rows = crate::router::tests::profile_rows(
+            &state,
+            serde_json::json!({
+                "predicate": { "with": {
+                    "at": { "the": "xyz.tonk.profile-library/answered-at", "as": "UnsignedInteger", "cardinality": "one" },
+                    "outcome": { "the": "xyz.tonk.profile-library/outcome", "as": "Text", "cardinality": "one" }
+                } },
+                "terms": {
+                    "this": tonk_schema::ProfileLibraryReloaded::ENTITY,
+                    "at": { "?": { "name": "at" } },
+                    "outcome": { "?": { "name": "outcome" } }
+                }
+            }),
+        )
+        .await;
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0]["fields"]["at"], 42);
+        assert_ne!(rows[0]["fields"]["outcome"], "failed", "{rows:?}");
     }
 
     async fn assert_account_views_migrate(tonk: &TonkState) {

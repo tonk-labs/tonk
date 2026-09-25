@@ -211,14 +211,9 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             post(evaluate::evaluate_profile),
         )
         .route(
-            "/api/profile/library",
-            post(repository::update_profile_library),
-        )
-        .route(
             "/api/profile/branch/{branch}/transact",
             post(transact::transact_profile),
         )
-        .route("/api/profile/welcome", post(onboarding_space::welcome))
         .route(
             "/api/repository/{repo}/branch/{branch}/sync/status",
             get(sync::sync_status),
@@ -247,10 +242,6 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .route(
             "/api/repository/{repo}/branch/{branch}/query",
             post(query::query),
-        )
-        .route(
-            "/api/repository/{repo}/branch/{branch}/onboarding",
-            post(onboarding_space::prepare),
         )
         // Content-addressed blob bytes: GET serves an entity's bytes; POST
         // ingests a new blob into the branch store and returns its ref.
