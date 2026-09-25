@@ -1288,6 +1288,7 @@ dependencies = [
  "ipld-core",
  "parking_lot",
  "serde",
+ "serde_ipld_dagjson",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",

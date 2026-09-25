@@ -25,6 +25,7 @@ ipld-core = { workspace = true }
 parking_lot = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+serde_ipld_dagjson = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tonk-evaluator = { workspace = true }

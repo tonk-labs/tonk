@@ -13,6 +13,7 @@ use std::sync::Arc;
 use dialog_common::Blake3Hash;
 use dialog_query::ConceptQuery;
 use dialog_query::Parameters;
+use ipld_core::ipld::Ipld;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -61,17 +62,25 @@ impl From<&ConceptQuery> for QueryHash {
     /// Hash a [`ConceptQuery`] into a [`QueryHash`] for use as
     /// a subscription identity within one branch.
     ///
-    /// Serde-json over the wire [`Query`] projection is a
-    /// deterministic function of `query` *within one Rust
-    /// process* — sufficient for use as a hash input. Map
-    /// ordering is the only concern; `Parameters` and
-    /// `NamedAttributes` both emit keys in `BTreeMap` order via
-    /// their custom serializers.
+    /// Hashes the canonical DAG-JSON encoding of the wire [`Query`]
+    /// projection, so equal queries hash equally however their maps
+    /// happen to iterate (the `terms` map iterates in a different
+    /// order on every decode of the same request).
+    ///
+    /// Encoding the wire struct directly would stream its maps in
+    /// iteration order, so it goes through [`Ipld`] first, whose maps
+    /// are sorted. The hop is via JSON because `to_ipld` rejects the
+    /// `u128` an unsigned constant carries, while a JSON number
+    /// decodes into [`Ipld::Integer`]. A constant past `i128::MAX`
+    /// has no `Ipld` form; such a query hashes its JSON as is, which
+    /// still identifies it, only without the canonical ordering.
     fn from(query: &ConceptQuery) -> Self {
-        let wire = Query::from(query);
-        let bytes = serde_json::to_vec(&wire)
+        let json = serde_json::to_vec(&Query::from(query))
             .expect("wire Query is serializable for any valid ConceptQuery");
-        Self(Blake3Hash::hash(&bytes))
+        let canonical = serde_ipld_dagjson::from_slice::<Ipld>(&json)
+            .ok()
+            .and_then(|ipld| serde_ipld_dagjson::to_vec(&ipld).ok());
+        Self(Blake3Hash::hash(canonical.as_deref().unwrap_or(&json)))
     }
 }
 
@@ -240,6 +249,37 @@ mod tests {
             },
             receiver,
         )
+    }
+
+    /// A query decoded from the wire, as the worker decodes a request.
+    fn wire_query(json: serde_json::Value) -> ConceptQuery {
+        serde_json::from_value::<Query>(json)
+            .expect("query decodes")
+            .into_concept_query()
+            .expect("concept query")
+    }
+
+    /// Two requests for the same query share one subscription, however
+    /// their maps happened to be laid out in memory.
+    #[dialog_common::test]
+    fn it_hashes_equal_queries_equally() {
+        let json = serde_json::json!({
+            "predicate": { "with": {
+                "name": { "the": "xyz.tonk.person/name", "as": "Text", "cardinality": "one" },
+                "age": { "the": "xyz.tonk.person/age", "as": "UnsignedInteger", "cardinality": "one" },
+                "email": { "the": "xyz.tonk.person/email", "as": "Text", "cardinality": "one" }
+            } },
+            "terms": {
+                "this": { "?": { "name": "this" } },
+                "name": { "?": { "name": "name" } },
+                "email": { "?": { "name": "email" } },
+                "age": 41
+            }
+        });
+        let first = QueryHash::from(&wire_query(json.clone()));
+        for _ in 0..32 {
+            assert_eq!(QueryHash::from(&wire_query(json.clone())), first);
+        }
     }
 
     /// Decode a delivered frame off a receiver.
