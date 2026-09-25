@@ -175,6 +175,60 @@ namespace_id = "1001"
 ACCOUNT_SERVICE_URL = "https://accounts-staging.tonk.xyz"
 EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 
+# Dev. Every push to `main` deploys here, so tonk.foundation always runs the
+# development branch. Its state is disjoint from staging and production, and
+# being off the tonk.network apex it mints its own passkey credentials.
+[env.dev]
+routes = [{ pattern = "tonk.foundation", custom_domain = true }]
+
+[env.dev.build]
+command = "nix build --accept-flake-config .#tonk-cloudflare-preview-artifacts"
+
+[env.dev.observability]
+enabled = true
+head_sampling_rate = 1
+redact_query_string = true
+
+[env.dev.observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = false
+
+[[env.dev.r2_buckets]]
+binding = "BUCKET"
+bucket_name = "tonk-spaces-dev"
+
+[[env.dev.d1_databases]]
+binding = "CONTROL"
+database_name = "tonk-access-control-dev"
+database_id = "f984fb72-1594-4cac-b655-2a3804a552e9"
+migrations_dir = "rust/tonk-access-service/migrations"
+
+[[env.dev.d1_databases]]
+binding = "INGEST"
+database_name = "tonk-access-ingest-dev"
+database_id = "c43d89f2-2c0f-4c97-a1a9-09acb4efd9ed"
+migrations_dir = "rust/tonk-access-service/migrations-ingest"
+
+[[env.dev.kv_namespaces]]
+binding = "REVOCATIONS_KV"
+id = "a4293e8f7c0f4a1fb9cd17f4c6f2c5f5"
+
+[[env.dev.kv_namespaces]]
+binding = "SERVABILITY_KV"
+id = "5b262b24fdea4a6cba1be3245e10f391"
+
+[[env.dev.ratelimits]]
+name = "LOOKUP_LIMITER"
+namespace_id = "1001"
+
+  [env.dev.ratelimits.simple]
+  limit = 60
+  period = 60
+
+[env.dev.vars]
+EMAIL_FROM = "tonk <accounts@tonk.xyz>"
+
 # Preview. Every pull request uploads a version of this environment under a
 # `--preview-alias` and is reached at its own workers.dev URL, so the
 # environment holds no route of its own. `routes = []` is load-bearing: a named
