@@ -347,12 +347,12 @@
       "variants": "Old sharing/account handoffs and legacy resume metadata."
     },
     {
-      "evidence": "Local CLI import/recovery, exact-authority service tests, persisted KV/D1 revocation restart, checks. Earlier browser results precede this narrowed implementation; fresh browser execution is pending.",
-      "gaps": "Published CLI/browser matrix; staging, Safari and global revocation propagation.",
+      "evidence": "Tool-only CLI routing/no-mutation, account-independence, credential isolation, worker explicit-space issuance, FAB source tests, two packaged whole-browser tool-connection journeys, and the existing packaged person-membership journey passed for Plan 005.",
+      "gaps": "Profile switching while open, responsive/focus/reduced-motion inspection, published CLI/browser matrix, staging, Safari and global revocation propagation remain open.",
       "group": "Accounts: CLI and browser handoff",
       "id": "ACCT-C14",
-      "title": "Copy a scoped invitation for a person or agent, run one-way tonk join without browser/account approval, and revoke its grant group from Settings.",
-      "variants": "Empty or unrelated-account CLI; repeated bearer holders; independent invites; closed issuing browser; restart; offline or revoked authority."
+      "title": "Choose **connect a tool**, run one-way tonk join without browser/account approval, and revoke its grant group from Settings; **invite someone** remains browser-only membership.",
+      "variants": "Empty, same-account, unrelated-account, or malformed-legacy CLI; person link; repeated bearer holders; independent issuers/invites; fresh/returning space; profile/space switch; restart; offline or revoked authority."
     },
     {
       "evidence": "Whole browser revoke-CLI flow; DOM list tests; presenter tests require response uncertainty to lead to refresh before retry.",
@@ -624,7 +624,7 @@
       "group": "Authoring, data, rendering, and transfer",
       "id": "DATA-07",
       "title": "Evaluate notation from inline text, file, explicit -, or piped stdin.",
-      "variants": "Query/write/mixed; JSON/quiet/home/dry-run/no-sync."
+      "variants": "Query/write/mixed; JSON/quiet/home/dry-run/no-sync; file-relative !include (inline/stdin refuse it)."
     },
     {
       "evidence": "Listing/schema tests.",
@@ -846,6 +846,7 @@
       "capture": "running product",
       "id": "WEB-04",
       "journey_ids": [
+        "ACCT-C14",
         "SPACE-06",
         "SYNC-01",
         "SYNC-02",
@@ -859,11 +860,13 @@
         "rust/tonk-ui/src/bin/ui.rs",
         "rust/tonk-fab/src/markup.rs",
         "rust/tonk-fab/src/bar.rs",
+        "rust/tonk-fab/src/tool_connection.rs",
         "rust/tonk-fab/src/agent_panel.rs",
-        "rust/tonk-fab/src/member_roster.rs"
+        "rust/tonk-fab/src/member_roster.rs",
+        "rust/tonk-fab/src/skin.rs"
       ],
       "status": "captured",
-      "summary": "The v0.17 floating action bar names the current space and exposes share, members, connect-agent, and Tonk-home actions, with attached panels and a conditional account entry.",
+      "summary": "The v0.17 floating action bar names the current space and separates person invitations from scoped tool connections alongside share, members, and Tonk-home actions.",
       "surface": "browser"
     },
     {
@@ -1745,12 +1748,12 @@
       "result": "Automated preflight/approval/fallback/exact-invitation/spoof-rejection/receipt coverage; revoked-authority reclaim, command interruption, remote-offline recovery, and whole-process original-invite retry remain unrun."
     },
     {
-      "claim": "Scoped invitation imports without an account and revokes all holders (Scoped agent invitation).",
+      "claim": "Explicit tool connection imports without a CLI account while person links remain browser-only membership (Scoped tool connection).",
       "device": "hybrid + restart + two-actor",
       "file": "verification/accounts.md",
       "id": "HANDOFF-21",
       "priority": "P1",
-      "result": "Native protocol, CLI import/recovery and issuer/revocation checks passed at 199e9a599. Fresh browser execution remains unverified."
+      "result": "Native routing/account/isolation and worker/FAB checks passed during Plan 005. The feature-enabled packaged archive ran and passed tool_connection_rejects_person_links_and_confirms_the_cli and it_keeps_copied_agent_grants_independent_of_cli_accounts; the existing person-membership browser journey also passed. Status remains Drafted pending profile-switch, 390px, keyboard, reduced-motion, Safari, deployed, and global-enforcement evidence."
     },
     {
       "claim": "Device list identifies self separately from shared rows (Resolve).",
