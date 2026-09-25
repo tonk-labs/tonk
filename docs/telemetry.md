@@ -19,6 +19,13 @@ The distinct id is `tonk:<sha256(profile DID)>` — stable per profile,
 not reversible. `tonk identity --reset` rotates it. Commands run
 before a profile exists report as `tonk:anonymous`.
 
+Browser capture registers `metrics_version=2` and capture-time
+`identity_state=unresolved`, then `identity_state=profile` after PostHog accepts
+the profile hash. Identity lookup retries at most three times with a five-second
+bound per attempt, without blocking startup or completed signup. Anonymous
+arrival events are traffic, not active profiles or accounts. See the
+[metric definitions and authoritative account query](analytics/metrics.md).
+
 ## Events
 
 ### CLI
@@ -44,7 +51,7 @@ even though the CLI flushes the batch only when the command finishes.
 | `panic` | `type` (constant `wasm_panic`), repository-relative `location`, and a fingerprint derived only from those static values; the panic message stays in the local console |
 | `account_event` | The same closed account journey schema emitted by the CLI. |
 | `visit` | `schema_version=2`, `channel` (`warm_outreach` / `organic_reshare` / `clearnet_discovery`), `attribution_source` (`url_parameter` / `utm` / `referrer` / `inferred`), `source_platform` (the closed list below), `source_detection` (`url_parameter` / `utm` / `referrer` / `direct`), `entry_type` (`tonk_network` / `shared_space`), normalized `entry_route`, and optional hashed `entry_space_id` |
-| `account_created` | `schema_version`; fired after account creation, configured enrollment, and a best-effort refresh of the hashed profile identity, even though the account journey then waits for email activation |
+| `account_created` | `schema_version`; fired after account creation, configured enrollment, and a background refresh of the hashed profile identity, even though the account journey then waits for email activation |
 | `space_conversion` | `schema_version`, `conversion` (`created` / `joined`), hashed `space_id` |
 | `space_shared` | `schema_version`, hashed `space_id`; fired only after an invite is successfully minted |
 | `product_event` | Closed product interaction lifecycle for startup, active Settings/profile operations, invite resolution/retry, share-and-copy, sheet activation, and CLI operations. |

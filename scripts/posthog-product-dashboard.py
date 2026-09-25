@@ -25,7 +25,7 @@ def cli_path() -> str:
     return str(pathlib.Path(found).resolve())
 
 
-def api(tool: str, payload: dict[str, object]) -> object:
+def api(tool: str, payload: dict[str, object], *, confirm: bool = False) -> object:
     command = [
         cli_path(),
         "api",
@@ -34,6 +34,8 @@ def api(tool: str, payload: dict[str, object]) -> object:
         tool,
         json.dumps(payload, separators=(",", ":")),
     ]
+    if confirm:
+        command.insert(4, "--confirm")
     completed = subprocess.run(command, check=False, capture_output=True, text=True)
     if completed.returncode:
         print(completed.stderr, file=sys.stderr, end="")
