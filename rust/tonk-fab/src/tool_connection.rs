@@ -670,10 +670,6 @@ mod tests {
         assert!(surface.has_attribute("hidden"));
         assert!(!surface.has_attribute("data-tool-link"));
 
-        document
-            .get_element_by_id("fabb-connect-cluster")
-            .unwrap()
-            .remove();
         surface.remove();
     }
 }
