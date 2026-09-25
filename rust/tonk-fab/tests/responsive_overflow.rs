@@ -375,7 +375,14 @@ async fn closing_a_drawer_contracts_its_column_without_stretching_the_menu() {
     yield_for(450).await;
     assert!(wrapper.get_bounding_client_rect().width() > 500.0);
     button.click();
-    yield_for(500).await;
+    // Width can settle before transitionend is delivered on a busy browser.
+    // Wait for the close handler, while still failing if it never hides the panel.
+    for _ in 0..60 {
+        if panel.has_attribute("hidden") {
+            break;
+        }
+        yield_for(50).await;
+    }
     assert!(wrapper.get_bounding_client_rect().width() < 362.0);
     assert!(panel.has_attribute("hidden"));
     parent.remove();
