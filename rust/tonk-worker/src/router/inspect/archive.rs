@@ -4,8 +4,7 @@ use ::axum::extract::Path;
 use ::axum::{Json, extract::State};
 use axum_wasm_macros::wasm_compat;
 use base58::FromBase58;
-use dialog_effects::archive as archive_fx;
-use dialog_repository::{RepositoryArchiveExt as _, RepositoryExt as _};
+use dialog_repository::RepositoryExt as _;
 use dialog_storage::Blake3Hash;
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -130,9 +129,7 @@ pub async fn inspect_archive_block(
             }));
         }
     };
-    let catalog = branch.archive().index();
-    let get = archive_fx::Get::new(hash);
-    let effect = catalog.invoke(get);
+    let effect = branch.archive().index().get(hash);
 
     match effect.perform(&tonk_state.operator).await {
         Ok(Some(data)) => {

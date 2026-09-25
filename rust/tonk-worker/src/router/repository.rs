@@ -8740,7 +8740,7 @@ route!: &foreign-profile-route
             .await
             .expect("profile branch opens");
         let mut subscriber = subscribed_session
-            .subscribe(query, None)
+            .subscribe(query, None, 0)
             .expect("view subscription registers");
         tonk.reactor
             .schedule_poll(std::sync::Arc::clone(&subscribed_session.state));
@@ -10718,7 +10718,7 @@ block/insert!:
                 .await
                 .expect("acquire cached main");
             subscriber = session
-                .subscribe(ConceptQuery::from(Query::<Name>::default()), None)
+                .subscribe(ConceptQuery::from(Query::<Name>::default()), None, 0)
                 .expect("subscribe");
             before_ptr = Arc::as_ptr(&session.state);
         }
@@ -10780,7 +10780,7 @@ block/insert!:
         // refresh this was the share-flow regression — the swapped-in
         // handle's empty overlay silently dropped every session fact.
         let mut fresh = session
-            .subscribe(ConceptQuery::from(Query::<Name>::default()), None)
+            .subscribe(ConceptQuery::from(Query::<Name>::default()), None, 0)
             .expect("subscribe after refresh");
         // A new subscriber is Pending until a poll serves its snapshot;
         // drive one the way the request dispatcher would.

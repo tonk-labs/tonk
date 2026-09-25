@@ -41,7 +41,7 @@ use crate::events;
 use crate::host::HostState;
 use crate::http;
 use crate::registry::{Entry, EntryId};
-use crate::url::{evaluate_url, query_url, transact_url};
+use crate::url::{evaluate_url, query_url, subscribe_url, transact_url};
 
 /// One installed listener — the closure is held so it stays
 /// attached for the page's lifetime.
@@ -500,7 +500,11 @@ fn handle_subscribe(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
         );
         return;
     }
-    let url = query_url(space.as_deref(), branch.as_deref(), profile);
+    let depth = Reflect::get(&detail, &JsValue::from_str("depth"))
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0) as u32;
+    let url = subscribe_url(space.as_deref(), branch.as_deref(), profile, depth);
 
     let query_val = match Reflect::get(&detail, &JsValue::from_str("query")) {
         Ok(v) if !v.is_undefined() && !v.is_null() => v,
@@ -510,10 +514,6 @@ fn handle_subscribe(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
         Ok(v) => v,
         Err(_) => return,
     };
-    let depth = Reflect::get(&detail, &JsValue::from_str("depth"))
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0) as u32;
 
     let entry_id = {
         let mut s = state.borrow_mut();
@@ -696,9 +696,9 @@ async fn refresh_entry(state: &Rc<RefCell<HostState>>, entry_id: crate::registry
         let s = state.borrow();
         s.registry
             .get(entry_id)
-            .map(|e| (e.consumer.clone(), e.query.clone(), e.tag.clone()))
+            .map(|e| (e.consumer.clone(), e.query.clone(), e.tag.clone(), e.depth))
     };
-    let Some((consumer, query, tag)) = snapshot else {
+    let Some((consumer, query, tag, depth)) = snapshot else {
         return;
     };
     if !consumer.is_connected() {
@@ -736,7 +736,7 @@ async fn refresh_entry(state: &Rc<RefCell<HostState>>, entry_id: crate::registry
     }
     // Abort the existing upstream and clear its handle so the
     // refresh's new subscription is the only live one.
-    let url = query_url(space.as_deref(), branch.as_deref(), profile);
+    let url = subscribe_url(space.as_deref(), branch.as_deref(), profile, depth);
     {
         let mut s = state.borrow_mut();
         if s.registry.get(entry_id).is_some() {
