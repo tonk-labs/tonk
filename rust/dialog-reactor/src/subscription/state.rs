@@ -115,6 +115,10 @@ pub struct SubscriberSession {
     /// without cancelling its response stream leaves the receiver
     /// alive, so the send-failure prune never fires.
     pub client: Option<String>,
+    /// How deeply the subscriber's consumer is nested: 0 is outermost,
+    /// and the default for a subscriber that isn't a display. A branch
+    /// notifies lower levels first. See [`Subscription::level`].
+    pub level: u32,
 }
 
 /// One subscription, shared by every subscriber that opened the
@@ -143,6 +147,17 @@ pub struct Subscription {
 }
 
 impl Subscription {
+    /// The lowest level among this subscription's subscribers, so a query
+    /// shared across levels is polled where its outermost consumer needs
+    /// it. A subscription left with no subscribers sorts last.
+    pub fn level(&self) -> u32 {
+        self.subscribers
+            .iter()
+            .map(|subscriber| subscriber.level)
+            .min()
+            .unwrap_or(u32::MAX)
+    }
+
     /// Fan a poll's result out to every subscriber, advancing each to
     /// [`Established`](Status::Established) once served.
     ///
@@ -246,6 +261,7 @@ mod tests {
                 sender,
                 status,
                 client: None,
+                level: 0,
             },
             receiver,
         )

@@ -21,6 +21,7 @@ dialog-repository = { workspace = true }
 dialog-search-tree = { workspace = true }
 dialog-storage = { workspace = true }
 futures-util = { workspace = true }
+indexmap = { workspace = true }
 ipld-core = { workspace = true }
 parking_lot = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

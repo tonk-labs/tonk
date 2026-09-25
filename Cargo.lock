@@ -1285,6 +1285,7 @@ dependencies = [
  "dialog-search-tree",
  "dialog-storage",
  "futures-util",
+ "indexmap",
  "ipld-core",
  "parking_lot",
  "serde",
