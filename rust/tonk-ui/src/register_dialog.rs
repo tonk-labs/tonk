@@ -2841,6 +2841,7 @@ fn current_local_space_link_path() -> Option<String> {
 ///
 /// A blocked share has an exact space path. A Hub account ceremony retains
 /// the `/account` route while open, so closing it also returns to `/`.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn return_to_previous() {
     let host = web_sys::window()
         .and_then(|window| window.document())
