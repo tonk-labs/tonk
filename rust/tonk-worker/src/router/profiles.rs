@@ -15,17 +15,13 @@
 use std::ops::Deref;
 use std::sync::{Arc, atomic::Ordering};
 
-use axum::{Extension, Json, extract::State};
-use axum_wasm_macros::wasm_compat;
 use dialog_artifacts::Entity;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use dialog_varsig::Did;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_common::log;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tonk_schema::prelude::DidExt as _;
-use tonk_worker_api::{ActivateProfileRequest, ProfileRosterEntry, ProfilesResponse};
+use tonk_worker_api::{ProfileRosterEntry, ProfilesResponse};
 
 use super::AppState;
 use crate::TonkWorkerError;
@@ -216,35 +212,13 @@ async fn refreshed_response(tonk: &TonkState) -> Result<ProfilesResponse, TonkWo
     Ok(response_from(&tonk.active_branch, roster))
 }
 
-/// `GET /api/profiles`.
-#[wasm_compat]
-pub async fn list(
-    State(state): State<AppState>,
-) -> Result<Json<ProfilesResponse>, TonkWorkerError> {
-    let tonk = state.read().await;
-    Ok(Json(refreshed_response(&tonk).await?))
-}
-
-/// `POST /api/profiles/activate`.
-#[wasm_compat]
-pub async fn activate(
-    State(state): State<AppState>,
-    source: Option<Extension<super::ClientId>>,
-    Json(request): Json<ActivateProfileRequest>,
-) -> Result<Json<ProfilesResponse>, TonkWorkerError> {
-    let source = source.as_ref().map(|source| &source.0);
-    activate_named(&state, request.profile, source)
-        .await
-        .map(Json)
-}
-
 /// Switch to branch `name`.
 ///
 /// Switching away from an account signs out of it: the profile holds at
 /// most one grant, and the branch being left keeps its data for when it
 /// is returned to. The target is validated before anything is withdrawn,
 /// so a mistyped name costs nothing.
-async fn activate_named(
+pub(crate) async fn activate_named(
     state: &AppState,
     name: String,
     source: Option<&super::ClientId>,
@@ -380,20 +354,6 @@ impl dialog_capability::Provider<tonk_schema::command::SwitchProfile>
     }
 }
 
-/// `POST /api/profiles/add`.
-///
-/// Promote a fresh profile as the landing pad for Add Account. The account
-/// ceremony may keep it for a new account or route to another roster profile
-/// after discovering an existing account root.
-#[wasm_compat]
-pub async fn add(
-    State(state): State<AppState>,
-    source: Option<Extension<super::ClientId>>,
-) -> Result<Json<ProfilesResponse>, TonkWorkerError> {
-    let source = source.as_ref().map(|source| &source.0);
-    add_profile(&state, source).await.map(Json)
-}
-
 /// Start an empty branch to sign a new account in on.
 ///
 /// Leaving the current account is what makes room: the profile holds at
@@ -401,7 +361,7 @@ pub async fn add(
 /// that follows nothing yet. A branch that already follows nothing and
 /// holds no root is that landing pad already, and is handed back rather
 /// than abandoned for another.
-async fn add_profile(
+pub(crate) async fn add_profile(
     state: &AppState,
     source: Option<&super::ClientId>,
 ) -> Result<ProfilesResponse, TonkWorkerError> {
@@ -702,16 +662,7 @@ mod tests {
     }
 
     async fn activate_branch(state: &AppState, name: &str) -> ProfilesResponse {
-        let Json(response) = activate(
-            State(state.clone()),
-            None,
-            Json(ActivateProfileRequest {
-                profile: name.to_owned(),
-            }),
-        )
-        .await
-        .unwrap();
-        response
+        activate_named(state, name.to_owned(), None).await.unwrap()
     }
 
     /// The add-account command starts an empty branch.
@@ -869,7 +820,7 @@ mod tests {
         use tonk_schema::ProfileRow;
 
         let state = Arc::new(RwLock::new(test_state().await));
-        let Json(response) = list(State(state.clone())).await.unwrap();
+        let response = refreshed_response(&*state.read().await).await.unwrap();
 
         let tonk = state.read().await;
         let session = tonk
@@ -990,9 +941,9 @@ mod tests {
             rows.len()
         };
 
-        let _ = list(State(state.clone())).await.unwrap();
+        let _ = refreshed_response(&*state.read().await).await.unwrap();
         let first = count().await;
-        let _ = list(State(state.clone())).await.unwrap();
+        let _ = refreshed_response(&*state.read().await).await.unwrap();
         let second = count().await;
 
         assert_eq!(
@@ -1005,7 +956,7 @@ mod tests {
     async fn it_lists_the_active_branch_with_its_account_state() {
         let state = Arc::new(RwLock::new(test_state().await));
 
-        let Json(response) = list(State(state.clone())).await.unwrap();
+        let response = refreshed_response(&*state.read().await).await.unwrap();
 
         let current = response
             .profiles
@@ -1074,7 +1025,7 @@ mod tests {
     async fn it_reuses_an_empty_branch_when_signing_out() {
         let state = Arc::new(RwLock::new(test_state().await));
         let account_branch = active(&state).await;
-        let Json(added) = add(State(state.clone()), None).await.unwrap();
+        let added = add_profile(&state, None).await.unwrap();
         let empty = added.active;
         let count = local_branches(&*state.read().await).await.len();
         activate_branch(&state, &account_branch).await;
@@ -1097,15 +1048,9 @@ mod tests {
     async fn it_refuses_to_activate_a_branch_meta_does_not_name() {
         let state = Arc::new(RwLock::new(test_state().await));
 
-        let error = activate(
-            State(state),
-            None,
-            Json(ActivateProfileRequest {
-                profile: "no-such-branch".to_string(),
-            }),
-        )
-        .await
-        .unwrap_err();
+        let error = activate_named(&state, "no-such-branch".to_string(), None)
+            .await
+            .unwrap_err();
 
         assert!(
             matches!(error, TonkWorkerError::NotFound(_)),
@@ -1124,7 +1069,7 @@ mod tests {
             (tonk.active_branch.clone(), tonk.profile.did())
         };
 
-        let Json(response) = add(State(state.clone()), None).await.unwrap();
+        let response = add_profile(&state, None).await.unwrap();
 
         let tonk = state.read().await;
         assert_ne!(tonk.active_branch, original);
@@ -1157,7 +1102,7 @@ mod tests {
         let state = Arc::new(RwLock::new(test_state_without_root().await));
         let before = active(&state).await;
 
-        let Json(response) = add(State(state.clone()), None).await.unwrap();
+        let response = add_profile(&state, None).await.unwrap();
 
         assert_eq!(
             response.active, before,
@@ -1168,12 +1113,13 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_serves_a_branchs_spaces_after_activating_it() {
-        let (app, state, _lsp) = crate::api_router_with_state(test_state().await);
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
         let original = active(&state).await;
-        let key = put_repo(&app, "switching-space").await;
+        let key = put_repo(&state, "switching-space").await;
         assert!(space_keys(&state).await.contains(&key));
 
-        let _ = add(State(state.clone()), None).await.unwrap();
+        let _ = add_profile(&state, None).await.unwrap();
         assert!(
             space_keys(&state).await.is_empty(),
             "an empty branch must not see the other account's spaces"
@@ -1194,15 +1140,9 @@ mod tests {
         let state = Arc::new(RwLock::new(test_state().await));
         let before = active(&state).await;
 
-        let _ = activate(
-            State(state.clone()),
-            None,
-            Json(ActivateProfileRequest {
-                profile: "no-such-branch".to_string(),
-            }),
-        )
-        .await
-        .unwrap_err();
+        let _ = activate_named(&state, "no-such-branch".to_string(), None)
+            .await
+            .unwrap_err();
         {
             let tonk = state.read().await;
             assert_eq!(tonk.active_branch, before);
@@ -1215,7 +1155,7 @@ mod tests {
             );
         }
 
-        let Json(response) = add(State(state.clone()), None).await.unwrap();
+        let response = add_profile(&state, None).await.unwrap();
         let tonk = state.read().await;
         assert_eq!(
             active_branch_name(&tonk.reactor, &tonk.operator).await,
@@ -1271,7 +1211,7 @@ mod tests {
         let state = Arc::new(RwLock::new(test_state().await));
         let account_branch = active(&state).await;
         let root = own_root(&state).await;
-        let _ = add(State(state.clone()), None).await.unwrap();
+        let _ = add_profile(&state, None).await.unwrap();
         assert_ne!(active(&state).await, account_branch);
 
         let tonk = state.read().await;
@@ -1285,7 +1225,7 @@ mod tests {
     async fn it_returns_to_the_branch_following_the_discovered_root() {
         let state = Arc::new(RwLock::new(test_state().await));
         let first = active(&state).await;
-        let Json(added) = add(State(state.clone()), None).await.unwrap();
+        let added = add_profile(&state, None).await.unwrap();
         let second = added.active;
         let second_root = fresh_root().await;
         follow(&state, &second_root).await;
@@ -1335,10 +1275,11 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_never_moves_spaces_when_routing_between_accounts() {
-        let (app, state, _lsp) = crate::api_router_with_state(test_state().await);
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
         let first = active(&state).await;
-        let retained = put_repo(&app, "retained-by-first-account").await;
-        let _ = add(State(state.clone()), None).await.unwrap();
+        let retained = put_repo(&state, "retained-by-first-account").await;
+        let _ = add_profile(&state, None).await.unwrap();
         let second_root = fresh_root().await;
         follow(&state, &second_root).await;
         activate_branch(&state, &first).await;

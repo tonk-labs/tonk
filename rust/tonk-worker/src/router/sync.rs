@@ -543,10 +543,8 @@ pub async fn mark_offline(state: &AppState) {
         tonk.reactor.repos().read().keys().cloned().collect()
     };
     for repo in open {
-        let info = match super::repository::get_repository(State(state.clone()), Path(repo.clone()))
-            .await
-        {
-            Ok(Json(info)) => info,
+        let info = match super::repository::load_repository_info(state, &repo).await {
+            Ok(info) => info,
             Err(_) => continue,
         };
         let tonk = state.read().await;
@@ -618,10 +616,8 @@ pub async fn sync_repository(state: &AppState, repo: &str) -> Result<(), String>
         }
     }
 
-    let info = match super::repository::get_repository(State(state.clone()), Path(repo.to_string()))
-        .await
-    {
-        Ok(Json(info)) => info,
+    let info = match super::repository::load_repository_info(state, repo).await {
+        Ok(info) => info,
         Err(e) => {
             log!("background sync: could not load '{repo}': {e}");
             return Ok(());
@@ -636,7 +632,7 @@ pub async fn sync_repository(state: &AppState, repo: &str) -> Result<(), String>
         };
         // HTTP success now means reconciliation completed or was deliberately
         // skipped; operational failures are typed route errors.
-        match sync(State(state.clone()), Path(params)).await {
+        match sync(state.clone(), params).await {
             Ok(_) => {}
             Err(e) => {
                 log!("background sync of {repo}/{branch} failed: {e}");
@@ -661,181 +657,6 @@ pub struct SyncPath {
     pub repo: String,
     /// The branch name.
     pub branch: String,
-}
-
-/// Pull changes from the upstream remote.
-#[wasm_compat]
-pub async fn pull(
-    State(state): State<AppState>,
-    Path(params): Path<SyncPath>,
-) -> Result<Json<SyncResponse>, TonkWorkerError> {
-    log!(
-        "Pulling from upstream: repo={}, branch={}",
-        params.repo,
-        params.branch
-    );
-
-    // Before the lock, because renewal takes one of its own — and before
-    // the presign below, because a worker that has just restarted holds
-    // guest chains addressed to an operator that no longer exists.
-    ensure_session_authority(&state).await?;
-
-    let tonk_state = state.write().await;
-
-    let session = tonk_state
-        .reactor
-        .repository(&params.repo)
-        .branch(&params.branch)
-        .acquire(&tonk_state.operator)
-        .await
-        .map_err(|e| TonkWorkerError::NotFound(e.to_string()))?;
-
-    let before = session.handle().revision();
-
-    // A branch that tracks nothing has nothing to reconcile, which is a
-    // configuration state rather than a failure — the same reading
-    // [`sync`] and [`publish_settled_status`] give it. Without this the
-    // pull reaches dialog, comes back `BranchHasNoUpstream`, and lands in
-    // the catch-all as a 503 "temporarily unavailable", which is untrue:
-    // nothing is going to become available until a remote is attached.
-    if session.handle().upstream().is_none() {
-        log!(
-            "Pull skipped, no upstream: {}@{}",
-            params.branch,
-            params.repo
-        );
-        return Ok(Json(SyncResponse {
-            success: true,
-            disposition: SyncDisposition::Completed,
-            before: before.clone(),
-            after: before,
-            error: None,
-        }));
-    }
-
-    // Every branch pulls the same way: adopt the head, materialize
-    // nothing. `.download()` here walked every block the revision
-    // references, and history records live in the same tree as the
-    // data, so an account pull dragged the branch's whole lineage down
-    // before anything could render.
-    //
-    // What the account actually needs local is the handful of blocks
-    // the next boot's authorization walk reads, and those arrive by
-    // being READ: `NetworkedIndex` hydrates a read-miss from the remote
-    // and writes it into the local archive on the way through. So the
-    // account claims its capability chains by proving them instead,
-    // started detached below.
-    let hydrate = super::account_state::is_account_key(&tonk_state, &params.repo).await;
-    let pulled = tonk_state
-        .reactor
-        .repository(&params.repo)
-        .branch(&params.branch)
-        .pull()
-        .perform(&tonk_state.operator)
-        .await;
-    match pulled {
-        Ok(after) => {
-            log!("Pull succeeded: {}@{}", params.branch, params.repo);
-            if hydrate
-                && let Err(error) = super::account_state::converge_account_state(&tonk_state).await
-            {
-                log!("account-state convergence after pull failed: {error}");
-            }
-            // A pull that moved the head changed what every live view
-            // over this branch shows; deliver it. Nothing else will — a
-            // pull commits nothing locally, so no commit-time poll runs,
-            // and a view left waiting repainted only on its next
-            // unrelated poll (or a manual refresh).
-            if after != before {
-                let session = tonk_state
-                    .reactor
-                    .repository(&params.repo)
-                    .branch(&params.branch)
-                    .acquire(&tonk_state.operator)
-                    .await;
-                if let Ok(session) = session {
-                    tonk_state
-                        .reactor
-                        .schedule_poll(std::sync::Arc::clone(&session.state));
-                    tonk_state
-                        .reactor
-                        .run_scheduled_polls(&tonk_state.operator)
-                        .await;
-                }
-            }
-            announce_head(&params.repo, &params.branch, after.clone());
-            Ok(Json(SyncResponse {
-                success: true,
-                disposition: SyncDisposition::Completed,
-                before,
-                after,
-                error: None,
-            }))
-        }
-        Err(e) => {
-            log!("Pull failed: {}@{}: {e:?}", params.branch, params.repo);
-            let error = sync_failure(&e);
-            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-            publish_failure_status(&tonk_state, &params.repo, &params.branch, &error).await;
-            Err(error)
-        }
-    }
-}
-
-/// Push local changes to the upstream remote.
-#[wasm_compat]
-pub async fn push(
-    State(state): State<AppState>,
-    Path(params): Path<SyncPath>,
-) -> Result<Json<SyncResponse>, TonkWorkerError> {
-    log!(
-        "Pushing to upstream: repo={}, branch={}",
-        params.repo,
-        params.branch
-    );
-
-    ensure_session_authority(&state).await?;
-
-    let tonk_state = state.write().await;
-
-    let session = tonk_state
-        .reactor
-        .repository(&params.repo)
-        .branch(&params.branch)
-        .acquire(&tonk_state.operator)
-        .await
-        .map_err(|e| TonkWorkerError::NotFound(e.to_string()))?;
-
-    let before = session.handle().revision();
-
-    match tonk_state
-        .reactor
-        .repository(&params.repo)
-        .branch(&params.branch)
-        .push()
-        .perform(&tonk_state.operator)
-        .await
-    {
-        Ok(_) => {
-            log!("Push succeeded: {}@{}", params.branch, params.repo);
-            let after = session.handle().revision();
-            announce_head(&params.repo, &params.branch, after.clone());
-            Ok(Json(SyncResponse {
-                success: true,
-                disposition: SyncDisposition::Completed,
-                before: before.clone(),
-                after,
-                error: None,
-            }))
-        }
-        Err(e) => {
-            log!("Push failed: {}@{}: {e:?}", params.branch, params.repo);
-            let error = sync_failure(&e);
-            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-            publish_failure_status(&tonk_state, &params.repo, &params.branch, &error).await;
-            Err(error)
-        }
-    }
 }
 
 /// Classify a branch against its upstream without mutating local
@@ -955,11 +776,10 @@ pub async fn sync_status(
 }
 
 /// Full sync: pull then push.
-#[wasm_compat]
-pub async fn sync(
-    State(state): State<AppState>,
-    Path(params): Path<SyncPath>,
-) -> Result<Json<SyncResponse>, TonkWorkerError> {
+pub(crate) async fn sync(
+    state: AppState,
+    params: SyncPath,
+) -> Result<SyncResponse, TonkWorkerError> {
     log!(
         "Syncing with upstream: repo={}, branch={}",
         params.repo,
@@ -988,13 +808,13 @@ pub async fn sync(
         )
         .await;
         log!("sync of {}/{} skipped: offline", params.repo, params.branch);
-        return Ok(Json(SyncResponse {
+        return Ok(SyncResponse {
             success: true,
             disposition: SyncDisposition::Offline,
             before: None,
             after: None,
             error: None,
-        }));
+        });
     }
 
     // Honor the durable pause preference at the single chokepoint every sync
@@ -1012,13 +832,13 @@ pub async fn sync(
             let tonk_state = state.write().await;
             publish_paused_status(&tonk_state, &params.repo, &params.branch).await;
             log!("sync of {}/{} skipped: paused", params.repo, params.branch);
-            return Ok(Json(SyncResponse {
+            return Ok(SyncResponse {
                 success: true,
                 disposition: SyncDisposition::Paused,
                 before: None,
                 after: None,
                 error: None,
-            }));
+            });
         }
     }
 
@@ -1181,13 +1001,13 @@ pub async fn sync(
             // the push answered with has no reader.
             #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
             let _ = pushed;
-            Ok(Json(SyncResponse {
+            Ok(SyncResponse {
                 success: true,
                 disposition: SyncDisposition::Completed,
                 before,
                 after,
                 error: None,
-            }))
+            })
         }
         Err(e) => {
             log!("Push failed: {}@{}: {e:?}", params.branch, params.repo);
@@ -1720,12 +1540,13 @@ mod overlay_tests {
     use dialog_query::{Output as _, Query, Term};
     use tonk_schema::{petname, prelude::DidExt as _};
 
-    use crate::router::{api_router_with_state, tests::put_repo, tests::test_state};
+    use crate::router::{tests::put_repo, tests::test_state};
 
     #[dialog_common::test]
     async fn it_stamps_the_self_identity_overlay_on_load() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let key = put_repo(&app, "chip-space").await;
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
+        let key = put_repo(&state, "chip-space").await;
         let tonk = state.read().await;
         super::publish_self_identity(&tonk, &key, "main").await;
 
@@ -1773,8 +1594,8 @@ mod renewal_tests {
     wasm_bindgen_test_configure!(run_in_service_worker);
 
     use super::{ensure_session_authority, renew_session_with};
+    use crate::router::AppState;
     use crate::router::tests::test_state;
-    use crate::router::{AppState, api_router_with_state};
 
     async fn operator_did(state: &AppState) -> String {
         state.read().await.operator.did().to_string()
@@ -1793,7 +1614,8 @@ mod renewal_tests {
 
     #[dialog_common::test]
     async fn it_replaces_a_due_session_once_without_committing() {
-        let (_app, state, _lsp) = api_router_with_state(test_state().await);
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
         let before = operator_did(&state).await;
         let head = revision(&state).await;
         state.write().await.session_expires_at = crate::session::now();
@@ -1826,7 +1648,8 @@ mod renewal_tests {
 
     #[dialog_common::test]
     async fn it_keeps_the_current_session_when_construction_fails() {
-        let (_app, state, _lsp) = api_router_with_state(test_state().await);
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
         let before = operator_did(&state).await;
         let head = revision(&state).await;
         let due = crate::session::now();
@@ -1845,7 +1668,8 @@ mod renewal_tests {
 
     #[dialog_common::test]
     async fn it_installs_only_one_concurrent_candidate() {
-        let (_app, state, _lsp) = api_router_with_state(test_state().await);
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
         let head = revision(&state).await;
         state.write().await.session_expires_at = crate::session::now();
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();

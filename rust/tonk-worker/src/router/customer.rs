@@ -311,18 +311,6 @@ pub async fn get_state(
     }))
 }
 
-/// `POST /api/custody/provision` request body: the custody DID a
-/// passkey enrollment derived, and the consent chain the custody key
-/// minted for `/provider/add`.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProvisionCustodyRequest {
-    /// The custody space's subject.
-    pub custody: String,
-    /// Hex-encoded consent delegation chain.
-    pub consent_hex: String,
-}
-
 fn decode_custody_consent(
     consent_hex: &str,
 ) -> Result<dialog_ucan_core::DelegationChain, TonkWorkerError> {
@@ -332,101 +320,12 @@ fn decode_custody_consent(
         .map_err(|error| TonkWorkerError::Router(format!("consent does not decode: {error}")))
 }
 
-/// POST `/api/custody/provision` → provision a custody space under
-/// this profile's account. The page runs the enrollment ceremony and
-/// hands the consent here; the call is idempotent, and retryable — the
-/// published cell, not this row, is the account's durability.
-#[wasm_compat]
-pub async fn provision_custody(
-    State(state): State<AppState>,
-    Json(request): Json<ProvisionCustodyRequest>,
-) -> Result<Json<()>, TonkWorkerError> {
-    let state = state.read().await;
-    let custody: dialog_varsig::Did = request
-        .custody
-        .parse()
-        .map_err(|error| TonkWorkerError::Router(format!("invalid custody DID: {error:?}")))?;
-    let consent = decode_custody_consent(&request.consent_hex)?;
-    provision_or_defer(&state, &custody, &consent, Some("custody")).await?;
-    Ok(Json(()))
-}
-
-/// `POST /api/custody/queue` request body: a custody cell that could
-/// not be published yet.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct QueueCustodyRequest {
-    /// The custody space whose cell is waiting.
-    pub custody: String,
-    /// Consent for provisioning this custody space. Optional only so a page
-    /// loaded before this worker version can finish its already-started flow.
-    #[serde(default)]
-    pub consent_hex: Option<String>,
-    /// Hex-encoded sealed envelope to publish.
-    pub sealed_hex: String,
-    /// Hex-encoded pre-signed publish invocation, minted by the
-    /// ceremony that sealed the envelope.
-    pub invocation_hex: String,
-}
-
-fn custody_pending_batch(request: &QueueCustodyRequest) -> Vec<PendingWork> {
-    let mut work = Vec::with_capacity(2);
-    if let Some(consent_hex) = &request.consent_hex {
-        work.push(PendingWork::Provision {
-            consumer: request.custody.clone(),
-            consent_hex: consent_hex.clone(),
-            consumer_kind: Some("custody".to_owned()),
-        });
-    }
-    if !request.invocation_hex.is_empty() {
-        work.push(PendingWork::PublishCustody {
-            custody: request.custody.clone(),
-            sealed_hex: request.sealed_hex.clone(),
-            invocation_hex: request.invocation_hex.clone(),
-        });
-    }
-    work
-}
-
-/// POST `/api/custody/queue` → record a custody cell for publication
-/// once its space is provisioned and the account confirms its email.
-/// The ceremony pre-signed the publish invocation, so the worker drains
-/// this itself — no page, no assertion. The cell is also recorded on
-/// profile main right away: the account's own sync is the durability
-/// channel, and the vault copy only bootstraps a brand-new browser.
-#[wasm_compat]
-pub async fn queue_custody(
-    State(state): State<AppState>,
-    Json(request): Json<QueueCustodyRequest>,
-) -> Result<Json<()>, TonkWorkerError> {
-    let state = state.read().await;
-    if let Some(consent_hex) = &request.consent_hex {
-        // Reject malformed recovery material before it can poison the durable
-        // queue. The access service still verifies its authority on replay.
-        decode_custody_consent(consent_hex)?;
-    }
-    // No passkey facts on this path: the queue route carries a cell that
-    // could not be published, not a ceremony's creation metadata. The
-    // ceremony records its own row where it has both.
-    record_custody_cell(
-        &state,
-        &request.custody,
-        &request.sealed_hex,
-        None,
-        "",
-        None,
-    )
-    .await?;
-    let work = custody_pending_batch(&request);
-    if !work.is_empty() {
-        // Provision and publish are one durable ordered batch. Replaying this
-        // request also restores a missing provision ahead of a surviving
-        // publish from an interrupted earlier attempt.
-        defer_all(&state, work).await?;
-    }
-    Ok(Json(()))
-}
-
+// Only the browser's account ceremonies reach this now; the CLI links
+// through its own path.
+#[cfg_attr(
+    not(all(target_arch = "wasm32", target_os = "unknown")),
+    allow(dead_code)
+)]
 /// Record `custody`'s sealed cell on profile main, so the account's own
 /// sync carries the recovery envelope to every device that holds the
 /// profile.
@@ -1415,17 +1314,6 @@ async fn run_pending(
     }
 }
 
-/// `GET /api/customer/pending` → the queued work still waiting: the
-/// account panel reads this to say a backup is on its way; the worker
-/// itself drains it.
-#[wasm_compat]
-pub async fn get_pending(
-    State(state): State<AppState>,
-) -> Result<Json<PendingQueue>, TonkWorkerError> {
-    let state = state.read().await;
-    Ok(Json(load_pending(&state).await?))
-}
-
 /// Record a customer at `status`, so a test can put the profile in the
 /// state the gate reads without standing up an access service.
 ///
@@ -1558,54 +1446,19 @@ mod tests {
     }
 
     #[test]
-    fn custody_queue_carries_an_ordered_repair_batch_and_accepts_legacy_requests() {
-        let request = QueueCustodyRequest {
-            custody: "did:key:zCustody".to_owned(),
-            consent_hex: Some("aa".to_owned()),
-            sealed_hex: "bb".to_owned(),
-            invocation_hex: "c0de".to_owned(),
-        };
-        assert_eq!(
-            custody_pending_batch(&request),
-            vec![
-                PendingWork::Provision {
-                    consumer: "did:key:zCustody".to_owned(),
-                    consent_hex: "aa".to_owned(),
-                    consumer_kind: Some("custody".to_owned()),
-                },
-                PendingWork::PublishCustody {
-                    custody: "did:key:zCustody".to_owned(),
-                    sealed_hex: "bb".to_owned(),
-                    invocation_hex: "c0de".to_owned(),
-                },
-            ]
-        );
-
-        let legacy: QueueCustodyRequest = serde_json::from_value(serde_json::json!({
-            "custody": "did:key:zCustody",
-            "sealedHex": "bb",
-            "invocationHex": "c0de"
-        }))
-        .unwrap();
-        assert_eq!(
-            custody_pending_batch(&legacy),
-            vec![PendingWork::PublishCustody {
+    fn custody_replay_keeps_a_matching_provision_and_publish_in_one_batch() {
+        let matching = vec![
+            PendingWork::Provision {
+                consumer: "did:key:zCustody".to_owned(),
+                consent_hex: "aa".to_owned(),
+                consumer_kind: Some("custody".to_owned()),
+            },
+            PendingWork::PublishCustody {
                 custody: "did:key:zCustody".to_owned(),
                 sealed_hex: "bb".to_owned(),
                 invocation_hex: "c0de".to_owned(),
-            }]
-        );
-    }
-
-    #[test]
-    fn custody_replay_keeps_a_matching_provision_and_publish_in_one_batch() {
-        let matching = QueueCustodyRequest {
-            custody: "did:key:zCustody".to_owned(),
-            consent_hex: Some("aa".to_owned()),
-            sealed_hex: "bb".to_owned(),
-            invocation_hex: "c0de".to_owned(),
-        };
-        let matching = custody_pending_batch(&matching);
+            },
+        ];
         assert_eq!(pending_replay_batch(&matching, 0), matching.as_slice());
 
         let unrelated = vec![

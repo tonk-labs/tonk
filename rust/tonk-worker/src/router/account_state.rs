@@ -783,33 +783,6 @@ pub(crate) enum Publish {
     Later,
 }
 
-/// Push profile main behind an answer already on its way.
-///
-/// The login's sweep answers before it pushes ([`Publish::Later`]) so the
-/// page is not held for the upload; this is the upload, started once the
-/// caller has let go of its read guard. Detached in the browser, where
-/// the answer has gone out; awaited natively, so the tests that follow a
-/// link with a remote check see what the browser will have seen a
-/// moment later.
-pub(crate) async fn push_after_answer(app: crate::router::AppState) {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    {
-        wasm_bindgen_futures::spawn_local(async move {
-            let tonk = app.read().await;
-            if let Err(error) = push_account_main(&tonk).await {
-                log!("push behind the login's answer did not land: {error}");
-            }
-        });
-    }
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-    {
-        let tonk = app.read().await;
-        if let Err(error) = push_account_main(&tonk).await {
-            log!("push behind the login's answer did not land: {error}");
-        }
-    }
-}
-
 async fn sync_ready(tonk: &TonkState, _key: &str, publish: Publish) -> Result<(), String> {
     let session = tonk
         .reactor
@@ -1709,50 +1682,6 @@ async fn adopt_account_display_name(
     })
 }
 
-/// Seed the authoritative name from this device's current profile name when
-/// the account repository is ready and still unnamed.
-pub(crate) async fn initialize_display_name(
-    tonk: &TonkState,
-) -> Result<tonk_worker_api::AccountDisplayNameResponse, TonkWorkerError> {
-    use tonk_schema::{AccountDisplayName, prelude::DidExt as _};
-
-    if ensure_account_state(tonk).await != AccountStateStatus::Ready {
-        return Err(account_state_unavailable());
-    }
-    let ready = require_ready_account_state(tonk)
-        .await
-        .map_err(|_| account_state_unavailable())?;
-    let branch = tonk
-        .reactor
-        .profile_repository()
-        .branch(&tonk.active_branch)
-        .acquire(&tonk.operator)
-        .await
-        .map_err(|error| TonkWorkerError::Internal(format!("open ready account state: {error}")))?;
-    let existing: Vec<AccountDisplayName> = branch
-        .handle()
-        .query()
-        .select(Query::<AccountDisplayName> {
-            this: Term::from(ready.subject.this()),
-            name: Term::var("name"),
-        })
-        .perform(&tonk.operator)
-        .try_vec()
-        .await
-        .map_err(|error| {
-            TonkWorkerError::Internal(format!("read initial account display name: {error:?}"))
-        })?;
-    if let Some(existing) = existing.into_iter().next() {
-        converge_account_state(tonk).await?;
-        return Ok(tonk_worker_api::AccountDisplayNameResponse {
-            name: existing.name.0,
-        });
-    }
-
-    let name = crate::router::profile_name::resolve_display_name(tonk).await;
-    adopt_account_display_name(tonk, &name).await
-}
-
 /// Apply the display-name flow used by both the result-bearing HTTP endpoint
 /// and the legacy transient command handler.
 pub(crate) async fn rename_display_name(
@@ -2008,9 +1937,9 @@ pub(crate) mod tests {
                 .await
                 .unwrap();
         }
-        let (app, state, _lsp) = crate::router::api_router_with_state(state);
-        let key_a = crate::router::tests::put_repo(&app, "account-project-a").await;
-        let key_c = crate::router::tests::put_repo(&app, "account-project-c").await;
+        let state: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(state));
+        let key_a = crate::router::tests::put_repo(&state, "account-project-a").await;
+        let key_c = crate::router::tests::put_repo(&state, "account-project-c").await;
 
         // The descriptor must be signed by the root `test_state` persisted:
         // linking now attaches a provider to that exact local root.
@@ -3426,11 +3355,6 @@ pub(crate) mod tests {
              database — exists behind it",
         );
 
-        let initialized = initialize_display_name(&state).await.unwrap();
-        assert_eq!(
-            initialized.name, "linked-name",
-            "initialization must not overwrite an existing account fact"
-        );
         let account = state
             .reactor
             .profile_repository()

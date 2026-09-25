@@ -1,30 +1,22 @@
-//! `POST /api/site` — register/update the requesting client's site.
+//! Per-tab site registration and the client ledger behind it.
 //!
-//! The site is per-tab navigation state, NOT per-query. On first load the
-//! navigation predates the service worker (the page is served before the SW
-//! exists), so the SW never sees a navigation `FetchEvent` for it — the page
-//! must announce itself. Once controlled, the page calls `POST /api/site` with
-//! its current path; the SW reads the requesting **client id**, derives the site
-//! entity (`site:<client-id>`), asserts a [`Site`] `{path, anchor, replica,
-//! route, concept}` on the Level-0-resolved branch's overlay, and returns the
-//! site id. The page renders `<tonk-display entity={site} model=tonk:site>`; the
-//! `tonk:site` view nests into the matched `{concept}` and renders.
+//! The site is per-tab navigation state, NOT per-query. A `<tonk-site>` mints
+//! its own site entity (`site:<uuid>`) and asserts a transient `tonk:load
+//! { this: site, path }` on the branch it routes against; the
+//! [`Load`](tonk_schema::command::Load) provider below matches the path
+//! against that branch's route table and stamps a [`Site`] `{path, anchor,
+//! replica, route, concept}` onto the entity in the branch overlay. The page
+//! renders `<tonk-display entity={site} model=tonk:site>`; the `tonk:site`
+//! view nests into the matched `{concept}` and renders.
 //!
-//! The same endpoint handles navigation updates: the page re-calls it on each
-//! client-side navigation, and the cardinality-one fields update in place. Read
-//! queries never stamp, so a tab's displays re-querying never re-derive or
-//! re-poll — the perf cost of stamping is paid once per navigation, not per read.
+//! Navigation re-asserts the command against the same entity, and the
+//! cardinality-one fields update in place. Read queries never stamp, so a
+//! tab's displays re-querying never re-derive or re-poll — the cost of
+//! stamping is paid once per navigation, not per read.
+//!
+//! [`Site`]: tonk_schema::Site
 
-use ::axum::Json;
-use ::axum::extract::{Request, State};
-use ::axum::http::HeaderMap;
-use axum_wasm_macros::wasm_compat;
-use serde::Serialize;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
-
-use super::{AppState, ClientId};
-use crate::TonkWorkerError;
+use super::ClientId;
 
 /// The repo-token prefix naming the profile-as-repository endpoint, mirroring
 /// `tonk_host::location`'s `PROFILE_PREFIX`. A site's stamped `repo` is a
@@ -33,13 +25,6 @@ use crate::TonkWorkerError;
 /// repository. Duplicated rather than imported: `tonk-host` is guest-side and
 /// the worker does not depend on it.
 const PROFILE_LOCATION_PREFIX: &str = "profile:";
-
-/// `POST /api/site` response: the site entity the client should render against.
-#[derive(Debug, Serialize)]
-pub struct SiteResponse {
-    /// The site entity URI (`site:<client-id>`).
-    pub site: String,
-}
 
 /// What one SW client has registered with the worker, plus whether we
 /// have ever *observed it alive* in `clients.matchAll()`.
@@ -62,8 +47,8 @@ pub struct SiteResponse {
 pub struct ClientState {
     /// Site entities this client has stamped. Tracked per client (not as
     /// a `site → client` map) because the site URI is not a function of
-    /// the client: the `/site` endpoints key it `site:<client-id>`, but
-    /// the page-minted `tonk:load` command keys it `site:<uuid>`.
+    /// the client: the page-minted `tonk:load` command keys it
+    /// `site:<uuid>`.
     pub sites: std::collections::HashSet<String>,
     /// Latched once this client appeared in `clients.matchAll()`. Until
     /// then the client is presumed to be booting, never dead.
@@ -101,202 +86,11 @@ pub(crate) async fn client_context_is_current(
 pub type ClientRegistry =
     std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<super::ClientId, ClientState>>>;
 
-/// Read a header as a `&str`, empty when absent or non-ASCII.
-fn header<'a>(headers: &'a HeaderMap, name: &str) -> &'a str {
-    headers
-        .get(name)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-}
-
-/// Register the requesting client's site: assert its [`Site`] and return the
-/// site id. The client id (browser-assigned, one per document) keys the site, so
-/// it is GC-able (the SW can reconcile against live clients) and needs no minted
-/// uuid. Idempotent — re-calling on navigation supersedes the cardinality-one
-/// fields in place.
-#[wasm_compat]
-pub async fn register_site(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    request: Request,
-) -> Result<Json<SiteResponse>, TonkWorkerError> {
-    let client_id = request
-        .extensions()
-        .get::<ClientId>()
-        .map(|c| c.0.clone())
-        .unwrap_or_default();
-    if client_id.is_empty() {
-        return Err(TonkWorkerError::Router("no client id on /api/site".into()));
-    }
-    let site = format!("site:{client_id}");
-
-    let path = header(&headers, "x-tonk-path").to_owned();
-    let anchor = header(&headers, "x-tonk-hash").to_owned();
-    let tonk = state.read().await;
-    stamp_site(&tonk, &site, ClientId(client_id), &path, anchor).await;
-
-    Ok(Json(SiteResponse { site }))
-}
-
-/// Body of a per-branch `POST .../site`: the path to record and match against
-/// the branch's route table, plus an optional anchor (URL hash).
-#[derive(Debug, serde::Deserialize, Default)]
-pub struct SiteRequest {
-    /// The path to record on the site and match against the branch's `route!`
-    /// table. For a per-branch endpoint this is the path the caller wants
-    /// routed within that branch (the branch is named in the URL, not parsed
-    /// from this path).
-    #[serde(default)]
-    pub path: String,
-    /// The active anchor (URL hash), if any.
-    #[serde(default)]
-    pub anchor: String,
-}
-
-/// `POST /api/repository/{repo}/branch/{branch}/site` — register the requesting
-/// client's site on an explicit `(repo, branch)`, matching the body `path`
-/// against that branch's route table. Unlike [`register_site`], the branch comes
-/// from the request URL (like `/query` and `/transact`), not from parsing the
-/// document path — so the SW does no document-path routing here.
-#[wasm_compat]
-pub async fn register_site_on_repo(
-    State(state): State<AppState>,
-    ::axum::extract::Path(path): ::axum::extract::Path<crate::router::transact::TransactPath>,
-    request: Request,
-) -> Result<Json<SiteResponse>, TonkWorkerError> {
-    let (site, client) = client_site(&request)?;
-    let body = read_site_request(request).await?;
-    let tonk = state.read().await;
-    // The stamp acquires the branch; a directory-listed space this
-    // device has not pulled yet is mounted first, as on every other
-    // route that addresses a space by key.
-    match super::adopt::ensure_space_mounted(&tonk, &path.repo).await {
-        Ok(true) => {
-            super::adopt::schedule_seed_upgrade(&tonk, state.clone(), &path.repo).await;
-        }
-        Ok(false) => {}
-        Err(error) => {
-            tonk_common::log!("on-demand mount of '{}' failed: {error}", path.repo);
-        }
-    }
-    stamp_site_on(
-        &tonk,
-        &site,
-        client,
-        &path.repo,
-        &path.branch,
-        false,
-        &body.path,
-        &body.path,
-        body.anchor,
-    )
-    .await;
-    Ok(Json(SiteResponse { site }))
-}
-
-/// `POST /api/profile/branch/{branch}/site` — the profile counterpart of
-/// [`register_site_on_repo`]. The profile is a singleton repository, so the URL
-/// carries only the branch.
-#[wasm_compat]
-pub async fn register_site_on_profile(
-    State(state): State<AppState>,
-    ::axum::extract::Path(path): ::axum::extract::Path<
-        crate::router::transact::ProfileTransactPath,
-    >,
-    request: Request,
-) -> Result<Json<SiteResponse>, TonkWorkerError> {
-    let (site, client) = client_site(&request)?;
-    let body = read_site_request(request).await?;
-    let tonk = state.read().await;
-    let repo = tonk.profile_name.clone();
-    stamp_site_on(
-        &tonk,
-        &site,
-        client,
-        &repo,
-        &path.branch,
-        true,
-        &body.path,
-        &body.path,
-        body.anchor,
-    )
-    .await;
-    Ok(Json(SiteResponse { site }))
-}
-
-/// Derive the `site:<client-id>` entity for a request, erroring if the SW set no
-/// client id (the per-tab key the site is stamped under).
-fn client_site(request: &Request) -> Result<(String, ClientId), TonkWorkerError> {
-    let client_id = request
-        .extensions()
-        .get::<ClientId>()
-        .map(|c| c.0.clone())
-        .unwrap_or_default();
-    if client_id.is_empty() {
-        return Err(TonkWorkerError::Router("no client id on /site".into()));
-    }
-    Ok((format!("site:{client_id}"), ClientId(client_id)))
-}
-
-/// Read and decode the [`SiteRequest`] body, defaulting to an empty path when
-/// the body is absent or empty.
-async fn read_site_request(request: Request) -> Result<SiteRequest, TonkWorkerError> {
-    use ::axum::body::to_bytes;
-    let bytes = to_bytes(request.into_body(), usize::MAX)
-        .await
-        .map_err(|e| TonkWorkerError::Router(format!("failed to read /site body: {e}")))?;
-    if bytes.is_empty() {
-        return Ok(SiteRequest::default());
-    }
-    serde_json::from_slice(&bytes)
-        .map_err(|e| TonkWorkerError::Router(format!("invalid /site body: {e}")))
-}
-
-/// Assert the [`Site`] for `site` (a `site:<client-id>` URI) from `path` on the
-/// Level-0-resolved branch's overlay: derive the replica, match the remaining
-/// path against the route table, and write `{path, anchor, replica, route,
-/// concept}` through the overlay builder (which schedules a poll so subscribers
-/// see the change — no inline whole-branch re-poll). Best-effort: a non-space
-/// path, an unacquirable branch, an absent replica, or no matched route all skip
-/// stamping rather than fail registration.
-/// Resolve `path` to its Level-0 branch, then stamp the site there. This is the
-/// document-path-driven entry: `resolve_path` decides which repository/branch
-/// the path addresses, and [`stamp_site_on`] does the branch-generic work.
-///
-/// Only spaces route here; the profile (`/`, `/join`) is handled by the
-/// per-branch `/site` endpoint, which calls [`stamp_site_on`] directly with the
-/// branch named in the request URL.
-async fn stamp_site(
-    tonk: &crate::worker::TonkState,
-    site: &str,
-    client: ClientId,
-    path: &str,
-    anchor: String,
-) {
-    use tonk_schema::{RouteTarget, resolve_path};
-
-    let Some(RouteTarget::Space { space, rest }) = resolve_path(path) else {
-        return;
-    };
-    stamp_site_on(
-        tonk,
-        site,
-        client,
-        &space.name,
-        &space.branch,
-        false,
-        path,
-        &rest,
-        anchor,
-    )
-    .await;
-}
-
 /// Stamp a site on an explicit `(repo, branch)` — the branch-generic core,
 /// independent of any document-path parsing. The caller supplies the branch
-/// coordinates (from `resolve_path` for the legacy document path, or from the
-/// request URL for the per-branch `/site` endpoint), the full `path` to record,
-/// and the `rest` to match against that branch's `route!` table.
+/// coordinates (the origin the `tonk:load` command committed on), the full
+/// `path` to record, and the `rest` to match against that branch's `route!`
+/// table.
 ///
 /// Acquires the branch, derives the replica (the branch's origin), matches the
 /// route, and writes `{path, anchor, repo, branch, replica, route, concept}`
@@ -519,8 +313,7 @@ fn site_param_claim(
     })
 }
 
-/// Run the [`Load`](tonk_schema::command::Load) command — the
-/// transact-driven replacement for the `POST /api/.../site` endpoint.
+/// Run the [`Load`](tonk_schema::command::Load) command.
 ///
 /// A `<tonk-site>` asserts a transient `tonk:load { this: site:<uuid>, path }`
 /// through the regular transact API; its ancestor `<tonk-repository>` /
@@ -567,7 +360,7 @@ impl dialog_capability::Provider<tonk_schema::command::Load> for crate::router::
         // In profile mode the origin carries no repo at all, but the stamp
         // records a `profile:<name>` location token — and a nameless
         // `profile:` is not a location. Fill the name from the worker's own
-        // profile, which is what the per-branch endpoint already stamps.
+        // profile.
         let repo = if profile {
             tonk.profile_name.clone()
         } else {
@@ -759,9 +552,10 @@ mod match_route_tests {
     async fn matched_route(seed: &str, authored: Option<&str>, path: &str) -> Option<String> {
         const LIBRARY: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
 
-        let (app, state, _lsp) =
-            crate::router::api_router_with_state(crate::router::tests::test_state().await);
-        let key = crate::router::tests::put_repo(&app, "route-e2e").await;
+        let state: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(
+            crate::router::tests::test_state().await,
+        ));
+        let key = crate::router::tests::put_repo(&state, "route-e2e").await;
         let tonk = state.read().await;
 
         let installed = crate::router::evaluate::evaluate_body_recording(
@@ -931,11 +725,11 @@ mod route_order_tests {
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 mod tests {
     use ::axum::body::Body;
-    use ::axum::http::{Request, StatusCode};
+    use ::axum::http::Request;
     use tower::ServiceExt as _;
 
     use crate::router::tests::test_state;
-    use crate::router::{ClientId, api_router_with_state};
+    use crate::router::{AppState, ClientId, CommandEnv, CommandOrigin, api_router_with_state};
 
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test_configure;
@@ -975,6 +769,24 @@ mod tests {
             .map(str::to_owned)
     }
 
+    /// Assert `tonk:load { this: site:<client>, path }` as `client` would, on
+    /// the named space's `branch` — or the profile's when `repo` is empty.
+    async fn load(state: &AppState, repo: &str, branch: &str, client: &str, path: &str) {
+        let env = CommandEnv::new(
+            state.clone(),
+            CommandOrigin {
+                repo: repo.to_owned(),
+                branch: branch.to_owned(),
+                client: Some(ClientId(client.to_owned())),
+            },
+        );
+        let command = tonk_schema::command::Load {
+            this: format!("site:{client}").parse().expect("a site entity"),
+            path: tonk_schema::domain::command::load::Path(path.to_owned()),
+        };
+        dialog_capability::Provider::<tonk_schema::command::Load>::execute(&env, command).await;
+    }
+
     /// The site's stamped `repo` — the location token a view interpolates.
     async fn stamped_repo(app: &::axum::Router, client: &str, endpoint: &str) -> Option<String> {
         stamped_field(app, client, "repo", endpoint).await
@@ -1007,17 +819,7 @@ mod tests {
             .expect("the profile library seeds");
         }
 
-        let mut request = Request::builder()
-            .method("POST")
-            .uri("/api/profile/branch/main/site")
-            .header("content-type", "application/json")
-            .body(Body::from(r#"{"path":"/"}"#))
-            .unwrap();
-        request
-            .extensions_mut()
-            .insert(ClientId("probe".to_owned()));
-        let response = app.clone().oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        load(&state, "", "main", "probe", "/").await;
 
         let repo = stamped_repo(&app, "probe", "/api/profile/branch/main/query")
             .await
@@ -1037,29 +839,9 @@ mod tests {
     #[dialog_common::test]
     async fn it_stamps_a_bare_repo_token_on_a_named_space() {
         let (app, state, _lsp) = api_router_with_state(test_state().await);
-        // A branchless `{}` create: the worker seeds nothing, so this test
+        // A branchless create: the worker seeds nothing, so this test
         // drives the seed itself and the repo exists to seed onto.
-        let created = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("PUT")
-                    .uri("/api/repository/space")
-                    .header("content-type", "application/json")
-                    .body(Body::from("{}"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(created.status(), StatusCode::CREATED);
-        let body = ::axum::body::to_bytes(created.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let info: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        let key = info["name"]
-            .as_str()
-            .expect("the create returns a key")
-            .to_owned();
+        let key = crate::router::tests::put_repo(&state, "space").await;
         {
             let tonk = state.read().await;
             crate::router::evaluate::evaluate_body(
@@ -1073,17 +855,7 @@ mod tests {
             .expect("the core library seeds");
         }
 
-        let mut request = Request::builder()
-            .method("POST")
-            .uri(format!("/api/repository/{key}/branch/main/site"))
-            .header("content-type", "application/json")
-            .body(Body::from(r#"{"path":"/"}"#))
-            .unwrap();
-        request
-            .extensions_mut()
-            .insert(ClientId("space-probe".to_owned()));
-        let response = app.clone().oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        load(&state, &key, "main", "space-probe", "/").await;
 
         let repo = stamped_repo(
             &app,
@@ -1126,15 +898,7 @@ mod tests {
             }
         }
 
-        let mut request = Request::builder()
-            .method("POST")
-            .uri("/api/profile/branch/main/site")
-            .header("content-type", "application/json")
-            .body(Body::from(r#"{"path":"/notebook"}"#))
-            .unwrap();
-        request.extensions_mut().insert(ClientId("nb".to_owned()));
-        let response = app.clone().oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        load(&state, "", "main", "nb", "/notebook").await;
 
         // The notebook index route matched, so the notebook's own model is
         // what the shell mounts rather than the profile's `/{*rest}`
@@ -1147,17 +911,7 @@ mod tests {
         // What `/` resolves to is the profile's Hub; `/notebook` must NOT be
         // that, and must not be the not-found fallback either.
         let home = {
-            let mut request = Request::builder()
-                .method("POST")
-                .uri("/api/profile/branch/main/site")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"path":"/"}"#))
-                .unwrap();
-            request
-                .extensions_mut()
-                .insert(ClientId("nb-home".to_owned()));
-            let response = app.clone().oneshot(request).await.unwrap();
-            assert_eq!(response.status(), StatusCode::OK);
+            load(&state, "", "main", "nb-home", "/").await;
             stamped_field(&app, "nb-home", "concept", "/api/profile/branch/main/query")
                 .await
                 .expect("the home route stamps a concept")

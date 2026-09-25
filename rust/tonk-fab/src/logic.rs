@@ -4,40 +4,56 @@
 
 use serde_json::{Value, json};
 
-/// Build the repository endpoint with the repository DID as one path
-/// segment: the bar's presence probe, answered 404 for a space this device
-/// does not hold.
+/// The query asking whether this device holds `space`: this profile's
+/// replica record for it, the same row the Hub lists the space from.
+///
+/// A space this device never joined has none, and the bar hides its share
+/// actions. Mounting a space listed in the account directory is done by the
+/// space view's own queries, which record the replica as they mount it.
 #[cfg(any(target_arch = "wasm32", test))]
-pub(crate) fn repository_endpoint(space: &str) -> Result<String, &'static str> {
+pub(crate) fn presence_query_body(space: &str) -> Result<Value, &'static str> {
     let space = space.trim();
     if space.is_empty() || space.contains('{') || space.contains('}') {
         return Err("repository binding is unresolved");
     }
-    Ok(format!("/api/repository/{}", urlencoding::encode(space)))
+    Ok(json!({
+        "terms": {
+            "this": { "?": { "name": "replica" } },
+            "subject": space
+        },
+        "predicate": {
+            "description": "This device's replica of a space.",
+            "with": {
+                "subject": { "the": "xyz.tonk.replica/subject", "cardinality": "one", "as": "Entity" }
+            }
+        }
+    }))
 }
 
-// The bar addresses exactly one repository endpoint, above. It mints its open
-// link through the share control's transient command, and it reaches no
-// invitation endpoint at all: listing, minting to a named root, and revoking
-// are infrastructure the worker and CLI own. The one revocation surface a user
+// The bar reaches no repository or invitation endpoint at all: presence is
+// the query above, it mints its open link through the share control's
+// transient command, and listing, minting to a named root, and revoking are
+// infrastructure the worker and CLI own. The one revocation surface a user
 // gets is the account page's device list.
 
 #[cfg(test)]
-mod repository_endpoint_tests {
-    use super::repository_endpoint;
+mod presence_query_tests {
+    use super::presence_query_body;
 
     #[test]
-    fn it_encodes_a_repository_did_as_one_path_segment() {
+    fn it_binds_the_space_did_as_the_replica_subject() {
+        let body = presence_query_body(" did:key:z6Mkspace ").unwrap();
+        assert_eq!(body["terms"]["subject"], "did:key:z6Mkspace");
         assert_eq!(
-            repository_endpoint("did:key:z6Mk/a").unwrap(),
-            "/api/repository/did%3Akey%3Az6Mk%2Fa"
+            body["predicate"]["with"]["subject"]["the"],
+            "xyz.tonk.replica/subject"
         );
     }
 
     #[test]
     fn it_rejects_empty_and_unresolved_repository_bindings() {
         for value in ["", "  ", "{id}", "did:key:{id}"] {
-            assert!(repository_endpoint(value).is_err(), "{value:?}");
+            assert!(presence_query_body(value).is_err(), "{value:?}");
         }
     }
 }
@@ -622,6 +638,29 @@ pub fn pause_claim_json(space: &str, time: f64) -> Value {
     })
 }
 
+/// Build a `TransactRequest` JSON body for the `account/resend-activation`
+/// command: mail this account's activation link again. `at` is the press's
+/// timestamp, which is what makes a second press a new command.
+pub fn resend_activation_claim_json(at: u64) -> Value {
+    json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "description": "Mail this account's activation link again.",
+                        "with": {
+                            "at": { "the": "xyz.tonk.resend-activation/at", "as": "UnsignedInteger" }
+                        }
+                    }
+                },
+                "parameters": { "at": at }
+            }
+        }]
+    })
+}
+
 /// The inline `min-width` (px) to stamp on a bar segment when its dropdown
 /// opens: the menu's natural (max-content) width when that EXCEEDS the
 /// segment, so the rung widens — whitespace filling around its label — and
@@ -1196,6 +1235,18 @@ mod persist {
         assert_eq!(collapsed_from_conclusions(&flat), Some(false));
         assert_eq!(collapsed_from_conclusions(&serde_json::json!([])), None);
         assert_eq!(collapsed_from_conclusions(&serde_json::json!({})), None);
+    }
+
+    #[test]
+    fn resend_activation_claim_is_a_transient_keyed_by_the_press() {
+        let v = resend_activation_claim_json(1_754_380_800_000);
+        let app = &v["claims"][0]["application"];
+        assert_eq!(app["predicate"]["kind"], "transient");
+        assert_eq!(
+            app["predicate"]["concept"]["with"]["at"]["the"],
+            "xyz.tonk.resend-activation/at"
+        );
+        assert_eq!(app["parameters"]["at"], 1_754_380_800_000_u64);
     }
 
     #[test]

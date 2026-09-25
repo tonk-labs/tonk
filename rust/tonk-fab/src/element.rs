@@ -43,15 +43,13 @@ use tonk_common::log;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::{JsFuture, spawn_local};
-use web_sys::{
-    Element, HtmlElement, PointerEvent, ResizeObserver, Response, VisibilityState, window,
-};
+use web_sys::{Element, HtmlElement, PointerEvent, ResizeObserver, VisibilityState, window};
 
 use crate::bar;
 use crate::logic::{
     DEFAULT_DOCK, DOCK_CLASSES, Dock, Edge, EdgeInsets, EdgeSnap, FabBox, clamp_position,
     collapsed_claim_json, collapsed_from_conclusions, dock_claim_json, dock_from_conclusions,
-    fit_panel, nearest_dock, pause_claim_json, repository_endpoint, snap_to_nearest_edge,
+    fit_panel, nearest_dock, pause_claim_json, presence_query_body, snap_to_nearest_edge,
 };
 use crate::shadow::Bound;
 
@@ -204,9 +202,7 @@ impl CustomElement for TonkFab {
                 restamp_space(this, new.as_deref().unwrap_or_default());
                 // Probe this host directly. A document lookup would select the
                 // first bar, which need not be the one whose binding changed.
-                if let Some(endpoint) = host_repository_endpoint(this) {
-                    spawn_local(check_presence(this.clone(), endpoint));
-                }
+                check_presence(this);
             }
             _ => bar::update(this),
         }
@@ -1529,32 +1525,30 @@ pub(crate) fn apply_account_ready(this: &HtmlElement, ready: bool) {
     bar::update(this);
 }
 
-/// Return this bar's repository endpoint once its space binding is resolved.
-fn host_repository_endpoint(this: &HtmlElement) -> Option<String> {
-    repository_endpoint(&this.get_attribute("space")?).ok()
-}
-
-/// Ask the worker whether this device holds the space.
-async fn check_presence(this: HtmlElement, endpoint: String) {
-    let Some(win) = window() else { return };
-    let Ok(value) = JsFuture::from(win.fetch_with_str(&endpoint)).await else {
+/// Ask the profile whether this device holds the bar's space, once its
+/// space binding is resolved.
+fn check_presence(this: &HtmlElement) {
+    let Some(query_body) = this
+        .get_attribute("space")
+        .and_then(|space| presence_query_body(&space).ok())
+    else {
         return;
     };
-    let Ok(response) = value.dyn_into::<Response>() else {
-        return;
-    };
-    if response.status() == 404 {
-        apply_unknown_space(&this);
-    } else if response.ok() {
-        apply_present(&this);
-    }
+    let host = this.clone();
+    profile_query(query_body, move |rows| {
+        // A failed query says nothing about the space; leave the bar as is.
+        let Some(rows) = rows else { return };
+        if js_sys::Array::from(&rows).length() == 0 {
+            apply_unknown_space(&host);
+        } else {
+            apply_present(&host);
+        }
+    });
 }
 
 /// Probe presence now and whenever this tab returns to the foreground.
 fn attach_presence(this: &HtmlElement) -> Vec<Bound> {
-    if let Some(endpoint) = host_repository_endpoint(this) {
-        spawn_local(check_presence(this.clone(), endpoint));
-    }
+    check_presence(this);
     let Some(document) = window().and_then(|window| window.document()) else {
         return Vec::new();
     };
@@ -1567,9 +1561,7 @@ fn attach_presence(this: &HtmlElement) -> Vec<Bound> {
                 .and_then(|window| window.document())
                 .is_some_and(|document| document.visibility_state() == VisibilityState::Hidden);
             if !hidden && host.is_connected() {
-                if let Some(endpoint) = host_repository_endpoint(&host) {
-                    spawn_local(check_presence(host.clone(), endpoint));
-                }
+                check_presence(&host);
             }
         },
     )]

@@ -786,7 +786,7 @@ async fn issued_link_entities(
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 mod tests {
     use super::*;
-    use crate::router::api_router_with_state;
+
     use crate::router::join::tests::{handcrafted_invite_url, post_join};
     use crate::router::tests::{
         content_invited_via, content_member_names, content_member_roles, content_memberships,
@@ -838,11 +838,12 @@ mod tests {
     /// to it, and the onboarding account retired; both still prove.
     #[dialog_common::test]
     async fn it_rotates_created_and_joined_spaces_to_the_account() {
-        let (app, state, _lsp) = api_router_with_state(test_state_without_root().await);
-        let created_key = put_repo(&app, "rotated-space").await;
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state_without_root().await));
+        let created_key = put_repo(&state, "rotated-space").await;
         let created: Did = created_key.parse().unwrap();
         let (url, joined_key) = handcrafted_invite_url(96, 97).await;
-        assert_eq!(post_join(&app, &url).await, StatusCode::CREATED);
+        assert_eq!(post_join(&state, &url).await, StatusCode::CREATED);
         let joined: Did = joined_key.parse().unwrap();
 
         let tonk = state.read().await;
@@ -937,8 +938,9 @@ mod tests {
     /// founder row when the account changes and its name is projected.
     #[dialog_common::test]
     async fn it_rotates_the_created_space_founder_roster() {
-        let (app, state, _lsp) = api_router_with_state(test_state_without_root().await);
-        let key = put_repo(&app, "founder-roster").await;
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state_without_root().await));
+        let key = put_repo(&state, "founder-roster").await;
         let root = {
             let tonk = state.read().await;
             let root = persist_test_root(&tonk).await;
@@ -969,8 +971,9 @@ mod tests {
     /// founder bundle behind. Repair must also work with no onboarding secret.
     #[dialog_common::test]
     async fn it_repairs_a_retired_founder_roster_on_name_projection() {
-        let (app, state, _lsp) = api_router_with_state(test_state_without_root().await);
-        let key = put_repo(&app, "retired-founder-roster").await;
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state_without_root().await));
+        let key = put_repo(&state, "retired-founder-roster").await;
         let old = content_memberships(&state, &key).await.remove(0);
         let old_role = content_member_roles(&state, &key).await.remove(0);
         let old_name = content_member_names(&state, &key).await.remove(0);
@@ -1124,9 +1127,10 @@ mod tests {
     /// it must not leave a second, retired identity behind in the space.
     #[dialog_common::test]
     async fn it_replaces_the_onboarding_membership_with_the_account() {
-        let (app, state, _lsp) = api_router_with_state(test_state_without_root().await);
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state_without_root().await));
         let (url, joined_key) = handcrafted_invite_url(98, 99).await;
-        assert_eq!(post_join(&app, &url).await, StatusCode::CREATED);
+        assert_eq!(post_join(&state, &url).await, StatusCode::CREATED);
 
         let onboarding = crate::onboarding::did(&*state.read().await)
             .await
@@ -1223,8 +1227,9 @@ mod tests {
         use dialog_credentials::Ed25519Signer;
         use dialog_varsig::Principal as _;
 
-        let (app, state, _lsp) = api_router_with_state(test_state_without_root().await);
-        let created_key = put_repo(&app, "unpublished-key-space").await;
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state_without_root().await));
+        let created_key = put_repo(&state, "unpublished-key-space").await;
         let created: Did = created_key.parse().unwrap();
 
         let tonk = state.read().await;

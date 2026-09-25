@@ -275,9 +275,11 @@ pub(crate) fn open_cluster(this: &HtmlElement) {
             event.prevent_default();
             let ceremony = ceremony.clone();
             spawn_local(async move {
-                let result =
-                    tonk_host::post_json("/api/customer/enroll", r#"{"email":null,"deposits":[]}"#)
-                        .await;
+                // The account's enrollment already stands at the service; a
+                // resend is the `account/resend-activation` command, not a
+                // second enrollment.
+                let at = js_sys::Date::now() as u64;
+                let result = transact(&crate::logic::resend_activation_claim_json(at)).await;
                 if let Ok(Some(narrator)) = ceremony.query_selector("[data-activation-narrator]") {
                     narrator.set_text_content(Some(if result.is_ok() {
                         "Sent — open the link in your activation email."
@@ -310,6 +312,24 @@ pub(crate) fn open_cluster(this: &HtmlElement) {
             cluster.remove();
         }
     }
+}
+
+/// Commit `claim` through `window.tonk.transact` and wait for the commit.
+async fn transact(claim: &serde_json::Value) -> Result<(), JsValue> {
+    let tonk = window()
+        .and_then(|window| Reflect::get(&window, &"tonk".into()).ok())
+        .ok_or_else(|| JsValue::from_str("no window.tonk"))?;
+    let transact = Reflect::get(&tonk, &"transact".into())?
+        .dyn_into::<js_sys::Function>()
+        .map_err(|_| JsValue::from_str("no window.tonk.transact"))?;
+    let body = js_sys::JSON::parse(&claim.to_string())?;
+    let promise = transact
+        .call1(&tonk, &body)?
+        .dyn_into::<js_sys::Promise>()
+        .map_err(|_| JsValue::from_str("window.tonk.transact returned no promise"))?;
+    wasm_bindgen_futures::JsFuture::from(promise)
+        .await
+        .map(|_| ())
 }
 
 fn activation_email(this: &HtmlElement) -> String {

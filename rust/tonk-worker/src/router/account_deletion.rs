@@ -6,19 +6,14 @@
 
 use std::collections::BTreeSet;
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use axum::extract::Extension;
-use axum::{Json, extract::State};
-use axum_wasm_macros::wasm_compat;
 use dialog_query::{Output as _, Query, Term};
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_schema::SpaceProvider;
 use tonk_schema::domain::space::Provider;
 use tonk_schema::prelude::DidExt as _;
 use tonk_worker_api::{AccountDeletionPlan, AccountDeletionSpace};
 
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use super::AppState;
 use crate::TonkWorkerError;
 use crate::worker::TonkState;
@@ -79,15 +74,6 @@ async fn load_plan(state: &TonkState) -> Result<AccountDeletionPlan, TonkWorkerE
             .collect(),
         joined_spaces: joined.len(),
     })
-}
-
-/// GET `/api/account/deletion/plan` returns the exact destructive scope.
-#[wasm_compat]
-pub async fn plan(
-    State(state): State<AppState>,
-) -> Result<Json<AccountDeletionPlan>, TonkWorkerError> {
-    let state = state.read().await;
-    Ok(Json(load_plan(&state).await?))
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
@@ -235,7 +221,7 @@ async fn purge_inner(
     // joined through it, so a branch holding none is forgotten rather
     // than left listed as a ghost, and one that still holds joined
     // spaces stays listed so they remain reachable.
-    let _ = super::account::unlink(State(state.clone()), source.cloned().map(Extension))
+    super::profiles::sign_out(state, source)
         .await
         .map_err(|error| format!("the profile did not unlink: {error}"))?;
     if current.joined_spaces == 0 {

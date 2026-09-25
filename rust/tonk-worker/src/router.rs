@@ -9,7 +9,6 @@ use ::axum::{
     response::Response,
     routing::get,
     routing::post,
-    routing::put,
 };
 use tokio::sync::RwLock;
 
@@ -47,7 +46,6 @@ pub(crate) fn update_pending() -> bool {
 }
 
 mod claim;
-pub use claim::{AssertPath, AssertResponse, ClaimQuery, ClaimResponse, QueryResponse};
 
 pub(crate) mod account;
 mod account_deletion;
@@ -68,22 +66,17 @@ pub(crate) mod custody;
 pub(crate) mod rotation;
 
 mod join;
-pub use join::{JoinRequest, JoinResponse};
 mod local_space_link;
 
 pub(crate) mod account_devices;
 
 mod create_invite;
-pub use create_invite::{CreateInviteRequest, CreateInviteResponse};
 
 pub(crate) mod agent_connections;
 mod revoke_invite;
 
 /// Space membership management: admins and removals, as commands.
 mod members;
-
-pub mod inspect;
-pub use inspect::{BranchStatusResponse, RemoteBranchStatusResponse, RemoteStatusResponse};
 
 pub(crate) mod repository;
 pub(crate) use repository::ProfileLibraryCache;
@@ -132,13 +125,10 @@ pub use query::QueryPath;
 pub use tonk_schema::{DEFAULT_BRANCH, SpaceRef, parse_space};
 
 mod session;
-pub use session::{ClientRegistry, ClientState, SiteResponse};
+pub use session::{ClientRegistry, ClientState};
 
 mod transact;
 pub use transact::{ProfileTransactPath, TransactPath, TransactResponse};
-
-mod transfer;
-pub use transfer::ImportResponse;
 
 pub mod bridge;
 pub use bridge::BridgeRegistry;
@@ -147,8 +137,6 @@ mod host;
 pub use host::{ClientId, ViewBinding, ViewBindings};
 
 mod blob;
-
-mod migration;
 
 mod navigate;
 
@@ -185,11 +173,6 @@ async fn profile_context_fence(
     Ok(next.run(request).await)
 }
 
-/// Root handler that returns a welcome message.
-async fn root(State(_state): State<AppState>) -> &'static str {
-    "Hello, Tonk!"
-}
-
 /// Creates the API router with all configured routes.
 ///
 /// Sets up the routing tree with the TonkState as shared state.
@@ -223,43 +206,16 @@ pub fn api_router_with_state(state: TonkState) -> (Router, AppState, Arc<LspHub>
 pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
     let (lsp_routes, lsp_hub) = lsp::lsp_router(state.clone());
     let router = Router::new()
-        .route("/api", get(root))
         .route("/api/identify", get(identify::identify))
         .route(
             "/api/identity/root",
             get(identity::get).post(identity::save),
         )
-        .route("/api/account", get(account::get).delete(account::unlink))
-        .route("/api/account/deletion/plan", get(account_deletion::plan))
-        .route("/api/account/attach", post(account::link))
+        .route("/api/account", get(account::get))
         .route("/api/account/display-name", post(account::set_display_name))
         // Customer registration with the same-origin access service.
         .route("/api/customer", get(customer::get_state))
-        .route("/api/customer/pending", get(customer::get_pending))
-        .route("/api/custody/provision", post(customer::provision_custody))
-        .route("/api/custody/queue", post(customer::queue_custody))
-        .route("/api/account/devices", get(account_devices::list))
-        .route(
-            "/api/account/devices/register",
-            post(account_devices::register),
-        )
-        .route("/api/account/devices/revoke", post(account_devices::revoke))
         .route("/api/profile", get(profile::get_profile))
-        // Profile roster and switching — every account signed in on this
-        // browser has its own profile; these list them, swap the active
-        // one, and mint a fresh landing pad for "add account".
-        .route("/api/profiles", get(profiles::list))
-        .route("/api/profiles/activate", post(profiles::activate))
-        .route("/api/profiles/add", post(profiles::add))
-        // Profile-as-repository routes. The profile is its own
-        // repository but lives outside the named-repo namespace
-        // (no `repo` segment), so it gets a parallel route
-        // surface here rather than nesting under
-        // `/api/repository/{repo}/...`.
-        .route(
-            "/api/profile/repository",
-            get(repository::get_profile_repository),
-        )
         .route(
             "/api/profile/branch/{branch}/query",
             post(query::query_profile),
@@ -276,35 +232,7 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             "/api/profile/branch/{branch}/transact",
             post(transact::transact_profile),
         )
-        // The profile's own CSV export, alongside `/query` and
-        // `/transact`. The repository route cannot serve the profile:
-        // the profile is a singleton reached through
-        // `profile_repository()`, not by name.
-        .route(
-            "/api/profile/branch/{branch}/export",
-            get(transfer::export_profile),
-        )
-        // Register the requesting client's site (per-tab navigation state).
-        // The page calls this on load and on each client-side navigation; the
-        // SW asserts the tab's `tonk:site` and returns the site id. Reads never
-        // stamp — see `router/session.rs`.
         .route("/api/profile/welcome", post(onboarding_space::welcome))
-        .route("/api/site", post(session::register_site))
-        // Per-branch site registration: the branch comes from the URL (like
-        // `/query` and `/transact`), not from parsing the document path. A
-        // `<tonk-site>` scoped by `<tonk-repository>`/`<tonk-branch>` ancestors
-        // posts its path here and renders the returned site entity.
-        .route(
-            "/api/profile/branch/{branch}/site",
-            post(session::register_site_on_profile),
-        )
-        .route(
-            "/api/repository/{repo}/branch/{branch}/site",
-            post(session::register_site_on_repo),
-        )
-        // Join an invite — creates a fresh replica or refreshes
-        // access on an existing one. See `router/join.rs`.
-        .route("/api/profile/join", post(join::join))
         .route(
             "/api/local-space-link/approve",
             post(local_space_link::approve),
@@ -321,71 +249,18 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             "/api/local-space-link/complete",
             post(local_space_link::complete),
         )
-        .route(
-            "/api/migrate/repo-vs-profile",
-            get(migration::repo_vs_profile),
-        )
-        // Repository lifecycle
-        .route(
-            "/api/repository/{repo}",
-            put(repository::put_repository).get(repository::get_repository),
-        )
-        // Invite minting — see `router/create_invite.rs`. Two modes
-        // (audience-open and audience-scoped) keyed off the request
-        // body shape.
-        .route(
-            "/api/repository/{repo}/invite",
-            post(create_invite::create_invite),
-        )
-        .route(
-            "/api/repository/{repo}/invites/{target_cid}/revoke",
-            post(revoke_invite::revoke),
-        )
-        .route("/api/repository/{repo}/invites", get(revoke_invite::list))
         .route("/api/account/connections", get(agent_connections::list))
         .route(
             "/api/account/connections/{id}/revoke",
             post(agent_connections::revoke),
-        )
-        // Opt-in remote attach — wires a remote (and branch upstream)
-        // onto an existing repo, idempotently. See
-        // `router/repository.rs::attach_remote`.
-        .route(
-            "/api/repository/{repo}/remote",
-            post(repository::attach_remote),
         )
         // Sync operations
         // The single parameterless drain: the page's idle heartbeat pokes this
         // and the SW's Background-Sync `onsync` reaches the same drain here.
         .route("/api/sync", post(sync::drain))
         .route(
-            "/api/repository/{repo}/branch/{branch}/sync",
-            post(sync::sync),
-        )
-        .route(
-            "/api/repository/{repo}/branch/{branch}/sync/pull",
-            post(sync::pull),
-        )
-        .route(
-            "/api/repository/{repo}/branch/{branch}/sync/push",
-            post(sync::push),
-        )
-        .route(
             "/api/repository/{repo}/branch/{branch}/sync/status",
             get(sync::sync_status),
-        )
-        // Claim operations
-        .route(
-            "/api/repository/{repo}/branch/{branch}/claim/assert/{entity}/{attr_ns}/{attr_name}",
-            post(claim::assert_claim),
-        )
-        .route(
-            "/api/repository/{repo}/branch/{branch}/claim/retract/{entity}/{attr_ns}/{attr_name}",
-            post(claim::retract_claim),
-        )
-        .route(
-            "/api/repository/{repo}/branch/{branch}/claim/select",
-            get(claim::select_claims),
         )
         // Evaluate route — accepts an asserted-notation document
         // (any mix of queries and mutations), runs the unified
@@ -394,17 +269,6 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .route(
             "/api/repository/{repo}/branch/{branch}/evaluate",
             post(evaluate::evaluate),
-        )
-        // CSV export / import — stream the branch's artifacts out as
-        // `text/csv`, or commit a CSV body's rows as assertions. See
-        // `router/transfer.rs`.
-        .route(
-            "/api/repository/{repo}/branch/{branch}/export",
-            get(transfer::export),
-        )
-        .route(
-            "/api/repository/{repo}/branch/{branch}/import",
-            post(transfer::import),
         )
         // Structured-mutation route — see `plan/transact-endpoint.md`.
         // Bypasses tonk-notation: accepts a typed
@@ -422,17 +286,6 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .route(
             "/api/repository/{repo}/branch/{branch}/query",
             post(query::query),
-        )
-        // Host/guest iframe bridge. The shell embeds an iframe
-        // pointed at this URL; the handler records the iframe's
-        // client id against `{repo, branch}` so its later
-        // subresource fetches can be re-rooted, and serves the
-        // entity's body by selecting `(the=<mime>, of=<entity>)`
-        // on the branch. The MIME comes from the entity's
-        // trailing `.<ext>` (defaulting to `text/html`).
-        .route(
-            "/api/repository/{repo}/branch/{branch}/host/{host}/{entity}",
-            get(host::guest),
         )
         .route(
             "/api/repository/{repo}/branch/{branch}/onboarding",
@@ -453,27 +306,6 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .route(
             "/api/repository/{repo}/branch/{branch}/blob/{entity}",
             get(blob::serve),
-        )
-        // Inspect operations
-        .route(
-            "/api/inspect/repository/{repo}/branch/{branch}",
-            get(inspect::branch::inspect_branch),
-        )
-        .route(
-            "/api/inspect/repository/{repo}/remote/{remote}",
-            get(inspect::remote::inspect_remote),
-        )
-        .route(
-            "/api/inspect/repository/{repo}/remote/{remote}/branch/{branch}",
-            get(inspect::remote::inspect_remote_branch),
-        )
-        .route(
-            "/api/inspect/repository/{repo}/archive/index/{hash}",
-            get(inspect::archive::inspect_archive_block),
-        )
-        .route(
-            "/api/inspect/repository/{repo}/remote/{remote}/archive/index/{hash}",
-            get(inspect::archive::inspect_remote_archive_block),
         )
         .with_state(state.clone())
         // LSP routes carry their own state (`Extension<LspHub>`) so
@@ -497,7 +329,7 @@ pub mod tests {
     wasm_bindgen_test_configure!(run_in_service_worker);
 
     use crate::api_router;
-    use crate::worker::TonkState;
+
     // The state fixtures moved to `helpers::state` so crates outside
     // this one can boot a real worker too; re-exported here so the
     // tests below read as they did.
@@ -509,15 +341,13 @@ pub mod tests {
     pub(crate) use crate::helpers::state::{persist_test_root, test_root_seed};
 
     use dialog_credentials::Ed25519Signer;
-    use dialog_operator::Profile;
+
     use dialog_repository::RepositoryExt as _;
-    use dialog_storage::provider::storage::Storage;
+
     use dialog_ucan_core::{DelegationBuilder, DelegationChain, subject::Subject as UcanSubject};
     use dialog_varsig::Principal as _;
     use tonk_invite::{Invite, InviteAudience};
     use tonk_schema::prelude::DidExt as _;
-
-    use crate::worker::DefaultSpace;
 
     use axum::Router;
     use axum::body::Body;
@@ -814,38 +644,60 @@ pub mod tests {
             .expect("member-name query")
     }
 
-    /// Creates a test repository via `PUT /api/repository/{label}` and
-    /// returns its minted routing key.
+    /// Creates a test repository and returns its minted routing key.
     ///
-    /// `label` is only a display name now — the repository's identity is
-    /// a freshly minted `did:key`, and the routing key returned here (the
-    /// DID suffix from the 201 `RepositoryInfo`) is what every subsequent
-    /// request must address. Each PUT always creates, so runs are
-    /// independent without name juggling.
-    pub(crate) async fn put_repo(app: &Router, label: &str) -> String {
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/api/repository/{}", label))
-                    .method("PUT")
-                    .header("content-type", "application/json")
-                    .body(Body::from("{}"))
-                    .unwrap(),
-            )
+    /// `label` is only a display name — the repository's identity is a
+    /// freshly minted `did:key`, and the routing key returned here is what
+    /// every subsequent request must address. Each call always creates, so
+    /// runs are independent without name juggling.
+    pub(crate) async fn put_repo(state: &super::AppState, label: &str) -> String {
+        put_repo_with(
+            state,
+            label,
+            &super::repository::RepositoryConfiguration::default(),
+        )
+        .await
+        .name
+    }
+
+    /// Create a repository the way the create command does (identity,
+    /// delegation, remotes, branches, replica row) and seed it in the
+    /// background, returning what was created.
+    pub(crate) async fn put_repo_with(
+        state: &super::AppState,
+        label: &str,
+        configuration: &super::repository::RepositoryConfiguration,
+    ) -> super::RepositoryInfo {
+        super::repository::create_space_for_test(state, label, configuration)
             .await
-            .unwrap();
-        let status = response.status();
-        assert_eq!(
-            status,
-            StatusCode::CREATED,
-            "expected 201 from PUT /api/repository/{label}, got {status}",
-        );
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .expect("repository creates")
+    }
+
+    /// Commit `the = is` about `of` on `repo`'s `main` branch — a plain
+    /// durable claim, for tests that only need the branch to move.
+    pub(crate) async fn assert_claim(
+        state: &super::AppState,
+        repo: &str,
+        of: &str,
+        the: &str,
+        is: &str,
+    ) {
+        let tonk = state.read().await;
+        tonk.reactor
+            .repository(repo)
+            .branch("main")
+            .transaction()
+            .assert(super::claim::RawClaim {
+                the: the.parse().expect("an attribute"),
+                of: of.parse().expect("an entity"),
+                is: dialog_artifacts::Value::String(is.to_owned()),
+                unique: false,
+            })
+            .commit()
+            .perform(&tonk.operator)
             .await
-            .unwrap();
-        let info: super::RepositoryInfo = serde_json::from_slice(&body).unwrap();
-        info.name
+            .expect("the claim commits");
+        tonk.reactor.run_scheduled_polls(&tonk.operator).await;
     }
 
     /// The stable code the page routes the account gate off, for both shapes
@@ -857,8 +709,9 @@ pub mod tests {
     /// device key when there is no root, the root when there is one.
     #[dialog_common::test]
     async fn it_creates_a_space_before_any_account_exists() {
-        let (app, state, _lsp) = super::api_router_with_state(test_state_without_root().await);
-        let key = put_repo(&app, "pre-account").await;
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state_without_root().await));
+        let key = put_repo(&state, "pre-account").await;
         {
             let tonk = state.read().await;
             let repository = tonk
@@ -882,8 +735,9 @@ pub mod tests {
             );
         }
 
-        let (app, state, _lsp) = super::api_router_with_state(test_state_without_account().await);
-        let key = put_repo(&app, "signed-out").await;
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state_without_account().await));
+        let key = put_repo(&state, "signed-out").await;
         let tonk = state.read().await;
         let repository = tonk
             .profile
@@ -908,8 +762,9 @@ pub mod tests {
     /// replaced, so the account holds the authority going forward.
     #[dialog_common::test]
     async fn it_adopts_profile_spaces_once_a_root_exists() {
-        let (app, state, _lsp) = super::api_router_with_state(test_state_without_root().await);
-        let key = put_repo(&app, "adopted").await;
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state_without_root().await));
+        let key = put_repo(&state, "adopted").await;
 
         let tonk = state.read().await;
         let root_did = persist_test_root(&tonk).await;
@@ -942,8 +797,9 @@ pub mod tests {
     /// harness serves over no HTTP. `put_repo` asserts the 201 itself.
     #[dialog_common::test]
     async fn it_creates_a_space_once_an_account_is_attached() {
-        let (app, _state, _lsp) = super::api_router_with_state(test_state().await);
-        let key = put_repo(&app, "account-attached").await;
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
+        let key = put_repo(&state, "account-attached").await;
         assert!(key.starts_with("did:key:"));
     }
 
@@ -954,9 +810,9 @@ pub mod tests {
         let state = test_state().await;
         let root = super::identity::local_root(&state).await.unwrap();
         let grant_cid = root.delegation.proof_cids()[0];
-        let (app, state, _lsp) = super::api_router_with_state(state);
-        let first = put_repo(&app, "First").await;
-        let second = put_repo(&app, "Second").await;
+        let state: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(state));
+        let first = put_repo(&state, "First").await;
+        let second = put_repo(&state, "Second").await;
         let tonk = state.read().await;
 
         for key in [first, second] {
@@ -986,30 +842,6 @@ pub mod tests {
                 .unwrap();
             assert_eq!(stored.proof_cids()[0], cids[0]);
         }
-    }
-
-    #[dialog_common::test]
-    async fn it_responds_to_root_api_request() {
-        let state = test_state().await;
-        let (app, _lsp) = api_router(state);
-
-        let request = Request::builder()
-            .uri("/api")
-            .method("GET")
-            .body(Body::empty())
-            .expect("Failed to build request");
-
-        let response = app
-            .oneshot(request)
-            .await
-            .expect("Failed to execute request");
-
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("Failed to read response body");
-        assert_eq!(body.as_ref(), b"Hello, Tonk!");
     }
 
     /// `POST /api/sync` is the idle heartbeat's poll target. It must do NO work
@@ -1068,54 +900,35 @@ pub mod tests {
 
     #[dialog_common::test]
     async fn it_creates_repository() {
-        let state = test_state().await;
-        let (app, _lsp) = api_router(state);
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
 
-        // The PUT path segment is only a display label; the response
-        // identifier is the freshly minted routing key (the DID suffix),
-        // which is what subsequent requests address.
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/api/repository/test-create")
-                    .method("PUT")
-                    .header("content-type", "application/json")
-                    .body(Body::from("{}"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::CREATED);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let resp: super::RepositoryInfo = serde_json::from_slice(&body).unwrap();
+        // The label is only a display name; the identifier is the freshly
+        // minted routing key (the DID suffix), which is what every later
+        // request addresses.
+        let resp = put_repo_with(
+            &state,
+            "test-create",
+            &super::repository::RepositoryConfiguration::default(),
+        )
+        .await;
         // `name` is the routing key (the DID suffix). `label` reads from
         // the repository's own `tonk/repository` name on its content
-        // branch; this branchless PUT seeds no content branch (and thus
+        // branch; this branchless create seeds no content branch (and thus
         // no name), so the label falls back to the routing key.
         assert_eq!(resp.name, resp.subject.repo_key());
         assert_eq!(resp.label, resp.name);
         assert!(!resp.subject.as_str().is_empty());
 
-        // The returned key is addressable; GET it back and confirm the
+        // The returned key is addressable; load it back and confirm the
         // routing key and the (key-fallback) label are stable.
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/api/repository/{}", resp.name))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+        let fetched = super::repository::load_repository_info(&state, &resp.name)
             .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let fetched: super::RepositoryInfo = serde_json::from_slice(&body).unwrap();
-        assert_eq!(fetched.name, resp.name, "routing key is stable across GET");
+            .expect("the created repository loads");
+        assert_eq!(
+            fetched.name, resp.name,
+            "routing key is stable across loads"
+        );
         assert_eq!(
             fetched.label, resp.name,
             "label falls back to the routing key when no name is seeded",
@@ -1126,59 +939,16 @@ pub mod tests {
     #[dialog_common::test]
     async fn it_mints_a_fresh_key_for_each_create_under_the_same_label() {
         let state = test_state().await;
-        let (app, _lsp) = api_router(state);
+        let state: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(state));
 
         // Two PUTs to the same label both succeed (no collision) and
         // mint distinct routing keys — identity is the minted DID, the
         // label is only a display name.
-        let first = put_repo(&app, "duplicate-label").await;
-        let second = put_repo(&app, "duplicate-label").await;
+        let first = put_repo(&state, "duplicate-label").await;
+        let second = put_repo(&state, "duplicate-label").await;
         assert_ne!(
             first, second,
             "each create must mint a distinct routing key",
-        );
-    }
-
-    #[dialog_common::test]
-    async fn it_routes_invite_minting() {
-        let state = test_state().await;
-        let (app, _lsp) = api_router(state);
-        let repo = "test-invite-route";
-
-        // Create the repo first so the invite handler can load it. The
-        // route refuses a local-only repo, so give it a remote too —
-        // this test is only proving the route is reachable.
-        let key = put_repo(&app, repo).await;
-        let repo = key.as_str();
-        attach_remote(&app, repo, "https://sync.example.test/ucan/").await;
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/api/repository/{}/invite", repo))
-                    .method("POST")
-                    // The mint derives the link's prefix from the request
-                    // origin, which the browser-to-axum conversion stamps on
-                    // every real request; a hand-built one has to supply it.
-                    .extension(
-                        crate::axum::RequestOrigin::parse("https://local.example/invite")
-                            .expect("valid origin"),
-                    )
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        // Whatever the handler decides to do, we want a 2xx — proving
-        // the route is reachable. A 404 here would mean the route
-        // failed to match, which is the exact regression we're
-        // guarding against.
-        let status = response.status();
-        assert!(
-            status.is_success(),
-            "expected 2xx from POST /api/repository/{}/invite, got {}",
-            repo,
-            status,
         );
     }
 
@@ -1189,50 +959,38 @@ pub mod tests {
     /// DID. The worker mints the keypair, so the test reads the seed back
     /// rather than generating it.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    struct MintedInvite {
-        access: String,
+    pub(crate) struct MintedInvite {
+        pub(crate) access: String,
         /// The stored `&remote=<url>` suffix.
-        remote: String,
+        pub(crate) remote: String,
         /// The base58 membership seed the worker minted, read back from the
         /// session overlay via the `tonk:invitation` join.
-        seed: [u8; 32],
+        pub(crate) seed: [u8; 32],
         /// The finished invite URL the handler assembled — what the share
         /// view renders and the user copies. Read back from the overlay, so
         /// tests can assert on the handler's ACTUAL output rather than on a
         /// URL they reassembled from parts themselves.
-        link: String,
+        pub(crate) link: String,
     }
 
-    /// PUT a fresh repo and return both its routing key and subject DID.
+    /// Create a fresh repo and return both its routing key and subject DID.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    pub(crate) async fn put_repo_info(app: &Router, label: &str) -> (String, String) {
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/api/repository/{label}"))
-                    .method("PUT")
-                    .header("content-type", "application/json")
-                    .body(Body::from("{}"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::CREATED);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let info: super::RepositoryInfo = serde_json::from_slice(&body).unwrap();
+    pub(crate) async fn put_repo_info(state: &super::AppState, label: &str) -> (String, String) {
+        let info = put_repo_with(
+            state,
+            label,
+            &super::repository::RepositoryConfiguration::default(),
+        )
+        .await;
         (info.name, info.subject.as_str().to_owned())
     }
 
-    /// Attach a sync remote to `repo`'s `main` branch via `POST /remote` —
-    /// the same path the topbar "Enable sync" form drives. Tests that mint
-    /// an invite need this first: `run_invite` refuses to mint against a
-    /// repo whose `main` has no upstream (see
-    /// `repository::tests::it_refuses_to_mint_without_a_remote`).
+    /// Attach a sync remote to `repo`'s `main` branch — the configuration
+    /// the enable-sync command writes. Tests that mint an invite need this
+    /// first: `run_invite` refuses to mint against a repo whose `main` has
+    /// no upstream (see `repository::tests::it_refuses_to_mint_without_a_remote`).
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    pub(crate) async fn attach_remote(app: &Router, repo: &str, endpoint: &str) {
+    pub(crate) async fn attach_remote(state: &super::AppState, repo: &str, endpoint: &str) {
         use super::repository::{
             BranchConfiguration, RemoteConfiguration, RepositoryConfiguration,
         };
@@ -1249,23 +1007,9 @@ pub mod tests {
                 "main",
                 BranchConfiguration::default().upstream("origin", "main"),
             );
-        let attach = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/api/repository/{repo}/remote"))
-                    .method("POST")
-                    .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&config).unwrap()))
-                    .unwrap(),
-            )
+        super::repository::attach_remote_config(state, repo, &config)
             .await
-            .unwrap();
-        assert_eq!(
-            attach.status(),
-            StatusCode::OK,
-            "remote attach should succeed"
-        );
+            .expect("remote attach should succeed");
     }
 
     /// Hand-craft an audience-open invite URL for a synthetic repository
@@ -1322,9 +1066,13 @@ pub mod tests {
     /// and return the minted invite. Attaches a remote before minting —
     /// a local-only repo now refuses to mint at all.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    async fn mint_invite_via_command(app: &Router, label: &str) -> MintedInvite {
-        let (repo, subject) = put_repo_info(app, label).await;
-        attach_remote(app, &repo, "https://sync.example.test/ucan/").await;
+    async fn mint_invite_via_command(
+        app: &Router,
+        state: &super::AppState,
+        label: &str,
+    ) -> MintedInvite {
+        let (repo, subject) = put_repo_info(state, label).await;
+        attach_remote(state, &repo, "https://sync.example.test/ucan/").await;
         mint_invite_for(app, &repo, &subject).await
     }
 
@@ -1333,7 +1081,7 @@ pub mod tests {
     /// the handler never produces the join (durable authorization +
     /// overlay credential).
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    async fn mint_invite_for(app: &Router, repo: &str, subject: &str) -> MintedInvite {
+    pub(crate) async fn mint_invite_for(app: &Router, repo: &str, subject: &str) -> MintedInvite {
         // Assert the `tonk:invite` transient via /transact — the path that
         // dispatches commands post-commit. The command carries only a
         // timestamp; the worker mints the keypair and delegation.
@@ -1457,7 +1205,7 @@ pub mod tests {
 
         let state = test_state().await;
         let (app, state, _lsp) = super::api_router_with_state(state);
-        let (repo, subject) = put_repo_info(&app, "enable-sync-share-broadcast").await;
+        let (repo, subject) = put_repo_info(&state, "enable-sync-share-broadcast").await;
         let query = serde_json::json!({
             "predicate": { "with": { "link": {
                 "the": "xyz.tonk.credential/link", "as": "Text", "cardinality": "one"
@@ -1557,8 +1305,8 @@ pub mod tests {
     #[dialog_common::test]
     async fn it_dispatches_the_invite_command() {
         let state = test_state().await;
-        let (app, _state, _lsp) = super::api_router_with_state(state);
-        let minted = mint_invite_via_command(&app, "invite-command").await;
+        let (app, state, _lsp) = super::api_router_with_state(state);
+        let minted = mint_invite_via_command(&app, &state, "invite-command").await;
         assert!(!minted.access.is_empty());
     }
 
@@ -1573,8 +1321,8 @@ pub mod tests {
         let state = test_state().await;
         let (app, app_state, _lsp) = super::api_router_with_state(state);
 
-        let (repo, subject) = put_repo_info(&app, "invite-no-leak").await;
-        attach_remote(&app, &repo, "https://sync.example.test/ucan/").await;
+        let (repo, subject) = put_repo_info(&app_state, "invite-no-leak").await;
+        attach_remote(&app_state, &repo, "https://sync.example.test/ucan/").await;
         let minted = mint_invite_for(&app, &repo, &subject).await;
         assert!(!minted.access.is_empty(), "authorization must mint");
 
@@ -1653,8 +1401,8 @@ pub mod tests {
         use tonk_invite::{Invite, InviteAudience};
 
         let state = test_state().await;
-        let (app, _state, _lsp) = super::api_router_with_state(state);
-        let minted = mint_invite_via_command(&app, "invite-join").await;
+        let (app, state, _lsp) = super::api_router_with_state(state);
+        let minted = mint_invite_via_command(&app, &state, "invite-join").await;
 
         // Assemble the invite URL exactly as the view does: the stored
         // `access` chain plus the `#seed` read back from the overlay.
@@ -1677,7 +1425,7 @@ pub mod tests {
         // assertion is that the command-minted URL *claims* (a 2xx with a
         // replica), proving the chain + seed assemble into a valid,
         // redeemable audience-open invite.
-        let (status, body) = post_join(&app, &url).await;
+        let (status, body) = post_join(&state, &url).await;
         assert!(
             status.is_success(),
             "joining a command-minted invite should succeed, got {status}: {body}",
@@ -1711,8 +1459,8 @@ pub mod tests {
     #[dialog_common::test]
     async fn it_joins_through_the_minted_link() {
         let state = test_state().await;
-        let (app, _state, _lsp) = super::api_router_with_state(state);
-        let minted = mint_invite_via_command(&app, "invite-link-join").await;
+        let (app, state, _lsp) = super::api_router_with_state(state);
+        let minted = mint_invite_via_command(&app, &state, "invite-link-join").await;
 
         // The seed rides in the fragment, never the query.
         let seed = bs58::encode(minted.seed).into_string();
@@ -1728,7 +1476,7 @@ pub mod tests {
         );
 
         // Redeem the handler's own URL, unmodified.
-        let (status, body) = post_join(&app, &minted.link).await;
+        let (status, body) = post_join(&state, &minted.link).await;
         assert!(
             status.is_success(),
             "the minted link must redeem, got {status}: {body}",
@@ -1749,13 +1497,13 @@ pub mod tests {
     #[dialog_common::test]
     async fn it_embeds_the_remote_in_a_command_minted_invite() {
         let state = test_state().await;
-        let (app, _state, _lsp) = super::api_router_with_state(state);
+        let (app, state, _lsp) = super::api_router_with_state(state);
 
         // Create the repo, then attach a sync remote via the `/remote`
         // route (the same path the topbar "Enable sync" form drives).
-        let (repo, subject) = put_repo_info(&app, "invite-remote").await;
+        let (repo, subject) = put_repo_info(&state, "invite-remote").await;
         let endpoint = "https://sync.example.test/ucan/";
-        attach_remote(&app, &repo, endpoint).await;
+        attach_remote(&state, &repo, endpoint).await;
 
         // Mint the invite through the command. `mint_invite_via_command`
         // creates its *own* fresh repo, so mint against THIS repo directly:
@@ -1829,93 +1577,46 @@ pub mod tests {
         (url, subject_did)
     }
 
-    /// Agent handoffs select the browser account even in a foreign space.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    #[dialog_common::test]
-    async fn agent_handoff_targets_current_account_not_owner() {
-        let (app, state, _lsp) = super::api_router_with_state(test_state().await);
-        let (foreign, key) = open_invite_url(180, 181, None).await;
-        let (status, body) = post_join(&app, &foreign).await;
-        assert_eq!(status, StatusCode::CREATED, "{body}");
-        attach_remote(&app, &key, "https://sync.example.test/ucan/").await;
-        let expected = super::identity::local_root(&*state.read().await)
+    /// Redeem `url` as the join command does, answering in the shape the
+    /// retired HTTP join did: the status, and `{outcome, repository}`.
+    async fn post_join(state: &super::AppState, url: &str) -> (StatusCode, serde_json::Value) {
+        use dialog_repository::RepositoryExt as _;
+        let status = super::join::join_status(state, url).await;
+        if !status.is_success() {
+            return (status, serde_json::Value::Null);
+        }
+        let tonk = state.read().await;
+        let invite = tonk_invite::Invite::parse_url(url)
             .await
-            .unwrap()
-            .root_did;
-        let origin = crate::axum::RequestOrigin::parse("https://local.example/").unwrap();
-        let (first, _) =
-            super::create_invite::create_agent_handoff(state.clone(), key.clone(), origin.clone())
-                .await
-                .unwrap();
-        let first_invite = tonk_invite::Invite::parse_url(first.url().as_str())
+            .expect("a redeemed invite parses");
+        let subject = invite.chain.subject().expect("an invite names its subject");
+        let key = subject.repo_key().to_owned();
+        let repository = tonk
+            .profile
+            .repository(&key)
+            .load()
+            .perform(&tonk.operator)
             .await
-            .unwrap();
-        assert!(matches!(
-            first_invite.audience,
-            tonk_invite::InviteAudience::Scoped
-        ));
-        assert_eq!(first_invite.chain.audience(), &expected);
-        assert_ne!(
-            first_invite.chain.issuer(),
-            &expected,
-            "the foreign owner must not select the handoff account"
-        );
-        let (second, _) =
-            super::create_invite::create_agent_handoff(state.clone(), key.clone(), origin.clone())
-                .await
-                .unwrap();
-        assert_ne!(
-            first.url(),
-            second.url(),
-            "each mint is an independent invitation"
-        );
-        let axum::Json(shared) = super::create_invite::create_invite(
-            axum::extract::State(state),
-            axum::extract::Path(key),
-            axum::Extension(origin),
-            axum::body::Bytes::new(),
+            .expect("the joined replica loads");
+        let info = super::repository::build_repository_info(&tonk, &key, &repository).await;
+        let outcome = if status == StatusCode::CREATED {
+            "joined"
+        } else {
+            "renewed"
+        };
+        (
+            status,
+            serde_json::json!({ "outcome": outcome, "repository": info }),
         )
-        .await
-        .unwrap();
-        assert!(matches!(
-            tonk_invite::Invite::parse_url(shared.url().as_str())
-                .await
-                .unwrap()
-                .audience,
-            tonk_invite::InviteAudience::Open { .. }
-        ));
-    }
-
-    async fn post_join(app: &Router, url: &str) -> (StatusCode, serde_json::Value) {
-        let body = serde_json::json!({ "url": url }).to_string();
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/api/profile/join")
-                    .method("POST")
-                    .header("content-type", "application/json")
-                    .body(Body::from(body))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let status = response.status();
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let json: serde_json::Value =
-            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
-        (status, json)
     }
 
     #[dialog_common::test]
     async fn it_joins_a_fresh_invite_with_joined_outcome() {
         let state = test_state().await;
-        let (app, _lsp) = api_router(state);
+        let state: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(state));
 
         let (invite_url, subject_did) = synthesize_open_invite().await;
-        let (status, body) = post_join(&app, &invite_url).await;
+        let (status, body) = post_join(&state, &invite_url).await;
 
         assert_eq!(
             status,
@@ -1935,12 +1636,12 @@ pub mod tests {
     #[dialog_common::test]
     async fn it_renews_when_subject_already_mounted() {
         let state = test_state().await;
-        let (app, _lsp) = api_router(state);
+        let state: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(state));
 
         let (invite_url, subject_did) = synthesize_open_invite().await;
 
         // First join creates the replica under the subject's routing key.
-        let (first_status, first_body) = post_join(&app, &invite_url).await;
+        let (first_status, first_body) = post_join(&state, &invite_url).await;
         assert_eq!(
             first_status,
             StatusCode::CREATED,
@@ -1951,7 +1652,7 @@ pub mod tests {
         // recipient already has it mounted. Worker should respond with a
         // `renewed` outcome and return the existing replica, keyed by the
         // subject's identity.
-        let (second_status, second_body) = post_join(&app, &invite_url).await;
+        let (second_status, second_body) = post_join(&state, &invite_url).await;
         assert_eq!(
             second_status,
             StatusCode::OK,
@@ -1971,9 +1672,9 @@ pub mod tests {
     #[dialog_common::test]
     async fn it_rejects_malformed_invite_url() {
         let state = test_state().await;
-        let (app, _lsp) = api_router(state);
+        let state: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(state));
 
-        let (status, _body) = post_join(&app, "not-a-url").await;
+        let (status, _body) = post_join(&state, "not-a-url").await;
         assert_eq!(
             status,
             StatusCode::BAD_REQUEST,
@@ -1982,127 +1683,34 @@ pub mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_returns_repository_info() {
-        let state = test_state().await;
-        let (app, _lsp) = api_router(state);
-        let repo = "test-info";
-
-        let key = put_repo(&app, repo).await;
-        let repo = key.as_str();
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/api/repository/{}", repo))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let resp: super::RepositoryInfo = serde_json::from_slice(&body).unwrap();
-        assert_eq!(resp.name, repo);
-        assert!(!resp.subject.as_str().is_empty());
-    }
-
-    #[dialog_common::test]
-    async fn it_asserts_and_selects_claims() {
-        let state = test_state().await;
-        let (app, _lsp) = api_router(state);
-        let repo = "test-claims";
-
-        let key = put_repo(&app, repo).await;
-        let repo = key.as_str();
-
-        // Assert a fact
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(format!(
-                        "/api/repository/{}/branch/main/claim/assert/test:entity/test/name",
-                        repo
-                    ))
-                    .method("POST")
-                    .header("content-type", "text/plain")
-                    .body(Body::from("Test Name"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-
-        // Query the fact
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri(format!(
-                        "/api/repository/{}/branch/main/claim/select?the=test/name&of=test:entity",
-                        repo
-                    ))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let resp: super::QueryResponse = serde_json::from_slice(&body).unwrap();
-        assert_eq!(resp.claims.len(), 1);
-        assert_eq!(resp.claims[0].is, serde_json::json!("Test Name"));
-    }
-
-    #[dialog_common::test]
     async fn it_rejects_manual_sync_without_an_upstream() {
-        let state = test_state().await;
-        let (app, _lsp) = api_router(state);
-        let repo = "test-sync";
+        use ::axum::response::IntoResponse as _;
 
-        let key = put_repo(&app, repo).await;
+        let state = test_state().await;
+        let state: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(state));
+        let key = put_repo(&state, "test-sync").await;
         let repo = key.as_str();
 
         // First assert a fact so the branch has data
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(format!(
-                        "/api/repository/{}/branch/main/claim/assert/test:sync/test/value",
-                        repo
-                    ))
-                    .method("POST")
-                    .header("content-type", "text/plain")
-                    .body(Body::from("sync test"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_claim(&state, repo, "test:sync", "test/value", "sync test").await;
 
-        // Manual sync is an attempted operation, not the background sweep:
-        // without an upstream it must report an operational failure rather
-        // than claim a successful reconciliation. The background coordinator
-        // deliberately filters such branches before calling this route.
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/api/repository/{}/branch/main/sync", repo))
-                    .method("POST")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        // An asked-for sync is an attempted operation, not the background
+        // sweep: without an upstream it must report an operational failure
+        // rather than claim a successful reconciliation. The background
+        // coordinator deliberately filters such branches before calling it.
+        let failure = super::sync::sync(
+            state.clone(),
+            super::sync::SyncPath {
+                repo: repo.to_owned(),
+                branch: "main".to_owned(),
+            },
+        )
+        .await
+        .expect_err("a branch with no upstream cannot sync")
+        .into_response();
 
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        assert_eq!(failure.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = axum::body::to_bytes(failure.into_body(), usize::MAX)
             .await
             .unwrap();
         let failure: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -2116,10 +1724,9 @@ pub mod tests {
 
         let tonk = test_state().await;
         let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
-        let (app, _lsp) = crate::api_router_from_state(app_state.clone());
         let repo = "test-bgsync-noupstream";
 
-        let key = put_repo(&app, repo).await;
+        let key = put_repo(&app_state, repo).await;
         let repo = key.as_str();
 
         // No branch has an upstream, so the worker-side sweep selects
@@ -2148,31 +1755,16 @@ pub mod tests {
     #[dialog_common::test]
     async fn it_reports_no_upstream_status_for_an_unconfigured_branch() {
         let state = test_state().await;
-        let (app, _lsp) = api_router(state);
+        let (app, state, _lsp) = crate::router::api_router_with_state(state);
         let repo = "test-sync-status";
 
-        let key = put_repo(&app, repo).await;
+        let key = put_repo(&state, repo).await;
         let repo = key.as_str();
 
         // Land a commit so the branch has a local revision — the
         // status route should still report `no-upstream` (none is
         // configured) while surfacing the local head.
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(format!(
-                        "/api/repository/{}/branch/main/claim/assert/test:status/test/value",
-                        repo
-                    ))
-                    .method("POST")
-                    .header("content-type", "text/plain")
-                    .body(Body::from("status test"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_claim(&state, repo, "test:status", "test/value", "status test").await;
 
         let response = app
             .oneshot(
@@ -2202,15 +1794,15 @@ pub mod tests {
     /// same repo — the in-process stand-in for a real remote, the
     /// same pattern the tonk sync tests use — so the status route's
     /// fetch + classify path has somewhere local to read from.
-    /// Returns the router for driving the HTTP surface.
-    async fn repo_with_sibling_upstream(label: &str) -> (Router, String) {
+    /// Returns the router for driving the HTTP surface, and the state.
+    async fn repo_with_sibling_upstream(label: &str) -> (Router, super::AppState, String) {
         use std::sync::Arc;
         use tokio::sync::RwLock;
 
         let tonk = test_state().await;
         let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
         let (app, _lsp) = crate::api_router_from_state(app_state.clone());
-        let repo = put_repo(&app, label).await;
+        let repo = put_repo(&app_state, label).await;
         let repo = repo.as_str();
 
         let guard = app_state.read().await;
@@ -2240,54 +1832,29 @@ pub mod tests {
             .await
             .expect("set main's upstream to the sibling");
         drop(guard);
-        (app, repo.to_owned())
+        (app, app_state.clone(), repo.to_owned())
     }
 
     /// Land a commit on `main` by asserting one marker fact. Each
     /// distinct `marker` is its own entity, so successive calls
     /// advance the tree.
-    async fn commit_marker(app: &Router, repo: &str, marker: &str) {
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(format!(
-                        "/api/repository/{repo}/branch/main/claim/assert/test:{marker}/test/value"
-                    ))
-                    .method("POST")
-                    .header("content-type", "text/plain")
-                    .body(Body::from(marker.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            response.status(),
-            StatusCode::OK,
-            "commit '{marker}' should land"
-        );
+    async fn commit_marker(state: &super::AppState, repo: &str, marker: &str) {
+        assert_claim(state, repo, &format!("test:{marker}"), "test/value", marker).await;
     }
 
-    /// Push `main` to its upstream over the HTTP sync route, asserting
-    /// the push reports success.
-    async fn push_main(app: &Router, repo: &str) {
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/api/repository/{repo}/branch/main/sync/push"))
-                    .method("POST")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let sync: super::SyncResponse = serde_json::from_slice(&body).unwrap();
-        assert!(sync.success, "push should succeed: {:?}", sync.error);
+    /// Reconcile `main` with its upstream the way the background sweep
+    /// does, asserting it reports success.
+    async fn push_main(state: &super::AppState, repo: &str) {
+        let sync = super::sync::sync(
+            state.clone(),
+            super::sync::SyncPath {
+                repo: repo.to_owned(),
+                branch: "main".to_owned(),
+            },
+        )
+        .await
+        .expect("the sync reconciles");
+        assert!(sync.success, "sync should succeed: {:?}", sync.error);
     }
 
     /// GET the sync status of `main` and deserialize the response.
@@ -2312,10 +1879,10 @@ pub mod tests {
 
     #[dialog_common::test]
     async fn it_reports_synced_status_after_pushing_to_the_upstream() {
-        let (app, repo) = repo_with_sibling_upstream("test-sync-status-synced").await;
+        let (app, state, repo) = repo_with_sibling_upstream("test-sync-status-synced").await;
 
-        commit_marker(&app, &repo, "synced-probe").await;
-        push_main(&app, &repo).await;
+        commit_marker(&state, &repo, "synced-probe").await;
+        push_main(&state, &repo).await;
 
         // Both heads now populated and equal — exercises the route's
         // fetch + classify path and the both-revisions-present JSON
@@ -2329,13 +1896,13 @@ pub mod tests {
 
     #[dialog_common::test]
     async fn it_reports_ahead_status_when_local_leads_the_upstream() {
-        let (app, repo) = repo_with_sibling_upstream("test-sync-status-ahead").await;
+        let (app, state, repo) = repo_with_sibling_upstream("test-sync-status-ahead").await;
 
         // Establish a shared base on the upstream, then advance main
         // one commit past it.
-        commit_marker(&app, &repo, "base").await;
-        push_main(&app, &repo).await;
-        commit_marker(&app, &repo, "ahead-probe").await;
+        commit_marker(&state, &repo, "base").await;
+        push_main(&state, &repo).await;
+        commit_marker(&state, &repo, "ahead-probe").await;
 
         let status = get_main_status(&app, &repo).await;
         assert_eq!(status.state, tonk_schema::SyncState::Ahead);
@@ -2364,7 +1931,7 @@ pub mod tests {
         let state = test_state().await;
         let (app, app_state, _lsp) = super::api_router_with_state(state);
 
-        let (repo, _subject) = put_repo_info(&app, "sync-repo-unreachable").await;
+        let (repo, _subject) = put_repo_info(&app_state, "sync-repo-unreachable").await;
 
         // A real remote address on loopback with nothing listening: the
         // connection is refused immediately (no external network, no
@@ -2408,47 +1975,6 @@ pub mod tests {
         );
     }
 
-    #[dialog_common::test]
-    async fn it_inspects_branch_after_commit() {
-        let state = test_state().await;
-        let (app, _lsp) = api_router(state);
-        let repo = "test-inspect";
-
-        let key = put_repo(&app, repo).await;
-        let repo = key.as_str();
-
-        // Commit some data first so the branch exists
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(format!(
-                        "/api/repository/{}/branch/main/claim/assert/test:inspect/test/value",
-                        repo
-                    ))
-                    .method("POST")
-                    .header("content-type", "text/plain")
-                    .body(Body::from("inspect test"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-
-        // Now inspect the branch
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/api/inspect/repository/{}/branch/main", repo))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-    }
-
     /// Reproduces the editor's reported failure on an
     /// attribute+attribute+concept document submitted as a
     /// single YAML body. The new analyzer should accept all
@@ -2458,10 +1984,10 @@ pub mod tests {
     #[dialog_common::test]
     async fn it_transacts_attributes_and_concept_in_one_doc() {
         let state = test_state().await;
-        let (app, _lsp) = api_router(state);
+        let (app, state, _lsp) = crate::router::api_router_with_state(state);
         let repo = "test-transact-multi";
 
-        let key = put_repo(&app, repo).await;
+        let key = put_repo(&state, repo).await;
         let repo = key.as_str();
 
         let body = r#"attribute!: &person-name
@@ -2517,10 +2043,10 @@ concept!: &person
     #[dialog_common::test]
     async fn it_transacts_a_single_attribute() {
         let state = test_state().await;
-        let (app, _lsp) = api_router(state);
+        let (app, state, _lsp) = crate::router::api_router_with_state(state);
         let repo = "test-transact-single";
 
-        let key = put_repo(&app, repo).await;
+        let key = put_repo(&state, repo).await;
         let repo = key.as_str();
 
         let body = r#"attribute!: &person-name
@@ -2567,10 +2093,10 @@ concept!: &person
     #[dialog_common::test]
     async fn it_returns_400_on_malformed_transaction() {
         let state = test_state().await;
-        let (app, _lsp) = api_router(state);
+        let (app, state, _lsp) = crate::router::api_router_with_state(state);
         let repo = "test-transact-malformed";
 
-        let key = put_repo(&app, repo).await;
+        let key = put_repo(&state, repo).await;
         let repo = key.as_str();
 
         // YAML with an indentation error — saphyr rejects it.
@@ -2597,10 +2123,10 @@ concept!: &person
     #[dialog_common::test]
     async fn it_resolves_bookmarks_across_transactions() {
         let state = test_state().await;
-        let (app, _lsp) = api_router(state);
+        let (app, state, _lsp) = crate::router::api_router_with_state(state);
         let repo = "test-transact-cross";
 
-        let key = put_repo(&app, repo).await;
+        let key = put_repo(&state, repo).await;
         let repo = key.as_str();
 
         // First transaction: define `person-name` only.
@@ -2672,10 +2198,10 @@ concept!: &person
     #[dialog_common::test]
     async fn it_retracts_a_concept_instance() {
         let state = test_state().await;
-        let (app, _lsp) = api_router(state);
+        let (app, state, _lsp) = crate::router::api_router_with_state(state);
         let repo = "test-retract-concept";
 
-        let key = put_repo(&app, repo).await;
+        let key = put_repo(&state, repo).await;
         let repo = key.as_str();
 
         // Define schema + assert an Alice with a bookmark
@@ -2768,10 +2294,10 @@ person!: &alice
     #[dialog_common::test]
     async fn it_runs_anonymous_query() {
         let state = test_state().await;
-        let (app, _lsp) = api_router(state);
+        let (app, state, _lsp) = crate::router::api_router_with_state(state);
         let repo = "test-anon-query";
 
-        let key = put_repo(&app, repo).await;
+        let key = put_repo(&state, repo).await;
         let repo = key.as_str();
 
         // Define a `person` concept and assert one Alice so the
@@ -2875,10 +2401,10 @@ person!: &alice
     #[dialog_common::test]
     async fn it_supersedes_cardinality_one_field_on_update() {
         let state = test_state().await;
-        let (app, _lsp) = api_router(state);
+        let (app, state, _lsp) = crate::router::api_router_with_state(state);
         let repo = "test-supersede";
 
-        let key = put_repo(&app, repo).await;
+        let key = put_repo(&state, repo).await;
         let repo = key.as_str();
 
         // Setup: schema + Alice with age 28.
@@ -3048,10 +2574,10 @@ person!:
     #[dialog_common::test]
     async fn it_rebinds_bookmark_on_body_change() {
         let state = test_state().await;
-        let (app, _lsp) = api_router(state);
+        let (app, state, _lsp) = crate::router::api_router_with_state(state);
         let repo = "test-rebind-bookmark";
 
-        let key = put_repo(&app, repo).await;
+        let key = put_repo(&state, repo).await;
         let repo = key.as_str();
 
         let setup = r#"attribute!: &person-name
@@ -3117,10 +2643,10 @@ person!: &alice
     #[dialog_common::test]
     async fn it_mints_anonymous_head_from_body() {
         let state = test_state().await;
-        let (app, _lsp) = api_router(state);
+        let (app, state, _lsp) = crate::router::api_router_with_state(state);
         let repo = "test-anon-head";
 
-        let key = put_repo(&app, repo).await;
+        let key = put_repo(&state, repo).await;
         let repo = key.as_str();
 
         let setup = r#"attribute!: &person-name
@@ -3173,10 +2699,10 @@ concept!: &person
     #[dialog_common::test]
     async fn it_introduces_variable_head_in_document_scope() {
         let state = test_state().await;
-        let (app, _lsp) = api_router(state);
+        let (app, state, _lsp) = crate::router::api_router_with_state(state);
         let repo = "test-var-intro";
 
-        let key = put_repo(&app, repo).await;
+        let key = put_repo(&state, repo).await;
         let repo = key.as_str();
 
         let setup = r#"attribute!: &person-name
@@ -3234,10 +2760,10 @@ concept!: &person
     #[dialog_common::test]
     async fn it_accumulates_cardinality_many_field() {
         let state = test_state().await;
-        let (app, _lsp) = api_router(state);
+        let (app, state, _lsp) = crate::router::api_router_with_state(state);
         let repo = "test-many";
 
-        let key = put_repo(&app, repo).await;
+        let key = put_repo(&state, repo).await;
         let repo = key.as_str();
 
         let setup = r#"attribute!: &tagged-name
@@ -3294,10 +2820,10 @@ tagged!: &dave
     #[dialog_common::test]
     async fn it_retracts_concept_projection_by_uri() {
         let state = test_state().await;
-        let (app, _lsp) = api_router(state);
+        let (app, state, _lsp) = crate::router::api_router_with_state(state);
         let repo = "test-retract-uri";
 
-        let key = put_repo(&app, repo).await;
+        let key = put_repo(&state, repo).await;
         let repo = key.as_str();
 
         let setup = r#"attribute!: &person-name
@@ -3354,10 +2880,10 @@ person!: &erin
     #[dialog_common::test]
     async fn it_retracts_concept_projection_via_query() {
         let state = test_state().await;
-        let (app, _lsp) = api_router(state);
+        let (app, state, _lsp) = crate::router::api_router_with_state(state);
         let repo = "test-retract-var";
 
-        let key = put_repo(&app, repo).await;
+        let key = put_repo(&state, repo).await;
         let repo = key.as_str();
 
         let setup = r#"attribute!: &person-name
@@ -3407,10 +2933,10 @@ person!:
     #[dialog_common::test]
     async fn it_joins_queries_on_shared_variable() {
         let state = test_state().await;
-        let (app, _lsp) = api_router(state);
+        let (app, state, _lsp) = crate::router::api_router_with_state(state);
         let repo = "test-join";
 
-        let key = put_repo(&app, repo).await;
+        let key = put_repo(&state, repo).await;
         let repo = key.as_str();
 
         // Two concepts that overlap on a `name` field via
@@ -3590,9 +3116,9 @@ employee:
     #[dialog_common::test]
     async fn it_resolves_a_tree_node_formula() {
         let state = test_state().await;
-        let (app, _lsp) = api_router(state);
+        let (app, state, _lsp) = crate::router::api_router_with_state(state);
         let repo = "test-reactor-formula";
-        let key = put_repo(&app, repo).await;
+        let key = put_repo(&state, repo).await;
         let repo = key.as_str();
         seed_named_entity(&app, repo).await;
 
@@ -3622,9 +3148,9 @@ employee:
     #[dialog_common::test]
     async fn it_rejects_an_unknown_formula() {
         let state = test_state().await;
-        let (app, _lsp) = api_router(state);
+        let (app, state, _lsp) = crate::router::api_router_with_state(state);
         let repo = "test-reactor-formula-unknown";
-        let key = put_repo(&app, repo).await;
+        let key = put_repo(&state, repo).await;
         let repo = key.as_str();
         seed_named_entity(&app, repo).await;
 
@@ -3669,9 +3195,9 @@ employee:
     #[dialog_common::test]
     async fn it_resolves_tree_children_of_the_root() {
         let state = test_state().await;
-        let (app, _lsp) = api_router(state);
+        let (app, state, _lsp) = crate::router::api_router_with_state(state);
         let repo = "test-reactor-formula-child";
-        let key = put_repo(&app, repo).await;
+        let key = put_repo(&state, repo).await;
         let repo = key.as_str();
         seed_named_entity(&app, repo).await;
 
@@ -3721,9 +3247,9 @@ employee:
     #[dialog_common::test]
     async fn it_walks_to_a_leaf_and_decodes_an_entry_key() {
         let state = test_state().await;
-        let (app, _lsp) = api_router(state);
+        let (app, state, _lsp) = crate::router::api_router_with_state(state);
         let repo = "test-reactor-formula-walk";
-        let key = put_repo(&app, repo).await;
+        let key = put_repo(&state, repo).await;
         let repo = key.as_str();
         seed_named_entity(&app, repo).await;
 
@@ -3922,9 +3448,9 @@ employee:
     #[dialog_common::test]
     async fn it_returns_query_results_one_shot() {
         let state = test_state().await;
-        let (app, _lsp) = api_router(state);
+        let (app, state, _lsp) = crate::router::api_router_with_state(state);
         let repo = "test-reactor-query";
-        let key = put_repo(&app, repo).await;
+        let key = put_repo(&state, repo).await;
         let repo = key.as_str();
         seed_named_entity(&app, repo).await;
 
@@ -3956,7 +3482,7 @@ employee:
         let (app, _lsp) = crate::api_router_from_state(app_state.clone());
 
         let repo = "test-reactor-query-effect";
-        let key = put_repo(&app, repo).await;
+        let key = put_repo(&app_state, repo).await;
         let repo = key.as_str();
         seed_named_entity(&app, repo).await;
 
@@ -3993,9 +3519,9 @@ employee:
     #[dialog_common::test]
     async fn it_streams_initial_snapshot_over_sse() {
         let state = test_state().await;
-        let (app, _lsp) = api_router(state);
+        let (app, state, _lsp) = crate::router::api_router_with_state(state);
         let repo = "test-reactor-sse";
-        let key = put_repo(&app, repo).await;
+        let key = put_repo(&state, repo).await;
         let repo = key.as_str();
         seed_named_entity(&app, repo).await;
 
@@ -4014,9 +3540,9 @@ employee:
     #[dialog_common::test]
     async fn it_shares_subscription_across_subscribers_with_same_query() {
         let state = test_state().await;
-        let (app, _lsp) = api_router(state);
+        let (app, state, _lsp) = crate::router::api_router_with_state(state);
         let repo = "test-reactor-shared";
-        let key = put_repo(&app, repo).await;
+        let key = put_repo(&state, repo).await;
         let repo = key.as_str();
         seed_named_entity(&app, repo).await;
 
@@ -4034,9 +3560,9 @@ employee:
     #[dialog_common::test]
     async fn it_rejects_malformed_query_body() {
         let state = test_state().await;
-        let (app, _lsp) = api_router(state);
+        let (app, state, _lsp) = crate::router::api_router_with_state(state);
         let repo = "test-reactor-malformed";
-        let key = put_repo(&app, repo).await;
+        let key = put_repo(&state, repo).await;
         let repo = key.as_str();
 
         let response = app
@@ -4060,9 +3586,9 @@ employee:
     #[dialog_common::test]
     async fn it_broadcasts_changed_snapshot_after_commit() {
         let state = test_state().await;
-        let (app, _lsp) = api_router(state);
+        let (app, state, _lsp) = crate::router::api_router_with_state(state);
         let repo = "test-reactor-broadcast";
-        let key = put_repo(&app, repo).await;
+        let key = put_repo(&state, repo).await;
         let repo = key.as_str();
         seed_named_attribute(&app, repo, "person-name", "xyz.tonk.person/name").await;
 
@@ -4142,9 +3668,9 @@ employee:
     #[dialog_common::test]
     async fn it_broadcasts_superseded_field_after_commit() {
         let state = test_state().await;
-        let (app, _lsp) = api_router(state);
+        let (app, state, _lsp) = crate::router::api_router_with_state(state);
         let repo = "test-reactor-supersede-broadcast";
-        let key = put_repo(&app, repo).await;
+        let key = put_repo(&state, repo).await;
         let repo = key.as_str();
 
         // Publish `id:counter -> <attribute entity for xyz.tonk/a>`.
@@ -4228,9 +3754,9 @@ employee:
     #[dialog_common::test]
     async fn it_tracks_emitted_state_across_consecutive_supersessions() {
         let state = test_state().await;
-        let (app, _lsp) = api_router(state);
+        let (app, state, _lsp) = crate::router::api_router_with_state(state);
         let repo = "test-reactor-consecutive-supersede";
-        let key = put_repo(&app, repo).await;
+        let key = put_repo(&state, repo).await;
         let repo = key.as_str();
 
         seed_named_attribute(&app, repo, "counter", "xyz.tonk/a").await;
@@ -4278,7 +3804,7 @@ employee:
         let (app, _lsp) = crate::api_router_from_state(app_state.clone());
 
         let repo = "test-reactor-noop-repoll";
-        let key = put_repo(&app, repo).await;
+        let key = put_repo(&app_state, repo).await;
         let repo = key.as_str();
         seed_named_attribute(&app, repo, "person-name", "xyz.tonk.person/name").await;
 
@@ -4326,7 +3852,7 @@ employee:
         let (app, _lsp) = crate::api_router_from_state(app_state.clone());
 
         let repo = "test-reactor-prune";
-        let key = put_repo(&app, repo).await;
+        let key = put_repo(&app_state, repo).await;
         let repo = key.as_str();
         seed_named_attribute(&app, repo, "person-name", "xyz.tonk.person/name").await;
 
@@ -4513,9 +4039,9 @@ employee:
     #[dialog_common::test]
     async fn it_projects_query_terms_into_conclusion_fields() {
         let state = test_state().await;
-        let (app, _lsp) = api_router(state);
+        let (app, state, _lsp) = crate::router::api_router_with_state(state);
         let repo = "test-reactor-projection";
-        let key = put_repo(&app, repo).await;
+        let key = put_repo(&state, repo).await;
         let repo = key.as_str();
         seed_named_attribute(&app, repo, "person-name", "xyz.tonk.person/name").await;
 
@@ -4540,56 +4066,6 @@ employee:
                 .unwrap_or_else(|| panic!("fields[\"entity\"] must be a string: {row}"));
             assert!(!entity.is_empty(), "entity target must be non-empty: {row}");
         }
-    }
-
-    /// Pull through the reactor's chain must re-poll
-    /// subscriptions on success. We can't test against a real
-    /// upstream here, but the no-op pull (no remote configured)
-    /// still drives the chain and proves the wiring exists.
-    /// After the pull, a subscription remains live and a
-    /// follow-up commit broadcasts a fresh frame — proving the
-    /// pull path didn't tear anything down.
-    #[dialog_common::test]
-    async fn it_keeps_subscription_live_across_pull() {
-        use std::sync::Arc;
-        use tokio::sync::RwLock;
-
-        let tonk = test_state().await;
-        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
-        let (app, _lsp) = crate::api_router_from_state(app_state.clone());
-
-        let repo = "test-reactor-pull";
-        let key = put_repo(&app, repo).await;
-        let repo = key.as_str();
-        seed_named_attribute(&app, repo, "person-name", "xyz.tonk.person/name").await;
-
-        let mut body = open_subscription(&app, repo, "main").await;
-        let snapshot_before = read_sse_frame(&mut body).await;
-
-        // Pull through the reactor. With no upstream the dialog
-        // pull is a no-op, but the reactor wiring still runs the
-        // post-pull re-poll.
-        let pull_response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/api/repository/{repo}/branch/main/sync/pull"))
-                    .method("POST")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(pull_response.status(), StatusCode::OK);
-
-        // Subscription must still be alive — proven by a commit
-        // delivering a fresh frame on the same SSE body.
-        seed_named_attribute(&app, repo, "person-age", "xyz.tonk.person/age").await;
-        let snapshot_after = read_sse_frame(&mut body).await;
-        assert_ne!(
-            snapshot_before, snapshot_after,
-            "post-pull commit must still broadcast"
-        );
     }
 
     /// `/query` against a missing repository answers the empty set, the
@@ -4642,7 +4118,7 @@ employee:
         let (app, _lsp) = crate::api_router_from_state(app_state.clone());
 
         let repo = "test-reactor-shutdown-releases";
-        let key = put_repo(&app, repo).await;
+        let key = put_repo(&app_state, repo).await;
         let repo = key.as_str();
         seed_named_attribute(&app, repo, "person-name", "xyz.tonk.person/name").await;
 
@@ -4723,9 +4199,9 @@ employee:
     #[dialog_common::test]
     async fn it_does_not_commit_when_transact_false() {
         let state = test_state().await;
-        let (app, _lsp) = api_router(state);
+        let (app, state, _lsp) = crate::router::api_router_with_state(state);
         let repo = "test-no-commit-transact-false";
-        let key = put_repo(&app, repo).await;
+        let key = put_repo(&state, repo).await;
         let repo = key.as_str();
 
         let body = r#"attribute!: &person-name
@@ -4782,9 +4258,9 @@ employee:
     #[dialog_common::test]
     async fn it_returns_structured_analyze_error_for_malformed_body() {
         let state = test_state().await;
-        let (app, _lsp) = api_router(state);
+        let (app, state, _lsp) = crate::router::api_router_with_state(state);
         let repo = "test-analyze-error-shape";
-        let key = put_repo(&app, repo).await;
+        let key = put_repo(&state, repo).await;
         let repo = key.as_str();
 
         // `name: x` is a head with a non-mapping body — the
@@ -4833,9 +4309,9 @@ employee:
     #[dialog_common::test]
     async fn it_labels_implicit_query_block_with_assertion_head_name() {
         let state = test_state().await;
-        let (app, _lsp) = api_router(state);
+        let (app, state, _lsp) = crate::router::api_router_with_state(state);
         let repo = "test-implicit-query-label";
-        let key = put_repo(&app, repo).await;
+        let key = put_repo(&state, repo).await;
         let repo = key.as_str();
 
         // First seed `person-name` and `person-age` attributes
@@ -4917,9 +4393,9 @@ concept!: &person
     #[dialog_common::test]
     async fn it_renders_blank_query_field_with_matched_value() {
         let state = test_state().await;
-        let (app, _lsp) = api_router(state);
+        let (app, state, _lsp) = crate::router::api_router_with_state(state);
         let repo = "test-blank-field-render";
-        let key = put_repo(&app, repo).await;
+        let key = put_repo(&state, repo).await;
         let repo = key.as_str();
 
         // Seed person concept + an instance.
@@ -5010,10 +4486,10 @@ person!:
     #[dialog_common::test]
     async fn it_transacts_empty_batch_as_noop() {
         let state = test_state().await;
-        let (app, _lsp) = api_router(state);
+        let (app, state, _lsp) = crate::router::api_router_with_state(state);
         let repo = "test-transact-empty";
 
-        let key = put_repo(&app, repo).await;
+        let key = put_repo(&state, repo).await;
         let repo = key.as_str();
 
         let body = "{\"claims\":[]}";
@@ -5047,10 +4523,10 @@ person!:
     #[dialog_common::test]
     async fn it_returns_400_on_malformed_transact_body() {
         let state = test_state().await;
-        let (app, _lsp) = api_router(state);
+        let (app, state, _lsp) = crate::router::api_router_with_state(state);
         let repo = "test-transact-bad-body";
 
-        let key = put_repo(&app, repo).await;
+        let key = put_repo(&state, repo).await;
         let repo = key.as_str();
 
         let body = "not json at all";

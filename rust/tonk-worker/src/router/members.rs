@@ -363,7 +363,6 @@ mod tests {
     use dialog_varsig::Principal as _;
     use wasm_bindgen_test::wasm_bindgen_test_configure;
 
-    use crate::router::api_router_with_state;
     use crate::router::tests::{content_member_roles, content_memberships, put_repo, test_state};
     wasm_bindgen_test_configure!(run_in_service_worker);
 
@@ -393,8 +392,9 @@ mod tests {
     /// revoking that is not removing a member.
     #[dialog_common::test]
     async fn it_refuses_to_resolve_the_founder_as_a_removal_target() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let key = put_repo(&app, "members-founder").await;
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
+        let key = put_repo(&state, "members-founder").await;
         let (branch, subject) = open_content(&state, &key).await;
         let tonk = state.read().await;
         let founder = crate::router::account::member_did(&tonk).await.unwrap();
@@ -413,10 +413,11 @@ mod tests {
     /// nobody else's.
     #[dialog_common::test]
     async fn it_resolves_a_joined_members_own_hop_as_the_removal_target() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
         let (url, key) = crate::router::join::tests::handcrafted_invite_url(90, 91).await;
         assert_eq!(
-            crate::router::join::tests::post_join(&app, &url).await,
+            crate::router::join::tests::post_join(&state, &url).await,
             StatusCode::CREATED
         );
         let (branch, subject) = open_content(&state, &key).await;
@@ -440,10 +441,11 @@ mod tests {
     /// Retracting a member takes every roster row keyed on their membership.
     #[dialog_common::test]
     async fn it_retracts_every_roster_row_of_a_removed_member() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
         let (url, key) = crate::router::join::tests::handcrafted_invite_url(92, 93).await;
         assert_eq!(
-            crate::router::join::tests::post_join(&app, &url).await,
+            crate::router::join::tests::post_join(&state, &url).await,
             StatusCode::CREATED
         );
         let (branch, subject) = open_content(&state, &key).await;
@@ -530,8 +532,9 @@ mod tests {
     /// device key in it.
     #[dialog_common::test]
     async fn it_admits_a_member_with_a_root_signed_chain_retained_in_the_space() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let key = put_repo(&app, "members-promote").await;
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
+        let key = put_repo(&state, "members-promote").await;
         let (branch, subject) = open_content(&state, &key).await;
         let member = Ed25519Signer::generate().await.unwrap().did();
         seed_member(&state, &key, &member, &subject).await;
@@ -584,8 +587,9 @@ mod tests {
     /// whatever it says.
     #[dialog_common::test]
     async fn it_refuses_a_hop_the_account_did_not_sign() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let key = put_repo(&app, "members-forged").await;
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
+        let key = put_repo(&state, "members-forged").await;
         let (_, subject) = open_content(&state, &key).await;
         let member = Ed25519Signer::generate().await.unwrap().did();
         seed_member(&state, &key, &member, &subject).await;
@@ -603,8 +607,9 @@ mod tests {
     /// A hop the account signed for someone else does not admit this member.
     #[dialog_common::test]
     async fn it_refuses_a_hop_to_another_audience() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let key = put_repo(&app, "members-audience").await;
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
+        let key = put_repo(&state, "members-audience").await;
         let (_, subject) = open_content(&state, &key).await;
         let member = Ed25519Signer::generate().await.unwrap().did();
         let other = Ed25519Signer::generate().await.unwrap().did();
@@ -622,8 +627,9 @@ mod tests {
     /// A stranger cannot be promoted: promotion describes a member.
     #[dialog_common::test]
     async fn it_refuses_to_promote_a_non_member() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let key = put_repo(&app, "members-stranger").await;
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
+        let key = put_repo(&state, "members-stranger").await;
         let stranger = Ed25519Signer::generate().await.unwrap().did();
         let (_, subject) = open_content(&state, &key).await;
         let hop = root_hop(&state, &subject, &stranger, None).await;

@@ -309,33 +309,20 @@ mod tests {
     /// row.
     #[dialog_common::test]
     async fn it_rekeys_the_roster_name_to_the_root_and_retracts_the_device_row() {
-        use axum::body::Body;
-        use axum::http::{Request, StatusCode};
         use dialog_varsig::Did;
-        use tower::ServiceExt;
 
-        let (app, state, _lsp) =
-            crate::router::api_router_with_state(crate::router::tests::test_state().await);
+        let state: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(
+            crate::router::tests::test_state().await,
+        ));
 
         // Create the space while unlinked: the founder membership is
         // stamped on the device DID.
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/api/repository/rename-rekey-test")
-                    .method("PUT")
-                    .header("content-type", "application/json")
-                    .body(Body::from("{}"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::CREATED);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let info: crate::router::RepositoryInfo = serde_json::from_slice(&body).unwrap();
+        let info = crate::router::tests::put_repo_with(
+            &state,
+            "rename-rekey-test",
+            &crate::router::repository::RepositoryConfiguration::default(),
+        )
+        .await;
         let key = info.name;
         let device_did = state.read().await.profile.did();
 

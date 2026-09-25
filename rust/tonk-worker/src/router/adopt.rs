@@ -718,9 +718,10 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_admits_without_content_projections() {
-        let (app, state, _lsp) =
-            crate::router::api_router_with_state(crate::router::tests::test_state().await);
-        let key = crate::router::tests::put_repo(&app, "admission-meta-only").await;
+        let state: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(
+            crate::router::tests::test_state().await,
+        ));
+        let key = crate::router::tests::put_repo(&state, "admission-meta-only").await;
         let tonk = state.read().await;
         let subject = key.parse().unwrap();
         let configuration = RepositoryConfiguration::default().remote(
@@ -747,9 +748,10 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_checks_tracking_and_repairs_a_stale_cached_upstream() {
-        let (app, state, _lsp) =
-            crate::router::api_router_with_state(crate::router::tests::test_state().await);
-        let key = crate::router::tests::put_repo(&app, "admission-tracking").await;
+        let state: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(
+            crate::router::tests::test_state().await,
+        ));
+        let key = crate::router::tests::put_repo(&state, "admission-tracking").await;
         let tonk = state.read().await;
         let repository: dialog_repository::Repository = tonk
             .profile
@@ -833,9 +835,10 @@ mod tests {
     }
 
     async fn configured_fixture() -> (super::super::AppState, String, RepositoryConfiguration) {
-        let (app, state, _lsp) =
-            crate::router::api_router_with_state(crate::router::tests::test_state().await);
-        let key = crate::router::tests::put_repo(&app, "admission-cache").await;
+        let state: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(
+            crate::router::tests::test_state().await,
+        ));
+        let key = crate::router::tests::put_repo(&state, "admission-cache").await;
         let configuration = RepositoryConfiguration::default()
             .remote(
                 "origin",
@@ -971,9 +974,10 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_retries_directory_failure_and_caches_local_absence() {
-        let (app, state, _lsp) =
-            crate::router::api_router_with_state(crate::router::tests::test_state().await);
-        let key = crate::router::tests::put_repo(&app, "admission-local-only").await;
+        let state: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(
+            crate::router::tests::test_state().await,
+        ));
+        let key = crate::router::tests::put_repo(&state, "admission-local-only").await;
         let tonk = state.read().await;
         use std::sync::atomic::Ordering::Relaxed;
         tonk.admission
@@ -1142,8 +1146,7 @@ mod tests {
     #[dialog_common::test]
     async fn it_retries_a_failed_leader_and_other_subjects_progress_independently() {
         let (state, key, _) = configured_fixture().await;
-        let (app, _lsp) = super::super::api_router_from_state(state.clone());
-        let other = crate::router::tests::put_repo(&app, "independent-admission").await;
+        let other = crate::router::tests::put_repo(&state, "independent-admission").await;
         let tonk = state.read().await;
         warm(&tonk, &key).await;
         let (entered, release) = pause_next(&tonk, &key);
@@ -1433,9 +1436,10 @@ mod tests {
     async fn it_reconciles_a_mounted_space_from_the_latest_directory_record() {
         use dialog_repository::{SiteAddress, Upstream};
 
-        let (app, state, _lsp) =
-            crate::router::api_router_with_state(crate::router::tests::test_state().await);
-        let key = crate::router::tests::put_repo(&app, "late-directory-remote").await;
+        let state: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(
+            crate::router::tests::test_state().await,
+        ));
+        let key = crate::router::tests::put_repo(&state, "late-directory-remote").await;
         let subject: dialog_varsig::Did = key.parse().unwrap();
         let configuration = super::super::repository::RepositoryConfiguration::default()
             .remote(
@@ -1530,9 +1534,10 @@ mod tests {
             origin: Origin(owner.clone()),
         };
 
-        let (app, state, _lsp) =
-            crate::router::api_router_with_state(crate::router::tests::test_state().await);
-        let key = crate::router::tests::put_repo(&app, "old-directory-branch").await;
+        let state: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(
+            crate::router::tests::test_state().await,
+        ));
+        let key = crate::router::tests::put_repo(&state, "old-directory-branch").await;
         let subject: dialog_varsig::Did = key.parse().unwrap();
         let tonk = state.read().await;
         let address = SiteAddress::from(dialog_remote_ucan::UcanAddress::new(

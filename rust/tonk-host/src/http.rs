@@ -65,12 +65,6 @@ pub async fn post_json(url: &str, body: &str) -> Result<String, ErrorDetail> {
     send_json("POST", url, Some(body)).await
 }
 
-/// DELETE a bare host-relative `url` and return the response body text,
-/// relayed and gated exactly as [`post_json`] is.
-pub async fn delete_json(url: &str) -> Result<String, ErrorDetail> {
-    send_json("DELETE", url, None).await
-}
-
 async fn send_json(method: &str, url: &str, body: Option<&str>) -> Result<String, ErrorDetail> {
     // Gate every `/api/*` request on service-worker activation.
     // Without this, an early call lands on the static-asset
@@ -98,7 +92,7 @@ async fn send_json(method: &str, url: &str, body: Option<&str>) -> Result<String
     // host-relative path absolute; inside a sealed guest the overridden
     // `window.fetch` relays only host-relative strings reliably (the
     // absolute form needs the bridge context's origin, which races the
-    // `ready` envelope). See `post_site_to`.
+    // `ready` envelope).
     let win = window_handle()?;
     let resp_value = JsFuture::from(win.fetch_with_str_and_init(url, &init))
         .await
@@ -126,90 +120,6 @@ async fn response_text(resp_value: JsValue) -> Result<String, ErrorDetail> {
         ));
     }
     Ok(body_text)
-}
-
-/// `POST /api/site` to register this document's site and read back the assigned
-/// `site:<client-id>` entity. The SW matches the route from `X-Tonk-Path`, so the
-/// caller passes the **route's** path explicitly rather than relying on
-/// `window.location` — on a client-side navigation the resource fires before the
-/// router has committed the new URL, so reading `window.location` would carry the
-/// stale (previous) path and the SW would resolve the wrong route. The SW keys
-/// the site on the requesting client id, so no body is needed. Returns the `site`
-/// field of the JSON response.
-pub(crate) async fn post_site(path: &str) -> Result<String, ErrorDetail> {
-    post_site_to("/api/site", path).await
-}
-
-/// `POST` a per-branch `/site` endpoint (`url`) to register this document's site
-/// on an explicit branch and read back the `site:<client-id>` entity. Like
-/// [`post_site`] but the branch is named in `url` (e.g.
-/// `/api/profile/branch/main/site`), so the SW does no document-path routing —
-/// it matches `path` against that branch's route table. The path rides both the
-/// `X-Tonk-Path` header (legacy `/api/site` reads it there) and the JSON body
-/// (the per-branch endpoint reads `{path}`), so one builder serves both.
-pub(crate) async fn post_site_to(url: &str, path: &str) -> Result<String, ErrorDetail> {
-    ready::wait().await;
-    let init = RequestInit::new();
-    init.set_method("POST");
-    let obj = js_sys::Object::new();
-    let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("path"), &JsValue::from_str(path));
-    let body = js_sys::JSON::stringify(&obj)
-        .ok()
-        .and_then(|s| s.as_string())
-        .unwrap_or_else(|| "{}".to_owned());
-    init.set_body(&JsValue::from_str(&body));
-    let headers = Headers::new()
-        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("Headers: {e:?}")))?;
-    headers
-        .append("accept", "application/json")
-        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("accept: {e:?}")))?;
-    let _ = headers.append("content-type", "application/json");
-    // The authoritative path comes from the caller (the route), not the context
-    // headers' `window.location` read — see the doc comment. Carried as a header
-    // for the legacy `/api/site` and in the body for the per-branch endpoint.
-    let _ = headers.append("x-tonk-path", path);
-    init.set_headers(&headers);
-
-    // Fetch the relative URL as a STRING, not a `Request`. A `Request` resolves
-    // `url` against `document.baseURI` at construction; inside a sealed guest
-    // that baseURI is the host's real origin, so the relative `/api/...` becomes
-    // a fully-qualified cross-origin URL that the guest's overridden
-    // `window.fetch` may not strip (origin `null` → CORS block). Passing the
-    // bare string lets the override catch the host-relative `/…` and relay it
-    // through `window.tonk.fetch` to the parent. The nested `<tonk-site>` is a
-    // sealed guest that calls this, so the opaque-origin caveat DOES apply.
-    let win = window_handle()?;
-    let resp_value = JsFuture::from(win.fetch_with_str_and_init(url, &init))
-        .await
-        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("fetch: {e:?}")))?;
-    let resp: Response = resp_value
-        .dyn_into()
-        .map_err(|_| ErrorDetail::new(ErrorKind::Network, "fetch did not return Response"))?;
-    let text = JsFuture::from(
-        resp.text()
-            .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("text: {e:?}")))?,
-    )
-    .await
-    .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("read body: {e:?}")))?;
-    let body_text = text
-        .as_string()
-        .ok_or_else(|| ErrorDetail::new(ErrorKind::Parse, "body was not a string"))?;
-    if !resp.ok() {
-        return Err(ErrorDetail::http(
-            resp.status(),
-            format!("HTTP {}: {body_text}", resp.status()),
-        ));
-    }
-    // Pull the `site` field out of `{"site":"site:<id>"}` without a serde dep.
-    let value: js_sys::Object = js_sys::JSON::parse(&body_text)
-        .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("parse /api/site: {e:?}")))?
-        .dyn_into()
-        .map_err(|_| ErrorDetail::new(ErrorKind::Parse, "/api/site body not an object"))?;
-    js_sys::Reflect::get(&value, &JsValue::from_str("site"))
-        .ok()
-        .and_then(|v| v.as_string())
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| ErrorDetail::new(ErrorKind::Parse, "/api/site response missing `site`"))
 }
 
 /// Open an SSE subscription against `url`, sending `body` as the
@@ -259,7 +169,7 @@ pub(crate) async fn frame_stream(
     // host-relative path absolute; inside a sealed guest the overridden
     // `window.fetch` relays only host-relative strings reliably (the
     // absolute form needs the bridge context's origin, which races the
-    // `ready` envelope). See `post_site_to`.
+    // `ready` envelope).
     let win = window_handle()?;
     let resp_value = JsFuture::from(win.fetch_with_str_and_init(url, &init))
         .await
@@ -403,7 +313,7 @@ pub(crate) async fn post_text(
     // host-relative path absolute; inside a sealed guest the overridden
     // `window.fetch` relays only host-relative strings reliably (the
     // absolute form needs the bridge context's origin, which races the
-    // `ready` envelope). See `post_site_to`.
+    // `ready` envelope).
     let win = window_handle()?;
     let resp_value = JsFuture::from(win.fetch_with_str_and_init(url, &init))
         .await

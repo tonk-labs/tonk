@@ -54,8 +54,6 @@
 //! [`JoinFailure`] both redact, and failure copy is fixed text chosen
 //! from a closed set rather than anything an upstream response said.
 
-use ::axum::{Json, extract::State, http::StatusCode};
-use axum_wasm_macros::wasm_compat;
 use dialog_artifacts::{
     ArtifactSelector, Attribute, Changes, Entity, Preload, Speculation, Statement as _, Value,
 };
@@ -76,9 +74,6 @@ use dialog_ucan::{Ucan, UcanDelegation};
 use dialog_ucan_core::DelegationChain;
 use dialog_varsig::Did;
 use futures_util::StreamExt as _;
-use serde::{Deserialize, Serialize};
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_account::prefix::SPACE_ROOT_SITE_PREFIX;
 use tonk_common::log;
 use tonk_invite::{Invite, InviteAudience};
@@ -89,11 +84,9 @@ use tonk_schema::{
 use tonk_worker_api::JoinFailureKind;
 use zeroize::Zeroizing;
 
-use super::AppState;
 use super::repository::{
-    BranchConfiguration, RemoteConfiguration, RepositoryConfiguration, RepositoryInfo,
-    UpstreamConfiguration, build_repository_info, record_initialized_replica_in_profile,
-    record_replica_local_meta,
+    BranchConfiguration, RemoteConfiguration, RepositoryConfiguration, UpstreamConfiguration,
+    record_initialized_replica_in_profile, record_replica_local_meta,
 };
 use crate::{TonkWorkerError, worker::TonkState};
 
@@ -166,44 +159,6 @@ impl<T> BranchEnv for T where
         + ConditionalSync
         + 'static
 {
-}
-
-/// Body of `POST /api/profile/join`.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct JoinRequest {
-    /// Full invite URL including any `#fragment`.
-    ///
-    /// Audience-open invites carry the ephemeral seed in the URL
-    /// fragment; browsers never send fragments with `fetch`, so the
-    /// caller must read `window.location.href` client-side and
-    /// forward the complete string.
-    pub url: String,
-}
-
-/// Body of a successful `POST /api/profile/join` response.
-///
-/// The `outcome` discriminator splits "we created a new local
-/// replica for you" from "you already had one; we just refreshed
-/// your access." UIs can navigate to `repository.name` either
-/// way — only the toast / banner copy differs.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "outcome", rename_all = "snake_case")]
-pub enum JoinResponse {
-    /// A new local replica was created for the invited subject
-    /// under the requested name. Status 201.
-    Joined {
-        /// Repository info for the freshly created replica.
-        repository: RepositoryInfo,
-    },
-    /// The recipient already had a replica for this subject. The
-    /// invite's delegation chain was saved (renewing access if
-    /// the invite carried fresh delegations) but no new replica
-    /// was created and the requested name is ignored. Status 200.
-    Renewed {
-        /// Repository info for the existing replica the recipient
-        /// will land in.
-        repository: RepositoryInfo,
-    },
 }
 
 /// A terminal join classification plus operator-facing context.
@@ -503,48 +458,18 @@ impl PreparedJoin {
     }
 }
 
-/// Redeem an invite URL to this device's account.
-#[wasm_compat]
-pub async fn join(
-    State(state): State<AppState>,
-    Json(body): Json<JoinRequest>,
-) -> Result<(StatusCode, Json<JoinResponse>), TonkWorkerError> {
+/// Redeem `url` the way the join command does and report it as the old
+/// HTTP surface did: `201` for a new replica, `200` for a renewal, and the
+/// failure's own status otherwise — the shape the join tests assert on.
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn join_status(state: &super::AppState, url: &str) -> ::axum::http::StatusCode {
+    use ::axum::response::IntoResponse as _;
     let tonk = state.write().await;
-    let outcome = join_invite(&tonk, &body.url).await?;
-    log!(
-        "POST /api/profile/join -> subject {} (key {})",
-        outcome.subject,
-        outcome.key
-    );
-    joined_response(&tonk, outcome).await
-}
-
-/// Load the committed replica and shape the route's success body.
-async fn joined_response(
-    tonk: &TonkState,
-    outcome: JoinOutcome,
-) -> Result<(StatusCode, Json<JoinResponse>), TonkWorkerError> {
-    let repository = tonk
-        .profile
-        .repository(outcome.key.as_str())
-        .load()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|error| {
-            TonkWorkerError::Internal(format!("failed to load the joined replica: {error}"))
-        })?;
-    let info = build_repository_info(tonk, &outcome.key, &repository).await;
-    Ok(if outcome.renewed {
-        (
-            StatusCode::OK,
-            Json(JoinResponse::Renewed { repository: info }),
-        )
-    } else {
-        (
-            StatusCode::CREATED,
-            Json(JoinResponse::Joined { repository: info }),
-        )
-    })
+    match join_invite(&tonk, url).await {
+        Ok(outcome) if outcome.renewed => ::axum::http::StatusCode::OK,
+        Ok(_) => ::axum::http::StatusCode::CREATED,
+        Err(failure) => TonkWorkerError::from(failure).into_response().status(),
+    }
 }
 
 /// The result of a successful join: the routing key, subject DID, and
@@ -2100,9 +2025,7 @@ pub(crate) mod tests {
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     wasm_bindgen_test_configure!(run_in_service_worker);
 
-    use axum::body::Body;
-    use axum::http::{Request, StatusCode};
-    use tower::ServiceExt;
+    use axum::http::StatusCode;
 
     use dialog_credentials::ed25519::Ed25519Signer;
     use dialog_ucan_core::subject::Subject as UcanSubject;
@@ -2116,7 +2039,7 @@ pub(crate) mod tests {
     use crate::router::repository::build_repository_info;
     use crate::router::tests::{
         attach_remote, content_invitations, content_invited_via, content_member_roles,
-        content_memberships, put_repo, test_state, test_state_without_root,
+        content_memberships, test_state, test_state_without_root,
     };
 
     /// Hand-craft an audience-open invite URL for a synthetic
@@ -2289,25 +2212,8 @@ pub(crate) mod tests {
         }
     }
 
-    pub(crate) async fn post_join(app: &axum::Router, url: &str) -> StatusCode {
-        post_invite(app, "/api/profile/join", url).await
-    }
-
-    async fn post_invite(app: &axum::Router, path: &str, url: &str) -> StatusCode {
-        let body = serde_json::json!({ "url": url }).to_string();
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(path)
-                    .method("POST")
-                    .header("content-type", "application/json")
-                    .body(Body::from(body))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        response.status()
+    pub(crate) async fn post_join(state: &crate::router::AppState, url: &str) -> StatusCode {
+        super::join_status(state, url).await
     }
 
     /// The entity a roster row is keyed on: the account root, not the
@@ -2328,9 +2234,10 @@ pub(crate) mod tests {
         use tonk_schema::RepositoryName;
         use tonk_schema::prelude::DidExt as _;
 
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
         let (url, key) = handcrafted_invite_url(105, 106).await;
-        assert_eq!(post_join(&app, &url).await, StatusCode::CREATED);
+        assert_eq!(post_join(&state, &url).await, StatusCode::CREATED);
         let subject: dialog_varsig::Did = key.parse().unwrap();
         let remote = crate::router::repository::RepositoryConfiguration::default()
             .remote(
@@ -2348,19 +2255,9 @@ pub(crate) mod tests {
                 crate::router::repository::BranchConfiguration::default()
                     .upstream("origin", "main"),
             );
-        let attached = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/api/repository/{key}/remote"))
-                    .method("POST")
-                    .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&remote).unwrap()))
-                    .unwrap(),
-            )
+        crate::router::repository::attach_remote_config(&state, &key, &remote)
             .await
-            .unwrap();
-        assert_eq!(attached.status(), StatusCode::OK);
+            .expect("the remote attaches");
         {
             let tonk = state.read().await;
             tonk.reactor
@@ -2399,14 +2296,15 @@ pub(crate) mod tests {
     /// provenance stamp linking them.
     #[dialog_common::test]
     async fn it_records_membership_and_provenance_on_join() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
         let (url, key) = handcrafted_invite_url(10, 11).await;
         let expected = {
             let parsed = Invite::parse_url(&url).await.unwrap();
             Invitation::from_chain(&parsed.chain).unwrap()
         };
 
-        assert_eq!(post_join(&app, &url).await, StatusCode::CREATED);
+        assert_eq!(post_join(&state, &url).await, StatusCode::CREATED);
 
         let memberships = content_memberships(&state, &key).await;
         let member_entity = member_entity(&state).await;
@@ -2443,10 +2341,11 @@ pub(crate) mod tests {
     /// Claiming an invite names the claimer on the repo meta.
     #[dialog_common::test]
     async fn it_records_the_claimer_name_on_join() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
         let (url, key) = handcrafted_invite_url(30, 31).await;
 
-        assert_eq!(post_join(&app, &url).await, StatusCode::CREATED);
+        assert_eq!(post_join(&state, &url).await, StatusCode::CREATED);
 
         let memberships = content_memberships(&state, &key).await;
         let names = crate::router::tests::content_member_names(&state, &key).await;
@@ -2469,14 +2368,15 @@ pub(crate) mod tests {
     /// A claimer's member entry records the inviter via provenance.
     #[dialog_common::test]
     async fn it_reports_provenance_in_members() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
         let (url, key) = handcrafted_invite_url(40, 41).await;
         let expected = {
             let parsed = Invite::parse_url(&url).await.unwrap();
             Invitation::from_chain(&parsed.chain).unwrap()
         };
 
-        assert_eq!(post_join(&app, &url).await, StatusCode::CREATED);
+        assert_eq!(post_join(&state, &url).await, StatusCode::CREATED);
 
         let info = {
             let tonk = state.read().await;
@@ -2508,11 +2408,12 @@ pub(crate) mod tests {
     /// with the joining device's local display name.
     #[dialog_common::test]
     async fn it_does_not_overwrite_an_existing_name_on_a_renewed_join() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
         let (url_a, key) = handcrafted_invite_url(60, 61).await;
         let (url_b, _) = handcrafted_invite_url(60, 62).await;
 
-        assert_eq!(post_join(&app, &url_a).await, StatusCode::CREATED);
+        assert_eq!(post_join(&state, &url_a).await, StatusCode::CREATED);
 
         let member_entity = member_entity(&state).await;
         let membership_entity = content_memberships(&state, &key)
@@ -2538,7 +2439,7 @@ pub(crate) mod tests {
                 .expect("existing name commits");
         }
 
-        assert_eq!(post_join(&app, &url_b).await, StatusCode::OK);
+        assert_eq!(post_join(&state, &url_b).await, StatusCode::OK);
 
         let names = crate::router::tests::content_member_names(&state, &key).await;
         assert_eq!(
@@ -2572,7 +2473,8 @@ pub(crate) mod tests {
     /// new invitation but leaves the original provenance stamp alone.
     #[dialog_common::test]
     async fn it_does_not_overwrite_provenance_on_a_renewed_join() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
         // Same subject signer (tag 20), two different ephemerals.
         let (url_a, key) = handcrafted_invite_url(20, 21).await;
         let (url_b, _) = handcrafted_invite_url(20, 22).await;
@@ -2585,8 +2487,8 @@ pub(crate) mod tests {
             Invitation::from_chain(&parsed.chain).unwrap()
         };
 
-        assert_eq!(post_join(&app, &url_a).await, StatusCode::CREATED);
-        assert_eq!(post_join(&app, &url_b).await, StatusCode::OK);
+        assert_eq!(post_join(&state, &url_a).await, StatusCode::CREATED);
+        assert_eq!(post_join(&state, &url_b).await, StatusCode::OK);
 
         // The Renewed path still records the second invitation, even
         // though it leaves provenance pinned to the first.
@@ -2626,33 +2528,13 @@ pub(crate) mod tests {
         let (app, state, _lsp) = api_router_with_state(test_state().await);
 
         // Create own repo (addressed by its routing key), mint own invite.
-        // The mint route refuses a local-only repo, so attach a remote first.
-        let key = put_repo(&app, "test-self-claim").await;
-        attach_remote(&app, &key, "https://sync.example.test/ucan/").await;
-        // The mint route derives its link base from the request origin,
-        // which the browser conversion boundary attaches. A request built
-        // here bypasses that boundary, so supply it directly.
-        let minted_resp = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/api/repository/{key}/invite"))
-                    .method("POST")
-                    .header("content-type", "application/json")
-                    .extension(crate::axum::RequestOrigin::parse("https://tonk.network/").unwrap())
-                    .body(Body::from("{}"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(minted_resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(minted_resp.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let minted: crate::router::CreateInviteResponse = serde_json::from_slice(&bytes).unwrap();
+        // Minting refuses a local-only repo, so attach a remote first.
+        let (key, subject) = crate::router::tests::put_repo_info(&state, "test-self-claim").await;
+        attach_remote(&state, &key, "https://sync.example.test/ucan/").await;
+        let minted = crate::router::tests::mint_invite_for(&app, &key, &subject).await;
 
         // Claiming own invite hits the Renewed path.
-        assert_eq!(post_join(&app, minted.url().as_str()).await, StatusCode::OK);
+        assert_eq!(post_join(&state, &minted.link).await, StatusCode::OK);
 
         // The claimer's own membership exists, but no stamp on it.
         let memberships = content_memberships(&state, &key).await;
@@ -2683,7 +2565,8 @@ pub(crate) mod tests {
     /// and no device-keyed row is written.
     #[dialog_common::test]
     async fn it_keys_membership_on_the_root_did_for_an_account_holder() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
 
         let (root_did, device_did) = {
             let state = state.read().await;
@@ -2695,7 +2578,7 @@ pub(crate) mod tests {
 
         // Join an invite.
         let (url, key) = handcrafted_invite_url(50, 51).await;
-        assert_eq!(post_join(&app, &url).await, StatusCode::CREATED);
+        assert_eq!(post_join(&state, &url).await, StatusCode::CREATED);
 
         let memberships = content_memberships(&state, &key).await;
         let root_entity = root_did.this();
@@ -2758,12 +2641,13 @@ pub(crate) mod tests {
 
     #[dialog_common::test]
     async fn it_leaves_no_trace_when_the_url_is_not_an_invite() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
         let (_, key) = handcrafted_invite_url(60, 61).await;
         let before = snapshot(&state, &key).await;
 
         assert_eq!(
-            post_join(&app, "https://tonk.network/join?access=not-base58").await,
+            post_join(&state, "https://tonk.network/join?access=not-base58").await,
             StatusCode::BAD_REQUEST,
         );
 
@@ -2772,12 +2656,13 @@ pub(crate) mod tests {
 
     #[dialog_common::test]
     async fn it_leaves_no_trace_when_the_invite_names_another_identity() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
         let stranger = Ed25519Signer::import(&[99u8; 32]).await.unwrap();
         let (url, key) = targeted_invite_url(62, &stranger.did()).await;
         let before = snapshot(&state, &key).await;
 
-        assert_eq!(post_join(&app, &url).await, StatusCode::FORBIDDEN);
+        assert_eq!(post_join(&state, &url).await, StatusCode::FORBIDDEN);
 
         assert_eq!(
             snapshot(&state, &key).await,
@@ -2796,12 +2681,13 @@ pub(crate) mod tests {
     /// side store.
     #[dialog_common::test]
     async fn it_leaves_no_trace_when_the_remote_is_unreachable() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
         let (url, key) = unreachable_invite_url(64, 65).await;
         let before = snapshot(&state, &key).await;
 
         assert_eq!(
-            post_join(&app, &url).await,
+            post_join(&state, &url).await,
             StatusCode::SERVICE_UNAVAILABLE,
             "an unreachable remote is a retryable upstream failure",
         );
@@ -2826,15 +2712,16 @@ pub(crate) mod tests {
     /// mutate the existing roster or head.
     #[dialog_common::test]
     async fn it_leaves_an_existing_replica_untouched_when_renewal_remote_is_unavailable() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
         let (url, key) = handcrafted_invite_url(68, 69).await;
-        assert_eq!(post_join(&app, &url).await, StatusCode::CREATED);
+        assert_eq!(post_join(&state, &url).await, StatusCode::CREATED);
         let joined = snapshot(&state, &key).await;
 
         let (renewal, renewal_key) = unreachable_invite_url(68, 70).await;
         assert_eq!(renewal_key, key);
         assert_eq!(
-            post_join(&app, &renewal).await,
+            post_join(&state, &renewal).await,
             StatusCode::SERVICE_UNAVAILABLE
         );
         assert_eq!(snapshot(&state, &key).await, joined);
@@ -2844,9 +2731,10 @@ pub(crate) mod tests {
     /// have renewed exactly as it was.
     #[dialog_common::test]
     async fn it_leaves_an_existing_replica_untouched_when_a_renewal_is_rejected() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
         let (url, key) = handcrafted_invite_url(68, 69).await;
-        assert_eq!(post_join(&app, &url).await, StatusCode::CREATED);
+        assert_eq!(post_join(&state, &url).await, StatusCode::CREATED);
         let joined = snapshot(&state, &key).await;
 
         // A renewal of the same subject, but issued to someone else.
@@ -2854,7 +2742,7 @@ pub(crate) mod tests {
         let (renewal, renewal_key) = targeted_invite_url(68, &stranger.did()).await;
         assert_eq!(renewal_key, key, "same subject, different audience");
 
-        assert_eq!(post_join(&app, &renewal).await, StatusCode::FORBIDDEN);
+        assert_eq!(post_join(&state, &renewal).await, StatusCode::FORBIDDEN);
 
         assert_eq!(
             snapshot(&state, &key).await,
@@ -2928,14 +2816,15 @@ pub(crate) mod tests {
 
     #[dialog_common::test]
     async fn it_joins_a_targeted_invite_issued_to_this_root() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
         let root_did = {
             let tonk = state.read().await;
             crate::router::identity::root_did(&tonk).await.unwrap()
         };
         let (url, key) = targeted_invite_url(74, &root_did).await;
 
-        assert_eq!(post_join(&app, &url).await, StatusCode::CREATED);
+        assert_eq!(post_join(&state, &url).await, StatusCode::CREATED);
 
         let memberships = content_memberships(&state, &key).await;
         assert!(
@@ -2950,10 +2839,11 @@ pub(crate) mod tests {
     /// replica's card never sits at "installing".
     #[dialog_common::test]
     async fn it_indexes_a_joined_replica_as_initialized() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
         let (url, key) = handcrafted_invite_url(76, 77).await;
 
-        assert_eq!(post_join(&app, &url).await, StatusCode::CREATED);
+        assert_eq!(post_join(&state, &url).await, StatusCode::CREATED);
 
         let after = snapshot(&state, &key).await;
         assert!(after.replicas.iter().any(|entry| entry == &key));
@@ -2984,16 +2874,17 @@ pub(crate) mod tests {
     /// between two.
     #[dialog_common::test]
     async fn it_keeps_a_durable_members_authority_when_the_invite_is_reopened() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
         // Space storage is keyed by subject, not profile. Keep this fixture
         // distinct from members::tests (90, 91), which also commits a member.
         let (url, key) = handcrafted_invite_url(218, 219).await;
         let subject: dialog_varsig::Did = key.parse().unwrap();
 
-        assert_eq!(post_join(&app, &url).await, StatusCode::CREATED);
+        assert_eq!(post_join(&state, &url).await, StatusCode::CREATED);
         let durable = proof_window(&state, &subject).await;
 
-        assert_eq!(post_join(&app, &url).await, StatusCode::OK);
+        assert_eq!(post_join(&state, &url).await, StatusCode::OK);
 
         assert_eq!(
             proof_window(&state, &subject).await,
@@ -3028,12 +2919,13 @@ pub(crate) mod tests {
     /// duplicating: one replica, one membership row.
     #[dialog_common::test]
     async fn it_renews_rather_than_duplicating_a_repeated_attempt() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
         let (url, key) = handcrafted_invite_url(78, 79).await;
 
-        assert_eq!(post_join(&app, &url).await, StatusCode::CREATED);
+        assert_eq!(post_join(&state, &url).await, StatusCode::CREATED);
         let first = snapshot(&state, &key).await;
-        assert_eq!(post_join(&app, &url).await, StatusCode::OK);
+        assert_eq!(post_join(&state, &url).await, StatusCode::OK);
         let second = snapshot(&state, &key).await;
 
         assert_eq!(second, first, "a repeated join is idempotent");
@@ -3054,10 +2946,11 @@ pub(crate) mod tests {
     /// account until accreditation re-roots it.
     #[dialog_common::test]
     async fn it_joins_under_the_onboarding_account_before_accreditation() {
-        let (app, state, _lsp) = api_router_with_state(test_state_without_root().await);
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state_without_root().await));
         let (url, key) = handcrafted_invite_url(84, 85).await;
 
-        assert_eq!(post_join(&app, &url).await, StatusCode::CREATED);
+        assert_eq!(post_join(&state, &url).await, StatusCode::CREATED);
 
         // The membership terminates at the onboarding account, the same
         // shape a passkey root gives, so accreditation re-roots it from
@@ -3159,9 +3052,10 @@ pub(crate) mod tests {
             .await
             .unwrap();
             drop(fixture);
-            let (app, state, _lsp) = api_router_with_state(initial);
+            let state: crate::router::AppState =
+                std::sync::Arc::new(tokio::sync::RwLock::new(initial));
             let (url, key) = handcrafted_invite_url(86, 87).await;
-            assert_eq!(post_join(&app, &url).await, StatusCode::CREATED);
+            assert_eq!(post_join(&state, &url).await, StatusCode::CREATED);
             let before = snapshot(&state, &key).await;
             let subject = key.parse().unwrap();
             assert_eq!(
@@ -3213,7 +3107,7 @@ pub(crate) mod tests {
             crate::onboarding::did(&rebuilt).await.unwrap(),
             Some(account)
         );
-        let (_app, state, _lsp) = api_router_with_state(rebuilt);
+        let state: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(rebuilt));
         assert_eq!(snapshot(&state, &key).await, before);
         assert_eq!(content_memberships(&state, &key).await.len(), 1);
         assert_eq!(
@@ -3226,10 +3120,11 @@ pub(crate) mod tests {
     /// cryptographic verification alone — and still lands its roster.
     #[dialog_common::test]
     async fn it_joins_a_local_only_invite_without_a_remote() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
         let (url, key) = handcrafted_invite_url(80, 81).await;
 
-        assert_eq!(post_join(&app, &url).await, StatusCode::CREATED);
+        assert_eq!(post_join(&state, &url).await, StatusCode::CREATED);
 
         let after = snapshot(&state, &key).await;
         assert_eq!(after.members.len(), 1);
@@ -3260,9 +3155,10 @@ pub(crate) mod tests {
     /// unreachable host.
     #[dialog_common::test]
     async fn it_leaves_local_state_untouched_when_a_refusal_is_classified() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
         let (url, key) = handcrafted_invite_url(82, 83).await;
-        assert_eq!(post_join(&app, &url).await, StatusCode::CREATED);
+        assert_eq!(post_join(&state, &url).await, StatusCode::CREATED);
         let joined = snapshot(&state, &key).await;
 
         // A later refusal from the remote classifies as revoked, and
@@ -3294,23 +3190,14 @@ pub(crate) mod tests {
     async fn it_accepts_content_whose_space_model_is_a_declared_concept() {
         use dialog_repository::{Branch, Repository, RepositoryExt as _};
 
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/api/repository/validate-content")
-                    .method("PUT")
-                    .header("content-type", "application/json")
-                    .body(Body::from("{}"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::CREATED);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let info: crate::router::RepositoryInfo = serde_json::from_slice(&body).unwrap();
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
+        let info = crate::router::tests::put_repo_with(
+            &state,
+            "validate-content",
+            &crate::router::repository::RepositoryConfiguration::default(),
+        )
+        .await;
         let repo = info.name;
 
         // The repository's own identity, asserted the way

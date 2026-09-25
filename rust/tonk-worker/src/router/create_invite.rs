@@ -15,32 +15,17 @@
 //! Every returned link also carries the organic channel and a hashed space
 //! token used by the page-side, closed PostHog attribution schema.
 
-use ::axum::{
-    Extension, Json,
-    body::Bytes,
-    extract::{Path, State},
-};
-use axum_wasm_macros::wasm_compat;
-use dialog_capability::Subject;
 use dialog_credentials::{Ed25519Signer, key::KeyExport};
-use dialog_effects::Use;
 use dialog_query::{Output as _, Query, Term};
-use dialog_repository::{
-    LoadRemoteError, RemoteRepository, RepositoryExt as _, SiteAddress, Upstream,
-};
+use dialog_repository::{LoadRemoteError, RemoteRepository, SiteAddress, Upstream};
 use dialog_ucan::UcanDelegation;
 use dialog_varsig::{Did, Principal};
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_common::log;
-use tonk_invite::{Invite, InviteAudience, home_address_meta, shortcut::ShortcutRequest};
-use tonk_schema::{Invitation, InvitationExecution, Remote as RemoteConcept};
+use tonk_invite::shortcut::ShortcutRequest;
+use tonk_schema::Remote as RemoteConcept;
 use url::Url;
 
-pub use tonk_worker_api::{CreateInviteRequest, CreateInviteResponse};
-
-use super::AppState;
-use crate::{TonkWorkerError, axum::RequestOrigin};
+use crate::TonkWorkerError;
 
 /// Name of the content branch on a repository — the branch that syncs
 /// across replicas, where roster/governance facts must live.
@@ -85,236 +70,6 @@ pub(crate) async fn generate_ephemeral() -> Result<(Ed25519Signer, [u8; 32]), To
         .map_err(|e| TonkWorkerError::Internal(format!("failed to import ephemeral key: {e}")))?;
 
     Ok((signer, seed))
-}
-
-/// Mint an invite URL for `repo`.
-#[wasm_compat]
-pub async fn create_invite(
-    State(state): State<AppState>,
-    Path(repo_name): Path<String>,
-    Extension(origin): Extension<RequestOrigin>,
-    body_bytes: Bytes,
-) -> Result<Json<CreateInviteResponse>, TonkWorkerError> {
-    log!("POST /api/repository/{}/invite", repo_name);
-
-    // Parse inline so JSON errors become structured `Router` (400) rather
-    // than axum's default plain-text `JsonRejection`.
-    let request: CreateInviteRequest = if body_bytes.is_empty() {
-        CreateInviteRequest::default()
-    } else {
-        serde_json::from_slice(&body_bytes)
-            .map_err(|e| TonkWorkerError::Router(format!("Invalid request body: {e}")))?
-    };
-
-    mint_invite(state, repo_name, origin, request, None).await
-}
-
-/// Mint an agent handoff for the current browser account, never the space owner.
-#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) async fn create_agent_handoff(
-    state: AppState,
-    repo_name: String,
-    origin: RequestOrigin,
-) -> Result<(CreateInviteResponse, super::identity::LocalRoot), TonkWorkerError> {
-    let account = super::identity::local_root(&*state.read().await).await?;
-    let request = CreateInviteRequest {
-        recipient_root: Some(account.root_did.clone()),
-        ..Default::default()
-    };
-    let Json(response) = mint_invite(state, repo_name, origin, request, Some(&account)).await?;
-    Ok((response, account))
-}
-
-async fn mint_invite(
-    state: AppState,
-    repo_name: String,
-    origin: RequestOrigin,
-    request: CreateInviteRequest,
-    expected: Option<&super::identity::LocalRoot>,
-) -> Result<Json<CreateInviteResponse>, TonkWorkerError> {
-    let shorten_explicitly = request.base_url.is_some();
-    let base_url = match request.base_url.clone() {
-        Some(base_url) => base_url,
-        None => origin
-            .url()
-            .join("join")
-            .map_err(|error| TonkWorkerError::Internal(error.to_string()))?,
-    };
-
-    let tonk = state.read().await;
-
-    if let Some(expected) = expected {
-        let current = super::identity::local_root(&tonk).await?;
-        if current.root_did != expected.root_did || current.bytes != expected.bytes {
-            return Err(TonkWorkerError::Conflict(
-                "browser account changed while creating the handoff; try again".into(),
-            ));
-        }
-    }
-
-    if super::account::provider(&tonk).await.is_none() {
-        return Err(TonkWorkerError::Forbidden(
-            "create an account or log in before sharing".into(),
-        ));
-    }
-
-    let repository = tonk
-        .profile
-        .repository(&repo_name)
-        .load()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| {
-            TonkWorkerError::NotFound(format!("Repository '{}' not found: {}", repo_name, e))
-        })?;
-
-    let (audience_did, audience) = match request.recipient_root {
-        Some(did) => (did, InviteAudience::Scoped),
-        None => {
-            let (signer, seed) = generate_ephemeral().await?;
-            (signer.did(), InviteAudience::Open { seed })
-        }
-    };
-
-    let remote = match resolve_remote_url(&tonk, &repository).await? {
-        RemoteRequirement::Ready(remote) => remote,
-        RemoteRequirement::Refused(reason) => {
-            let reason = explain_refusal(&tonk, reason).await;
-            return Err(TonkWorkerError::Conflict(format!(
-                "cannot mint an invite for '{repo_name}': {} ({})",
-                reason.detail(),
-                reason.code()
-            )));
-        }
-    };
-
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    if expected.is_some()
-        && super::repository::remote_is_own_service(remote.access_url.as_str())
-        && !super::customer::space_provider_recorded(&tonk, &repository.did()).await
-    {
-        match super::repository::provision_space_consumer(&tonk, &repository.did()).await {
-            Ok(()) => {}
-            Err(error @ TonkWorkerError::Upstream { .. })
-                if !super::customer::is_retryable(&error) =>
-            {
-                return Err(error);
-            }
-            // Match ordinary sharing: a member may lack the owner's local
-            // provisioning credential. Only a terminal service refusal is
-            // authoritative; missing local billing state is not a denial.
-            Err(error) => log!("agent handoff provisioning skipped: {error}"),
-        }
-    }
-
-    // The leaf is signed with the space's upstream in its `home.address`
-    // meta and — when one has hydrated here — its display name in
-    // `space.name`, so both ride inside the signed grant: the endpoint
-    // because the grant and the address must not be swappable
-    // independently, the name as the invitation's historical fact ("you
-    // were invited to a space called X", true after any rename).
-    let mut meta = home_address_meta(&remote.access_url);
-    if let Some(name) =
-        super::repository::repository_display_name(&tonk, &repository, &repo_name).await
-    {
-        meta.extend(tonk_invite::space_name_meta(&name));
-    }
-    let delegation: UcanDelegation = tonk
-        .profile
-        .access()
-        .claim(Subject::from(repository.did()).attenuate(Use))
-        .delegate(audience_did.clone())
-        .meta(meta)
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| TonkWorkerError::Internal(format!("failed to create delegation: {e}")))?;
-
-    let invite = Invite::new(
-        delegation.into_chain(),
-        audience,
-        Some(remote.access_url.clone()),
-    )
-    .await
-    .map_err(|e| TonkWorkerError::Internal(format!("failed to assemble invite: {e}")))?;
-
-    // Record the invitation on the repo's content branch: the durable
-    // half of the invite. The content branch syncs across replicas, so
-    // the record converges where the roster lives. The URL (with its
-    // secret fragment) is never stored — only chain-derivable facts. A
-    // failure here fails the mint; the claim path can self-heal a missing
-    // record, but a mint that can't write its own repo's content branch
-    // is broken enough to surface.
-    //
-    // Route through the *reactor's* cached `main` handle (keyed by the
-    // routing key, the `{repo}` param) rather than a fresh
-    // `repository.branch().open()`: background sync pulls/publishes through
-    // the reactor's cached handle, so a commit on a separate handle leaves
-    // it pinned at a stale head and the next pull's CAS fails forever.
-    let invitation = Invitation::from_chain(&invite.chain)
-        .expect("Invite invariant: chain has a specific subject");
-    let kind = match &invite.audience {
-        InviteAudience::Open { .. } => "open",
-        InviteAudience::Scoped => "scoped",
-    };
-    let execution = InvitationExecution::new(&invitation, kind);
-    tonk.reactor
-        .repository(&repo_name)
-        .branch(CONTENT_BRANCH)
-        .transaction()
-        .assert(invitation)
-        .assert(execution)
-        .commit()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| TonkWorkerError::Internal(format!("failed to record invitation: {e}")))?;
-
-    retain_invite_authority(&tonk, &repo_name, &invite.chain).await?;
-
-    let url_str = invite
-        .to_url(base_url.as_str())
-        .map_err(|e| TonkWorkerError::Router(format!("failed to serialize invite URL: {e}")))?;
-    let url_str =
-        tonk_analytics::launch::space_referral_url(&url_str, &repo_name).map_err(|e| {
-            TonkWorkerError::Internal(format!("failed to add invite referral attribution: {e}"))
-        })?;
-
-    // Shorten against the link's own origin — the only origin that can
-    // serve the relative redirect back — when the caller supplied it
-    // (the UI always sends `window.origin`). The long URL is fully
-    // functional, so a failed PUT degrades to it rather than failing
-    // the mint. The hardcoded default base is never PUT to, keeping
-    // tests and offline mints network-free.
-    let url_str = if shorten_explicitly {
-        match shorten(&url_str).await {
-            Ok(short) => short,
-            Err(e) => {
-                log!("invite shortcut failed; using the full URL: {e}");
-                url_str
-            }
-        }
-    } else {
-        url_str
-    };
-    let url = Url::parse(&url_str).map_err(|e| {
-        TonkWorkerError::Internal(format!(
-            "invite URL serializer produced an unparseable value: {e}"
-        ))
-    })?;
-
-    log!(
-        "Minted invite for repo '{}' audience {}",
-        repo_name,
-        audience_did,
-    );
-
-    let response = match invite.audience {
-        InviteAudience::Open { .. } => CreateInviteResponse::Open { url },
-        InviteAudience::Scoped => CreateInviteResponse::Scoped {
-            url,
-            recipient_root: audience_did,
-        },
-    };
-    Ok(Json(response))
 }
 
 /// Retain an invite's delegation chain, plus the profile-to-account union,
@@ -897,64 +652,16 @@ mod tests {
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     wasm_bindgen_test_configure!(run_in_service_worker);
 
-    use axum::body::Body;
-    use axum::http::{Request, StatusCode};
     use dialog_remote_ucan::UcanAddress;
     use dialog_repository::{RepositoryExt as _, SiteAddress};
-    use tower::ServiceExt;
 
-    use tonk_invite::Invite;
-    use tonk_schema::Invitation;
-    use tonk_schema::prelude::DidExt as _;
-
-    use crate::axum::RequestOrigin;
-    use crate::router::tests::{attach_remote, content_invitations, put_repo, test_state};
-    use crate::router::{CreateInviteResponse, api_router_with_state};
-
-    #[dialog_common::test]
-    async fn agent_handoff_rejects_a_changed_account_generation_before_minting() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let key = put_repo(&app, "handoff-generation").await;
-        attach_remote(&app, &key, "https://sync.example.test/ucan/").await;
-        let mut previous = crate::router::identity::local_root(&*state.read().await)
-            .await
-            .unwrap();
-        // Same root, different captured attachment: root equality alone is
-        // insufficient to let an earlier operation publish a handoff.
-        previous.bytes.push(0);
-        let result = super::mint_invite(
-            state.clone(),
-            key.clone(),
-            RequestOrigin::parse("https://local.example/").unwrap(),
-            super::CreateInviteRequest {
-                recipient_root: Some(previous.root_did.clone()),
-                ..Default::default()
-            },
-            Some(&previous),
-        )
-        .await;
-        assert!(matches!(result, Err(crate::TonkWorkerError::Conflict(_))));
-        assert!(content_invitations(&state, &key).await.is_empty());
-        crate::router::account::detach_test_account(&*state.read().await)
-            .await
-            .unwrap();
-        let result = super::create_agent_handoff(
-            state.clone(),
-            key.clone(),
-            RequestOrigin::parse("https://local.example/").unwrap(),
-        )
-        .await;
-        assert!(
-            result.is_err(),
-            "signed-out browser must not mint a handoff"
-        );
-        assert!(content_invitations(&state, &key).await.is_empty());
-    }
+    use crate::router::tests::{put_repo, test_state};
 
     #[dialog_common::test]
     async fn it_recovers_a_missing_dialog_remote_from_replica_metadata() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let key = put_repo(&app, "recover-missing-dialog-remote").await;
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
+        let key = put_repo(&state, "recover-missing-dialog-remote").await;
         let tonk = state.read().await;
         let repository = tonk
             .profile
@@ -984,80 +691,14 @@ mod tests {
         );
     }
 
-    /// Minting an invite records an `Invitation` on the repo's content
-    /// branch whose entity matches what a claimer derives from the
-    /// URL, and whose inviter is the minting profile.
-    #[dialog_common::test]
-    async fn it_records_the_invitation_on_mint() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-
-        // Create the repo; address it by the minted routing key. The
-        // route now refuses a local-only repo, so give it a remote first.
-        let key = put_repo(&app, "test-mint-invitation").await;
-        attach_remote(&app, &key, "https://sync.example.test/ucan/").await;
-
-        // Mint an open invite.
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/api/repository/{key}/invite"))
-                    .method("POST")
-                    .header("content-type", "application/json")
-                    .extension(
-                        RequestOrigin::parse("https://local.example/invite").expect("valid origin"),
-                    )
-                    .body(Body::from("{}"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let minted: CreateInviteResponse = serde_json::from_slice(&bytes).unwrap();
-        assert!(minted.url().query_pairs().any(|(name, value)| {
-            name == tonk_analytics::launch::CHANNEL_PARAMETER && value == "reshare"
-        }));
-        assert!(minted.url().query_pairs().any(|(name, value)| {
-            name == tonk_analytics::launch::SPACE_PARAMETER
-                && value == tonk_analytics::anonymize(&key)
-        }));
-
-        // The claimer-side derivation from the URL matches the record.
-        let parsed = Invite::parse_url(minted.url().as_str()).await.unwrap();
-        let expected = Invitation::from_chain(&parsed.chain).unwrap();
-
-        // The minted leaf names the space's upstream in its signed meta,
-        // so the endpoint survives without the `remote=` parameter.
-        let embedded = tonk_invite::home_address(&parsed.chain).unwrap();
-        assert_eq!(
-            embedded.map(String::from),
-            Some("https://sync.example.test/ucan/".to_owned())
-        );
-
-        let invitations = content_invitations(&state, &key).await;
-        assert_eq!(invitations.len(), 1, "exactly the minted invitation");
-        assert_eq!(invitations[0].this, expected.this);
-
-        let root_entity = {
-            let guard = state.read().await;
-            crate::router::identity::root_did(&guard)
-                .await
-                .expect("test profile has a root")
-                .this()
-        };
-        assert_eq!(invitations[0].inviter.0, root_entity);
-    }
-
     /// A space created without a remote refuses, and says which case it was.
     #[dialog_common::test]
     async fn it_refuses_a_repository_with_no_upstream() {
         use crate::router::create_invite::{RemoteRefusal, RemoteRequirement, resolve_remote_url};
 
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let key = put_repo(&app, "test-no-upstream").await;
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
+        let key = put_repo(&state, "test-no-upstream").await;
 
         let tonk = state.read().await;
         let repository = tonk
@@ -1095,118 +736,5 @@ mod tests {
             RemoteRefusal::UnshareableRemote.detail(),
             "This space's sync server can't be shared."
         );
-    }
-
-    /// The HTTP mint route refuses a local-only repository rather than
-    /// answering with an invite that can never sync.
-    #[dialog_common::test]
-    async fn it_rejects_a_mint_for_a_local_only_repository() {
-        let (app, _state, _lsp) = api_router_with_state(test_state().await);
-        let key = put_repo(&app, "test-http-local-only").await;
-
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/api/repository/{key}/invite"))
-                    .extension(
-                        RequestOrigin::parse("https://local.example/invite").expect("valid origin"),
-                    )
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::CONFLICT);
-    }
-
-    /// The HTTP route is a second boundary behind the FABB account check: a
-    /// stale client must not be able to mint from an unattached profile.
-    #[dialog_common::test]
-    async fn it_rejects_a_mint_without_an_account() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let key = put_repo(&app, "test-http-account-required").await;
-        attach_remote(&app, &key, "https://sync.example.test/ucan/").await;
-        {
-            let tonk = state.read().await;
-            crate::router::account::detach_test_account(&tonk)
-                .await
-                .expect("the test account detaches");
-        }
-
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/api/repository/{key}/invite"))
-                    .extension(
-                        RequestOrigin::parse("https://local.example/invite").expect("valid origin"),
-                    )
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        assert!(
-            content_invitations(&state, &key).await.is_empty(),
-            "a provider-free profile records no invitation"
-        );
-    }
-
-    #[dialog_common::test]
-    async fn it_uses_the_request_origin_and_rejects_unknown_fields() {
-        let (app, _state, _lsp) = api_router_with_state(test_state().await);
-        let key = put_repo(&app, "test-request-origin").await;
-        attach_remote(&app, &key, "https://sync.example.test/ucan/").await;
-
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/api/repository/{key}/invite"))
-                    .header("content-type", "application/json")
-                    .extension(
-                        RequestOrigin::parse(
-                            "https://staging.example.test/source?ignored=yes#ignored",
-                        )
-                        .expect("valid origin"),
-                    )
-                    .body(Body::from("{}"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let minted: CreateInviteResponse = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(
-            minted.url().origin().ascii_serialization(),
-            "https://staging.example.test"
-        );
-        assert_eq!(minted.url().path(), "/join");
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/api/repository/{key}/invite"))
-                    .header("content-type", "application/json")
-                    .extension(
-                        RequestOrigin::parse("https://local.example/invite").expect("valid origin"),
-                    )
-                    .body(Body::from(r#"{"baseURL":"https://wrong.example/join"}"#))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }

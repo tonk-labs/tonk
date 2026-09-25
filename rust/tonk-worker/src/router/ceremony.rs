@@ -310,22 +310,16 @@ async fn authorize_device_inner(
     // member, which this browser is and the waiting device is not:
     // register it here, before the grant is delivered, so a device that
     // installs the grant is already listed and able to reach the service.
-    let registered = super::account_devices::register(
-        axum::extract::State(state.clone()),
-        axum::Json(super::account_devices::RegisterDeviceRequest {
+    let attachment_id = super::account_devices::register(
+        state,
+        super::account_devices::RegisterDeviceRequest {
             did: authorization.audience.clone(),
             name: authorization.name.clone(),
             delegation_hex: authorized.delegation_hex.clone(),
-        }),
+        },
     )
     .await
     .map_err(|error| format!("the device was not registered: {error}"))?;
-    let attachment_id = registered
-        .0
-        .get("attachmentId")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default()
-        .to_owned();
     let payload = serde_json::json!({
         "delegationHex": authorized.delegation_hex,
         // The grant's signed meta is the authoritative address; this

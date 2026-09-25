@@ -5,27 +5,15 @@
 //! service records it in the index its presign path already screens
 //! against. There is no separate relay to configure or to miss.
 
-use axum::{
-    Json,
-    extract::{Path, State},
-};
-use axum_wasm_macros::wasm_compat;
-use dialog_query::{Output as _, Query, Term};
-use dialog_repository::RepositoryExt as _;
 use dialog_ucan::{Parameters, Scope, UcanDelegation};
 use dialog_ucan_core::DelegationChain;
 use dialog_ucan_core::command::Command;
 use dialog_ucan_core::subject::Subject as UcanSubject;
 use dialog_varsig::Did;
 use ipld_core::cid::Cid;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_account::customer::RevokeReceipt;
 use tonk_common::log;
-use tonk_schema::{Invitation, InvitationExecution};
-use tonk_worker_api::{InvitationKind, InvitationSummary};
 
-use super::AppState;
 use super::create_invite::{ConfiguredRemoteRequirement, resolve_configured_remote_url_with};
 use crate::{TonkState, TonkWorkerError};
 
@@ -85,138 +73,6 @@ pub(super) fn leaf_cid(path: &DelegationChain) -> Result<Cid, TonkWorkerError> {
         .last()
         .copied()
         .ok_or_else(|| TonkWorkerError::Internal("a proved path has no leaf".to_string()))
-}
-
-/// Every recorded invitation on `branch`, each paired with the delegation
-/// path that currently reaches its audience and the CID of that path's leaf.
-///
-/// An invitation whose path can no longer be proved is dropped: that is what
-/// a revoked or never-retained invite looks like from here, and neither is
-/// listable or revocable.
-async fn proved_invitations(
-    branch: &dialog_repository::Branch,
-    tonk: &TonkState,
-    subject: &Did,
-) -> Result<Vec<(Invitation, DelegationChain, Cid)>, TonkWorkerError> {
-    let invitations: Vec<Invitation> = branch
-        .query()
-        .select(Query::<Invitation> {
-            this: Term::var("this"),
-            subject: Term::var("subject"),
-            inviter: Term::var("inviter"),
-            audience: Term::var("audience"),
-        })
-        .perform(&tonk.operator)
-        .try_vec()
-        .await
-        .map_err(|error| {
-            TonkWorkerError::Internal(format!("invitation query failed: {error:?}"))
-        })?;
-
-    let mut proved = Vec::new();
-    for invitation in invitations {
-        let Ok(audience) = invitation.audience.0.to_string().parse::<Did>() else {
-            log!(
-                "invitation {} has an unparseable audience; skipping",
-                invitation.this
-            );
-            continue;
-        };
-        // Two cases land here and they are not the same: an invite that was
-        // revoked (its leaf is retracted, so it should disappear) and one
-        // minted before chains were retained (nothing was ever written, so it
-        // disappears without having been revoked). Neither is actionable from
-        // here, but they are worth telling apart in a log.
-        let Ok(path) = prove_path(branch, tonk, subject, &audience).await else {
-            log!(
-                "invitation {} has no provable path to {audience}; \
-                 it was revoked, or minted before its chain was retained",
-                invitation.this
-            );
-            continue;
-        };
-        let cid = leaf_cid(&path)?;
-        proved.push((invitation, path, cid));
-    }
-    Ok(proved)
-}
-
-/// The recorded invitation and proved path whose leaf is `target`.
-async fn resolve_target(
-    branch: &dialog_repository::Branch,
-    tonk: &TonkState,
-    subject: &Did,
-    target: &Cid,
-) -> Result<(DelegationChain, Invitation), TonkWorkerError> {
-    proved_invitations(branch, tonk, subject)
-        .await?
-        .into_iter()
-        .find(|(_, _, cid)| cid == target)
-        .map(|(invitation, path, _)| (path, invitation))
-        .ok_or_else(|| {
-            TonkWorkerError::NotFound(
-                "the target CID is not a live invitation for this repository".to_string(),
-            )
-        })
-}
-
-/// Revoke only an invitation path recorded in the named repository.
-#[wasm_compat]
-pub async fn revoke(
-    State(state): State<AppState>,
-    Path((repo, target_cid)): Path<(String, String)>,
-) -> Result<Json<RevokeReceipt>, TonkWorkerError> {
-    let target: Cid = target_cid
-        .parse()
-        .map_err(|error| TonkWorkerError::Router(format!("invalid target CID: {error}")))?;
-    let tonk = state.read().await;
-    let session = tonk
-        .reactor
-        .repository(&repo)
-        .branch("main")
-        .acquire(&tonk.operator)
-        .await
-        .map_err(|error| TonkWorkerError::NotFound(format!("repository not found: {error}")))?;
-    // The subject comes from the repository rather than off the stored
-    // path: an invite is scoped to the space, so the space's own DID is
-    // what a proof search has to aim at.
-    let repository = tonk
-        .profile
-        .repository(&repo)
-        .load()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|error| {
-            TonkWorkerError::NotFound(format!("repository '{repo}' not found: {error}"))
-        })?;
-    let subject = repository.did();
-
-    // The target names a hop, and the hop is reachable only by proving as
-    // the principal it lands on. So resolve the recorded invitation whose
-    // audience the target belongs to, rather than searching the facts for a
-    // CID they do not carry (the facts are keyed by the blob store's blake3
-    // of the envelope, while a UCAN CID is dag-cbor/sha2-256).
-    let (path, invitation) = resolve_target(session.handle(), &tonk, &subject, &target).await?;
-
-    let receipt =
-        publish_revocation(&tonk, &repo, &repository, session.handle(), &path, &target).await?;
-    retract_leaf(&tonk, session.handle(), &path).await;
-    // The record is what `list` enumerates, so it goes with the hop it
-    // described.
-    if let Err(error) = tonk
-        .reactor
-        .repository(&repo)
-        .branch("main")
-        .transaction()
-        .retract(invitation)
-        .commit()
-        .perform(&tonk.operator)
-        .await
-    {
-        log!("revoked invitation record was not retracted: {error}");
-    }
-
-    Ok(Json(receipt))
 }
 
 /// This profile's account's authority over the space: a `/` chain from the
@@ -371,80 +227,4 @@ pub(super) async fn retract_leaf(
     {
         log!("revoked grant was not retracted locally: {error}");
     }
-}
-
-/// List secret-free invitation management rows for one repository.
-///
-/// The target CID a row reports is not stored: it is the leaf of the
-/// delegation path proved from the invitation's audience, computed the same
-/// way [`revoke`] resolves the target it is handed. Deriving both from one
-/// walk is what keeps a listed CID revocable, rather than being a stale
-/// mint-time snapshot the live facts no longer agree with.
-#[wasm_compat]
-pub async fn list(
-    State(state): State<AppState>,
-    Path(repo): Path<String>,
-) -> Result<Json<Vec<InvitationSummary>>, TonkWorkerError> {
-    let tonk = state.read().await;
-    let session = tonk
-        .reactor
-        .repository(&repo)
-        .branch("main")
-        .acquire(&tonk.operator)
-        .await
-        .map_err(|error| TonkWorkerError::NotFound(format!("repository not found: {error}")))?;
-    let repository = tonk
-        .profile
-        .repository(&repo)
-        .load()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|error| {
-            TonkWorkerError::NotFound(format!("repository '{repo}' not found: {error}"))
-        })?;
-    let subject = repository.did();
-
-    let executions: Vec<InvitationExecution> = session
-        .handle()
-        .query()
-        .select(Query::<InvitationExecution> {
-            this: Term::var("this"),
-            kind: Term::var("kind"),
-        })
-        .perform(&tonk.operator)
-        .try_vec()
-        .await
-        .map_err(|error| {
-            TonkWorkerError::Internal(format!("invitation execution query failed: {error:?}"))
-        })?;
-
-    let mut rows = proved_invitations(session.handle(), &tonk, &subject)
-        .await?
-        .into_iter()
-        .map(|(invitation, _, target)| {
-            let execution = executions
-                .iter()
-                .find(|execution| execution.this == invitation.this);
-            let kind = match execution.map(|execution| execution.kind.0.as_str()) {
-                Some("open") => InvitationKind::Open,
-                Some("scoped") => InvitationKind::Scoped,
-                _ => InvitationKind::Unknown,
-            };
-            let recipient_root = (kind == InvitationKind::Scoped)
-                .then(|| invitation.audience.0.to_string().parse().ok())
-                .flatten();
-            InvitationSummary {
-                target_cid: target.to_string(),
-                kind,
-                recipient_root,
-                status: if execution.is_some() {
-                    "active".to_string()
-                } else {
-                    "unconfigured".to_string()
-                },
-            }
-        })
-        .collect::<Vec<_>>();
-    rows.sort_by(|left, right| left.target_cid.cmp(&right.target_cid));
-    Ok(Json(rows))
 }

@@ -1012,7 +1012,7 @@ pub(crate) mod tests {
         use tonk_schema::Branch as MetaBranch;
 
         let state = test_state().await;
-        let (_app, state, _lsp) = crate::router::api_router_with_state(state);
+        let state: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(state));
 
         let count = || async {
             let tonk = state.read().await;
@@ -1090,7 +1090,7 @@ pub(crate) mod tests {
 
         let state = test_state().await;
         let (app, state, _lsp) = crate::router::api_router_with_state(state);
-        let real_key = crate::router::tests::put_repo(&app, "visible-space").await;
+        let real_key = crate::router::tests::put_repo(&state, "visible-space").await;
         let account = Ed25519Signer::import(&[73; 32]).await.unwrap().did();
         {
             let tonk = state.read().await;

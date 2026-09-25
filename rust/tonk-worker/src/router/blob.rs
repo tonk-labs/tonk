@@ -325,7 +325,7 @@ mod tests {
         let tonk = test_state().await;
         let app_state = Arc::new(RwLock::new(tonk));
         let (app, _lsp) = api_router_from_state(app_state.clone());
-        let repo = put_repo(&app, "blob-serve").await;
+        let repo = put_repo(&app_state, "blob-serve").await;
 
         // Write a blob straight into the branch store. `Blob::import(...).write(...)`
         // returns the content-addressed `blob:<hash>` entity directly — the same
@@ -354,22 +354,15 @@ mod tests {
                 .unwrap()
         };
 
-        // Assert its content-type fact through the HTTP claim route.
-        let assert = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(format!(
-                        "/api/repository/{repo}/branch/main/claim/assert/{entity}/xyz.tonk.blob/content-type"
-                    ))
-                    .method("POST")
-                    .header("content-type", "text/plain")
-                    .body(Body::from("image/png"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(assert.status(), StatusCode::OK);
+        // Assert its content-type fact, as an upload does.
+        crate::router::tests::assert_claim(
+            &app_state,
+            &repo,
+            &entity.to_string(),
+            "xyz.tonk.blob/content-type",
+            "image/png",
+        )
+        .await;
 
         // GET the bytes back.
         let resp = app
@@ -398,7 +391,7 @@ mod tests {
         let tonk = test_state().await;
         let app_state = Arc::new(RwLock::new(tonk));
         let (app, _lsp) = api_router_from_state(app_state.clone());
-        let repo = put_repo(&app, "blob-upload").await;
+        let repo = put_repo(&app_state, "blob-upload").await;
 
         let payload = b"\x89PNG\r\n\x1a\nupload".to_vec();
 
@@ -495,7 +488,7 @@ mod tests {
         let tonk = test_state().await;
         let app_state = Arc::new(RwLock::new(tonk));
         let (app, _lsp) = api_router_from_state(app_state.clone());
-        let repo = put_repo(&app, "blob-large").await;
+        let repo = put_repo(&app_state, "blob-large").await;
 
         let expected_size = 64 * 1024 * 1024;
         let payload = vec![0xabu8; expected_size];
@@ -527,7 +520,7 @@ mod tests {
         let tonk = test_state().await;
         let app_state = Arc::new(RwLock::new(tonk));
         let (app, _lsp) = api_router_from_state(app_state.clone());
-        let repo = put_repo(&app, "blob-name-default").await;
+        let repo = put_repo(&app_state, "blob-name-default").await;
 
         // Upload with no X-Tonk-Blob-Name header.
         let up = app
@@ -559,7 +552,7 @@ mod tests {
         let tonk = test_state().await;
         let app_state = Arc::new(RwLock::new(tonk));
         let (app, _lsp) = api_router_from_state(app_state.clone());
-        let repo = put_repo(&app, "blob-name-keep").await;
+        let repo = put_repo(&app_state, "blob-name-keep").await;
         let payload = b"%PDF-1.4 named".to_vec();
 
         // First upload names the blob.
@@ -607,7 +600,7 @@ mod tests {
         let tonk = test_state().await;
         let app_state = Arc::new(RwLock::new(tonk));
         let (app, _lsp) = api_router_from_state(app_state.clone());
-        let repo = put_repo(&app, "blob-reject").await;
+        let repo = put_repo(&app_state, "blob-reject").await;
 
         // A well-formed entity that is not a blob reference must be rejected
         // before it can be used to read arbitrary fact bytes.

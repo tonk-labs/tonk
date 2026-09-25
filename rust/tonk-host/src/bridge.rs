@@ -52,16 +52,14 @@ pub fn context_origin() -> Option<String> {
 }
 
 thread_local! {
-    /// This document's `site` entity, as assigned by the service worker. The SW
-    /// derives it from the requesting client id (`site:<client-id>`) when the
-    /// page registers via `POST /api/site` — so it is browser-managed and GC-able
-    /// rather than a locally-minted uuid. `None` until [`ensure_site`] has run.
+    /// This document's `site` entity. Nothing assigns one any more: the
+    /// worker route that handed a page its `site:<client-id>` is retired, and
+    /// each `<tonk-site>` now mints its own entity and asserts `tonk:load`.
     static SITE_ID: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
 }
 
-/// This document's `site` entity, as assigned by the SW — empty until
-/// [`ensure_site`] has registered the page. The shell reads the tab's
-/// location/route facts the SW stamped on this entity.
+/// This document's `site` entity — empty, since nothing assigns one (see
+/// `SITE_ID`). Carried on `X-Tonk-Site` and into the guest context.
 pub fn site_id() -> String {
     SITE_ID.with(|cell| cell.borrow().clone().unwrap_or_default())
 }
@@ -144,50 +142,6 @@ async fn query_field(url: &str, body: &str, field: &str) -> Option<String> {
         Reflect::get(&row, &key).ok()?
     };
     value.as_string().filter(|value| !value.is_empty())
-}
-
-/// Register this page's site with the service worker and cache the assigned id.
-///
-/// On first load the navigation predates the SW (the page is served before the
-/// SW exists), so the SW never sees a navigation for this document — the page
-/// must announce itself. `POST /api/site` (carrying the current path on
-/// `X-Tonk-Path`) makes the SW assert this tab's `tonk:site` and return the
-/// `site:<client-id>` entity to render against. Idempotent: re-call on
-/// navigation to update the site in place.
-#[cfg(target_arch = "wasm32")]
-pub async fn ensure_site(path: &str) -> Result<String, ErrorDetail> {
-    let site = crate::http::post_site(path).await?;
-    SITE_ID.with(|cell| *cell.borrow_mut() = Some(site.clone()));
-    Ok(site)
-}
-
-/// Register this document's site against a per-branch `/site` endpoint (`url`),
-/// matching `path` on that branch. The branch is named in `url` (e.g.
-/// `/api/profile/branch/main/site`), so the SW does no document-path routing.
-/// Returns and caches the `site:<client-id>` entity, like [`ensure_site`].
-#[cfg(target_arch = "wasm32")]
-pub async fn ensure_site_on(url: &str, path: &str) -> Result<String, ErrorDetail> {
-    let site = crate::http::post_site_to(url, path).await?;
-    SITE_ID.with(|cell| *cell.borrow_mut() = Some(site.clone()));
-    Ok(site)
-}
-
-/// Native stub — the `/site` fetch is wasm-only.
-#[cfg(not(target_arch = "wasm32"))]
-pub async fn ensure_site_on(_url: &str, _path: &str) -> Result<String, ErrorDetail> {
-    Err(ErrorDetail::new(
-        ErrorKind::Network,
-        "ensure_site_on is only available on wasm32",
-    ))
-}
-
-/// Native stub — the `/api/site` fetch is wasm-only.
-#[cfg(not(target_arch = "wasm32"))]
-pub async fn ensure_site(_path: &str) -> Result<String, ErrorDetail> {
-    Err(ErrorDetail::new(
-        ErrorKind::Network,
-        "ensure_site is only available on wasm32",
-    ))
 }
 
 /// The request-context headers every host-relative `/api` request carries, so

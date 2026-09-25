@@ -565,7 +565,7 @@ mod tests {
         let device = state.read().await.profile.did();
         let (replacement, grant) = request_for(2, &device).await;
 
-        let _ = super::super::account::unlink(State(state.clone()), None)
+        let _ = crate::router::profiles::sign_out(&state, None)
             .await
             .unwrap();
         let Json(status) = save(State(state.clone()), Json(replacement)).await.unwrap();
@@ -622,7 +622,7 @@ mod tests {
             encryption_key: None,
         };
 
-        let _ = super::super::account::unlink(State(state.clone()), None)
+        let _ = crate::router::profiles::sign_out(&state, None)
             .await
             .unwrap();
         let Json(status) = save(State(state.clone()), Json(request)).await.unwrap();

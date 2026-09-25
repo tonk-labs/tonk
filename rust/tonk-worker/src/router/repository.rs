@@ -11,12 +11,7 @@ use dialog_capability::Subject;
 use dialog_effects::Use;
 use std::collections::HashMap;
 
-use ::axum::{
-    Json,
-    body::Bytes,
-    extract::{Path, State},
-    http::{HeaderMap, StatusCode},
-};
+use ::axum::{Json, body::Bytes, extract::State};
 use axum_wasm_macros::wasm_compat;
 use dialog_credentials::{Credential, Ed25519Signer, Ed25519Verifier};
 use dialog_effects::space::{Space, SpaceExt as _};
@@ -227,75 +222,33 @@ pub struct RepositoryInfo {
     pub members: Vec<MemberInfo>,
 }
 
-/// Create a repository with optional remote and branch configuration.
+/// Create a repository with `configuration` and seed it in the background,
+/// the way the create command does — the fixture tests build spaces with.
 ///
-/// Semantics:
-/// - Always creates a fresh repository with a freshly minted identity.
-///   The `{repo}` path segment is the display label; the repository's
-///   routing key is its credential's DID suffix. There is no create-time
-///   collision — two spaces may share a label.
-/// - On success, delegates repository access to the current profile,
-///   sets up any remotes from the body, creates each listed branch,
-///   and wires up upstream tracking when specified.
-/// - Returns `201 Created` with a [`RepositoryInfo`] body whose `name`
-///   is the new routing key.
-#[wasm_compat]
-pub async fn put_repository(
-    State(state): State<AppState>,
-    Path(display_name): Path<String>,
-    _headers: HeaderMap,
-    body_bytes: Bytes,
-) -> Result<(StatusCode, Json<RepositoryInfo>), TonkWorkerError> {
-    log!("PUT /api/repository/{}", display_name);
-
-    // Parse body manually so JSON errors return our structured
-    // `TonkWorkerError::Router` (JSON body) rather than axum's
-    // default plain-text `JsonRejection`.
-    let configuration = if body_bytes.is_empty() {
-        RepositoryConfiguration::default()
-    } else {
-        serde_json::from_slice(&body_bytes)
-            .map_err(|e| TonkWorkerError::Router(format!("Invalid request body: {}", e)))?
-    };
-
+/// The identity is freshly minted, so `display_name` is only a label and
+/// two spaces may share one. Returns the new repository's info, whose
+/// `name` is its routing key.
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn create_space_for_test(
+    state: &AppState,
+    display_name: &str,
+    configuration: &RepositoryConfiguration,
+) -> Result<RepositoryInfo, TonkWorkerError> {
     let tonk = state.write().await;
-
-    // Create the repository and everything that comes with it —
-    // delegation, remotes, branches, upstreams, meta facts. This
-    // records the replica in the profile with `status: blank` (see
-    // `record_replica_in_profile`), so the Hub card appears in its
-    // installing state right away. The display label is seeded into the
-    // repository's own `tonk/repository` concept; the routing key is the
-    // new repository's DID suffix, derived from the returned handle.
-    let repository = create_repository(&tonk, &display_name, &configuration).await?;
+    let repository = create_repository(&tonk, display_name, configuration).await?;
     let subject = repository.did();
     let key = subject.repo_key().to_owned();
     let info = build_repository_info(&tonk, &key, &repository).await;
-
-    // A space created with a remote in this one shot is not escrowed for
-    // cross-device restore: the account-holder create flow attaches its
-    // remote through `enable_sync_inner` (which does escrow it), never
-    // this path, so only non-UI callers reach here with a remote. Backing
-    // it up would need the sync URL recovered from the parsed
-    // configuration; left as a follow-up. Fails open — the space works
-    // locally, it just will not follow the user to another device.
-
-    // Seed asynchronously, then flip the replica to `initialized`.
-    // Seeding the standard library is the slow part (~seconds of
-    // prolly-tree commits); doing it inline would block this response
-    // and starve the page's asset/Web Awesome loads on the single SW
-    // thread. Instead we return now and seed in the background, then
-    // stamp `status: initialized` so the Hub card settles. The reactor
-    // re-polls the profile subscription on that commit, so the card
-    // updates without the page polling.
-    //
-    // The spawned task takes an owned `AppState` (the lock is released
-    // when `tonk` drops at the end of this scope) and re-acquires it.
     drop(tonk);
     let branches: Vec<String> = configuration.branch.keys().cloned().collect();
-    spawn_seed(state, display_name, key, subject, branches);
-
-    Ok((StatusCode::CREATED, Json(info)))
+    spawn_seed(
+        state.clone(),
+        display_name.to_owned(),
+        key,
+        subject,
+        branches,
+    );
+    Ok(info)
 }
 
 /// The attribute carrying the optional sync URL on a `space/create` or
@@ -3410,12 +3363,8 @@ where
 }
 
 /// Spawn the background seed + status flip for a freshly created
-/// repository. Returns immediately; the work runs after the PUT
-/// response is sent.
-///
-/// Native builds have no service-worker scope (and no `spawn_local`
-/// runtime here), so they no-op — the seed/status path is browser-only.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+/// test repository. Returns immediately; the work runs in the background.
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 fn spawn_seed(
     state: AppState,
     display_name: String,
@@ -3432,16 +3381,6 @@ fn spawn_seed(
         let tonk = state.read().await;
         tonk.reactor.run_scheduled_polls(&tonk.operator).await;
     });
-}
-
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-fn spawn_seed(
-    _state: AppState,
-    _display_name: String,
-    _key: String,
-    _subject: Did,
-    _branches: Vec<String>,
-) {
 }
 
 /// Whether `subject` still has a recorded [`Replica`] on the profile's
@@ -6129,28 +6068,19 @@ async fn reconcile_prepared_profile_library(
     })
 }
 
-/// Load a repository by name and return its [`RepositoryInfo`].
-///
-/// Handler for `GET /api/repository/{repo}`. 404s when the
-/// repository can't be loaded.
-#[wasm_compat]
-pub async fn get_repository(
-    State(state): State<AppState>,
-    Path(name): Path<String>,
-) -> Result<Json<RepositoryInfo>, TonkWorkerError> {
-    log!("GET /api/repository/{}", name);
-
+/// Load a repository by name and return its [`RepositoryInfo`], mounting a
+/// directory-listed space this device has not replicated yet — the lazy
+/// adoption the query route performs, so a second device can address a
+/// space straight from the synced account directory. `NotFound` when the
+/// repository can't be loaded, carrying why the mount did not produce it.
+pub(crate) async fn load_repository_info(
+    state: &AppState,
+    name: &str,
+) -> Result<RepositoryInfo, TonkWorkerError> {
     let tonk = state.read().await;
-
-    // First use of a directory-listed space this device has not
-    // replicated mounts it on demand — same lazy adoption the query
-    // route performs, so a second device can address a space straight
-    // from the synced account directory. A no-op for mounted repos.
-    // The outcome rides the not-found error: a swallowed mount failure
-    // turns an explainable miss into a bare 404.
-    let mount = match super::adopt::ensure_space_mounted(&tonk, &name).await {
+    let mount = match super::adopt::ensure_space_mounted(&tonk, name).await {
         Ok(true) => {
-            super::adopt::schedule_seed_upgrade(&tonk, state.clone(), &name).await;
+            super::adopt::schedule_seed_upgrade(&tonk, state.clone(), name).await;
             None
         }
         Ok(false) => Some("the account directory holds no mountable record for it".to_string()),
@@ -6163,7 +6093,7 @@ pub async fn get_repository(
     };
     let repository = tonk
         .profile
-        .repository(&name)
+        .repository(name)
         .load()
         .perform(&tonk.operator)
         .await
@@ -6174,38 +6104,7 @@ pub async fn get_repository(
                 .unwrap_or_default();
             TonkWorkerError::NotFound(format!("Repository '{}' not found{}: {}", name, mount, e))
         })?;
-
-    let info = build_repository_info(&tonk, &name, &repository).await;
-    Ok(Json(info))
-}
-
-/// Return [`RepositoryInfo`] for the profile-as-repository.
-///
-/// Handler for `GET /api/profile/repository`. The profile lives
-/// outside the named-repo namespace, so it has its own route.
-/// Mirrors the data the `info.profile` field of
-/// `GET /api/profile` carries — exposed separately so the UI can
-/// `.refetch()` just the profile-as-repository view after
-/// branch-level operations without re-fetching the full profile
-/// payload (with its replica list).
-#[wasm_compat]
-pub async fn get_profile_repository(
-    State(state): State<AppState>,
-) -> Result<Json<RepositoryInfo>, TonkWorkerError> {
-    log!("GET /api/profile/repository");
-
-    let tonk = state.read().await;
-    let repository = tonk
-        .reactor
-        .profile_repository()
-        .acquire(&tonk.operator)
-        .await
-        .map_err(|e| {
-            TonkWorkerError::Internal(format!("Failed to acquire profile repository: {e}"))
-        })?
-        .repository();
-    let info = build_repository_info(&tonk, &tonk.profile_name, &repository).await;
-    Ok(Json(info))
+    Ok(build_repository_info(&tonk, name, &repository).await)
 }
 
 /// The branch a repository's own `tonk/repository` name is seeded onto.
@@ -6960,87 +6859,26 @@ where
     Ok(effective)
 }
 
-/// Attach remotes (and branch upstreams) to an **existing**
-/// repository — the opt-in counterpart to wiring a remote at create
-/// time.
-///
-/// `POST /api/repository/{repo}/remote`. The body is a
-/// [`RepositoryConfiguration`] — the same shape `PUT` accepts — so a
-/// caller advertises the remote and the branch that tracks it exactly
-/// as it would at creation:
-///
-/// ```json
-/// { "remote": { "origin": { "address": … } },
-///   "branch": { "main": { "upstream": { "remote": "origin", "branch": "main" } } } }
-/// ```
-///
-/// Idempotent: a remote that already exists keeps its address and
-/// subject (it is not recreated), and a branch already tracking the
-/// requested upstream is left untouched (so its sync divergence base
-/// isn't reset). Calling twice is a safe no-op.
-///
-/// Why this is opt-in rather than baked into `create_space`: the
-/// access-service remote is useful for exercising the sync/invite
-/// loop now, but production provisions sync differently. Keeping the
-/// attach an explicit, isolated action means prod swaps this one call
-/// instead of unpicking it from the create path, and a freshly
-/// created repo stays local until something explicitly gives it a
-/// remote.
-#[wasm_compat]
-pub async fn attach_remote(
-    State(state): State<AppState>,
-    Path(name): Path<String>,
-    body_bytes: Bytes,
-) -> Result<Json<RepositoryInfo>, TonkWorkerError> {
-    log!("POST /api/repository/{}/remote", name);
-
-    let configuration: RepositoryConfiguration = if body_bytes.is_empty() {
-        RepositoryConfiguration::default()
-    } else {
-        serde_json::from_slice(&body_bytes)
-            .map_err(|e| TonkWorkerError::Router(format!("Invalid request body: {e}")))?
-    };
-
+/// Wire `configuration`'s remotes and upstreams onto an existing
+/// repository, idempotently — the fixture tests point a space at a remote
+/// with. Production attaches through the enable-sync command, which also
+/// provisions the space at the account's access service.
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn attach_remote_config(
+    state: &AppState,
+    name: &str,
+    configuration: &RepositoryConfiguration,
+) -> Result<RepositoryInfo, TonkWorkerError> {
     let tonk = state.write().await;
-
     let repository = tonk
         .profile
-        .repository(&name)
+        .repository(name)
         .load()
         .perform(&tonk.operator)
         .await
-        .map_err(|e| {
-            TonkWorkerError::NotFound(format!("Repository '{}' not found: {}", name, e))
-        })?;
-
-    // Provision before attaching, for the same reason
-    // [`enable_sync_inner`] does: a space created without an active
-    // customer has no consumer row, and an upstream without one syncs to
-    // a refused presign. Best effort here rather than fatal — this route
-    // is also how a space is pointed at a remote that is not the
-    // account's access service (a self-hosted endpoint, a test server),
-    // where `/provider/add` against our own service is beside the point.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    if !configuration.remote.is_empty() {
-        match space_root_prefix(&tonk, &repository.did()).await {
-            Ok(prefix) => {
-                if let Err(error) =
-                    super::customer::provision_consumer(&tonk, &repository.did(), &prefix, None)
-                        .await
-                {
-                    log!("attach remote '{name}': provisioning skipped: {error}");
-                }
-            }
-            Err(error) => {
-                log!("attach remote '{name}': no root delegation to consent with: {error}")
-            }
-        }
-    }
-
-    ensure_remote_config(&tonk, &repository, &name, &configuration).await?;
-
-    let info = build_repository_info(&tonk, &name, &repository).await;
-    Ok(Json(info))
+        .map_err(|e| TonkWorkerError::NotFound(format!("Repository '{name}' not found: {e}")))?;
+    ensure_remote_config(&tonk, &repository, name, configuration).await?;
+    Ok(build_repository_info(&tonk, name, &repository).await)
 }
 
 /// Scaffold regression tests: `core.yaml` makes a repository renderable
@@ -9238,9 +9076,7 @@ mod tests {
         );
     }
 
-    use axum::body::Body;
-    use axum::http::{Request, StatusCode};
-    use tower::ServiceExt;
+    use axum::http::StatusCode;
 
     use axum::Router;
     use dialog_remote_ucan::UcanAddress;
@@ -9252,7 +9088,7 @@ mod tests {
     };
     use crate::router::evaluate::evaluate_body;
     use crate::router::tests::{content_invitations, put_repo, put_repo_info};
-    use crate::router::{AppState, CreateInviteResponse, api_router_with_state, tests::test_state};
+    use crate::router::{AppState, api_router_with_state, tests::test_state};
 
     /// The seed sealed to the account is the only copy of a created
     /// space's secret: the repository stores the verifier, the space still
@@ -9268,8 +9104,9 @@ mod tests {
         use dialog_varsig::Principal as _;
         use tonk_schema::prelude::DidExt as _;
 
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let key = put_repo(&app, "public-key-space").await;
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
+        let key = put_repo(&state, "public-key-space").await;
         let tonk = state.read().await;
         let repository: dialog_repository::Repository = tonk
             .profile
@@ -9349,35 +9186,14 @@ mod tests {
     const CORE: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
 
     /// Create a fresh repo and return its router, wrapped state, and
-    /// minted routing key. PUTs a branchless `{}` so the worker seeds
+    /// minted routing key. Creates it branchless so the worker seeds
     /// nothing — the test drives seeding / attaching itself. The `main`
     /// branch is created on first write. `label` is only a display
     /// name; every create mints a fresh identity, so runs never collide.
     async fn fresh_repo(label: &str) -> (Router, AppState, String) {
         let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/api/repository/{label}"))
-                    .method("PUT")
-                    .header("content-type", "application/json")
-                    .body(Body::from("{}"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let status = response.status();
-        assert_eq!(
-            status,
-            StatusCode::CREATED,
-            "expected 201 from PUT /api/repository/{label}, got {status}",
-        );
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let info: RepositoryInfo = serde_json::from_slice(&body).unwrap();
-        (app, state, info.name)
+        let key = put_repo(&state, label).await;
+        (app, state, key)
     }
 
     /// A profile holding one space, signed out of its account.
@@ -9390,9 +9206,9 @@ mod tests {
     async fn rename_mirrors_the_name_into_the_account_directory() {
         use dialog_query::{Output as _, Query, Term};
 
-        let (app, state, key) = fresh_repo("rename-directory-mirror").await;
+        let (_app, state, key) = fresh_repo("rename-directory-mirror").await;
         attach(
-            &app,
+            &state,
             &key,
             &origin_config("https://sync.example.test/ucan/"),
         )
@@ -9436,9 +9252,9 @@ mod tests {
         use dialog_query::{Output as _, Query, Term};
         use tonk_schema::domain::remote::Origin as RemoteOrigin;
 
-        let (app, state, key) = fresh_repo("preserved-directory-upstream").await;
+        let (_app, state, key) = fresh_repo("preserved-directory-upstream").await;
         attach(
-            &app,
+            &state,
             &key,
             &origin_config("https://actual-sync.example.test/ucan/"),
         )
@@ -9955,31 +9771,12 @@ mod tests {
     /// the rename was issued.
     #[dialog_common::test]
     async fn it_restamps_member_name_across_all_spaces() {
-        let (app, state, key_a) = fresh_repo("rename-all-a").await;
+        let (_app, state, key_a) = fresh_repo("rename-all-a").await;
 
         // A second space in the same profile/state. Both are created before
         // signing out, because creating one is exactly what the account gate
         // refuses afterwards.
-        let key_b = {
-            let response = app
-                .clone()
-                .oneshot(
-                    Request::builder()
-                        .uri("/api/repository/rename-all-b")
-                        .method("PUT")
-                        .header("content-type", "application/json")
-                        .body(Body::from("{}"))
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::CREATED);
-            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-                .await
-                .unwrap();
-            let info: RepositoryInfo = serde_json::from_slice(&body).unwrap();
-            info.name
-        };
+        let key_b = put_repo(&state, "rename-all-b").await;
         {
             let tonk = state.read().await;
             crate::router::account::detach_test_account(&tonk)
@@ -10513,40 +10310,26 @@ block/insert!:
             )
     }
 
-    /// POST a remote-attach config to `repo` and decode the resulting
+    /// Attach a remote config to `repo` and return the resulting
     /// `RepositoryInfo`.
-    async fn attach(app: &Router, repo: &str, config: &RepositoryConfiguration) -> RepositoryInfo {
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/api/repository/{repo}/remote"))
-                    .method("POST")
-                    .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(config).unwrap()))
-                    .unwrap(),
-            )
+    async fn attach(
+        state: &AppState,
+        repo: &str,
+        config: &RepositoryConfiguration,
+    ) -> RepositoryInfo {
+        super::attach_remote_config(state, repo, config)
             .await
-            .unwrap();
-        assert_eq!(
-            response.status(),
-            StatusCode::OK,
-            "attach should return 200"
-        );
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        serde_json::from_slice(&body).unwrap_or_else(|e| panic!("decode RepositoryInfo: {e}"))
+            .expect("attach should succeed")
     }
 
     /// Attaching the access-service remote to an existing, remote-less
     /// repo wires `origin` and points `main` at `origin/main`.
     #[dialog_common::test]
     async fn it_attaches_a_remote_and_tracks_main() {
-        let (app, _state, repo) = fresh_repo("test-attach-remote").await;
+        let (_app, state, repo) = fresh_repo("test-attach-remote").await;
         let repo = repo.as_str();
 
-        let info = attach(&app, repo, &origin_config("https://example.test/ucan/")).await;
+        let info = attach(&state, repo, &origin_config("https://example.test/ucan/")).await;
 
         assert!(
             info.remote.contains_key("origin"),
@@ -10570,12 +10353,12 @@ block/insert!:
     /// `origin/main` (no duplicate-remote error, no reset).
     #[dialog_common::test]
     async fn it_attaches_remote_idempotently() {
-        let (app, _state, repo) = fresh_repo("test-attach-remote-idempotent").await;
+        let (_app, state, repo) = fresh_repo("test-attach-remote-idempotent").await;
         let repo = repo.as_str();
         let config = origin_config("https://example.test/ucan/");
 
-        attach(&app, repo, &config).await;
-        let info = attach(&app, repo, &config).await;
+        attach(&state, repo, &config).await;
+        let info = attach(&state, repo, &config).await;
 
         assert!(info.remote.contains_key("origin"));
         let upstream = info
@@ -10593,47 +10376,18 @@ block/insert!:
     /// meta, not a `remote=` URL parameter.
     #[dialog_common::test]
     async fn it_mints_an_invite_with_a_remote_after_attach() {
-        let (app, _state, repo) = fresh_repo("test-attach-then-invite").await;
+        let (app, state, repo) = fresh_repo("test-attach-then-invite").await;
         let repo = repo.as_str();
 
-        attach(&app, repo, &origin_config("https://example.test/ucan/")).await;
+        let info = attach(&state, repo, &origin_config("https://example.test/ucan/")).await;
+        let minted = crate::router::tests::mint_invite_for(&app, repo, info.subject.as_str()).await;
 
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/api/repository/{repo}/invite"))
-                    .method("POST")
-                    .header("content-type", "application/json")
-                    // The link's prefix comes from the request origin, which
-                    // the browser-to-axum conversion stamps on every real
-                    // request; a hand-built one has to supply it.
-                    .extension(
-                        crate::axum::RequestOrigin::parse("https://local.example/invite")
-                            .expect("valid origin"),
-                    )
-                    .body(Body::from("{}"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            response.status(),
-            StatusCode::OK,
-            "invite mint should succeed"
-        );
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let invite: CreateInviteResponse =
-            serde_json::from_slice(&body).unwrap_or_else(|e| panic!("decode invite: {e}"));
-
+        let link: url::Url = minted.link.parse().expect("the minted link is a URL");
         assert!(
-            !invite.url().query_pairs().any(|(key, _)| key == "remote"),
-            "the endpoint rides inside the signed chain, not the URL; url was {}",
-            invite.url(),
+            !link.query_pairs().any(|(key, _)| key == "remote"),
+            "the endpoint rides inside the signed chain, not the URL; url was {link}",
         );
-        let parsed = tonk_invite::Invite::parse_url(invite.url().as_str())
+        let parsed = tonk_invite::Invite::parse_url(link.as_str())
             .await
             .expect("minted invite URL parses");
         assert_eq!(
@@ -10653,14 +10407,14 @@ block/insert!:
     async fn it_reconciles_the_cached_branch_handle_after_attach() {
         use dialog_repository::Upstream;
 
-        let (app, state, repo) = fresh_repo("test-attach-refreshes-cache").await;
+        let (_app, state, repo) = fresh_repo("test-attach-refreshes-cache").await;
         let repo = repo.as_str();
 
         // Seed through the reactor so `main` is cached with no upstream —
         // the state real space creation leaves behind before sync is on.
         seed(&state, repo, CORE).await;
 
-        attach(&app, repo, &origin_config("https://example.test/ucan/")).await;
+        attach(&state, repo, &origin_config("https://example.test/ucan/")).await;
 
         // The cached handle that sync reads must now report the upstream.
         let guard = state.read().await;
@@ -10699,7 +10453,7 @@ block/insert!:
         use dialog_query::{ConceptQuery, Query};
         use tonk_schema::meta::{Name, name::Referent};
 
-        let (app, state, repo) = fresh_repo("test-attach-keeps-subscriptions").await;
+        let (_app, state, repo) = fresh_repo("test-attach-keeps-subscriptions").await;
         let repo = repo.as_str();
         seed(&state, repo, CORE).await;
 
@@ -10751,7 +10505,7 @@ block/insert!:
         );
         while subscriber.receiver.try_recv().is_ok() {}
 
-        attach(&app, repo, &origin_config("https://example.test/ucan/")).await;
+        attach(&state, repo, &origin_config("https://example.test/ucan/")).await;
 
         let guard = state.read().await;
         let session = guard
@@ -10940,15 +10694,16 @@ block/insert!:
     /// joined repository and delegate from the authority accepted at join.
     #[dialog_common::test]
     async fn it_mints_from_the_fabb_after_joining_a_space() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
         let (url, key) = crate::router::join::tests::handcrafted_invite_url(121, 122).await;
         assert_eq!(
-            crate::router::join::tests::post_join(&app, &url).await,
+            crate::router::join::tests::post_join(&state, &url).await,
             StatusCode::CREATED,
             "the member first joins the space",
         );
 
-        let _ = post_remote(&app, &key, "https://sync.example.test/ucan/", None).await;
+        let _ = post_remote(&state, &key, "https://sync.example.test/ucan/", None).await;
         let subject: dialog_varsig::Did = key.parse().expect("joined subject DID");
         {
             let tonk = state.read().await;
@@ -11007,7 +10762,7 @@ block/insert!:
     async fn it_restamps_state_self_after_invite_clears_the_overlay() {
         use dialog_query::{Output as _, Query, Term};
 
-        let (app, state, key) = fresh_repo("test-invite-restamps-self").await;
+        let (_app, state, key) = fresh_repo("test-invite-restamps-self").await;
 
         // Attach a remote first — `run_invite` refuses to mint (and never
         // reaches the credential overlay write this test exercises) against
@@ -11023,23 +10778,9 @@ block/insert!:
                 "main",
                 BranchConfiguration::default().upstream("origin", "main"),
             );
-        let attach = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/api/repository/{key}/remote"))
-                    .method("POST")
-                    .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&config).unwrap()))
-                    .unwrap(),
-            )
+        super::attach_remote_config(&state, &key, &config)
             .await
-            .unwrap();
-        assert_eq!(
-            attach.status(),
-            StatusCode::OK,
-            "remote attach should succeed"
-        );
+            .expect("remote attach should succeed");
 
         // Prime state:self so we have something to lose.
         {
@@ -11155,8 +10896,9 @@ block/insert!:
     /// attach with nothing to attach to.
     #[dialog_common::test]
     async fn it_refuses_to_mint_without_a_remote() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let key = put_repo(&app, "test-refuse-mint").await;
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
+        let key = put_repo(&state, "test-refuse-mint").await;
 
         run_invite_with_time(&state, &key, 1234.0).await;
 
@@ -11176,8 +10918,8 @@ block/insert!:
     /// stale share click with an account refusal and mint no authority.
     #[dialog_common::test]
     async fn it_refuses_to_mint_without_an_attached_account() {
-        let (app, state, key) = fresh_repo_signed_out("test-account-required-mint").await;
-        let _ = post_remote(&app, &key, "https://access.example.test/ucan/", None).await;
+        let (_app, state, key) = fresh_repo_signed_out("test-account-required-mint").await;
+        let _ = post_remote(&state, &key, "https://access.example.test/ucan/", None).await;
 
         run_invite_with_time(&state, &key, 4321.0).await;
 
@@ -11198,12 +10940,12 @@ block/insert!:
         );
     }
 
-    /// POST a remote config to `key`, exactly as the topbar and the share
-    /// prompt's confirm do. Unlike [`attach_remote`] it names no relay
+    /// Attach a remote config to `key`, the shape the topbar and the share
+    /// prompt's confirm wire. Unlike [`attach_remote`] it names no relay
     /// unless asked, so a test can produce the pre-in-band-revocation shape:
     /// a space that syncs but cannot mint.
     async fn post_remote(
-        app: &Router,
+        state: &AppState,
         key: &str,
         endpoint: &str,
         relay: Option<&str>,
@@ -11220,23 +10962,9 @@ block/insert!:
                 "main",
                 BranchConfiguration::default().upstream("origin", "main"),
             );
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/api/repository/{key}/remote"))
-                    .method("POST")
-                    .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&config).unwrap()))
-                    .unwrap(),
-            )
+        super::attach_remote_config(state, &key, &config)
             .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK, "remote attach succeeds");
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        serde_json::from_slice(&body).unwrap()
+            .expect("remote attach succeeds")
     }
 
     /// A second attach does not repoint a remote that is already there.
@@ -11253,9 +10981,10 @@ block/insert!:
     /// minting without one is the ordinary case, asserted here.
     #[dialog_common::test]
     async fn it_does_not_repoint_a_remote_that_is_already_attached() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let key = put_repo(&app, "test-relay-repair").await;
-        let _ = post_remote(&app, &key, "https://access.example.test/ucan/", None).await;
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
+        let key = put_repo(&state, "test-relay-repair").await;
+        let _ = post_remote(&state, &key, "https://access.example.test/ucan/", None).await;
 
         run_invite_with_time(&state, &key, 11.0).await;
 
@@ -11270,7 +10999,7 @@ block/insert!:
         );
 
         let info = post_remote(
-            &app,
+            &state,
             &key,
             "https://a-different-origin.example.test/ucan/",
             None,
@@ -11291,8 +11020,8 @@ block/insert!:
     async fn it_does_not_auto_attach_over_any_existing_remote() {
         use dialog_repository::RepositoryExt as _;
 
-        let (app, state, repo) = fresh_repo("test-account-reconcile-preserves-remote").await;
-        let _ = post_remote(&app, &repo, "https://existing.example.test/ucan/", None).await;
+        let (_app, state, repo) = fresh_repo("test-account-reconcile-preserves-remote").await;
+        let _ = post_remote(&state, &repo, "https://existing.example.test/ucan/", None).await;
 
         let tonk = state.read().await;
         assert!(
@@ -11365,8 +11094,9 @@ block/insert!:
     /// attribute and so mints a new space instead; this guards against that.
     #[dialog_common::test]
     async fn it_attaches_the_remote_to_the_existing_space() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let (key, subject) = put_repo_info(&app, "test-enable-sync").await;
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
+        let (key, subject) = put_repo_info(&state, "test-enable-sync").await;
         let before = existing_space_labels(&state).await.len();
 
         dispatch_enable_sync(&state, &subject, "https://example.test/ucan/", false, 1.0).await;
@@ -11680,8 +11410,9 @@ block/insert!:
     /// not on an explicit request to sync.
     #[dialog_common::test]
     async fn it_attaches_sync_even_when_provisioning_cannot_run() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let (key, subject) = put_repo_info(&app, "test-attach-without-provision").await;
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
+        let (key, subject) = put_repo_info(&state, "test-attach-without-provision").await;
 
         dispatch_enable_sync(&state, &subject, "https://example.test/ucan/", false, 1.0).await;
 
@@ -11694,8 +11425,9 @@ block/insert!:
     /// Without the `share` marker the handler attaches and stops.
     #[dialog_common::test]
     async fn it_mints_only_when_asked_to_share() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let (key, subject) = put_repo_info(&app, "test-enable-sync-no-share").await;
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
+        let (key, subject) = put_repo_info(&state, "test-enable-sync-no-share").await;
 
         dispatch_enable_sync(&state, &subject, "https://example.test/ucan/", false, 1.0).await;
 
@@ -11717,8 +11449,9 @@ block/insert!:
     /// With the marker, the attach is followed by a mint — the single-click path.
     #[dialog_common::test]
     async fn it_mints_after_attaching_when_asked_to_share() {
-        let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let (key, subject) = put_repo_info(&app, "test-enable-sync-share").await;
+        let state: crate::router::AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
+        let (key, subject) = put_repo_info(&state, "test-enable-sync-share").await;
 
         dispatch_enable_sync(&state, &subject, "https://example.test/ucan/", true, 1.0).await;
 
@@ -12103,9 +11836,10 @@ mod seed_tests {
     async fn it_reports_whether_an_update_is_waiting() {
         const LIBRARY: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
 
-        let (app, state, _lsp) =
-            crate::router::api_router_with_state(crate::router::tests::test_state().await);
-        let key = crate::router::tests::put_repo(&app, "seed-check").await;
+        let state: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(
+            crate::router::tests::test_state().await,
+        ));
+        let key = crate::router::tests::put_repo(&state, "seed-check").await;
         let tonk = state.read().await;
 
         let subject: dialog_varsig::Did = {
@@ -12254,9 +11988,10 @@ mod seed_tests {
     async fn it_records_the_commit_that_carries_it() {
         use dialog_query::{Output as _, Query, Term};
 
-        let (app, state, _lsp) =
-            crate::router::api_router_with_state(crate::router::tests::test_state().await);
-        let key = crate::router::tests::put_repo(&app, "seed-self-named").await;
+        let state: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(
+            crate::router::tests::test_state().await,
+        ));
+        let key = crate::router::tests::put_repo(&state, "seed-self-named").await;
         let tonk = state.read().await;
 
         const LIBRARY: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
@@ -12335,9 +12070,10 @@ mod seed_tests {
     async fn it_replaces_the_previous_seed_without_stranding_facts() {
         use dialog_query::{Output as _, Query, Term};
 
-        let (app, state, _lsp) =
-            crate::router::api_router_with_state(crate::router::tests::test_state().await);
-        let key = crate::router::tests::put_repo(&app, "seed-upgrade").await;
+        let state: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(
+            crate::router::tests::test_state().await,
+        ));
+        let key = crate::router::tests::put_repo(&state, "seed-upgrade").await;
         let tonk = state.read().await;
 
         // An "old seed": two routes, one of which the new seed keeps.
@@ -12438,14 +12174,15 @@ route!: &probe/dropped
         const CORE: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
         const PROFILE: &str = include_str!("../../../tonk-core/assets/library/profile.yaml");
 
-        let (app, state, _lsp) =
-            crate::router::api_router_with_state(crate::router::tests::test_state().await);
+        let state: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(
+            crate::router::tests::test_state().await,
+        ));
 
         for (name, library, url) in [
             ("core", CORE, super::STANDARD_LIBRARY_URL),
             ("profile", PROFILE, super::PROFILE_LIBRARY_URL),
         ] {
-            let key = crate::router::tests::put_repo(&app, &format!("eval-{name}")).await;
+            let key = crate::router::tests::put_repo(&state, &format!("eval-{name}")).await;
             let tonk = state.read().await;
 
             let outcome = crate::router::evaluate::evaluate_body(
@@ -12492,9 +12229,10 @@ route!: &probe/dropped
 
         const LIBRARY: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
 
-        let (app, state, _lsp) =
-            crate::router::api_router_with_state(crate::router::tests::test_state().await);
-        let key = crate::router::tests::put_repo(&app, "seed-components").await;
+        let state: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(
+            crate::router::tests::test_state().await,
+        ));
+        let key = crate::router::tests::put_repo(&state, "seed-components").await;
 
         let tonk = state.read().await;
 
