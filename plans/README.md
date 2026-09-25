@@ -25,3 +25,15 @@ reinterpret ordinary links as tool connections; redelegate agent invitations to
 a shared CLI device key. Each obscures the explicit person-versus-tool boundary
 or changes the agreed invitation identity. These are design decisions, not new
 audit findings. Existing cold-start and Welcome plans are unchanged.
+
+## FABB v0.17.0 update
+
+| Plan | Priority | Status | Execution order |
+| --- | --- | --- | --- |
+| [005: Update the in-space UI to FABB v0.17.0](005-fabb-v017-ui-update.md) | P1 | PARTIAL | Bar, attached panels and contained tasks implemented; member graph awaits authoritative relationship/activity data |
+
+Grounded in Tonk `d4003e8d6` and Gooey `f74da0e` on 2026-09-22. Full members-map parity depends on an authoritative relationship/activity data contract; the current roster projection does not provide it.
+
+Earlier `plan/fabb-conformance.md`, `plan/fabb-mobile.md`, and `plan/fabb-share.md` remain historical references; 005 supersedes their conflicting in-space anatomy and presentation targets when executed. Preserve their still-applicable lifecycle, authority and viewport guarantees.
+
+Considered and excluded: changes/review/history (outside the current reference MVP); wholesale Hub restyling (outside this FABB-focused plan); importing mock authentication or fabricated member activity (not production data contracts).

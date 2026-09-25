@@ -401,6 +401,19 @@ fn it_defaults_the_space_alias_to_blank_in_core() {
 }
 
 #[dialog_common::test]
+fn a_blank_space_waits_for_explicit_agent_invitation_intent() {
+    let blank = STANDARD_LIBRARY
+        .split("concept!: &blank")
+        .nth(1)
+        .and_then(|tail| tail.split("# The Enable-sync command").next())
+        .expect("blank-space declaration");
+    assert!(blank.contains("class=\"blank-canvas\""));
+    assert!(!blank.contains("tonk:agent-handoff"));
+    assert!(!blank.contains("page-mount"));
+    assert!(!blank.contains("Generating link"));
+}
+
+#[dialog_common::test]
 fn it_distinguishes_leaving_from_deleting_a_space() {
     let rendered_words = PROFILE_LIBRARY
         .split_whitespace()

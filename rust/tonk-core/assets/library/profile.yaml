@@ -3964,7 +3964,7 @@ element!: &account-settings
           'authorize-device': 'Approved. Handing the terminal its access…',
         }[which] ?? 'Done.';
         const text = {
-          'pending-ceremony': `${subject}: waiting for your passkey…`,
+          'pending-ceremony': `${subject}: waiting for passkey…`,
           'working': `${subject}…`,
           'done': done,
           'refused': `${subject} did not finish: ${detail}`,
@@ -4075,12 +4075,12 @@ element!: &account-settings
             self.status('Signing out…');
           } else if (hit('[data-delete-account-submit]')) {
             self.querySelector('[data-delete-account-dialog]')?.close?.();
-            self.status('Waiting for your passkey…');
+            self.status('Waiting for passkey…');
           } else if (hit('[data-add-passkey]')) {
-            self.status('Waiting for your passkey…');
+            self.status('Waiting for passkey…');
           } else if (hit('[data-link-approve]')) {
             self.setAttribute('data-passkey-requested', '');
-            self.status('Waiting for your passkey…');
+            self.status('Waiting for passkey…');
           } else if (hit('[data-link-decline]')) {
             self.decline();
           }

@@ -196,7 +196,7 @@ mod tests {
           }
           throw Error('offline generation was not adopted');
         })()"#,
-                vec![],
+                Vec::new(),
             )
             .await?;
         let devtools = ChromeDevTools::new(driver.handle.clone());
@@ -1392,7 +1392,7 @@ mod tests {
     pub(crate) async fn run_cluster_login(driver: &WebDriver, email: &str) -> Result<()> {
         await_register_dialog(driver).await?;
         type_into_register_dialog(driver, email).await?;
-        await_register_action(driver, "log in with your passkey").await?;
+        await_register_action(driver, "log in with passkey").await?;
         let before = driver
             .execute("return performance.timeOrigin", Vec::new())
             .await?
@@ -1750,7 +1750,7 @@ mod tests {
         graft_prf_outputs(&device_b, &key_output, &kek_output).await?;
         raise_cluster_from_hub(&device_b, &env).await?;
         type_into_register_dialog(&device_b, email).await?;
-        await_register_action(&device_b, "log in with your passkey").await?;
+        await_register_action(&device_b, "log in with passkey").await?;
         click_register_action(&device_b).await?;
         // Refused by the gate, and parked rather than failed.
         await_row_value(&device_b, "email", "awaiting confirmation").await?;
@@ -1928,7 +1928,7 @@ mod tests {
         type_into_register_dialog(&second, EMAIL).await?;
         // The address is taken, so the offer is to sign in rather than
         // create — that much already worked.
-        await_register_action(&second, "log in with your passkey").await?;
+        await_register_action(&second, "log in with passkey").await?;
         click_register_action(&second).await?;
 
         // What this test exists for: a row naming the outstanding step,
@@ -2076,6 +2076,154 @@ mod tests {
             );
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_keeps_fabb_account_tasks_in_space(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        wait_for_service_worker(&driver).await?;
+        goto(&driver, env.tonk_web.as_str()).await?;
+        let key = create_space(&driver, "Account task space").await?;
+        await_url_containing(&driver, &format!("/space/{key}")).await?;
+        let original = driver.current_url().await?;
+
+        enter_guest(&driver).await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let mut last;
+        loop {
+            let opened = driver
+                .execute(
+                    r#"const bar=document.querySelector('tonk-fab');
+                       const root=bar?.shadowRoot;
+                       const space=root?.querySelector('.space');
+                       const account=root?.querySelector('.login');
+                       if (!bar || !root || !space || !account || account.hidden) {
+                         return {opened:false, bar:!!bar, root:!!root, space:!!space,
+                           account:!!account, accountHidden:account?.hidden ?? null};
+                       }
+                       space.click();
+                       account.click();
+                       return {opened:true};"#,
+                    Vec::new(),
+                )
+                .await?;
+            last = opened.json().clone();
+            if last["opened"].as_bool() == Some(true) {
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the FABB account entry did not become available: {last}"
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        driver.enter_default_frame().await?;
+        wait_for_displayed(&driver, "#tonk-register[data-fabb-task]").await?;
+        assert_eq!(driver.current_url().await?, original);
+        let form = driver
+            .execute(
+                r#"const host = document.querySelector('#tonk-register[data-fabb-task]');
+                   const label = host?.querySelector('#tonk-register-email-row .k');
+                   const input = host?.querySelector('#tonk-register-email');
+                   const status = host?.querySelector('#tonk-register-status');
+                   const head = host?.querySelector('#tonk-register-head');
+                   const disc = host?.querySelector('.fabb-task-disc');
+                   const title = host?.querySelector('.fabb-task-title');
+                   const dismiss = host?.querySelector('#tonk-register-dismiss');
+                   const action = host?.querySelector('#tonk-register-action');
+                   const explanation = host?.querySelector('.oexp');
+                   const inputStyle = input && getComputedStyle(input);
+                   const statusStyle = status && getComputedStyle(status);
+                   const explanationStyle = explanation && getComputedStyle(explanation);
+                   const rowStyle = label && getComputedStyle(label.closest('.orow'));
+                   const dismissRect = dismiss?.getBoundingClientRect();
+                   const actionRect = action?.getBoundingClientRect();
+                   return {
+                     label: label?.textContent?.trim() || '',
+                     status: status?.textContent?.trim() || '',
+                     placeholder: input?.getAttribute('placeholder'),
+                     inputHeight: input?.getBoundingClientRect().height || 0,
+                     inputFontSize: inputStyle?.fontSize || '',
+                     inputBorder: inputStyle?.borderTopWidth || '',
+                     inputOutline: inputStyle?.outlineWidth || '',
+                     inputOutlineStyle: inputStyle?.outlineStyle || '',
+                     inputBackground: inputStyle?.backgroundColor || '',
+                     statusFontSize: statusStyle?.fontSize || '',
+                     headHeight: head?.getBoundingClientRect().height || 0,
+                     discWidth: disc?.getBoundingClientRect().width || 0,
+                     titleRight: title?.getBoundingClientRect().right || 0,
+                     headRight: head?.getBoundingClientRect().right || 0,
+                     bodyBackground: rowStyle?.backgroundColor || '',
+                     explanationBackground: explanationStyle?.backgroundColor || '',
+                     explanationBorder: explanationStyle?.borderTopWidth || '',
+                     dismiss: dismiss?.textContent?.trim() || '',
+                     action: action?.textContent?.trim() || '',
+                     actionDisabled: action?.disabled ?? false,
+                     footerDomOrder: !!(dismiss?.compareDocumentPosition(action) & Node.DOCUMENT_POSITION_FOLLOWING),
+                     footerAligned: Math.abs((dismissRect?.top || 0) - (actionRect?.top || 0)) < 1,
+                     footerWidthDelta: Math.abs((dismissRect?.width || 0) - (actionRect?.width || 0))
+                   };"#,
+                Vec::new(),
+            )
+            .await?;
+        let form = form.json();
+        anyhow::ensure!(
+            form["label"] == "email address"
+                && form["status"]
+                    == "Enter your email to continue. We’ll check whether you already have a Tonk account."
+                && form["inputHeight"].as_f64() == Some(48.0)
+                && form["inputFontSize"] == "18px"
+                && form["placeholder"].is_null()
+                && form["inputBorder"] == "0px"
+                // An inactive headless window can retain activeElement while
+                // :focus-visible is false; its nonvisible "none" outline
+                // still reports the browser's 3px default outline width.
+                && (form["inputOutlineStyle"] == "none"
+                    || (form["inputOutlineStyle"] == "solid" && form["inputOutline"] == "2px"))
+                && form["inputBackground"] == form["bodyBackground"]
+                && form["statusFontSize"] == "18px"
+                && form["headHeight"].as_f64() == Some(48.0)
+                && form["discWidth"].as_f64() == Some(18.0)
+                && (form["headRight"].as_f64().unwrap_or_default()
+                    - form["titleRight"].as_f64().unwrap_or_default()
+                    - 18.0)
+                    .abs()
+                    < 1.0
+                && form["bodyBackground"] == form["explanationBackground"]
+                && form["explanationBorder"] == "0px"
+                && form["dismiss"] == "cancel"
+                && form["action"] == "continue"
+                && form["actionDisabled"] == true
+                && form["footerDomOrder"] == true
+                && form["footerAligned"] == true
+                && form["footerWidthDelta"].as_f64().unwrap_or(f64::MAX) < 1.0,
+            "the contained account form drifted from the FABB reference: {form}"
+        );
+
+        driver
+            .action_chain()
+            .send_keys(Key::Escape)
+            .perform()
+            .await?;
+        wait_for_absent(&driver, "#tonk-register").await?;
+        assert_eq!(driver.current_url().await?, original);
+        enter_guest(&driver).await?;
+        let restored = driver
+            .execute(
+                r#"const bar=document.querySelector('tonk-fab');
+                   return !!bar && !bar.hasAttribute('data-task-hosted') &&
+                     !bar.hasAttribute('aria-busy');"#,
+                Vec::new(),
+            )
+            .await?;
+        anyhow::ensure!(
+            restored.json() == true,
+            "the FABB did not resume after cancellation"
+        );
+        driver.enter_default_frame().await?;
 
         driver.quit().await?;
         Ok(())
@@ -2530,7 +2678,7 @@ mod tests {
 
         // The taken address offers sign-in...
         type_into_register_dialog(&driver, existing_email).await?;
-        await_register_action(&driver, "log in with your passkey").await?;
+        await_register_action(&driver, "log in with passkey").await?;
         assert_eq!(
             credential_count(&driver, &authenticator_id).await?,
             0,
@@ -3150,21 +3298,28 @@ mod tests {
         // anything ever renders the answer. The dialog shipped with a
         // write and no read, latching on "Checking…" forever, and that
         // test stayed green throughout.
-        // The bar offers the account row, not the copy row: nothing is
-        // registered. That is the visible half of the account
+        // The bar offers an account gate: nothing is registered.
+        // That is the visible half of the account
         // subscription — when its query failed, no frame ever arrived
-        // and the bar sat on this row even after someone registered.
-        await_share_row(&driver, "account").await?;
+        // and the bar kept requiring an account even after someone registered.
+        await_share_action(&driver, "account").await?;
         open_register_dialog(&driver).await?;
 
-        // Nothing is offered until the lookup answers. A ceremony
+        // No ceremony can run until the lookup answers. A ceremony
         // started before that runs creation against an address that
         // might already have an account, which fails at the end and
         // leaves an orphan passkey.
         let idle = register_action_label(&driver).await?;
+        let action_disabled = driver
+            .execute(
+                r#"return document.querySelector('#tonk-register-action')?.disabled ?? false;"#,
+                Vec::new(),
+            )
+            .await?;
         assert!(
-            idle.is_empty(),
-            "the action row must stay folded until the answer, got {idle:?}",
+            idle.is_empty() || (idle == "continue" && action_disabled.json() == true),
+            "the account action must stay unavailable until the answer, got {idle:?} (disabled: {})",
+            action_disabled.json(),
         );
 
         type_into_register_dialog(&driver, "nobody@example.com").await?;
@@ -3223,9 +3378,7 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_replaces_agent_link_progress_with_the_account_handoff_refusal(
-        env: TestEnvironment,
-    ) -> Result<()> {
+    async fn it_keeps_agent_invitation_out_of_the_blank_canvas(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
         driver.goto(env.tonk_web.as_str()).await?;
         let before = space_keys(&driver).await?;
@@ -3233,24 +3386,44 @@ mod tests {
         let key = await_new_space(&driver, &before).await?;
         await_url_containing(&driver, &format!("/space/{key}")).await?;
         enter_space_view(&driver).await?;
-
-        wait_for_displayed(&driver, "[data-agent-handoff-status]").await?;
-        let canvas = element(&driver, ".blank-canvas__deeplink")
-            .await?
-            .text()
+        wait_for_displayed(&driver, ".blank-canvas").await?;
+        let canvas = driver
+            .execute(
+                r#"return {
+                    inviteMounts: document.querySelectorAll('.blank-canvas page-mount').length,
+                    deeplinks: document.querySelectorAll('.blank-canvas__deeplink').length,
+                    handoffStatuses: document.querySelectorAll('[data-agent-handoff-status]').length
+                };"#,
+                Vec::new(),
+            )
             .await?;
         assert!(
-            canvas.contains("create an account or sign in to connect a tool")
-                || canvas.contains("Agent invitations are not enabled on this deployment yet."),
-            "the settled refusal must explain the failure: {canvas:?}"
+            canvas.json()["inviteMounts"] == 0
+                && canvas.json()["deeplinks"] == 0
+                && canvas.json()["handoffStatuses"] == 0,
+            "the blank canvas must not start an agent invitation: {}",
+            canvas.json()
         );
+        driver.enter_default_frame().await?;
+        await_share_action(&driver, "account").await?;
+        enter_guest(&driver).await?;
+        let gate = driver
+            .execute(
+                r#"const root = document.querySelector('tonk-fab')?.shadowRoot;
+                   root?.querySelector('.space')?.click();
+                   root?.querySelector('.agent')?.click();
+                   return {
+                     hidden: root?.querySelector('#agent-panel')?.hasAttribute('hidden'),
+                     prompt: root?.querySelector('.agent-continue span')?.textContent?.trim()
+                   };"#,
+                Vec::new(),
+            )
+            .await?;
         assert!(
-            !canvas.contains("Generating link"),
-            "pending progress must disappear when refusal settles: {canvas:?}"
-        );
-        assert!(
-            !canvas.contains("condition banner"),
-            "the refusal must not point to absent UI: {canvas:?}"
+            gate.json()["hidden"] == false
+                && gate.json()["prompt"] == "add an account to connect an agent",
+            "the FABB must offer the account gate for agent invitations: {}",
+            gate.json()
         );
 
         driver.quit().await?;
@@ -3454,10 +3627,6 @@ mod tests {
     /// test in the file, because the value is in the SEQUENCE: steps
     /// that pass alone still fail in order.
     ///
-    /// The ceremony's later rows (passkey, verification, display name,
-    /// and the closing copy-link) are not built yet, so this fails part
-    /// way through by design — it is the specification of the flow, and
-    /// what it reports is how far the flow actually gets.
     #[dialog_common::test]
     async fn it_signs_up_to_share_and_hands_over_the_link(env: TestEnvironment) -> Result<()> {
         let (driver, authenticator) = driver_with_prf_authenticator(&env).await?;
@@ -3476,12 +3645,12 @@ mod tests {
         await_url_containing(&driver, &format!("/space/{key}")).await?;
 
         // 5–6. Share offers to log in: nothing is registered.
-        open_share_stack(&driver).await?;
-        await_share_row(&driver, "account").await?;
+        open_space_actions(&driver).await?;
+        await_share_action(&driver, "account").await?;
 
         // 7–8. The cluster comes up with the address field focused, so
         // typing works without aiming at anything.
-        click_share_row(&driver, "[data-share-account]").await?;
+        click_share_action(&driver, "account").await?;
         await_register_dialog(&driver).await?;
         assert_eq!(
             focused_element_id(&driver).await?,
@@ -3500,7 +3669,7 @@ mod tests {
         let before = credential_count(&driver, &authenticator).await?;
         click_register_action(&driver).await?;
         type_into_settled_row(&driver, "display name", "Alice").await?;
-        await_register_action(&driver, "waiting for your device").await?;
+        await_register_action(&driver, "waiting for device").await?;
 
         // 12–13. The ceremony settles into a record naming the device.
         await_credential_count(&driver, &authenticator, before + 1).await?;
@@ -3757,12 +3926,12 @@ mod tests {
 
     /// The bar stops offering to log in once an account exists.
     ///
-    /// The rendered half of the same subscription. Asserting on the row
+    /// The rendered half of the same subscription. Asserting on the action
     /// the user sees rather than on the fact behind it is what catches a
     /// query that silently answers nothing: the fact was right the whole
     /// time the bar was wrong.
     #[dialog_common::test]
-    async fn it_offers_the_copy_row_once_an_account_exists(env: TestEnvironment) -> Result<()> {
+    async fn it_offers_the_copy_action_once_an_account_exists(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;
         driver.goto(env.tonk_web.as_str()).await?;
 
@@ -3773,14 +3942,14 @@ mod tests {
         driver
             .goto(env.tonk_web.join(&format!("space/{key}"))?.as_str())
             .await?;
-        await_share_row(&driver, "account").await?;
+        await_share_action(&driver, "account").await?;
 
         sign_up(&driver, &env, "bar-flips@example.com").await?;
         driver
             .goto(env.tonk_web.join(&format!("space/{key}"))?.as_str())
             .await?;
 
-        await_share_row(&driver, "link").await?;
+        await_share_action(&driver, "link").await?;
 
         driver.quit().await?;
         Ok(())
@@ -3858,7 +4027,7 @@ mod tests {
         env: TestEnvironment,
     ) -> Result<()> {
         // Register the address in a profile of its own, then ask about
-        // it from a fresh one. The share row that raises the cluster is
+        // it from a fresh one. The share action that raises the cluster is
         // only offered while THIS browser has no account, so a profile
         // that just signed up cannot reach the cluster to ask anything —
         // and the question here is what the lookup says about an address
@@ -3873,9 +4042,9 @@ mod tests {
 
         open_register_dialog_from_a_space(&driver, &env, "Signed In").await?;
         type_into_register_dialog(&driver, taken).await?;
-        let label = await_register_action(&driver, "log in with your passkey").await?;
+        let label = await_register_action(&driver, "log in with passkey").await?;
         assert_eq!(
-            label, "log in with your passkey",
+            label, "log in with passkey",
             "a registered address must offer sign-in, not a second signup",
         );
 
@@ -3900,7 +4069,7 @@ mod tests {
         driver.goto(env.tonk_web.as_str()).await?;
         open_register_dialog_from_a_space(&driver, &env, "Tap Bound").await?;
         type_into_register_dialog(&driver, taken).await?;
-        await_register_action(&driver, "log in with your passkey").await?;
+        await_register_action(&driver, "log in with passkey").await?;
 
         let started_in_click = driver
             .execute(
@@ -3959,7 +4128,7 @@ mod tests {
         wait_for_service_worker(&second).await?;
         raise_cluster_from_hub(&second, &env).await?;
         type_into_register_dialog(&second, EMAIL).await?;
-        await_register_action(&second, "log in with your passkey").await?;
+        await_register_action(&second, "log in with passkey").await?;
         click_register_action(&second).await?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
         while second.find(By::Css("#tonk-register")).await.is_ok() {
@@ -4152,7 +4321,7 @@ mod tests {
         wait_for_service_worker(&driver).await?;
         raise_cluster_from_hub(&driver, &env).await?;
         type_into_register_dialog(&driver, EMAIL).await?;
-        await_register_action(&driver, "log in with your passkey").await?;
+        await_register_action(&driver, "log in with passkey").await?;
 
         driver
             .execute(
@@ -4411,9 +4580,12 @@ mod tests {
                     r##"
                     const done = arguments[arguments.length - 1];
                     const [noun, value] = [arguments[0], arguments[1]];
+                    const contained = !!document.querySelector('#tonk-register[data-fabb-task]');
                     for (const row of document.querySelectorAll("#tonk-register .orow")) {
                         const k = row.querySelector(".k");
-                        if (!k || k.textContent.trim() !== noun) continue;
+                        const label = k?.textContent.trim();
+                        if (label !== noun && !(contained && noun === 'display name' &&
+                            label === 'what should people call you?')) continue;
                         const input = row.querySelector("input");
                         if (!input) return done({ error: noun + " row takes no input" });
                         input.focus();
@@ -4512,6 +4684,36 @@ mod tests {
     #[cfg(feature = "connection-invites")]
     async fn await_tool_connection_ready(driver: &WebDriver, space: &str) -> Result<()> {
         await_tool_connection_ready_after(driver, space, None).await
+    }
+
+    #[cfg(feature = "connection-invites")]
+    async fn click_tool_connection_action(driver: &WebDriver) -> Result<()> {
+        enter_guest(driver).await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let opened = driver
+                .execute(
+                    r#"const root = document.querySelector('tonk-fab')?.shadowRoot;
+                       const actions = root?.querySelector('.run');
+                       const tool = root?.querySelector('.tool');
+                       if (!actions || !tool || tool.hidden) return false;
+                       if (actions.hidden) root.querySelector('.space')?.click();
+                       if (actions.hidden) return false;
+                       tool.click();
+                       return true;"#,
+                    Vec::new(),
+                )
+                .await?;
+            if opened.json() == true {
+                driver.enter_default_frame().await?;
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                driver.enter_default_frame().await?;
+                return Err(anyhow!("the bar never offered its tool connection action"));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
     }
 
     #[cfg(feature = "connection-invites")]
@@ -4701,11 +4903,8 @@ mod tests {
         }
     }
 
-    /// Click the bar's `share` cell, which opens the share stack.
-    ///
-    /// The cell is in the bar's shadow root; the stack it reveals is
-    /// slotted light content.
-    async fn open_share_stack(driver: &WebDriver) -> Result<()> {
+    /// Open the bar's space actions before choosing a share action.
+    async fn open_space_actions(driver: &WebDriver) -> Result<()> {
         enter_guest(driver).await?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
@@ -4714,9 +4913,9 @@ mod tests {
                     r##"
                     const bar = document.querySelector("tonk-fab");
                     if (!bar || !bar.shadowRoot) return false;
-                    const cell = bar.shadowRoot.querySelector('[data-cell="share"]');
+                    const cell = bar.shadowRoot.querySelector('.space');
                     if (!cell) return false;
-                    cell.click();
+                    if (bar.shadowRoot.querySelector('.run')?.hasAttribute('hidden')) cell.click();
                     return true;
                     "##,
                     Vec::new(),
@@ -4728,50 +4927,41 @@ mod tests {
             }
             if tokio::time::Instant::now() >= deadline {
                 driver.enter_default_frame().await?;
-                return Err(anyhow!("the bar never showed a share cell to click"));
+                return Err(anyhow!("the bar never showed its space actions"));
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
     }
 
-    /// Open the FAB's share stack and click one of its rows.
-    ///
-    /// Two DOM boundaries sit between the driver and the row. The bar
-    /// lives in the sealed guest, at an opaque origin, so the browsing
-    /// context has to be switched into it; and the cell that OPENS the
-    /// stack lives in the bar's shadow root, while the row the stack
-    /// holds is a slotted light child. Querying the light tree alone
-    /// finds the row but never opens the stack it is hidden inside.
-    async fn click_share_row(driver: &WebDriver, marker: &str) -> Result<()> {
+    /// Take the account gate or the ready copy action in the FABB shadow root.
+    async fn click_share_action(driver: &WebDriver, action: &str) -> Result<()> {
         enter_guest(driver).await?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
             let outcome = driver
                 .execute(
                     r##"
-                    const marker = arguments[0];
+                    const action = arguments[0];
                     const bar = document.querySelector("tonk-fab");
-                    if (!bar) return { error: "no bar" };
-                    // The stack opens from a shadow cell.
-                    const cell = bar.shadowRoot
-                        && bar.shadowRoot.querySelector('[data-cell="share"]');
-                    if (!cell) return { error: "no share cell" };
-                    if (cell.getAttribute("aria-expanded") !== "true") cell.click();
-                    // The rows are slotted light children, and each is a
-                    // `<tonk-mi>` whose click listener sits on `.row`
-                    // INSIDE its own shadow root — picking a row is the
-                    // stack's only verb, and that is where it is heard.
-                    // Clicking the host element reaches no listener, so
-                    // the stack rendered, hovered, and did nothing.
-                    const row = bar.querySelector(marker);
-                    if (!row) return { error: "no row matching " + marker };
-                    if (row.hasAttribute("hidden")) return { error: "row is hidden: " + marker };
-                    const inner = row.shadowRoot && row.shadowRoot.querySelector(".row");
-                    if (!inner) return { error: "row has no shadow .row: " + marker };
-                    inner.click();
+                    const root = bar?.shadowRoot;
+                    const share = root?.querySelector('.share');
+                    if (!share) return { error: "no share action" };
+                    const accountRequired = bar.hasAttribute('data-account-required');
+                    if (action === 'account' && !accountRequired) return { error: 'account already ready' };
+                    if (action === 'link' && accountRequired) return { error: 'account still required' };
+                    if (root.querySelector('.run')?.hasAttribute('hidden')) root.querySelector('.space').click();
+                    share.click();
+                    if (action === 'account') {
+                        const gate = root.querySelector('#share-panel');
+                        const continueButton = root.querySelector('.share-continue');
+                        if (!gate || gate.hasAttribute('hidden') || !continueButton) {
+                            return { error: 'account gate did not open' };
+                        }
+                        continueButton.click();
+                    }
                     return { ok: true };
                     "##,
-                    vec![serde_json::json!(marker)],
+                    vec![serde_json::json!(action)],
                 )
                 .await?;
             let value = outcome.json().clone();
@@ -4790,29 +4980,22 @@ mod tests {
                     .and_then(|error| error.as_str())
                     .unwrap_or("unknown");
                 driver.enter_default_frame().await?;
-                return Err(anyhow!("could not click the share row: {reason}"));
+                return Err(anyhow!("could not click the share action: {reason}"));
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
     }
 
-    /// Which of the share stack's two rows the bar is offering.
-    ///
-    /// `log in to share` before an account exists, the copy row after —
-    /// the visible half of the account subscription. Returns `None`
-    /// while neither is showing.
-    async fn share_row_offered(driver: &WebDriver) -> Result<Option<String>> {
+    /// Whether the FABB share action currently opens an account gate or copies.
+    async fn share_action_offered(driver: &WebDriver) -> Result<Option<String>> {
         enter_guest(driver).await?;
         let outcome = driver
             .execute(
                 r##"
                 const bar = document.querySelector("tonk-fab");
                 if (!bar) return null;
-                const account = bar.querySelector("[data-share-account]");
-                const link = bar.querySelector("[data-share-link]");
-                if (account && !account.hasAttribute("hidden")) return "account";
-                if (link && !link.hasAttribute("hidden")) return "link";
-                return null;
+                if (!bar.shadowRoot?.querySelector('.share') || bar.hasAttribute('data-unknown-space')) return null;
+                return bar.hasAttribute('data-account-required') ? "account" : "link";
                 "##,
                 Vec::new(),
             )
@@ -4821,23 +5004,14 @@ mod tests {
         Ok(outcome.json().as_str().map(str::to_owned))
     }
 
-    /// What the FABB's copy-link row says it is doing.
-    ///
-    /// The row's `data-share-state` IS the control's answer to a click:
-    /// `idle` at rest, `copying` while the mint is out, then `copied` or
-    /// `failed`. Absent means the control has not stamped a state at all.
-    ///
-    /// Read rather than the label text because the label is four spans
-    /// switched by CSS, and a hidden span's `textContent` still reads.
-    async fn share_row_state(driver: &WebDriver) -> Result<Option<String>> {
+    /// Read the copy action's state from its visible shadow-root button.
+    async fn share_action_state(driver: &WebDriver) -> Result<Option<String>> {
         enter_guest(driver).await?;
         let outcome = driver
             .execute(
                 r##"
                 const bar = document.querySelector("tonk-fab");
-                const row = bar && bar.querySelector("[data-share-link]");
-                if (!row) return null;
-                return row.getAttribute("data-share-state");
+                return bar?.shadowRoot?.querySelector('.share')?.getAttribute('data-share-state') ?? null;
                 "##,
                 Vec::new(),
             )
@@ -4911,42 +5085,42 @@ mod tests {
         }
     }
 
-    /// Wait for the copy-link row to leave its resting state.
+    /// Wait for the copy action to leave its resting state.
     ///
     /// This is the assertion the FABB share regression needed and did not
     /// have. A share control bound to no space returns before dispatching
-    /// anything, so the row sits on `idle` for ever: no mint, no spinner,
+    /// anything, so the action sits on `idle` forever: no mint, no spinner,
     /// no refusal. Every other test in this file reached a share link
     /// through the registration ceremony's own button, which drives a
     /// different control, so all of them stayed green while picking
-    /// "copy link" from the bar did nothing at all.
-    async fn await_share_row_working(driver: &WebDriver) -> Result<String> {
+    /// "copy share link" from the bar did nothing at all.
+    async fn await_share_action_working(driver: &WebDriver) -> Result<String> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         let mut last;
         loop {
-            last = share_row_state(driver).await?;
+            last = share_action_state(driver).await?;
             match last.as_deref() {
                 Some(state) if state != "idle" => return Ok(state.to_owned()),
                 _ => {}
             }
             if tokio::time::Instant::now() >= deadline {
                 return Err(anyhow!(
-                    "the copy-link row never answered the click; it is showing {last:?}",
+                    "the copy action never answered the click; it is showing {last:?}",
                 ));
             }
             // Tighter than the usual 250ms: `copied` reverts to `idle`
             // after `COPIED_LINGER_MS`, so a slow poll could sample either
-            // side of the whole answer and read a resting row as a dead one.
+            // side of the whole answer and read an idle action as a dead one.
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
 
     /// Wait for the bar to offer `expected` (`account` or `link`).
-    async fn await_share_row(driver: &WebDriver, expected: &str) -> Result<()> {
+    async fn await_share_action(driver: &WebDriver, expected: &str) -> Result<()> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         let mut last;
         loop {
-            last = share_row_offered(driver).await?;
+            last = share_action_offered(driver).await?;
             if last.as_deref() == Some(expected) {
                 return Ok(());
             }
@@ -4959,17 +5133,16 @@ mod tests {
         }
     }
 
-    /// Get to the registration cluster: open the share menu, take the
-    /// "log in to share" row, wait for the cluster.
+    /// Get to the registration cluster through the FABB's share account gate.
     async fn open_register_dialog(driver: &WebDriver) -> Result<()> {
-        click_share_row(driver, "[data-share-account]").await?;
+        click_share_action(driver, "account").await?;
         await_register_dialog(driver).await
     }
 
     /// Raise the cluster from a space of its own.
     ///
     /// The bar is a space's control, so the Hub has no `tonk-fab` and no
-    /// share row to take — reaching for one there fails with "no bar".
+    /// share action to take — reaching for one there fails with "no bar".
     /// A test that only wants the cluster still has to come at it the
     /// way a person does: from inside a space, through share.
     async fn open_register_dialog_from_a_space(
@@ -4984,11 +5157,9 @@ mod tests {
         driver
             .goto(env.tonk_web.join(&format!("space/{key}"))?.as_str())
             .await?;
-        // Open the stack, THEN take its row — the same two steps the
-        // signup flow makes. Clicking the cell and the row in one pass
-        // reaches for a row the stack has not rendered yet.
-        open_share_stack(driver).await?;
-        await_share_row(driver, "account").await?;
+        // Open the space actions before taking the account gate.
+        open_space_actions(driver).await?;
+        await_share_action(driver, "account").await?;
         open_register_dialog(driver).await
     }
 
@@ -5042,7 +5213,7 @@ mod tests {
                     .execute(
                         r##"
                         const bar = document.querySelector("tonk-fab");
-                        const row = bar && bar.querySelector("[data-share-account]");
+                        const share = bar?.shadowRoot?.querySelector('.share');
                         const hub = document.querySelector("hub-bar");
                         const menu = hub && hub.querySelector("hub-menu");
                         return {
@@ -5053,8 +5224,8 @@ mod tests {
                             menuOpen: menu ? menu.getAttribute("open") : null,
                             addRow: !!document.querySelector("[data-add-profile]"),
                             bar: !!bar,
-                            row: !!row,
-                            rowHidden: row ? row.hasAttribute("hidden") : null,
+                            share: !!share,
+                            accountRequired: bar?.hasAttribute('data-account-required') ?? null,
                             tonk: typeof window.tonk,
                             register: (window.tonk && typeof window.tonk.register) || null,
                             space: bar ? bar.getAttribute("space") : null,
@@ -5107,7 +5278,7 @@ mod tests {
     ///
     /// The row is hidden until the lookup answers, and its label IS the
     /// routing decision: "create a passkey" for an address nobody has,
-    /// "log in with your passkey" for one that is taken. Waiting on it
+    /// "log in with passkey" for one that is taken. Waiting on it
     /// asserts the whole loop — command dispatched, answer written,
     /// subscription delivered, cluster rendered.
     async fn await_register_action(driver: &WebDriver, expected: &str) -> Result<String> {
@@ -5586,7 +5757,7 @@ mod tests {
     /// its space once, before the route had resolved one, and never again,
     /// leaving the control bound to nothing for the life of the page.
     ///
-    /// The order of the assertions is the point. First the row has to
+    /// The order of the assertions is the point. First the action has to
     /// ANSWER — leave `idle` — because that is the half a control bound to
     /// no space skips; only then is it worth asking whether a link came
     /// back.
@@ -5600,17 +5771,17 @@ mod tests {
         let key = create_space_awaiting_remote(&driver, "Shared From The Bar", true).await?;
         await_url_containing(&driver, &format!("/space/{key}")).await?;
 
-        // An active account offers the copy row, not the login row.
-        open_share_stack(&driver).await?;
-        await_share_row(&driver, "link").await?;
+        // An active account offers the copy action without an account gate.
+        open_space_actions(&driver).await?;
+        await_share_action(&driver, "link").await?;
 
         watch_guest_clipboard(&driver).await?;
-        click_share_row(&driver, "[data-share-link]").await?;
+        click_share_action(&driver, "link").await?;
 
-        let state = await_share_row_working(&driver).await?;
+        let state = await_share_action_working(&driver).await?;
         assert!(
             matches!(state.as_str(), "copying" | "copied" | "failed"),
-            "the row must report what the click did, got {state:?}",
+            "the action must report what the click did, got {state:?}",
         );
 
         // What the person ends up holding. Asserted on the text the control
@@ -5638,7 +5809,7 @@ mod tests {
 
     /// The account customer row has no provider until activation. The FABB
     /// used to require that optional field in its query, so this exact state
-    /// resolved as no row: the space offered "log in to share" and raised the
+    /// resolved as no account: the space offered the account gate and raised the
     /// signup ceremony even though the account already existed.
     #[dialog_common::test]
     async fn it_names_pending_activation_consistently_in_a_space(
@@ -5658,24 +5829,40 @@ mod tests {
         let key = create_space(&driver, "Waiting for Email").await?;
         await_url_containing(&driver, &format!("/space/{key}")).await?;
 
-        enter_guest(&driver).await?;
-        let banner = wait_for_displayed(&driver, "#fabb-activation-banner").await?;
-        let banner_text = banner.text().await?;
-        assert!(
-            banner_text.contains(email) && banner_text.contains("waiting for email confirmation"),
-            "the space must name the existing account's pending step: {banner_text:?}",
-        );
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            enter_guest(&driver).await?;
+            let condition = driver
+                .execute(
+                    r#"const action = document.querySelector('tonk-fab')?.shadowRoot?.querySelector('.condition');
+                       return { hidden: action?.hasAttribute('hidden'), text: action?.textContent?.trim() };"#,
+                    vec![],
+                )
+                .await?;
+            if condition.json()["hidden"] == false
+                && condition.json()["text"] == "confirm your email"
+            {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the FAB must name the existing account's pending step: {}",
+                condition.json(),
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
         driver.enter_default_frame().await?;
 
-        open_share_stack(&driver).await?;
-        await_share_row(&driver, "link").await?;
+        open_space_actions(&driver).await?;
+        await_share_action(&driver, "link").await?;
         enter_guest(&driver).await?;
         let share_copy = driver
             .execute(
                 r#"const bar = document.querySelector('tonk-fab');
+                   const root = bar?.shadowRoot;
                    return {
-                     accountHidden: bar?.querySelector('[data-share-account]')?.hasAttribute('hidden'),
-                     link: (bar?.querySelector('[data-share-link]')?.textContent || '').trim()
+                     accountHidden: root?.querySelector('.login')?.hasAttribute('hidden'),
+                     link: (root?.querySelector('.share span')?.textContent || '').trim()
                    };"#,
                 Vec::new(),
             )
@@ -5689,8 +5876,8 @@ mod tests {
         assert!(
             share_copy.json()["link"]
                 .as_str()
-                .is_some_and(|text| text.contains("confirm your email to share")),
-            "the share row must name activation as the missing step: {}",
+                .is_some_and(|text| text.contains("copy share link")),
+            "the ready share action must remain available: {}",
             share_copy.json(),
         );
 
@@ -6574,12 +6761,13 @@ mod tests {
         let key = create_space_awaiting_remote(&browser, "Tool connection", true).await?;
         await_url_containing(&browser, &format!("/space/{key}")).await?;
 
-        // The existing row remains an ordinary person invite. Exercise the
+        // The share action remains an ordinary person invite. Exercise the
         // actual clipboard handoff, then prove the CLI refuses it without
         // producing its registry.
         watch_guest_clipboard(&browser).await?;
-        click_share_row(&browser, "[data-share-link]").await?;
-        let _ = await_share_row_working(&browser).await?;
+        await_share_action(&browser, "link").await?;
+        click_share_action(&browser, "link").await?;
+        let _ = await_share_action_working(&browser).await?;
         let person_link = guest_copied_text(&browser).await?;
         let profile = tempfile::tempdir()?;
         let rejected = run_cli(
@@ -6612,7 +6800,7 @@ mod tests {
 
         // The separate app-owned action issues one scoped link. Both copy
         // buttons must expose that exact identity, not mint one per copy.
-        click_share_row(&browser, "[data-tool-connection]").await?;
+        click_tool_connection_action(&browser).await?;
         await_tool_connection_ready(&browser, &key).await?;
         let tool_link = copy_tool_connection(&browser, "[data-tool-copy-link]").await?;
         anyhow::ensure!(
@@ -6652,7 +6840,7 @@ mod tests {
         )
         .await?;
         wait_for_service_worker(&browser).await?;
-        click_share_row(&browser, "[data-tool-connection]").await?;
+        click_tool_connection_action(&browser).await?;
         await_tool_connection_ready_after(&browser, &key, Some(&tool_link)).await?;
         let returning = copy_tool_connection(&browser, "[data-tool-copy-link]").await?;
         anyhow::ensure!(
@@ -6665,7 +6853,7 @@ mod tests {
         // the modal that was open on the previous route.
         let second = create_space_awaiting_remote(&browser, "Second tool space", true).await?;
         await_url_containing(&browser, &format!("/space/{second}")).await?;
-        click_share_row(&browser, "[data-tool-connection]").await?;
+        click_tool_connection_action(&browser).await?;
         await_tool_connection_ready(&browser, &second).await?;
         let switched = copy_tool_connection(&browser, "[data-tool-copy-link]").await?;
         anyhow::ensure!(
@@ -6673,6 +6861,76 @@ mod tests {
             "space switch exposed a stale tool bearer"
         );
 
+        browser.quit().await?;
+        Ok(())
+    }
+
+    #[cfg(feature = "connection-invites")]
+    #[dialog_common::test]
+    async fn fabb_connect_agent_receives_a_minted_invitation(env: TestEnvironment) -> Result<()> {
+        let browser = driver_with_prf(&env).await?;
+        sign_up(&browser, &env, "fabb-agent@example.com").await?;
+        let key = create_space_awaiting_remote(&browser, "FAB agent", true).await?;
+        await_url_containing(&browser, &format!("/space/{key}")).await?;
+        enter_guest(&browser).await?;
+        let open_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let opened = browser
+                .execute(
+                    r#"const bar = document.querySelector('tonk-fab');
+                       const agent = bar?.querySelector('tonk-agent-panel');
+                       const barClass = customElements.get('tonk-fab');
+                       const agentClass = customElements.get('tonk-agent-panel');
+                       const root = bar?.shadowRoot;
+                       if (!barClass || !agentClass || !(bar instanceof barClass) ||
+                           !(agent instanceof agentClass) ||
+                           typeof agent.__tonkReset !== 'function' ||
+                           bar.hasAttribute('data-account-required') ||
+                           agent.getAttribute('space') !== arguments[0] ||
+                           !root?.querySelector('.space') || !root?.querySelector('.agent'))
+                         return false;
+                       root.querySelector('.space').click();
+                       root.querySelector('.agent').click();
+                       return !root.querySelector('#agent-panel').hidden;"#,
+                    vec![serde_json::json!(key)],
+                )
+                .await?;
+            if opened.json() == true {
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < open_deadline,
+                "FAB agent panel did not become ready to open"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
+        loop {
+            let state = browser
+                .execute(
+                    r#"const bar = document.querySelector('tonk-fab');
+                       const root = bar?.shadowRoot;
+                       return {
+                         status: root?.querySelector('.agent-status')?.textContent,
+                         copyHidden: root?.querySelector('#agent-panel .panel-copy')?.hidden,
+                         retryHidden: root?.querySelector('#agent-panel .agent-retry')?.hidden,
+                         agentSpace: bar?.querySelector('tonk-agent-panel')?.getAttribute('space'),
+                         accountRequired: bar?.hasAttribute('data-account-required')
+                       };"#,
+                    Vec::new(),
+                )
+                .await?;
+            if state.json()["copyHidden"] == false {
+                break;
+            }
+            if state.json()["retryHidden"] == false || tokio::time::Instant::now() >= deadline {
+                anyhow::bail!(
+                    "FAB agent invitation did not become ready: {}",
+                    state.json()
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
         browser.quit().await?;
         Ok(())
     }
@@ -6691,47 +6949,62 @@ mod tests {
         let key = create_space_awaiting_remote(&browser, "Before signup", false).await?;
         await_url_containing(&browser, &format!("/space/{key}")).await?;
         let original = browser.current_url().await?;
-        enter_space_view(&browser).await?;
-        wait_for_displayed(&browser, "[data-invite-account]").await?;
-        click(&browser, "[data-invite-account]")
-            .await
-            .context("open invite account setup")?;
+        enter_guest(&browser).await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let opened = browser
+                .execute(
+                    r#"const bar=document.querySelector('tonk-fab');
+                       const root=bar?.shadowRoot;
+                       const actions=root?.querySelector('.run');
+                       if (!bar?.hasAttribute('data-account-required') || !actions) return false;
+                       if (actions.hidden) root.querySelector('.space')?.click();
+                       const panel=root.querySelector('#agent-panel');
+                       if (panel?.hidden) root.querySelector('.agent')?.click();
+                       const gate=root.querySelector('.agent-continue');
+                       if (panel?.hidden || !gate) return false;
+                       gate.click();
+                       return true;"#,
+                    vec![],
+                )
+                .await?;
+            if opened.json() == true {
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "agent account gate did not open"
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
         browser.enter_default_frame().await?;
         run_cluster_ceremony(&browser, "agent-recovery@example.com").await?;
         activate_in_another_tab(&browser, &env, "agent-recovery@example.com").await?;
         wait_for_absent(&browser, "#tonk-register").await?;
-        enter_space_view(&browser).await?;
+        assert_eq!(browser.current_url().await?, original);
         let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
-        let copy = "[data-agent-mode=scoped] .agent-prompt__copy";
-        let mut sync_requested = false;
         loop {
-            if let Ok(button) = browser.find(By::Css(copy)).await
-                && button.is_displayed().await.unwrap_or(false)
-            {
+            let info = get_json(&browser, &format!("/api/repository/{key}")).await?;
+            let info = successful_body("read recovered space", &info);
+            if info["remote"]["origin"].is_object() {
                 break;
             }
-            if !sync_requested {
-                let clicked = browser.execute(
-                    r#"const controls=document.querySelector('tonk-agent-invite-controls');
-                       const button=controls?.querySelector('[data-invite-action=sync]');
-                       if (controls?.getAttribute('mode') !== 'sync' || !button || button.hidden) return false;
-                       button.click();
-                       return true;"#,
-                    vec![],
-                ).await?;
-                sync_requested = clicked.json() == true;
-            }
-            if tokio::time::Instant::now() >= deadline {
-                let state = browser.execute("return {mode:document.querySelector('tonk-agent-invite-controls')?.getAttribute('mode'),status:document.querySelector('[data-agent-handoff-status]')?.textContent,buttons:[...document.querySelectorAll('[data-invite-action]')].map(b=>({action:b.dataset.inviteAction,hidden:b.hidden}))}", vec![]).await?;
-                anyhow::bail!(
-                    "invitation did not become ready after signup: {}",
-                    state.json()
-                );
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the recovered space never attached a remote: {info}"
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
         }
-        assert_eq!(browser.current_url().await?, original);
-        let invite = copied_agent_bearer(&browser)
+        let pushed = post_json(
+            &browser,
+            &format!("/api/repository/{key}/branch/main/sync/push"),
+            serde_json::json!({}),
+        )
+        .await?;
+        successful_body("publish recovered space", &pushed);
+        click_tool_connection_action(&browser).await?;
+        await_tool_connection_ready(&browser, &key).await?;
+        let invite = copy_tool_connection(&browser, "[data-tool-copy-link]")
             .await
             .context("copy recovered invitation")?;
         let profile = tempfile::tempdir()?;
@@ -6769,42 +7042,12 @@ mod tests {
         sign_up(&browser, &env, "ordinary-agent@example.com").await?;
         let key = create_space_awaiting_remote(&browser, "Ordinary agent", true).await?;
         await_url_containing(&browser, &format!("/space/{key}")).await?;
-        enter_space_view(&browser).await?;
-        let copy = "[data-agent-mode=scoped] .agent-prompt__copy";
-        wait_for_displayed(&browser, copy).await?;
-        let layout = browser
-            .execute(
-                r#"const copy=document.querySelector('[data-agent-mode=scoped] .agent-prompt__copy');
-                    const action=copy.closest('.agent-prompt__action');
-                    const card=copy.closest('.agent-prompt');
-                    const button=copy.shadowRoot?.querySelector('[part~=button]');
-                    return {actions:action.querySelectorAll('button,wa-copy-button,a[href]').length,
-                        competing:!!action.querySelector('.agent-prompt__new'),
-                        card:card.getBoundingClientRect().toJSON(),
-                        copy:copy.getBoundingClientRect().toJSON(),
-                        button:button?.getBoundingClientRect().toJSON()};"#,
-                vec![],
-            )
-            .await?;
-        let layout = layout.json();
-        assert_eq!(layout["actions"], serde_json::json!(1));
-        assert_eq!(layout["competing"], serde_json::json!(false));
-        assert!(layout["button"]["height"].as_f64().unwrap_or_default() >= 44.0);
-        assert!(
-            layout["copy"]["right"].as_f64().unwrap_or(f64::INFINITY)
-                <= layout["card"]["right"].as_f64().unwrap_or_default()
-        );
-        watch_clipboard(&browser).await?;
-        click(&browser, copy).await?;
-        let prompt = copied_text(&browser).await?;
-
+        click_tool_connection_action(&browser).await?;
+        await_tool_connection_ready(&browser, &key).await?;
+        let invite = copy_tool_connection(&browser, "[data-tool-copy-link]").await?;
+        let prompt = copy_tool_connection(&browser, "[data-tool-copy-prompt]").await?;
         assert!(!prompt.contains("--switch-account"));
-        let invite = prompt
-            .split_whitespace()
-            .map(|part| part.trim_matches('\''))
-            .find(|part| part.contains("#tonk-agent-v"))
-            .context("scoped prompt has no connection URL")?
-            .to_owned();
+        assert_eq!(prompt.matches(&invite).count(), 1);
         assert_prompt_command(&prompt, &env.tonk_web, &invite)?;
         assert!(invite.contains("#tonk-agent-v2="));
         browser.enter_default_frame().await?;
@@ -7060,59 +7303,6 @@ mod tests {
     }
 
     #[cfg(feature = "connection-invites")]
-    async fn copied_agent_bearer(browser: &WebDriver) -> Result<String> {
-        let copy = "[data-agent-mode=scoped] .agent-prompt__copy";
-        wait_for_displayed(browser, copy).await?;
-        // WebAwesome ignores clicks while its previous success feedback runs.
-        // Wait for the real control to become ready before exercising clipboard.
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-        loop {
-            let ready = browser.execute(r#"const node=document.querySelector('[data-agent-mode=scoped] .agent-prompt__copy');
-                return !!customElements.get('wa-copy-button') && !!node?.shadowRoot?.querySelector('button')
-                    && !node.disabled && node.isCopying === false;"#, vec![]).await?;
-            if ready.json().as_bool() == Some(true) {
-                break;
-            }
-            anyhow::ensure!(
-                tokio::time::Instant::now() < deadline,
-                "copy control never became ready"
-            );
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        watch_clipboard(browser).await?;
-        click(browser, copy).await?;
-        let prompt = match copied_text(browser).await {
-            Ok(prompt) => prompt,
-            Err(error) => {
-                let state = browser.execute(r#"const node=document.querySelector('[data-agent-mode=scoped] .agent-prompt__copy');
-                    return { defined:!!customElements.get('wa-copy-button'), present:!!node,
-                        shadow:!!node?.shadowRoot, button:!!node?.shadowRoot?.querySelector('button'),
-                        disabled:node?.disabled, isCopying:node?.isCopying, status:node?.status, valueLength:node?.value?.length,
-                        innerDisabled:node?.shadowRoot?.querySelector('button')?.disabled,
-                        copiedLength:window.__tonkCopied?.length };"#, vec![]).await;
-                return Err(error.context(format!(
-                    "sanitized copy state: {:?}",
-                    state.map(|state| state.json().clone())
-                )));
-            }
-        };
-        let link = prompt
-            .split_whitespace()
-            .map(|part| part.trim_matches('\''))
-            .find(|part| part.contains("#tonk-agent-v2="))
-            .context("scoped prompt has no connection URL")?;
-        anyhow::ensure!(
-            link.contains("#tonk-agent-v2="),
-            "copy did not contain a scoped bearer"
-        );
-        anyhow::ensure!(
-            !prompt.contains("--switch-account"),
-            "scoped prompt requested account switching"
-        );
-        Ok(link.to_owned())
-    }
-
-    #[cfg(feature = "connection-invites")]
     async fn import_agent_bearer(
         env: &TestEnvironment,
         profile: &TempDir,
@@ -7184,7 +7374,7 @@ mod tests {
         sign_up(&browser, &env, "agent-issuer@example.com").await?;
         let key = create_space_awaiting_remote(&browser, "Independent agents", true).await?;
         await_url_containing(&browser, &format!("/space/{key}")).await?;
-        click_share_row(&browser, "[data-tool-connection]").await?;
+        click_tool_connection_action(&browser).await?;
         await_tool_connection_ready(&browser, &key).await?;
         let first = copy_tool_connection(&browser, "[data-tool-copy-link]")
             .await
@@ -7202,7 +7392,7 @@ mod tests {
             .to_owned();
         // Opening the explicit action again requests a separate identity and
         // revocation boundary. Copying does not mint another one.
-        click_share_row(&browser, "[data-tool-connection]").await?;
+        click_tool_connection_action(&browser).await?;
         await_tool_connection_ready(&browser, &key).await?;
         let second = copy_tool_connection(&browser, "[data-tool-copy-link]")
             .await

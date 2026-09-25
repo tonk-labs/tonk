@@ -11,6 +11,9 @@ pub mod ceremony;
 
 mod account_observability;
 
+/// Trusted-page parsing for contained in-space account tasks.
+pub mod fabb_task;
+
 /// The account panel's registration row, kept live by a subscription to
 /// the fact rather than a fetch, so an activation performed elsewhere
 /// reaches this tab.

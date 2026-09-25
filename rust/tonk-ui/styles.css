@@ -3070,6 +3070,23 @@ tonk-notebook-index {
   }
   #tonk-register[data-anchored] #tonk-register-head { display: none; }
 
+  /* In-space account work is a trusted modal occupying the FABB's translated
+     seat. The guest chrome remains mounted for restoration but is hidden. */
+  #tonk-register[data-fabb-task] { overflow: hidden; }
+  #tonk-register[data-fabb-task] .ocol {
+    position: absolute;
+    margin: 0;
+    max-height: calc(100dvh - 32px);
+    overflow: auto;
+    border: 1.5px solid var(--ink);
+    border-radius: 25px;
+    background: var(--page);
+  }
+  #tonk-register[data-fabb-task] .ostack { gap: 0; }
+  #tonk-register[data-fabb-task] .mblk,
+  #tonk-register[data-fabb-task] .obtn { min-height: 48px; border-radius: 0; }
+  #tonk-register[data-fabb-task] .ghost { margin: 0; min-height: 48px; }
+
   /* The study's chrome type: condensed, 600, 13px, slightly tracked and
      lowercased. Inheriting the page's body font instead made everything
      read thin and a size too large. */
@@ -3108,6 +3125,7 @@ tonk-notebook-index {
     height: 36px; display: flex; align-items: flex-end;
     padding: 0 16px 9px; font-size: 13px; white-space: nowrap;
   }
+  .tonk-ceremony .fabb-task-disc { display: none; }
 
   /* One row per step. `pre` is the folded state a row unfolds out of. */
   .tonk-ceremony .orow {
@@ -3257,6 +3275,138 @@ tonk-notebook-index {
     font-size: 13px; cursor: pointer;
     color: var(--ink);
     text-decoration: underline; text-underline-offset: 3px;
+  }
+
+  /* The in-space account ceremony uses the current FABB task shell while the
+     same DOM continues to drive the real email lookup and WebAuthn ceremony. */
+  #tonk-register[data-fabb-task] .ocol {
+    display: flex;
+    flex-flow: row wrap;
+    overflow: hidden;
+    background: var(--modal, var(--card));
+  }
+  #tonk-register[data-fabb-task] .ostack { display: contents; }
+  #tonk-register[data-fabb-task] .mblk { box-shadow: none; }
+  #tonk-register[data-fabb-task] .m-head {
+    box-sizing: border-box;
+    flex: 0 0 100%;
+    min-height: 48px;
+    height: 48px;
+    padding: 0 18px;
+    align-items: center;
+    gap: 16px;
+    border-bottom: 0;
+    background: var(--wash);
+    font-size: 17px;
+  }
+  #tonk-register[data-fabb-task] .fabb-task-disc {
+    display: block;
+    box-sizing: border-box;
+    width: 18px;
+    height: 18px;
+    flex: 0 0 18px;
+    border: 2px solid var(--ink);
+    border-radius: 50%;
+  }
+  #tonk-register[data-fabb-task] .fabb-task-title {
+    margin-left: auto;
+    text-align: right;
+  }
+  #tonk-register[data-fabb-task] .orow {
+    box-sizing: border-box;
+    flex: 0 0 100%;
+    min-height: 48px;
+    height: 48px;
+    padding: 12px 18px 9px;
+    align-items: center;
+    font: 400 18px/1.5 var(--cond);
+    letter-spacing: 0;
+    text-transform: none;
+    background: var(--wash);
+  }
+  /* Keep these rows in the DOM for the activation wait, but let the
+     instruction below the saved email and name carry the visible message. */
+  #tonk-register[data-fabb-task] #tonk-register-passkey-row,
+  #tonk-register[data-fabb-task] #tonk-register-confirm-row {
+    display: none;
+  }
+  #tonk-register[data-fabb-task] .orow.editing {
+    min-height: 104px;
+    height: auto;
+    grid-template-rows: auto 48px;
+    gap: 8px;
+    padding: 18px 18px 14px;
+  }
+  #tonk-register[data-fabb-task] .orow.editing .k {
+    color: var(--ink);
+    font: 600 17px/1.1 var(--cond);
+    letter-spacing: 0;
+  }
+  #tonk-register[data-fabb-task] .orow.editing .v {
+    align-items: stretch;
+  }
+  #tonk-register[data-fabb-task] .orow.editing .ed {
+    box-sizing: border-box;
+    min-height: 48px;
+    height: 48px;
+    padding: 12px 14px 9px;
+    border: 0;
+    background: var(--wash);
+    font: 400 18px/1.5 var(--cond);
+    letter-spacing: .02em;
+  }
+  #tonk-register[data-fabb-task] .orow.editing .ed:hover {
+    background: var(--wash-p);
+  }
+  #tonk-register[data-fabb-task] .orow.editing .ed:focus-visible {
+    outline: 2px solid currentColor;
+    outline-offset: -2px;
+  }
+  #tonk-register[data-fabb-task] .obtn {
+    order: 101;
+    box-sizing: border-box;
+    flex: 0 0 50%;
+    min-height: 48px;
+    height: 48px;
+    padding: 4px 12px;
+    align-items: center;
+    justify-content: flex-end;
+    border-top: 0;
+    font: 600 17px/1.1 var(--cond);
+    letter-spacing: 0;
+    text-align: right;
+    white-space: normal;
+    opacity: 1;
+  }
+  #tonk-register[data-fabb-task] .oexp {
+    order: 90;
+    box-sizing: border-box;
+    flex: 0 0 100%;
+    min-height: 105px;
+    margin: 0;
+    padding: 10px 18px 18px;
+    border-top: 0;
+    background: var(--wash);
+  }
+  #tonk-register[data-fabb-task] .oexp p {
+    font: 400 18px/1.5 var(--cond);
+    letter-spacing: 0;
+    text-transform: none;
+  }
+  #tonk-register[data-fabb-task] .ghost {
+    order: 100;
+    box-sizing: border-box;
+    flex: 0 0 50%;
+    min-height: 48px;
+    margin: 0;
+    padding: 12px 18px;
+    border-top: 0;
+    text-align: left;
+    text-decoration: none;
+    font: 600 17px/1.1 var(--cond);
+  }
+  #tonk-register[data-fabb-task] .ocol:has(.obtn[hidden]) .ghost {
+    flex-basis: 100%;
   }
 
   @media (max-width: 519px) {

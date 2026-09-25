@@ -21,7 +21,6 @@ path = "src/bin/guest.rs"
 console_error_panic_hook = { workspace = true }
 tonk-display = { workspace = true }
 tonk-fab = { workspace = true }
-tonk-workspace = { workspace = true }
 tonk-tree = { workspace = true }
 tonk-inspector = { workspace = true }
 tonk-portal = { workspace = true }

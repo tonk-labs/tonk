@@ -124,7 +124,10 @@ const PASSKEY_ROW: &str = "#tonk-register-passkey-row";
 const DIALOG_HTML: &str = r##"
 <div class="ocol">
   <div class="ostack" id="tonk-register-stack">
-    <div class="m-head mblk" id="tonk-register-head">add an account</div>
+    <div class="m-head mblk" id="tonk-register-head">
+      <span class="fabb-task-disc" aria-hidden="true"></span>
+      <span class="fabb-task-title">add an account</span>
+    </div>
     <div class="orow mblk editing" id="tonk-register-email-row">
       <span class="k">email</span>
       <span class="v"><input class="ed" id="tonk-register-email" type="email"
@@ -154,6 +157,126 @@ pub fn open() {
 /// the native modal has closed and its top-page host has been removed.
 pub fn open_with_return_focus(restore: impl FnOnce() + 'static) {
     open_with_return(Some(Box::new(restore)));
+}
+
+/// Raise the account ceremony as the trusted surface replacing an in-space
+/// FABB, then seat it against the exact translated edge supplied by the guest.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub fn open_fabb_task(
+    presentation: &tonk_portal::task::Presentation,
+    restore: impl FnOnce() + 'static,
+) {
+    LAST_FABB_TASK_SUCCESS.with(|success| success.set(false));
+    open_with_return(Some(Box::new(restore)));
+    let Some(host) = host_element() else { return };
+    let _ = host.set_attribute("data-fabb-task", "");
+    prepare_fabb_task_ui(&host);
+    position_fabb_task(&host, presentation);
+}
+
+/// Adapt the trusted ceremony's labels to the current contained FABB form.
+///
+/// The account mechanics stay shared with the normal registration surface;
+/// only the presentation changes here. This mirrors the reference flow's
+/// full-size field label and plain introductory guidance while the outer FABB
+/// remains the task container.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn prepare_fabb_task_ui(host: &Element) {
+    if let Ok(Some(label)) = host.query_selector(&format!("{EMAIL_ROW} .k")) {
+        label.set_text_content(Some("email address"));
+    }
+    if let Ok(Some(input)) = host.query_selector(EMAIL_INPUT) {
+        let _ = input.set_attribute("aria-label", "email address");
+        let _ = input.remove_attribute("placeholder");
+    }
+    if let Ok(Some(dismiss)) = host.query_selector(DISMISS) {
+        dismiss.set_text_content(Some("cancel"));
+    }
+    if let Ok(Some(action)) = host.query_selector(ACTION) {
+        action.set_text_content(Some("continue"));
+        let _ = action.remove_attribute("hidden");
+        let _ = action.class_list().remove_1("pre");
+        if let Some(button) = action.dyn_ref::<HtmlButtonElement>() {
+            button.set_disabled(true);
+        }
+        if let Ok(Some(container)) = host.query_selector(".ocol") {
+            let _ = container.append_child(&action);
+        }
+    }
+    set_status(
+        "Enter your email to continue. We’ll check whether you already have a Tonk account.",
+    );
+}
+
+fn set_heading(text: &str) {
+    let Some(head) = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.get_element_by_id("tonk-register-head"))
+    else {
+        return;
+    };
+    if let Ok(Some(title)) = head.query_selector(".fabb-task-title") {
+        title.set_text_content(Some(text));
+    } else {
+        head.set_text_content(Some(text));
+    }
+}
+
+/// Reseat a standing in-space account task without rebuilding its inputs.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub fn reseat_fabb_task(presentation: &tonk_portal::task::Presentation) {
+    let Some(host) = host_element().filter(|host| host.has_attribute("data-fabb-task")) else {
+        return;
+    };
+    position_fabb_task(&host, presentation);
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn position_fabb_task(host: &Element, presentation: &tonk_portal::task::Presentation) {
+    use tonk_portal::task::{Horizontal, Vertical};
+
+    let viewport_width = web_sys::window()
+        .and_then(|window| window.inner_width().ok())
+        .and_then(|value| value.as_f64())
+        .unwrap_or(1024.0);
+    let viewport_height = web_sys::window()
+        .and_then(|window| window.inner_height().ok())
+        .and_then(|value| value.as_f64())
+        .unwrap_or(768.0);
+    let width = presentation
+        .anchor
+        .width
+        .min(480.0)
+        .min((viewport_width - 32.0).max(1.0));
+    let left = match presentation.horizontal {
+        Horizontal::Left => presentation.anchor.left,
+        Horizontal::Right => presentation.anchor.right - width,
+    }
+    .clamp(16.0, (viewport_width - width - 16.0).max(16.0));
+    let Some(column) = host
+        .query_selector(".ocol")
+        .ok()
+        .flatten()
+        .and_then(|column| column.dyn_into::<HtmlElement>().ok())
+    else {
+        return;
+    };
+    let style = column.style();
+    let _ = style.set_property("left", &format!("{left}px"));
+    let _ = style.set_property("width", &format!("{width}px"));
+    let _ = style.remove_property("top");
+    let _ = style.remove_property("bottom");
+    match presentation.vertical {
+        Vertical::Top => {
+            let top = presentation.anchor.top.clamp(16.0, viewport_height - 16.0);
+            let _ = style.set_property("top", &format!("{top}px"));
+        }
+        Vertical::Bottom => {
+            let bottom =
+                (viewport_height - presentation.anchor.bottom).clamp(16.0, viewport_height - 16.0);
+            let _ = style.set_property("bottom", &format!("{bottom}px"));
+        }
+    }
 }
 
 fn open_with_return(guest_restore: Option<Box<dyn FnOnce()>>) {
@@ -316,7 +439,14 @@ fn add_row(host: &Element, id: &str, noun: &str, value: &str) -> Option<Element>
     row.set_id(id);
     row.set_class_name("orow mblk pre");
     settle(&row, noun, value);
-    // Before the action row, so the button stays at the foot of the stack.
+    // Before the action row, so the button stays at the foot of the ordinary
+    // ceremony stack. A contained FABB task moves that button into its fused
+    // footer, leaving subsequent ceremony rows in this stack.
+    if host.has_attribute("data-fabb-task") {
+        let _ = stack.append_child(&row);
+        unfold(&row);
+        return Some(row);
+    }
     let action = host.query_selector(ACTION).ok().flatten();
     match action {
         Some(action) => {
@@ -455,6 +585,13 @@ fn announce_account_change() {
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 thread_local! {
     static ANNOUNCED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static LAST_FABB_TASK_SUCCESS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Consume whether the account ceremony that just closed established an account.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) fn take_fabb_task_success() -> bool {
+    LAST_FABB_TASK_SUCCESS.with(|success| success.replace(false))
 }
 
 /// Take the dialog down.
@@ -471,7 +608,9 @@ pub fn close() {
         // banner never appears. A plain cancel changed nothing, and
         // must not re-read: the re-render would replace the very
         // opener this close is about to restore focus to.
-        ANNOUNCED.with(|announced| announced.set(false));
+        let changed = ANNOUNCED.with(|announced| announced.replace(false));
+        let was_fabb_task = host_element().is_some_and(|host| host.has_attribute("data-fabb-task"));
+        LAST_FABB_TASK_SUCCESS.with(|success| success.set(changed && was_fabb_task));
         finish_action();
         SETUP_WATCH.with(|held| {
             if let Some(listener) = held.borrow_mut().take()
@@ -1120,7 +1259,12 @@ fn show_answer(answer: &Answer) {
     if ACTION_PENDING.with(Cell::get) {
         return;
     }
-    set_status(status_for(&answer.state));
+    let contained = host.has_attribute("data-fabb-task");
+    set_status(if contained {
+        contained_status_for(&answer.state)
+    } else {
+        status_for(&answer.state)
+    });
 
     // The action row unfolds only once the lookup has named a step, and
     // says which one. Before that there is nothing to offer: an address
@@ -1148,7 +1292,7 @@ pub(crate) fn action_label(state: &str) -> Option<&'static str> {
     use tonk_schema::email_state as answer;
     match state {
         answer::UNREGISTERED => Some("create a passkey"),
-        answer::ACTIVE | answer::PENDING => Some("log in with your passkey"),
+        answer::ACTIVE | answer::PENDING => Some("log in with passkey"),
         // Checking, or an answer nothing can act on.
         _ => None,
     }
@@ -1171,6 +1315,20 @@ pub(crate) fn status_for(state: &str) -> &'static str {
         answer::UNAVAILABLE => "Could not reach the service. Check your connection.",
         answer::PENDING_CEREMONY => "Setting up your account…",
         _ => "",
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn contained_status_for(state: &str) -> &'static str {
+    use tonk_schema::email_state as answer;
+    match state {
+        answer::UNREGISTERED => {
+            "Create a passkey on your device or in your password manager to sign in next time."
+        }
+        answer::ACTIVE | answer::PENDING => {
+            "Use your existing passkey on your device or in your password manager."
+        }
+        _ => status_for(state),
     }
 }
 
@@ -1580,7 +1738,7 @@ pub(crate) fn run_signup_ceremony() {
     // While the platform holds the ceremony, the action row says so
     // rather than looking clickable. It blinks rather than spinning:
     // attention is earned by blinking, never by hue.
-    set_action("waiting for your device", false);
+    set_action("waiting for device", false);
 
     let account_action = if existing {
         AccountAction::LogIn
@@ -1664,7 +1822,7 @@ pub(crate) fn run_signup_ceremony() {
                 // refuses every later attempt.
                 set_action(
                     if existing {
-                        "log in with your passkey"
+                        "log in with passkey"
                     } else {
                         "create a passkey"
                     },
@@ -1873,7 +2031,7 @@ fn poll_lookup_until_active(email: String) {
                     // is one tap and a fresh assertion.
                     settle_named_row(CONFIRM_ROW, "email", "verified");
                     set_status("Your email is confirmed. Log in with your passkey to continue.");
-                    set_action("log in with your passkey", true);
+                    set_action("log in with passkey", true);
                     focus_action();
                     return;
                 }
@@ -2212,7 +2370,12 @@ fn hand_over_to_the_hub(host: &Element) {
 /// Unfold the display-name input and focus it.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn ask_for_name(host: &Element) {
-    set_status("");
+    let contained = host.has_attribute("data-fabb-task");
+    set_status(if contained {
+        "This name appears to other people in your spaces."
+    } else {
+        ""
+    });
 
     let Some(document) = web_sys::window().and_then(|window| window.document()) else {
         return;
@@ -2225,19 +2388,29 @@ fn ask_for_name(host: &Element) {
     };
     row.set_id(NAME_ROW.trim_start_matches('#'));
     row.set_class_name("orow mblk pre editing");
-    row.set_inner_html(
-        r##"<span class="k">display name</span>
+    row.set_inner_html(&format!(
+        r##"<span class="k">{}</span>
             <span class="v"><input class="ed" id="tonk-register-name" type="text"
-                  enterkeyhint="go" aria-label="display name"></span>"##,
-    );
+                  enterkeyhint="go" autocomplete="nickname" maxlength="40"
+                  aria-label="display name"></span>"##,
+        if contained {
+            "what should people call you?"
+        } else {
+            "display name"
+        }
+    ));
     let action = host.query_selector(ACTION).ok().flatten();
-    match action {
-        Some(action) => {
-            let _ = stack.insert_before(&row, Some(&action));
-        }
-        None => {
-            let _ = stack.append_child(&row);
-        }
+    let inserted = if contained {
+        // The contained task moved the action into its footer, so it is no
+        // longer a child of this stack and cannot be an insertBefore anchor.
+        stack.append_child(&row)
+    } else if let Some(action) = action {
+        stack.insert_before(&row, Some(&action))
+    } else {
+        stack.append_child(&row)
+    };
+    if inserted.is_err() {
+        return;
     }
     unfold(&row);
     set_action(SAVE_NAME, true);
@@ -2613,8 +2786,11 @@ const RETURN_PATH: &str = "data-return-path";
 fn finish_account_navigation(host: &Element) {
     let saved = host.get_attribute(RETURN_PATH);
     let destination = account_completion_destination(saved.as_deref());
+    let contained = host.has_attribute("data-fabb-task");
     close();
-    tonk_host::navigate_to(destination);
+    if !contained {
+        tonk_host::navigate_to(destination);
+    }
 }
 
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
@@ -2701,7 +2877,7 @@ pub fn describe(payload: &str) {
         request.reason.as_str(),
         "agent-invite-account" | "agent-invite-activation"
     );
-    if agent_invite || request.reason == "space-login" {
+    if agent_invite || matches!(request.reason.as_str(), "space-login" | "fabb-account") {
         if let Some(window) = web_sys::window()
             && let Some(host) = window
                 .document()
@@ -2723,9 +2899,16 @@ pub fn describe(payload: &str) {
             request.reason = tonk_worker_api::share::BLOCKED_NEEDS_ACTIVATION.into();
         }
     }
-    // Tool connection keeps its target in the FAB and retries when this
-    // dialog closes. Its space must not become a pending person share.
-    if !agent_invite {
+    // Agent and tool connections keep their targets in the FAB. Account
+    // setup from those actions must not become a pending person share.
+    if agent_invite || matches!(request.reason.as_str(), "space-login" | "fabb-account") {
+        if let Some(host) = web_sys::window()
+            .and_then(|window| window.document())
+            .and_then(|document| document.get_element_by_id(DIALOG_ID))
+        {
+            let _ = host.remove_attribute(PENDING_SHARE);
+        }
+    } else {
         remember_space(&request.space);
     }
     let Some(document) = web_sys::window().and_then(|window| window.document()) else {
@@ -2748,9 +2931,7 @@ pub fn describe(payload: &str) {
             );
             let _ = host.set_attribute(RETURN_PATH, &target);
         }
-        if let Ok(Some(head)) = document.query_selector("#tonk-register-head") {
-            head.set_text_content(Some("sign in to open this space"));
-        }
+        set_heading("sign in to open this space");
         set_status("Use the account you use for this space.");
     }
     if let Some(anchor) = &request.anchor
@@ -2788,17 +2969,11 @@ pub fn describe(payload: &str) {
     } else {
         "Your account is waiting on its email. Open the link we sent, then share again."
     });
-    if let Some(head) = document
-        .query_selector("#tonk-register-head")
-        .ok()
-        .flatten()
-    {
-        head.set_text_content(Some(if agent_invite {
-            "verify your email"
-        } else {
-            "confirm your email to share"
-        }));
-    }
+    set_heading(if agent_invite {
+        "verify your email"
+    } else {
+        "confirm your email to share"
+    });
 }
 
 /// A guest's position update: move an open anchored ceremony to the bar's
@@ -2892,14 +3067,23 @@ mod tests {
             "agent-invite-account",
             "agent-invite-activation",
             "space-login",
+            "fabb-account",
         ] {
             history
                 .replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(target))
                 .unwrap();
             let host = document.create_element("dialog").unwrap();
             host.set_id(super::DIALOG_ID);
+            host.set_attribute(super::PENDING_SHARE, "did:key:stale-share")
+                .unwrap();
             document.body().unwrap().append_child(&host).unwrap();
-            super::describe(&format!(r#"{{"reason":"{reason}"}}"#));
+            super::describe(&format!(
+                r#"{{"reason":"{reason}","space":"did:key:example"}}"#
+            ));
+            assert!(
+                super::pending_share().is_none(),
+                "{reason} must not finish with a person share link"
+            );
             assert_eq!(
                 host.get_attribute(super::RETURN_PATH).as_deref(),
                 Some(target)
@@ -3028,7 +3212,7 @@ mod tests {
         for state in [answer::ACTIVE, answer::PENDING] {
             assert_eq!(
                 action_label(state),
-                Some("log in with your passkey"),
+                Some("log in with passkey"),
                 "{state} has an account already",
             );
         }
@@ -3235,6 +3419,33 @@ mod space_login_tests {
         );
         document.body().unwrap().append_child(&host).unwrap();
         host
+    }
+
+    #[wasm_bindgen_test]
+    fn contained_account_places_the_display_name_field_above_its_footer() {
+        let document = web_sys::window().unwrap().document().unwrap();
+        let host = document.create_element("dialog").unwrap();
+        host.set_id(DIALOG_ID);
+        host.set_inner_html(DIALOG_HTML);
+        host.set_attribute("data-fabb-task", "").unwrap();
+        document.body().unwrap().append_child(&host).unwrap();
+        prepare_fabb_task_ui(&host);
+        let stack = host
+            .query_selector("#tonk-register-stack")
+            .unwrap()
+            .unwrap();
+        let action = host.query_selector(ACTION).unwrap().unwrap();
+        assert_ne!(action.parent_element(), Some(stack.clone()));
+
+        ask_for_name(&host);
+        let row = host
+            .query_selector(NAME_ROW)
+            .unwrap()
+            .expect("display name row");
+        assert_eq!(row.parent_element(), Some(stack));
+        assert!(row.query_selector("#tonk-register-name").unwrap().is_some());
+        assert_eq!(action.text_content().as_deref(), Some(SAVE_NAME));
+        host.remove();
     }
 
     #[wasm_bindgen_test]

@@ -1719,7 +1719,7 @@ fn mount_portal_slide(host: &Element, inner: &Inner, display: &str) -> Option<Sl
 /// across a view reconcile) *after* the announcement and missed the event.
 /// Cleared while a fresh delegate refresh is pending, so it never reads
 /// ready during the async descriptor-resolve window. This is a DOM contract
-/// shared with `<page-mount>` in the `tonk-workspace` crate — keep the string
+/// shared with `<page-mount>` in the standard library — keep the string
 /// in sync there.
 const BOUND_ATTR: &str = "data-bound";
 

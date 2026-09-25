@@ -49,25 +49,25 @@
       "id": "WEB-04",
       "surface": "browser",
       "area": "Spaces",
-      "name": "Space actions and switching",
-      "summary": "The expanded floating action bar names the current space and separates person invitations from scoped tool connections alongside switching, renaming, sync, and appearance actions.",
+      "name": "Space actions and attached panels",
+      "summary": "The v0.17 floating action bar names the current space and separates person invitations from scoped tool connections alongside share, members, and Tonk-home actions.",
       "artifact": "app/screens/web-04-space-actions.png",
       "capture": "running product",
       "status": "captured",
       "journey_ids": ["ACCT-C14", "SPACE-06", "SYNC-01", "SYNC-02", "SYNC-03", "SYNC-04", "COLLAB-01", "CLI-03"],
-      "source_paths": ["rust/tonk-ui/src/bin/ui.rs", "rust/tonk-fab/src/markup.rs", "rust/tonk-fab/src/tool_connection.rs", "rust/tonk-fab/src/skin.rs"]
+      "source_paths": ["rust/tonk-ui/src/bin/ui.rs", "rust/tonk-fab/src/markup.rs", "rust/tonk-fab/src/bar.rs", "rust/tonk-fab/src/tool_connection.rs", "rust/tonk-fab/src/agent_panel.rs", "rust/tonk-fab/src/member_roster.rs", "rust/tonk-fab/src/skin.rs"]
     },
     {
       "id": "WEB-05",
       "surface": "browser",
       "area": "Collaboration",
-      "name": "Join and share ceremonies",
-      "summary": "Invite claim, accountless accreditation, share, and absent-space access states explain what will change and retain actionable Tonk navigation before authority moves.",
+      "name": "Share and contained account tasks",
+      "summary": "Share, sync repair, activation, and account-required states stay attached to the originating FABB or replace it through one trusted contained task without leaving the space.",
       "artifact": "app/screens/web-05-join-share.png",
       "capture": "running product",
       "status": "captured",
       "journey_ids": ["COLLAB-01", "COLLAB-02", "COLLAB-03", "COLLAB-04", "COLLAB-05"],
-      "source_paths": ["rust/tonk-ui/src/bin/ui.rs", "rust/tonk-fab/src/markup.rs", "rust/tonk-fab/src/share.rs"]
+      "source_paths": ["rust/tonk-ui/src/bin/ui.rs", "rust/tonk-ui/src/fabb_task.rs", "rust/tonk-fab/src/contained_tasks.rs", "rust/tonk-fab/src/trusted_tasks.rs", "rust/tonk-fab/src/share.rs", "rust/tonk-portal/src/task.rs"]
     },
     {
       "id": "WEB-06",
@@ -88,10 +88,10 @@
       "name": "Account choice",
       "summary": "A provider-free profile can create an account, log in, choose a browser profile, or return to local Tonk.",
       "artifact": "app/screens/web-07-account-choice.png",
-      "capture": "production-source fixture",
+      "capture": "running product",
       "status": "captured",
       "journey_ids": ["ACCT-B01", "ACCT-B02", "ACCT-B03", "ACCT-B09", "ACCT-B10"],
-      "source_paths": ["rust/tonk-core/assets/library/profile.yaml", "rust/tonk-ui/src/register_dialog.rs"]
+      "source_paths": ["rust/tonk-ui/src/register_dialog.rs", "rust/tonk-ui/styles.css", "rust/tonk-ui/src/account_flow.rs"]
     },
     {
       "id": "WEB-08",
@@ -100,10 +100,10 @@
       "name": "Create account",
       "summary": "The account creation form collects an email and turns passkey cancellation, unsupported authenticators, and remote failures into distinct recovery steps.",
       "artifact": "app/screens/web-08-account-create.png",
-      "capture": "production-source fixture",
+      "capture": "running product",
       "status": "captured",
       "journey_ids": ["ACCT-B02", "ACCT-B05", "ACCT-B06", "ACCT-B07"],
-      "source_paths": ["rust/tonk-core/assets/library/profile.yaml", "rust/tonk-ui/src/register_dialog.rs"]
+      "source_paths": ["rust/tonk-ui/src/register_dialog.rs", "rust/tonk-ui/styles.css", "rust/tonk-ui/src/account_flow.rs"]
     },
     {
       "id": "WEB-09",
@@ -112,10 +112,10 @@
       "name": "Log in with a passkey",
       "summary": "The browser explains that a passkey ceremony will select the existing account before linking this profile.",
       "artifact": "app/screens/web-09-account-login.png",
-      "capture": "production-source fixture",
+      "capture": "running product",
       "status": "captured",
       "journey_ids": ["ACCT-B03", "ACCT-B08", "ACCT-B09"],
-      "source_paths": ["rust/tonk-core/assets/library/profile.yaml", "rust/tonk-ui/src/register_dialog.rs"]
+      "source_paths": ["rust/tonk-ui/src/register_dialog.rs", "rust/tonk-ui/styles.css", "rust/tonk-ui/src/account_flow.rs"]
     },
     {
       "id": "WEB-10",
@@ -127,7 +127,7 @@
       "capture": "production-source fixture",
       "status": "captured",
       "journey_ids": ["ACCT-C02", "ACCT-C03", "ACCT-C04", "ACCT-C05", "ACCT-C06"],
-      "source_paths": ["rust/tonk-core/assets/library/profile.yaml", "rust/tonk-ui/src/register_dialog.rs", "rust/tonk-cli/src/account.rs"]
+      "source_paths": ["rust/tonk-core/assets/library/profile.yaml", "rust/tonk-ui/styles.css", "rust/tonk-cli/src/account.rs"]
     },
     {
       "id": "WEB-11",
@@ -139,7 +139,7 @@
       "capture": "production-source fixture",
       "status": "captured",
       "journey_ids": ["ACCT-B04", "ACCT-B11", "ACCT-B12", "ACCT-B13", "ACCT-B14", "ACCT-B15"],
-      "source_paths": ["rust/tonk-core/assets/library/profile.yaml", "rust/tonk-ui/src/register_dialog.rs"]
+      "source_paths": ["rust/tonk-core/assets/library/profile.yaml", "rust/tonk-ui/styles.css"]
     },
     {
       "id": "WEB-12",
@@ -151,7 +151,7 @@
       "capture": "production-source fixture",
       "status": "captured",
       "journey_ids": ["ACCT-B04", "ACCT-B14", "ACCT-B15", "AUTH-01", "AUTH-02", "AUTH-03"],
-      "source_paths": ["rust/tonk-core/assets/library/profile.yaml", "rust/tonk-ui/src/register_dialog.rs"]
+      "source_paths": ["rust/tonk-core/assets/library/profile.yaml", "rust/tonk-ui/styles.css"]
     },
     {
       "id": "WEB-13",
@@ -163,7 +163,7 @@
       "capture": "production-source fixture",
       "status": "captured",
       "journey_ids": ["AUTH-04", "AUTH-05", "AUTH-06"],
-      "source_paths": ["rust/tonk-core/assets/library/profile.yaml", "rust/tonk-ui/src/register_dialog.rs"]
+      "source_paths": ["rust/tonk-core/assets/library/profile.yaml", "rust/tonk-ui/styles.css"]
     },
     {
       "id": "WEB-14",

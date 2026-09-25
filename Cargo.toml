@@ -34,7 +34,6 @@ members = [
   "rust/tonk-ui",
   "rust/tonk-worker",
   "rust/tonk-worker-api",
-  "rust/tonk-workspace",
 ]
 
 [workspace.package]
@@ -76,7 +75,6 @@ tonk-tree = { path = "./rust/tonk-tree" }
 tonk-ui = { path = "./rust/tonk-ui" }
 tonk-worker = { path = "./rust/tonk-worker" }
 tonk-worker-api = { path = "./rust/tonk-worker-api" }
-tonk-workspace = { path = "./rust/tonk-workspace" }
 
 aes-gcm = "0.10"
 anyhow = "1"

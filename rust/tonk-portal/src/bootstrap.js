@@ -1,5 +1,5 @@
 (function(){
-  var nextId=0, pending=new Map(), streams=new Map(), subRows=new Map(), registerFocus=new Map();
+  var nextId=0, pending=new Map(), streams=new Map(), subRows=new Map(), registerFocus=new Map(), taskFocus=new Map();
   var resolveReady; var ready=new Promise(function(r){resolveReady=r;});
   var ch=new MessageChannel(), port=ch.port1;
   function mint(){return "r"+(++nextId);}
@@ -111,6 +111,20 @@
       if(token){ registerFocus.set(token,{opener:opener,relay:typeof relay==="function"?relay:null}); }
       ready.then(function(){port.postMessage({v:1,type:"register",reason:reason,focusToken:token});});
     },
+    // Ask the trusted page to present one typed contained task. The payload
+    // is parsed and validated by the parent; guest markup never crosses the
+    // boundary. The callback receives the terminal result exactly once.
+    task:function(payload,relay){
+      var action="";try{action=JSON.parse(payload).action||"";}catch(e){}
+      if(action!=="open"){
+        ready.then(function(){port.postMessage({v:1,type:"task",payload:payload});});
+        return;
+      }
+      var opener=document.activeElement;
+      var token=mint();
+      taskFocus.set(token,{opener:opener,relay:typeof relay==="function"?relay:null});
+      ready.then(function(){port.postMessage({v:1,type:"task",payload:payload,focusToken:token});});
+    },
     // Same-origin request performed by the HOST: the opaque guest can't reach a
     // same-origin, SW-routed `/api/...` endpoint itself. The host issues the
     // request on its real origin and streams the response back; we rebuild a
@@ -192,6 +206,18 @@
         var discarded=registerFocus.get(env.focusToken);
         registerFocus.delete(env.focusToken);
         if(discarded&&discarded.relay){discarded.relay(env.type);}
+        return;
+      }
+      case "task-result": {
+        var task=taskFocus.get(env.focusToken);
+        var taskOpener=task&&task.opener;
+        taskFocus.delete(env.focusToken);
+        if(task&&task.relay){task.relay(env.result);taskOpener=null;}
+        window.dispatchEvent(new CustomEvent("tonk:task-closed",{detail:{result:env.result}}));
+        if(taskOpener&&taskOpener.isConnected&&!taskOpener.matches(":disabled")){
+          window.focus();
+          taskOpener.focus({preventScroll:true});
+        }
         return;
       }
       case "fetch-result": {

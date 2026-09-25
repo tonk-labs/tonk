@@ -115,6 +115,7 @@ async fn main() {
         tonk_ui::register_dialog::describe(reason);
         tonk_ui::register_dialog::adopt_stashed_share();
     });
+    tonk_portal::on_task(tonk_ui::fabb_task::handle);
     tonk_ui::activate::register();
 
     // Dev-only hot reload client. `debug_assertions` is on under `trunk serve`

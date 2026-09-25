@@ -523,7 +523,8 @@ async fn explicit_library_evaluation_refreshes_a_frozen_blank_canvas() -> anyhow
         .await?;
     let refreshed = tonk_cli::render::render(&test.site, &route).await?;
     assert!(!refreshed.contains("Frozen old canvas"));
-    assert!(refreshed.contains("tonk:agent-handoff"), "{refreshed}");
+    assert!(refreshed.contains("class=\"blank-canvas\""), "{refreshed}");
+    assert!(!refreshed.contains("tonk:agent-handoff"), "{refreshed}");
     Ok(())
 }
 

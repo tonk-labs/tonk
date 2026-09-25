@@ -550,7 +550,7 @@
                 markServiceWorkerReady();
 
                 let incoming = null;
-                let retirementRequested = false;
+                let retirementChecks = 0;
                 let settled = false;
                 let resolveOutcome;
                 const outcome = new Promise((resolve) => {
@@ -568,15 +568,13 @@
                     // A long-lived outgoing worker can miss `updatefound` and
                     // never restart, while its open streams keep an installed
                     // successor waiting. The update-aware page has durable
-                    // visibility of that state, so wake the incumbent once and
-                    // let it verify the waiting worker before releasing.
+                    // visibility of that state, so wake the incumbent and let
+                    // it verify the waiting worker before releasing.
                     if (
-                        !retirementRequested &&
                         incoming?.state === "installed" &&
-                        registration.waiting === incoming &&
-                        navigator.serviceWorker.controller === priorController
+                        navigator.serviceWorker.controller === priorController &&
+                        retirementChecks < 5
                     ) {
-                        retirementRequested = true;
                         // A new fetch can restart the incumbent after Chrome
                         // stops it but before the successor takes control.
                         // Let existing work settle and hold new page IO until
@@ -588,9 +586,17 @@
                         incoming.postMessage({
                             type: "activate-if-installed",
                         });
-                        priorController.postMessage({
-                            type: "retire-if-superseded",
-                        });
+                        retirementChecks += 1;
+                        if (registration.waiting === incoming) {
+                            priorController.postMessage({
+                                type: "retire-if-superseded",
+                            });
+                        }
+                        // `statechange` can arrive before `waiting` is visible
+                        // to this document. The incumbent may also see the
+                        // registration change after the first message. Retry
+                        // briefly; retirement is idempotent in the worker.
+                        setTimeout(onWorkerState, 250);
                     }
                     // Browser activation replaces the incumbent controller;
                     // `controllerchange` below drives the guarded reload.
@@ -605,6 +611,7 @@
                     if (!worker || worker === incoming) return;
                     incoming?.removeEventListener("statechange", onWorkerState);
                     incoming = worker;
+                    retirementChecks = 0;
                     observingInstallLifecycle = true;
                     incoming.addEventListener("statechange", onWorkerState);
                     const status = document.querySelector("[data-boot-status]");

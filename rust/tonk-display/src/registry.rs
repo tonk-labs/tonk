@@ -2231,7 +2231,7 @@ mod tests {
         settle_until(|| !status.has_attribute("hidden")).await;
         assert_eq!(
             text_of(&host, "[data-ceremony-status]"),
-            "Adding the passkey: waiting for your passkey\u{2026}"
+            "Adding the passkey: waiting for passkey\u{2026}"
         );
         assert_eq!(
             host.get_attribute("data-ceremony-state").as_deref(),

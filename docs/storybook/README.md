@@ -239,9 +239,11 @@ The relevant source locations are:
 - [`rust/tonk-ui/src/bin/ui.rs`](../../rust/tonk-ui/src/bin/ui.rs): top-document
   route selection.
 - [`rust/tonk-core/assets/library/profile.yaml`](../../rust/tonk-core/assets/library/profile.yaml):
-  the hub and account-settings views and element declarations. Account screen
-  captures predate the account-view refactor; their source paths now identify
+  the hub and account-settings views and element declarations. Account settings
+  fixture captures predate the account-view refactor; their source paths identify
   the successor view and ceremony implementations.
+- [`rust/tonk-ui/src/register_dialog.rs`](../../rust/tonk-ui/src/register_dialog.rs):
+  the trusted signup and sign-in ceremony used by the Hub and in-space tasks.
 - [`rust/tonk-ui/src/activate.rs`](../../rust/tonk-ui/src/activate.rs): emailed
   activation-link surface.
 - [`rust/tonk-ui/src/account_flow.rs`](../../rust/tonk-ui/src/account_flow.rs):

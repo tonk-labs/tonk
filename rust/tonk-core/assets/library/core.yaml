@@ -144,13 +144,12 @@ event!: &on/toggle
 # ============================================================
 
 # The blank canvas: what a lean (no-template) repo renders. It is the
-# default target of the `tonk/space` alias (below). Mirrors the mock's
-# connect-an-agent frame: a prompt
-# (the same `tonk:invite` mint the share path uses, rendered via the
-# `tonk:agent-invite` prompt view).
+# default target of the `tonk/space` alias (below). Agent invitations are
+# opened explicitly from the host-owned FABB, so rendering an empty space does
+# not rotate a bearer credential or duplicate the invitation UI in content.
 concept!: &blank
   this: tonk:blank
-  description: A lean repo's starting canvas — connect an agent or build by hand.
+  description: A lean repo's empty starting canvas.
   with:
     subject:
       description: The repository's subject DID (the replica's subject).
@@ -169,48 +168,9 @@ view!:
             flex-direction: column;
             justify-content: center;
             min-height: 100dvh;
-            gap: var(--wa-space-2xl);
             width: 100%;
-            max-width: 620px;
-            margin: 0 auto;
-            padding: var(--wa-space-3xl) var(--wa-space-2xl);
-            color: var(--wa-color-text-normal);
-            font-family: var(--wa-font-family-body);
-          }
-          .blank-canvas__label {
-            font-family: var(--wa-font-family-code);
-            font-size: var(--wa-font-size-xs);
-            letter-spacing: 0.08em;
-            text-transform: uppercase;
-            color: var(--wa-color-text-quiet);
-          }
-          .blank-canvas__deeplink {
-            display: flex;
-            flex-direction: column;
-            gap: var(--wa-space-xs);
-            align-items: flex-start;
-          }
-          /* `tonk-display` is light DOM and projects lifecycle slots by
-             toggling `hidden`. Its custom-element display rule outranks the UA
-             default, so enforce the inactive state here. */
-          .blank-canvas__deeplink tonk-display > [slot][hidden] {
-            display: none !important;
           }
         </style>
-        <section class="blank-canvas__deeplink">
-          <page-mount on:invite=tonk:agent-handoff></page-mount>
-          <tonk-display
-            entity={subject}
-            model=tonk:agent-invite
-            data-page="this repo">
-            <tonk-display
-              slot="no-entity"
-              entity={subject}
-              model=tonk:agent-handoff-state>
-              <div slot="no-entity" class="blank-canvas__label">Generating link…</div>
-            </tonk-display>
-          </tonk-display>
-        </section>
       </div>
 
 # The Enable-sync command. Submitting the sync chip's "Enable sync" form

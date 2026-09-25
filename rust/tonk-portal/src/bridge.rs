@@ -22,6 +22,7 @@
 //!   setTitle(text)    -> void,
 //!   open(href)        -> void,
 //!   analytics(event)  -> void,
+//!   task(payload, cb)  -> void,
 //!   ready: Promise<void>,
 //! }
 //! ```
@@ -46,7 +47,7 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use js_sys::{Object, Reflect};
 use tonk_host::consumer::{self as host_consumer, Subscription as HostSubscription};
@@ -76,6 +77,8 @@ pub(crate) struct PortalState {
     /// drained) on teardown so no response keeps streaming into a
     /// destroyed guest realm.
     relays: Vec<AbortController>,
+    /// The one trusted-page task leased to this guest, if any.
+    active_task: Option<crate::task::Request>,
     /// The port bound by the latest `hello` handshake, used to relay
     /// results back to the iframe. `None` until the iframe says hello.
     port: Option<MessagePort>,
@@ -115,6 +118,7 @@ impl PortalState {
             next_tag: 0,
             subs: BTreeMap::new(),
             relays: Vec::new(),
+            active_task: None,
             port: None,
             _dispatcher: None,
             with: None,
@@ -171,6 +175,56 @@ impl PortalState {
     /// navigation rebuild drains the lot.
     pub(crate) fn track_relay(&mut self, controller: AbortController) {
         self.relays.push(controller);
+    }
+
+    fn accept_task(&mut self, request: &crate::task::Request) -> Result<(), &'static str> {
+        use crate::task::Action;
+
+        match request.action {
+            Action::Open => {
+                if self.active_task.is_some() {
+                    return Err("busy");
+                }
+                self.active_task = Some(request.clone());
+            }
+            Action::Reseat | Action::Suspend | Action::Show => {
+                let Some(active) = self.active_task.as_ref() else {
+                    return Err("stale");
+                };
+                if active.request_id != request.request_id {
+                    return Err("stale");
+                }
+                self.active_task = Some(request.clone());
+            }
+            Action::Dismiss => {
+                let Some(active) = self.active_task.as_ref() else {
+                    return Err("stale");
+                };
+                if active.request_id != request.request_id {
+                    return Err("stale");
+                }
+                self.active_task = None;
+            }
+        }
+        Ok(())
+    }
+
+    fn finish_task(&mut self, request_id: &str) {
+        if self
+            .active_task
+            .as_ref()
+            .is_some_and(|request| request.request_id == request_id)
+        {
+            self.active_task = None;
+        }
+    }
+
+    fn take_task_dismissal(&mut self) -> Option<crate::task::Request> {
+        self.active_task.take().map(|mut request| {
+            request.action = crate::task::Action::Dismiss;
+            request.presentation = None;
+            request
+        })
     }
 }
 
@@ -1076,6 +1130,7 @@ fn make_dispatcher(
             "open" => handle_open(&state, &data),
             "analytics" => handle_analytics(&data),
             "register" => handle_register(&state, &port, &data),
+            "task" => handle_task(&state, &port, &data),
             "fetch" => handle_host_fetch(&state, &port, &data),
             "delegate" => handle_delegate(&port, &data),
             _ => {}
@@ -1520,6 +1575,186 @@ fn register_request(data: &JsValue) -> Option<(String, Option<String>)> {
     let reason = get_str(data, "reason").filter(|reason| !reason.is_empty())?;
     let token = get_str(data, "focusToken").filter(|token| !token.is_empty());
     Some((reason, token))
+}
+
+/// A one-shot result path from the trusted page to the exact sealed guest
+/// that requested a contained task.
+pub struct ContainedTaskReturn {
+    port: MessagePort,
+    frame: Option<HtmlIFrameElement>,
+    state: Weak<RefCell<PortalState>>,
+    request_id: Option<String>,
+    token: String,
+    handled: bool,
+}
+
+impl ContainedTaskReturn {
+    /// Finish the request, restore the connected guest frame and consume the
+    /// return token.
+    pub fn finish(mut self, result: &str) {
+        if let Some(frame) = self.frame.as_ref()
+            && frame.is_connected()
+        {
+            let _ = frame.focus();
+        }
+        self.release_task();
+        self.post(result);
+        self.handled = true;
+    }
+
+    fn release_task(&self) {
+        let Some(request_id) = self.request_id.as_deref() else {
+            return;
+        };
+        if let Some(state) = self.state.upgrade() {
+            state.borrow_mut().finish_task(request_id);
+        }
+    }
+
+    fn post(&self, result: &str) {
+        let envelope = Object::new();
+        set_v1(&envelope, "task-result");
+        let _ = Reflect::set(
+            &envelope,
+            &"focusToken".into(),
+            &JsValue::from_str(&self.token),
+        );
+        let _ = Reflect::set(&envelope, &"result".into(), &JsValue::from_str(result));
+        let _ = self.port.post_message(&envelope);
+    }
+}
+
+impl Drop for ContainedTaskReturn {
+    fn drop(&mut self) {
+        if !self.handled {
+            self.release_task();
+            self.post("disconnected");
+        }
+    }
+}
+
+type TaskHandler = Box<dyn Fn(crate::task::Request, Option<ContainedTaskReturn>)>;
+
+thread_local! {
+    static TASK_HANDLER: std::cell::RefCell<Option<TaskHandler>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Install what runs when a sealed guest asks for a trusted-page contained
+/// task. Later calls replace the handler so hot reload cannot stack hosts.
+pub fn on_task(handler: impl Fn(crate::task::Request, Option<ContainedTaskReturn>) + 'static) {
+    TASK_HANDLER.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(handler));
+    });
+}
+
+fn handle_task(state: &Rc<RefCell<PortalState>>, port: &MessagePort, data: &JsValue) {
+    let Some((payload, token)) = task_request(data) else {
+        return;
+    };
+    let make_return = |request_id: Option<&str>| {
+        token.as_ref().map(|token| ContainedTaskReturn {
+            port: port.clone(),
+            frame: state.borrow().iframe.clone(),
+            state: Rc::downgrade(state),
+            request_id: request_id.map(str::to_owned),
+            token: token.clone(),
+            handled: false,
+        })
+    };
+    let request = match crate::task::Request::parse(&payload).and_then(|request| {
+        let offset = state
+            .borrow()
+            .iframe
+            .as_ref()
+            .map(|frame| {
+                let element: &Element = frame.unchecked_ref();
+                let rect = element.get_bounding_client_rect();
+                (rect.left(), rect.top())
+            })
+            .unwrap_or((0.0, 0.0));
+        request.translated(offset.0, offset.1)
+    }) {
+        Ok(request) => request,
+        Err(_) => {
+            if let Some(reply) = make_return(None) {
+                reply.finish("invalid");
+            }
+            return;
+        }
+    };
+
+    if let Err(result) = state.borrow_mut().accept_task(&request) {
+        if let Some(reply) = make_return(None) {
+            reply.finish(result);
+        }
+        return;
+    }
+
+    let request_id = request.request_id.clone();
+    dispatch_task(request, make_return(Some(&request_id)), true);
+}
+
+fn dispatch_task(
+    request: crate::task::Request,
+    focus_return: Option<ContainedTaskReturn>,
+    relay: bool,
+) {
+    let mut request = Some(request);
+    let mut focus_return = focus_return;
+    TASK_HANDLER.with(|handler| {
+        if let Some(handler) = handler.borrow().as_ref() {
+            handler(request.take().expect("task request"), focus_return.take());
+        }
+    });
+    if request.is_none() {
+        return;
+    }
+    if !relay {
+        return;
+    }
+    if let Some(window) = window()
+        && let Ok(tonk) = Reflect::get(&window, &"tonk".into())
+        && let Ok(task) = Reflect::get(&tonk, &"task".into())
+        && let Some(task) = task.dyn_ref::<js_sys::Function>()
+        && let Ok(payload) = request.as_ref().expect("unhandled request").to_json()
+    {
+        let _ = relay_task(task, &tonk, &payload, focus_return.take());
+    }
+}
+
+/// Dismiss the task leased to a guest before its port and iframe disappear.
+pub(crate) fn disconnect_task(state: &Rc<RefCell<PortalState>>) {
+    let request = state.borrow_mut().take_task_dismissal();
+    if let Some(request) = request {
+        dispatch_task(request, None, true);
+    }
+}
+
+fn relay_task(
+    task: &js_sys::Function,
+    receiver: &JsValue,
+    payload: &str,
+    focus_return: Option<ContainedTaskReturn>,
+) -> Result<(), JsValue> {
+    let held = Rc::new(RefCell::new(focus_return));
+    let callback = Closure::<dyn FnMut(String)>::new(move |result: String| {
+        if let Some(reply) = held.borrow_mut().take() {
+            reply.finish(&result);
+        }
+    })
+    .into_js_value();
+    task.call2(receiver, &payload.into(), &callback)?;
+    Ok(())
+}
+
+fn task_request(data: &JsValue) -> Option<(String, Option<String>)> {
+    if get_str(data, "type")? != "task" {
+        return None;
+    }
+    let payload = get_str(data, "payload").filter(|payload| !payload.is_empty())?;
+    let token = get_str(data, "focusToken").filter(|token| !token.is_empty());
+    Some((payload, token))
 }
 
 fn handle_title(data: &JsValue) {
@@ -2430,7 +2665,7 @@ mod tests {
     use js_sys::{Array, Function, Promise};
     use wasm_bindgen_futures::JsFuture;
     use wasm_bindgen_test::wasm_bindgen_test_configure;
-    use web_sys::{CustomEvent, Document, MessageChannel};
+    use web_sys::{CustomEvent, Document, HtmlDialogElement, HtmlElement, MessageChannel};
 
     wasm_bindgen_test_configure!(run_in_browser);
 
@@ -3295,6 +3530,204 @@ mod tests {
     }
 
     #[dialog_common::test]
+    async fn it_presents_and_reseats_a_typed_task_across_a_real_opaque_portal() {
+        let host = FakeHost::install();
+        let probe = WindowProbe::install("task");
+        let standing = Rc::new(RefCell::new(None::<HtmlDialogElement>));
+        let reply = Rc::new(RefCell::new(None::<ContainedTaskReturn>));
+        let latest = Rc::new(RefCell::new(None::<crate::task::Request>));
+        let standing_for_handler = standing.clone();
+        let reply_for_handler = reply.clone();
+        let latest_for_handler = latest.clone();
+        on_task(move |request, focus_return| {
+            match request.action {
+                crate::task::Action::Open => {
+                    let dialog = document()
+                        .create_element("dialog")
+                        .expect("dialog")
+                        .dyn_into::<HtmlDialogElement>()
+                        .expect("native dialog");
+                    dialog.set_text_content(Some("trusted task probe"));
+                    document()
+                        .body()
+                        .expect("body")
+                        .append_child(&dialog)
+                        .expect("mount dialog");
+                    seat_probe(&dialog, &request);
+                    dialog.show_modal().expect("show modal");
+                    *standing_for_handler.borrow_mut() = Some(dialog);
+                    *reply_for_handler.borrow_mut() = focus_return;
+                }
+                crate::task::Action::Reseat => {
+                    if let Some(dialog) = standing_for_handler.borrow().as_ref() {
+                        seat_probe(dialog, &request);
+                    }
+                }
+                _ => {}
+            }
+            *latest_for_handler.borrow_mut() = Some(request);
+        });
+
+        let open = task_payload(crate::task::Action::Open, 10.0, 12.0);
+        let reseat = task_payload(crate::task::Action::Reseat, 30.0, 36.0);
+        let content = format!(
+            r#"<button id="opener">open task</button><main id="surface">space</main><script>
+            var opener=document.getElementById('opener'),surface=document.getElementById('surface');
+            opener.focus();surface.hidden=true;
+            window.addEventListener('tonk:task-closed',function(event){{
+              var wasHidden=surface.hidden;surface.hidden=false;
+              queueMicrotask(function(){{parent.postMessage({{__test:'task',result:event.detail.result,wasHidden:wasHidden,focused:document.activeElement===opener}},'*');}});
+            }},{{once:true}});
+            tonk.task({open:?});tonk.task({reseat:?});
+            </script>"#
+        );
+        let portal = mount_portal(&host, &content, None, None, None);
+        portal
+            .set_attribute(
+                "style",
+                "display:block;margin:29px 0 0 37px;width:320px;height:220px",
+            )
+            .expect("portal geometry");
+
+        for _ in 0..400 {
+            if standing
+                .borrow()
+                .as_ref()
+                .is_some_and(HtmlDialogElement::open)
+                && latest
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|request| request.action == crate::task::Action::Reseat)
+            {
+                break;
+            }
+            sleep(5).await;
+        }
+        let dialog = standing.borrow().clone().expect("standing top-page modal");
+        assert!(dialog.open(), "the native modal blocks the trusted page");
+        assert!(
+            dialog.matches(":modal").expect(":modal selector"),
+            "the request is modal in the top page rather than only the guest"
+        );
+        let iframe = portal
+            .query_selector("iframe")
+            .expect("iframe selector")
+            .expect("portal iframe")
+            .dyn_into::<HtmlElement>()
+            .expect("HTML iframe");
+        let frame = iframe.get_bounding_client_rect();
+        let latest_request = latest.borrow().clone().expect("reseat request");
+        let anchor = &latest_request.presentation.as_ref().unwrap().anchor;
+        assert!((anchor.left - (frame.left() + 30.0)).abs() < 0.5);
+        assert!((anchor.top - (frame.top() + 36.0)).abs() < 0.5);
+        assert_eq!(
+            latest_request.presentation.as_ref().unwrap().horizontal,
+            crate::task::Horizontal::Right
+        );
+        assert_eq!(
+            latest_request.presentation.as_ref().unwrap().vertical,
+            crate::task::Vertical::Bottom
+        );
+        assert!((dialog.get_bounding_client_rect().right() - anchor.right).abs() < 0.5);
+        assert!((dialog.get_bounding_client_rect().bottom() - anchor.bottom).abs() < 0.5);
+
+        reply
+            .borrow_mut()
+            .take()
+            .expect("task return")
+            .finish("completed");
+        let message = probe.wait().await;
+        assert_eq!(get_str(&message, "result").as_deref(), Some("completed"));
+        assert_eq!(
+            Reflect::get(&message, &"wasHidden".into())
+                .ok()
+                .and_then(|value| value.as_bool()),
+            Some(true),
+            "only the trusted task surface is visible while it is open"
+        );
+        assert_eq!(
+            Reflect::get(&message, &"focused".into())
+                .ok()
+                .and_then(|value| value.as_bool()),
+            Some(true),
+            "focus returns through the existing port token"
+        );
+        dialog.close();
+        dialog.remove();
+        portal.remove();
+    }
+
+    #[dialog_common::test]
+    async fn it_dismisses_the_trusted_task_when_its_guest_disconnects() {
+        let host = FakeHost::install();
+        let standing = Rc::new(RefCell::new(None::<HtmlDialogElement>));
+        let held_return = Rc::new(RefCell::new(None::<ContainedTaskReturn>));
+        let dismissed = Rc::new(std::cell::Cell::new(false));
+        let standing_for_handler = standing.clone();
+        let held_return_for_handler = held_return.clone();
+        let dismissed_for_handler = dismissed.clone();
+        on_task(move |request, focus_return| match request.action {
+            crate::task::Action::Open => {
+                let dialog = document()
+                    .create_element("dialog")
+                    .expect("dialog")
+                    .dyn_into::<HtmlDialogElement>()
+                    .expect("native dialog");
+                document()
+                    .body()
+                    .expect("body")
+                    .append_child(&dialog)
+                    .expect("mount dialog");
+                dialog.show_modal().expect("show modal");
+                *standing_for_handler.borrow_mut() = Some(dialog);
+                *held_return_for_handler.borrow_mut() = focus_return;
+            }
+            crate::task::Action::Dismiss => {
+                if let Some(dialog) = standing_for_handler.borrow_mut().take() {
+                    dialog.close();
+                    dialog.remove();
+                }
+                held_return_for_handler.borrow_mut().take();
+                dismissed_for_handler.set(true);
+            }
+            _ => {}
+        });
+
+        let open = task_payload(crate::task::Action::Open, 10.0, 12.0);
+        let portal = mount_portal(
+            &host,
+            &format!("<script>tonk.task({open:?})</script>"),
+            None,
+            None,
+            None,
+        );
+        for _ in 0..400 {
+            if standing
+                .borrow()
+                .as_ref()
+                .is_some_and(HtmlDialogElement::open)
+            {
+                break;
+            }
+            sleep(5).await;
+        }
+        assert!(standing.borrow().is_some(), "trusted task opened");
+
+        portal.remove();
+        for _ in 0..100 {
+            if dismissed.get() {
+                break;
+            }
+            sleep(5).await;
+        }
+        assert!(
+            dismissed.get(),
+            "guest teardown dispatches one typed dismissal"
+        );
+        assert!(standing.borrow().is_none(), "trusted modal is released");
+    }
+
+    #[dialog_common::test]
     async fn it_runs_a_real_query_across_the_opaque_origin_boundary() {
         let host = FakeHost::install();
         let canned = Array::new();
@@ -3776,6 +4209,116 @@ mod tests {
 
         let returned = listener.wait_for("register-focus").await;
         assert_eq!(get_str(&returned, "focusToken").as_deref(), Some("focus-2"));
+    }
+
+    fn task_payload(action: crate::task::Action, left: f64, top: f64) -> String {
+        crate::task::Request {
+            version: crate::task::VERSION,
+            request_id: "probe-1".into(),
+            purpose: crate::task::Purpose::Probe,
+            action,
+            account: None,
+            presentation: Some(crate::task::Presentation {
+                anchor: crate::task::Anchor {
+                    left,
+                    top,
+                    right: left + 120.0,
+                    bottom: top + 48.0,
+                    width: 120.0,
+                    height: 48.0,
+                },
+                horizontal: crate::task::Horizontal::Right,
+                vertical: crate::task::Vertical::Bottom,
+                dismissal: crate::task::Dismissal::Optional,
+            }),
+        }
+        .to_json()
+        .expect("task JSON")
+    }
+
+    fn seat_probe(dialog: &HtmlDialogElement, request: &crate::task::Request) {
+        let presentation = request.presentation.as_ref().expect("presentation");
+        let anchor = &presentation.anchor;
+        let width = 160.0;
+        let height = 96.0;
+        let left = match presentation.horizontal {
+            crate::task::Horizontal::Left => anchor.left,
+            crate::task::Horizontal::Right => anchor.right - width,
+        };
+        let top = match presentation.vertical {
+            crate::task::Vertical::Top => anchor.top,
+            crate::task::Vertical::Bottom => anchor.bottom - height,
+        };
+        let _ = dialog.style().set_property("margin", "0");
+        let _ = dialog.style().set_property("box-sizing", "border-box");
+        let _ = dialog.style().set_property("border", "0");
+        let _ = dialog.style().set_property("padding", "0");
+        let _ = dialog.style().set_property("width", &format!("{width}px"));
+        let _ = dialog
+            .style()
+            .set_property("height", &format!("{height}px"));
+        let _ = dialog.style().set_property("left", &format!("{left}px"));
+        let _ = dialog.style().set_property("top", &format!("{top}px"));
+    }
+
+    #[dialog_common::test]
+    async fn it_returns_a_contained_task_result_through_the_request_port() {
+        let state = Rc::new(RefCell::new(PortalState::new()));
+        let channel = MessageChannel::new().expect("message channel");
+        let listener = PortListener::attach(&channel.port2());
+        let held = Rc::new(RefCell::new(None));
+        let captured = held.clone();
+        on_task(move |request, focus_return| {
+            assert_eq!(request.purpose, crate::task::Purpose::Probe);
+            assert_eq!(request.action, crate::task::Action::Open);
+            *captured.borrow_mut() = focus_return;
+        });
+
+        let request = Object::new();
+        let _ = Reflect::set(&request, &"type".into(), &"task".into());
+        let _ = Reflect::set(
+            &request,
+            &"payload".into(),
+            &task_payload(crate::task::Action::Open, 10.0, 20.0).into(),
+        );
+        let _ = Reflect::set(&request, &"focusToken".into(), &"task-focus-1".into());
+        handle_task(&state, &channel.port1(), &request.into());
+        held.borrow_mut()
+            .take()
+            .expect("task return handle")
+            .finish("completed");
+
+        let returned = listener.wait_for("task-result").await;
+        assert_eq!(
+            get_str(&returned, "focusToken").as_deref(),
+            Some("task-focus-1")
+        );
+        assert_eq!(get_str(&returned, "result").as_deref(), Some("completed"));
+    }
+
+    #[dialog_common::test]
+    async fn it_rejects_invalid_task_geometry_before_the_presenter_runs() {
+        let state = Rc::new(RefCell::new(PortalState::new()));
+        let channel = MessageChannel::new().expect("message channel");
+        let listener = PortListener::attach(&channel.port2());
+        let handled = Rc::new(std::cell::Cell::new(false));
+        let seen = handled.clone();
+        on_task(move |_, _| seen.set(true));
+
+        let malformed = task_payload(crate::task::Action::Open, 10.0, 20.0)
+            .replace("\"width\":120.0", "\"width\":90.0");
+        let request = Object::new();
+        let _ = Reflect::set(&request, &"type".into(), &"task".into());
+        let _ = Reflect::set(&request, &"payload".into(), &malformed.into());
+        let _ = Reflect::set(&request, &"focusToken".into(), &"task-focus-2".into());
+        handle_task(&state, &channel.port1(), &request.into());
+
+        let returned = listener.wait_for("task-result").await;
+        assert!(
+            !handled.get(),
+            "invalid metadata never reaches the host presenter"
+        );
+        assert_eq!(get_str(&returned, "result").as_deref(), Some("invalid"));
     }
 
     #[dialog_common::test]

@@ -259,7 +259,7 @@ fn show_consent() {
         remove_card();
     });
     on_click(&host, "#tonk-custody-continue", move || {
-        set_card_text("Waiting for your passkey…");
+        set_card_text("Waiting for passkey…");
         let mut attempt = crate::account_observability::WebAccountAttempt::start(
             AccountAction::FinishAccountBackup,
             tonk_analytics::account::Surface::CustodyConsent,
@@ -360,7 +360,7 @@ fn run_command_ceremony(intent: tonk_worker_api::CustodyIntent, credential_id: O
     };
     let action = command_action(&intent);
     on_click(&host, "#tonk-custody-continue", move || {
-        set_card_text("Waiting for your passkey…");
+        set_card_text("Waiting for passkey…");
         tonk_common::log!("custody: continue clicked for {}", intent_label(&intent));
         match begin_with(method, intent.clone(), credential_id.clone()) {
             Ok(mediation) => wasm_bindgen_futures::spawn_local(async move {

@@ -10209,27 +10209,25 @@ block/insert!:
         );
     }
 
-    /// The empty-state canvas keeps the pending label only while the handoff
-    /// request is unanswered. A refusal resolves the nested model and renders
-    /// the explicit local-only notice instead of spinning forever.
+    /// Empty spaces leave tool connection creation to the host-owned FABB.
+    /// The handoff response still has its own view for explicit invitations.
     #[dialog_common::test]
-    fn it_routes_refused_agent_links_to_the_local_only_notice() {
+    fn it_keeps_agent_handoffs_out_of_the_blank_canvas() {
+        let blank_view = CORE
+            .split_once("view!:\n  this: tonk:blank")
+            .expect("blank view")
+            .1
+            .split_once("\n# The Enable-sync command")
+            .expect("end of blank view")
+            .0;
         assert!(
-            CORE.contains("slot=\"no-entity\"") && CORE.contains("model=tonk:agent-handoff-state"),
-            "agent-link fallback should query its independent handoff status",
+            !blank_view.contains("page-mount") && !blank_view.contains("tonk:agent-invite"),
+            "opening an empty space must not mint or render a tool invitation",
         );
         assert!(
-            !CORE.contains("agent link &middot; paste into your agent"),
-            "the rendered state should provide its own single label",
-        );
-        assert!(
-            CORE.contains("tonk-display > [slot][hidden]"),
-            "inactive pending and refusal slots should not survive a ready result",
-        );
-        assert!(CORE.contains("<p data-agent-handoff-status>{status}</p>"));
-        assert!(
-            !CORE.contains("Use connect in the condition banner"),
-            "the refusal must not prescribe a repair that is absent or inappropriate"
+            CORE.contains("this: tonk:agent-handoff-state")
+                && CORE.contains("<p data-agent-handoff-status>{status}</p>"),
+            "explicit tool invitations should keep their independent response view",
         );
     }
 

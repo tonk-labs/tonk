@@ -85,6 +85,7 @@ impl CustomElement for TonkPortal {
 
     fn disconnected_callback(&mut self, _this: &HtmlElement) {
         if let Some(state) = self.inner.borrow_mut().take() {
+            bridge::disconnect_task(&state);
             let mut s = state.borrow_mut();
             s.disposed = true;
             s.clear_subs();

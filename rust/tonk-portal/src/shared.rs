@@ -145,6 +145,7 @@ pub(crate) fn connect_portal(
 /// Shared by both portal elements; `content`/`entity`/`model` attribute
 /// changes call this.
 pub(crate) fn reload_portal(host: &Element, state: &Rc<RefCell<PortalState>>) {
+    bridge::disconnect_task(state);
     let mut s = state.borrow_mut();
     s.clear_subs();
     if let Some(iframe) = s.iframe.as_ref() {
