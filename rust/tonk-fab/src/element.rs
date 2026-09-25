@@ -1516,6 +1516,16 @@ pub(crate) fn apply_account_ready(this: &HtmlElement, ready: bool) {
             let _ = copy.set_attribute("hidden", "");
         }
     }
+    if let Some(tool) = this
+        .shadow_root()
+        .and_then(|root| root.query_selector("[data-action=tool]").ok().flatten())
+    {
+        if ready {
+            let _ = tool.remove_attribute("hidden");
+        } else {
+            let _ = tool.set_attribute("hidden", "");
+        }
+    }
     if let Some(login) = this
         .shadow_root()
         .and_then(|root| root.query_selector(".login").ok().flatten())

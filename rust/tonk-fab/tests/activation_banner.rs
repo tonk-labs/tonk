@@ -139,18 +139,13 @@ async fn registered_customer_can_resend_and_retires_when_active() {
     // `reset`/`update` onto the element from `connectedCallback`, so
     // give that a turn before delivering one.
     yield_for(20).await;
-    let login = bar.query_selector("[data-share-account]").unwrap().unwrap();
-    let invite = bar.query_selector("[data-share-link]").unwrap().unwrap();
-    let tool = bar
-        .query_selector("[data-tool-connection]")
-        .unwrap()
-        .unwrap();
+    let root = bar.shadow_root().unwrap();
+    let login = root.query_selector(".login").unwrap().unwrap();
+    let tool = root.query_selector("[data-action=tool]").unwrap().unwrap();
     assert!(!login.has_attribute("hidden"));
-    assert!(invite.has_attribute("hidden"));
     assert!(tool.has_attribute("hidden"));
     deliver(&bar, "Registered", "jack@example.test");
     assert!(login.has_attribute("hidden"));
-    assert!(!invite.has_attribute("hidden"));
     assert!(!tool.has_attribute("hidden"));
 
     assert!(

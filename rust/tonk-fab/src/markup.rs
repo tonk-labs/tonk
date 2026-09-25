@@ -161,7 +161,7 @@ pub const BAR_HTML: &str = r#"<div class="w">
       <button class="action share" data-cell="share" data-panel="share" aria-controls="share-panel" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="5" r="2.5"/><circle cx="18" cy="19" r="2.5"/><path d="m8 11 8-5M8 13l8 5"/></svg><span>copy share link</span></button>
       <button class="action members" data-panel="members" aria-controls="members-panel" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="10" r="2.5"/><circle cx="5" cy="5" r="2"/><circle cx="19" cy="5" r="2"/><path d="M7 21v-2a5 5 0 0 1 10 0v2M2 14v-2a3 3 0 0 1 3-3M22 14v-2a3 3 0 0 0-3-3"/></svg><span>view members</span></button>
       <button class="action agent" data-panel="agent" aria-controls="agent-panel" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 9.5V6.5"/><circle cx="12" cy="4" r="2.5"/><rect x="1.5" y="9.5" width="21" height="13" rx="4"/><circle cx="8" cy="16" r="1.5"/><circle cx="16" cy="16" r="1.5"/></svg><span>connect agent</span></button>
-      <button class="action tool" data-action="tool"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m6 9 4 3-4 3m7 0h5"/></svg><span>connect a tool</span></button>
+      <button class="action tool" data-action="tool" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m6 9 4 3-4 3m7 0h5"/></svg><span>connect a tool</span></button>
       <button class="action home" data-action="home"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 20V4m-5 5 5-5 5 5M8 16q0 5 5 5h7"/></svg><span>go to tonk home</span></button>
       <button class="more" data-cell="more" tabindex="-1" hidden></button>
     </nav>
@@ -219,6 +219,9 @@ pub const STACKS_HTML: &str = r#"<ui-sync-status headless with="main@{space}"></
 /// marks a stack row carries are painted here, in the light tree, next to the
 /// markup that uses them.
 pub const STACKS_CSS: &str = r#"
+.fabb-tool-connection p{ margin:0; }
+.fabb-tool-connection [data-tool-connection-status]{ margin-top:10px; }
+.fabb-tool-connection tonk-button[hidden]{ display:none !important; }
 /* the rename glyph — the block cursor as a noun, at the label's own size */
 tonk-fab .rename-mark{ display:inline-block; width:6px; height:12px; background:currentColor; }
 /* the headless subscribers render nothing; they are unslotted, but say so */
@@ -290,15 +293,13 @@ pub const REFUSAL_DIALOGS_HTML: &str = r#"<tonk-cluster id="fabb-connect-cluster
   <tonk-button slot="run" variant="primary" solid data-enable-sync-confirm>connect</tonk-button>
   <span slot="ghost">keep it on this device</span>
 </tonk-cluster>
-<tonk-cluster id="fabb-tool-connection-cluster" hidden data-tool-space="">
-  <p slot="statement">connect a tool</p>
+<tonk-dialog id="fabb-tool-connection-cluster" class="fabb-tool-connection" heading="connect a tool" hidden data-tool-space="">
   <p>give a tool access to this space under your account</p>
-  <p slot="narrator" data-tool-connection-status>creating a private link&hellip;</p>
-  <tonk-button slot="run" variant="primary" solid data-tool-copy-link disabled>copy link</tonk-button>
-  <tonk-button slot="run" solid data-tool-copy-prompt disabled>copy agent prompt</tonk-button>
-  <tonk-button slot="run" solid data-tool-retry hidden>try again</tonk-button>
-  <span slot="ghost">back to share</span>
-</tonk-cluster>"#;
+  <p data-tool-connection-status>creating a private link&hellip;</p>
+  <tonk-button slot="actions" solid data-tool-copy-prompt disabled>copy agent prompt</tonk-button>
+  <tonk-button slot="actions" variant="primary" solid data-tool-copy-link disabled>copy link</tonk-button>
+  <tonk-button slot="actions" solid data-tool-retry hidden>try again</tonk-button>
+</tonk-dialog>"#;
 
 /// Stamp the space DID into [`STACKS_HTML`].
 ///
@@ -617,6 +618,9 @@ mod tests {
         );
         assert!(REFUSAL_DIALOGS_HTML.contains("data-tool-copy-link"));
         assert!(REFUSAL_DIALOGS_HTML.contains("data-tool-copy-prompt"));
+        assert!(REFUSAL_DIALOGS_HTML.contains("<tonk-dialog id=\"fabb-tool-connection-cluster\""));
+        assert!(REFUSAL_DIALOGS_HTML.contains("heading=\"connect a tool\""));
+        assert!(REFUSAL_DIALOGS_HTML.contains("slot=\"actions\" solid data-tool-copy-prompt"));
     }
 
     #[test]
