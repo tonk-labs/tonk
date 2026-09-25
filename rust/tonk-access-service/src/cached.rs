@@ -16,10 +16,11 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use base58::ToBase58;
-use dialog_capability::{Capability, Policy, Provider};
+use dialog_capability::{Capability, Constraint, Did, Policy, Provider};
 use dialog_common::{Blake3Hash, ConditionalSend, ConditionalSync};
+use dialog_effects::Method;
 use dialog_effects::archive::prelude::{GetExt, PutExt};
-use dialog_effects::archive::{self, ArchiveError, Catalog};
+use dialog_effects::archive::{self, ArchiveError};
 use dialog_effects::blob::prelude::{BlobImportExt as _, BlobReadExt as _};
 use dialog_effects::blob::{self, BlobError, BlobReader, BlobSink, BlobWriter, ByteRange};
 use dialog_effects::memory::{self, Edition, MemoryError, Version};
@@ -31,22 +32,17 @@ pub mod worker;
 mod test;
 
 /// The key a block is stored under: `{subject}/{catalog}/{digest}`.
-pub fn block_key<Fx>(capability: &Capability<Fx>, digest: &Blake3Hash) -> String
-where
-    Fx: Policy<Of = Catalog>,
-{
-    format!(
-        "{}/{}/{}",
-        capability.subject(),
-        Catalog::of(capability).catalog,
-        digest.as_bytes().to_base58()
-    )
+pub fn block_key(subject: &Did, catalog: &str, digest: &Blake3Hash) -> String {
+    format!("{subject}/{catalog}/{}", digest.as_bytes().to_base58())
 }
 
-/// The key a blob is stored under: `{subject}/blob/{digest}`.
-pub fn blob_key<Fx>(capability: &Capability<Fx>, digest: &Blake3Hash) -> String
+/// The key a blob is stored under: `{subject}/blob/{digest}`, for a read
+/// or a write alike.
+pub fn blob_key<Fx, M>(capability: &Capability<Fx>, digest: &Blake3Hash) -> String
 where
-    Fx: Policy<Of = blob::Blob>,
+    Fx: Policy<Of = blob::Blob<M>>,
+    M: Method,
+    M::Of: Constraint,
 {
     format!(
         "{}/blob/{}",
@@ -186,7 +182,11 @@ where
         &self,
         capability: Capability<archive::Get>,
     ) -> Result<Option<Vec<u8>>, ArchiveError> {
-        let key = block_key(&capability, capability.digest());
+        let key = block_key(
+            capability.subject(),
+            capability.catalog(),
+            capability.digest(),
+        );
         if self.mode == Mode::ReadThrough
             && let Some(source) = self.cache.read(&key, None).await
             && let Ok(bytes) = collect(source).await
@@ -217,7 +217,11 @@ where
 {
     async fn execute(&self, capability: Capability<archive::Put>) -> Result<(), ArchiveError> {
         let content = capability.content().to_vec();
-        let key = block_key(&capability, &Blake3Hash::hash(&content));
+        let key = block_key(
+            capability.subject(),
+            capability.catalog(),
+            &Blake3Hash::hash(&content),
+        );
         Provider::<archive::Put>::execute(&self.store, capability).await?;
         self.note(Outcome::Fill);
         let cache = self.cache.clone();
