@@ -12,15 +12,12 @@ on:
 
 name: 'Pin CLI release'
 
-# Publish an immutable CLI release for a ref that predates automatic
-# pinning.
+# Publish an immutable CLI release for a ref that has none.
 #
-# `cli.yml` pins every build it runs, but only from the moment that
-# landed. Anything older has no pinned release and cannot get one from
-# that workflow: GitHub reads `workflow_dispatch` inputs from the file
-# *at the dispatched ref*, so dispatching an old tag fails with
-# "Unexpected inputs provided" — the input does not exist back there, and
-# history cannot be edited to add it.
+# Every `v*` release tag gets its own immutable GitHub release from
+# `release.yml`. Builds from before that (and any other commit) have no
+# release and cannot get one from that workflow, since it only runs on a
+# pushed tag.
 #
 # This workflow inverts that. It lives on the default branch, so its
 # inputs always exist, and it *checks out* the ref being published. That

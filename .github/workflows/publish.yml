@@ -7,8 +7,12 @@ on:
   # uses the trusted base-branch workflow rather than checking out PR code.
   pull_request_target:
     types: [closed]
+  # `main` deploys dev on tonk.foundation. A `v*` tag is a release: a
+  # prerelease tag (`v0.7.0-rc.1`) deploys staging and a final tag (`v0.7.0`)
+  # deploys production. `release.yml` explains how to cut one.
   push:
-    branches: [main, stable, staging]
+    branches: [main]
+    tags: ['v*']
 
 # Two runs of one pull request would race for the same preview aliases and D1
 # database. Superseding the in-flight run is the wanted outcome: the newer
@@ -31,6 +35,16 @@ jobs:
     name: Cloudflare Artifacts
     steps:
       - uses: actions/checkout@v4
+        with:
+          # A release compares its tag against `main`.
+          fetch-depth: ${{ github.ref_type != 'tag' && 1 || 0 }}
+
+      # Validates the tag, picks the environment from it, and stamps the
+      # tag's version into the workspace before anything builds.
+      - name: Resolve the release
+        if: github.ref_type == 'tag'
+        id: release
+        uses: ./.github/actions/resolve-release
 
       # Every pull request comment names the commit it deployed. A reviewer
       # who opens the comment while a newer run is still uploading otherwise
@@ -64,9 +78,10 @@ jobs:
         env:
           DEPLOY_EVENT: ${{ github.event_name }}
           DEPLOY_REF: ${{ github.ref }}
+          DEPLOY_CHANNEL: ${{ steps.release.outputs.channel }}
         run: |
           artifact=tonk-cloudflare-artifacts
-          if [ "$DEPLOY_EVENT" = pull_request ] || [ "$DEPLOY_REF" = refs/heads/staging ] || [ "$DEPLOY_REF" = refs/heads/main ]; then
+          if [ "$DEPLOY_EVENT" = pull_request ] || [ "$DEPLOY_REF" = refs/heads/main ] || [ "$DEPLOY_CHANNEL" = staging ]; then
             artifact=tonk-cloudflare-preview-artifacts
           fi
           nix build --accept-flake-config ".#$artifact"
@@ -254,7 +269,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       - name: Apply staging access migrations
-        if: github.event_name == 'push' && github.ref == 'refs/heads/staging'
+        if: steps.release.outputs.channel == 'staging'
         run: |
           nix --accept-flake-config develop --command \
             wrangler d1 migrations apply tonk-access-control-staging --remote \
@@ -267,14 +282,14 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       - name: Deploy staging
-        if: github.event_name == 'push' && github.ref == 'refs/heads/staging'
+        if: steps.release.outputs.channel == 'staging'
         run: nix --accept-flake-config develop --command wrangler deploy --env staging -c wrangler.toml
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       - name: Apply production access migrations
-        if: github.event_name == 'push' && github.ref == 'refs/heads/stable'
+        if: steps.release.outputs.channel == 'stable'
         run: |
           nix --accept-flake-config develop --command \
             wrangler d1 migrations apply tonk-access-control --remote \
@@ -287,7 +302,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       - name: Deploy production
-        if: github.event_name == 'push' && github.ref == 'refs/heads/stable'
+        if: steps.release.outputs.channel == 'stable'
         run: nix --accept-flake-config develop --command wrangler deploy -c wrangler.toml
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
