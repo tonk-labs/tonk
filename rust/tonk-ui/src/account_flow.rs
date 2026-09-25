@@ -39,6 +39,114 @@ mod tests {
         Ok(())
     }
 
+    /// Going home from a space swaps the space chrome for the Hub inside the
+    /// same guest frame. The site display must see the route change before
+    /// the space chrome nested in it does: otherwise the chrome loses its
+    /// row first and re-renders its nested displays against a blank
+    /// context, which flashed "Model not found" on the tab-title display.
+    /// The blank re-render is checked for directly, since how long the
+    /// flash stays up depends on how slow the branch is to poll.
+    #[dialog_common::test]
+    async fn it_switches_between_a_space_and_the_hub_without_an_absence_flash(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = env.driver().await?;
+        // The first visit opens the welcome space; a second lands on the Hub.
+        enter_space_view(&driver).await?;
+        wait_for_displayed(&driver, ".wp-outer").await?;
+        goto(&driver, env.tonk_web.as_str()).await?;
+        enter_hub(&driver).await?;
+        wait_for_displayed(&driver, ".space-card > a.srow").await?;
+
+        let origin = driver
+            .execute(
+                r#"window.__absences = [];
+                   const note = (element) => {
+                     const state = element.getAttribute && element.getAttribute('data-state');
+                     if (state === 'no-model') {
+                       window.__absences.push(`no-model ${element.getAttribute('model') || '?'}`);
+                     }
+                   };
+                   new MutationObserver((records) => {
+                     for (const record of records) {
+                       // A display re-rendered against a blank context: its
+                       // routing attributes go from a value to nothing. That
+                       // is the render the flash comes from, however briefly
+                       // it shows.
+                       if (record.type === 'attributes'
+                           && record.attributeName !== 'data-state'
+                           && record.target.localName === 'tonk-display'
+                           && record.oldValue
+                           && !record.target.getAttribute(record.attributeName)) {
+                         window.__absences.push(
+                           `blank ${record.attributeName} on ${record.target.getAttribute('model') || '?'}`);
+                       }
+                       note(record.target);
+                       for (const node of record.addedNodes || []) {
+                         if (node.nodeType === 1) {
+                           note(node);
+                           node.querySelectorAll('[data-state]').forEach(note);
+                         }
+                       }
+                     }
+                   }).observe(document, {
+                     subtree: true, childList: true,
+                     attributes: true, attributeOldValue: true,
+                     attributeFilter: ['data-state', 'with', 'entity'],
+                   });
+                   return performance.timeOrigin;"#,
+                Vec::new(),
+            )
+            .await?
+            .json()
+            .clone();
+
+        for _ in 0..8 {
+            enter_guest(&driver).await?;
+            driver
+                .find(By::Css(".space-card > a.srow"))
+                .await?
+                .click()
+                .await?;
+            driver.enter_default_frame().await?;
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+            while !driver.current_url().await?.path().starts_with("/space/") {
+                anyhow::ensure!(
+                    tokio::time::Instant::now() < deadline,
+                    "the space row did not open its space"
+                );
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            enter_space_view(&driver).await?;
+            wait_for_displayed(&driver, ".wp-outer").await?;
+            driver.enter_default_frame().await?;
+            driver.execute("history.back()", Vec::new()).await?;
+            enter_hub(&driver).await?;
+            wait_for_displayed(&driver, ".space-card > a.srow").await?;
+        }
+
+        enter_guest(&driver).await?;
+        let observed = driver
+            .execute(
+                "return { origin: performance.timeOrigin, absences: window.__absences || null };",
+                Vec::new(),
+            )
+            .await?
+            .json()
+            .clone();
+        anyhow::ensure!(
+            observed["origin"] == origin,
+            "the guest frame was replaced, so the observer missed the switches: {observed}"
+        );
+        anyhow::ensure!(
+            observed["absences"] == serde_json::json!([]),
+            "a display rendered against a blank context while switching: {observed}"
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
     // Storybook UI-01: first-root onboarding, playground prompt, and returning Hub.
     #[dialog_common::test]
     async fn it_opens_the_welcome_space_once_then_the_hub(env: TestEnvironment) -> Result<()> {

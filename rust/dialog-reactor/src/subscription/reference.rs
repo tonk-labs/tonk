@@ -184,7 +184,7 @@ impl SubscriptionPoll<'_> {
         };
         subscription.deliver(&snapshot_conclusions, delta_bytes.as_ref());
         if subscription.subscribers.is_empty() {
-            subs.remove(&self.hash);
+            subs.shift_remove(&self.hash);
         }
     }
 }
