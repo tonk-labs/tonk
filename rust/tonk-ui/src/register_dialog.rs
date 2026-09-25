@@ -502,23 +502,27 @@ fn commit_on_enter(host: &Element) {
     let Some(field) = host.query_selector(EMAIL_INPUT).ok().flatten() else {
         return;
     };
-    let listener =
-        Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |event: web_sys::KeyboardEvent| {
-            if event.key() != "Enter" {
-                return;
-            }
-            // The field sits in no form, but Enter still submits on
-            // some platforms; stop it reaching anything else.
-            event.prevent_default();
-            // Only once the lookup has named a step. The action row is
-            // hidden until then, and starting a ceremony on Enter alone
-            // means one fires the moment a half-typed address happens to
-            // look plausible — before anyone has said which of create or
-            // sign in they meant.
-            if action_is_offered() {
-                submit();
-            }
-        });
+    let listener = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+        // Chrome's autofill fires `keydown` as a plain `Event`
+        // with no `key`; only a real key press is ours to read.
+        let Some(event) = event.dyn_ref::<web_sys::KeyboardEvent>() else {
+            return;
+        };
+        if event.key() != "Enter" {
+            return;
+        }
+        // The field sits in no form, but Enter still submits on
+        // some platforms; stop it reaching anything else.
+        event.prevent_default();
+        // Only once the lookup has named a step. The action row is
+        // hidden until then, and starting a ceremony on Enter alone
+        // means one fires the moment a half-typed address happens to
+        // look plausible — before anyone has said which of create or
+        // sign in they meant.
+        if action_is_offered() {
+            submit();
+        }
+    });
     let _ = field.add_event_listener_with_callback("keydown", listener.as_ref().unchecked_ref());
     listener.forget();
 
@@ -528,23 +532,27 @@ fn commit_on_enter(host: &Element) {
     // "copy share link" had to be clicked. The action row is the step
     // being offered wherever the cursor happens to be, so Enter runs it.
     let cluster = host.clone();
-    let anywhere =
-        Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |event: web_sys::KeyboardEvent| {
-            if event.key() != "Enter" {
-                return;
-            }
-            // A row taking input commits itself; its own handler decides
-            // what Enter means there.
-            let typing = event
-                .target()
-                .and_then(|target| target.dyn_into::<Element>().ok())
-                .is_some_and(|element| element.matches("input").unwrap_or(false));
-            if typing || !action_is_offered() {
-                return;
-            }
-            event.prevent_default();
-            submit();
-        });
+    let anywhere = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+        // Chrome's autofill fires `keydown` as a plain `Event`
+        // with no `key`; only a real key press is ours to read.
+        let Some(event) = event.dyn_ref::<web_sys::KeyboardEvent>() else {
+            return;
+        };
+        if event.key() != "Enter" {
+            return;
+        }
+        // A row taking input commits itself; its own handler decides
+        // what Enter means there.
+        let typing = event
+            .target()
+            .and_then(|target| target.dyn_into::<Element>().ok())
+            .is_some_and(|element| element.matches("input").unwrap_or(false));
+        if typing || !action_is_offered() {
+            return;
+        }
+        event.prevent_default();
+        submit();
+    });
     let _ = cluster.add_event_listener_with_callback("keydown", anywhere.as_ref().unchecked_ref());
     anywhere.forget();
 }
@@ -692,38 +700,42 @@ fn restore_focus(return_focus: ReturnFocus) {
 /// under the platform dialog.
 fn contain_tab_focus(host: &Element) {
     let dialog = host.clone();
-    let listener =
-        Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |event: web_sys::KeyboardEvent| {
-            if event.key() != "Tab" {
-                return;
-            }
-            let focusables = registration_focusables(&dialog);
-            let (Some(first), Some(last)) = (focusables.first(), focusables.last()) else {
-                return;
-            };
-            let active = web_sys::window()
-                .and_then(|window| window.document())
-                .and_then(|document| document.active_element());
-            let target = if event.shift_key()
-                && active
-                    .as_ref()
-                    .is_some_and(|active| first.is_same_node(Some(active.as_ref())))
-            {
-                Some(last)
-            } else if !event.shift_key()
-                && active
-                    .as_ref()
-                    .is_some_and(|active| last.is_same_node(Some(active.as_ref())))
-            {
-                Some(first)
-            } else {
-                None
-            };
-            if let Some(target) = target {
-                event.prevent_default();
-                let _ = target.focus();
-            }
-        });
+    let listener = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+        // Chrome's autofill fires `keydown` as a plain `Event`
+        // with no `key`; only a real key press is ours to read.
+        let Some(event) = event.dyn_ref::<web_sys::KeyboardEvent>() else {
+            return;
+        };
+        if event.key() != "Tab" {
+            return;
+        }
+        let focusables = registration_focusables(&dialog);
+        let (Some(first), Some(last)) = (focusables.first(), focusables.last()) else {
+            return;
+        };
+        let active = web_sys::window()
+            .and_then(|window| window.document())
+            .and_then(|document| document.active_element());
+        let target = if event.shift_key()
+            && active
+                .as_ref()
+                .is_some_and(|active| first.is_same_node(Some(active.as_ref())))
+        {
+            Some(last)
+        } else if !event.shift_key()
+            && active
+                .as_ref()
+                .is_some_and(|active| last.is_same_node(Some(active.as_ref())))
+        {
+            Some(first)
+        } else {
+            None
+        };
+        if let Some(target) = target {
+            event.prevent_default();
+            let _ = target.focus();
+        }
+    });
     let _ = host.add_event_listener_with_callback("keydown", listener.as_ref().unchecked_ref());
     listener.forget();
 }
@@ -2431,14 +2443,18 @@ fn commit_name_on_enter(host: &Element) {
     let Some(field) = host.query_selector("#tonk-register-name").ok().flatten() else {
         return;
     };
-    let listener =
-        Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |event: web_sys::KeyboardEvent| {
-            if event.key() != "Enter" {
-                return;
-            }
-            event.prevent_default();
-            submit();
-        });
+    let listener = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+        // Chrome's autofill fires `keydown` as a plain `Event`
+        // with no `key`; only a real key press is ours to read.
+        let Some(event) = event.dyn_ref::<web_sys::KeyboardEvent>() else {
+            return;
+        };
+        if event.key() != "Enter" {
+            return;
+        }
+        event.prevent_default();
+        submit();
+    });
     let _ = field.add_event_listener_with_callback("keydown", listener.as_ref().unchecked_ref());
     listener.forget();
 }
@@ -3502,6 +3518,58 @@ mod space_login_tests {
         history
             .replace_state_with_url(&JsValue::NULL, "", Some(&original))
             .unwrap();
+    }
+
+    /// Chrome's autofill fires `keydown` as a plain `Event`, with no
+    /// `key`. The dialog's key handlers must pass it by rather than
+    /// read a key that isn't there.
+    #[wasm_bindgen_test]
+    fn it_ignores_a_keydown_that_carries_no_key() {
+        let document = web_sys::window().unwrap().document().unwrap();
+        let host = document.create_element("dialog").unwrap();
+        host.set_inner_html(
+            r#"<input id="tonk-register-email"><input id="tonk-register-name"><button></button>"#,
+        );
+        document.body().unwrap().append_child(&host).unwrap();
+        commit_on_enter(&host);
+        commit_name_on_enter(&host);
+        contain_tab_focus(&host);
+
+        // A listener that throws doesn't fail `dispatchEvent`; the
+        // browser reports it on the window instead, synchronously.
+        let window = web_sys::window().unwrap();
+        let reported = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        let record = reported.clone();
+        let on_error = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+            event.prevent_default();
+            let message = js_sys::Reflect::get(&event, &"message".into())
+                .ok()
+                .and_then(|message| message.as_string())
+                .unwrap_or_default();
+            record.borrow_mut().push(message);
+        });
+        window
+            .add_event_listener_with_callback("error", on_error.as_ref().unchecked_ref())
+            .unwrap();
+
+        for selector in [EMAIL_INPUT, "#tonk-register-name", "button"] {
+            let target = host.query_selector(selector).unwrap().unwrap();
+            let autofill = web_sys::Event::new_with_event_init_dict("keydown", &{
+                let init = web_sys::EventInit::new();
+                init.set_bubbles(true);
+                init
+            })
+            .unwrap();
+            assert!(
+                target.dispatch_event(&autofill).unwrap(),
+                "a keyless keydown is left alone"
+            );
+        }
+        window
+            .remove_event_listener_with_callback("error", on_error.as_ref().unchecked_ref())
+            .unwrap();
+        host.remove();
+        assert_eq!(*reported.borrow(), Vec::<String>::new());
     }
 
     #[wasm_bindgen_test]
