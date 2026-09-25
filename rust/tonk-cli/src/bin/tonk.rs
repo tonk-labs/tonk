@@ -2879,6 +2879,12 @@ async fn finish_scoped_connection(
     println!("Agent connection confirmed");
     println!("space: {name}");
     println!("next: tonk --space {name} status");
+    println!("working instructions: tonk --space {name} space agents get");
+    println!("inspect schemas: tonk --space {name} show");
+    println!("learn: tonk help tutorial");
+    println!(
+        "Read the space instructions and inspect relevant data before editing. If no task is established, ask what the user wants to do."
+    );
     ExitCode::Success
 }
 

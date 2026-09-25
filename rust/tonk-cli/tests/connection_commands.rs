@@ -288,7 +288,7 @@ async fn connection_command_imports_bearer_restarts_and_keeps_account_state() ->
     }
     let invite = AgentInvite::new(seed, chains, &scopes, &remote, Timestamp::now()).await?;
     // Carrier and ambient selection cannot choose the service or space.
-    let link = invite.to_url("https://untrusted-carrier.example/join")?;
+    let link = invite.to_url("https://untrusted-carrier.example/agent/")?;
     let prepared = tonk_cli::connections::validate_link(&link, &remote).await?;
     let temp = tempfile::tempdir()?;
     let producer_root = temp.path().join("producer");
@@ -359,6 +359,15 @@ async fn connection_command_imports_bearer_restarts_and_keeps_account_state() ->
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(String::from_utf8_lossy(&output.stdout).contains("Agent connection confirmed"));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for next in [
+        "tonk --space agent status",
+        "tonk --space agent space agents get",
+        "tonk --space agent show",
+        "tonk help tutorial",
+    ] {
+        assert!(stdout.contains(next), "missing orientation command: {next}");
+    }
     assert!(!String::from_utf8_lossy(&output.stdout).contains(&link));
     assert!(!String::from_utf8_lossy(&output.stderr).contains(&link));
     assert_eq!(store.account()?, Some(unrelated.clone()));
