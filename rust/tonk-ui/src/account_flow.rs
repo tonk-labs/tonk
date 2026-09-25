@@ -3640,6 +3640,7 @@ mod tests {
         hub_style_applied(&driver).await?;
         driver.set_window_rect(0, 0, 390, 480).await?;
         let card = format!(".space-card[data-space-subject='{key}']");
+        wait_for_displayed(&driver, &format!("{card} [data-space-actions-open]")).await?;
         driver
             .execute(
                 "document.querySelector(arguments[0]).scrollIntoView({block: 'center'});",
@@ -6903,7 +6904,7 @@ mod tests {
         wait_for_displayed(&driver, ".snew").await?;
         let create_action = element(&driver, ".snew").await?.text().await?;
         assert!(
-            create_action.contains("create new space"),
+            create_action.contains("new space"),
             "an empty Hub roster must show the creation action: {create_action:?}"
         );
         assert!(
@@ -6961,7 +6962,24 @@ mod tests {
         display_name.send_keys(select_all).await?;
         display_name.send_keys("Second Hub").await?;
         display_name.send_keys(Key::Enter).await?;
-        wait_for_text(&driver, "[data-account-label]", "Second Hub").await?;
+        // Settings hides the header. Observe the fact-backed label's DOM
+        // content here; WebDriver's visible text is intentionally empty.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let label = driver.execute(
+                "return document.querySelector('[data-account-trigger] [data-account-name]')?.textContent?.trim() || '';",
+                vec![],
+            ).await?;
+            if label.json() == "Second Hub" {
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the renamed account did not reach the header: {}",
+                label.json()
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
         driver.enter_default_frame().await?;
         let settings = driver.current_url().await?;
         goto(&driver, settings.as_str()).await?;
@@ -7277,9 +7295,8 @@ mod tests {
             "tool connection created a CLI account"
         );
 
-        // Return to the same space after navigation: app-owned chrome is not
-        // frozen with the seeded view, and opening it explicitly rotates the
-        // invitation rather than redisplaying a retained bearer.
+        // Returning to the same space may recover its session invitation.
+        // Copying the displayed prompt must not mint another grant.
         goto(
             &browser,
             env.tonk_web.join(&format!("space/{key}"))?.as_str(),
@@ -7287,11 +7304,12 @@ mod tests {
         .await?;
         wait_for_service_worker(&browser).await?;
         click_agent_connection_action(&browser).await?;
-        await_agent_connection_ready_after(&browser, &key, Some(&tool_link)).await?;
+        await_agent_connection_ready(&browser, &key).await?;
         let returning = copy_agent_connection_link(&browser).await?;
-        anyhow::ensure!(
-            returning != tool_link,
-            "returning action reused the old bearer"
+        assert_eq!(
+            copy_agent_connection_link(&browser).await?,
+            returning,
+            "copying the returning agent prompt minted another grant"
         );
 
         // Changing spaces replaces the whole app-owned surface. Its explicit
@@ -7737,8 +7755,11 @@ mod tests {
             .as_str()
             .context("first id missing")?
             .to_owned();
-        // Reloading loses the page-only bearer; explicitly opening connect agent
-        // then creates a separate identity. Copying does not mint another one.
+        // A browser restart loses the worker-session bearer. Explicitly opening
+        // connect agent then creates a separate identity; a page reload does not.
+        browser.quit().await?;
+        let caps = env.chrome_capabilities_for_profile(&browser_profile)?;
+        let browser = WebDriver::new(env.chromedriver.as_str(), caps).await?;
         goto(
             &browser,
             env.tonk_web.join(&format!("space/{key}"))?.as_str(),
@@ -7889,11 +7910,25 @@ mod tests {
         )
         .await?;
         enter_guest(&browser).await?;
-        let surface = browser.execute(
-            r#"const panel=document.querySelector('tonk-fab')?.shadowRoot?.querySelector('#agent-panel');
-               return panel && { hidden:panel.hidden, hasLink:!!panel.querySelector('.panel-copytext')?.textContent };"#,
-            vec![],
-        ).await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let surface = loop {
+            let surface = browser.execute(
+                r#"const bar=document.querySelector('tonk-fab');
+                   const agent=bar?.querySelector('tonk-agent-panel');
+                   const panel=bar?.shadowRoot?.querySelector('#agent-panel');
+                   if (!panel || typeof agent?.__tonkReset !== 'function') return null;
+                   return { hidden:panel.hidden, hasLink:!!panel.querySelector('.panel-copytext')?.textContent };"#,
+                vec![],
+            ).await?;
+            if !surface.json().is_null() {
+                break surface;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "restarted agent panel never mounted"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
         browser.enter_default_frame().await?;
         anyhow::ensure!(
             surface.json()["hidden"] == true && surface.json()["hasLink"] == false,

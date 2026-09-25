@@ -547,7 +547,7 @@ pub(crate) mod tests {
         let profile_library = generation_a_root.join("library/profile.yaml");
         let current = std::fs::read_to_string(&profile_library)
             .with_context(|| format!("read {}", profile_library.display()))?;
-        let marker = "<div class=\"stack chrome\" data-spaces-view aria-label=\"spaces\">";
+        let marker = "data-spaces-view aria-label=\"spaces\">";
         // The sentence is reduced from profile.yaml at eff85b2ab^, the last
         // revision before that historical empty-state row was removed.
         let historical = current.replacen(
@@ -695,7 +695,7 @@ pub(crate) mod tests {
                         r#"
                         return {
                             text: document.body.innerText,
-                            spaces: [...document.querySelectorAll("a.srow.blk")].map(link => ({
+                            spaces: [...document.querySelectorAll(".space-card > a.srow")].map(link => ({
                                 href: link.getAttribute("href"),
                                 name: link.textContent.trim(),
                             })),
@@ -971,7 +971,11 @@ pub(crate) mod tests {
             "the worker update changed the persisted space roster: before={spaces} after={repaired}"
         );
 
-        driver.find(By::Css("a.srow.blk")).await?.click().await?;
+        driver
+            .find(By::Css(".space-card > a.srow"))
+            .await?
+            .click()
+            .await?;
         driver.enter_default_frame().await?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
