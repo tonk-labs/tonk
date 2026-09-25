@@ -677,6 +677,27 @@ impl ProfileLibraryReloaded {
     pub const ENTITY: &str = "state:profile-library";
 }
 
+/// A space branch's diagnostics, on that branch's overlay: the answer to
+/// its last `inspect-branch`.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct BranchInspection {
+    /// Always [`BranchInspection::ENTITY`].
+    pub this: Entity,
+    /// The asking page's stamp.
+    pub answered_at: crate::domain::branch_inspection::AnsweredAt,
+    /// The repository's local metadata as JSON.
+    pub repository: crate::domain::branch_inspection::Repository,
+    /// The upstream classification as JSON, or empty.
+    pub status: crate::domain::branch_inspection::Status,
+    /// Why the inspection is incomplete, or empty.
+    pub failure: crate::domain::branch_inspection::Failure,
+}
+
+impl BranchInspection {
+    /// The single entity the answer lives on.
+    pub const ENTITY: &str = "state:branch-inspection";
+}
+
 /// Where a passkey-gated command got to, on the profile overlay.
 ///
 /// The hub's settings page asserts `tonk:delete-account`,

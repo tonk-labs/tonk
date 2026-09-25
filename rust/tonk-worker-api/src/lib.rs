@@ -16,13 +16,10 @@ mod account;
 mod agent_connections;
 pub use agent_connections::*;
 mod analytics;
-mod claim;
 mod conclusion;
 mod deployment;
 mod evaluate;
-mod identify;
 mod identity;
-mod invite;
 mod join;
 mod profile;
 mod profiles;
@@ -32,29 +29,22 @@ pub mod share;
 mod sync;
 
 pub use account::{
-    AccountDeletionPlan, AccountDeletionSpace, AccountDevice, AccountDisplayNameRequest,
-    AccountDisplayNameResponse, AccountLinkRequest, AccountStatus, AccountSummary,
-    RevokeDeviceAcknowledgement, RevokeDeviceRequest,
+    AccountDeletionPlan, AccountDeletionSpace, AccountDevice, AccountDisplayNameResponse,
+    AccountLinkRequest, AccountStatus, AccountSummary,
 };
 pub use analytics::{ANALYTICS_MESSAGE, AnalyticsEvent, AnalyticsMessage};
-pub use claim::{ClaimResponse, QueryResponse};
 pub use conclusion::{Conclusion, Frame};
 pub use deployment::DeploymentConfig;
 pub use evaluate::{CommitSummary, EvaluateResponse, QueryMatchBlock, QueryResult};
-pub use identify::IdentifyResponse;
 pub use identity::{
     AccountCreation, AccountPurge, CREATE_ACCOUNT_REQUEST, CUSTODY_REQUEST, CustodyIntent,
     DeviceAuthorization, DeviceLink, ENCRYPTION_KEY_REQUEST, Enrollment, LINK_ACCOUNT,
     LinkAccountRequest, PasskeyAddition, PasskeyMetadata, RootStatus, SaveRootRequest, WEBAUTHN,
     WebAuthnKind, WebAuthnRequest,
 };
-pub use invite::{
-    CreateInviteRequest, CreateInviteResponse, InvitationKind, InvitationSummary,
-    RevokeInvitationAcknowledgement,
-};
-pub use join::{JoinFailureKind, JoinRequest, JoinResponse};
-pub use profile::{ProfileInfo, SpaceEntry};
-pub use profiles::{ActivateProfileRequest, ProfileRosterEntry, ProfilesResponse};
+pub use join::{JoinFailureKind, JoinResponse};
+pub use profile::SpaceEntry;
+pub use profiles::{ProfileRosterEntry, ProfilesResponse};
 pub use query::Query;
 pub use repository::{
     BranchConfiguration, MemberInfo, RemoteConfiguration, RepositoryConfiguration, RepositoryInfo,

@@ -10,14 +10,10 @@
 
 use std::collections::HashMap;
 
-use ::axum::{Json, extract::Path, extract::State};
-use axum_wasm_macros::wasm_compat;
 use dialog_capability::access::{AuthorizeError, Recourse};
 use dialog_effects::Rejection;
 use dialog_repository::{PublishError, PullError, Revision};
 use serde::Deserialize;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_schema::{SyncState, classify};
 use tonk_worker_api::SyncDisposition;
@@ -666,27 +662,28 @@ pub struct SyncPath {
 /// merge, no push), and runs the shared classifier. A branch with
 /// no upstream returns [`SyncState::NoUpstream`] rather than an
 /// error, so the indicator has something to render for every
-/// branch.
-#[wasm_compat]
-pub async fn sync_status(
-    State(state): State<AppState>,
-    Path(params): Path<SyncPath>,
-) -> Result<Json<SyncStatusResponse>, TonkWorkerError> {
+/// branch. Reached through the inspector's [`InspectBranch`] probe; the
+/// classification is also published to the branch's `tonk/sync` overlay.
+///
+/// [`InspectBranch`]: tonk_schema::command::InspectBranch
+pub(crate) async fn check_status(
+    state: &AppState,
+    params: &SyncPath,
+) -> Result<SyncStatusResponse, TonkWorkerError> {
     // Renewal first: it takes the write lock, so it cannot run under the
-    // read lock this route then holds for its duration. The fetch below
+    // read lock this check then holds for its duration. The fetch below
     // presigns, so a lapsed or restarted-worker credential has to be
     // replaced before it, not by whichever drain happens to run next.
-    ensure_session_authority(&state).await?;
+    ensure_session_authority(state).await?;
 
     // Read-only: status acquires a branch and does a remote fetch but never
     // mutates `TonkState`. A read lock lets concurrent queries proceed instead
     // of blocking on the (network-bound) status request.
     let tonk_state = state.read().await;
 
-    // A status check fires whenever a space is opened, so this is the load-time
-    // hook for the topbar identity chip: re-stamp the `state:self` overlay here,
-    // before any sync-state branch returns, so a freshly opened space (even a
-    // paused or upstream-less one) always carries the member's identity.
+    // Re-stamp the `state:self` overlay before any sync-state branch returns,
+    // so an inspected space (even a paused or upstream-less one) carries the
+    // member's identity. `Load` stamps it when a space opens.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     publish_self_identity(&tonk_state, &params.repo, &params.branch).await;
 
@@ -704,11 +701,11 @@ pub async fn sync_status(
             .ok()
             .and_then(|session| session.handle().revision());
         publish_paused_status(&tonk_state, &params.repo, &params.branch).await;
-        return Ok(Json(SyncStatusResponse {
+        return Ok(SyncStatusResponse {
             state: SyncState::NoUpstream,
             local,
             remote: None,
-        }));
+        });
     }
 
     let session = tonk_state
@@ -731,11 +728,11 @@ pub async fn sync_status(
             SyncState::NoUpstream,
         )
         .await;
-        return Ok(Json(SyncStatusResponse {
+        return Ok(SyncStatusResponse {
             state: SyncState::NoUpstream,
             local,
             remote: None,
-        }));
+        });
     }
 
     let remote = match handle.fetch().perform(&tonk_state.operator).await {
@@ -758,7 +755,7 @@ pub async fn sync_status(
     // carries, now also a fact the UI can subscribe to.
     //
     // Re-check the pause preference first: the enabled check at the top of this
-    // route was before the (awaiting) upstream fetch, so a pause could have
+    // check was before the (awaiting) upstream fetch, so a pause could have
     // landed in between. Now that transactions interleave with sync, publishing
     // a settled `idle`/`local` here would clobber the `paused` the pause command
     // just set. If it became paused mid-fetch, keep `paused`.
@@ -768,11 +765,11 @@ pub async fn sync_status(
     } else {
         publish_paused_status(&tonk_state, &params.repo, &params.branch).await;
     }
-    Ok(Json(SyncStatusResponse {
+    Ok(SyncStatusResponse {
         state: sync_state,
         local,
         remote,
-    }))
+    })
 }
 
 /// Full sync: pull then push.

@@ -108,14 +108,6 @@ pub enum AccountStatus {
     },
 }
 
-/// Request to change the authoritative account display name.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AccountDisplayNameRequest {
-    /// New non-blank display name.
-    pub name: String,
-}
-
 /// Result of an authoritative account display-name write.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -140,26 +132,6 @@ pub struct AccountDevice {
     pub name: String,
     /// Link time, seconds since the epoch.
     pub created_at: u64,
-}
-
-/// Revoke one device authorized under this profile's account.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RevokeDeviceRequest {
-    /// DID of the device to revoke.
-    pub did: String,
-}
-
-/// Canonical acknowledgement returned after revoking an account device.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RevokeDeviceAcknowledgement {
-    /// DID whose grant was revoked.
-    pub target_did: String,
-    /// CID of the revoked root-to-device delegation.
-    pub target_cid: String,
-    /// Whether the immutable revocation was accepted by canonical storage.
-    pub published: bool,
 }
 
 #[cfg(test)]
@@ -251,18 +223,5 @@ mod tests {
         assert_eq!(json["did"], "did:key:device");
         assert_eq!(json["name"], "laptop");
         assert_eq!(json["createdAt"], 1_753_300_000u64);
-    }
-
-    #[dialog_common::test]
-    fn it_serializes_a_canonical_revocation_acknowledgement() {
-        let json = serde_json::to_value(RevokeDeviceAcknowledgement {
-            target_did: "did:key:device".into(),
-            target_cid: "bafycid".into(),
-            published: true,
-        })
-        .unwrap();
-        assert_eq!(json["targetDid"], "did:key:device");
-        assert_eq!(json["targetCid"], "bafycid");
-        assert_eq!(json["published"], true);
     }
 }

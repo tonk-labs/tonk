@@ -898,6 +898,27 @@ impl Command for ReloadProfileLibrary {
     type Output = ();
 }
 
+/// Read a space branch's diagnostics for the inspector: the repository's
+/// local metadata and, when `probe` is set, the branch classified against
+/// its upstream. Asserted on the branch being inspected; the answer is its
+/// [`BranchInspection`] overlay row carrying `at`.
+///
+/// [`BranchInspection`]: crate::BranchInspection
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct InspectBranch {
+    /// The command entity.
+    pub this: Entity,
+    /// Whether to contact the upstream.
+    pub probe: crate::domain::command::inspect_branch::Probe,
+    /// The asking page's stamp.
+    pub at: crate::domain::command::inspect_branch::At,
+}
+
+impl Command for InspectBranch {
+    type Input = Self;
+    type Output = ();
+}
+
 /// Revoke a member's access to a space.
 ///
 /// Asserted transiently by the roster row's expel control; the handler

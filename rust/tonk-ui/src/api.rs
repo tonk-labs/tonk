@@ -178,6 +178,7 @@ pub async fn account_linked() -> Result<bool, TonkUiError> {
 
 /// The `account/save-encryption-key` claim: record `key` with the local
 /// root the worker already holds.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) fn save_encryption_key_claim(key: &str) -> serde_json::Value {
     serde_json::json!({
         "claims": [{

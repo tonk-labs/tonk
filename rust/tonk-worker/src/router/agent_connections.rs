@@ -981,6 +981,30 @@ mod tests {
         };
         let first =
             crate::worker::boot_state(storage, "ledger-branch".into(), profile, registry).await?;
+        // Boot records `main` as a branch following nothing, which is
+        // already signed out. Have it follow an account, as a signed-in
+        // profile's does, so leaving lands on a fresh branch.
+        {
+            use tonk_schema::{Branch as MetaBranch, BranchUpstream, Replica};
+            let profile_did = first.profile.did();
+            let replica = Replica::new(profile_did.clone(), profile_did);
+            let account = Ed25519Signer::import(&[93; 32]).await?.did();
+            let service = Ed25519Signer::import(&[94; 32]).await?.did();
+            let served = Replica::new(service, account);
+            let upstream = MetaBranch::new(&served, "main");
+            let local = MetaBranch::new(&replica, "main");
+            first
+                .reactor
+                .profile_repository()
+                .branch(super::super::repository::META_BRANCH)
+                .transaction()
+                .assert(served)
+                .assert(upstream.clone())
+                .assert(BranchUpstream::new(&local, &upstream))
+                .commit()
+                .perform(&first.operator)
+                .await?;
+        }
         // Onto a fresh branch, the way add-account lands, and booted the
         // way the worker lands there.
         super::super::profile::leave_account(&first).await;

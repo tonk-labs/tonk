@@ -21,7 +21,7 @@ use custom_elements::CustomElement;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::{JsFuture, spawn_local};
-use web_sys::{CustomEvent, Element, Event, HtmlElement, Response, window};
+use web_sys::{CustomEvent, Element, Event, Headers, HtmlElement, RequestInit, Response, window};
 
 use crate::debug::{self, Probe};
 use crate::render::render_result;
@@ -208,7 +208,7 @@ impl DebugPanel {
         });
 
         // The panel is detached until the caller inserts it before the
-        // notebook, but its fetch may start now: the portal's window.fetch
+        // notebook, but its inspection may start now: the portal's window.fetch
         // relay does not depend on DOM event bubbling.
         panel.clone().refresh_local();
         Some(panel)
@@ -246,11 +246,10 @@ impl DebugPanel {
         self.refreshing.set(true);
         self.sync_busy_controls();
         let panel = self.clone();
-        let path = format!("/api/repository/{}", self.repo);
         spawn_local(async move {
-            match fetch_text(&path).await {
-                Ok(body) => {
-                    panel.repository.replace(Some(body));
+            match inspect(&panel.repo, &panel.branch, false).await {
+                Ok(inspection) => {
+                    panel.repository.replace(Some(inspection.repository));
                     panel.probe.replace(ProbeState::Idle);
                     panel.paint();
                 }
@@ -274,15 +273,19 @@ impl DebugPanel {
         self.probe.replace(ProbeState::Loading);
         self.paint();
         let panel = self.clone();
-        let path = format!(
-            "/api/repository/{}/branch/{}/sync/status",
-            self.repo, self.branch
-        );
         spawn_local(async move {
-            match fetch_text(&path).await {
-                Ok(body) => panel.probe.replace(ProbeState::Response(body)),
-                Err(error) => panel.probe.replace(ProbeState::Failure(error)),
-            };
+            match inspect(&panel.repo, &panel.branch, true).await {
+                Ok(inspection) => {
+                    panel.repository.replace(Some(inspection.repository));
+                    match inspection.status {
+                        Some(status) => panel.probe.replace(ProbeState::Response(status)),
+                        None => panel.probe.replace(ProbeState::Failure(inspection.failure)),
+                    };
+                }
+                Err(error) => {
+                    panel.probe.replace(ProbeState::Failure(error));
+                }
+            }
             panel.probing.set(false);
             panel.paint();
         });
@@ -397,30 +400,132 @@ fn copy_failed(button: &Element, message: &str) {
     button.class_list().add_1("is-error").ok();
 }
 
-async fn fetch_text(path: &str) -> Result<String, String> {
+/// How often, and for how long, the panel reads the answer row. The probe
+/// contacts the upstream, so the budget is generous.
+const INSPECT_BEAT_MS: i32 = 250;
+const INSPECT_ATTEMPTS: u32 = 240;
+
+/// A branch's diagnostics, read off its `state:branch-inspection` row.
+struct Inspection {
+    /// The repository's local metadata as JSON.
+    repository: String,
+    /// The upstream classification as JSON, when a probe asked for it and
+    /// it succeeded.
+    status: Option<String>,
+    /// Why the inspection is incomplete, or empty.
+    failure: String,
+}
+
+/// Ask the worker for `repo`/`branch` diagnostics: assert the transient
+/// `inspect-branch` command on that branch, then query the answer row until
+/// it carries this request's stamp.
+async fn inspect(repo: &str, branch: &str, probe: bool) -> Result<Inspection, String> {
+    let base = format!("/api/repository/{repo}/branch/{branch}");
+    let at = js_sys::Date::now() as u64;
+    post_json(
+        &format!("{base}/transact"),
+        &serde_json::json!({
+            "claims": [{
+                "op": "assert",
+                "application": {
+                    "predicate": {
+                        "kind": "transient",
+                        "concept": {
+                            "description": "Read this branch's diagnostics.",
+                            "with": {
+                                "probe": { "the": "xyz.tonk.inspect-branch/probe", "as": "Boolean" },
+                                "at": { "the": "xyz.tonk.inspect-branch/at", "as": "UnsignedInteger" }
+                            }
+                        }
+                    },
+                    "parameters": { "probe": probe, "at": at }
+                }
+            }]
+        }),
+    )
+    .await?;
+    let answer = serde_json::json!({
+        "predicate": { "with": {
+            "at": { "the": "xyz.tonk.branch-inspection/answered-at", "as": "UnsignedInteger", "cardinality": "one" },
+            "repository": { "the": "xyz.tonk.branch-inspection/repository", "as": "Text", "cardinality": "one" },
+            "status": { "the": "xyz.tonk.branch-inspection/status", "as": "Text", "cardinality": "one" },
+            "failure": { "the": "xyz.tonk.branch-inspection/failure", "as": "Text", "cardinality": "one" }
+        } },
+        "terms": {
+            "this": "state:branch-inspection",
+            "at": { "?": { "name": "at" } },
+            "repository": { "?": { "name": "repository" } },
+            "status": { "?": { "name": "status" } },
+            "failure": { "?": { "name": "failure" } }
+        }
+    });
+    for _ in 0..INSPECT_ATTEMPTS {
+        let rows = post_json(&format!("{base}/query"), &answer).await?;
+        let rows: serde_json::Value =
+            serde_json::from_str(&rows).map_err(|error| format!("query decode: {error}"))?;
+        let fields = &rows[0]["fields"];
+        if fields["at"].as_u64() == Some(at) {
+            let text = |name: &str| fields[name].as_str().unwrap_or_default().to_owned();
+            let (repository, status, failure) =
+                (text("repository"), text("status"), text("failure"));
+            if repository.is_empty() {
+                return Err(failure);
+            }
+            return Ok(Inspection {
+                repository,
+                status: (!status.is_empty()).then_some(status),
+                failure,
+            });
+        }
+        sleep(INSPECT_BEAT_MS).await;
+    }
+    Err("the worker did not answer the inspection".to_owned())
+}
+
+async fn sleep(ms: i32) {
+    let promise = js_sys::Promise::new(&mut |resolve, _| {
+        if let Some(window) = window() {
+            window
+                .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms)
+                .ok();
+        }
+    });
+    JsFuture::from(promise).await.ok();
+}
+
+/// POST `body` as JSON to `path` and return the response text.
+async fn post_json(path: &str, body: &serde_json::Value) -> Result<String, String> {
     let window = window().ok_or_else(|| "no window available".to_owned())?;
-    let value = JsFuture::from(window.fetch_with_str(path))
+    let headers = Headers::new().map_err(|error| format!("{error:?}"))?;
+    headers
+        .set("content-type", "application/json")
+        .map_err(|error| format!("{error:?}"))?;
+    let init = RequestInit::new();
+    init.set_method("POST");
+    init.set_headers(&headers);
+    init.set_body(&JsValue::from_str(&body.to_string()));
+    let value = JsFuture::from(window.fetch_with_str_and_init(path, &init))
         .await
-        .map_err(|error| format!("GET {path} failed: {error:?}"))?;
+        .map_err(|error| format!("POST {path} failed: {error:?}"))?;
     let response: Response = value
         .dyn_into()
-        .map_err(|_| format!("GET {path} did not return a response"))?;
+        .map_err(|_| format!("POST {path} did not return a response"))?;
     let status = response.status();
     let text = JsFuture::from(
         response
             .text()
-            .map_err(|error| format!("GET {path} body: {error:?}"))?,
+            .map_err(|error| format!("POST {path} body: {error:?}"))?,
     )
     .await
-    .map_err(|error| format!("GET {path} body: {error:?}"))?
+    .map_err(|error| format!("POST {path} body: {error:?}"))?
     .as_string()
     .unwrap_or_default();
     if response.ok() {
         Ok(text)
     } else if text.is_empty() {
-        Err(format!("GET {path} returned HTTP {status}"))
+        Err(format!("POST {path} returned HTTP {status}"))
     } else {
-        Err(format!("GET {path} returned HTTP {status}: {text}"))
+        Err(format!("POST {path} returned HTTP {status}: {text}"))
     }
 }
 

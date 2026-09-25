@@ -1260,6 +1260,21 @@ pub mod command {
         pub struct At(pub u64);
     }
 
+    /// Attributes of the `inspect-branch` command.
+    pub mod inspect_branch {
+        use super::Attribute;
+
+        /// Whether to also fetch the upstream head and classify the branch
+        /// against it. Network-bound, so the inspector asks only on request.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.inspect-branch")]
+        pub struct Probe(pub bool);
+        /// The asking page's stamp, echoed on the answer row.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("xyz.tonk.inspect-branch")]
+        pub struct At(pub u64);
+    }
+
     pub mod promote {
         use super::super::Entity;
         use super::Attribute;
@@ -1720,6 +1735,35 @@ pub mod profile_library {
     #[domain("xyz.tonk.profile-library")]
     #[cardinality(one)]
     pub struct Outcome(pub String);
+}
+
+/// Attributes of the `state:branch-inspection` answer row on a space
+/// branch's overlay.
+pub mod branch_inspection {
+    use super::Attribute;
+
+    /// The asking page's stamp.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.branch-inspection")]
+    #[cardinality(one)]
+    pub struct AnsweredAt(pub u64);
+    /// The repository's local metadata as JSON, or empty when it could not
+    /// be read.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.branch-inspection")]
+    #[cardinality(one)]
+    pub struct Repository(pub String);
+    /// The branch classified against its upstream as JSON, or empty when no
+    /// probe was asked for or it failed.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.branch-inspection")]
+    #[cardinality(one)]
+    pub struct Status(pub String);
+    /// Why the inspection is incomplete, or empty.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.branch-inspection")]
+    #[cardinality(one)]
+    pub struct Failure(pub String);
 }
 
 pub mod ceremony_status {

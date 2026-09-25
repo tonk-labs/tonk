@@ -142,7 +142,10 @@ pub struct CommandProviders {
     /// refusal publishes there), and — until membership moves fully
     /// profile-side —
     /// [`ExpelMember`](tonk_schema::command::ExpelMember), whose target
-    /// is likewise the origin space.
+    /// is likewise the origin space. The inspector's
+    /// [`InspectBranch`](tonk_schema::command::InspectBranch) and Welcome's
+    /// [`PrepareOnboarding`](tonk_schema::command::PrepareOnboarding) act
+    /// on the branch they were asserted on and nowhere else.
     space: CommandRegistry<CommandEnv>,
 }
 
@@ -258,6 +261,8 @@ fn space_commands() -> CommandRegistry<CommandEnv> {
         // Welcome asks for its own optional content: the command acts on
         // the branch it was asserted on and nowhere else.
         .command::<tonk_schema::command::PrepareOnboarding>()
+        // The inspector reads a branch's diagnostics on that branch.
+        .command::<tonk_schema::command::InspectBranch>()
         // A space may request an invite FOR ITSELF: the space view's
         // blank-canvas share (and the seeded `tonk:invite` descriptor)
         // dispatches on the space's own branch, and the refusal flow

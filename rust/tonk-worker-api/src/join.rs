@@ -60,18 +60,6 @@ impl JoinFailureKind {
     }
 }
 
-/// Body of `POST /api/profile/join`.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct JoinRequest {
-    /// Full invite URL including any `#fragment`.
-    ///
-    /// Audience-open invites carry the ephemeral seed in the URL
-    /// fragment; browsers never send fragments with `fetch`, so the
-    /// caller must read `window.location.href` client-side and
-    /// forward the complete string.
-    pub url: String,
-}
-
 /// Body of a successful `POST /api/profile/join` response.
 ///
 /// The `outcome` discriminator splits "we created a new local

@@ -18,7 +18,7 @@ pub enum Probe<'a> {
     Idle,
     /// A probe is in flight.
     Loading,
-    /// Raw JSON returned by `/sync/status`.
+    /// The upstream classification the worker answered the probe with.
     Response(&'a str),
     /// The probe failed without replacing the last local metadata.
     Failure(&'a str),

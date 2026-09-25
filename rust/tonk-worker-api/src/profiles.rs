@@ -32,14 +32,6 @@ pub struct ProfilesResponse {
     pub profiles: Vec<ProfileRosterEntry>,
 }
 
-/// Request body for `POST /api/profiles/activate`.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ActivateProfileRequest {
-    /// The branch to switch to.
-    pub profile: String,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -80,12 +72,5 @@ mod tests {
             serde_json::from_str::<ProfilesResponse>(&json).unwrap(),
             response
         );
-    }
-
-    #[dialog_common::test]
-    fn it_deserializes_an_activation_request() {
-        let request: ActivateProfileRequest =
-            serde_json::from_str(r#"{"profile":"tonk-0a"}"#).unwrap();
-        assert_eq!(request.profile, "tonk-0a");
     }
 }

@@ -9,10 +9,14 @@
 //! facts the page already subscribes to. See
 //! `.claude/skills/commands-not-routes/SKILL.md` before adding a line.
 
-/// Every route the worker serves, sorted. The data plane (branch query,
-/// transact, evaluate, blob, sync) belongs here; account, membership,
-/// invite, and custody operations are commands or are on their way to
-/// becoming ones.
+/// Every route the worker serves, sorted: a branch's query, transact and
+/// evaluate, on the profile and on a space. Everything else a page asks
+/// of the worker is a command it transacts, answered by facts it queries.
+///
+/// The two blob routes are the exception, and only because what they
+/// carry is not facts: `<img src>` must be able to point at a URL that
+/// serves raw bytes with their content type, and an upload is a body of
+/// bytes too large to be a claim.
 const ROUTES: &[&str] = &[
     "/api/profile/branch/{branch}/evaluate",
     "/api/profile/branch/{branch}/query",
@@ -21,7 +25,6 @@ const ROUTES: &[&str] = &[
     "/api/repository/{repo}/branch/{branch}/blob/{entity}",
     "/api/repository/{repo}/branch/{branch}/evaluate",
     "/api/repository/{repo}/branch/{branch}/query",
-    "/api/repository/{repo}/branch/{branch}/sync/status",
     "/api/repository/{repo}/branch/{branch}/transact",
 ];
 

@@ -66,8 +66,8 @@ pub use sync::*;
 pub mod account;
 pub use account::{
     AccountActive, AccountDisplayName, AccountLink, AccountLinking, AccountRegistered,
-    AccountSealedInbox, AccountSuspended, CeremonyStatus, EmailStatus, LocalRootKey,
-    LocalRootState, LocalSpaceLinkAnswer, LocalSpaceLinkRequest, OnboardingPrepared,
+    AccountSealedInbox, AccountSuspended, BranchInspection, CeremonyStatus, EmailStatus,
+    LocalRootKey, LocalRootState, LocalSpaceLinkAnswer, LocalSpaceLinkRequest, OnboardingPrepared,
     ProfileLibraryReloaded, WelcomeAnswer, ceremony, ceremony_state, email_state,
 };
 

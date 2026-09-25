@@ -86,6 +86,9 @@ pub use repository::{
 };
 
 mod sync;
+
+// The inspector's branch diagnostics, answered by a command.
+mod inspection;
 pub use dialog_repository::Revision;
 pub use sync::{
     SyncQueue, SyncResponse, SyncStatusResponse, branches_to_sync, drain_sync, sync_repository,
@@ -213,10 +216,6 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .route(
             "/api/profile/branch/{branch}/transact",
             post(transact::transact_profile),
-        )
-        .route(
-            "/api/repository/{repo}/branch/{branch}/sync/status",
-            get(sync::sync_status),
         )
         // Evaluate route — accepts an asserted-notation document
         // (any mix of queries and mutations), runs the unified
@@ -1699,22 +1698,7 @@ pub mod tests {
         // configured) while surfacing the local head.
         assert_claim(&state, repo, "test:status", "test/value", "status test").await;
 
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/api/repository/{}/branch/main/sync/status", repo))
-                    .method("GET")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let status: super::SyncStatusResponse = serde_json::from_slice(&body).unwrap();
+        let status = inspect_main_status(&app, &state, repo).await;
         assert_eq!(status.state, tonk_schema::SyncState::NoUpstream);
         assert!(
             status.local.is_some(),
@@ -1788,24 +1772,63 @@ pub mod tests {
             .expect("the push lands on the upstream");
     }
 
-    /// GET the sync status of `main` and deserialize the response.
-    async fn get_main_status(app: &Router, repo: &str) -> super::SyncStatusResponse {
+    /// Ask for `main`'s diagnostics with an upstream probe, the way the
+    /// inspector does, and read the classification off the answer row.
+    async fn inspect_main_status(
+        app: &Router,
+        state: &super::AppState,
+        repo: &str,
+    ) -> super::SyncStatusResponse {
+        let origin = super::CommandOrigin {
+            repo: repo.to_owned(),
+            branch: "main".to_owned(),
+            client: None,
+        };
+        let env = super::CommandEnv::new(state.clone(), origin);
+        dialog_capability::Provider::<tonk_schema::command::InspectBranch>::execute(
+            &env,
+            tonk_schema::command::InspectBranch {
+                this: "command:inspect".parse().unwrap(),
+                probe: tonk_schema::domain::command::inspect_branch::Probe(true),
+                at: tonk_schema::domain::command::inspect_branch::At(7),
+            },
+        )
+        .await;
+        let body = serde_json::json!({
+            "predicate": { "with": {
+                "at": { "the": "xyz.tonk.branch-inspection/answered-at", "as": "UnsignedInteger", "cardinality": "one" },
+                "status": { "the": "xyz.tonk.branch-inspection/status", "as": "Text", "cardinality": "one" },
+                "failure": { "the": "xyz.tonk.branch-inspection/failure", "as": "Text", "cardinality": "one" }
+            } },
+            "terms": {
+                "this": tonk_schema::BranchInspection::ENTITY,
+                "at": { "?": { "name": "at" } },
+                "status": { "?": { "name": "status" } },
+                "failure": { "?": { "name": "failure" } }
+            }
+        });
         let response = app
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/api/repository/{repo}/branch/main/sync/status"))
-                    .method("GET")
-                    .body(Body::empty())
+                    .method("POST")
+                    .uri(format!("/api/repository/{repo}/branch/main/query"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
                     .unwrap(),
             )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
-        serde_json::from_slice(&body).unwrap()
+        let rows: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        let fields = &rows[0]["fields"];
+        assert_eq!(fields["at"], 7);
+        assert_eq!(fields["failure"], "", "{fields}");
+        serde_json::from_str(fields["status"].as_str().unwrap()).unwrap()
     }
 
     #[dialog_common::test]
@@ -1818,7 +1841,7 @@ pub mod tests {
         // Both heads now populated and equal — exercises the route's
         // fetch + classify path and the both-revisions-present JSON
         // shape, not just the no-upstream early return.
-        let status = get_main_status(&app, &repo).await;
+        let status = inspect_main_status(&app, &state, &repo).await;
         assert_eq!(status.state, tonk_schema::SyncState::Synced);
         let local = status.local.expect("local head present");
         let remote = status.remote.expect("remote head present after push");
@@ -1835,7 +1858,7 @@ pub mod tests {
         push_main(&state, &repo).await;
         commit_marker(&state, &repo, "ahead-probe").await;
 
-        let status = get_main_status(&app, &repo).await;
+        let status = inspect_main_status(&app, &state, &repo).await;
         assert_eq!(status.state, tonk_schema::SyncState::Ahead);
         assert!(status.local.is_some(), "local head present");
         assert!(
