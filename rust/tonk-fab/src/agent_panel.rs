@@ -40,6 +40,7 @@ struct Target {
     status: Element,
     prompt: Element,
     copy: Element,
+    copy_link: Element,
     retry: Element,
     bar: HtmlElement,
 }
@@ -98,6 +99,34 @@ impl CustomElement for TonkAgentPanel {
                     // lost prior bearer needs a new grant, without an extra
                     // recovery click.
                     dispatch_handoff(&host, &state, true);
+                }
+            }));
+
+        let host = this.clone();
+        let state = self.state.clone();
+        self.listeners
+            .push(shadow::bind(this, "fabb-agent-account-ready", move |_| {
+                {
+                    let mut current = state.borrow_mut();
+                    if current.pending || !current.link.is_empty() {
+                        return;
+                    }
+                    if needs_account(&current.status) {
+                        current.status.clear();
+                    }
+                }
+                shadow::emit(&host, "fabb-agent-open", &wasm_bindgen::JsValue::NULL);
+            }));
+
+        let host = this.clone();
+        let state = self.state.clone();
+        self.listeners
+            .push(shadow::bind(this, "fabb-agent-copy-link", move |_| {
+                let link = state.borrow().link.clone();
+                if !link.is_empty()
+                    && let Some(view) = target(&host)
+                {
+                    copy_text(&view, &view.copy_link, &link, "link");
                 }
             }));
 
@@ -208,7 +237,11 @@ fn target(this: &HtmlElement) -> Option<Target> {
             .ok()
             .flatten()?,
         copy: root
-            .query_selector("#agent-panel .panel-copy")
+            .query_selector("#agent-panel .agent-copy-prompt")
+            .ok()
+            .flatten()?,
+        copy_link: root
+            .query_selector("#agent-panel .agent-copy-link")
             .ok()
             .flatten()?,
         retry: root
@@ -250,6 +283,10 @@ fn render(target: &Target, state: &AgentState) {
     let ready = !state.link.is_empty();
     let _ = target.copy.toggle_attribute_with_force("hidden", !ready);
     clear_copy_feedback(&target.copy);
+    let _ = target
+        .copy_link
+        .toggle_attribute_with_force("hidden", !ready);
+    clear_copy_feedback(&target.copy_link);
     let retryable = !ready && !state.pending && !state.status.is_empty();
     let _ = target
         .retry
@@ -266,7 +303,7 @@ fn render(target: &Target, state: &AgentState) {
             }));
     }
     let message = if ready {
-        "copy the prompt and only share the link with the agent"
+        "copy the link and give it to your agent"
     } else if state.pending {
         "creating an agent invitation…"
     } else if state.status.is_empty() {
@@ -442,32 +479,41 @@ fn copy_prompt(target: &Target, link: &str) {
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| "this".into());
     let prompt = localized_prompt(&name, link);
+    copy_text(target, &target.copy, &prompt, "prompt");
+}
+
+fn copy_text(target: &Target, button: &Element, text: &str, kind: &'static str) {
     let clipboard = window().map(|window| window.navigator().clipboard());
+    let button = button.clone();
     let view = target.clone();
     match clipboard {
         Some(clipboard) => {
-            let promise = clipboard.write_text(&prompt);
+            let promise = clipboard.write_text(text);
             spawn_local(async move {
                 if JsFuture::from(promise).await.is_ok() {
-                    show_copy_feedback(&view.copy, 1_800);
+                    show_copy_feedback(&button, 1_800);
                 } else {
-                    clear_copy_feedback(&view.copy);
+                    clear_copy_feedback(&button);
                     view.status
-                        .set_text_content(Some("could not copy the prompt; try again"));
+                        .set_text_content(Some(&format!("could not copy the {kind}; try again")));
                 }
             });
         }
         None => {
-            clear_copy_feedback(&target.copy);
-            target
-                .status
-                .set_text_content(Some("clipboard unavailable; select and copy the prompt"));
+            clear_copy_feedback(&button);
+            target.status.set_text_content(Some(
+                "clipboard unavailable; select and copy from the prompt",
+            ));
         }
     }
 }
 
 fn clear_copy_feedback(button: &Element) {
-    button.set_text_content(Some("copy prompt"));
+    button.set_text_content(Some(
+        &button
+            .get_attribute("data-copy-label")
+            .unwrap_or_else(|| "copy prompt".into()),
+    ));
 }
 
 fn show_copy_feedback(button: &Element, duration_ms: i32) {
