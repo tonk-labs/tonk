@@ -196,6 +196,11 @@ pub(super) fn resolve_binding(
             && let Some(body) = build_body(&binding, descriptor, event, &bound)
         {
             apply_side_effects(&binding, event);
+            // See the matching note in `delegate::try_binding`: this
+            // is where the winning binding is known.
+            if crate::introspect::armed() {
+                crate::introspect::note_dispatch(&bound, &binding.command);
+            }
             return Some(body);
         }
         cursor = bound.parent_element();
