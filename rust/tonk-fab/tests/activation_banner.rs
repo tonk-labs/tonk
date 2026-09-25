@@ -141,12 +141,11 @@ async fn registered_customer_can_resend_and_retires_when_active() {
     yield_for(20).await;
     let root = bar.shadow_root().unwrap();
     let login = root.query_selector(".login").unwrap().unwrap();
-    let tool = root.query_selector("[data-action=tool]").unwrap().unwrap();
     assert!(!login.has_attribute("hidden"));
-    assert!(tool.has_attribute("hidden"));
+    assert!(root.query_selector("[data-action=tool]").unwrap().is_none());
     deliver(&bar, "Registered", "jack@example.test");
     assert!(login.has_attribute("hidden"));
-    assert!(!tool.has_attribute("hidden"));
+    assert!(root.query_selector("[data-action=tool]").unwrap().is_none());
 
     assert!(
         document

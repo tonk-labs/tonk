@@ -59,12 +59,14 @@ revoked, wrong-recipient, and unavailable joins leave no visible replica.
 
 ## Account route
 
-`/settings` is mounted directly in the top document rather than inside a sealed
-`<tonk-site>` guest. WebAuthn must run on the `tonk.network` RP-ID origin, so
-`<tonk-account>` owns account creation and passkey self-link there. It reads the
-local profile DID from `/api/identify`, sends root-signed ceremony bytes to the
-configured account service, then attaches provider metadata through
-`/api/account/attach`; it does not replace or own the local root.
+`/settings` is a profile-library route rendered inside the sealed `<tonk-site>`
+guest, beside the Hub. WebAuthn still runs in the top document on the
+`tonk.network` RP-ID origin: the guest sends a typed registration request with a
+visible anchor, and the top document owns account creation and passkey
+self-link. The account flow reads the local profile DID from `/api/identify`,
+sends root-signed ceremony bytes to the configured account service, then
+attaches provider metadata through `/api/account/attach`; it does not replace or
+own the local root.
 
 The page fetches `GET /.well-known/tonk` once and uses its typed
 `accountServiceUrl`. It never infers services from a
@@ -190,20 +192,13 @@ The crate's library side (see [`src/lib.rs`](./src/lib.rs)) provides the pieces 
 
 ### Routing
 
-Routing is client-side (`leptos_router`), defined in
-[`src/components/launcher.rs`](./src/components/launcher.rs). Every space segment
-is a single `:space` param encoding `{branch}@{label}:{id}` (branch defaults to
-`main`), parsed by [`src/components/route.rs`](./src/components/route.rs). The
-routes:
-
-- `/`: the Tonk Hub (space picker), rendered bare.
-- `/space/:space/view/:entity`, `/space/:space/board/:board`, `/profile`, `/join`:
-  rendered inside the chromed `<wa-page>` shell.
-- `/space/:space` and `/space/:space/*subject`: the bare `<tonk-display>` route
-  (the `*subject` wildcard preserves entity URIs containing `/`).
-
-Static-keyword routes (`view`, `board`) are defined before the wildcard display
-routes because the router matches in definition order.
+The worker resolves paths through the profile library's `route!` records and
+mounts the selected model in `<tonk-site>`. The profile branch owns `/`,
+`/settings`, `/settings/link`, `/join`, `/inspector`, and `/diagnose`. Space paths
+mount the selected repository and branch, with `/space/:space/*subject`
+preserving entity URIs containing `/`. The Rust shell owns the sealed guest,
+navigation bridge, and top-document ceremonies; the schema-owned views own Hub
+and settings markup.
 
 ## Build and run
 

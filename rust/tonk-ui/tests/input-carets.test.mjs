@@ -106,8 +106,13 @@ test("an anchored account ceremony cannot scroll away from its hub bar", () => {
   );
   assert.match(
     appStyles,
-    /#tonk-register\[data-anchored\]\s*\{[\s\S]*?overflow: hidden;[\s\S]*?overscroll-behavior: none;/,
+    /#tonk-register\[data-anchored\]\s*\{[^}]*overflow: hidden;[^}]*overscroll-behavior: none;/,
     "the account page must neither scroll nor chain wheel input to the page behind it",
+  );
+  assert.match(
+    appStyles,
+    /#tonk-register\[data-anchored\] \.ocol\s*\{[^}]*overflow: auto;[^}]*overscroll-behavior: none;/,
+    "the content panel must remain scrollable without chaining to the page behind it",
   );
 });
 

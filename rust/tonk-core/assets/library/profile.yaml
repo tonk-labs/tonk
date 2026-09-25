@@ -70,6 +70,14 @@ concept!: &space
       the: xyz.tonk.space/name
       cardinality: one
       as: text
+    description:
+      description: >
+        The optional account-directory mirror of the space's short
+        description. The repository copy remains authoritative; this mirror
+        keeps the Hub from mounting every space to render its cards.
+      the: xyz.tonk.space/description
+      cardinality: one
+      as: text
     provider:
       description: >
         The account providing this space with the access service. Its
@@ -106,16 +114,19 @@ concept!: &space
       cardinality: one
       as: unsigned-integer
 
-# The Add Space command. The Hub's space-create element sends this shape
-# with a fresh command entity and follows its completion in the local overlay.
+# The Add Space command. The Hub's named creation dialogs submit this shape.
 # The worker records the replica, seeds the repository, and navigates the
 # creator. The command is transient and is swept before the durable commit.
-# The event declaration remains available to older declarative create forms.
+# The worker also publishes a per-command completion receipt for subscribers.
 event!: &on/space-create
   type: "submit"
   prevent-default: true
+  # The collection is nested in the Hub view, which also binds this command.
+  # Only the nearest view may dispatch this submit.
+  stop-propagation: true
   where:
     name: ".currentTarget.elements.name.value"
+    description: ".currentTarget.elements.description.value"
     open: ".currentTarget.elements.open.value"
 
 command!: &space/create
@@ -123,9 +134,9 @@ command!: &space/create
   with:
     name:
       description: >
-        The space name. The Hub sends "Untitled", which the worker
-        uniquifies against existing space labels ("Untitled", "Untitled 2", …).
-        The user renames the space in place on arrival.
+        The space name supplied by the Hub creation dialog. Legacy callers
+        may send "Untitled", which the worker uniquifies against existing
+        space labels ("Untitled", "Untitled 2", …).
       the: xyz.tonk.command.create-space/name
       as: text
     open:
@@ -138,6 +149,11 @@ command!: &space/create
         background must not yank the page out from under whoever is
         using it.
       the: xyz.tonk.command.create-space/open
+      as: text
+  maybe:
+    description:
+      description: The optional short description to persist with the space.
+      the: xyz.tonk.command.create-space/description
       as: text
 
 # Pull a space the account has but this device does not. The Hub's
@@ -201,6 +217,25 @@ command!: &space/remove
       the: xyz.tonk.command.remove-space/subject
       as: entity
 
+event!: &on/repository-rename-submit
+  type: "submit"
+  prevent-default: true
+  where:
+    space: ".currentTarget.dataset.space"
+    name: ".currentTarget.elements.name.value"
+
+command!: &tonk/rename-repository
+  description: Rename a space from the profile Hub.
+  with:
+    name:
+      description: The new repository name.
+      the: xyz.tonk.command.rename-repository/name
+      as: text
+    space:
+      description: The target space DID.
+      the: xyz.tonk.rename-repository/space
+      as: entity
+
 # Load the requesting tab's site for its current path. Mirrors core.yaml's
 # `&tonk/load` — seeded here too because the top-level `<tonk-site>` stamps onto
 # the PROFILE branch (its ancestors resolve no named repo, so the claim routes
@@ -252,7 +287,7 @@ view!:
          host injects. */
 
       :root{
-        --page:#e8e6e4; --ink:#38182a; --on-ink:#f7f6f5; --soft:#5b4953;
+        --page:#dedbd8; --ink:#38182a; --on-ink:#f7f6f5; --soft:#5b4953;
         /* the current role — a place you are in, split from the CTA register
            (Aug 20): near-ink, one step toward the page, so a tab never
            outshouts an action. Filled by the colour pass — same hue as the ink,
@@ -260,7 +295,7 @@ view!:
         --cur:#552e44;
         --ring:rgba(56,24,42,0.85); --sep:rgba(56,24,42,.28); --frost:rgba(253,252,252,0.72);
         --frost-solid:#f7f6f5; /* frost pre-composited over the flat page — same look, no filter */
-        --panel:#d0ccc8; --card:#fcfbfb; --card-hover:#eeedec;
+        --name-field:#faf9f9; --collection:#e9e6e3; --panel:#d0ccc8; --card:#f7f6f5; --card-hover:#eeedec;
         --wash:rgba(56,24,42,.06); --wash-2:rgba(56,24,42,.12);
         /* wash-p is the hover for SOLID-INK surfaces, so it must be a wash of
            on-ink, not of ink — a 16% ink wash over ink composites to exactly
@@ -275,13 +310,15 @@ view!:
         --mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
         --ease:cubic-bezier(.25,.46,.45,.94);
       }
+      @font-face { font-family:Gestalte; font-weight:300; font-display:swap;
+        src:url('/fonts/gestalte-300.otf') format('opentype'); }
       @media (prefers-color-scheme: dark){
         :root{
           --page:#161313; --ink:#e2dfdd; --on-ink:#221c1d; --soft:#c8c3bf;
           --cur:#cdc9c5; /* the same step toward the page, inverted */
           --ring:rgba(226,223,221,0.55); --sep:rgba(226,223,221,.28); --frost:rgba(29,24,25,0.78);
           --frost-solid:#1b1718;
-          --panel:#3c3335; --card:#261f20; --card-hover:#322a2b;
+          --name-field:#181416; --collection:#1c171a; --panel:#3c3335; --card:#261f23; --card-hover:#322a2b;
           --wash:rgba(226,223,221,.09); --wash-2:rgba(226,223,221,.15); --wash-p:rgba(34,28,29,.14);
           --canvas:#1c1718; --stub-ink:#736265;
           /* in the dark the veil is the page itself — bone rings and labels punch
@@ -308,7 +345,7 @@ view!:
          for the hub to have its colors, and the dark twin is the media
          query above, not a class someone else stamps. ── */
       .hub-page {
-        position:relative; min-height:100dvh; background:var(--page);
+        display:flow-root; position:relative; min-height:100dvh; background:var(--page);
         color:var(--ink); font-family:var(--cond);
       }
       .hub-page *, .hub-page *::before, .hub-page *::after { box-sizing:border-box; }
@@ -343,28 +380,30 @@ view!:
       .chrome { font-family:var(--cond); font-weight:600; font-size:13px;
         line-height:1; letter-spacing:.02em; text-transform:lowercase; }
 
-      /* ── centered launcher — the mark leads the column, in flow (a fixed
-         corner mark was the left anchor's partner, and the anchor is gone) ── */
-      .hub-logo { display:flex; justify-content:center; margin:48px 0 0;
-        color:var(--ink); user-select:none; }
-      .hub-logo svg { display:block; width:132px; height:auto; }
-      /* two cells now: account 144 · spaces 432 = 576 — the settings cell
-         left the bar for the account view (settings is an account place,
-         and under the name is where hands look for it). 576 is the shared
-         ceremony width, and the hub speaks it too. */
-      .hubcol { width:min(576px, calc(100vw - 32px)); margin:56px auto 120px; }
-      .hubbar { position:relative; z-index:10; display:flex; align-items:stretch;
-        width:100%; height:36px; background:var(--frost-solid);
-        box-shadow:0 0 0 1px var(--ring); }
-      /* every word sits bottom-right on the 9px seat */
-      .hcell { display:flex; align-items:flex-end; justify-content:flex-end; gap:8px;
-        padding:0 10px 9px 12px; font-size:13px; line-height:1; white-space:nowrap;
+      /* ── collection shell ── */
+      .hub-header { width:100%; min-height:100px; padding:0 42px;
+        display:flex; align-items:center; justify-content:space-between;
+        gap:32px; }
+      .hub-logo { display:flex; justify-content:center; color:var(--ink); user-select:none;
+        flex:none; }
+      .hub-logo svg { display:block; width:107px; height:auto; }
+      .hubcol { width:min(1166px, calc(100vw - 84px)); margin:18px auto 120px; }
+      .hubbar { position:relative; z-index:10; display:flex; align-items:center;
+        justify-content:flex-end; gap:14px; width:auto; min-height:44px; background:transparent; }
+      .hcell { display:flex; align-items:center; justify-content:center; gap:8px;
+        min-height:38px; height:38px; padding:0 18px; font-size:14px; line-height:1; white-space:nowrap;
         text-decoration:none; color:inherit; flex:none; }
       .hcell:hover { background:var(--wash); }
       .hcell:active { background:var(--wash-2); }
-      /* the account cell flushes its name LEFT against the bar's end */
-      .hc-acct { width:144px; min-width:0; justify-content:flex-start; }
-      .hc-view { width:432px; border-left:1px solid var(--sep); }
+      .hc-acct { min-width:0; max-width:260px; justify-content:flex-start;
+        border:0; }
+      .hc-view { display:none; }
+      .header-new { display:block; }
+      .header-new .snew { min-width:120px; min-height:38px; height:38px; gap:16px; font-weight:500; box-shadow:none;
+        align-items:center; justify-content:center; padding:0 18px; }
+      .hubbar :is(.hcell, .header-new .snew) { box-sizing:border-box;
+        height:38px; min-height:38px; padding:0 18px; font:500 14px/1 var(--cond); }
+      .header-new .snew .g { font-size:20px; }
       /* the view you are in wears CURRENT (near-ink) — solid ink stays the
          CTA register, so a tab never outshouts an action */
       .hc-acct[aria-current="page"], .hc-view[aria-current="page"] {
@@ -386,13 +425,16 @@ view!:
          so the rows are only ways onward: settings first, one row per
          other account carrying its switch verb, then the add door — the
          page's one CTA, solid ink. ── */
-      .hub-page hub-bar { position:relative; display:block; width:100%; }
+      .hub-page hub-bar { position:relative; display:block; width:auto; }
+      .hub-page:has(hub-bar[path^="/settings"]) .hub-header hub-bar { display:none; }
+      .hub-page:has(hub-bar[path^="/settings"]) .hub-header { border-bottom:0; }
       /* The menu's own `open` attribute drives its visibility, rather
          than a `hidden` attribute script has to remember to toggle. */
       .account-trigger { overflow:hidden; }
       .account-trigger [data-account-label] { overflow:hidden; text-overflow:ellipsis;
         white-space:nowrap; text-transform:none; }
-      .account-menu { display:flex; flex-direction:column; gap:7px; width:100%; margin-top:7px;
+      .account-menu { position:absolute; z-index:20; top:calc(100% + 8px); right:0;
+        display:flex; flex-direction:column; gap:7px; width:min(320px, calc(100vw - 32px));
         color:var(--ink); }
       .account-menu[hidden] { display:none; }
       .account-menu__profiles { display:flex; flex-direction:column; gap:7px; }
@@ -432,12 +474,89 @@ view!:
          `<account-settings>` in `tonk-ui/styles.css`; only the hub
          seat's geometry lives here. ── */
       .settings { display:flex; flex-direction:column; align-items:stretch;
-        margin-top:7px; }
+        margin-top:24px; }
       .settings[hidden] { display:none; }
+      .hub-page > .hub-logo { margin:32px auto 0; }
+      .hub-page:has(hub-bar[path^="/settings"]) .hubcol { margin-top:24px; }
+      .settings-title { margin:0 0 34px; font:300 clamp(38px,4.5vw,60px)/1.08 Gestalte,Georgia,serif;
+        letter-spacing:-.02em; text-transform:none; }
+      .settings-back { position:absolute; right:42px; top:28px;
+        display:flex; align-items:center; min-height:44px; padding:0 18px;
+        font:600 14px/1.2 var(--cond); }
+      .settings-back:hover { background:var(--wash); }
+      .settings-back:active { background:var(--wash-2); }
+      .hub-page:has(hub-bar[path="/account"]) :is(.settings-title,.settings-back) { display:none; }
+      .hub-page account-settings { display:block; }
+      .hub-page account-settings .s-body { min-width:0; min-height:0; max-height:none;
+        overflow:visible; padding:0; background:transparent; border:0; color:var(--ink); }
+      .hub-page account-settings .pane[hidden] { display:none; }
+      .hub-page account-settings .account-panels { display:grid;
+        grid-template-columns:repeat(2,minmax(0,1fr)); gap:24px; align-items:stretch; }
+      .hub-page account-settings tonk-display[model="tonk:account/registered"],
+      .hub-page account-settings tonk-display[model="tonk:account/registered"] > tonk-view,
+      .hub-page account-settings [data-account-registered] { display:contents; }
+      .hub-page account-settings .account-panels tonk-dialog { display:contents; }
+      .hub-page account-settings .settings-panel { min-width:0; margin:0; padding:28px;
+        background:var(--card); font-family:var(--sans); text-transform:none; }
+      .hub-page account-settings .settings-panel h2 { margin:0 0 24px;
+        font:300 30px/1.15 Gestalte,Georgia,serif; text-transform:none; }
+      .hub-page account-settings .details-form { display:grid; gap:8px; }
+      .hub-page account-settings .details-form label,
+      .hub-page account-settings .settings-field > span { font:600 15px/1.4 var(--cond); }
+      .hub-page account-settings .sname { width:100%; min-height:48px; margin:0;
+        padding:13px 16px; border:0; background:var(--name-field); color:var(--ink);
+        font:400 16px/1.4 var(--sans); text-align:left; }
+      .hub-page account-settings .sname:focus-visible { box-shadow:inset 0 0 0 2px var(--ink); }
+      .hub-page account-settings .details-form .primary-action { justify-self:end;
+        width:auto; min-height:48px; margin-top:16px; padding:12px 18px;
+        border:0; text-decoration:none; font:600 16px/1.2 var(--cond); }
+      .hub-page account-settings .form-error { margin:0; color:var(--ink);
+        font:400 13px/1.45 var(--sans); }
+      .hub-page account-settings .form-error[hidden] { display:none; }
+      .hub-page account-settings .settings-field { display:grid; gap:8px; margin-top:12px; }
+      .hub-page account-settings .settings-field b { min-height:48px; padding:13px 16px;
+        background:var(--wash); font:400 16px/1.4 var(--sans); overflow-wrap:anywhere; }
+      .hub-page account-settings .passkey-list tonk-display { display:grid; gap:8px; }
+      .hub-page account-settings .passkey-card { display:flex; align-items:center; gap:12px;
+        min-height:64px; padding:16px; background:var(--wash); }
+      .hub-page account-settings .passkey-mark { width:28px; height:28px; padding:5px; flex:none; }
+      .hub-page account-settings .passkey-card b { display:block; font:600 16px/1.4 var(--cond); }
+      .hub-page account-settings .passkey-created { display:block; margin-top:2px;
+        color:var(--soft); font:400 13px/1.5 var(--sans); }
+      .hub-page account-settings .expl { max-width:60ch; margin:14px 0 0;
+        font:400 15px/1.6 var(--sans); }
+      .hub-page account-settings .panel-action,
+      .hub-page account-settings .switch-account { display:flex; align-items:center;
+        justify-content:space-between; gap:16px; width:100%; min-height:48px;
+        margin-top:20px; padding:12px 16px; border:0; background:var(--wash);
+        color:var(--ink); font:600 16px/1.25 var(--cond); text-align:left;
+        text-decoration:none; text-transform:none; }
+      .hub-page account-settings .switch-account { min-height:64px; margin:0 0 8px;
+        padding:16px; font:500 16px/1.4 var(--cond); }
+      .hub-page account-settings .switch-account:disabled { opacity:1; cursor:default; }
+      .hub-page account-settings .switch-state { margin-left:auto; font:400 14px/1.4 var(--cond); }
+      .hub-page account-settings .switch-account:not(:disabled) .switch-state::after { content:" ↗"; }
+      .hub-page account-settings .signout-panel .panel-action { width:fit-content; }
+      .hub-page account-settings .primary-action { background:var(--ink); color:var(--on-ink);
+        justify-content:center; }
+      .hub-page account-settings .settings-heading { display:flex; align-items:center;
+        justify-content:space-between; gap:16px; }
+      .hub-page account-settings .settings-heading h2 { margin:0; }
+      .hub-page account-settings .danger-panel { grid-column:1 / -1; }
+      .hub-page account-settings .danger-panel { display:flex; align-items:center;
+        justify-content:space-between; gap:24px; }
+      .hub-page account-settings .danger-panel h2 { margin-bottom:8px; }
+      .hub-page account-settings .danger-panel p,
+      .hub-page account-settings .signout-panel p { margin:0; font:400 15px/1.55 var(--sans); }
+      .hub-page account-settings .danger-panel .panel-action { width:auto; flex:none; margin:0; }
+      .hub-page account-settings .connection-record { margin-top:8px; padding:16px;
+        background:var(--wash); box-shadow:none; }
 
-      /* ── the spaces stack — 432, blocks with 7px gaps of pure page ── */
-      .stack { width:100%; margin-top:7px; display:flex;
-        flex-direction:column; gap:7px; }
+      /* ── the spaces collection ── */
+      .stack { width:100%; display:grid;
+        grid-template-columns:repeat(3,minmax(0,1fr)); gap:34px 26px;
+        padding:25px 24px 22px; border:1px solid var(--sep);
+        background:var(--collection); }
       .stack[hidden] { display:none; }
       /* The account cell while its name is still replicating: a <wa-skeleton>
          standing in for the name that has not arrived. A name is a fact; until
@@ -467,59 +586,112 @@ view!:
       @keyframes tonk-sheen {
         from { background-position:200% 0; }
         to { background-position:-200% 0; } }
-      /* the wrapper, not the link, is the positioning context: the verbs
-         and the confirm cluster sit OUTSIDE the anchor (a control inside
-         one is invalid markup, and a label inside one navigates instead of
-         doing its job) while reading as part of the row */
-      .srow-wrap { position:relative; }
-      .srow { display:flex; align-items:flex-end;
-        justify-content:flex-end; padding:0 10px 9px 16px; cursor:pointer;
-        text-decoration:none; color:var(--ink);
-        background:var(--frost-solid);
-        -webkit-backdrop-filter:none; backdrop-filter:none; }
-      .srow:hover { background:linear-gradient(var(--wash),var(--wash)), var(--frost-solid); }
-      .srow:active { background:linear-gradient(var(--wash-2),var(--wash-2)), var(--frost-solid); }
-      /* the ellipsis clip needs descender room: at line-height 1 the box
-         ends at the baseline's feet and takes the tails off g, p and y.
-         The padding gives the clip air; the negative margin hands it back
-         so the seat does not move. */
-      .srow .n { overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
-        text-transform:none; padding-bottom:4px; margin-bottom:-4px;
-        max-width:calc(100% - 130px); }
+      .srow-wrap { position:relative; display:flex; flex-direction:column; min-width:0; border:1px solid var(--ink);
+        background:var(--card); --fr-r:0px; --fr-b:0px; --fr-fb:1;
+        --fr-l:0px; --fr-fl:0; }
+      .srow-wrap:nth-of-type(3n+2) { top:7px; }
+      .srow-wrap::before { content:""; position:absolute; z-index:0; pointer-events:none;
+        top:-1px; right:calc(-1px - var(--fr-r)); bottom:calc(-1px - var(--fr-b));
+        left:calc(-1px - var(--fr-l));
+        background:linear-gradient(var(--ink),var(--ink)) right top/var(--fr-r) calc(100% - var(--fr-b)) no-repeat,
+          linear-gradient(var(--ink),var(--ink)) left bottom/calc(var(--fr-l) + var(--fr-fb)*(100% - var(--fr-l) - var(--fr-r))) var(--fr-b) no-repeat,
+          linear-gradient(var(--ink),var(--ink)) left bottom/var(--fr-l) calc(var(--fr-b) + var(--fr-fl)*(100% - var(--fr-b))) no-repeat; }
+      .srow { position:relative; z-index:1; display:flex; flex-direction:column;
+        flex:1; min-height:0; cursor:pointer; text-decoration:none; color:var(--ink);
+        background:var(--card); }
+      .srow:hover .n { text-decoration:underline; text-underline-offset:4px; }
+      .space-preview { position:relative; height:150px; overflow:hidden;
+        flex:none; border-bottom:1px solid var(--ink); background:var(--panel); }
+      .space-preview::before, .space-preview::after { content:""; position:absolute;
+        background:color-mix(in srgb, var(--ink) 13%, var(--card)); filter:blur(7px); }
+      .space-preview::before { width:72%; height:58%; inset:10% auto auto -8%; }
+      .space-preview::after { width:55%; height:80%; inset:auto -12% -22% auto;
+        background:color-mix(in srgb, var(--ink) 7%, var(--page)); }
+      .space-caption { display:flex; flex:1; min-height:60px; padding:16px 19px 22px;
+        flex-direction:column; align-items:flex-start; justify-content:flex-start; gap:9px; }
+      .srow .n { letter-spacing:-.02em; min-width:0; max-width:100%; overflow-wrap:anywhere;
+        text-transform:none; font:300 27px/1.1 Gestalte,Georgia,serif; }
+      .space-description { max-width:225px; overflow-wrap:anywhere; line-height:1.5;
+        color:var(--soft); font-family:var(--cond); font-size:12px; font-weight:400;
+        text-transform:none; }
+      .space-description:empty { display:none; }
       /* a space still seeding, and one this device has not replicated:
          quieter, but still openable — visiting replicates it */
-      .srow-wrap[data-status="tonk:blank"] .srow .n { opacity:.6; }
-      .srow-wrap:not([data-local="true"]) .srow .n { color:var(--soft); }
-      /* the verbs — soft until approached, left of the row. Soft ink is
-         metadata-only, so they take full ink the moment they are live. */
-      .verbs { position:absolute; left:16px; bottom:9px; display:flex; gap:18px;
-        opacity:0; transition:opacity .15s var(--ease); color:var(--soft); }
-      .srow-wrap:hover .verbs, .srow-wrap:focus-within .verbs { opacity:1; }
+      .srow-wrap[data-presence="case:seeding"] .srow .n,
+      .srow-wrap[data-presence="case:remote"] .srow .n { color:var(--soft); }
+      .verbs { position:relative; z-index:1; display:flex; justify-content:flex-end;
+        gap:18px; min-height:49px; margin:0 19px 9px; padding:5px 0 0; border-top:1px solid var(--sep);
+        color:var(--soft); background:var(--card); }
+      space-actions { position:relative; z-index:2; display:block; }
       space-remove { display:contents; }
-      .verbs tonk-share { display:contents; }
-      .verbs [data-share-copy-label] { display:none; }
-      .verbs tonk-share:not([data-share-state]) [data-share-copy-label="idle"],
-      .verbs tonk-share[data-share-state="idle"] [data-share-copy-label="idle"],
-      .verbs tonk-share[data-share-state="copying"] [data-share-copy-label="copying"],
-      .verbs tonk-share[data-share-state="copied"] [data-share-copy-label="copied"],
-      .verbs tonk-share[data-share-state="blocked"] [data-share-copy-label="failed"],
-      .verbs tonk-share[data-share-state="failed"] [data-share-copy-label="failed"] { display:inline; }
-      .verbs button, .verbs .verb-remove { display:inline-flex; align-items:center;
-        color:inherit; font:inherit; letter-spacing:inherit;
+      .verbs button { display:inline-flex; min-width:44px; min-height:44px;
+        align-items:center; justify-content:flex-end; gap:6px;
+        color:inherit; font:500 12px/1 var(--cond); letter-spacing:normal;
         text-transform:lowercase; cursor:pointer; }
-      .verbs button:hover, .verbs .verb-remove:hover { color:var(--ink);
+      [data-space-actions-open]::after { content:"▾"; font-size:12px; transition:transform .15s; }
+      [data-space-actions-open][aria-expanded="true"]::after { transform:rotate(180deg); }
+      .verbs button:hover { color:var(--ink);
         text-decoration:underline; text-underline-offset:3px; }
       .verbs button:disabled { opacity:.55; cursor:wait; text-decoration:none; }
-      /* creation is the stack's final, and only, solid ink row */
-      space-create, .snew-form { display:block; }
-      .snew:disabled { cursor:wait; }
-      [data-create-status] { margin:8px 0 0; font:13px/1.5 var(--sans); }
-      [data-create-status][data-announce-only] { position:absolute; width:1px; height:1px; padding:0; margin:0; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
-      .snew { display:flex; align-items:flex-end; justify-content:flex-end; gap:8px;
-        width:100%; height:36px; padding:0 10px 9px 16px; background:var(--ink);
+      .srow-wrap:has(.space-menu[open="true"]) { z-index:10; }
+      .space-menu { position:fixed; z-index:8; width:184px;
+        max-width:calc(100vw - 16px); padding:5px; border:1px solid var(--ink);
+        background:var(--frost-solid); color:var(--ink);
+        box-shadow:0 0 0 1px var(--ring); }
+      .space-menu[open="false"] { display:none; }
+      .space-menu tonk-share, .space-menu space-remove { display:contents; }
+      .space-menu button { display:flex; width:100%; min-height:44px; align-items:center;
+        padding:10px 12px; gap:16px; color:inherit; font:400 14px/1 var(--cond); text-align:left; }
+      .space-menu .verb-remove { border-top:1px solid var(--sep); margin-top:4px; }
+      .space-menu::before { content:""; position:absolute; pointer-events:none;
+        top:-1px; right:-5px; bottom:-5px; left:-1px;
+        background:linear-gradient(var(--ink),var(--ink)) right top/4px 100% no-repeat,
+          linear-gradient(var(--ink),var(--ink)) left bottom/66.667% 4px no-repeat; z-index:-1; }
+      .space-menu button:hover, .space-menu button:focus-visible { background:var(--wash); }
+      .space-menu [data-share-copy-label] { display:none; }
+      .space-menu tonk-share:not([data-share-state]) [data-share-copy-label="idle"],
+      .space-menu tonk-share[data-share-state="idle"] [data-share-copy-label="idle"],
+      .space-menu tonk-share[data-share-state="copying"] [data-share-copy-label="copying"],
+      .space-menu tonk-share[data-share-state="copied"] [data-share-copy-label="copied"],
+      .space-menu tonk-share[data-share-state="blocked"] [data-share-copy-label="failed"],
+      .space-menu tonk-share[data-share-state="failed"] [data-share-copy-label="failed"] { display:inline; }
+      /* creation is the collection's final card and the header's primary action */
+      space-create { display:block; }
+      .stack > space-create { min-height:0; }
+      .stack > space-create > .snew { min-height:100%; }
+      .stack > space-create > .snew { flex-direction:column; gap:18px;
+        border:1px dashed var(--sep); background:transparent; color:var(--ink);
+        box-shadow:none; font:400 15px/1.2 var(--cond); }
+      .stack > space-create > .snew .g { order:-1; font:300 40px/1 Gestalte,Georgia,serif; }
+      .stack > space-create > .snew:hover { background:var(--wash); }
+      .snew { display:flex; align-items:center; justify-content:center; gap:8px;
+        width:100%; height:100%; padding:20px; background:var(--ink);
         color:var(--on-ink); box-shadow:0 0 0 1px var(--ink); cursor:pointer; }
       .snew:hover { background:linear-gradient(var(--wash-p),var(--wash-p)), var(--ink); }.remove-form { margin:0; font-family:var(--sans); font-weight:600;
         font-size:13.5px; line-height:1.6; text-transform:none; }
+      .space-create-form { display:grid; gap:19px; width:100%; min-width:0;
+        margin:0; font-family:var(--sans); text-transform:none; }
+      .space-create-field { display:grid; gap:7px; }
+      .space-create-field span { font:500 13px/1.2 var(--cond); text-transform:lowercase; }
+      .space-create-field input, .space-create-field textarea { width:100%; min-height:48px;
+        padding:10px; border:1px solid var(--ring); border-radius:0;
+        background:var(--card); color:var(--ink); font:400 16px/1.4 var(--sans); }
+      .space-create-field textarea { min-height:84px; resize:vertical; }
+      .space-create-field input:focus-visible, .space-create-field textarea:focus-visible {
+        outline:none; border-color:var(--ink); box-shadow:0 0 0 2px var(--ink); }
+      .space-create-help, .space-create-error { margin:0; color:var(--soft);
+        font:400 13px/1.45 var(--sans); }
+      .space-create-error { color:var(--ink); min-height:1.45em; }
+      .space-create-error:empty { min-height:0; }
+      .hub-page tonk-dialog[appearance="hub"] {
+        --fabb-panel:var(--card); --fabb-ink:var(--ink);
+        --fabb-ink-soft:var(--soft); --fabb-on-ink:var(--on-ink);
+        --fabb-ring:var(--ring); --fabb-dim:var(--dim); }
+      .hub-page tonk-dialog[appearance="hub"] .m-cancel,
+      .hub-page tonk-dialog[appearance="hub"] .m-go {
+        min-width:0; min-height:44px; height:auto; padding:10px 18px;
+        align-items:center; justify-content:center; box-shadow:none;
+        font:600 15px/1.2 var(--cond); }
       .m-cancel { display:flex; align-items:flex-end; justify-content:flex-end;
         min-width:144px; height:36px; padding:0 10px 9px 24px; border:0;
         background:var(--card); color:var(--ink); font:inherit; font-size:13px;
@@ -536,37 +708,97 @@ view!:
         .verbs, .account-menu__row { transition:none; }
       }
 
-      /* ── one breakpoint, the bar's own fold. Approach hides nothing from
-         a hand that cannot hover. ── */
-      @media (hover:none), (max-width:640px) {
-        .verbs { opacity:1; gap:24px; }
-        /* the 44 target law, invisibly — centres 44 apart, no overlap */
-        .verbs button, .verbs .verb-remove { padding:16px; margin:-16px -12px; }
+      .mobile-nav { display:none; }
+      .account-email-notice { position:fixed; z-index:29; right:24px; bottom:24px;
+        display:none; align-items:center; gap:24px; max-width:calc(100% - 48px);
+        padding:16px 20px; background:var(--ink); color:var(--on-ink);
+        font:400 17px/1.45 var(--cond); }
+      .account-email-notice[data-account-status="case:registered"] { display:flex; }
+      .hub-page:has(hub-bar[path="/account"]) .account-email-notice { display:none; }
+      .account-email-notice button { min-height:44px; padding:10px 12px; color:inherit;
+        font:600 15px/1.15 var(--cond); text-decoration:underline;
+        text-underline-offset:3px; white-space:nowrap; }
+      .visually-hidden { position:absolute; width:1px; height:1px; padding:0; margin:-1px;
+        overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+      @media (hover:none) {
+        .verbs { gap:24px; }
         .verbs button:hover, .verbs .verb-remove:hover { text-decoration:none; }
-        .srow .n { max-width:calc(100% - 150px); }
       }
-      @media (max-width:640px) {
-        .hub-logo { margin-top:20px; }
+      @media (min-width:601px) and (max-width:1100px) {
+        .srow .n { font-size:25px; }
+        .space-caption { padding:14px 14px 22px; }
+        .verbs { margin-right:14px; margin-left:14px; }
+      }
+      @media (min-width:601px) and (max-width:900px) {
+        .hub-header { padding:0 24px; }
+        .hubcol { width:calc(100vw - 48px); }
+        .stack { grid-template-columns:repeat(2,minmax(0,1fr)); }
+      }
+      @media (max-width:600px) {
+        .hub-header { min-height:72px; padding:0 16px; justify-content:center; }
         .hub-logo svg { width:98px; }
-        .hubcol { width:calc(100vw - 32px); margin:40px auto 120px; }
-        /* account holds its 144; the spaces cell follows the column */
-        .hc-view { width:auto; flex:1; min-width:0; }
-        .hubbar, .hcell { height:44px; min-height:44px; }
-        .account-menu__row, .srow, .snew { min-height:44px; }
+        .hub-header hub-bar { display:none; }
+        .hubcol { width:calc(100vw - 32px); margin:12px auto 118px; }
+        .stack { grid-template-columns:1fr; gap:16px; padding:13px 10px 16px; }
+        .srow-wrap:nth-of-type(3n+2) { top:0; }
+        .srow-wrap { display:grid; grid-template-columns:minmax(0,1fr) 67px; --fr-r:var(--fr-r-mobile,0px); --fr-b:var(--fr-b-mobile,0px);
+          --fr-l:var(--fr-l-mobile,0px); }
+        .srow { min-height:64px; display:grid; grid-template-columns:64px minmax(0,1fr); }
+        .space-preview { height:100%; min-height:64px; border-bottom:0; border-right:1px solid var(--ink); }
+        .space-preview::before, .space-preview::after { filter:blur(4px); }
+        .space-caption { min-height:64px; padding:8px 10px; gap:5px; justify-content:center; }
+        .srow .n { font:500 16px/1.2 var(--sans); }
+        .space-description { min-width:0; max-width:100%; font:400 11px/1.4 var(--sans);
+          display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical; overflow:hidden; }
+        .space-description:empty { display:none; }
+        .srow-wrap > space-actions { display:flex; align-items:center; }
+        .verbs { min-height:44px; margin:0; padding:0 10px 0 0; border:0; }
+        .verbs button { min-width:57px; }
+        .stack > space-create { display:none; }
+        .mobile-nav { position:fixed; z-index:30; inset:auto 0 0; display:grid;
+          grid-template-columns:1fr 1.25fr 1fr; gap:7px; padding:7px 12px
+          calc(7px + env(safe-area-inset-bottom,0px)); background:var(--frost-solid);
+          border-top:1px solid var(--ring); }
+        .mobile-nav > a, .mobile-nav > space-create { min-width:0; min-height:54px; }
+        .mobile-nav > a, .mobile-nav button { display:flex; width:100%; min-height:54px;
+          flex-direction:column; align-items:center; justify-content:center; gap:3px; padding:8px;
+          font:500 13px/1 var(--cond); }
+        .nav-mark { display:grid; place-items:center; width:20px; height:20px; font:20px/1 var(--sans); }
+        .nav-square::before { content:""; width:10px; height:10px; background:currentColor; }
+        .nav-person::before { content:""; width:12px; height:12px; border-radius:50%; background:currentColor; }
+        .mobile-nav [aria-current="page"] { background:var(--wash); }
+        .mobile-nav .mobile-create { background:var(--ink); color:var(--on-ink); }
+        .account-email-notice { right:16px; bottom:calc(82px + env(safe-area-inset-bottom,0px));
+          left:16px; max-width:none; flex-wrap:wrap; gap:6px 16px; }
+        .account-email-notice button { margin-left:auto; white-space:normal; }
+        .account-menu__row { min-height:44px; }
+        .hub-page > .hub-logo { margin-top:20px; }
+        .hub-page:has(hub-bar[path^="/settings"]) .hubcol { margin-top:20px; }
+        .settings-title { font-size:40px; }
+        .settings-back { position:static; align-self:flex-end; margin-bottom:12px; }
+        .hubcol:has(.settings) > hub-bar > .hubbar { display:none; }
+        .settings { margin-top:0; }
+        .hub-page account-settings .account-panels { grid-template-columns:1fr; gap:16px; }
+        .hub-page account-settings .settings-panel { padding:22px 20px; }
+        .hub-page account-settings .danger-panel { grid-column:auto; align-items:stretch;
+          flex-direction:column; }
+        .hub-page account-settings .danger-panel .panel-action { width:100%; }
         .m-cancel, .m-go { min-height:44px; }
       }
       /* One page: the bar's path says whether the stack or the account
          section shows, and the section says whether its rows are for a
          browser with an account here or without one. */
       .hub-page:has(hub-bar[path^="/settings"]) [data-spaces-view],
-      .hub-page:has(hub-bar[path="/account"]) [data-spaces-view] { display:none; }
+      .hub-page:has(hub-bar[path="/account"]):has(account-settings[data-linked="true"]):not(:has(account-settings[data-linking="true"])) [data-spaces-view] { display:none; }
       .hub-page:not(:has(hub-bar[path^="/settings"])):not(:has(hub-bar[path="/account"])) [data-settings-view] { display:none; }
       account-settings:not([data-linked="true"]) [data-when-linked] { display:none; }
-      /* an account page with no account lists nothing: only the cluster shows */
+      /* An unlinked account opens its ceremony over the spaces collection. */
       .hub-page:has(hub-bar[path="/account"]) [data-settings-view]:has(account-settings:not([data-linked="true"])) { display:none; }
+      .hub-page:has(account-settings[data-linking="true"]) [data-settings-view] { display:none; }
   show:
     directory: |
-        <div class="stack chrome" data-spaces-view aria-label="spaces">
+        <hub-collection class="stack chrome" with="main@profile:tonk"
+          data-spaces-view aria-label="spaces">
           <link rel="stylesheet" with:src="ui">
           <!-- No empty-state bar. An account with no spaces and an
                account whose spaces are still arriving look identical
@@ -580,44 +812,67 @@ view!:
                while staying outside it: reaching for the action never opens the space.
                Each per-space consumer carries its OWN subject; the routing
                helpers read an element's own attribute and never walk ancestors. -->
-          <div class="srow-wrap" data-presence={presence} data-id={this}>
-            <a class="srow blk" href="/space/{subject}"><span class="n">{name}</span></a>
+          <div class="srow-wrap space-card" data-presence={presence} data-space-subject={subject} data-id={this}>
+            <a class="srow" href="/space/{subject}">
+              <span class="space-preview" aria-hidden="true"></span>
+              <span class="space-caption"><span class="n">{name}</span><span class="space-description">{description}</span></span>
+            </a>
             <!-- Both verbs sit outside the anchor and are laid over it: a
                  <button> inside an <a> is invalid markup the parser reshapes,
                  and a <label for> inside one navigates rather than opening the
                  confirm. Hovering the row reveals them (`.srow-wrap:hover`),
                  so the reveal still follows the row and not just the verbs. -->
-            <space-remove data-space-subject={subject} data-space-name={name}
-              data-space-provider={provider} data-space-founded={founded-at}
-              data-space-owner={owner}>
+            <space-actions>
               <span class="verbs">
-                <tonk-share space={subject}><button type="button" class="copy-verb"><span data-share-copy-label="idle">copy link</span><span data-share-copy-label="copying">copying…</span><span data-share-copy-label="copied">copied</span><span data-share-copy-label="failed">couldn't copy</span></button></tonk-share>
-                <button class="verb-remove" type="button" data-space-remove-open disabled>checking&hellip;</button>
+                <button type="button" data-space-actions-open aria-haspopup="menu"
+                  aria-expanded="false" aria-controls="space-menu-{subject}">more</button>
               </span>
-              <tonk-dialog data-space-remove-dialog heading="confirm leaving space">
-                <form id="remove-{subject}" class="remove-form" on:space-remove=space/remove data-remove={subject}>
-                  Leave {name}? This removes the space and its local data from this
-                  device. You'll need another invite link to join again. Other
-                  members keep access.
+              <hub-menu id="space-menu-{subject}" class="space-menu" role="menu">
+                <tonk-share space={subject}><button type="button" role="menuitem"><span data-share-copy-label="idle">copy link</span><span data-share-copy-label="copying">copying…</span><span data-share-copy-label="copied">copied</span><span data-share-copy-label="failed">couldn't copy</span></button></tonk-share>
+                <button type="button" role="menuitem" data-space-rename-open>rename</button>
+                <space-remove data-space-subject={subject} data-space-name={name}
+                  data-space-provider={provider} data-space-founded={founded-at}
+                  data-space-owner={owner}>
+                  <button class="verb-remove" type="button" role="menuitem"
+                    data-space-remove-open disabled>checking&hellip;</button>
+                  <tonk-dialog appearance="hub" data-space-remove-dialog heading="confirm leaving space">
+                    <form id="remove-{subject}" class="remove-form" on:space-remove=space/remove data-remove={subject}>
+                      Leave {name}? This removes the space and its local data from this
+                      device. You'll need another invite link to join again. Other
+                      members keep access.
+                    </form>
+                    <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
+                    <button class="m-go" slot="actions" type="submit" html:form="remove-{subject}" data-space-remove-submit>leave space</button>
+                  </tonk-dialog>
+                </space-remove>
+              </hub-menu>
+              <tonk-dialog appearance="hub" data-space-rename-dialog heading="Rename space">
+                <form id="rename-{subject}" class="space-create-form" data-space-rename-form
+                  data-space={subject} on:repository-rename-submit=tonk/rename-repository>
+                  <label class="space-create-field"><span>space name</span><input name="name" type="text"
+                    value={name} required maxlength="100" autocomplete="off" data-space-rename-input></label>
+                  <p class="space-create-error" data-space-rename-error role="alert"></p>
                 </form>
                 <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
-                <button class="m-go" slot="actions" type="submit" html:form="remove-{subject}" data-space-remove-submit>leave space</button>
+                <button class="m-go" slot="actions" type="submit" html:form="rename-{subject}"
+                  data-space-rename-submit>save changes</button>
               </tonk-dialog>
-            </space-remove>
+            </space-actions>
           </div>
-          <!-- Creating asks nothing up front: the space starts "Untitled" (the
-               worker uniquifies the sentinel) and is renamed in place with the
-               bar's block cursor the moment you land in it. No remote is
-               carried: the worker resolves where a space syncs from the
-               account's own registration, so a space created before anyone
-               registers stays local until it is shared. -->
           <space-create>
-            <form class="snew-form">
-              <button class="snew chrome" type="submit" disabled><span data-create-label>create new space</span><span class="g" aria-hidden="true">+</span></button>
-            </form>
-            <p data-create-status role="status" aria-live="polite" hidden></p>
+            <button class="snew chrome" type="button" data-new-space data-space-create-open>new space<span class="g" aria-hidden="true">+</span></button>
+            <tonk-dialog appearance="hub" data-space-create-dialog heading="New space">
+              <form id="create-space-card" class="space-create-form" data-space-create-form>
+                <label class="space-create-field"><span>space name</span><input name="name" type="text" required maxlength="100" autocomplete="off"></label>
+                <label class="space-create-field"><span>a short description <small>/ optional</small></span><textarea name="description" maxlength="240"></textarea></label>
+                <input type="hidden" name="open" value="true">
+                <p class="space-create-error" data-space-create-error role="alert"></p>
+              </form>
+              <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
+              <button class="m-go" slot="actions" type="submit" form="create-space-card" data-space-create-submit>create space</button>
+            </tonk-dialog>
           </space-create>
-        </div>
+        </hub-collection>
     # The space page's waiting room. Reached only when the space's own
     # content has not arrived but the account's DIRECTORY ROW for it has
     # — so this device knows the space exists and is entitled to it, and
@@ -694,6 +949,12 @@ event!: &on/profile-rename
   where:
     name: ".currentTarget.value"
 
+event!: &on/profile-rename-submit
+  type: "submit"
+  prevent-default: true
+  where:
+    name: ".currentTarget.elements.name.value"
+
 command!: &profile/rename
   description: Rename the signed-in member (set their display name).
   with:
@@ -701,6 +962,20 @@ command!: &profile/rename
       description: The new name, read from the editable's value on commit.
       the: xyz.tonk.command.profile-rename/name
       as: text
+
+event!: &on/resend-activation
+  type: "click"
+  prevent-default: true
+  where:
+    at: ".timeStamp"
+
+command!: &account/resend-activation
+  description: Ask the account service to send the pending activation email again.
+  with:
+    at:
+      description: The click timestamp, so every resend is a distinct request.
+      the: xyz.tonk.resend-activation/at
+      as: unsigned-integer
 
 # Toggle auto-sync (pause ⇄ resume) for a space. Dispatched by the FAB's
 # `<ui-sync-status onpause=…>` cap on alt/option-click. Defined here on the
@@ -1284,6 +1559,11 @@ view!:
           <span class="account-menu__name">{label}</span>
         </button>
       </div>
+    settings: |
+      <button class="switch-account" type="button" data-id={this} data-settings-profile data-profile={name}
+        data-handle={name} data-active={active} on:switch-profile=tonk:switch-profile>
+        <span>{label}</span><span class="switch-state" data-switch-state>switch</span>
+      </button>
 
 # The signup ceremony's progress, as the worker reports it.
 #
@@ -1455,6 +1735,142 @@ concept!: &element
       as: {[symbol]: text}
       cardinality: one
 
+# The account menu's keyboard and focus behaviour, as branch data.
+#
+# Everything here is DOM work with no fact behind it: which item holds
+# focus, whether the menu is open, where focus returns when it closes.
+# That is why it stayed in Rust while the bar's contents became views,
+# and why it can leave Rust without becoming one — an element is a
+# place for behaviour that is not data.
+#
+# `open` is an attribute rather than internal state so CSS, devtools
+# and `getAttribute` all agree on it, and so a view can render a menu
+# already open without a script having run first.
+#
+# The methods are `open`/`close`, not `show`/`hide`: `show` is what a
+# view calls its dictionary of templates, and one word meaning two
+# things across the two halves of the same file is a trap.
+element!: &hub-menu
+  description: A roving-focus menu — arrows move, Escape closes, focus returns to the opener.
+  attribute:
+    open: "false"
+  method:
+    # Focusable items only. A disabled or hidden row is still in the DOM
+    # and must not take focus, which is why this is a method rather than
+    # a selector each caller inlines.
+    items: |
+      (self) => [...self.querySelectorAll('[role=menuitem]')].filter(
+        (item) => !item.hidden
+          && item.getAttribute('aria-disabled') !== 'true'
+          && !item.matches(':disabled'))
+    # Move focus by `step`, wrapping. With nothing focused yet, entering
+    # forwards lands on the first item and backwards on the last, so
+    # ArrowUp from the trigger opens at the bottom, as a menu should.
+    move: |
+      (self, step) => {
+        const items = self.items();
+        if (!items.length) return;
+        const at = items.indexOf(document.activeElement);
+        const next = at < 0
+          ? (step > 0 ? 0 : items.length - 1)
+          : (at + step + items.length) % items.length;
+        items[next].focus({ preventScroll: true });
+      }
+    # The opener is whatever points at this menu with `aria-controls`.
+    # Read from the DOM rather than remembered, so a menu re-rendered
+    # under a fresh trigger still finds the right one.
+    opener: |
+      (self) => {
+        const id = self.getAttribute('id');
+        return id ? document.querySelector(`[aria-controls="${id}"]`) : null;
+      }
+    place: |
+      (self, trigger) => {
+        const viewport = window.visualViewport;
+        const leftEdge = viewport?.offsetLeft ?? 0;
+        const topEdge = viewport?.offsetTop ?? 0;
+        const rightEdge = leftEdge + (viewport?.width ?? window.innerWidth);
+        const nav = document.querySelector('.mobile-nav')?.getBoundingClientRect();
+        const bottomEdge = Math.min(topEdge + (viewport?.height ?? window.innerHeight),
+          nav?.height > 0 ? nav.top : Infinity);
+        const margin = 8;
+        const gap = 5;
+        const target = trigger.getBoundingClientRect();
+        self.style.maxHeight = `${Math.max(44, bottomEdge - topEdge - margin * 2)}px`;
+        self.style.overflowY = 'auto';
+        const width = self.offsetWidth;
+        const height = self.offsetHeight;
+        const left = Math.max(leftEdge + margin,
+          Math.min(target.right - width, rightEdge - width - margin));
+        const below = target.bottom + gap;
+        const above = target.top - height - gap;
+        const top = below + height <= bottomEdge - margin ? below
+          : above >= topEdge + margin ? above
+          : Math.max(topEdge + margin, Math.min(below, bottomEdge - height - margin));
+        self.style.left = `${left}px`;
+        self.style.top = `${top}px`;
+      }
+    open: |
+      (self) => {
+        self.setAttribute('open', 'true');
+        const trigger = self.opener();
+        if (trigger) {
+          trigger.setAttribute('aria-expanded', 'true');
+          self.place(trigger);
+        }
+        self._viewportChanged ??= () => self.close(false);
+        window.addEventListener('scroll', self._viewportChanged, { passive: true });
+        window.addEventListener('resize', self._viewportChanged);
+        window.visualViewport?.addEventListener('scroll', self._viewportChanged, { passive: true });
+        window.visualViewport?.addEventListener('resize', self._viewportChanged);
+        self.move(1);
+      }
+    # Closing returns focus to the opener, which is what makes the menu a
+    # detour rather than somewhere you get stranded. `restoreFocus` is
+    # false when the menu is closing because it is going away.
+    close: |
+      (self, restoreFocus) => {
+        self.setAttribute('open', 'false');
+        if (self._viewportChanged) {
+          window.removeEventListener('scroll', self._viewportChanged);
+          window.removeEventListener('resize', self._viewportChanged);
+          window.visualViewport?.removeEventListener('scroll', self._viewportChanged);
+          window.visualViewport?.removeEventListener('resize', self._viewportChanged);
+        }
+        const trigger = self.opener();
+        if (!trigger) return;
+        trigger.setAttribute('aria-expanded', 'false');
+        if (restoreFocus !== false) trigger.focus();
+      }
+    connected: |
+      (self) => {
+        self.addEventListener('keydown', (event) => {
+          switch (event.key) {
+            case 'ArrowDown': event.preventDefault(); self.move(1); break;
+            case 'ArrowUp': event.preventDefault(); self.move(-1); break;
+            case 'Home': event.preventDefault(); self.items()[0]?.focus({ preventScroll: true }); break;
+            case 'End': {
+              event.preventDefault();
+              const items = self.items();
+              items[items.length - 1]?.focus({ preventScroll: true });
+              break;
+            }
+            case 'Escape': {
+              // A modal nested under a menu owns Escape while it is open.
+              // Preventing the key here would cancel the native dialog's
+              // close action and strand focus inside an invisible menu.
+              if (event.target?.closest?.('tonk-dialog')?.open) break;
+              event.preventDefault(); self.close(true); break;
+            }
+          }
+        });
+      }
+    # A definition replaced while a menu is open would leave it open with
+    # no handlers. Closing without taking focus is the honest recovery:
+    # the page keeps whatever had focus, and the replacement starts shut.
+    released: |
+      (self) => self.close(false)
+
 # A passkey registered for this account.
 #
 # Directory-shaped: one row per passkey, so the settings page lists them
@@ -1483,26 +1899,27 @@ concept!: &account/passkey
 view!:
   this: tonk:account/registered
   show:
+    email: |
+      <div class="settings-field">
+        <span>account email</span>
+        <b data-settings-email>{email}</b>
+      </div>
     settings: |
       <div data-account-registered>
-        <div class="srowd">
-          <span>display name</span>
-          <!-- The name is a different concept from the registration:
-               `tonk:account/name` is the account's own display name and
-               `tonk:account/registered` is where it enrolled. Nesting a
-               display rather than interpolating is what keeps each field
-               on the concept that declares it. -->
-          <span class="sname-seat">
-            <tonk-display model="tonk:account/name" view="editable"></tonk-display>
-          </span>
-        </div>
-        <div class="srowd"><span>account email</span><b data-settings-email>{email}</b></div>
-        <div class="sect">passkeys</div>
-        <tonk-display model="tonk:account/passkey"></tonk-display>
-        <p class="expl">
-          Your passkey replaces a password and may be saved to a device, browser
-          profile, or password manager.
-        </p>
+        <section class="settings-panel details-panel">
+          <h2>Your details</h2>
+          <tonk-display model="tonk:account/name" view="editable"></tonk-display>
+        </section>
+        <section class="settings-panel passkeys-panel">
+          <h2>Passkeys</h2>
+          <div class="passkey-list"><tonk-display model="tonk:account/passkey"></tonk-display></div>
+          <p class="expl">
+            Your passkey replaces a password and may be saved to a device, browser
+            profile, or password manager.
+          </p>
+          <button class="cta panel-action" type="button" data-add-passkey data-account="tonk:add-passkey"
+            on:add-passkey=tonk:add-passkey>add a passkey <span aria-hidden="true">+</span></button>
+        </section>
         <!-- The deletion dialog lives on the registration because the
              command carries the verified address, stamped on the submit
              control here. What it deletes is listed from `space/owned`;
@@ -1546,17 +1963,227 @@ view!:
   this: tonk:account/name
   show:
     editable: |
-      <input class="sname" type="text" data-settings-name value={name} aria-label="display name"
-        autocomplete="off" on:profile-rename=profile/rename>
+      <form class="details-form" data-profile-rename-form>
+        <label for="account-display-name">display name</label>
+        <input class="sname" id="account-display-name" name="name" type="text"
+          data-settings-name value={name} required maxlength="50" autocomplete="name"
+          aria-describedby="account-display-name-error">
+        <p id="account-display-name-error" class="form-error" data-profile-rename-error
+          role="alert" hidden></p>
+        <tonk-display model="tonk:account/registered" view="email"></tonk-display>
+        <button class="cta primary-action" type="submit" data-profile-rename-submit>save changes</button>
+      </form>
 
 view!:
   this: tonk:account/passkey
   show:
     directory: |
-      <div class="srowd" data-id={this}>
-        <b class="lft" data-settings-passkey-device>{created-on}</b>
-        <b data-settings-passkey-created>{created-at}</b>
+      <div class="passkey-card" data-id={this}>
+        <svg class="passkey-mark" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="9" r="4"></circle><path d="m11 12 8 8m-2-2 3-3m-6 0 3-3"></path></svg>
+        <span><b data-settings-passkey-device>{created-on}</b>
+          <span class="passkey-created">created <span data-settings-passkey-created>{created-at}</span></span></span>
       </div>
+
+# Deals the decorative collection frames from stable space identities. The
+# list pass only adjusts adjacent repeated heavy rules; it never reads or
+# mounts a space. Re-running it over the same ordered subjects gives the same
+# CSS variables, including after a fact-driven rerender.
+element!: &hub-collection
+  description: A space-card collection with stable decorative frames.
+  method:
+    hash: |
+      (self, value) => {
+        let hash = 2166136261;
+        for (const char of value) {
+          hash ^= char.charCodeAt(0);
+          hash = Math.imul(hash, 16777619);
+        }
+        return hash >>> 0;
+      }
+    frame: |
+      (self, subject) => {
+        let seed = self.hash(subject);
+        const random = () => {
+          seed = seed + 0x6D2B79F5 | 0;
+          let value = Math.imul(seed ^ seed >>> 15, 1 | seed);
+          value = value + Math.imul(value ^ value >>> 7, 61 | value) ^ value;
+          return ((value ^ value >>> 14) >>> 0) / 4294967296;
+        };
+        const pick = (choices) => {
+          let value = random() * choices.reduce((sum, choice) => sum + choice[1], 0);
+          for (const choice of choices) if ((value -= choice[1]) < 0) return choice[0];
+          return choices[choices.length - 1][0];
+        };
+        if (random() < .15) return { right: 1, bottom: 1, bottomReach: 1, left: 1, leftReach: 0 };
+        let right = pick([[1,.2],[3,.3],[7,.4],[15,.1]]);
+        const bottom = pick([[1,.15],[3,.3],[7,.35],[15,.2]]);
+        if (right === 15 && bottom === 15) right = 7;
+        const bottomReach = bottom === 1 ? 1 : pick([[.5,.3],[2/3,.45],[.75,.25]]);
+        const left = bottom === 1 ? 1 : Math.min(bottom, pick([[1,.4],[3,.4],[7,.2]]));
+        const leftReach = left === 1 ? 0 : pick([[1/3,.35],[.5,.45],[2/3,.2]]);
+        return { right, bottom, bottomReach, left, leftReach };
+      }
+    deal: |
+      (self) => {
+        const cards = [...self.querySelectorAll('.space-card[data-space-subject]')];
+        const frames = cards.map(card => self.frame(card.dataset.spaceSubject ?? ''));
+        const stepDown = { 15: 7, 7: 3, 3: 1, 1: 1 };
+        frames.forEach((frame, index) => {
+          if (!index) return;
+          const previous = frames[index - 1];
+          const weight = Math.max(frame.right, frame.bottom);
+          const previousWeight = Math.max(previous.right, previous.bottom);
+          if (weight === 1 && previousWeight === 1) {
+            frame.right = 3;
+          } else if (weight >= 7 && weight === previousWeight) {
+            if (frame.right === weight) frame.right = stepDown[frame.right];
+            if (frame.bottom === weight) frame.bottom = stepDown[frame.bottom];
+            frame.left = Math.min(frame.left, frame.bottom);
+          }
+        });
+        const desktop = { 1: 0, 3: 2, 7: 6, 15: 14 };
+        const mobile = { 1: 0, 3: 2, 7: 4, 15: 7 };
+        cards.forEach((card, index) => {
+          const frame = frames[index];
+          card.style.setProperty('--fr-r', `${desktop[frame.right]}px`);
+          card.style.setProperty('--fr-b', `${desktop[frame.bottom]}px`);
+          card.style.setProperty('--fr-l', `${desktop[frame.left]}px`);
+          card.style.setProperty('--fr-r-mobile', `${mobile[frame.right]}px`);
+          card.style.setProperty('--fr-b-mobile', `${mobile[frame.bottom]}px`);
+          card.style.setProperty('--fr-l-mobile', `${mobile[frame.left]}px`);
+          card.style.setProperty('--fr-fb', frame.bottomReach.toFixed(3));
+          card.style.setProperty('--fr-fl', frame.leftReach.toFixed(3));
+        });
+      }
+    connected: |
+      (self) => {
+        self.deal();
+        self._observer?.disconnect();
+        const observer = new MutationObserver(() => self.deal());
+        observer.observe(self, { childList: true, subtree: true, attributes: true,
+          attributeFilter: ['data-space-subject'] });
+        self._observer = observer;
+      }
+    disconnected: |
+      (self) => self._observer?.disconnect()
+
+# Owns one New Space opener and its dialog. Capture owns dispatch so each
+# submission can subscribe to its exact command receipt before it is sent.
+element!: &space-create
+  description: Opens and validates a named space creation dialog.
+  method:
+    open: |
+      (self) => {
+        const form = self.querySelector('form[data-space-create-form]');
+        const error = self.querySelector('[data-space-create-error]');
+        if (self.hasAttribute('busy')) {
+          self.querySelector('[data-space-create-dialog]')?.show?.();
+          return;
+        }
+        form?.reset();
+        if (error) error.textContent = '';
+        self.removeAttribute('busy');
+        for (const control of self.querySelectorAll('[data-space-create-submit]')) {
+          control.disabled = false;
+        }
+        self.querySelector('[data-space-create-dialog]')?.show?.();
+        requestAnimationFrame(() => form?.elements?.name?.focus());
+      }
+    validate: |
+      (self, event) => {
+        const form = event.target;
+        if (!form?.matches?.('form[data-space-create-form]')) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        const name = form.elements.name;
+        const description = form.elements.description;
+        const error = self.querySelector('[data-space-create-error]');
+        name.value = name.value.trim();
+        description.value = description.value.trim();
+        if (!name.value) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          if (error) error.textContent = 'Enter a name for this space.';
+          name.focus();
+          return;
+        }
+        if (self.hasAttribute('busy')) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          return;
+        }
+        if (error) error.textContent = '';
+        self.setAttribute('busy', '');
+        for (const control of self.querySelectorAll('[data-space-create-submit]')) {
+          control.disabled = true;
+        }
+        self.create(form);
+      }
+    create: |
+      async (self, form) => {
+        let reader;
+        const error = self.querySelector('[data-space-create-error]');
+        const parameters = { name: form.elements.name.value,
+          description: form.elements.description.value, open: form.elements.open.value };
+        try {
+          await window.tonk.ready;
+          if (!self.isConnected) return;
+          const id = 'urn:uuid:' + Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(16).padStart(8, '0')).join('');
+          reader = window.tonk.subscribe({
+            predicate: { with: {
+              status: { the: 'xyz.tonk.space-creation/status', as: 'Text', cardinality: 'one' },
+              detail: { the: 'xyz.tonk.space-creation/detail', as: 'Text', cardinality: 'one' },
+            } },
+            terms: { this: id, status: { '?': { name: 'status' } }, detail: { '?': { name: 'detail' } } },
+          }).getReader();
+          self.__reader = reader;
+          await window.tonk.transact({ claims: [{ op: 'assert', application: {
+            predicate: { kind: 'transient', concept: { with: {
+              name: { the: 'xyz.tonk.command.create-space/name', as: 'Text' },
+              open: { the: 'xyz.tonk.command.create-space/open', as: 'Text' },
+              description: { the: 'xyz.tonk.command.create-space/description', as: 'Text' },
+            } } },
+            parameters: { this: id, ...parameters },
+          } }] });
+          while (self.isConnected) {
+            const { value, done } = await reader.read();
+            if (done) throw new Error('Creation status stream ended');
+            const result = value.find(row => row.this === id)?.fields;
+            if (result?.status === 'failed') {
+              if (error) error.textContent = result.detail;
+              return;
+            }
+            if (result?.status === 'created') {
+              self.querySelector('[data-space-create-dialog]')?.close?.();
+              window.tonk.navigate(result.detail);
+              return;
+            }
+          }
+        } catch (failure) {
+          if (error) error.textContent = "Couldn't confirm creation. Check your spaces before trying again.";
+        } finally {
+          if (reader) await reader.cancel().catch(() => {});
+          if (self.__reader === reader) self.__reader = null;
+          self.removeAttribute('busy');
+          for (const control of self.querySelectorAll('[data-space-create-submit]')) control.disabled = false;
+        }
+      }
+    disconnected: |
+      (self) => {
+        self.__reader?.cancel().catch(() => {});
+        self.__reader = null;
+      }
+    connected: |
+      (self) => {
+        if (self.__wired) return;
+        self.__wired = true;
+        self.addEventListener('submit', event => self.validate(event), true);
+        self.addEventListener('click', event => {
+          if (event.target?.closest?.('[data-space-create-open]')) self.open();
+        });
+      }
+    released: |
+      (self) => self.disconnected()
 
 # The hub bar's tab and ceremony behaviour, as branch data.
 #
@@ -1588,11 +2215,15 @@ element!: &hub-bar
         if (typeof path !== 'string' || !path) return;
         if (self.getAttribute('path') !== path) self.setAttribute('path', path);
         const account = path === '/account' || path === '/settings' || path.startsWith('/settings/');
-        for (const [selector, current] of [['[data-account-trigger]', account], ['[data-return-spaces]', !account]]) {
-          const cell = self.querySelector(selector);
-          if (!cell) continue;
-          if (current) cell.setAttribute('aria-current', 'page');
-          else cell.removeAttribute('aria-current');
+        const page = self.closest('.hub-page') ?? self;
+        for (const [selector, current] of [
+          ['[data-account-trigger], [data-account-nav]', account],
+          ['[data-return-spaces]', !account],
+        ]) {
+          for (const cell of page.querySelectorAll(selector)) {
+            if (current) cell.setAttribute('aria-current', 'page');
+            else cell.removeAttribute('aria-current');
+          }
         }
       }
     connected: |
@@ -1639,10 +2270,23 @@ view!:
         <!-- The hub chrome's CSS is the `space` view's own `style: ui`,
              which also says which of the two sections below shows. -->
         <tab-title text="Tonk"></tab-title>
-        <div class="hub-logo" role="img" aria-label="tonk"><svg viewBox="0 0 1024 343" width="132" height="44" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M337.41 169.57C337.41 136.215 363.983 109.171 396.764 109.171C429.539 109.171 456.112 136.215 456.112 169.57C456.112 202.932 429.539 229.975 396.764 229.975C363.983 229.975 337.41 202.932 337.41 169.57ZM643.51 54C614.396 54 589.91 61.6682 572.703 77.2353C563.913 85.1861 557.227 94.8795 552.759 105.986C552.206 97.3086 549.67 85.1977 540.937 75.1754C530.712 63.4453 515.039 55.8233 494.461 56.2041C488.76 56.3253 484.229 61.045 484.345 66.7514C484.46 72.3886 489.06 76.8833 494.668 76.8833C494.737 76.8833 494.812 76.8833 494.881 76.8833C509.044 76.6006 519.252 81.8339 525.282 88.6654C534.084 98.6415 532.072 113.834 532.02 114.197C531.167 119.817 535.012 125.079 540.626 125.962C541.168 126.048 545.537 126.602 547.612 124.565C546.673 130.203 546.171 136.076 546.171 142.192C546.171 183.349 531.225 224.038 507.39 247.764C488.403 266.66 465.219 275.805 434.911 279.382C479.549 263.671 511.569 221.038 511.569 170.874C511.569 107.365 460.262 55.8868 396.966 55.8868C333.675 55.8868 282.368 107.365 282.368 170.874C282.368 234.383 333.675 285.868 396.966 285.868C399.121 285.868 401.254 285.793 403.375 285.677C451.126 285.1 484.569 276.722 510.508 250.902C535.196 226.328 550.592 184.555 550.592 142.192C550.592 90.1771 586.197 57.8658 643.51 57.8658C737.703 57.8658 741.576 107.169 741.657 113.96C731.477 116.378 708.795 127.093 708.795 147.247V284.702H742.314C745.744 284.702 746.107 282.556 746.107 281.333V114.209C746.107 107.983 743.208 54 643.51 54Z" fill="currentColor"/><path d="M144.171 58.5683L129.662 58.5856C106.081 58.6318 91.4574 69.3695 83.3356 77.9031C72.9486 88.8081 67 103.873 67 119.221C67 148.151 86.5636 179.285 133.299 179.285V155.658C100.513 155.658 90.6043 136.029 90.6043 119.221C90.6043 104.029 99.7116 81.7516 130.135 81.7516L144.171 81.7458V261.448C131.691 261.448 124.786 248.968 124.786 238.08L104.974 238.092C104.974 267.316 130.095 284.383 143.98 284.706H170.432C195.829 284.706 215.053 259.717 215.053 196.924V107.306H225.924V155.658H274.164V58.5683H144.171Z" fill="currentColor"/><path d="M926.713 197.694L895.344 197.463C903.656 193.101 910.337 187.937 915.461 183.073C941.844 158.049 955.222 116.16 955.222 58.5828H938.99C938.99 111.527 927.318 149.447 904.302 171.286C893.817 181.227 875.475 192.721 847.444 191.544V58.5828H776.988V211.663C776.988 244.701 754.468 249.9 754.468 249.9C754.474 249.9 754.468 284.715 754.468 284.715H847.444V216.815C847.444 211.703 856.764 211.721 856.764 216.815C856.764 225.54 856.741 239.803 856.741 248.977C856.741 275.98 879.85 289.735 907.633 289.735C932.039 289.735 955.43 274.601 956.098 248.977C956.536 232.186 960.612 197.694 926.713 197.694Z" fill="currentColor"/></svg></div>
-        <main class="hubcol">
+        <header class="hub-header">
+        <a class="hub-logo" href="/" aria-label="Tonk home"><svg viewBox="0 0 1024 343" width="132" height="44" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M337.41 169.57C337.41 136.215 363.983 109.171 396.764 109.171C429.539 109.171 456.112 136.215 456.112 169.57C456.112 202.932 429.539 229.975 396.764 229.975C363.983 229.975 337.41 202.932 337.41 169.57ZM643.51 54C614.396 54 589.91 61.6682 572.703 77.2353C563.913 85.1861 557.227 94.8795 552.759 105.986C552.206 97.3086 549.67 85.1977 540.937 75.1754C530.712 63.4453 515.039 55.8233 494.461 56.2041C488.76 56.3253 484.229 61.045 484.345 66.7514C484.46 72.3886 489.06 76.8833 494.668 76.8833C494.737 76.8833 494.812 76.8833 494.881 76.8833C509.044 76.6006 519.252 81.8339 525.282 88.6654C534.084 98.6415 532.072 113.834 532.02 114.197C531.167 119.817 535.012 125.079 540.626 125.962C541.168 126.048 545.537 126.602 547.612 124.565C546.673 130.203 546.171 136.076 546.171 142.192C546.171 183.349 531.225 224.038 507.39 247.764C488.403 266.66 465.219 275.805 434.911 279.382C479.549 263.671 511.569 221.038 511.569 170.874C511.569 107.365 460.262 55.8868 396.966 55.8868C333.675 55.8868 282.368 107.365 282.368 170.874C282.368 234.383 333.675 285.868 396.966 285.868C399.121 285.868 401.254 285.793 403.375 285.677C451.126 285.1 484.569 276.722 510.508 250.902C535.196 226.328 550.592 184.555 550.592 142.192C550.592 90.1771 586.197 57.8658 643.51 57.8658C737.703 57.8658 741.576 107.169 741.657 113.96C731.477 116.378 708.795 127.093 708.795 147.247V284.702H742.314C745.744 284.702 746.107 282.556 746.107 281.333V114.209C746.107 107.983 743.208 54 643.51 54Z" fill="currentColor"/><path d="M144.171 58.5683L129.662 58.5856C106.081 58.6318 91.4574 69.3695 83.3356 77.9031C72.9486 88.8081 67 103.873 67 119.221C67 148.151 86.5636 179.285 133.299 179.285V155.658C100.513 155.658 90.6043 136.029 90.6043 119.221C90.6043 104.029 99.7116 81.7516 130.135 81.7516L144.171 81.7458V261.448C131.691 261.448 124.786 248.968 124.786 238.08L104.974 238.092C104.974 267.316 130.095 284.383 143.98 284.706H170.432C195.829 284.706 215.053 259.717 215.053 196.924V107.306H225.924V155.658H274.164V58.5683H144.171Z" fill="currentColor"/><path d="M926.713 197.694L895.344 197.463C903.656 193.101 910.337 187.937 915.461 183.073C941.844 158.049 955.222 116.16 955.222 58.5828H938.99C938.99 111.527 927.318 149.447 904.302 171.286C893.817 181.227 875.475 192.721 847.444 191.544V58.5828H776.988V211.663C776.988 244.701 754.468 249.9 754.468 249.9C754.474 249.9 754.468 284.715 754.468 284.715H847.444V216.815C847.444 211.703 856.764 211.721 856.764 216.815C856.764 225.54 856.741 239.803 856.741 248.977C856.741 275.98 879.85 289.735 907.633 289.735C932.039 289.735 955.43 274.601 956.098 248.977C956.536 232.186 960.612 197.694 926.713 197.694Z" fill="currentColor"/></svg></a>
         <hub-bar class="hub-bar">
           <nav class="hubbar chrome" aria-label="hub">
+            <space-create class="header-new">
+              <button class="snew chrome" type="button" data-new-space data-space-create-open>new space<span class="g" aria-hidden="true">+</span></button>
+              <tonk-dialog appearance="hub" data-space-create-dialog heading="New space">
+                <form id="create-space-header" class="space-create-form" data-space-create-form>
+                  <label class="space-create-field"><span>space name</span><input name="name" type="text" required maxlength="100" autocomplete="off"></label>
+                  <label class="space-create-field"><span>a short description <small>/ optional</small></span><textarea name="description" maxlength="240"></textarea></label>
+                  <input type="hidden" name="open" value="true">
+                  <p class="space-create-error" data-space-create-error role="alert"></p>
+                </form>
+                <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
+                <button class="m-go" slot="actions" type="submit" form="create-space-header" data-space-create-submit>create space</button>
+              </tonk-dialog>
+            </space-create>
             <!-- Two links: the account's page and home. The host pushes
                  the path and this page re-routes in place, and the cell
                  for where the page is reads as current. -->
@@ -1651,13 +2295,16 @@ view!:
                  branch. The link row says whether THIS DEVICE holds the
                  account here; the name renders through it. Directory
                  mode (no `entity=`), where an absent row is `empty`. -->
-            <a class="hcell hc-acct account-trigger" href="/account" data-account-trigger>
+            <a class="hcell hc-acct account-trigger" href="/settings" data-account-trigger>
               <span data-account-label><tonk-display model="state:account-link" view="label" data-account-link
                 ><span slot="empty">add an account</span></tonk-display></span>
             </a>
             <a class="hcell hc-view" href="/" data-return-spaces aria-current="page">spaces</a>
           </nav>
         </hub-bar>
+        </header>
+        <main class="hubcol">
+        <h1 class="visually-hidden">Spaces</h1>
           <!-- One page for `/` and `/settings`: the stack and the panel
                are both here, and the bar's `path` picks the one that
                shows. The view reads nothing off the site, so a navigation
@@ -1666,57 +2313,22 @@ view!:
                its hover and its focus across the move. -->
           <tonk-display model="space"></tonk-display>
         <section class="settings chrome" data-settings-view>
+            <a class="settings-back" href="/" data-return-spaces>‹ back to spaces</a>
+            <h1 class="settings-title">account settings</h1>
             <account-settings>
               <div class="s-body">
-                <!-- /account: the account's choices. Settings is a link to its
-                     page; the other accounts on this browser switch;
-                     `data-add-profile` rotates onto a fresh branch and the worker
-                     reloads this tab onto it, where the page, having no account,
-                     raises the ceremony itself. A browser with no account here
-                     is shown the sign-in cluster and nothing to list. -->
-                <div class="pane" data-pane="menu" hidden>
-                  <div class="account-menu__profiles-seat" data-account-menu>
-                    <a class="account-menu__row" href="/settings" data-open-settings data-when-linked>
-                      settings
-                      <svg class="settings-icon" viewBox="0 0 9 9" aria-hidden="true">
-                        <g stroke="currentColor" stroke-width="1.2">
-                          <line x1="0" y1="2.5" x2="9" y2="2.5"></line>
-                          <line x1="0" y1="6.5" x2="9" y2="6.5"></line>
-                        </g>
-                        <rect x="5" y="1" width="3" height="3" fill="currentColor"></rect>
-                        <rect x="1" y="5" width="3" height="3" fill="currentColor"></rect>
-                      </svg>
-                    </a>
-                    <span data-when-linked><tonk-display model="tonk:profile/row"></tonk-display></span>
-                    <button class="account-menu__row account-menu__row--ink" type="button"
-                      data-add-profile on:add-profile=tonk:add-profile data-when-linked>
-                      add account<span class="g" aria-hidden="true">+</span>
-                    </button>
-                  </div>
-                </div>
                 <div class="pane" data-pane="account">
-                  <tonk-display model="tonk:account/registered" view="settings"></tonk-display>
-                  <div class="srowd">
-                    <span>another passkey for this account</span>
-                    <button class="cta" type="button" data-add-passkey data-account="tonk:add-passkey"
-                      on:add-passkey=tonk:add-passkey>add a passkey with the current one</button>
-                  </div>
-                  <section data-agent-connections hidden aria-label="agent access">
-                    <div class="srowd"><span>agent access</span><button class="cta" type="button" data-connections-refresh>refresh</button></div>
-                    <p class="expl">each invite grants access to one space. anyone holding a copy can use it. a confirmation records completed setup, not a currently connected process.</p>
-                    <p class="expl">revoking an invite affects all its holders and delegated access. enforcement can take time to reach the service; already downloaded data stays with its holders.</p>
-                    <p class="expl" data-connections-status role="status" aria-live="polite"></p>
-                    <div data-connections-list></div>
-                  </section>
-                  <div class="sect">sign out</div>
-                  <div class="srowd">
-                    <span>disconnect this account; keep local spaces on this device</span>
-                    <button class="cta" type="button" data-sign-out-open>sign out on this device</button>
-                  </div>
-                  <div class="sect">delete data</div>
-                  <div class="srowd">
-                    <span>delete all data associated with this account</span>
-                    <button class="cta" type="button" data-delete-account-open>delete account (permanent)</button>
+                  <div class="account-panels">
+                    <tonk-display model="tonk:account/registered" view="settings"></tonk-display>
+                    <section class="settings-panel signout-panel">
+                      <h2>Sign out</h2>
+                      <p>Disconnect this account. Keep local spaces on this device.</p>
+                      <button class="cta panel-action" type="button" data-sign-out-open>sign out on this device <span aria-hidden="true">↗</span></button>
+                    </section>
+                    <section class="settings-panel danger-panel">
+                      <div><h2>Delete account</h2><p>Permanently delete all data associated with this account.</p></div>
+                      <button class="cta panel-action" type="button" data-delete-account-open>delete account (permanent)</button>
+                    </section>
                   </div>
                 </div>
                 <div class="pane" data-pane="link" hidden data-link-approval>
@@ -1763,6 +2375,24 @@ view!:
             </account-settings>
           </section>
         </main>
+        <tonk-display model="tonk:account/status" view="notice"></tonk-display>
+        <nav class="mobile-nav" aria-label="main navigation">
+          <a href="/" data-return-spaces><span class="nav-mark nav-square" aria-hidden="true"></span>spaces</a>
+          <space-create>
+            <button class="mobile-create" type="button" data-new-space data-space-create-open><span class="nav-mark" aria-hidden="true">+</span>new space</button>
+            <tonk-dialog appearance="hub" data-space-create-dialog heading="New space">
+              <form id="create-space-mobile" class="space-create-form" data-space-create-form>
+                <label class="space-create-field"><span>space name</span><input name="name" type="text" required maxlength="100" autocomplete="off"></label>
+                <label class="space-create-field"><span>a short description <small>/ optional</small></span><textarea name="description" maxlength="240"></textarea></label>
+                <input type="hidden" name="open" value="true">
+                <p class="space-create-error" data-space-create-error role="alert"></p>
+              </form>
+              <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
+              <button class="m-go" slot="actions" type="submit" form="create-space-mobile" data-space-create-submit>create space</button>
+            </tonk-dialog>
+          </space-create>
+          <a href="/settings" data-account-nav><span class="nav-mark nav-person" aria-hidden="true"></span>account</a>
+        </nav>
       </div>
 # The /settings route is the hub with its settings section showing: the
 # same view as `/`, so moving between them is a path change the view
@@ -2483,6 +3113,15 @@ concept!: &account/status
       the: xyz.tonk.account/status
       cardinality: one
       as: entity
+
+view!:
+  this: tonk:account/status
+  show:
+    notice: |
+      <aside class="account-email-notice" data-account-status={status} aria-label="account activation">
+        <span>Check your email to finish setting up this account.</span>
+        <button type="button" on:resend-activation=account/resend-activation>resend activation email</button>
+      </aside>
 
 # An onboarding account that has not been handed over is interim.
 # ---------------------------------------------------------------
@@ -3258,95 +3897,74 @@ element!: &space-login
         });
       }
 
-# Creation outlives the accepted transact request. Follow the command's own
-# result so feedback remains visible through seeding and failures allow retry.
-element!: &space-create
-  description: Creates a space with immediate feedback and a per-request result.
+element!: &space-actions
+  description: Controls a space card menu and its rename dialog.
   method:
-    status: |
-      (self, text, announceOnly = false) => {
-        const status = self.querySelector('[data-create-status]');
-        if (status) {
-          status.toggleAttribute('data-announce-only', announceOnly);
-          status.textContent = text;
-          status.hidden = !text;
+    close: |
+      (self, restoreFocus) => self.querySelector('hub-menu')?.close?.(restoreFocus)
+    validate: |
+      (self, event) => {
+        const form = event.target;
+        if (!form?.matches?.('form[data-space-rename-form]')) return;
+        const input = form.elements.name;
+        const error = self.querySelector('[data-space-rename-error]');
+        input.value = input.value.trim();
+        if (!input.value) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          if (error) error.textContent = 'Enter a name for this space.';
+          input.focus();
+          return;
         }
-      }
-    busy: |
-      (self, busy) => {
-        self.__busy = busy;
-        self.querySelector('form')?.setAttribute('aria-busy', String(busy));
-        const button = self.querySelector('button[type="submit"]');
-        if (button) button.disabled = busy;
-        const label = self.querySelector('[data-create-label]');
-        if (label) label.textContent = busy ? 'creating space…' : 'create new space';
-      }
-    create: |
-      async (self) => {
-        if (self.__busy) return;
-        self.busy(true);
-        self.status('Creating your space…', true);
-        let reader;
-        try {
-          await window.tonk.ready;
-          const id = 'urn:uuid:' + Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(16).padStart(8, '0')).join('');
-          reader = window.tonk.subscribe({
-            predicate: { with: {
-              status: { the: 'xyz.tonk.space-creation/status', as: 'Text', cardinality: 'one' },
-              detail: { the: 'xyz.tonk.space-creation/detail', as: 'Text', cardinality: 'one' },
-            } },
-            terms: { this: id, status: { '?': { name: 'status' } }, detail: { '?': { name: 'detail' } } },
-          }).getReader();
-          self.__reader = reader;
-          await window.tonk.transact({ claims: [{ op: 'assert', application: {
-            predicate: { kind: 'transient', concept: { with: {
-              name: { the: 'xyz.tonk.command.create-space/name', as: 'Text' },
-              open: { the: 'xyz.tonk.command.create-space/open', as: 'Text' },
-            } } },
-            parameters: { this: id, name: 'Untitled', open: 'true' },
-          } }] });
-          while (self.isConnected) {
-            const { value, done } = await reader.read();
-            if (done) throw new Error('Creation status stream ended');
-            const result = value.find(row => row.this === id)?.fields;
-            if (result?.status === 'failed') {
-              self.status(result.detail);
-              self.busy(false);
-              return;
-            }
-            if (result?.status === 'created') {
-              self.status('Opening your space…', true);
-              window.tonk.navigate(result.detail);
-              return;
-            }
-          }
-        } catch (error) {
-          if (self.isConnected) {
-            console.warn('Space creation:', error);
-            self.status("Couldn't confirm creation. Check your spaces before trying again.");
-            self.busy(false);
-          }
-        } finally {
-          if (reader) await reader.cancel().catch(() => {});
-          if (self.__reader === reader) self.__reader = null;
+        if (self.hasAttribute('busy')) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          return;
         }
+        if (error) error.textContent = '';
+        self.setAttribute('busy', '');
+        const submit = self.querySelector('[data-space-rename-submit]');
+        if (submit) submit.disabled = true;
       }
     connected: |
       (self) => {
         if (self.__wired) return;
         self.__wired = true;
-        self.busy(false);
-        self.addEventListener('submit', event => {
-          event.preventDefault();
-          event.stopPropagation();
-          self.create();
+        self.addEventListener('submit', event => self.validate(event), true);
+        self.addEventListener('click', event => {
+          const opener = event.target?.closest?.('[data-space-actions-open]');
+          if (opener) {
+            const menu = self.querySelector('hub-menu');
+            if (menu?.getAttribute('open') === 'true') menu.close(true);
+            else menu?.open?.();
+            return;
+          }
+          if (event.target?.closest?.('[data-space-rename-open]')) {
+            self.close(false);
+            self.removeAttribute('busy');
+            const submit = self.querySelector('[data-space-rename-submit]');
+            if (submit) submit.disabled = false;
+            const error = self.querySelector('[data-space-rename-error]');
+            if (error) error.textContent = '';
+            self.querySelector('[data-space-rename-dialog]')?.show?.();
+            requestAnimationFrame(() => {
+              const input = self.querySelector('[data-space-rename-input]');
+              input?.focus(); input?.select?.();
+            });
+            return;
+          }
+          if (event.target?.closest?.('[role=menuitem]')
+              && !event.target?.closest?.('[data-space-remove-open]')) self.close(false);
         });
+        self._outside = event => {
+          if (!self.contains(event.target)) self.close(false);
+        };
+        document.addEventListener('pointerdown', self._outside, true);
       }
     disconnected: |
-      (self) => {
-        self.__reader?.cancel().catch(() => {});
-        self.__reader = null;
-      }
+      (self) => document.removeEventListener('pointerdown', self._outside, true)
+    released: |
+      (self) => self.disconnected()
 
 # Names and routes delete or leave for one Hub row. Which verb it is
 # comes off the row's own attributes: no provider means the space is
@@ -3646,6 +4264,8 @@ element!: &account-settings
     connections-refresh: |
       (self) => {
         const generation = String((Number(self.getAttribute('data-connections-generation')) || 0) + 1);
+        if (!self.linked() || self.context().path !== '/settings' ||
+            !self.querySelector('[data-connections-list]')) return;
         self.setAttribute('data-connections-generation', generation);
         const current = () => self.isConnected && self.getAttribute('data-connections-generation') === generation;
         const list = self.querySelector('[data-connections-list]');
@@ -3868,10 +4488,6 @@ element!: &account-settings
         if (self.localLinkShow()) return;
         const request = self.linkRequest();
         if (!request) {
-          if (self.context().path === '/account') {
-            self.pane('menu');
-            return;
-          }
           self.pane('account');
           if (self.context().hash === '#delete-account') self.openDelete();
           self.connectionsRefresh();
@@ -3944,6 +4560,112 @@ element!: &account-settings
           if (armed) submit.removeAttribute('disabled'); else submit.setAttribute('disabled', '');
         }
       }
+    profiles: |
+      (self) => {
+        for (const button of self.querySelectorAll('[data-settings-profile]')) {
+          const active = button.dataset.active === 'true';
+          if (button.disabled !== active) button.disabled = active;
+          const state = button.querySelector('[data-switch-state]');
+          const label = active ? 'current' : 'switch';
+          if (state && state.textContent !== label) state.textContent = label;
+        }
+      }
+    passkey-dates: |
+      (self) => {
+        for (const date of self.querySelectorAll('[data-settings-passkey-created]')) {
+          const seconds = Number(date.textContent.trim());
+          if (!Number.isFinite(seconds) || seconds <= 0) continue;
+          const created = new Date(seconds * 1000);
+          if (Number.isNaN(created.getTime())) continue;
+          date.textContent = new Intl.DateTimeFormat(undefined, {
+            month: 'short', day: 'numeric', year: 'numeric'
+          }).format(created);
+        }
+      }
+    profile-name-submit: |
+      (self, event) => {
+        const form = event.target.closest?.('[data-profile-rename-form]');
+        if (!form) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        const input = form.elements?.name;
+        const submit = form.querySelector('[data-profile-rename-submit]');
+        const error = form.querySelector('[data-profile-rename-error]');
+        if (form.getAttribute('aria-busy') === 'true') {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          return;
+        }
+        const name = (input?.value ?? '').trim();
+        if (!name) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          if (input) {
+            input.setAttribute('aria-invalid', 'true');
+            input.focus();
+          }
+          if (error) {
+            error.textContent = 'Enter a display name.';
+            error.hidden = false;
+          }
+          return;
+        }
+        input.value = name;
+        input.removeAttribute('aria-invalid');
+        if (error) { error.textContent = ''; error.hidden = true; }
+        if (name === input.defaultValue.trim()) return;
+        form.setAttribute('aria-busy', 'true');
+        if (submit) submit.disabled = true;
+        self.profileNameSave(form, name);
+      }
+    profile-name-save: |
+      async (self, form, name) => {
+        let reader;
+        const error = form.querySelector('[data-profile-rename-error]');
+        try {
+          await window.tonk.ready;
+          if (!self.isConnected) return;
+          const id = 'urn:uuid:' + Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(16).padStart(8, '0')).join('');
+          reader = window.tonk.subscribe({
+            predicate: { with: {
+              status: { the: 'xyz.tonk.profile-rename/status', as: 'Text', cardinality: 'one' },
+              detail: { the: 'xyz.tonk.profile-rename/detail', as: 'Text', cardinality: 'one' },
+            } },
+            terms: { this: id, status: { '?': { name: 'status' } }, detail: { '?': { name: 'detail' } } },
+          }).getReader();
+          self._nameReader = reader;
+          await window.tonk.transact({ claims: [{ op: 'assert', application: {
+            predicate: { kind: 'transient', concept: { with: {
+              name: { the: 'xyz.tonk.command.profile-rename/name', as: 'Text' },
+            } } },
+            parameters: { this: id, name },
+          } }] });
+          while (self.isConnected) {
+            const { value, done } = await reader.read();
+            if (done) throw new Error('Rename status stream ended');
+            const result = value.find(row => row.this === id)?.fields;
+            if (result?.status === 'failed') {
+              if (error) { error.textContent = result.detail; error.hidden = false; }
+              return;
+            }
+            if (result?.status === 'renamed') {
+              form.elements.name.defaultValue = name;
+              return;
+            }
+          }
+        } catch (failure) {
+          if (error) {
+            error.textContent = "Couldn't confirm your display name was saved. Try again.";
+            error.hidden = false;
+          }
+        } finally {
+          if (reader) await reader.cancel().catch(() => {});
+          if (self._nameReader === reader) self._nameReader = null;
+          form.removeAttribute('aria-busy');
+          const submit = form.querySelector('[data-profile-rename-submit]');
+          if (submit) submit.disabled = false;
+        }
+      }
     # Word the ceremony row. Every write is guarded, because this runs
     # from an observer over the same subtree it writes into.
     describe: |
@@ -4014,28 +4736,33 @@ element!: &account-settings
       }
     unlink: |
       (self) => { self._shown = null; self.setAttribute('data-linking', 'false'); }
-    # Ask the top page to place the ceremony under the bar. `reason`
-    # distinguishes an opening from a move: a move must never open a
-    # cluster the person has just dismissed, and only a move needs a
-    # seat; an opening reaches the top page even before the bar has a
-    # rectangle, and an unseated ceremony opens where the top page puts it.
+    # Pass the opener's bounds to the trusted top page. `reason`
+    # distinguishes an opening from a move: a move must never reopen a
+    # ceremony the person has just dismissed.
     place: |
       (self, reason) => {
-        const box = document.querySelector('.hubbar')?.getBoundingClientRect();
+        const target = matchMedia('(max-width: 600px)').matches
+          ? document.querySelector('[data-account-nav]')
+          : document.querySelector('.hubbar');
+        const box = target?.getBoundingClientRect();
         const anchor = box && box.width > 0 && box.height > 0 ? { left: box.left, bottom: box.bottom, width: box.width } : null;
         if (!anchor && reason === 'reseat') return;
         window.tonk?.register?.(JSON.stringify(anchor ? { reason, space: '', anchor } : { reason, space: '' }));
       }
     # The link state the account page's rows are keyed on, and the door:
     # the account page or the settings page with no account raises the
-    # ceremony itself once the link display has resolved empty. Signing
-    # up IS the cluster; with no account the account page lists nothing
-    # else. WebAuthn needs a `window` and a user gesture, which this
+    # ceremony itself once the link display has resolved empty. With no
+    # account the spaces collection stays behind the modal. WebAuthn needs
+    # a `window` and a user gesture, which this
     # opaque realm has neither of, so the top page raises it.
     door: |
       (self) => {
         const linked = self.linked() ? 'true' : self.unlinked() ? 'false' : '';
-        if (self.getAttribute('data-linked') !== linked) self.setAttribute('data-linked', linked);
+        const changed = self.getAttribute('data-linked') !== linked;
+        if (changed) self.setAttribute('data-linked', linked);
+        const trigger = document.querySelector('[data-account-trigger]');
+        const destination = linked === 'true' ? '/settings' : '/account';
+        if (trigger && trigger.getAttribute('href') !== destination) trigger.setAttribute('href', destination);
         const path = self.context().path;
         // Settings with no account here are the account page's business:
         // it is where signing up happens, so a bare settings path goes
@@ -4047,15 +4774,20 @@ element!: &account-settings
         }
         const account = path === '/account' || path.startsWith('/settings/');
         const linking = self.getAttribute('data-linking') === 'true';
+        if (linked === 'true' && path === '/account' && !linking) {
+          window.tonk?.navigate?.('/settings');
+          return;
+        }
+        if (changed && linked === 'true' && path === '/settings') self.connectionsRefresh();
         if (account && self.unlinked() && !linking) self.link('needs-account');
-        // A tab switch hides the standing ceremony, and a return shows
-        // it again with everything typed intact: the cluster is the
-        // account page's content, not the spaces page's.
+        // Route changes can suspend and restore the ceremony with its
+        // typed address intact.
         const shown = account ? 'show' : 'suspend';
         if (linking && self._shown !== shown) { self._shown = shown; self.place(shown); }
       }
     connected: |
       (self) => {
+        self.addEventListener('submit', (event) => self.profileNameSubmit(event), true);
         self.addEventListener('click', (event) => {
           const hit = (selector) => event.target.closest(selector);
           if (hit('[data-connections-refresh]')) {
@@ -4090,8 +4822,8 @@ element!: &account-settings
         });
         // The rows this words and counts arrive after connect and change
         // while the panel is up; one observer covers all three.
-        const rows = new MutationObserver(() => { self.describe(); self.scope(); self.arm(); });
-        rows.observe(self, { childList: true, subtree: true, attributes: true,
+        const rows = new MutationObserver(() => { self.describe(); self.scope(); self.arm(); self.profiles(); self.passkeyDates(); });
+        rows.observe(self, { childList: true, characterData: true, subtree: true, attributes: true,
           attributeFilter: ['data-ceremony', 'data-ceremony-state', 'data-ceremony-detail', 'data-email'] });
         const opened = () => {
           if (self.hasAttribute('data-passkey-screen')) return;
@@ -4140,9 +4872,13 @@ element!: &account-settings
         window.addEventListener('scroll', moveSeat, true);
         self._moveSeat = moveSeat;
         self.describe();
+        self.profiles();
+        self.passkeyDates();
       }
     disconnected: |
       (self) => {
+        self._nameReader?.cancel().catch(() => {});
+        self._nameReader = null;
         if (self._moved) window.removeEventListener('tonk:context', self._moved);
         self._resolved?.disconnect();
         if (self._torn) window.removeEventListener('tonk:registration-closed', self._torn);

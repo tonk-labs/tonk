@@ -212,6 +212,25 @@ impl SpaceName {
     }
 }
 
+/// The account-directory mirror of a space's optional short description.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SpaceDescription {
+    /// The repository's own entity — the directory entity.
+    pub this: Entity,
+    /// The mirrored description.
+    pub description: crate::domain::space::Description,
+}
+
+impl SpaceDescription {
+    /// A description mirror for `subject`.
+    pub fn new(subject: &Did, description: impl Into<String>) -> Self {
+        Self {
+            this: subject.this(),
+            description: crate::domain::space::Description(description.into()),
+        }
+    }
+}
+
 /// The account currently providing this space with the access
 /// service, on the directory entity.
 ///

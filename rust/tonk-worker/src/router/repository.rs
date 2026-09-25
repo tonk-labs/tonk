@@ -35,7 +35,8 @@ use tonk_common::log;
 use tonk_schema::prelude::DidExt as _;
 use tonk_schema::{
     Branch as MetaBranch, Invitation, InvitedVia, MemberName, MemberRole, Membership, Remote,
-    RemoteExecution, Replica, RepositoryName, SeedKind, SpaceStatus, TrackingBranch,
+    RemoteExecution, Replica, RepositoryName, SeedKind, SpaceDescription, SpaceStatus,
+    TrackingBranch,
 };
 use url::Url;
 use zeroize::Zeroizing;
@@ -307,6 +308,11 @@ const REMOTE_ATTR: &str = "xyz.tonk.command.create-space/remote";
 /// the migration, so both are read.
 const LEGACY_REMOTE_ATTR: &str = "dom.event.current-target.elements.remote/value";
 
+/// Optional short description carried by the new Hub create form. Kept out of
+/// the typed command shape so older profile libraries that declare only the
+/// required name continue to trigger the same provider.
+const DESCRIPTION_ATTR: &str = "xyz.tonk.command.create-space/description";
+
 /// Read the optional remote URL from a transient's facts, tolerating
 /// both `Value::String` and `Value::Entity`.
 ///
@@ -339,6 +345,20 @@ fn remote_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
         })
         .map(|url| url.trim().to_string())
         .filter(|url| !url.is_empty())
+}
+
+fn description_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
+    use dialog_artifacts::Value;
+
+    facts
+        .iter()
+        .find(|artifact| artifact.the.to_string() == DESCRIPTION_ATTR)
+        .and_then(|artifact| match &artifact.is {
+            Value::String(value) => Some(value.trim().to_owned()),
+            Value::Entity(value) => Some(value.to_string().trim().to_owned()),
+            _ => None,
+        })
+        .filter(|value| !value.is_empty())
 }
 
 /// The `space/create` transient's optional `open` flag.
@@ -529,6 +549,8 @@ pub(crate) struct CreateSpaceRequest {
     command: tonk_schema::command::CreateSpace,
     /// The optional sync URL, read from the raw facts.
     remote: Option<String>,
+    /// The optional description, read from the transient's raw facts.
+    description: Option<String>,
 }
 
 impl crate::reactor::Decode for CreateSpaceRequest {
@@ -553,6 +575,7 @@ impl crate::reactor::Decode for CreateSpaceRequest {
         Some(Self {
             command,
             remote: remote_from_facts(facts),
+            description: description_from_facts(facts),
         })
     }
 }
@@ -592,6 +615,7 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
     let receipt = request.command.this.clone();
     let name = request.command.name.0;
     let remote = request.remote;
+    let description = request.description;
     if !env.from_profile() {
         log!(
             "CreateSpace ignored: origin '{}' is not the profile branch — \
@@ -634,7 +658,7 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
     //    whether or not a remote was given (and never vanishes on
     //    a remote failure). The create mints a fresh identity and
     //    returns its routing key.
-    let key = match create_space_inner(env.state(), &name).await {
+    let key = match create_space_inner(env.state(), &name, description.as_deref()).await {
         Ok(key) => key,
         Err(error) => {
             log!("CreateSpace '{}' failed: {}", name, error);
@@ -741,6 +765,38 @@ async fn report_space_creation(
         .await
     {
         log!("CreateSpace: failed to publish result: {error}");
+    }
+}
+
+async fn report_profile_rename(
+    state: &AppState,
+    receipt: &dialog_artifacts::Entity,
+    status: &str,
+    detail: &str,
+) {
+    let tonk = state.read().await;
+    if let Err(error) = tonk
+        .reactor
+        .profile_repository()
+        .branch(&tonk.active_branch)
+        .overlay()
+        .assert(
+            dialog_query::the!("xyz.tonk.profile-rename/status")
+                .of(receipt.clone())
+                .is(status.to_owned())
+                .cardinality(dialog_query::Cardinality::One),
+        )
+        .assert(
+            dialog_query::the!("xyz.tonk.profile-rename/detail")
+                .of(receipt.clone())
+                .is(detail.to_owned())
+                .cardinality(dialog_query::Cardinality::One),
+        )
+        .write()
+        .perform(&tonk.operator)
+        .await
+    {
+        log!("ProfileRename: failed to publish result: {error}");
     }
 }
 
@@ -1549,7 +1605,7 @@ mod connection_invite_disabled_tests {
     #[dialog_common::test]
     async fn disabled_build_publishes_an_explicit_refusal_without_a_bearer() {
         let state = crate::router::command::tests::native::test_state().await;
-        let repo = create_space_inner(&state, "Disabled tool connection")
+        let repo = create_space_inner(&state, "Disabled tool connection", None)
             .await
             .unwrap();
         let env = crate::router::CommandEnv::new(
@@ -2409,9 +2465,14 @@ impl dialog_capability::Provider<tonk_schema::command::ProfileRename>
         let key = self.origin().repo.clone();
         log!("command ProfileRename repo={} name={}", key, name);
 
-        if let Err(error) = run_profile_rename(self, name).await {
-            log!("ProfileRename for repo '{}' failed: {}", key, error);
-        }
+        let (status, detail) = match run_profile_rename(self, name).await {
+            Ok(()) => ("renamed", "Display name saved."),
+            Err(error) => {
+                log!("ProfileRename for repo '{}' failed: {}", key, error);
+                ("failed", "Couldn't save your display name. Try again.")
+            }
+        };
+        report_profile_rename(self.state(), &command.this, status, detail).await;
     }
 }
 
@@ -3140,7 +3201,11 @@ async fn account_sync_remote(tonk: &TonkState) -> Option<String> {
 /// A sync remote is never wired here — it would make a remote/auth
 /// failure abort the whole create, so the space never appears.
 /// [`CreateSpaceHandler`] attaches the remote separately, after this.
-async fn create_space_inner(state: &AppState, name: &str) -> Result<String, RepositoryError> {
+async fn create_space_inner(
+    state: &AppState,
+    name: &str,
+    description: Option<&str>,
+) -> Result<String, RepositoryError> {
     // A local-only `main`-branch space (the same config the button asks
     // for); a remote is attached afterwards by the handler.
     let configuration =
@@ -3160,7 +3225,7 @@ async fn create_space_inner(state: &AppState, name: &str) -> Result<String, Repo
 
     // Seed + flip to initialized once the lock is released (seeding is
     // the slow part; holding the lock would stall the page).
-    seed_and_initialize(state, name, &key, &subject, &branches).await?;
+    seed_and_initialize(state, name, description, &key, &subject, &branches).await?;
     Ok(key)
 }
 
@@ -3359,7 +3424,8 @@ fn spawn_seed(
     branches: Vec<String>,
 ) {
     wasm_bindgen_futures::spawn_local(async move {
-        if let Err(e) = seed_and_initialize(&state, &display_name, &key, &subject, &branches).await
+        if let Err(e) =
+            seed_and_initialize(&state, &display_name, None, &key, &subject, &branches).await
         {
             log!("Background seed for '{}' failed: {}", key, e);
         }
@@ -3447,6 +3513,7 @@ async fn bail_if_space_removed(
 async fn seed_and_initialize(
     state: &AppState,
     display_name: &str,
+    description: Option<&str>,
     key: &str,
     subject: &Did,
     branches: &[String],
@@ -3476,7 +3543,7 @@ async fn seed_and_initialize(
                 RepositoryError::Internal(format!("fetch '{STANDARD_LIBRARY_URL}': {e}"))
             })?;
 
-        let name_body = repository_name_body(subject, display_name)?;
+        let name_body = repository_name_body(subject, display_name, description)?;
         let version = seed_version(&scaffold);
         let tonk = state.read().await;
         for branch_name in branches {
@@ -3512,13 +3579,13 @@ async fn seed_and_initialize(
         if bail_if_space_removed(&tonk, subject, key, "status stamp").await? {
             return Ok(());
         }
-        write_replica_status(&tonk, subject, Replica::initialized_status()).await?;
+        write_replica_status(&tonk, subject, Replica::initialized_status(), description).await?;
     } else {
         let tonk = state.read().await;
         if bail_if_space_removed(&tonk, subject, key, "status stamp").await? {
             return Ok(());
         }
-        write_replica_status(&tonk, subject, Replica::initialized_status()).await?;
+        write_replica_status(&tonk, subject, Replica::initialized_status(), description).await?;
     }
     log!("Repository '{}' initialized", key);
     Ok(())
@@ -4497,16 +4564,24 @@ pub(super) async fn seed_standard_library(
 pub(super) fn repository_name_body(
     subject: &Did,
     display_name: &str,
+    description: Option<&str>,
 ) -> Result<String, RepositoryError> {
     // `name` is a JSON string so any character in the user-typed label
     // (quotes, colons, newlines) is carried verbatim rather than
     // breaking the notation.
     let name = serde_json::to_string(display_name)
         .map_err(|e| RepositoryError::Internal(format!("encode repository name: {e}")))?;
-    Ok(format!(
+    let mut body = format!(
         "tonk/repository!:\n  this: {subject}\n  name: {name}\n",
         subject = subject.as_str(),
-    ))
+    );
+    if let Some(description) = description.map(str::trim).filter(|value| !value.is_empty()) {
+        let description = serde_json::to_string(description).map_err(|e| {
+            RepositoryError::Internal(format!("encode repository description: {e}"))
+        })?;
+        body.push_str(&format!("  description: {description}\n"));
+    }
+    Ok(body)
 }
 
 /// Build out a repository from a [`RepositoryConfiguration`].
@@ -5373,8 +5448,9 @@ pub(super) async fn set_replica_status(
     tonk: &TonkState,
     subject: &Did,
     status: tonk_schema::domain::replica::Status,
+    description: Option<&str>,
 ) -> Result<(), RepositoryError> {
-    write_replica_status(tonk, subject, status).await?;
+    write_replica_status(tonk, subject, status, description).await?;
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
     Ok(())
 }
@@ -5383,6 +5459,7 @@ async fn write_replica_status(
     tonk: &TonkState,
     subject: &Did,
     status: tonk_schema::domain::replica::Status,
+    description: Option<&str>,
 ) -> Result<(), RepositoryError> {
     let entity = Replica::new(tonk.profile.did(), subject.clone())
         .this()
@@ -5390,13 +5467,16 @@ async fn write_replica_status(
     let directory = tonk_schema::Space::new(subject, status.clone());
     let stamp = SpaceStatus::new(entity, status);
 
-    let revision = tonk
+    let branch = tonk
         .reactor
         .profile_repository()
         .branch(&tonk.active_branch)
-        .transaction()
-        .assert(stamp)
-        .assert(directory)
+        .transaction();
+    let mut transaction = branch.assert(stamp).assert(directory);
+    if let Some(description) = description.map(str::trim).filter(|value| !value.is_empty()) {
+        transaction = transaction.assert(SpaceDescription::new(subject, description));
+    }
+    let revision = transaction
         .commit()
         .perform(&tonk.operator)
         .await
@@ -7093,6 +7173,37 @@ mod space_creation_feedback_tests {
     }
 
     #[dialog_common::test]
+    async fn profile_rename_reports_completion_for_each_request_including_unchanged_names() {
+        let (app, state, _lsp) =
+            crate::router::api_router_with_state(super::profile_library_tests::test_state().await);
+        let branch = state.read().await.active_branch.clone();
+        for receipt in ["urn:uuid:rename-first", "urn:uuid:rename-unchanged"] {
+            post(
+                &app,
+                &format!("/api/profile/branch/{branch}/transact"),
+                serde_json::json!({
+                    "claims": [{ "op": "assert", "application": {
+                        "predicate": { "kind": "transient", "concept": { "with": {
+                            "name": { "the": "xyz.tonk.command.profile-rename/name", "as": "Text" }
+                        } } },
+                        "parameters": { "this": receipt, "name": "Ada" }
+                    } }]
+                }),
+            )
+            .await;
+            let rows = post(&app, &format!("/api/profile/branch/{branch}/query"), serde_json::json!({
+                "predicate": { "with": {
+                    "status": { "the": "xyz.tonk.profile-rename/status", "as": "Text", "cardinality": "one" },
+                    "detail": { "the": "xyz.tonk.profile-rename/detail", "as": "Text", "cardinality": "one" }
+                } },
+                "terms": { "this": receipt, "status": { "?": { "name": "status" } }, "detail": { "?": { "name": "detail" } } }
+            })).await;
+            assert_eq!(rows[0]["this"], receipt);
+            assert_eq!(rows[0]["fields"]["status"], "renamed", "{rows}");
+        }
+    }
+
+    #[dialog_common::test]
     async fn space_creation_reports_a_seeded_destination_for_the_submitted_request() {
         let (app, state, _lsp) =
             crate::router::api_router_with_state(super::profile_library_tests::test_state().await);
@@ -7139,7 +7250,7 @@ mod space_creation_feedback_tests {
 /// The optional-remote reader the create/enable handler uses. Native.
 #[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
 mod remote_from_facts_tests {
-    use super::remote_from_facts;
+    use super::{DESCRIPTION_ATTR, description_from_facts, remote_from_facts};
     use dialog_artifacts::{Artifact, Changes, Entity, Instruction, Statement, Value};
     use dialog_query::the;
 
@@ -7286,6 +7397,62 @@ mod remote_from_facts_tests {
             .is("   ".to_string())
             .assert(&mut changes);
         assert!(remote_from_facts(&artifacts(changes)).is_none());
+    }
+
+    #[test]
+    fn it_reads_and_trims_an_optional_description() {
+        let of: Entity = "did:key:zDescribe".parse().expect("entity");
+        let mut changes = Changes::new();
+        name_fact(&mut changes, &of);
+        dialog_query::the!("xyz.tonk.command.create-space/description")
+            .of(of)
+            .is("  Shared research notes  ".to_string())
+            .assert(&mut changes);
+        assert_eq!(
+            description_from_facts(&artifacts(changes)).as_deref(),
+            Some("Shared research notes")
+        );
+        assert_eq!(
+            DESCRIPTION_ATTR,
+            "xyz.tonk.command.create-space/description"
+        );
+    }
+
+    #[test]
+    fn it_treats_a_blank_description_as_absent() {
+        let of: Entity = "did:key:zDescribeBlank".parse().expect("entity");
+        let mut changes = Changes::new();
+        name_fact(&mut changes, &of);
+        dialog_query::the!("xyz.tonk.command.create-space/description")
+            .of(of)
+            .is("   ".to_string())
+            .assert(&mut changes);
+        assert!(description_from_facts(&artifacts(changes)).is_none());
+    }
+}
+
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod repository_description_body_tests {
+    use super::repository_name_body;
+
+    #[test]
+    fn it_seeds_a_description_with_the_repository_name() {
+        let subject = "did:key:zDescriptionBody".parse().expect("did");
+        let body = repository_name_body(
+            &subject,
+            "Research \"Notebook\"",
+            Some("Notes: shared\nwith the team"),
+        )
+        .expect("body");
+        assert!(body.contains("name: \"Research \\\"Notebook\\\"\""));
+        assert!(body.contains("description: \"Notes: shared\\nwith the team\""));
+    }
+
+    #[test]
+    fn it_keeps_legacy_creates_description_free() {
+        let subject = "did:key:zLegacyCreate".parse().expect("did");
+        let body = repository_name_body(&subject, "Untitled", None).expect("body");
+        assert!(!body.contains("description:"));
     }
 }
 
@@ -7470,7 +7637,7 @@ mod notebook_creation_tests {
         use futures_util::StreamExt as _;
 
         let state = crate::router::command::tests::native::test_state().await;
-        let key = create_space_inner(&state, "Notebook Host")
+        let key = create_space_inner(&state, "Notebook Host", None)
             .await
             .expect("the space creates");
         let tonk = state.read().await;
@@ -7553,6 +7720,7 @@ mod rename_repository_tests {
     use crate::router::command::{CommandOrigin, dispatch};
     use dialog_artifacts::Statement;
     use dialog_query::the;
+    use tonk_schema::RepositoryDescription;
 
     /// Every name-bearing record for `key`, read back the way its
     /// consumers read them: the space's own [`RepositoryName`] on its
@@ -7603,6 +7771,69 @@ mod rename_repository_tests {
         )
     }
 
+    #[dialog_common::test]
+    async fn it_persists_a_create_description_in_content_and_the_directory() {
+        let state = crate::router::command::tests::native::test_state().await;
+        let key = create_space_inner(
+            &state,
+            "Field Notes",
+            Some("Observations shared across devices"),
+        )
+        .await
+        .expect("the described space creates");
+        let tonk = state.read().await;
+        let content = tonk
+            .reactor
+            .repository(&key)
+            .branch(CONTENT_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .expect("content branch opens");
+        let authored: Vec<RepositoryDescription> = content
+            .handle()
+            .query()
+            .select(Query::<RepositoryDescription> {
+                this: Term::var("this"),
+                description: Term::var("description"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("repository-description query");
+        let profile = tonk
+            .reactor
+            .profile_repository()
+            .branch(&tonk.active_branch)
+            .acquire(&tonk.operator)
+            .await
+            .expect("profile branch opens");
+        let mirrored: Vec<SpaceDescription> = profile
+            .handle()
+            .query()
+            .select(Query::<SpaceDescription> {
+                this: Term::var("this"),
+                description: Term::var("description"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("space-description mirror query");
+        assert_eq!(
+            authored
+                .into_iter()
+                .map(|row| row.description.0)
+                .collect::<Vec<_>>(),
+            ["Observations shared across devices"]
+        );
+        assert_eq!(
+            mirrored
+                .into_iter()
+                .map(|row| row.description.0)
+                .collect::<Vec<_>>(),
+            ["Observations shared across devices"]
+        );
+    }
+
     /// A space renaming ITSELF — the one space-side command with a
     /// write outside its own branch. Dispatched with the space as
     /// origin (the vocabulary split keeps `RenameRepository` in the
@@ -7614,7 +7845,7 @@ mod rename_repository_tests {
     #[dialog_common::test]
     async fn it_updates_both_records_when_a_space_renames_itself() {
         let state = crate::router::command::tests::native::test_state().await;
-        let key = create_space_inner(&state, "Before Rename")
+        let key = create_space_inner(&state, "Before Rename", None)
             .await
             .expect("the space creates");
 
@@ -7733,7 +7964,7 @@ mod invite_chain_tests {
         .expect("the root persists with a recipient");
         let state: crate::router::AppState = std::sync::Arc::new(tokio::sync::RwLock::new(tonk));
 
-        let key = create_space_inner(&state, "Invite Chain")
+        let key = create_space_inner(&state, "Invite Chain", None)
             .await
             .expect("the space creates");
         enable_sync_inner(&state, &key, &remote)
@@ -12475,10 +12706,10 @@ mod connection_invite_overlay_tests {
     #[dialog_common::test]
     async fn app_owned_connection_targets_only_the_selected_space() {
         let state = crate::router::command::tests::native::test_state().await;
-        let selected = create_space_inner(&state, "Selected tool space")
+        let selected = create_space_inner(&state, "Selected tool space", None)
             .await
             .unwrap();
-        let other = create_space_inner(&state, "Other tool space")
+        let other = create_space_inner(&state, "Other tool space", None)
             .await
             .unwrap();
         let selected_did = space_did(&state, &selected).await;
@@ -12519,7 +12750,7 @@ mod connection_invite_overlay_tests {
     #[dialog_common::test]
     async fn connection_invite_recovery_requires_account_activation_and_explicit_sync() {
         let state = crate::router::command::tests::native::test_state().await;
-        let repo = create_space_inner(&state, "Retained anonymous space")
+        let repo = create_space_inner(&state, "Retained anonymous space", None)
             .await
             .unwrap();
         let env = crate::router::CommandEnv::new(
@@ -12659,7 +12890,7 @@ mod connection_invite_overlay_tests {
     #[dialog_common::test]
     async fn connection_invite_overlay_reuses_ready_and_requires_explicit_new_after_loss() {
         let state = crate::router::command::tests::native::test_state().await;
-        let repo = create_space_inner(&state, "Invitation cache")
+        let repo = create_space_inner(&state, "Invitation cache", None)
             .await
             .unwrap();
         {

@@ -245,14 +245,6 @@ pub(crate) fn build(this: &HtmlElement, state: &Shared) -> Vec<Bound> {
     if let Ok(Some(home)) = root.query_selector("[data-action=home]") {
         listeners.push(shadow::on_click(&home, || tonk_host::navigate_to("/")));
     }
-    if let Ok(Some(tool)) = root.query_selector("[data-action=tool]") {
-        let host = this.clone();
-        let shared = state.clone();
-        listeners.push(shadow::on_click(&tool, move || {
-            close(&host, &shared);
-            crate::tool_connection::open(&host);
-        }));
-    }
     if let Ok(Some(condition)) = root.query_selector("[data-action=condition]") {
         let host = this.clone();
         listeners.push(shadow::on_click(&condition, move || {

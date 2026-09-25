@@ -162,7 +162,7 @@ pub async fn prepare(value: &str) -> Result<PreparedAgent> {
     } else {
         crate::invite::preflight_resolved(resolved).await?;
         anyhow::bail!(
-            "This link invites a person to the space.\nTo connect the CLI, ask for a link from \"connect a tool\" in Tonk."
+            "This link invites a person to the space.\nTo connect the CLI, ask for a link from \"connect agent\" in Tonk."
         )
     }
 }
