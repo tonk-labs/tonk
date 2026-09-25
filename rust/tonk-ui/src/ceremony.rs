@@ -61,8 +61,12 @@ pub(crate) async fn run_account_ceremony(
     )
     .await
     .map_err(|error| error.message)?;
-    crate::analytics::identify().await;
-    tonk_analytics::web::capture_account_created();
+    // Keep the receipt after bounded identity resolution so profile-based
+    // queries can count it, without delaying the completed account ceremony.
+    wasm_bindgen_futures::spawn_local(async {
+        crate::analytics::identify().await;
+        tonk_analytics::web::capture_account_created();
+    });
     Ok(())
 }
 
