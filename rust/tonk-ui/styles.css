@@ -3042,7 +3042,10 @@ tonk-notebook-index {
   body:has(#tonk-register[data-anchored][open]:not([data-suspended])) {
     overflow: hidden;
   }
-  #tonk-register[data-anchored] { overflow: hidden; }
+  #tonk-register[data-anchored] {
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
   #tonk-register[data-anchored]::backdrop { backdrop-filter: none; }
   #tonk-register[data-anchored] .ocol {
     position: absolute; left: auto; top: var(--anchor-top, 86px);
@@ -3050,6 +3053,7 @@ tonk-notebook-index {
     bottom: auto; margin: 0;
     width: min(360px, calc(100vw - 32px));
     max-height: calc(100dvh - 110px); overflow: auto;
+    overscroll-behavior: none;
     display: flex; flex-flow: row wrap; align-content: flex-start;
     border: 1.5px solid var(--ink); border-radius: 25px;
     background: var(--modal, var(--card));
