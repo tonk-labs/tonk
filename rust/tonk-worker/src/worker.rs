@@ -1908,6 +1908,18 @@ impl TonkServiceWorker {
             .await
             .map_err(|e| JsError::new(&format!("Failed to initialize the worker: {e}")))?;
 
+        // A predecessor retiring for this worker left its session overlay
+        // behind. Restore it before serving anything, so no read or
+        // subscription observes this worker without it.
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        if let Some(overlays) = crate::handoff::take().await {
+            let restored = state
+                .reactor
+                .import_overlays(overlays, &state.operator)
+                .await;
+            log!("Restored {restored} session overlay(s) from the previous worker");
+        }
+
         // 5. Wrap state in the router. `api_router_with_state`
         // returns the LSP hub *and* a cloneable `AppState` handle:
         // the worker keeps the latter so `on_fetch` can read the
@@ -1997,13 +2009,23 @@ impl TonkServiceWorker {
             // LSP shutdown ran first, the successor could activate and clear
             // `registration.waiting` while query reconnects still saw this
             // generation as live. The reactor gate makes the latch and every
-            // active/pending subscriber registration atomic.
-            {
+            // active/pending subscriber registration atomic. The overlay is
+            // exported first: shutdown drops the cached branches holding it.
+            let overlays = {
                 let tonk = state.read().await;
+                let overlays = tonk.reactor.export_overlays();
                 tonk.retire();
-            }
+                overlays
+            };
             lsp.shutdown().await;
             log!("Streams are released");
+            // Written even when empty: the successor's activation waits for
+            // this snapshot, and an empty one tells it there is nothing to
+            // carry rather than leaving it to time out.
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            crate::handoff::save(overlays).await;
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+            drop(overlays);
             Ok(JsValue::UNDEFINED)
         })
     }

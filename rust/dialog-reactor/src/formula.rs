@@ -31,9 +31,7 @@ use dialog_artifacts::{
     ENTITY_KEY_TAG, Entity, HISTORY_KEY_TAG, Key, VALUE_KEY_TAG, Value,
 };
 use dialog_query::Term;
-use dialog_repository::{
-    Branch, LocalIndex, NetworkedIndex, RepositoryArchiveExt, RepositoryMemoryExt, Upstream,
-};
+use dialog_repository::{Branch, LocalIndex, NetworkedIndex, RepositoryMemoryExt, Upstream};
 use dialog_storage::{Blake3Hash, StorageBackend};
 use ipld_core::ipld::Ipld;
 use thiserror::Error;

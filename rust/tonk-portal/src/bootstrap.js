@@ -3,6 +3,49 @@
   var resolveReady; var ready=new Promise(function(r){resolveReady=r;});
   var ch=new MessageChannel(), port=ch.port1;
   function mint(){return "r"+(++nextId);}
+  // A render can replace the control that raised registration while the
+  // ceremony runs, or just after it closes. Its replacement has the same tag
+  // and data attributes; `data-state` changes as a display settles.
+  function replacementSelector(element){
+    if(!element||!element.tagName||element===document.body){ return null; }
+    var parts=[];
+    for(var i=0;i<element.attributes.length;i++){
+      var attribute=element.attributes[i];
+      if(attribute.name.indexOf("data-")===0&&attribute.name!=="data-state"){
+        parts.push("["+attribute.name+'="'+CSS.escape(attribute.value)+'"]');
+      }
+    }
+    return parts.length?element.tagName.toLowerCase()+parts.join(""):null;
+  }
+  function replacementFor(selector){
+    var found=selector?document.querySelectorAll(selector):[];
+    return found.length===1?found[0]:null;
+  }
+  // The control a person last focused. A render between their click and the
+  // registration request can replace it, dropping focus to the body.
+  var lastFocused=null;
+  document.addEventListener("focusin",function(event){ lastFocused=event.target; },true);
+  function focusable(element){
+    return element&&element.isConnected&&!element.matches(":disabled");
+  }
+  // Return focus to the opener, or to the node a render put in its place,
+  // including a render that lands shortly after focus returned.
+  function returnFocus(opener,selector){
+    var target=focusable(opener)?opener:replacementFor(selector);
+    if(!focusable(target)){ return; }
+    window.focus();
+    target.focus({preventScroll:true});
+    if(!selector){ return; }
+    var follow=new MutationObserver(function(){
+      if(target.isConnected){ return; }
+      var active=document.activeElement;
+      if(active&&active!==document.body){ follow.disconnect(); return; }
+      var next=replacementFor(selector);
+      if(focusable(next)){ target=next; target.focus({preventScroll:true}); }
+    });
+    follow.observe(document.documentElement,{childList:true,subtree:true});
+    setTimeout(function(){ follow.disconnect(); },2000);
+  }
   // Merge an optional per-call routing context ({with}) into an envelope.
   // The guest relay passes the `branch@repo` location its in-guest `with`
   // ancestry resolved. The host parses it and honors it ONLY when the
@@ -106,9 +149,10 @@
     // the host can word the prompt. Fire-and-forget (no response).
     register:function(reason,relay){
       var opener=document.activeElement;
+      if(!opener||opener===document.body){ opener=lastFocused; }
       // Even an unfocused opener needs the ceremony's terminal event.
       var token=mint();
-      if(token){ registerFocus.set(token,{opener:opener,relay:typeof relay==="function"?relay:null}); }
+      if(token){ registerFocus.set(token,{opener:opener,selector:replacementSelector(opener),relay:typeof relay==="function"?relay:null}); }
       ready.then(function(){port.postMessage({v:1,type:"register",reason:reason,focusToken:token});});
     },
     // Ask the trusted page to present one typed contained task. The payload
@@ -188,18 +232,15 @@
       case "register-focus": {
         var registration=registerFocus.get(env.focusToken);
         var opener=registration&&registration.opener;
+        var selector=registration&&registration.selector;
         registerFocus.delete(env.focusToken);
-        if(registration&&registration.relay){registration.relay(env.type);opener=null;}
-        // The top-page ceremony has been torn down. Its opener may have been
-        // replaced by a profile-fact render while the ceremony was running,
-        // so signal the guest window even when that old node can no longer
-        // take focus. Hub chrome uses this terminal event to clear its durable
-        // linking marker and restore the spaces page in one step.
+        if(registration&&registration.relay){registration.relay(env.type);opener=null;selector=null;}
+        // The top-page ceremony has been torn down. Hub chrome uses this
+        // terminal event to clear its durable linking marker and restore the
+        // spaces page in one step, and closing an anchored ceremony also
+        // returns the route to `/`; either can re-render the opener.
         window.dispatchEvent(new Event(env.type==="custody-focus" ? "tonk:custody-closed" : "tonk:registration-closed"));
-        if(opener&&opener.isConnected&&!opener.matches(":disabled")){
-          window.focus();
-          opener.focus({preventScroll:true});
-        }
+        returnFocus(opener,selector);
         return;
       }
       case "register-focus-discard": {

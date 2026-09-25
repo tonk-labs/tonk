@@ -175,6 +175,9 @@ pub use worker::*;
 pub mod device;
 pub mod session;
 
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+mod handoff;
+
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod cache;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]

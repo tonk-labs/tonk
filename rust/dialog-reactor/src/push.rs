@@ -10,10 +10,7 @@ use super::error::ReactorError;
 use dialog_artifacts::Index;
 use dialog_artifacts::tree::TreeStorageBridge;
 use dialog_common::Blake3Hash as NodeHash;
-use dialog_repository::{
-    NetworkedIndex, PushError, RepositoryArchiveExt as _, RepositoryMemoryExt as _, Revision,
-    Upstream,
-};
+use dialog_repository::{NetworkedIndex, PushError, RepositoryMemoryExt as _, Revision, Upstream};
 use dialog_search_tree::{
     ContentAddressedStorage as TreeStorage, DialogSearchTreeError, TreeDifference,
 };
