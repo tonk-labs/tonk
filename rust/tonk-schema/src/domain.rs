@@ -1142,6 +1142,88 @@ pub mod command {
         pub struct At(pub u64);
     }
 
+    /// Attributes of the four `local-space-link/*` commands. Each step
+    /// has its own namespace: decode matches fields, not concepts, so
+    /// steps sharing an attribute would each decode as the others.
+    pub mod local_space_link {
+        /// `local-space-link/describe`: read what a request asks.
+        pub mod describe {
+            use dialog_query::Attribute;
+
+            /// The request, as the terminal encoded it.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.local-space-link.describe")]
+            pub struct Request(pub String);
+            /// The asking page's stamp, echoed on the answer.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.local-space-link.describe")]
+            pub struct At(pub u64);
+        }
+
+        /// `local-space-link/approve`: consent to link the space.
+        pub mod approve {
+            use dialog_query::Attribute;
+
+            /// The request being approved.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.local-space-link.approve")]
+            pub struct Request(pub String);
+            /// The asking page's stamp, echoed on the answer.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.local-space-link.approve")]
+            pub struct At(pub u64);
+        }
+
+        /// `local-space-link/provision`: provision the space at the
+        /// account's access service.
+        pub mod provision {
+            use dialog_query::Attribute;
+
+            /// The approved request.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.local-space-link.provision")]
+            pub struct Request(pub String);
+            /// The approval this browser issued for it.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.local-space-link.provision")]
+            pub struct Approval(pub String);
+            /// The space's consent to be provisioned, from the terminal.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.local-space-link.provision")]
+            pub struct Consent(pub String);
+            /// The asking page's stamp, echoed on the answer.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.local-space-link.provision")]
+            pub struct At(pub u64);
+        }
+
+        /// `local-space-link/complete`: join the published space.
+        pub mod complete {
+            use dialog_query::Attribute;
+
+            /// The approved request.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.local-space-link.complete")]
+            pub struct Request(pub String);
+            /// The approval this browser issued for it.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.local-space-link.complete")]
+            pub struct Approval(pub String);
+            /// The invite the terminal minted for this account.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.local-space-link.complete")]
+            pub struct Invite(pub String);
+            /// The provisioning receipt this browser issued.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.local-space-link.complete")]
+            pub struct Provisioned(pub String);
+            /// The asking page's stamp, echoed on the answer.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.local-space-link.complete")]
+            pub struct At(pub u64);
+        }
+    }
+
     pub mod promote {
         use super::super::Entity;
         use super::Attribute;
@@ -1502,6 +1584,55 @@ pub mod local_root {
     #[domain("xyz.tonk.local-root")]
     #[cardinality(one)]
     pub struct EncryptionKey(pub Entity);
+}
+
+/// Attributes of the `state:local-space-link` answer row: where the last
+/// local-space-link step got to, and what it produced. Overlay-only.
+pub mod local_space_link {
+    use super::Attribute;
+
+    /// The step this answer is for: `describe`, `approve`, `provision` or
+    /// `complete`.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.local-space-link")]
+    #[cardinality(one)]
+    pub struct Step(pub String);
+    /// The asking page's stamp.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.local-space-link")]
+    #[cardinality(one)]
+    pub struct AnsweredAt(pub u64);
+    /// `done` or `failed`.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.local-space-link")]
+    #[cardinality(one)]
+    pub struct Outcome(pub String);
+    /// What the step produced — the approval, the provisioning receipt or
+    /// the completion, encoded for the terminal — or why it failed.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.local-space-link")]
+    #[cardinality(one)]
+    pub struct Product(pub String);
+    /// The space's name, as the request gives it.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.local-space-link")]
+    #[cardinality(one)]
+    pub struct Name(pub String);
+    /// The space's DID, when the request names one; empty otherwise.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.local-space-link")]
+    #[cardinality(one)]
+    pub struct Subject(pub String);
+    /// Where the terminal listens for the answer.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.local-space-link")]
+    #[cardinality(one)]
+    pub struct Callback(pub String);
+    /// The terminal's correlation token, echoed back to it.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.local-space-link")]
+    #[cardinality(one)]
+    pub struct Correlation(pub String);
 }
 
 pub mod ceremony_status {

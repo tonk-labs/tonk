@@ -67,7 +67,8 @@ pub mod account;
 pub use account::{
     AccountActive, AccountDisplayName, AccountLink, AccountLinking, AccountRegistered,
     AccountSealedInbox, AccountSuspended, CeremonyStatus, EmailStatus, LocalRootKey,
-    LocalRootState, ceremony, ceremony_state, email_state,
+    LocalRootState, LocalSpaceLinkAnswer, LocalSpaceLinkRequest, ceremony, ceremony_state,
+    email_state,
 };
 
 pub mod custody;

@@ -1237,9 +1237,9 @@ view!:
 # ROUTING (profile branch) — mirrors core.yaml, scoped to the profile
 # ============================================================
 #
-# The profile is itself a routable target: `<tonk-site path=…>` posts to
-# `/api/profile/branch/main/site`, the SW asserts this tab's `tonk:site` on this
-# branch (matching the path against the `route!` table below), and the element
+# The profile is itself a routable target: `<tonk-site path=…>` asserts
+# `tonk:load` on this branch, the SW stamps this tab's `tonk:site` here
+# (matching the path against the `route!` table below), and the element
 # renders `<tonk-display entity=site:… model=tonk:site>`. The site view nests the
 # matched `{concept}` on the same site entity — the same indirection a space uses.
 
@@ -3107,6 +3107,61 @@ concept!: &agent-connection/answer
       cardinality: one
       as: unsigned-integer
 
+# Where the last step of linking a terminal's local space got to: the
+# step, the asking page's stamp, and what the step produced for the
+# terminal or why it failed. Overlay-only, one row, replaced per step.
+concept!: &local-space-link/answer
+  this: state:local-space-link
+  description: The answer to the last local-space-link step.
+  with:
+    step:
+      description: describe, approve, provision or complete.
+      the: xyz.tonk.local-space-link/step
+      cardinality: one
+      as: text
+    answered-at:
+      description: The asking page's stamp.
+      the: xyz.tonk.local-space-link/answered-at
+      cardinality: one
+      as: unsigned-integer
+    outcome:
+      description: done or failed.
+      the: xyz.tonk.local-space-link/outcome
+      cardinality: one
+      as: text
+    product:
+      description: The approval, receipt or completion for the terminal, or why the step failed.
+      the: xyz.tonk.local-space-link/product
+      cardinality: one
+      as: text
+
+# What a local-space-link request asks, written beside a describe answer.
+concept!: &local-space-link/request
+  this: tonk:local-space-link/request
+  description: The space and terminal a local-space-link request names.
+  # ENTITY: `state:local-space-link`.
+  with:
+    name:
+      description: The space's name.
+      the: xyz.tonk.local-space-link/name
+      cardinality: one
+      as: text
+    subject:
+      description: The space's DID, empty when the request names none.
+      the: xyz.tonk.local-space-link/subject
+      cardinality: one
+      as: text
+    callback:
+      description: Where the terminal listens.
+      the: xyz.tonk.local-space-link/callback
+      cardinality: one
+      as: text
+    correlation:
+      description: The terminal's correlation token.
+      the: xyz.tonk.local-space-link/correlation
+      cardinality: one
+      as: text
+
 # The hub bar's account cell: a hidden marker the bar keys on, and the
 # account's name rendered THROUGH the link, so a branch whose link is
 # gone offers "add an account" however much it still knows about the
@@ -4354,17 +4409,6 @@ element!: &account-settings
         const at = window.location;
         return { origin: at.origin, path: at.pathname, search: at.search, hash: at.hash };
       }
-    # The worker's HTTP API, reached the way any guest reaches it: the
-    # host relays a same-origin fetch. A refusal rejects with its status.
-    api: |
-      (self, path, body) => {
-        const init = body === undefined ? {} : { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) };
-        return window.fetch(`${self.context().origin}${path}`, init).then(async (response) => {
-          const text = await response.text();
-          if (!response.ok) { const error = new Error(text || String(response.status)); error.status = response.status; throw error; }
-          return text ? JSON.parse(text) : null;
-        });
-      }
     # Agent access: the invites this account issued to terminals, each
     # granting one space, and the removal of that access. Both are
     # commands; the worker answers by listing the invite groups as overlay
@@ -4522,6 +4566,48 @@ element!: &account-settings
     # A terminal asking to attach one local space to this account. The
     # request rides the URL as an encoded blob only the worker can read,
     # so the pane asks it what is being asked before showing anything.
+    # Every step is a `local-space-link/<step>` command; the worker answers
+    # on the `state:local-space-link` row, stamped with the asker's `at`,
+    # with what the step produced for the terminal or why it failed.
+    local-link-ask: |
+      (self, step, fields) => {
+        const one = (the, as) => ({ the, as, cardinality: 'one' });
+        const variable = (name) => ({ '?': { name } });
+        const at = Date.now();
+        const parameters = { ...fields, at };
+        const with_ = Object.fromEntries(Object.keys(parameters).map((name) =>
+          [name, { the: `xyz.tonk.local-space-link.${step}/${name}`, as: name === 'at' ? 'UnsignedInteger' : 'Text' }]));
+        const answered = ['step', 'outcome', 'product'];
+        const described = ['name', 'subject', 'callback', 'correlation'];
+        const query = (names, extra) => ({
+          predicate: { with: {
+            ...Object.fromEntries(names.map((name) => [name, one(`xyz.tonk.local-space-link/${name}`, 'Text')])),
+            ...extra,
+          } },
+          terms: {
+            this: 'state:local-space-link',
+            ...Object.fromEntries([...names, ...Object.keys(extra)].map((name) => [name, variable(name)])),
+          },
+        });
+        const first = (rows) => (Array.isArray(rows) && rows[0] ? (rows[0].fields ?? rows[0]) : null);
+        const wait = (tries) => window.tonk.query(query(answered, {
+          at: one('xyz.tonk.local-space-link/answered-at', 'UnsignedInteger'),
+        })).then((rows) => {
+          const row = first(rows);
+          if (row && Number(row.at) === at && row.step === step) return row;
+          if (tries <= 0) throw new Error('the worker did not answer');
+          return new Promise((resolve) => setTimeout(resolve, 250)).then(() => wait(tries - 1));
+        });
+        const claim = { claims: [{ op: 'assert', application: {
+          predicate: { kind: 'transient', concept: { description: `Local-space link: ${step}.`, with: with_ } },
+          parameters,
+        } }] };
+        return window.tonk.transact(claim).then(() => wait(240)).then((row) => {
+          if (row.outcome !== 'done') throw new Error(row.product || `${step} failed`);
+          if (step !== 'describe') return row;
+          return window.tonk.query(query(described, {})).then((rows) => ({ ...row, ...(first(rows) ?? {}) }));
+        });
+      }
     local-link-request: |
       (self) => {
         const at = self.context();
@@ -4552,10 +4638,10 @@ element!: &account-settings
         self.pane('local-link');
         if (self.getAttribute('data-local-link-shown') !== request.request) {
           self.setAttribute('data-local-link-shown', request.request);
-          self.api('/api/local-space-link/describe', { request: request.request }).then((described) => {
+          self.localLinkAsk('describe', { request: request.request }).then((described) => {
             self.localLink = described;
             self.text('[data-local-link-name]', described.name);
-            self.text('[data-local-link-did]', described.subject ?? 'unreadable request');
+            self.text('[data-local-link-did]', described.subject || 'unreadable request');
             self.localLinkContinue(request);
           }, () => { self.text('[data-local-link-did]', 'unreadable request'); });
         }
@@ -4576,8 +4662,8 @@ element!: &account-settings
         const described = self.localLink;
         if (!request || !described) return;
         self.status('Approving this local space…');
-        self.api('/api/local-space-link/approve', { request: request.request }).then((response) => {
-          const approval = response?.approval;
+        self.localLinkAsk('approve', { request: request.request }).then((response) => {
+          const approval = response?.product;
           if (!approval) { self.status('The approval response was not readable.'); return; }
           self.localLinkReturn(described.callback, [['approve', approval], ['correlation', described.correlation]]);
         }, (error) => self.status(`Could not approve this space: ${error.message}`));
@@ -4593,8 +4679,8 @@ element!: &account-settings
         const described = self.localLink;
         if (!described) return;
         self.status('Preparing this space for publication…');
-        self.api('/api/local-space-link/provision', { request: request.request, approval: request.approval, consent: request.consent }).then((response) => {
-          const provisioned = response?.provisioned;
+        self.localLinkAsk('provision', { request: request.request, approval: request.approval, consent: request.consent }).then((response) => {
+          const provisioned = response?.product;
           if (!provisioned) { self.status('The provisioning receipt was not readable.'); return; }
           self.localLinkReturn(described.callback, [['provisioned', provisioned], ['correlation', described.correlation]]);
         }, (error) => {
@@ -4607,8 +4693,8 @@ element!: &account-settings
         const described = self.localLink;
         if (!described) return;
         self.status('Publishing this space to your account…');
-        self.api('/api/local-space-link/complete', { request: request.request, approval: request.approval, invite: request.invite, provisioned: request.provisioned }).then((response) => {
-          const completion = response?.completion;
+        self.localLinkAsk('complete', { request: request.request, approval: request.approval, invite: request.invite, provisioned: request.provisioned }).then((response) => {
+          const completion = response?.product;
           if (!completion) { self.status('The publication receipt was not readable. Reload to retry.'); return; }
           self.localLinkReturn(described.callback, [['complete', completion], ['correlation', described.correlation]]);
         }, (error) => {

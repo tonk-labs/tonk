@@ -220,22 +220,6 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         )
         .route("/api/profile/welcome", post(onboarding_space::welcome))
         .route(
-            "/api/local-space-link/approve",
-            post(local_space_link::approve),
-        )
-        .route(
-            "/api/local-space-link/describe",
-            post(local_space_link::describe),
-        )
-        .route(
-            "/api/local-space-link/provision",
-            post(local_space_link::provision),
-        )
-        .route(
-            "/api/local-space-link/complete",
-            post(local_space_link::complete),
-        )
-        .route(
             "/api/repository/{repo}/branch/{branch}/sync/status",
             get(sync::sync_status),
         )

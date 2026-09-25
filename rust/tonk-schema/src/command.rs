@@ -754,6 +754,86 @@ impl Command for RevokeConnection {
     type Output = ();
 }
 
+/// Read what a terminal's local-space-link request asks — the space's name
+/// and DID, and where the terminal listens — onto `state:local-space-link`.
+/// The page cannot decode the request itself.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DescribeLocalSpaceLink {
+    /// The command entity.
+    pub this: Entity,
+    /// The request.
+    pub request: crate::domain::command::local_space_link::describe::Request,
+    /// The asking page's stamp.
+    pub at: crate::domain::command::local_space_link::describe::At,
+}
+
+impl Command for DescribeLocalSpaceLink {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Consent, with this browser's device, to link a terminal's local space
+/// into the signed-in account. The approval lands on
+/// `state:local-space-link` for the page to hand back to the terminal.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ApproveLocalSpaceLink {
+    /// The command entity.
+    pub this: Entity,
+    /// The request.
+    pub request: crate::domain::command::local_space_link::approve::Request,
+    /// The asking page's stamp.
+    pub at: crate::domain::command::local_space_link::approve::At,
+}
+
+impl Command for ApproveLocalSpaceLink {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Provision an approved local space at the account's access service. The
+/// provisioning receipt lands on `state:local-space-link`.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ProvisionLocalSpaceLink {
+    /// The command entity.
+    pub this: Entity,
+    /// The request.
+    pub request: crate::domain::command::local_space_link::provision::Request,
+    /// The approval.
+    pub approval: crate::domain::command::local_space_link::provision::Approval,
+    /// The space's consent.
+    pub consent: crate::domain::command::local_space_link::provision::Consent,
+    /// The asking page's stamp.
+    pub at: crate::domain::command::local_space_link::provision::At,
+}
+
+impl Command for ProvisionLocalSpaceLink {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Join the local space the terminal published to this account. The
+/// completion lands on `state:local-space-link`.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CompleteLocalSpaceLink {
+    /// The command entity.
+    pub this: Entity,
+    /// The request.
+    pub request: crate::domain::command::local_space_link::complete::Request,
+    /// The approval.
+    pub approval: crate::domain::command::local_space_link::complete::Approval,
+    /// The invite.
+    pub invite: crate::domain::command::local_space_link::complete::Invite,
+    /// The provisioning receipt.
+    pub provisioned: crate::domain::command::local_space_link::complete::Provisioned,
+    /// The asking page's stamp.
+    pub at: crate::domain::command::local_space_link::complete::At,
+}
+
+impl Command for CompleteLocalSpaceLink {
+    type Input = Self;
+    type Output = ();
+}
+
 /// Revoke a member's access to a space.
 ///
 /// Asserted transiently by the roster row's expel control; the handler

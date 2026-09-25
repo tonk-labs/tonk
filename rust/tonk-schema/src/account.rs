@@ -591,6 +591,42 @@ pub struct LocalRootKey {
     pub key: crate::domain::local_root::EncryptionKey,
 }
 
+/// Where the last local-space-link step got to, on the profile overlay:
+/// the step, the asker's stamp, and what it produced or why it failed.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LocalSpaceLinkAnswer {
+    /// Always [`LocalSpaceLinkAnswer::ENTITY`].
+    pub this: Entity,
+    /// Which step.
+    pub step: crate::domain::local_space_link::Step,
+    /// The asking page's stamp.
+    pub answered_at: crate::domain::local_space_link::AnsweredAt,
+    /// `done` or `failed`.
+    pub outcome: crate::domain::local_space_link::Outcome,
+    /// The step's product, or why it failed.
+    pub product: crate::domain::local_space_link::Product,
+}
+
+impl LocalSpaceLinkAnswer {
+    /// The single entity the answer lives on.
+    pub const ENTITY: &str = "state:local-space-link";
+}
+
+/// What a local-space-link request asks, beside its describe answer.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LocalSpaceLinkRequest {
+    /// Always [`LocalSpaceLinkAnswer::ENTITY`].
+    pub this: Entity,
+    /// The space's name.
+    pub name: crate::domain::local_space_link::Name,
+    /// The space's DID, or empty.
+    pub subject: crate::domain::local_space_link::Subject,
+    /// Where the terminal listens.
+    pub callback: crate::domain::local_space_link::Callback,
+    /// The terminal's correlation token.
+    pub correlation: crate::domain::local_space_link::Correlation,
+}
+
 /// Where a passkey-gated command got to, on the profile overlay.
 ///
 /// The hub's settings page asserts `tonk:delete-account`,
