@@ -114,14 +114,16 @@ concept!: &space
       cardinality: one
       as: unsigned-integer
 
-# The Add Space command. The Hub's space-create element sends this shape
-# with a fresh command entity and follows its completion in the local overlay.
+# The Add Space command. The Hub's named creation dialogs submit this shape.
 # The worker records the replica, seeds the repository, and navigates the
 # creator. The command is transient and is swept before the durable commit.
-# The event declaration remains available to older declarative create forms.
+# The worker also publishes a per-command completion receipt for subscribers.
 event!: &on/space-create
   type: "submit"
   prevent-default: true
+  # The collection is nested in the Hub view, which also binds this command.
+  # Only the nearest view may dispatch this submit.
+  stop-propagation: true
   where:
     name: ".currentTarget.elements.name.value"
     description: ".currentTarget.elements.description.value"
@@ -132,9 +134,9 @@ command!: &space/create
   with:
     name:
       description: >
-        The space name. The Hub sends "Untitled", which the worker
-        uniquifies against existing space labels ("Untitled", "Untitled 2", …).
-        The user renames the space in place on arrival.
+        The space name supplied by the Hub creation dialog. Legacy callers
+        may send "Untitled", which the worker uniquifies against existing
+        space labels ("Untitled", "Untitled 2", …).
       the: xyz.tonk.command.create-space/name
       as: text
     open:
@@ -285,7 +287,7 @@ view!:
          host injects. */
 
       :root{
-        --page:#e8e6e4; --ink:#38182a; --on-ink:#f7f6f5; --soft:#5b4953;
+        --page:#dedbd8; --ink:#38182a; --on-ink:#f7f6f5; --soft:#5b4953;
         /* the current role — a place you are in, split from the CTA register
            (Aug 20): near-ink, one step toward the page, so a tab never
            outshouts an action. Filled by the colour pass — same hue as the ink,
@@ -293,7 +295,7 @@ view!:
         --cur:#552e44;
         --ring:rgba(56,24,42,0.85); --sep:rgba(56,24,42,.28); --frost:rgba(253,252,252,0.72);
         --frost-solid:#f7f6f5; /* frost pre-composited over the flat page — same look, no filter */
-        --panel:#d0ccc8; --card:#fcfbfb; --card-hover:#eeedec;
+        --name-field:#faf9f9; --collection:#e9e6e3; --panel:#d0ccc8; --card:#f7f6f5; --card-hover:#eeedec;
         --wash:rgba(56,24,42,.06); --wash-2:rgba(56,24,42,.12);
         /* wash-p is the hover for SOLID-INK surfaces, so it must be a wash of
            on-ink, not of ink — a 16% ink wash over ink composites to exactly
@@ -308,13 +310,15 @@ view!:
         --mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
         --ease:cubic-bezier(.25,.46,.45,.94);
       }
+      @font-face { font-family:Gestalte; font-weight:300; font-display:swap;
+        src:url('/fonts/gestalte-300.otf') format('opentype'); }
       @media (prefers-color-scheme: dark){
         :root{
           --page:#161313; --ink:#e2dfdd; --on-ink:#221c1d; --soft:#c8c3bf;
           --cur:#cdc9c5; /* the same step toward the page, inverted */
           --ring:rgba(226,223,221,0.55); --sep:rgba(226,223,221,.28); --frost:rgba(29,24,25,0.78);
           --frost-solid:#1b1718;
-          --panel:#3c3335; --card:#261f20; --card-hover:#322a2b;
+          --name-field:#181416; --collection:#1c171a; --panel:#3c3335; --card:#261f23; --card-hover:#322a2b;
           --wash:rgba(226,223,221,.09); --wash-2:rgba(226,223,221,.15); --wash-p:rgba(34,28,29,.14);
           --canvas:#1c1718; --stub-ink:#736265;
           /* in the dark the veil is the page itself — bone rings and labels punch
@@ -377,26 +381,29 @@ view!:
         line-height:1; letter-spacing:.02em; text-transform:lowercase; }
 
       /* ── collection shell ── */
-      .hub-header { width:min(1250px, calc(100vw - 48px)); min-height:88px;
-        margin:0 auto; display:flex; align-items:center; justify-content:space-between;
-        gap:32px; border-bottom:1px solid var(--sep); }
+      .hub-header { width:100%; min-height:100px; padding:0 42px;
+        display:flex; align-items:center; justify-content:space-between;
+        gap:32px; }
       .hub-logo { display:flex; justify-content:center; color:var(--ink); user-select:none;
         flex:none; }
-      .hub-logo svg { display:block; width:132px; height:auto; }
-      .hubcol { width:min(1250px, calc(100vw - 48px)); margin:44px auto 120px; }
-      .hubbar { position:relative; z-index:10; display:flex; align-items:stretch;
-        justify-content:flex-end; width:auto; min-height:48px; background:transparent; }
+      .hub-logo svg { display:block; width:107px; height:auto; }
+      .hubcol { width:min(1166px, calc(100vw - 84px)); margin:18px auto 120px; }
+      .hubbar { position:relative; z-index:10; display:flex; align-items:center;
+        justify-content:flex-end; gap:14px; width:auto; min-height:44px; background:transparent; }
       .hcell { display:flex; align-items:center; justify-content:center; gap:8px;
-        min-height:48px; padding:0 18px; font-size:14px; line-height:1; white-space:nowrap;
+        min-height:38px; height:38px; padding:0 18px; font-size:14px; line-height:1; white-space:nowrap;
         text-decoration:none; color:inherit; flex:none; }
       .hcell:hover { background:var(--wash); }
       .hcell:active { background:var(--wash-2); }
-      .hc-acct { min-width:160px; max-width:260px; justify-content:flex-start;
-        border-left:1px solid var(--sep); }
+      .hc-acct { min-width:0; max-width:260px; justify-content:flex-start;
+        border:0; }
       .hc-view { display:none; }
-      .header-new { display:block; border-left:1px solid var(--sep); }
-      .header-new .snew { min-width:150px; min-height:48px; height:48px;
+      .header-new { display:block; }
+      .header-new .snew { min-width:120px; min-height:38px; height:38px; gap:16px; font-weight:500; box-shadow:none;
         align-items:center; justify-content:center; padding:0 18px; }
+      .hubbar :is(.hcell, .header-new .snew) { box-sizing:border-box;
+        height:38px; min-height:38px; padding:0 18px; font:500 14px/1 var(--cond); }
+      .header-new .snew .g { font-size:20px; }
       /* the view you are in wears CURRENT (near-ink) — solid ink stays the
          CTA register, so a tab never outshouts an action */
       .hc-acct[aria-current="page"], .hc-view[aria-current="page"] {
@@ -419,6 +426,8 @@ view!:
          other account carrying its switch verb, then the add door — the
          page's one CTA, solid ink. ── */
       .hub-page hub-bar { position:relative; display:block; width:auto; }
+      .hub-page:has(hub-bar[path^="/settings"]) .hub-header hub-bar { display:none; }
+      .hub-page:has(hub-bar[path^="/settings"]) .hub-header { border-bottom:0; }
       /* The menu's own `open` attribute drives its visibility, rather
          than a `hidden` attribute script has to remember to toggle. */
       .account-trigger { overflow:hidden; }
@@ -468,7 +477,15 @@ view!:
         margin-top:24px; }
       .settings[hidden] { display:none; }
       .hub-page > .hub-logo { margin:32px auto 0; }
-      .hubcol:has(.settings) { margin-top:32px; }
+      .hub-page:has(hub-bar[path^="/settings"]) .hubcol { margin-top:24px; }
+      .settings-title { margin:0 0 34px; font:300 clamp(38px,4.5vw,60px)/1.08 Gestalte,Georgia,serif;
+        letter-spacing:-.02em; text-transform:none; }
+      .settings-back { position:absolute; right:42px; top:28px;
+        display:flex; align-items:center; min-height:44px; padding:0 18px;
+        font:600 14px/1.2 var(--cond); }
+      .settings-back:hover { background:var(--wash); }
+      .settings-back:active { background:var(--wash-2); }
+      .hub-page:has(hub-bar[path="/account"]) :is(.settings-title,.settings-back) { display:none; }
       .hub-page account-settings { display:block; }
       .hub-page account-settings .s-body { min-width:0; min-height:0; max-height:none;
         overflow:visible; padding:0; background:transparent; border:0; color:var(--ink); }
@@ -476,50 +493,55 @@ view!:
       .hub-page account-settings .account-panels { display:grid;
         grid-template-columns:repeat(2,minmax(0,1fr)); gap:24px; align-items:stretch; }
       .hub-page account-settings tonk-display[model="tonk:account/registered"],
+      .hub-page account-settings tonk-display[model="tonk:account/registered"] > tonk-view,
       .hub-page account-settings [data-account-registered] { display:contents; }
-      .hub-page account-settings .settings-panel { min-width:0; padding:28px;
+      .hub-page account-settings .account-panels tonk-dialog { display:contents; }
+      .hub-page account-settings .settings-panel { min-width:0; margin:0; padding:28px;
         background:var(--card); font-family:var(--sans); text-transform:none; }
       .hub-page account-settings .settings-panel h2 { margin:0 0 24px;
-        font:600 22px/1.2 var(--cond); }
+        font:300 30px/1.15 Gestalte,Georgia,serif; text-transform:none; }
       .hub-page account-settings .details-form { display:grid; gap:8px; }
       .hub-page account-settings .details-form label,
       .hub-page account-settings .settings-field > span { font:600 15px/1.4 var(--cond); }
       .hub-page account-settings .sname { width:100%; min-height:48px; margin:0;
-        padding:13px 16px; border:0; background:var(--wash); color:var(--ink);
+        padding:13px 16px; border:0; background:var(--name-field); color:var(--ink);
         font:400 16px/1.4 var(--sans); text-align:left; }
       .hub-page account-settings .sname:focus-visible { box-shadow:inset 0 0 0 2px var(--ink); }
+      .hub-page account-settings .details-form .primary-action { justify-self:end;
+        width:auto; min-height:48px; margin-top:16px; padding:12px 18px;
+        border:0; text-decoration:none; font:600 16px/1.2 var(--cond); }
       .hub-page account-settings .form-error { margin:0; color:var(--ink);
         font:400 13px/1.45 var(--sans); }
       .hub-page account-settings .form-error[hidden] { display:none; }
-      .hub-page account-settings .settings-field { display:grid; gap:8px; margin-top:20px; }
+      .hub-page account-settings .settings-field { display:grid; gap:8px; margin-top:12px; }
       .hub-page account-settings .settings-field b { min-height:48px; padding:13px 16px;
         background:var(--wash); font:400 16px/1.4 var(--sans); overflow-wrap:anywhere; }
       .hub-page account-settings .passkey-list tonk-display { display:grid; gap:8px; }
       .hub-page account-settings .passkey-card { display:flex; align-items:center; gap:12px;
         min-height:64px; padding:16px; background:var(--wash); }
-      .hub-page account-settings .passkey-mark { width:28px; height:28px; flex:none;
-        border:2px solid currentColor; border-radius:50%; }
+      .hub-page account-settings .passkey-mark { width:28px; height:28px; padding:5px; flex:none; }
       .hub-page account-settings .passkey-card b { display:block; font:600 16px/1.4 var(--cond); }
       .hub-page account-settings .passkey-created { display:block; margin-top:2px;
         color:var(--soft); font:400 13px/1.5 var(--sans); }
       .hub-page account-settings .expl { max-width:60ch; margin:14px 0 0;
-        font:400 14px/1.55 var(--sans); }
+        font:400 15px/1.6 var(--sans); }
       .hub-page account-settings .panel-action,
       .hub-page account-settings .switch-account { display:flex; align-items:center;
         justify-content:space-between; gap:16px; width:100%; min-height:48px;
         margin-top:20px; padding:12px 16px; border:0; background:var(--wash);
         color:var(--ink); font:600 16px/1.25 var(--cond); text-align:left;
         text-decoration:none; text-transform:none; }
+      .hub-page account-settings .switch-account { min-height:64px; margin:0 0 8px;
+        padding:16px; font:500 16px/1.4 var(--cond); }
+      .hub-page account-settings .switch-account:disabled { opacity:1; cursor:default; }
+      .hub-page account-settings .switch-state { margin-left:auto; font:400 14px/1.4 var(--cond); }
+      .hub-page account-settings .switch-account:not(:disabled) .switch-state::after { content:" ↗"; }
+      .hub-page account-settings .signout-panel .panel-action { width:fit-content; }
       .hub-page account-settings .primary-action { background:var(--ink); color:var(--on-ink);
         justify-content:center; }
-      .hub-page account-settings .switch-list tonk-display { display:grid; gap:8px; }
-      .hub-page account-settings .switch-account { margin:0; }
-      .hub-page account-settings .switch-account:disabled { opacity:1; cursor:default; }
-      .hub-page account-settings .switch-state { color:var(--soft); font-weight:400; }
       .hub-page account-settings .settings-heading { display:flex; align-items:center;
         justify-content:space-between; gap:16px; }
       .hub-page account-settings .settings-heading h2 { margin:0; }
-      .hub-page account-settings .connections-panel,
       .hub-page account-settings .danger-panel { grid-column:1 / -1; }
       .hub-page account-settings .danger-panel { display:flex; align-items:center;
         justify-content:space-between; gap:24px; }
@@ -532,8 +554,9 @@ view!:
 
       /* ── the spaces collection ── */
       .stack { width:100%; display:grid;
-        grid-template-columns:repeat(auto-fill,minmax(min(100%, 260px),1fr));
-        gap:34px 26px; }
+        grid-template-columns:repeat(3,minmax(0,1fr)); gap:34px 26px;
+        padding:25px 24px 22px; border:1px solid var(--sep);
+        background:var(--collection); }
       .stack[hidden] { display:none; }
       /* The account cell while its name is still replicating: a <wa-skeleton>
          standing in for the name that has not arrived. A name is a fact; until
@@ -563,9 +586,10 @@ view!:
       @keyframes tonk-sheen {
         from { background-position:200% 0; }
         to { background-position:-200% 0; } }
-      .srow-wrap { position:relative; min-width:0; border:1px solid var(--ink);
+      .srow-wrap { position:relative; display:flex; flex-direction:column; min-width:0; border:1px solid var(--ink);
         background:var(--card); --fr-r:0px; --fr-b:0px; --fr-fb:1;
         --fr-l:0px; --fr-fl:0; }
+      .srow-wrap:nth-of-type(3n+2) { top:7px; }
       .srow-wrap::before { content:""; position:absolute; z-index:0; pointer-events:none;
         top:-1px; right:calc(-1px - var(--fr-r)); bottom:calc(-1px - var(--fr-b));
         left:calc(-1px - var(--fr-l));
@@ -573,22 +597,22 @@ view!:
           linear-gradient(var(--ink),var(--ink)) left bottom/calc(var(--fr-l) + var(--fr-fb)*(100% - var(--fr-l) - var(--fr-r))) var(--fr-b) no-repeat,
           linear-gradient(var(--ink),var(--ink)) left bottom/var(--fr-l) calc(var(--fr-b) + var(--fr-fl)*(100% - var(--fr-b))) no-repeat; }
       .srow { position:relative; z-index:1; display:flex; flex-direction:column;
-        min-height:210px; cursor:pointer; text-decoration:none; color:var(--ink);
+        flex:1; min-height:0; cursor:pointer; text-decoration:none; color:var(--ink);
         background:var(--card); }
       .srow:hover .n { text-decoration:underline; text-underline-offset:4px; }
       .space-preview { position:relative; height:150px; overflow:hidden;
-        border-bottom:1px solid var(--ink); background:var(--panel); }
+        flex:none; border-bottom:1px solid var(--ink); background:var(--panel); }
       .space-preview::before, .space-preview::after { content:""; position:absolute;
         background:color-mix(in srgb, var(--ink) 13%, var(--card)); filter:blur(7px); }
       .space-preview::before { width:72%; height:58%; inset:10% auto auto -8%; }
       .space-preview::after { width:55%; height:80%; inset:auto -12% -22% auto;
         background:color-mix(in srgb, var(--ink) 7%, var(--page)); }
-      .space-caption { display:flex; align-items:center; min-height:60px; padding:13px 18px; }
-      .space-caption { flex-direction:column; align-items:flex-start; justify-content:center; gap:4px; }
-      .srow .n { min-width:0; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
-        text-transform:none; font-family:var(--sans); font-size:19px; font-weight:500; }
-      .space-description { max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
-        color:var(--soft); font-family:var(--sans); font-size:13px; font-weight:400;
+      .space-caption { display:flex; flex:1; min-height:60px; padding:16px 19px 22px;
+        flex-direction:column; align-items:flex-start; justify-content:flex-start; gap:9px; }
+      .srow .n { letter-spacing:-.02em; min-width:0; max-width:100%; overflow-wrap:anywhere;
+        text-transform:none; font:300 27px/1.1 Gestalte,Georgia,serif; }
+      .space-description { max-width:225px; overflow-wrap:anywhere; line-height:1.5;
+        color:var(--soft); font-family:var(--cond); font-size:12px; font-weight:400;
         text-transform:none; }
       .space-description:empty { display:none; }
       /* a space still seeding, and one this device has not replicated:
@@ -596,24 +620,33 @@ view!:
       .srow-wrap[data-presence="case:seeding"] .srow .n,
       .srow-wrap[data-presence="case:remote"] .srow .n { color:var(--soft); }
       .verbs { position:relative; z-index:1; display:flex; justify-content:flex-end;
-        gap:18px; min-height:44px; padding:0 12px; border-top:1px solid var(--sep);
+        gap:18px; min-height:49px; margin:0 19px 9px; padding:5px 0 0; border-top:1px solid var(--sep);
         color:var(--soft); background:var(--card); }
       space-actions { position:relative; z-index:2; display:block; }
       space-remove { display:contents; }
       .verbs button { display:inline-flex; min-width:44px; min-height:44px;
-        align-items:center; justify-content:center;
-        color:inherit; font:inherit; letter-spacing:inherit;
+        align-items:center; justify-content:flex-end; gap:6px;
+        color:inherit; font:500 12px/1 var(--cond); letter-spacing:normal;
         text-transform:lowercase; cursor:pointer; }
+      [data-space-actions-open]::after { content:"▾"; font-size:12px; transition:transform .15s; }
+      [data-space-actions-open][aria-expanded="true"]::after { transform:rotate(180deg); }
       .verbs button:hover { color:var(--ink);
         text-decoration:underline; text-underline-offset:3px; }
       .verbs button:disabled { opacity:.55; cursor:wait; text-decoration:none; }
-      .space-menu { position:absolute; z-index:8; right:10px; bottom:44px; width:180px;
-        padding:6px; background:var(--frost-solid); color:var(--ink);
+      .srow-wrap:has(.space-menu[open="true"]) { z-index:10; }
+      .space-menu { position:fixed; z-index:8; width:184px;
+        max-width:calc(100vw - 16px); padding:5px; border:1px solid var(--ink);
+        background:var(--frost-solid); color:var(--ink);
         box-shadow:0 0 0 1px var(--ring); }
       .space-menu[open="false"] { display:none; }
       .space-menu tonk-share, .space-menu space-remove { display:contents; }
       .space-menu button { display:flex; width:100%; min-height:44px; align-items:center;
-        padding:8px 10px; color:inherit; font:600 13px/1 var(--cond); text-align:left; }
+        padding:10px 12px; gap:16px; color:inherit; font:400 14px/1 var(--cond); text-align:left; }
+      .space-menu .verb-remove { border-top:1px solid var(--sep); margin-top:4px; }
+      .space-menu::before { content:""; position:absolute; pointer-events:none;
+        top:-1px; right:-5px; bottom:-5px; left:-1px;
+        background:linear-gradient(var(--ink),var(--ink)) right top/4px 100% no-repeat,
+          linear-gradient(var(--ink),var(--ink)) left bottom/66.667% 4px no-repeat; z-index:-1; }
       .space-menu button:hover, .space-menu button:focus-visible { background:var(--wash); }
       .space-menu [data-share-copy-label] { display:none; }
       .space-menu tonk-share:not([data-share-state]) [data-share-copy-label="idle"],
@@ -624,27 +657,41 @@ view!:
       .space-menu tonk-share[data-share-state="failed"] [data-share-copy-label="failed"] { display:inline; }
       /* creation is the collection's final card and the header's primary action */
       space-create { display:block; }
-      .stack > space-create { min-height:252px; }
+      .stack > space-create { min-height:0; }
       .stack > space-create > .snew { min-height:100%; }
+      .stack > space-create > .snew { flex-direction:column; gap:18px;
+        border:1px dashed var(--sep); background:transparent; color:var(--ink);
+        box-shadow:none; font:400 15px/1.2 var(--cond); }
+      .stack > space-create > .snew .g { order:-1; font:300 40px/1 Gestalte,Georgia,serif; }
+      .stack > space-create > .snew:hover { background:var(--wash); }
       .snew { display:flex; align-items:center; justify-content:center; gap:8px;
         width:100%; height:100%; padding:20px; background:var(--ink);
         color:var(--on-ink); box-shadow:0 0 0 1px var(--ink); cursor:pointer; }
       .snew:hover { background:linear-gradient(var(--wash-p),var(--wash-p)), var(--ink); }.remove-form { margin:0; font-family:var(--sans); font-weight:600;
         font-size:13.5px; line-height:1.6; text-transform:none; }
-      .space-create-form { display:grid; gap:18px; min-width:min(460px,calc(100vw - 64px));
+      .space-create-form { display:grid; gap:19px; width:100%; min-width:0;
         margin:0; font-family:var(--sans); text-transform:none; }
       .space-create-field { display:grid; gap:7px; }
-      .space-create-field span { font:600 13px/1.2 var(--cond); text-transform:lowercase; }
+      .space-create-field span { font:500 13px/1.2 var(--cond); text-transform:lowercase; }
       .space-create-field input, .space-create-field textarea { width:100%; min-height:48px;
-        padding:11px 12px; border:1px solid var(--ring); border-radius:0;
+        padding:10px; border:1px solid var(--ring); border-radius:0;
         background:var(--card); color:var(--ink); font:400 16px/1.4 var(--sans); }
-      .space-create-field textarea { min-height:96px; resize:vertical; }
+      .space-create-field textarea { min-height:84px; resize:vertical; }
       .space-create-field input:focus-visible, .space-create-field textarea:focus-visible {
-        outline:2px solid var(--ink); outline-offset:2px; box-shadow:none; }
+        outline:none; border-color:var(--ink); box-shadow:0 0 0 2px var(--ink); }
       .space-create-help, .space-create-error { margin:0; color:var(--soft);
         font:400 13px/1.45 var(--sans); }
       .space-create-error { color:var(--ink); min-height:1.45em; }
       .space-create-error:empty { min-height:0; }
+      .hub-page tonk-dialog[appearance="hub"] {
+        --fabb-panel:var(--card); --fabb-ink:var(--ink);
+        --fabb-ink-soft:var(--soft); --fabb-on-ink:var(--on-ink);
+        --fabb-ring:var(--ring); --fabb-dim:var(--dim); }
+      .hub-page tonk-dialog[appearance="hub"] .m-cancel,
+      .hub-page tonk-dialog[appearance="hub"] .m-go {
+        min-width:0; min-height:44px; height:auto; padding:10px 18px;
+        align-items:center; justify-content:center; box-shadow:none;
+        font:600 15px/1.2 var(--cond); }
       .m-cancel { display:flex; align-items:flex-end; justify-content:flex-end;
         min-width:144px; height:36px; padding:0 10px 9px 24px; border:0;
         background:var(--card); color:var(--ink); font:inherit; font-size:13px;
@@ -667,6 +714,7 @@ view!:
         padding:16px 20px; background:var(--ink); color:var(--on-ink);
         font:400 17px/1.45 var(--cond); }
       .account-email-notice[data-account-status="case:registered"] { display:flex; }
+      .hub-page:has(hub-bar[path="/account"]) .account-email-notice { display:none; }
       .account-email-notice button { min-height:44px; padding:10px 12px; color:inherit;
         font:600 15px/1.15 var(--cond); text-decoration:underline;
         text-underline-offset:3px; white-space:nowrap; }
@@ -676,29 +724,48 @@ view!:
         .verbs { gap:24px; }
         .verbs button:hover, .verbs .verb-remove:hover { text-decoration:none; }
       }
+      @media (min-width:601px) and (max-width:1100px) {
+        .srow .n { font-size:25px; }
+        .space-caption { padding:14px 14px 22px; }
+        .verbs { margin-right:14px; margin-left:14px; }
+      }
+      @media (min-width:601px) and (max-width:900px) {
+        .hub-header { padding:0 24px; }
+        .hubcol { width:calc(100vw - 48px); }
+        .stack { grid-template-columns:repeat(2,minmax(0,1fr)); }
+      }
       @media (max-width:600px) {
-        .hub-header { width:calc(100vw - 32px); min-height:72px; justify-content:center; }
+        .hub-header { min-height:72px; padding:0 16px; justify-content:center; }
         .hub-logo svg { width:98px; }
         .hub-header hub-bar { display:none; }
-        .hubcol { width:calc(100vw - 32px); margin:24px auto 118px; }
-        .stack { grid-template-columns:1fr; gap:16px; }
-        .srow-wrap { --fr-r:var(--fr-r-mobile,0px); --fr-b:var(--fr-b-mobile,0px);
+        .hubcol { width:calc(100vw - 32px); margin:12px auto 118px; }
+        .stack { grid-template-columns:1fr; gap:16px; padding:13px 10px 16px; }
+        .srow-wrap:nth-of-type(3n+2) { top:0; }
+        .srow-wrap { display:grid; grid-template-columns:minmax(0,1fr) 67px; --fr-r:var(--fr-r-mobile,0px); --fr-b:var(--fr-b-mobile,0px);
           --fr-l:var(--fr-l-mobile,0px); }
         .srow { min-height:64px; display:grid; grid-template-columns:64px minmax(0,1fr); }
-        .space-preview { height:64px; border-bottom:0; border-right:1px solid var(--ink); }
+        .space-preview { height:100%; min-height:64px; border-bottom:0; border-right:1px solid var(--ink); }
         .space-preview::before, .space-preview::after { filter:blur(4px); }
-        .space-caption { min-height:64px; padding:8px 12px; }
-        .srow .n { font-size:16px; }
-        .verbs { min-height:44px; align-items:center; padding:7px 12px; }
-        .stack > space-create { min-height:76px; }
+        .space-caption { min-height:64px; padding:8px 10px; gap:5px; justify-content:center; }
+        .srow .n { font:500 16px/1.2 var(--sans); }
+        .space-description { min-width:0; max-width:100%; font:400 11px/1.4 var(--sans);
+          display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical; overflow:hidden; }
+        .space-description:empty { display:none; }
+        .srow-wrap > space-actions { display:flex; align-items:center; }
+        .verbs { min-height:44px; margin:0; padding:0 10px 0 0; border:0; }
+        .verbs button { min-width:57px; }
+        .stack > space-create { display:none; }
         .mobile-nav { position:fixed; z-index:30; inset:auto 0 0; display:grid;
           grid-template-columns:1fr 1.25fr 1fr; gap:7px; padding:7px 12px
           calc(7px + env(safe-area-inset-bottom,0px)); background:var(--frost-solid);
           border-top:1px solid var(--ring); }
         .mobile-nav > a, .mobile-nav > space-create { min-width:0; min-height:54px; }
         .mobile-nav > a, .mobile-nav button { display:flex; width:100%; min-height:54px;
-          align-items:center; justify-content:center; gap:7px; padding:8px;
-          font:600 13px/1 var(--cond); }
+          flex-direction:column; align-items:center; justify-content:center; gap:3px; padding:8px;
+          font:500 13px/1 var(--cond); }
+        .nav-mark { display:grid; place-items:center; width:20px; height:20px; font:20px/1 var(--sans); }
+        .nav-square::before { content:""; width:10px; height:10px; background:currentColor; }
+        .nav-person::before { content:""; width:12px; height:12px; border-radius:50%; background:currentColor; }
         .mobile-nav [aria-current="page"] { background:var(--wash); }
         .mobile-nav .mobile-create { background:var(--ink); color:var(--on-ink); }
         .account-email-notice { right:16px; bottom:calc(82px + env(safe-area-inset-bottom,0px));
@@ -706,7 +773,9 @@ view!:
         .account-email-notice button { margin-left:auto; white-space:normal; }
         .account-menu__row { min-height:44px; }
         .hub-page > .hub-logo { margin-top:20px; }
-        .hubcol:has(.settings) { margin-top:20px; }
+        .hub-page:has(hub-bar[path^="/settings"]) .hubcol { margin-top:20px; }
+        .settings-title { font-size:40px; }
+        .settings-back { position:static; align-self:flex-end; margin-bottom:12px; }
         .hubcol:has(.settings) > hub-bar > .hubbar { display:none; }
         .settings { margin-top:0; }
         .hub-page account-settings .account-panels { grid-template-columns:1fr; gap:16px; }
@@ -720,14 +789,16 @@ view!:
          section shows, and the section says whether its rows are for a
          browser with an account here or without one. */
       .hub-page:has(hub-bar[path^="/settings"]) [data-spaces-view],
-      .hub-page:has(hub-bar[path="/account"]) [data-spaces-view] { display:none; }
+      .hub-page:has(hub-bar[path="/account"]):has(account-settings[data-linked="true"]):not(:has(account-settings[data-linking="true"])) [data-spaces-view] { display:none; }
       .hub-page:not(:has(hub-bar[path^="/settings"])):not(:has(hub-bar[path="/account"])) [data-settings-view] { display:none; }
       account-settings:not([data-linked="true"]) [data-when-linked] { display:none; }
-      /* an account page with no account lists nothing: only the cluster shows */
+      /* An unlinked account opens its ceremony over the spaces collection. */
       .hub-page:has(hub-bar[path="/account"]) [data-settings-view]:has(account-settings:not([data-linked="true"])) { display:none; }
+      .hub-page:has(account-settings[data-linking="true"]) [data-settings-view] { display:none; }
   show:
     directory: |
-        <hub-collection class="stack chrome" data-spaces-view aria-label="spaces">
+        <hub-collection class="stack chrome" with="main@profile:tonk"
+          data-spaces-view aria-label="spaces">
           <link rel="stylesheet" with:src="ui">
           <!-- No empty-state bar. An account with no spaces and an
                account whose spaces are still arriving look identical
@@ -764,7 +835,7 @@ view!:
                   data-space-owner={owner}>
                   <button class="verb-remove" type="button" role="menuitem"
                     data-space-remove-open disabled>checking&hellip;</button>
-                  <tonk-dialog data-space-remove-dialog heading="confirm leaving space">
+                  <tonk-dialog appearance="hub" data-space-remove-dialog heading="confirm leaving space">
                     <form id="remove-{subject}" class="remove-form" on:space-remove=space/remove data-remove={subject}>
                       Leave {name}? This removes the space and its local data from this
                       device. You'll need another invite link to join again. Other
@@ -775,10 +846,10 @@ view!:
                   </tonk-dialog>
                 </space-remove>
               </hub-menu>
-              <tonk-dialog data-space-rename-dialog heading="rename space">
+              <tonk-dialog appearance="hub" data-space-rename-dialog heading="Rename space">
                 <form id="rename-{subject}" class="space-create-form" data-space-rename-form
                   data-space={subject} on:repository-rename-submit=tonk/rename-repository>
-                  <label class="space-create-field"><span>name</span><input name="name" type="text"
+                  <label class="space-create-field"><span>space name</span><input name="name" type="text"
                     value={name} required maxlength="100" autocomplete="off" data-space-rename-input></label>
                   <p class="space-create-error" data-space-rename-error role="alert"></p>
                 </form>
@@ -789,14 +860,13 @@ view!:
             </space-actions>
           </div>
           <space-create>
-            <button class="snew chrome" type="button" data-new-space data-space-create-open>create new space<span class="g" aria-hidden="true">+</span></button>
-            <tonk-dialog data-space-create-dialog heading="new space">
+            <button class="snew chrome" type="button" data-new-space data-space-create-open>new space<span class="g" aria-hidden="true">+</span></button>
+            <tonk-dialog appearance="hub" data-space-create-dialog heading="New space">
               <form id="create-space-card" class="space-create-form" data-space-create-form
                 on:space-create=space/create>
-                <label class="space-create-field"><span>name</span><input name="name" type="text" required maxlength="100" autocomplete="off"></label>
-                <label class="space-create-field"><span>description <small>(optional)</small></span><textarea name="description" maxlength="240"></textarea></label>
+                <label class="space-create-field"><span>space name</span><input name="name" type="text" required maxlength="100" autocomplete="off"></label>
+                <label class="space-create-field"><span>a short description <small>/ optional</small></span><textarea name="description" maxlength="240"></textarea></label>
                 <input type="hidden" name="open" value="true">
-                <p class="space-create-help">You can change these later.</p>
                 <p class="space-create-error" data-space-create-error role="alert"></p>
               </form>
               <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
@@ -1491,7 +1561,7 @@ view!:
         </button>
       </div>
     settings: |
-      <button class="switch-account" type="button" data-id={this} data-settings-profile
+      <button class="switch-account" type="button" data-id={this} data-settings-profile data-profile={name}
         data-handle={name} data-active={active} on:switch-profile=tonk:switch-profile>
         <span>{label}</span><span class="switch-state" data-switch-state>switch</span>
       </button>
@@ -1705,7 +1775,7 @@ element!: &hub-menu
         const next = at < 0
           ? (step > 0 ? 0 : items.length - 1)
           : (at + step + items.length) % items.length;
-        items[next].focus();
+        items[next].focus({ preventScroll: true });
       }
     # The opener is whatever points at this menu with `aria-controls`.
     # Read from the DOM rather than remembered, so a menu re-rendered
@@ -1715,10 +1785,45 @@ element!: &hub-menu
         const id = self.getAttribute('id');
         return id ? document.querySelector(`[aria-controls="${id}"]`) : null;
       }
+    place: |
+      (self, trigger) => {
+        const viewport = window.visualViewport;
+        const leftEdge = viewport?.offsetLeft ?? 0;
+        const topEdge = viewport?.offsetTop ?? 0;
+        const rightEdge = leftEdge + (viewport?.width ?? window.innerWidth);
+        const nav = document.querySelector('.mobile-nav')?.getBoundingClientRect();
+        const bottomEdge = Math.min(topEdge + (viewport?.height ?? window.innerHeight),
+          nav?.height > 0 ? nav.top : Infinity);
+        const margin = 8;
+        const gap = 5;
+        const target = trigger.getBoundingClientRect();
+        self.style.maxHeight = `${Math.max(44, bottomEdge - topEdge - margin * 2)}px`;
+        self.style.overflowY = 'auto';
+        const width = self.offsetWidth;
+        const height = self.offsetHeight;
+        const left = Math.max(leftEdge + margin,
+          Math.min(target.right - width, rightEdge - width - margin));
+        const below = target.bottom + gap;
+        const above = target.top - height - gap;
+        const top = below + height <= bottomEdge - margin ? below
+          : above >= topEdge + margin ? above
+          : Math.max(topEdge + margin, Math.min(below, bottomEdge - height - margin));
+        self.style.left = `${left}px`;
+        self.style.top = `${top}px`;
+      }
     open: |
       (self) => {
         self.setAttribute('open', 'true');
-        self.opener()?.setAttribute('aria-expanded', 'true');
+        const trigger = self.opener();
+        if (trigger) {
+          trigger.setAttribute('aria-expanded', 'true');
+          self.place(trigger);
+        }
+        self._viewportChanged ??= () => self.close(false);
+        window.addEventListener('scroll', self._viewportChanged, { passive: true });
+        window.addEventListener('resize', self._viewportChanged);
+        window.visualViewport?.addEventListener('scroll', self._viewportChanged, { passive: true });
+        window.visualViewport?.addEventListener('resize', self._viewportChanged);
         self.move(1);
       }
     # Closing returns focus to the opener, which is what makes the menu a
@@ -1727,6 +1832,12 @@ element!: &hub-menu
     close: |
       (self, restoreFocus) => {
         self.setAttribute('open', 'false');
+        if (self._viewportChanged) {
+          window.removeEventListener('scroll', self._viewportChanged);
+          window.removeEventListener('resize', self._viewportChanged);
+          window.visualViewport?.removeEventListener('scroll', self._viewportChanged);
+          window.visualViewport?.removeEventListener('resize', self._viewportChanged);
+        }
         const trigger = self.opener();
         if (!trigger) return;
         trigger.setAttribute('aria-expanded', 'false');
@@ -1738,11 +1849,11 @@ element!: &hub-menu
           switch (event.key) {
             case 'ArrowDown': event.preventDefault(); self.move(1); break;
             case 'ArrowUp': event.preventDefault(); self.move(-1); break;
-            case 'Home': event.preventDefault(); self.items()[0]?.focus(); break;
+            case 'Home': event.preventDefault(); self.items()[0]?.focus({ preventScroll: true }); break;
             case 'End': {
               event.preventDefault();
               const items = self.items();
-              items[items.length - 1]?.focus();
+              items[items.length - 1]?.focus({ preventScroll: true });
               break;
             }
             case 'Escape': {
@@ -1789,15 +1900,16 @@ concept!: &account/passkey
 view!:
   this: tonk:account/registered
   show:
+    email: |
+      <div class="settings-field">
+        <span>account email</span>
+        <b data-settings-email>{email}</b>
+      </div>
     settings: |
       <div data-account-registered>
         <section class="settings-panel details-panel">
           <h2>Your details</h2>
           <tonk-display model="tonk:account/name" view="editable"></tonk-display>
-          <div class="settings-field">
-            <span>account email</span>
-            <b data-settings-email>{email}</b>
-          </div>
         </section>
         <section class="settings-panel passkeys-panel">
           <h2>Passkeys</h2>
@@ -1807,7 +1919,7 @@ view!:
             profile, or password manager.
           </p>
           <button class="cta panel-action" type="button" data-add-passkey data-account="tonk:add-passkey"
-            on:add-passkey=tonk:add-passkey>add a passkey with the current one <span aria-hidden="true">+</span></button>
+            on:add-passkey=tonk:add-passkey>add a passkey <span aria-hidden="true">+</span></button>
         </section>
         <!-- The deletion dialog lives on the registration because the
              command carries the verified address, stamped on the submit
@@ -1859,6 +1971,7 @@ view!:
           aria-describedby="account-display-name-error">
         <p id="account-display-name-error" class="form-error" data-profile-rename-error
           role="alert" hidden></p>
+        <tonk-display model="tonk:account/registered" view="email"></tonk-display>
         <button class="cta primary-action" type="submit" data-profile-rename-submit>save changes</button>
       </form>
 
@@ -1867,7 +1980,7 @@ view!:
   show:
     directory: |
       <div class="passkey-card" data-id={this}>
-        <span class="passkey-mark" aria-hidden="true"></span>
+        <svg class="passkey-mark" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="9" r="4"></circle><path d="m11 12 8 8m-2-2 3-3m-6 0 3-3"></path></svg>
         <span><b data-settings-passkey-device>{created-on}</b>
           <span class="passkey-created">created <span data-settings-passkey-created>{created-at}</span></span></span>
       </div>
@@ -1877,7 +1990,7 @@ view!:
 # mounts a space. Re-running it over the same ordered subjects gives the same
 # CSS variables, including after a fact-driven rerender.
 element!: &hub-collection
-  description: A responsive space-card collection with stable decorative frames.
+  description: A space-card collection with stable decorative frames.
   method:
     hash: |
       (self, value) => {
@@ -1930,7 +2043,7 @@ element!: &hub-collection
           }
         });
         const desktop = { 1: 0, 3: 2, 7: 6, 15: 14 };
-        const mobile = { 1: 0, 3: 1, 7: 3, 15: 6 };
+        const mobile = { 1: 0, 3: 2, 7: 4, 15: 7 };
         cards.forEach((card, index) => {
           const frame = frames[index];
           card.style.setProperty('--fr-r', `${desktop[frame.right]}px`);
@@ -1946,8 +2059,7 @@ element!: &hub-collection
     connected: |
       (self) => {
         self.deal();
-        if (self.__wired) return;
-        self.__wired = true;
+        self._observer?.disconnect();
         const observer = new MutationObserver(() => self.deal());
         observer.observe(self, { childList: true, subtree: true, attributes: true,
           attributeFilter: ['data-space-subject'] });
@@ -2105,13 +2217,12 @@ view!:
           <nav class="hubbar chrome" aria-label="hub">
             <space-create class="header-new">
               <button class="snew chrome" type="button" data-new-space data-space-create-open>new space<span class="g" aria-hidden="true">+</span></button>
-              <tonk-dialog data-space-create-dialog heading="new space">
+              <tonk-dialog appearance="hub" data-space-create-dialog heading="New space">
                 <form id="create-space-header" class="space-create-form" data-space-create-form
                   on:space-create=space/create>
-                  <label class="space-create-field"><span>name</span><input name="name" type="text" required maxlength="100" autocomplete="off"></label>
-                  <label class="space-create-field"><span>description <small>(optional)</small></span><textarea name="description" maxlength="240"></textarea></label>
+                  <label class="space-create-field"><span>space name</span><input name="name" type="text" required maxlength="100" autocomplete="off"></label>
+                  <label class="space-create-field"><span>a short description <small>/ optional</small></span><textarea name="description" maxlength="240"></textarea></label>
                   <input type="hidden" name="open" value="true">
-                  <p class="space-create-help">You can change these later.</p>
                   <p class="space-create-error" data-space-create-error role="alert"></p>
                 </form>
                 <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
@@ -2126,7 +2237,7 @@ view!:
                  branch. The link row says whether THIS DEVICE holds the
                  account here; the name renders through it. Directory
                  mode (no `entity=`), where an absent row is `empty`. -->
-            <a class="hcell hc-acct account-trigger" href="/account" data-account-trigger>
+            <a class="hcell hc-acct account-trigger" href="/settings" data-account-trigger>
               <span data-account-label><tonk-display model="state:account-link" view="label" data-account-link
                 ><span slot="empty">add an account</span></tonk-display></span>
             </a>
@@ -2144,54 +2255,25 @@ view!:
                its hover and its focus across the move. -->
           <tonk-display model="space"></tonk-display>
         <section class="settings chrome" data-settings-view>
+            <a class="settings-back" href="/" data-return-spaces>‹ back to spaces</a>
+            <h1 class="settings-title">account settings</h1>
             <account-settings>
               <div class="s-body">
-                <!-- /account: the account's choices. Settings is a link to its
-                     page; the other accounts on this browser switch;
-                     `data-add-profile` rotates onto a fresh branch and the worker
-                     reloads this tab onto it, where the page, having no account,
-                     raises the ceremony itself. A browser with no account here
-                     is shown the sign-in cluster and nothing to list. -->
-                <div class="pane" data-pane="menu" hidden>
-                  <div class="account-menu__profiles-seat" data-account-menu>
-                    <a class="account-menu__row" href="/settings" data-open-settings data-when-linked>
-                      settings
-                      <svg class="settings-icon" viewBox="0 0 9 9" aria-hidden="true">
-                        <g stroke="currentColor" stroke-width="1.2">
-                          <line x1="0" y1="2.5" x2="9" y2="2.5"></line>
-                          <line x1="0" y1="6.5" x2="9" y2="6.5"></line>
-                        </g>
-                        <rect x="5" y="1" width="3" height="3" fill="currentColor"></rect>
-                        <rect x="1" y="5" width="3" height="3" fill="currentColor"></rect>
-                      </svg>
-                    </a>
-                    <span data-when-linked><tonk-display model="tonk:profile/row"></tonk-display></span>
-                    <button class="account-menu__row account-menu__row--ink" type="button"
-                      data-add-profile on:add-profile=tonk:add-profile data-when-linked>
-                      add account<span class="g" aria-hidden="true">+</span>
-                    </button>
-                  </div>
-                </div>
                 <div class="pane" data-pane="account">
                   <div class="account-panels">
                     <tonk-display model="tonk:account/registered" view="settings"></tonk-display>
-                    <section class="settings-panel switch-panel">
-                      <h2>Switch account</h2>
-                      <div class="switch-list"><tonk-display model="tonk:profile/row" view="settings"></tonk-display></div>
-                      <button class="cta panel-action" type="button" data-add-profile
-                        on:add-profile=tonk:add-profile>add account <span aria-hidden="true">+</span></button>
-                    </section>
-                    <section class="settings-panel signout-panel">
-                      <h2>Sign out</h2>
-                      <p>Disconnect this account. Keep local spaces on this device.</p>
-                      <button class="cta panel-action" type="button" data-sign-out-open>sign out on this device</button>
-                    </section>
                     <section class="settings-panel connections-panel" data-agent-connections hidden aria-label="agent access">
-                      <div class="settings-heading"><h2>Agent access</h2><button class="cta" type="button" data-connections-refresh>refresh</button></div>
+                      <div class="settings-heading"><h2>Agent access</h2>
+                        <button class="cta" type="button" data-connections-refresh>refresh</button></div>
                       <p class="expl">Each invite grants access to one space. Anyone holding a copy can use it. A confirmation records completed setup, not a currently connected process.</p>
                       <p class="expl">Revoking an invite affects all its holders and delegated access. Enforcement can take time to reach the service; already downloaded data stays with its holders.</p>
                       <p class="expl" data-connections-status role="status" aria-live="polite"></p>
                       <div data-connections-list></div>
+                    </section>
+                    <section class="settings-panel signout-panel">
+                      <h2>Sign out</h2>
+                      <p>Disconnect this account. Keep local spaces on this device.</p>
+                      <button class="cta panel-action" type="button" data-sign-out-open>sign out on this device <span aria-hidden="true">↗</span></button>
                     </section>
                     <section class="settings-panel danger-panel">
                       <div><h2>Delete account</h2><p>Permanently delete all data associated with this account.</p></div>
@@ -2245,23 +2327,22 @@ view!:
         </main>
         <tonk-display model="tonk:account/status" view="notice"></tonk-display>
         <nav class="mobile-nav" aria-label="main navigation">
-          <a href="/" data-return-spaces>spaces</a>
+          <a href="/" data-return-spaces><span class="nav-mark nav-square" aria-hidden="true"></span>spaces</a>
           <space-create>
-            <button class="mobile-create" type="button" data-new-space data-space-create-open><span aria-hidden="true">+</span>new space</button>
-            <tonk-dialog data-space-create-dialog heading="new space">
+            <button class="mobile-create" type="button" data-new-space data-space-create-open><span class="nav-mark" aria-hidden="true">+</span>new space</button>
+            <tonk-dialog appearance="hub" data-space-create-dialog heading="New space">
               <form id="create-space-mobile" class="space-create-form" data-space-create-form
                 on:space-create=space/create>
-                <label class="space-create-field"><span>name</span><input name="name" type="text" required maxlength="100" autocomplete="off"></label>
-                <label class="space-create-field"><span>description <small>(optional)</small></span><textarea name="description" maxlength="240"></textarea></label>
+                <label class="space-create-field"><span>space name</span><input name="name" type="text" required maxlength="100" autocomplete="off"></label>
+                <label class="space-create-field"><span>a short description <small>/ optional</small></span><textarea name="description" maxlength="240"></textarea></label>
                 <input type="hidden" name="open" value="true">
-                <p class="space-create-help">You can change these later.</p>
                 <p class="space-create-error" data-space-create-error role="alert"></p>
               </form>
               <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
               <button class="m-go" slot="actions" type="submit" form="create-space-mobile" data-space-create-submit>create space</button>
             </tonk-dialog>
           </space-create>
-          <a href="/settings" data-account-nav>account</a>
+          <a href="/settings" data-account-nav><span class="nav-mark nav-person" aria-hidden="true"></span>account</a>
         </nav>
       </div>
 # The /settings route is the hub with its settings section showing: the
@@ -4134,6 +4215,7 @@ element!: &account-settings
     connections-refresh: |
       (self) => {
         const generation = String((Number(self.getAttribute('data-connections-generation')) || 0) + 1);
+        if (!self.linked() || self.context().path !== '/settings') return;
         self.setAttribute('data-connections-generation', generation);
         const current = () => self.isConnected && self.getAttribute('data-connections-generation') === generation;
         const list = self.querySelector('[data-connections-list]');
@@ -4356,10 +4438,6 @@ element!: &account-settings
         if (self.localLinkShow()) return;
         const request = self.linkRequest();
         if (!request) {
-          if (self.context().path === '/account') {
-            self.pane('menu');
-            return;
-          }
           self.pane('account');
           if (self.context().hash === '#delete-account') self.openDelete();
           self.connectionsRefresh();
@@ -4436,9 +4514,22 @@ element!: &account-settings
       (self) => {
         for (const button of self.querySelectorAll('[data-settings-profile]')) {
           const active = button.dataset.active === 'true';
-          button.disabled = active;
+          if (button.disabled !== active) button.disabled = active;
           const state = button.querySelector('[data-switch-state]');
-          if (state) state.textContent = active ? 'current' : 'switch';
+          const label = active ? 'current' : 'switch';
+          if (state && state.textContent !== label) state.textContent = label;
+        }
+      }
+    passkey-dates: |
+      (self) => {
+        for (const date of self.querySelectorAll('[data-settings-passkey-created]')) {
+          const seconds = Number(date.textContent.trim());
+          if (!Number.isFinite(seconds) || seconds <= 0) continue;
+          const created = new Date(seconds * 1000);
+          if (Number.isNaN(created.getTime())) continue;
+          date.textContent = new Intl.DateTimeFormat(undefined, {
+            month: 'short', day: 'numeric', year: 'numeric'
+          }).format(created);
         }
       }
     profile-name-submit: |
@@ -4543,11 +4634,9 @@ element!: &account-settings
       }
     unlink: |
       (self) => { self._shown = null; self.setAttribute('data-linking', 'false'); }
-    # Ask the top page to place the ceremony under the bar. `reason`
-    # distinguishes an opening from a move: a move must never open a
-    # cluster the person has just dismissed, and only a move needs a
-    # seat; an opening reaches the top page even before the bar has a
-    # rectangle, and an unseated ceremony opens where the top page puts it.
+    # Pass the opener's bounds to the trusted top page. `reason`
+    # distinguishes an opening from a move: a move must never reopen a
+    # ceremony the person has just dismissed.
     place: |
       (self, reason) => {
         const target = matchMedia('(max-width: 600px)').matches
@@ -4560,14 +4649,18 @@ element!: &account-settings
       }
     # The link state the account page's rows are keyed on, and the door:
     # the account page or the settings page with no account raises the
-    # ceremony itself once the link display has resolved empty. Signing
-    # up IS the cluster; with no account the account page lists nothing
-    # else. WebAuthn needs a `window` and a user gesture, which this
+    # ceremony itself once the link display has resolved empty. With no
+    # account the spaces collection stays behind the modal. WebAuthn needs
+    # a `window` and a user gesture, which this
     # opaque realm has neither of, so the top page raises it.
     door: |
       (self) => {
         const linked = self.linked() ? 'true' : self.unlinked() ? 'false' : '';
-        if (self.getAttribute('data-linked') !== linked) self.setAttribute('data-linked', linked);
+        const changed = self.getAttribute('data-linked') !== linked;
+        if (changed) self.setAttribute('data-linked', linked);
+        const trigger = document.querySelector('[data-account-trigger]');
+        const destination = linked === 'true' ? '/settings' : '/account';
+        if (trigger && trigger.getAttribute('href') !== destination) trigger.setAttribute('href', destination);
         const path = self.context().path;
         // Settings with no account here are the account page's business:
         // it is where signing up happens, so a bare settings path goes
@@ -4579,10 +4672,14 @@ element!: &account-settings
         }
         const account = path === '/account' || path.startsWith('/settings/');
         const linking = self.getAttribute('data-linking') === 'true';
+        if (linked === 'true' && path === '/account' && !linking) {
+          window.tonk?.navigate?.('/settings');
+          return;
+        }
+        if (changed && linked === 'true' && path === '/settings') self.connectionsRefresh();
         if (account && self.unlinked() && !linking) self.link('needs-account');
-        // A tab switch hides the standing ceremony, and a return shows
-        // it again with everything typed intact: the cluster is the
-        // account page's content, not the spaces page's.
+        // Route changes can suspend and restore the ceremony with its
+        // typed address intact.
         const shown = account ? 'show' : 'suspend';
         if (linking && self._shown !== shown) { self._shown = shown; self.place(shown); }
       }
@@ -4623,8 +4720,8 @@ element!: &account-settings
         });
         // The rows this words and counts arrive after connect and change
         // while the panel is up; one observer covers all three.
-        const rows = new MutationObserver(() => { self.describe(); self.scope(); self.arm(); self.profiles(); });
-        rows.observe(self, { childList: true, subtree: true, attributes: true,
+        const rows = new MutationObserver(() => { self.describe(); self.scope(); self.arm(); self.profiles(); self.passkeyDates(); });
+        rows.observe(self, { childList: true, characterData: true, subtree: true, attributes: true,
           attributeFilter: ['data-ceremony', 'data-ceremony-state', 'data-ceremony-detail', 'data-email'] });
         const opened = () => {
           if (self.hasAttribute('data-passkey-screen')) return;
@@ -4674,6 +4771,7 @@ element!: &account-settings
         self._moveSeat = moveSeat;
         self.describe();
         self.profiles();
+        self.passkeyDates();
       }
     disconnected: |
       (self) => {

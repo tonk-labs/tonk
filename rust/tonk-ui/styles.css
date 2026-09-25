@@ -3036,39 +3036,91 @@ tonk-notebook-index {
      hidden with its state intact, shown again on the switch back. After
      the [open] rule so it wins their specificity tie. */
   #tonk-register[data-suspended] { display: none; }
-  #tonk-register::backdrop { background: var(--dim); }
-  /* Anchored — the Hub's add-an-account tab raised it: the ceremony rows
-     ARE that tab's page, seated in the column one gap under the bar, so
-     there is no veil and no head row (the tab is the head). */
-  #tonk-register[data-anchored]::backdrop { background: transparent; }
-  /* The Hub bar lives in the routed iframe while this page lives in the top
-     document. A wheel over the only pointer-active part of the dialog (its
-     input column) must not scroll either realm out from under the other.
-     Release the page lock while the ceremony is suspended behind SPACES. */
+  #tonk-register::backdrop { background: var(--dim); backdrop-filter: blur(3px); }
+  /* Hub account work is a trusted modal over the spaces collection. */
   html:has(#tonk-register[data-anchored][open]:not([data-suspended])),
   body:has(#tonk-register[data-anchored][open]:not([data-suspended])) {
     overflow: hidden;
   }
-  /* Non-modal and full-viewport, the host would swallow every click —
-     including the bar tabs it sits under, which are the way OUT of the
-     page. Only the seated column is really here. */
-  #tonk-register[data-anchored] {
-    pointer-events: none;
-    overflow: hidden;
-    overscroll-behavior: none;
-  }
-  #tonk-register[data-anchored] .ocol { pointer-events: auto; }
+  #tonk-register[data-anchored] { overflow: hidden; }
+  #tonk-register[data-anchored]::backdrop { backdrop-filter: none; }
   #tonk-register[data-anchored] .ocol {
-    position: absolute; margin: 0;
-    left: var(--anchor-left, 0); top: var(--anchor-top, 0);
-    width: var(--anchor-width, 576px);
-    /* The Hub account menu remains mounted in the sealed guest while this
-       top-page ceremony replaces it. Paint the column's gaps as well as its
-       blocks so menu labels cannot show through between ceremony rows. */
-    background: var(--page);
-    box-shadow: 0 0 0 1px var(--page);
+    position: absolute; left: auto; top: var(--anchor-top, 86px);
+    right: max(16px, calc(100vw - var(--anchor-left, 0px) - var(--anchor-width, 0px)));
+    bottom: auto; margin: 0;
+    width: min(360px, calc(100vw - 32px));
+    max-height: calc(100dvh - 110px); overflow: auto;
+    display: flex; flex-flow: row wrap; align-content: flex-start;
+    border: 1.5px solid var(--ink); border-radius: 25px;
+    background: var(--modal, var(--card));
   }
-  #tonk-register[data-anchored] #tonk-register-head { display: none; }
+  #tonk-register[data-anchored] .ostack { display: contents; }
+  #tonk-register[data-anchored] .mblk { box-shadow: none; }
+  #tonk-register[data-anchored] .m-head {
+    box-sizing: border-box; flex: 0 0 100%;
+    min-height: 48px; height: 48px; padding: 0 18px;
+    align-items: center; gap: 16px;
+    background: var(--wash); font-size: 17px;
+  }
+  #tonk-register[data-anchored] .fabb-task-disc {
+    display: block; box-sizing: border-box;
+    width: 18px; height: 18px; flex: 0 0 18px;
+    background: var(--ink); border-radius: 50%;
+  }
+  #tonk-register[data-anchored] .fabb-task-title {
+    margin-left: auto; text-align: right;
+  }
+  #tonk-register[data-anchored] .orow {
+    box-sizing: border-box; flex: 0 0 100%;
+    min-height: 48px; height: auto; padding: 18px 18px 14px;
+    grid-template-rows: auto 48px; gap: 8px;
+    background: var(--wash);
+  }
+  #tonk-register[data-anchored] .orow.editing { min-height: 104px; }
+  #tonk-register[data-anchored] .orow.pre,
+  #tonk-register[data-anchored] .obtn.pre {
+    min-height: 0; height: 0; padding-top: 0; padding-bottom: 0;
+  }
+  #tonk-register[data-anchored] .orow.editing .k {
+    color: var(--ink); font: 600 17px/1.1 var(--cond);
+  }
+  #tonk-register[data-anchored] .orow.editing .v { align-items: stretch; }
+  #tonk-register[data-anchored] .orow.editing .ed {
+    box-sizing: border-box; min-height: 48px; height: 48px;
+    padding: 12px 14px 9px; border: 0;
+    background: var(--wash); font: 400 18px/1.5 var(--cond);
+  }
+  #tonk-register[data-anchored] .orow.editing .ed:focus-visible {
+    outline: 2px solid var(--ink); outline-offset: -2px;
+  }
+  #tonk-register[data-anchored] .oexp {
+    order: 90; box-sizing: border-box; flex: 0 0 100%;
+    min-height: 105px; margin: 0; padding: 10px 18px 18px;
+    border-top: 0; background: var(--wash);
+  }
+  #tonk-register[data-anchored] .oexp p {
+    font: 400 18px/1.5 var(--cond); letter-spacing: 0;
+    text-transform: none;
+  }
+  #tonk-register[data-anchored] .ghost,
+  #tonk-register[data-anchored] .obtn {
+    box-sizing: border-box; flex: 0 0 50%;
+    min-height: 48px; height: 48px; margin: 0;
+    padding: 12px 18px; border: 0;
+    font: 600 17px/1.1 var(--cond); letter-spacing: 0;
+    text-decoration: none;
+  }
+  #tonk-register[data-anchored] .ghost { order: 100; justify-content: flex-start; text-align: left; }
+  #tonk-register[data-anchored] .obtn {
+    order: 101; align-items: center; justify-content: flex-end;
+    opacity: 1;
+  }
+  @media (max-width: 600px) {
+    #tonk-register[data-anchored] .ocol {
+      top: auto; right: 16px; bottom: calc(82px + env(safe-area-inset-bottom, 0px));
+      max-height: calc(100dvh - 110px - env(safe-area-inset-bottom, 0px));
+    }
+  }
 
   /* In-space account work is a trusted modal occupying the FABB's translated
      seat. The guest chrome remains mounted for restoration but is hidden. */

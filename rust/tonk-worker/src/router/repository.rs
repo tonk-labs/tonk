@@ -1573,7 +1573,7 @@ mod connection_invite_disabled_tests {
     #[dialog_common::test]
     async fn disabled_build_publishes_an_explicit_refusal_without_a_bearer() {
         let state = crate::router::command::tests::native::test_state().await;
-        let repo = create_space_inner(&state, "Disabled tool connection")
+        let repo = create_space_inner(&state, "Disabled tool connection", None)
             .await
             .unwrap();
         let env = crate::router::CommandEnv::new(

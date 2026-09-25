@@ -169,9 +169,6 @@ fn it_keeps_the_handles_the_suite_drives_the_hub_by() {
     for handle in [
         "data-account-trigger",
         "data-account-label",
-        "data-account-menu",
-        "data-add-profile",
-        "data-open-settings",
         "data-return-spaces",
         "data-settings-name",
         "data-settings-email",
@@ -184,7 +181,9 @@ fn it_keeps_the_handles_the_suite_drives_the_hub_by() {
         let attribute = format!("{handle} ");
         let attribute_last = format!("{handle}>");
         assert!(
-            PROFILE_LIBRARY.contains(&attribute) || PROFILE_LIBRARY.contains(&attribute_last),
+            PROFILE_LIBRARY.contains(&attribute)
+                || PROFILE_LIBRARY.contains(&attribute_last)
+                || PROFILE_LIBRARY.contains(&format!("{handle}\n")),
             "`{handle}` is how the suite finds this control; without it the \
              test times out rather than saying what moved",
         );
@@ -279,7 +278,7 @@ fn it_names_the_menu_methods_open_and_close() {
     );
 }
 
-/// The account bar renders its name and switcher from facts.
+/// The account bar renders its name from facts.
 ///
 /// The bar used to be markup an element painted from a fetch, which is
 /// why "a signup is up" had to live on the document body: the route view
@@ -288,7 +287,7 @@ fn it_names_the_menu_methods_open_and_close() {
 /// rather than working around it.
 #[dialog_common::test]
 fn it_renders_the_account_bar_from_facts() {
-    for model in ["tonk:account/name", "tonk:profile/row"] {
+    for model in ["tonk:account/name"] {
         assert!(
             PROFILE_LIBRARY.contains(&format!(r#"model="{model}""#)),
             "the account bar must render `{model}` as a display, not paint it",
@@ -300,22 +299,13 @@ fn it_renders_the_account_bar_from_facts() {
     );
 }
 
-/// Adding an account dispatches a command rather than fetching.
-///
-/// The ceremony that follows is a top-page passkey dialog the worker
-/// cannot raise, so the command's handler asks the page to open it. What
-/// this pins is the dispatch: if the row went back to calling
-/// `/api/profiles/add` directly, the element would be back with it.
+/// Keep the profile command schema compatible without exposing account
+/// switching or profile creation in settings.
 #[dialog_common::test]
-fn it_adds_an_account_through_a_command() {
-    assert!(
-        PROFILE_LIBRARY.contains("on:add-profile=tonk:add-profile"),
-        "the add-account row must dispatch the command",
-    );
-    assert!(
-        PROFILE_LIBRARY.contains("xyz.tonk.command.add-profile/time"),
-        "the command must carry a timestamp so a retry re-fires",
-    );
+fn it_retains_the_profile_command_without_a_settings_switcher() {
+    assert!(PROFILE_LIBRARY.contains("xyz.tonk.command.add-profile/time"));
+    assert!(!PROFILE_LIBRARY.contains("on:add-profile=tonk:add-profile"));
+    assert!(!PROFILE_LIBRARY.contains("class=\"settings-panel switch-panel\""));
 }
 
 /// The overlay fields the switcher renders are declared as its concept's
@@ -477,7 +467,7 @@ fn it_uses_the_shared_native_dialog_for_hub_space_removal() {
     for contract in [
         "<space-remove ",
         "data-space-remove-open",
-        "<tonk-dialog data-space-remove-dialog",
+        "<tonk-dialog appearance=\"hub\" data-space-remove-dialog",
         "data-dialog=\"close\"",
         "type=\"submit\" html:form=\"remove-{subject}\"",
     ] {
@@ -685,9 +675,10 @@ fn it_builds_a_responsive_hub_collection_with_a_settings_route() {
     for contract in [
         ".hub-header",
         ".hubcol",
-        "width:min(1250px, calc(100vw - 48px))",
-        "grid-template-columns:repeat(auto-fill,minmax(min(100%, 260px),1fr))",
+        "width:min(1166px, calc(100vw - 84px))",
+        "grid-template-columns:repeat(3,minmax(0,1fr))",
         "<hub-collection class=\"stack chrome\"",
+        "with=\"main@profile:tonk\"",
         "<nav class=\"mobile-nav\"",
         "<a class=\"hub-logo\" href=\"/\" aria-label=\"Tonk home\"",
     ] {
@@ -971,10 +962,11 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
     assert!(!panel.contains("confirm device removal"));
     assert!(!panel.contains("remove all data associated with this account from this device"));
     assert!(PROFILE_LIBRARY.contains("data-add-passkey"));
-    // The account page's one link out is to its settings, and that is
-    // the panel's own row.
-    assert!(panel.contains("href=\"/settings\" data-open-settings"));
-    assert_eq!(panel.matches("href=\"/settings\"").count(), 1);
+    // Agent access occupies the second settings row; account switching is absent.
+    assert!(panel.contains("class=\"settings-panel connections-panel\""));
+    assert!(!panel.contains("switch-panel"));
+    assert!(!panel.contains("data-add-profile"));
+    assert_eq!(panel.matches("href=\"/settings\"").count(), 0);
     // The name, address and passkeys are facts, so the panel mounts the
     // view that renders them rather than carrying their markup; the
     // ceremony's progress is a row it words.

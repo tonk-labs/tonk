@@ -2433,7 +2433,7 @@ mod tests {
             )
             .await?;
         let hub = hub.json();
-        // The view declares both twins — `--page: #e8e6e4` / `--ink:
+        // The view declares both twins — `--page: #dedbd8` / `--ink:
         // #38182a`, and a `@media (prefers-color-scheme: dark)` pair —
         // so the values to expect depend on the scheme the browser is
         // actually in. Pinning the light literals would fail on a dark
@@ -2442,7 +2442,7 @@ mod tests {
         let (page, ink) = if hub["dark"] == true {
             ("rgb(22, 19, 19)", "rgb(226, 223, 221)")
         } else {
-            ("rgb(232, 230, 228)", "rgb(56, 24, 42)")
+            ("rgb(222, 219, 216)", "rgb(56, 24, 42)")
         };
         assert_eq!(
             hub["background"], page,
@@ -2564,8 +2564,8 @@ mod tests {
             )
             .await?;
         let desktop = desktop.json();
-        assert_eq!(desktop["headerWidth"], 1152);
-        assert_eq!(desktop["mainWidth"], 1152);
+        assert_eq!(desktop["headerWidth"], 1200);
+        assert_eq!(desktop["mainWidth"], 1116);
         assert_eq!(desktop["mobileDisplay"], "none");
         assert_eq!(desktop["logoHref"], "/");
         assert_eq!(desktop["accountHref"], "/settings");
@@ -2600,7 +2600,7 @@ mod tests {
             assert_eq!(mobile["navDisplay"], "grid");
             assert_eq!(mobile["navBottom"], mobile["viewportHeight"]);
             assert_eq!(mobile["navItems"], 3);
-            assert_eq!(mobile["visibleNew"], 2);
+            assert_eq!(mobile["visibleNew"], 1);
             assert_eq!(mobile["overflow"], false);
             if !mobile["cardColumns"].is_null() {
                 assert!(
@@ -2612,6 +2612,64 @@ mod tests {
             }
         }
 
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_keeps_hub_card_actions_beside_the_mobile_caption(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        goto(&driver, env.tonk_web.as_str()).await?;
+        let before = space_keys(&driver).await?;
+        submit_hub_wizard_with(
+            &driver,
+            "Layout notes",
+            "A description that wraps beside the action",
+        )
+        .await?;
+        let key = await_new_space(&driver, &before).await?;
+        goto(&driver, env.tonk_web.as_str()).await?;
+        enter_hub(&driver).await?;
+        hub_style_applied(&driver).await?;
+        let card = format!(".space-card[data-space-subject='{key}']");
+        element(&driver, &card).await?;
+
+        for width in [1200, 500] {
+            driver.set_window_rect(0, 0, width, 844).await?;
+            let layout = driver.execute(
+                r#"const card = document.querySelector(arguments[0]);
+                   const link = card.querySelector('.srow').getBoundingClientRect();
+                   const action = card.querySelector('[data-space-actions-open]').getBoundingClientRect();
+                   const preview = card.querySelector('.space-preview').getBoundingClientRect();
+                   return {
+                     toolbar: !!document.querySelector('.collection-heading, .collection-search'),
+                     overflow: document.documentElement.scrollWidth > innerWidth,
+                     separate: !card.querySelector('a button'),
+                     beside: action.left >= link.right && action.top >= link.top && action.bottom <= link.bottom,
+                     previewWidth: Math.round(preview.width),
+                   };"#,
+                vec![serde_json::json!(card)],
+            ).await?;
+            let layout = layout.json();
+            assert_eq!(layout["toolbar"], false);
+            assert_eq!(layout["overflow"], false);
+            assert_eq!(layout["separate"], true);
+            if width == 500 {
+                assert_eq!(layout["beside"], true, "{layout}");
+                assert_eq!(layout["previewWidth"], 64);
+            }
+        }
+        element(&driver, &format!("{card} [data-space-actions-open]"))
+            .await?
+            .click()
+            .await?;
+        element(&driver, &format!("{card} [data-space-rename-open]"))
+            .await?
+            .click()
+            .await?;
+        element(&driver, &format!("{card} [data-space-rename-input]")).await?;
         driver.quit().await?;
         Ok(())
     }
@@ -3340,6 +3398,36 @@ mod tests {
     /// keeps a space local never got a say. The space then synced to a
     /// service that refuses to serve it.
     #[dialog_common::test]
+    async fn it_creates_exactly_one_space_from_the_collection_card(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        driver.goto(env.tonk_web.as_str()).await?;
+        let before = space_keys(&driver).await?;
+        enter_hub(&driver).await?;
+        click(&driver, ".stack > space-create [data-space-create-open]").await?;
+        wait_for_displayed(&driver, ".stack > space-create [data-space-create-dialog]").await?;
+        element(&driver, ".stack > space-create input[name=name]")
+            .await?
+            .send_keys("One card creation")
+            .await?;
+        element(&driver, ".stack > space-create textarea[name=description]")
+            .await?
+            .send_keys("One submit, one space")
+            .await?;
+        click(&driver, ".stack > space-create [data-space-create-submit]").await?;
+        driver.enter_default_frame().await?;
+        await_url_containing(&driver, "/space/").await?;
+        // Both handlers finish asynchronously; allow a second creation to surface.
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let after = space_keys(&driver).await?;
+        let created: Vec<_> = after.iter().filter(|key| !before.contains(key)).collect();
+        assert_eq!(created.len(), 1, "one card submit created: {created:?}");
+        driver.quit().await?;
+        Ok(())
+    }
+
+    #[dialog_common::test]
     async fn it_creates_a_local_only_space_from_the_hub_wizard(env: TestEnvironment) -> Result<()> {
         // The authenticator id comes along so the ceremony can be
         // observed: a passkey either got minted or it did not.
@@ -3550,9 +3638,53 @@ mod tests {
         goto(&driver, env.tonk_web.as_str()).await?;
         enter_hub(&driver).await?;
         hub_style_applied(&driver).await?;
+        driver.set_window_rect(0, 0, 390, 480).await?;
         let card = format!(".space-card[data-space-subject='{key}']");
+        driver
+            .execute(
+                "document.querySelector(arguments[0]).scrollIntoView({block: 'center'});",
+                vec![serde_json::json!(format!(
+                    "{card} [data-space-actions-open]"
+                ))],
+            )
+            .await?;
         click(&driver, &format!("{card} [data-space-actions-open]")).await?;
         wait_for_displayed(&driver, &format!("{card} .space-menu")).await?;
+        let menu_bounds = driver
+            .execute(
+                "const menu = document.querySelector(arguments[0]); \
+                       const bounds = menu.getBoundingClientRect(); \
+                       const viewport = window.visualViewport; \
+                       const nav = document.querySelector('.mobile-nav')?.getBoundingClientRect(); \
+                       return {open: menu.getAttribute('open'), left: bounds.left, \
+                       right: bounds.right, top: bounds.top, bottom: bounds.bottom, \
+                       viewportLeft: viewport?.offsetLeft ?? 0, \
+                       viewportRight: (viewport?.offsetLeft ?? 0) + (viewport?.width ?? innerWidth), \
+                       viewportTop: viewport?.offsetTop ?? 0, \
+                       viewportBottom: Math.min((viewport?.offsetTop ?? 0) + \
+                         (viewport?.height ?? innerHeight), nav?.height > 0 ? nav.top : Infinity)};",
+                vec![serde_json::json!(format!("{card} .space-menu"))],
+            )
+            .await?;
+        let bounds = menu_bounds.json();
+        assert_eq!(
+            bounds["open"], "true",
+            "the card menu must stay open: {bounds}"
+        );
+        for (side, edge, direction) in [
+            ("left", "viewportLeft", 1.0),
+            ("top", "viewportTop", 1.0),
+            ("right", "viewportRight", -1.0),
+            ("bottom", "viewportBottom", -1.0),
+        ] {
+            let distance = (bounds[side].as_f64().unwrap_or_default()
+                - bounds[edge].as_f64().unwrap_or_default())
+                * direction;
+            assert!(
+                distance >= 7.0,
+                "the menu crosses the {side} viewport edge: {bounds}"
+            );
+        }
         click(&driver, &format!("{card} [data-space-rename-open]")).await?;
         wait_for_displayed(&driver, &format!("{card} [data-space-rename-dialog]")).await?;
 
@@ -3919,6 +4051,10 @@ mod tests {
                 return {
                     haspopup: trigger ? trigger.getAttribute("aria-haspopup") : "no trigger",
                     caret: !!(trigger && trigger.querySelector(".g")),
+                    accountHeight: trigger.getBoundingClientRect().height,
+                    newHeight: document.querySelector('.header-new .snew').getBoundingClientRect().height,
+                    accountTop: trigger.getBoundingClientRect().top,
+                    newTop: document.querySelector('.header-new .snew').getBoundingClientRect().top,
                 };
                 "##,
                 Vec::new(),
@@ -3935,6 +4071,12 @@ mod tests {
             "the account cell draws no dropdown caret",
         );
 
+        assert_eq!(
+            affordance.json()["accountHeight"],
+            affordance.json()["newHeight"]
+        );
+        assert_eq!(affordance.json()["accountTop"], affordance.json()["newTop"]);
+
         // One press. The cell is the account tab: it pushes `/account`
         // into the same document, and the page the Hub asks for is the
         // TOP page's cluster — so the press must not reload anything.
@@ -3950,6 +4092,52 @@ mod tests {
         await_register_dialog(&driver).await?;
 
         driver.enter_default_frame().await?;
+        let presentation = driver
+            .execute(
+                r#"const dialog = document.querySelector('#tonk-register');
+                   const panel = dialog.querySelector('.ocol').getBoundingClientRect();
+                   return {
+                     radius: getComputedStyle(dialog.querySelector('.ocol')).borderTopLeftRadius,
+                     width: panel.width,
+                     modal: dialog.matches(':modal'),
+                     anchored: dialog.hasAttribute('data-anchored'),
+                     heading: getComputedStyle(dialog.querySelector('#tonk-register-head')).display,
+                     cancel: getComputedStyle(dialog.querySelector('#tonk-register-dismiss')).display,
+                     action: dialog.querySelector('#tonk-register-action').textContent,
+                     disabled: dialog.querySelector('#tonk-register-action').disabled,
+                     right: innerWidth - panel.right,
+                     top: panel.top,
+                     height: panel.height,
+                     bottom: innerHeight - panel.bottom,
+                   };"#,
+                Vec::new(),
+            )
+            .await?;
+        let presentation = presentation.json();
+        assert_eq!(presentation["modal"], true, "{presentation}");
+        assert_eq!(presentation["anchored"], true, "{presentation}");
+        assert_eq!(presentation["radius"], "25px", "{presentation}");
+        assert_eq!(presentation["width"], 360, "{presentation}");
+        assert_ne!(presentation["heading"], "none", "{presentation}");
+        assert_ne!(presentation["cancel"], "none", "{presentation}");
+        assert_eq!(presentation["action"], "continue", "{presentation}");
+        assert_eq!(presentation["disabled"], true, "{presentation}");
+        assert!(
+            presentation["right"].as_f64().unwrap_or(-1.0) >= 8.0,
+            "{presentation}"
+        );
+        assert!(
+            presentation["top"].as_f64().unwrap_or(f64::INFINITY) < 200.0,
+            "the account form should open below its header action: {presentation}"
+        );
+        assert!(
+            presentation["height"].as_f64().unwrap_or(f64::INFINITY) < 550.0,
+            "the email step should be a compact form: {presentation}"
+        );
+        assert!(
+            presentation["bottom"].as_f64().unwrap_or(-1.0) >= 8.0,
+            "{presentation}"
+        );
         let landed = driver.current_url().await?;
         assert_eq!(
             landed.path(),
@@ -3974,6 +4162,25 @@ mod tests {
         type_into_settled_row(&driver, "display name", "Hub Owner").await?;
         await_settled_row(&driver, "passkey").await?;
         await_narrator_containing(&driver, "confirmation link").await?;
+
+        enter_hub(&driver).await?;
+        let background = driver
+            .execute(
+                r#"return {
+                    settingsVisible: !!document.querySelector('[data-settings-view]')?.getClientRects().length,
+                    spacesVisible: !!document.querySelector('hub-collection[data-spaces-view]')?.getClientRects().length,
+                    noticeVisible: !!document.querySelector('.account-email-notice')?.getClientRects().length,
+                };"#,
+                Vec::new(),
+            )
+            .await?;
+        assert_eq!(
+            background.json()["settingsVisible"],
+            false,
+            "{background:?}"
+        );
+        assert_eq!(background.json()["spacesVisible"], true, "{background:?}");
+        assert_eq!(background.json()["noticeVisible"], false, "{background:?}");
 
         // The label flips from the offer to the member's name without a
         // reload, and the cell stays the account tab: no menu grows on it.
@@ -4009,6 +4216,77 @@ mod tests {
             );
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
+
+        driver.enter_default_frame().await?;
+        driver.goto(env.tonk_web.as_str()).await?;
+        enter_hub(&driver).await?;
+        wait_for_displayed(&driver, "[data-account-trigger] [data-account-name]").await?;
+        click(&driver, "[data-account-trigger]").await?;
+        await_url_path(&driver, "/settings").await?;
+        enter_hub(&driver).await?;
+        wait_for_displayed(&driver, ".details-panel").await?;
+        wait_for_displayed(&driver, ".passkeys-panel").await?;
+        wait_for_displayed(&driver, "[data-settings-passkey-created]").await?;
+        wait_for_displayed(&driver, ".connections-panel").await?;
+        let settings = driver
+            .execute(
+                r#"const details = document.querySelector('.details-panel').getBoundingClientRect();
+                   const passkeys = document.querySelector('.passkeys-panel').getBoundingClientRect();
+                   const agents = document.querySelector('.connections-panel').getBoundingClientRect();
+                   const signout = document.querySelector('.signout-panel').getBoundingClientRect();
+                   const email = document.querySelector('[data-settings-email]').getBoundingClientRect();
+                   const save = document.querySelector('[data-profile-rename-submit]');
+                   return {
+                     saveAfterEmail: save.getBoundingClientRect().top >= email.bottom,
+                     saveOwnsName: !!save.form?.querySelector('[data-settings-name]'),
+                     agentsLeft: agents.left,
+                     agentsTop: agents.top,
+                     signoutLeft: signout.left,
+                     signoutTop: signout.top,
+                     detailsLeft: details.left,
+                     title: document.querySelector('.settings-title')?.textContent,
+                     switchPanel: !!document.querySelector('.switch-panel'),
+                     passkeyDate: document.querySelector('[data-settings-passkey-created]')?.textContent,
+                     detailsTop: details.top,
+                     detailsRight: details.right,
+                     passkeysTop: passkeys.top,
+                     passkeysLeft: passkeys.left,
+                   };"#,
+                Vec::new(),
+            )
+            .await?;
+        let settings = settings.json();
+        assert_eq!(settings["title"], "account settings", "{settings}");
+        assert_eq!(settings["switchPanel"], false, "{settings}");
+        assert_eq!(settings["saveAfterEmail"], true, "{settings}");
+        assert_eq!(settings["saveOwnsName"], true, "{settings}");
+        assert_eq!(
+            settings["agentsLeft"], settings["detailsLeft"],
+            "{settings}"
+        );
+        assert_eq!(
+            settings["signoutLeft"], settings["passkeysLeft"],
+            "{settings}"
+        );
+        assert_eq!(settings["agentsTop"], settings["signoutTop"], "{settings}");
+        assert!(
+            settings["passkeyDate"]
+                .as_str()
+                .is_some_and(|date| date.chars().any(char::is_alphabetic)),
+            "passkey creation date should be readable rather than raw seconds: {settings}"
+        );
+        assert!(
+            (settings["detailsTop"].as_f64().unwrap_or_default()
+                - settings["passkeysTop"].as_f64().unwrap_or_default())
+            .abs()
+                <= 2.0,
+            "details and passkeys should share the first settings row: {settings}"
+        );
+        assert!(
+            settings["passkeysLeft"].as_f64().unwrap_or_default()
+                > settings["detailsRight"].as_f64().unwrap_or(f64::INFINITY),
+            "details and passkeys should be separate columns: {settings}"
+        );
 
         driver.quit().await?;
         Ok(())
@@ -6482,9 +6760,11 @@ mod tests {
         let switcher = driver.new_tab().await?;
         driver.switch_to_window(switcher).await?;
         goto(&driver, env.tonk_web.as_str()).await?;
+        let added = post_json(&driver, "/api/profiles/add", serde_json::json!({})).await?;
+        successful_body("add test profile", &added);
+        goto(&driver, env.tonk_web.as_str()).await?;
         enter_hub(&driver).await?;
         click(&driver, "[data-account-trigger]").await?;
-        click(&driver, "[data-add-profile]").await?;
         driver.enter_default_frame().await?;
         await_register_dialog(&driver).await?;
 
@@ -6552,11 +6832,13 @@ mod tests {
         wait_for_text_containing(&driver, ".stack", "First Garden").await?;
         driver.enter_default_frame().await?;
 
-        // Add account, from the Hub's account menu: it rotates onto a
-        // fresh profile and raises the cluster in the top page.
+        // Prepare a fresh profile through the API, then use the unlinked
+        // Hub's account action. Settings no longer exposes account switching.
+        let added = post_json(&driver, "/api/profiles/add", serde_json::json!({})).await?;
+        successful_body("add test profile", &added);
+        goto(&driver, env.tonk_web.as_str()).await?;
         enter_hub(&driver).await?;
         click(&driver, "[data-account-trigger]").await?;
-        click(&driver, "[data-add-profile]").await?;
         driver.enter_default_frame().await?;
         await_register_dialog(&driver).await?;
         let profiles = get_json(&driver, "/api/profiles").await?;
@@ -6640,7 +6922,7 @@ mod tests {
         // the same chrome with the account settings section open and
         // unsupported Devices/Usage/Syncing surfaces absent.
         click(&driver, "[data-account-trigger]").await?;
-        click(&driver, "[data-open-settings]").await?;
+        await_url_path(&driver, "/settings").await?;
         driver.enter_default_frame().await?;
         enter_hub(&driver).await?;
         element(&driver, "account-settings").await?;
@@ -6693,40 +6975,20 @@ mod tests {
         enter_hub(&driver).await?;
         wait_for_text(&driver, "[data-account-label]", "Second Hub").await?;
 
-        // Switch back from the Hub's account roster. The component reloads
-        // the whole top page, rebuilding subscriptions owned by the old
-        // profile before mounting the first profile's Hub.
-        driver.enter_default_frame().await?;
-        let before_reload = driver
-            .execute("return performance.timeOrigin", Vec::new())
-            .await?
-            .json()
-            .clone();
-        enter_hub(&driver).await?;
-        click(&driver, "[data-account-trigger]").await?;
-        wait_for_text_containing(&driver, "[data-account-menu]", "Tab Owner").await?;
-        let selector = format!("button[data-profile=\"{first_profile}\"]");
-        click(&driver, &selector).await?;
-        driver.enter_default_frame().await?;
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-        loop {
-            if driver
-                .execute("return performance.timeOrigin", Vec::new())
-                .await
-                .is_ok_and(|current| current.json() != &before_reload)
-            {
-                break;
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return Err(anyhow!("timed out waiting for the profile switch reload"));
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
+        // Profile switching remains an API capability, without a settings roster.
+        let switched = post_json(
+            &driver,
+            "/api/profiles/activate",
+            serde_json::json!({ "profile": first_profile }),
+        )
+        .await?;
+        successful_body("restore first test profile", &switched);
+        goto(&driver, &format!("{}settings", env.tonk_web)).await?;
         // The switch was made from the account page and the reload lands
         // there, where the stack is not shown; the spaces tab is the way
         // back to it, pushed in place.
         enter_hub(&driver).await?;
-        click(&driver, "[data-return-spaces]").await?;
+        click(&driver, ".settings-back").await?;
         wait_for_text_containing(&driver, ".stack", "First Garden").await?;
         driver.enter_default_frame().await?;
         let listed = get_json(&driver, "/api/profile").await?;
@@ -6736,7 +6998,8 @@ mod tests {
         );
         enter_hub(&driver).await?;
         click(&driver, "[data-account-trigger]").await?;
-        wait_for_text_containing(&driver, "[data-account-menu]", "Second Hub").await?;
+        wait_for_displayed(&driver, ".connections-panel").await?;
+        assert!(driver.find_all(By::Css(".switch-panel")).await?.is_empty());
 
         driver.quit().await?;
         Ok(())
@@ -6763,9 +7026,11 @@ mod tests {
             .context("the first profile has no active handle")?
             .to_string();
 
+        let added = post_json(&driver, "/api/profiles/add", serde_json::json!({})).await?;
+        successful_body("add test profile", &added);
+        goto(&driver, env.tonk_web.as_str()).await?;
         enter_hub(&driver).await?;
         click(&driver, "[data-account-trigger]").await?;
-        click(&driver, "[data-add-profile]").await?;
         driver.enter_default_frame().await?;
         run_cluster_ceremony(&driver, SECOND).await?;
         activate(&driver, &env, SECOND).await?;
