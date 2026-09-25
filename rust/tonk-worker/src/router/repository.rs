@@ -12706,10 +12706,10 @@ mod connection_invite_overlay_tests {
     #[dialog_common::test]
     async fn app_owned_connection_targets_only_the_selected_space() {
         let state = crate::router::command::tests::native::test_state().await;
-        let selected = create_space_inner(&state, "Selected tool space")
+        let selected = create_space_inner(&state, "Selected tool space", None)
             .await
             .unwrap();
-        let other = create_space_inner(&state, "Other tool space")
+        let other = create_space_inner(&state, "Other tool space", None)
             .await
             .unwrap();
         let selected_did = space_did(&state, &selected).await;

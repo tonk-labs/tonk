@@ -287,12 +287,10 @@ fn it_names_the_menu_methods_open_and_close() {
 /// rather than working around it.
 #[dialog_common::test]
 fn it_renders_the_account_bar_from_facts() {
-    for model in ["tonk:account/name"] {
-        assert!(
-            PROFILE_LIBRARY.contains(&format!(r#"model="{model}""#)),
-            "the account bar must render `{model}` as a display, not paint it",
-        );
-    }
+    assert!(
+        PROFILE_LIBRARY.contains(r#"model="tonk:account/name""#),
+        "the account bar must render `tonk:account/name` as a display, not paint it",
+    );
     assert!(
         PROFILE_LIBRARY.contains("xyz.tonk.ceremony/state"),
         "ceremony progress must be a fact the bar can read, not element state",
