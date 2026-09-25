@@ -17,9 +17,11 @@ use lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range};
 use saphyr::{MarkedYaml, Scalar as SaphyrScalar, ScanError, YamlData, YamlLoader};
 use saphyr_parser::{Event, Marker, Parser, ScalarStyle, Span, SpannedEventReceiver, StrInput};
 
+use url::Url;
+
 use crate::syntax::{
-    Anchor, Application, Effectful, Expression, Field, FieldValue, HeadName, Predicate, Premise,
-    Scalar, Spanned, Syntax,
+    Anchor, Application, Effectful, Expression, Field, FieldValue, HeadName, Include, IncludeForm,
+    Predicate, Premise, Scalar, Spanned, Syntax,
 };
 
 /// Outcome of a parse.
@@ -31,9 +33,25 @@ pub struct Parsed {
     pub diagnostics: Vec<Diagnostic>,
 }
 
-/// Parse `text` as a YAML document and convert it to a [`Syntax`]
-/// tree.
+/// The location of a document that has none: text that arrived
+/// without a URI of its own (a request body, an editor buffer, an
+/// inline `-c` string). A `data:` URI cannot be a base, so an
+/// `!include` in such a document has nothing to resolve against and
+/// is refused rather than guessed at.
+pub const INLINE_LOCATION: &str = "data:,";
+
+/// Parse `text` as a YAML document with no location of its own and
+/// convert it to a [`Syntax`] tree. Its [`Syntax::base`] is
+/// [`INLINE_LOCATION`], so it cannot `!include` anything; use
+/// [`parse_at`] for a document read from somewhere.
 pub fn parse(text: &str) -> Parsed {
+    let inline = Url::parse(INLINE_LOCATION).expect("INLINE_LOCATION is a valid URI");
+    parse_at(inline, text)
+}
+
+/// Parse `text` as the YAML document found at `base`, which is what
+/// its `!include` references resolve against.
+pub fn parse_at(base: Url, text: &str) -> Parsed {
     let documents = match parse_documents(text) {
         Ok(documents) => documents,
         Err(err) => {
@@ -72,7 +90,11 @@ pub fn parse(text: &str) -> Parsed {
         diagnostic.range = clamp_range(diagnostic.range, text);
     }
     Parsed {
-        syntax: Some(Syntax { expressions, range }),
+        syntax: Some(Syntax {
+            expressions,
+            range,
+            base,
+        }),
         diagnostics,
     }
 }
@@ -295,6 +317,18 @@ fn scalar_to_marked_yaml<'input>(event: Event<'input>, span: Span) -> MarkedYaml
         }
     };
     MarkedYaml { span, data }
+}
+
+/// The [`IncludeForm`] a local `!include` / `!include-binary` tag
+/// selects, or `None` for any other tag.
+fn include_form(tag: Option<&saphyr_parser::Tag>) -> Option<IncludeForm> {
+    let tag = tag?;
+    if tag.handle != "!" {
+        return None;
+    }
+    [IncludeForm::Text, IncludeForm::Binary]
+        .into_iter()
+        .find(|form| tag.suffix == form.tag())
 }
 
 /// Whether `tag` is YAML 1.1's `!!binary`, whose content is base64.
@@ -1007,6 +1041,22 @@ fn walk_field_value(
                 }
             }
         }
+        YamlData::Representation(text, _, tag) if include_form(tag.as_deref()).is_some() => {
+            let form = include_form(tag.as_deref()).expect("guarded");
+            let reference = text.trim();
+            if reference.is_empty() {
+                // An empty reference resolves to the document itself.
+                out.push(error(
+                    range_of(value),
+                    format!("`!{}` needs a path or URI to include.", form.tag()),
+                ));
+                return None;
+            }
+            Some(FieldValue::Include(Include {
+                reference: reference.to_owned(),
+                form,
+            }))
+        }
         YamlData::Representation(text, style, _) => {
             // A plain (unquoted) scalar can be a symbol, a
             // variable, a URI, or a literal that the YAML core
@@ -1040,6 +1090,17 @@ fn walk_field_value(
             out.push(error(
                 range_of(value),
                 r#"Sequence values are not supported in this notation. Use repeated assertions for cardinality-many writes."#,
+            ));
+            None
+        }
+        YamlData::Tagged(tag, _) if include_form(Some(tag)).is_some() => {
+            let form = include_form(Some(tag)).expect("guarded");
+            out.push(error(
+                range_of(value),
+                format!(
+                    "`!{}` takes a path or URI, not a mapping or sequence.",
+                    form.tag()
+                ),
             ));
             None
         }
@@ -1916,6 +1977,70 @@ person:
             &age.value,
             FieldValue::Literal(Scalar::UnsignedInteger(28))
         ));
+    }
+
+    /// `!include` records the reference as written; loading it is
+    /// [`crate::include::expand`]'s job, not the parser's.
+    #[dialog_common::test]
+    fn it_parses_include_references() {
+        let syntax = parse_clean(
+            r#"
+note!:
+  this: ?n
+  body: !include ./body.md
+  quoted: !include "notes/a b.md"
+  image: !include-binary ../media/a.webp
+"#,
+        );
+        let fields = &syntax.expressions[0].application().fields;
+        let include = |name: &str| {
+            let field = fields.iter().find(|f| f.name == name).unwrap();
+            let FieldValue::Include(include) = &field.value else {
+                panic!("expected include for {name}, got {:?}", field.value);
+            };
+            include.clone()
+        };
+        assert_eq!(
+            include("body"),
+            Include {
+                reference: "./body.md".into(),
+                form: IncludeForm::Text
+            }
+        );
+        assert_eq!(include("quoted").reference, "notes/a b.md");
+        assert_eq!(include("image").form, IncludeForm::Binary);
+        assert_eq!(syntax.base.as_str(), INLINE_LOCATION);
+    }
+
+    #[dialog_common::test]
+    fn it_records_the_document_location() {
+        let base = Url::parse("file:///notes/today.yaml").unwrap();
+        let syntax = parse_at(
+            base.clone(),
+            "note:
+  this: ?n
+",
+        )
+        .syntax
+        .unwrap();
+        assert_eq!(syntax.base, base);
+    }
+
+    #[dialog_common::test]
+    fn it_rejects_an_include_without_a_scalar_reference() {
+        let parsed = parse(
+            "note!:
+  this: ?n
+  body: !include \"\"\n  other: !include {a: 1}\n",
+        );
+        let messages: Vec<_> = parsed
+            .diagnostics
+            .iter()
+            .map(|d| d.message.as_str())
+            .collect();
+        assert_eq!(messages.len(), 2, "{messages:#?}");
+        assert!(messages[0].contains("needs a path"));
+        assert!(messages[1].contains("not a mapping"));
     }
 
     /// `!!binary` is YAML 1.1's standard tag for base64 content. It is a

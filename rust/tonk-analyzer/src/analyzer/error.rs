@@ -291,6 +291,20 @@ pub enum AnalyzeErrorKind {
     /// Document has zero expressions.
     #[error("document is empty — nothing to analyze")]
     EmptyDocument,
+    /// An `!include` reached analysis still unexpanded. Included
+    /// content is inlined by [`tonk_notation::expand`] before
+    /// analysis; one left in place either has no location to resolve
+    /// against (an inline document) or ran through a pipeline that
+    /// does not load included resources.
+    #[error("`!{tag} {reference}` cannot be included: {reason}")]
+    UnexpandedInclude {
+        /// The tag as written (`include` / `include-binary`).
+        tag: &'static str,
+        /// The reference as written.
+        reference: String,
+        /// Why it was not inlined.
+        reason: String,
+    },
     /// Two heads in the document tried to declare the same
     /// anchor or `?variable` name.
     #[error(
@@ -668,6 +682,7 @@ impl AnalyzeErrorKind {
     pub fn code(&self) -> &'static str {
         match self {
             Self::EmptyDocument => "E_EMPTY_DOCUMENT",
+            Self::UnexpandedInclude { .. } => "E_UNEXPANDED_INCLUDE",
             Self::DuplicateName { .. } => "E_DUPLICATE_NAME",
             Self::NameShadowing { .. } => "E_NAME_SHADOWING",
             Self::UnboundMutationVariable { .. } => "E_UNBOUND_MUTATION_VARIABLE",

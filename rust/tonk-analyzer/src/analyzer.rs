@@ -152,6 +152,8 @@ pub fn analyze_local(syntax: &Syntax) -> Result<Tree<Syntax>, AnalyzeError> {
         ));
     }
 
+    reject_unexpanded_includes(syntax)?;
+
     // push → resolve(LocalOnly) → build. The graph's resolve phase
     // is genuinely synchronous when the resolver does no IO:
     // `LocalOnly` answers every external need with `None` without
@@ -164,6 +166,41 @@ pub fn analyze_local(syntax: &Syntax) -> Result<Tree<Syntax>, AnalyzeError> {
     let resolved = poll_ready(graph.resolve(syntax, &scope, &graph::LocalOnly))?;
     rule::check_overlapping_transient_rule_triggers(syntax, &scope)?;
     expand(syntax, &scope, resolved)
+}
+
+/// Refuse a document that still carries an `!include`.
+///
+/// Included content is inlined by [`tonk_notation::expand`] before
+/// analysis, so one that survives was never loaded: its document has
+/// no location to resolve against (an inline body, whose base is
+/// [`tonk_notation::INLINE_LOCATION`]), or the pipeline that ran it
+/// does not load included resources. Checked up front, against the
+/// document's base, so the error says which of the two it was.
+fn reject_unexpanded_includes(syntax: &Syntax) -> Result<(), AnalyzeError> {
+    fn find(fields: &[tonk_notation::Field]) -> Option<&tonk_notation::Field> {
+        fields.iter().find_map(|field| match &field.value {
+            tonk_notation::FieldValue::Include(_) => Some(field),
+            tonk_notation::FieldValue::Nested(nested) => find(nested),
+            tonk_notation::FieldValue::Premises(premises) => {
+                premises.iter().find_map(|premise| find(&premise.bindings))
+            }
+            _ => None,
+        })
+    }
+    let found = syntax
+        .expressions
+        .iter()
+        .find_map(|expression| find(&expression.application().fields));
+    match found {
+        Some(field) => {
+            let tonk_notation::FieldValue::Include(include) = &field.value else {
+                unreachable!("find only returns includes");
+            };
+            Err(field::unexpanded_include(include, Some(&syntax.base))
+                .with_range(field.value_range))
+        }
+        None => Ok(()),
+    }
 }
 
 /// Drive a future that performs no real IO to completion on the
@@ -223,6 +260,8 @@ impl<'s, 'a> Analyze<'s, 'a> {
                 syntax.range,
             ));
         }
+
+        reject_unexpanded_includes(syntax)?;
 
         let scope = Scope::new();
         let graph = graph::push(syntax)?;
@@ -1326,9 +1365,42 @@ holder!: &my-holder
         let syntax = Syntax {
             expressions: Vec::new(),
             range: lsp_types::Range::default(),
+            base: tonk_notation::Url::parse(tonk_notation::INLINE_LOCATION).unwrap(),
         };
         let err = analyze_empty(&syntax).await.unwrap_err();
         assert!(matches!(err.kind, AnalyzeErrorKind::EmptyDocument));
+    }
+
+    /// A document with no location of its own cannot `!include`: the
+    /// reference has nothing to be relative to.
+    #[dialog_common::test]
+    async fn it_rejects_an_include_in_an_inline_document() {
+        let syntax = must_parse("note!:\n  this: ?n\n  body: !include ./body.md\n");
+        let err = analyze_empty(&syntax).await.unwrap_err();
+        let AnalyzeErrorKind::UnexpandedInclude { reference, .. } = &err.kind else {
+            panic!("expected UnexpandedInclude, got {err:?}");
+        };
+        assert_eq!(reference, "./body.md");
+        assert!(err.to_string().contains("no location"), "{err}");
+        assert_eq!(err.range.map(|r| r.start.line), Some(2));
+    }
+
+    /// A located document whose includes were never expanded is still
+    /// refused — nested under a mapping too — rather than analyzed as
+    /// if the value were missing.
+    #[dialog_common::test]
+    fn it_rejects_an_unexpanded_include_in_a_located_document() {
+        let parsed = tonk_notation::parse_at(
+            tonk_notation::Url::parse("file:///notes/today.yaml").unwrap(),
+            "note!:\n  this: ?n\n  meta:\n    image: !include-binary a.webp\n",
+        );
+        let syntax = parsed.syntax.unwrap();
+        let err = analyze_local(&syntax).unwrap_err();
+        assert!(
+            matches!(err.kind, AnalyzeErrorKind::UnexpandedInclude { .. }),
+            "{err:?}"
+        );
+        assert!(err.to_string().contains("file:///notes/a.webp"), "{err}");
     }
 
     /// `attribute!: &foo` declares a content-derived attribute

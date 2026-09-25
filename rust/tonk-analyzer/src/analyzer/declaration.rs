@@ -969,6 +969,11 @@ fn stringify_simple_value(field: &tonk_notation::Field) -> Result<String, Analyz
         FieldValue::Literal(other) => scalar_to_string(other)?,
         FieldValue::Uri(s) => s.clone(),
         FieldValue::Symbol(s) => s.clone(),
+        FieldValue::Include(include) => {
+            return Err(
+                super::field::unexpanded_include(include, None).with_range(field.value_range)
+            );
+        }
         FieldValue::Variable(_)
         | FieldValue::Blank
         | FieldValue::Nested(_)
