@@ -306,20 +306,26 @@
           parent.postMessage({__tonkRuntime:"warn",error:"tonk-prose inject: "+String(proseErr)+(proseErr&&proseErr.stack?"\n"+proseErr.stack:"")},"*");
         }
       }
-      // The <tonk-table> spreadsheet. LAZY end-to-end like <tonk-prose>
-      // above: the boot payload carries only the registration shell; the
-      // grid core AND the multi-megabyte engine-bytes leaf cross the
-      // boundary only when the first <tonk-table> actually connects. The
-      // shell consults window.__tonkTableGrid — ours asks the trusted
-      // parent for the grid graph (`need-table`), mints blobs from the
-      // `inject-table` reply (the grid's relative import of the engine
-      // leaf rewrites to its blob in dependency order), and resolves the
-      // grid's blob URL. The engine then instantiates from the leaf's
-      // embedded bytes — no fetch, which is why it works at this opaque
-      // origin at all.
-      if (d.table && d.table.length) {
+      // The <tonk-table> spreadsheet. LAZY end-to-end, and now with
+      // NOTHING in the boot payload: the shell is branch data, resolved
+      // by the element registry when a <tonk-table> is first rendered,
+      // and the grid core plus the multi-megabyte engine-bytes leaf
+      // cross the boundary only when an element actually connects.
+      //
+      // All that is installed here is the seam the shell reaches for:
+      // window.__tonkTableGrid asks the trusted parent for the grid
+      // graph (`need-table`), mints blobs from the `inject-table` reply
+      // (the grid's relative import of the engine leaf rewrites to its
+      // blob in dependency order), and resolves the grid's blob URL.
+      // The engine then instantiates from the leaf's embedded bytes —
+      // no fetch, which is why it works at this opaque origin at all.
+      //
+      // Installed unconditionally: there is no longer a payload whose
+      // presence could gate it, and a guest whose parent cannot serve
+      // the core fails at first connect with the timeout below rather
+      // than silently having no spreadsheet.
+      {
         try {
-          var tableBlobs=mintGraph(d.table);
           var tableGrid=null;
           window.__tonkTableGrid=function(){
             if (!tableGrid) {
@@ -349,10 +355,9 @@
             }
             return tableGrid;
           };
-          await import(tableBlobs["tonk-table.js"]);
         } catch(tableErr) {
-          // Same containment as tonk-prose: a missing spreadsheet must not
-          // abort the rest of the guest runtime.
+          // Same containment as tonk-prose: a broken seam must not abort
+          // the rest of the guest runtime.
           parent.postMessage({__tonkRuntime:"warn",error:"tonk-table inject: "+String(tableErr)+(tableErr&&tableErr.stack?"\n"+tableErr.stack:"")},"*");
         }
       }

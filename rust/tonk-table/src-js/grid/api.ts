@@ -1,4 +1,5 @@
-// Contract between the `<tonk-table>` shell (`../index.ts`) and the
+// Contract between the `<tonk-table>` shell (branch data: the
+// `element!:` in `tonk-core/assets/library/table.yaml`) and the
 // lazily-loaded grid core (`./index.ts`). The shell imports ONLY types
 // from this module — anything with a runtime footprint must stay out
 // of it, or the shell chunk stops being tiny.

@@ -155,9 +155,9 @@
    * document SYNCHRONOUSLY, so their `connectedCallback` — and through
    * it `connected`, and the attribute replay before it — runs inside
    * this call. Furnishing afterwards would mean a `connected` that
-   * calls a sibling method (`self.helper()`) or reads a declared
-   * accessor hits the prototype a moment before that member exists,
-   * which is not a failure a definition can be written to avoid.
+   * calls a sibling method (`self.state()`) hits the prototype a
+   * moment before that method exists, which is not a failure a
+   * definition can be written to avoid.
    */
   const define = (tag, furnish) => {
     if (defined.has(tag)) {
@@ -348,8 +348,24 @@
   // `customElements` is: one registration serves every instance.
   const announced = new Set();
 
-  /** Tag prefixes whose elements are registered by someone else. */
-  const FOREIGN = ["tonk-", "wa-"];
+  /**
+   * Tag prefixes whose elements are registered by someone else.
+   *
+   * `wa-` is WebAwesome: a third-party design system that registers
+   * its own tags, and one the branch has no business defining.
+   *
+   * `tonk-` is NOT on this list, though the guest bundle registers
+   * several `tonk-*` elements, because a built-in is exactly the kind
+   * of element that may move to the branch -- `<tonk-table>`'s shell
+   * lives in `library/table.yaml` and would be invisible here under a
+   * prefix rule. Ownership is a fact about what got registered, not
+   * about a name, and `:not(:defined)` already reports it: a bundled
+   * element is defined before any view renders, so it is never
+   * announced. A `tonk-` tag that renders before its bundle script
+   * runs costs one unanswered name lookup and then registers
+   * normally, which is the same path any unknown tag takes.
+   */
+  const FOREIGN = ["wa-"];
 
   /** The event announcing that an undefined custom element rendered. */
   const NEEDED = "tonk-element-needed";
