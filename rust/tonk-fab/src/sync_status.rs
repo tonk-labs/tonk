@@ -33,6 +33,7 @@ use wasm_bindgen_futures::spawn_local;
 use web_sys::{Element, HtmlElement, window};
 
 use tonk_host::consumer::{self, Subscription};
+use tonk_host::resolve_with;
 
 /// The `data-sync-status` value shown until the first frame lands — the
 /// pending disc (matches the topbar chip's honest "syncing…" default, since a
@@ -156,6 +157,15 @@ fn subscribe_status(this: &HtmlElement, subscription: Rc<RefCell<Option<Subscrip
     let host = this.clone();
     spawn_local(async move {
         if !host.is_connected() || subscription.borrow().is_some() {
+            return;
+        }
+        // A `with` of its own that is not a location yet is not addressed
+        // yet: the FAB authors `main@` before it learns its space, and a
+        // repeat prototype carries an unstamped `{…}`. The host can only
+        // refuse either, so wait; the `with` callback subscribes once the
+        // value names a location. An element with no `with` at all takes
+        // the site's context, as before.
+        if host.has_attribute("with") && !matches!(resolve_with(&host), Ok(Some(_))) {
             return;
         }
         let consumer: Element = host.into();

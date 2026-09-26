@@ -106,12 +106,30 @@ The load lifecycle has four cases:
   document, then continues without reloading.
 - An online warm load checks for a newer worker behind the boot overlay.
 - A real warm replacement activates through `skipWaiting()`. Activation
-  replaces the controller of already-controlled documents; each update-aware
-  page observes `controllerchange` and reloads once before the application root
-  mounts so the document, shell, and controller agree.
+  replaces the controller of already-controlled documents, and each
+  update-aware page observes `controllerchange`. A page whose
+  `tonk-page-build` matches the successor's `/api/health` `page` keeps running
+  and remounts each top-level `<tonk-site>`, so its guest boots from the new
+  worker. Any other page reloads once, so the document, shell, and controller
+  agree. A first-install document adopts later successors the same way.
+
+The page build is stamped over every published resource except the guest
+runtime, the lazily fetched editor bundles, and library data. Two builds with
+the same page build therefore differ only in worker and guest code. The host
+side of the host/guest bridge is compiled into the top page, so an unchanged
+page build also means an unchanged bridge.
 - An offline warm load keeps its existing controller and cached shell. A failed
   update check does not unregister the worker or clear CacheStorage, IndexedDB,
   or other local Tonk state.
+
+Chrome activates a waiting `skipWaiting()` successor only once the outgoing
+worker goes idle, and a request that lands while that worker stops restarts
+it without the prompt idle deadline. So while a successor waits, a page holds
+its own `/api/*` requests until `controllerchange` (at most ten seconds per
+successor). A restarted incumbent has lost that deadline and a repeated
+`skipWaiting()` does not restore it, but any in-scope navigation does, so a
+holding page loads `/api/health` in a hidden frame every second. It repeats
+because a navigation that lands while the incumbent stops restarts it too.
 
 Every incoming worker still obtains and verifies its own manifest. For each
 manifest member it may reuse a response from an older final Tonk generation,

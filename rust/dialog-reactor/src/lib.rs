@@ -53,7 +53,7 @@ pub use error::ReactorError;
 pub use export::{Export, ExportError};
 pub use formula::{FormulaError, resolve_formula};
 pub use import::{Import, ImportError};
-pub use overlay::{OverlayBuilder, OverlayWrite};
+pub use overlay::{OverlayBuilder, OverlaySnapshot, OverlayWrite};
 pub use pull::Pull;
 pub use push::Push;
 pub use query::QueryEffect;
@@ -119,6 +119,8 @@ pub struct PendingSubscription {
     pub query: dialog_query::ConceptQuery,
     /// The client this subscriber serves, for stale-client pruning.
     pub client: Option<String>,
+    /// The consumer's nesting level — see [`Subscription::level`](crate::Subscription::level).
+    pub level: u32,
     /// Sender the adopted subscription broadcasts into — already wired
     /// to the consumer's open SSE stream, which is why the hand-off is
     /// invisible to the page: it just starts receiving frames.
@@ -200,9 +202,10 @@ impl Reactor {
         session: &BranchSession,
         query: dialog_query::ConceptQuery,
         client: Option<String>,
+        level: u32,
     ) -> Result<Subscriber, ReactorError> {
         self.subscription_lifecycle
-            .register(|| session.subscribe(query, client))
+            .register(|| session.subscribe(query, client, level))
             .ok_or(ReactorError::Shutdown)?
     }
 
@@ -221,7 +224,12 @@ impl Reactor {
                 return;
             }
             for pending in pending {
-                state.adopt_subscriber(pending.query, pending.client, pending.sender);
+                state.adopt_subscriber(
+                    pending.query,
+                    pending.client,
+                    pending.level,
+                    pending.sender,
+                );
             }
             // Evaluate once so adopted subscribers get a real frame now.
             self.schedule_poll(Arc::clone(state));

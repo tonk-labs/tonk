@@ -3,13 +3,13 @@
 //! operations on the branch happen directly on the state without
 //! routing through the reactor's name-keyed lookup.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use bytes::Bytes;
 use dialog_artifacts::Statement;
 use dialog_query::ConceptQuery;
 use dialog_repository::Branch;
+use indexmap::IndexMap;
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
@@ -28,8 +28,10 @@ pub struct BranchState {
     /// `Cell<Revision>` keeps this handle current as the branch
     /// advances).
     pub branch: Branch,
-    /// Subscriptions on this branch, keyed by query hash.
-    subscriptions: Mutex<HashMap<QueryHash, Subscription>>,
+    /// Subscriptions on this branch, keyed by query hash, in the order
+    /// they were created. [`Self::poll`] walks them lowest level first (see
+    /// [`Subscription::level`]), creation order breaking ties.
+    subscriptions: Mutex<IndexMap<QueryHash, Subscription>>,
     /// Serializes *transactions* on this branch — concurrent writers (e.g.
     /// two browser tabs committing through one service worker) line up rather
     /// than racing the head CAS and failing. Guards nothing but the right to be
@@ -51,7 +53,7 @@ impl BranchState {
     pub fn new(branch: Branch) -> Self {
         Self {
             branch,
-            subscriptions: Mutex::new(HashMap::new()),
+            subscriptions: Mutex::new(IndexMap::new()),
             transactor: tokio::sync::Mutex::new(()),
         }
     }
@@ -91,7 +93,7 @@ impl BranchState {
 
     /// Borrow the subscription map. Used by [`SubscriptionPoll`]
     /// to walk subscribers, and by tests asserting on cache state.
-    pub fn subscriptions(&self) -> &Mutex<HashMap<QueryHash, Subscription>> {
+    pub fn subscriptions(&self) -> &Mutex<IndexMap<QueryHash, Subscription>> {
         &self.subscriptions
     }
 
@@ -139,10 +141,11 @@ impl BranchState {
         &self,
         query: ConceptQuery,
         client: Option<String>,
+        level: u32,
         sender: mpsc::UnboundedSender<Bytes>,
     ) -> QueryHash {
         let hash = QueryHash::from(&query);
-        self.install_subscriber(query, client, sender);
+        self.install_subscriber(query, client, level, sender);
         hash
     }
 
@@ -150,10 +153,11 @@ impl BranchState {
         &self,
         query: ConceptQuery,
         client: Option<String>,
+        level: u32,
     ) -> Result<Subscriber, ReactorError> {
         let hash = QueryHash::from(&query);
         let (sender, receiver) = mpsc::unbounded_channel();
-        self.install_subscriber(query, client, sender);
+        self.install_subscriber(query, client, level, sender);
         Ok(Subscriber { hash, receiver })
     }
 
@@ -165,6 +169,7 @@ impl BranchState {
         &self,
         query: ConceptQuery,
         client: Option<String>,
+        level: u32,
         sender: mpsc::UnboundedSender<Bytes>,
     ) {
         let hash = QueryHash::from(&query);
@@ -189,6 +194,7 @@ impl BranchState {
             sender,
             status: Status::Pending,
             client,
+            level,
         });
     }
 
@@ -227,10 +233,22 @@ impl BranchState {
     /// fan out to subscribers. Each subscription is polled via
     /// the same `SubscriptionPoll::perform` path the public
     /// chain uses.
+    ///
+    /// Lower levels go first. A display's level is how many displays
+    /// enclose it, so it learns of a change before the displays nested
+    /// inside it do: a parent that re-renders
+    /// its children away first spares them a frame for an address it is
+    /// replacing. Creation order breaks ties (a stable sort over the
+    /// insertion-ordered map).
     pub async fn poll<'a, Env: SelectProvider>(self: &'a Arc<Self>, env: &'a Env) {
         let hashes: Vec<QueryHash> = {
             let subs = self.subscriptions.lock();
-            subs.keys().cloned().collect()
+            let mut ordered: Vec<(u32, QueryHash)> = subs
+                .iter()
+                .map(|(hash, subscription)| (subscription.level(), hash.clone()))
+                .collect();
+            ordered.sort_by_key(|(level, _)| *level);
+            ordered.into_iter().map(|(_, hash)| hash).collect()
         };
         for hash in hashes {
             SubscriptionPoll { state: self, hash }.perform(env).await;

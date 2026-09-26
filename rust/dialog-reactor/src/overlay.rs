@@ -21,6 +21,7 @@
 use std::sync::Arc;
 
 use dialog_artifacts::{Changes, Statement};
+use serde::{Deserialize, Serialize};
 
 use super::BranchReference;
 use super::env::{BranchOpenProvider, LoadProvider};
@@ -90,5 +91,83 @@ impl OverlayWrite<'_> {
             .reactor()
             .schedule_poll(Arc::clone(&cached.state));
         Ok(())
+    }
+}
+
+/// One branch's session overlay, addressed by where the reactor caches it, so
+/// another process (a successor service worker) can restore it into the same
+/// branch. The overlay otherwise lives only in this process's memory.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OverlaySnapshot {
+    /// The named repository, or `None` for the profile-as-repository.
+    pub repository: Option<String>,
+    /// The branch within that repository.
+    pub branch: String,
+    /// The branch's session facts, asserts and retracts alike.
+    pub changes: Changes,
+}
+
+impl crate::Reactor {
+    /// Snapshot the session overlay of every cached branch that has one.
+    /// Only cached branches can hold overlay facts, since the overlay lives
+    /// on the cached branch handle.
+    pub fn export_overlays(&self) -> Vec<OverlaySnapshot> {
+        let named: Vec<(Option<String>, Arc<crate::RepositoryState>)> = self
+            .repos()
+            .read()
+            .iter()
+            .map(|(name, repository)| (Some(name.clone()), Arc::clone(repository)))
+            .collect();
+        let profile = self
+            .profile_repo_state()
+            .map(|repository| (None, repository));
+        named
+            .into_iter()
+            .chain(profile)
+            .flat_map(|(repository, state)| {
+                let branches = state.branches().read();
+                branches
+                    .iter()
+                    .map(|(branch, cached)| OverlaySnapshot {
+                        repository: repository.clone(),
+                        branch: branch.clone(),
+                        changes: cached.branch.overlay().export(),
+                    })
+                    .filter(|snapshot| !snapshot.changes.is_empty())
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    /// Restore overlays [exported](Self::export_overlays) by another process,
+    /// opening each branch as needed and scheduling a poll so its subscribers
+    /// see the restored facts. A branch that cannot be opened here is
+    /// skipped. Returns how many overlays were restored.
+    pub async fn import_overlays<Env>(&self, snapshots: Vec<OverlaySnapshot>, env: &Env) -> usize
+    where
+        Env: LoadProvider + BranchOpenProvider,
+    {
+        let mut restored = 0;
+        for snapshot in snapshots {
+            let repository = match &snapshot.repository {
+                Some(name) => self.repository(name),
+                None => self.profile_repository(),
+            };
+            match repository.branch(&snapshot.branch).acquire(env).await {
+                Ok(session) => {
+                    session.state.assert_overlay(snapshot.changes);
+                    self.schedule_poll(Arc::clone(&session.state));
+                    restored += 1;
+                }
+                Err(error) => {
+                    dialog_common::log!(
+                        "overlay restore skipped {:?}/{}: {error}",
+                        snapshot.repository,
+                        snapshot.branch
+                    );
+                }
+            }
+        }
+        restored
     }
 }
