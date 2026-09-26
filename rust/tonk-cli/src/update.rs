@@ -33,9 +33,9 @@ pub const DEFAULT_ENDPOINT: &str = "https://github.com/tonk-labs/tonk/releases";
 /// A release channel, as `install.sh` understands it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Channel {
-    /// The `tonk-latest` rolling release, built from `stable`.
+    /// GitHub's `latest` release, the newest final `v*` tag.
     Stable,
-    /// The `tonk-staging` rolling pre-release, built from `staging`.
+    /// The `tonk-staging` rolling pre-release, the newest prerelease `v*` tag.
     Staging,
 }
 
