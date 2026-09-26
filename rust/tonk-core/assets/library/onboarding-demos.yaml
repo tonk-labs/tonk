@@ -138,10 +138,6 @@ command!: &assign
 
 command!: &compose
   with:
-    assignee:
-      description: "Member the new to-do is assigned to"
-      the: dom.event.current-target.dataset/assignee
-      as: entity
     bucket:
       description: "Which list the composer belongs to"
       the: dom.event.current-target.dataset/bucket
@@ -162,12 +158,45 @@ command!: &compose
 concept!: &todo
   description: "A to-do item in the shared list"
   with:
-    assignee: todo-assignee
     bucket: todo-bucket
     created: todo-created
     done: todo-done
     due: todo-due
     title: todo-title
+  maybe:
+    assignee: todo-assignee
+
+# Each rule changes only the fields it is about, through these, so none
+# depends on the fields a to-do happens to lack (an assignee, mostly).
+concept!: &todo/done
+  description: "Whether a to-do is completed"
+  with:
+    done: todo-done
+
+concept!: &todo/placement
+  description: "The list a to-do sits in and the date it is due"
+  with:
+    bucket: todo-bucket
+    due: todo-due
+
+concept!: &todo/assignment
+  description: "The member a to-do is assigned to"
+  with:
+    assignee: todo-assignee
+
+# A member of this space, as the assignee pill and the "Assign to" menu
+# show one. Reads the same roster facts as the core `member` concept.
+concept!: &todo/assignable
+  description: "A space member a to-do can be assigned to"
+  with:
+    member:
+      description: The member account's DID (the `member` of the Membership)
+      the: xyz.tonk.membership/member
+      as: entity
+    name:
+      description: The member's self-asserted display name for this space
+      the: xyz.tonk.membership/name
+      as: text
 
 concept!: &tagging
   description: "The tags carried by a to-do"
@@ -200,21 +229,21 @@ view!:
     directory: |
       <tonk-display entity={this} model={dom.host/model}></tonk-display>
     ui: |
-      <div class="t" data-bucket="b-{bucket}" data-done="d-{done}" data-assignee={assignee} style="order:{created}">
+      <div class="t" data-bucket="b-{bucket}" data-done="d-{done}" style="order:{created}">
         <button class="check" onclick=toggle data-toggle={this} aria-label="Toggle done">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 12.5l5 5 10-11"/></svg>
         </button>
         <div class="body">
           <span class="title">{title}</span>
           <tonk-display entity={this} model=tagging><span slot="no-entity" style="display:none"></span></tonk-display>
-          <span class="who"><tonk-display entity={assignee} model=member view=label></tonk-display></span>
+          <tonk-display entity={this} model=todo/assignment><span slot="no-entity" style="display:none"></span></tonk-display>
         </div>
         <div class="acts">
           <div class="menu">
             <button class="mb" aria-label="Actions">&#8943;</button>
             <div class="pop">
               <div class="pop-h">Assign to</div>
-              <button onclick=assign data-assign={this} data-member="did:key:z6MkCkkvsRH3ErzS8NCwqhxd1VAHCsHyJjx1BduJt3o3QLsG">brave-otter</button><button onclick=assign data-assign={this} data-member="did:key:z6MkFMJAa7dqnJkekBa2ejMYgLzBkeq9N7TFuJHBpUjd74Rf">gavin</button>
+              <tonk-display model=todo/assignable data-todo={this}></tonk-display>
               <div class="sep"></div>
               <div class="pop-h">Move to</div>
               <button onclick=move data-move={this} data-bucket="inbox"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13h4l1.5 2.5h7L17 13h4M3 13l3-8h12l3 8v6H3v-6z"/></svg>Inbox</button><button onclick=move data-move={this} data-bucket="today"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8L3.5 9.7l5.9-.9L12 3.5z"/></svg>Today</button><button onclick=move data-move={this} data-bucket="anytime"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5l8.5 4.5-8.5 4.5L3.5 8 12 3.5zM3.5 12.5L12 17l8.5-4.5M3.5 16.5L12 21l8.5-4.5"/></svg>Anytime</button>
@@ -230,6 +259,20 @@ view!:
           </div>
         </div>
       </div>
+
+view!:
+  this: todo/assignment
+  show:
+    ui: |
+      <span class="who"><tonk-display entity={assignee} model=todo/assignable view=label></tonk-display></span>
+
+view!:
+  this: todo/assignable
+  show:
+    label: |
+      {name}
+    directory: |
+      <button onclick=assign data-assign={dom.host/data-todo} data-member={this}>{name}</button>
 
 view!:
   this: tagging
@@ -298,8 +341,6 @@ view!:
       }
       .tagf:hover { background: var(--hover); }
       #tf-all:checked ~ .hd .tagf[data-t="all"] { background: var(--chip-on-bg); color: var(--chip-on-fg); font-weight: 600; }
-      #af-all:checked ~ .hd .tagf[data-a="all"] { background: var(--chip-on-bg); color: var(--chip-on-fg); font-weight: 600; }
-      .fsep { flex: none; width: 1px; height: 17px; background: var(--line); margin: 0 3px; }
       .stage { display: flex; flex-direction: column; gap: 2px; }
       .ch, .cp { display: none; }
       .ch { order: -3; align-items: center; gap: 8px; margin-bottom: 2px; font-size: 20px; font-weight: 700; letter-spacing: -0.014em; }
@@ -417,12 +458,6 @@ view!:
       #tf-ops:checked ~ .hd .tagf[data-t="ops"] { background: var(--chip-on-bg); color: var(--chip-on-fg); font-weight: 600; }
       #tf-ops:checked ~ .stage .t:not(:has(.tag[data-tag="t-ops"])) { display: none !important; }
       #tf-ops:checked ~ .stage .day:not(:has(.tag[data-tag="t-ops"])) { display: none !important; }
-      #af-0:checked ~ .hd .tagf[data-a="0"] { background: var(--chip-on-bg); color: var(--chip-on-fg); font-weight: 600; }
-      #af-0:checked ~ .stage .t:not([data-assignee="did:key:z6MkCkkvsRH3ErzS8NCwqhxd1VAHCsHyJjx1BduJt3o3QLsG"]) { display: none !important; }
-      #af-0:checked ~ .stage .day:not(:has(.t[data-assignee="did:key:z6MkCkkvsRH3ErzS8NCwqhxd1VAHCsHyJjx1BduJt3o3QLsG"])) { display: none !important; }
-      #af-1:checked ~ .hd .tagf[data-a="1"] { background: var(--chip-on-bg); color: var(--chip-on-fg); font-weight: 600; }
-      #af-1:checked ~ .stage .t:not([data-assignee="did:key:z6MkFMJAa7dqnJkekBa2ejMYgLzBkeq9N7TFuJHBpUjd74Rf"]) { display: none !important; }
-      #af-1:checked ~ .stage .day:not(:has(.t[data-assignee="did:key:z6MkFMJAa7dqnJkekBa2ejMYgLzBkeq9N7TFuJHBpUjd74Rf"])) { display: none !important; }
       @media (max-width: 700px) {
         .app { padding: 20px 14px 40px; width: calc(100% - 20px); margin: 12px auto 24px; }
         .ttl { font-size: 24px; }
@@ -453,15 +488,15 @@ view!:
         }
       }
       </style>
-      <input type="radio" name="tdbucket" id="tdb-inbox" class="st"><input type="radio" name="tdbucket" id="tdb-today" class="st" checked><input type="radio" name="tdbucket" id="tdb-upcoming" class="st"><input type="radio" name="tdbucket" id="tdb-anytime" class="st"><input type="radio" name="tdtag" id="tf-all" class="st" checked><input type="radio" name="tdtag" id="tf-design" class="st"><input type="radio" name="tdtag" id="tf-engineering" class="st"><input type="radio" name="tdtag" id="tf-ops" class="st"><input type="radio" name="tdwho" id="af-all" class="st" checked><input type="radio" name="tdwho" id="af-0" class="st"><input type="radio" name="tdwho" id="af-1" class="st">
+      <input type="radio" name="tdbucket" id="tdb-inbox" class="st"><input type="radio" name="tdbucket" id="tdb-today" class="st" checked><input type="radio" name="tdbucket" id="tdb-upcoming" class="st"><input type="radio" name="tdbucket" id="tdb-anytime" class="st"><input type="radio" name="tdtag" id="tf-all" class="st" checked><input type="radio" name="tdtag" id="tf-design" class="st"><input type="radio" name="tdtag" id="tf-engineering" class="st"><input type="radio" name="tdtag" id="tf-ops" class="st">
       <header class="hd">
         <h1 class="ttl">{heading}</h1>
         <nav class="tabs"><label for="tdb-inbox" class="tab" data-b="inbox"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13h4l1.5 2.5h7L17 13h4M3 13l3-8h12l3 8v6H3v-6z"/></svg>Inbox</label><label for="tdb-today" class="tab" data-b="today"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8L3.5 9.7l5.9-.9L12 3.5z"/></svg>Today</label><label for="tdb-upcoming" class="tab" data-b="upcoming"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.5h16v15H4v-15zM4 10h16M8.5 3v4.5M15.5 3v4.5"/></svg>Upcoming</label><label for="tdb-anytime" class="tab" data-b="anytime"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5l8.5 4.5-8.5 4.5L3.5 8 12 3.5zM3.5 12.5L12 17l8.5-4.5M3.5 16.5L12 21l8.5-4.5"/></svg>Anytime</label></nav>
-        <div class="filters"><label for="tf-all" class="tagf" data-t="all">All tags</label><label for="tf-design" class="tagf" data-t="design">#design</label><label for="tf-engineering" class="tagf" data-t="engineering">#engineering</label><label for="tf-ops" class="tagf" data-t="ops">#ops</label><span class="fsep"></span><label for="af-all" class="tagf" data-a="all">Anyone</label><label for="af-0" class="tagf" data-a="0">brave-otter</label><label for="af-1" class="tagf" data-a="1">gavin</label></div>
+        <div class="filters"><label for="tf-all" class="tagf" data-t="all">All tags</label><label for="tf-design" class="tagf" data-t="design">#design</label><label for="tf-engineering" class="tagf" data-t="engineering">#engineering</label><label for="tf-ops" class="tagf" data-t="ops">#ops</label></div>
       </header>
       <section class="stage">
         <div class="ch" data-b="inbox"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13h4l1.5 2.5h7L17 13h4M3 13l3-8h12l3 8v6H3v-6z"/></svg><span>Inbox</span></div><div class="ch" data-b="today"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8L3.5 9.7l5.9-.9L12 3.5z"/></svg><span>Today</span></div><div class="ch" data-b="upcoming"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.5h16v15H4v-15zM4 10h16M8.5 3v4.5M15.5 3v4.5"/></svg><span>Upcoming</span></div><div class="ch" data-b="anytime"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5l8.5 4.5-8.5 4.5L3.5 8 12 3.5zM3.5 12.5L12 17l8.5-4.5M3.5 16.5L12 21l8.5-4.5"/></svg><span>Anytime</span></div>
-        <div class="cp" data-b="inbox"><form onsubmit="return false"><input type="text" name="title" placeholder="New To-Do" autocomplete="off" onchange=compose data-bucket="inbox" data-assignee="did:key:z6MkCkkvsRH3ErzS8NCwqhxd1VAHCsHyJjx1BduJt3o3QLsG"><input type="hidden" name="due" value="none"></form></div><div class="cp" data-b="today"><form onsubmit="return false"><input type="text" name="title" placeholder="New To-Do" autocomplete="off" onchange=compose data-bucket="today" data-assignee="did:key:z6MkCkkvsRH3ErzS8NCwqhxd1VAHCsHyJjx1BduJt3o3QLsG"><input type="hidden" name="due" value="none"></form></div><div class="cp" data-b="upcoming"><form onsubmit="return false"><input type="text" name="title" placeholder="New To-Do" autocomplete="off" onchange=compose data-bucket="upcoming" data-assignee="did:key:z6MkCkkvsRH3ErzS8NCwqhxd1VAHCsHyJjx1BduJt3o3QLsG"><input type="date" name="due" value="2026-08-27" aria-label="Date"></form></div><div class="cp" data-b="anytime"><form onsubmit="return false"><input type="text" name="title" placeholder="New To-Do" autocomplete="off" onchange=compose data-bucket="anytime" data-assignee="did:key:z6MkCkkvsRH3ErzS8NCwqhxd1VAHCsHyJjx1BduJt3o3QLsG"><input type="hidden" name="due" value="none"></form></div>
+        <div class="cp" data-b="inbox"><form onsubmit="return false"><input type="text" name="title" placeholder="New To-Do" autocomplete="off" onchange=compose data-bucket="inbox"><input type="hidden" name="due" value="none"></form></div><div class="cp" data-b="today"><form onsubmit="return false"><input type="text" name="title" placeholder="New To-Do" autocomplete="off" onchange=compose data-bucket="today"><input type="hidden" name="due" value="none"></form></div><div class="cp" data-b="upcoming"><form onsubmit="return false"><input type="text" name="title" placeholder="New To-Do" autocomplete="off" onchange=compose data-bucket="upcoming"><input type="date" name="due" value="2026-08-27" aria-label="Date"></form></div><div class="cp" data-b="anytime"><form onsubmit="return false"><input type="text" name="title" placeholder="New To-Do" autocomplete="off" onchange=compose data-bucket="anytime"><input type="hidden" name="due" value="none"></form></div>
         <tonk-display class="days" model=day></tonk-display>
         <tonk-display class="todos" model=todo></tonk-display>
       </section>
@@ -470,28 +505,76 @@ view!:
 rule!:
   assert!: todo
   when:
-    - assert: schedule
-      where: { due: ?due, todo: ?this }
+    - assert: compose
+      where: { this: ?this, due: ?due, time: ?created, title: ?title, bucket: ?bucket }
+    - assert: ==
+      where: { this: false, is: ?done }
+
+rule!:
+  assert!: todo/done
+  when:
+    - assert: toggle
+      where: { todo: ?this }
+    - assert: todo/done
+      where: { this: ?this, done: false }
+    - assert: ==
+      where: { this: true, is: ?done }
+
+rule!:
+  assert!: todo/done
+  when:
+    - assert: toggle
+      where: { todo: ?this }
+    - assert: todo/done
+      where: { this: ?this, done: true }
+    - assert: ==
+      where: { this: false, is: ?done }
+
+# Moving to a list clears the date; scheduling a date files it under
+# upcoming.
+rule!:
+  assert!: todo/placement
+  when:
+    - assert: move
+      where: { todo: ?this, bucket: ?bucket }
     - assert: todo
-      where: { this: ?this, due: _, done: ?done, title: ?title, bucket: _, created: ?created, assignee: ?assignee }
+      where: { this: ?this }
+    - assert: ==
+      where: { this: "none", is: ?due }
+
+rule!:
+  assert!: todo/placement
+  when:
+    - assert: schedule
+      where: { todo: ?this, due: ?due }
+    - assert: todo
+      where: { this: ?this }
     - assert: ==
       where: { this: "upcoming", is: ?bucket }
 
 rule!:
-  assert: day
+  assert!: todo/assignment
   when:
-    - assert: day-slot
-      where: { this: ?this, date: ?date, rank: ?rank, label: ?label }
+    - assert: assign
+      where: { todo: ?this, member: ?assignee }
     - assert: todo
-      where: { this: ?todo, due: ?date, done: _, title: _, bucket: "upcoming", created: _, assignee: _ }
+      where: { this: ?this }
 
 rule!:
-  assert!: todo
+  retract!: todo
   when:
-    - assert: compose
-      where: { this: ?this, due: ?due, time: ?created, title: ?title, bucket: ?bucket, assignee: ?assignee }
-    - assert: ==
-      where: { this: false, is: ?done }
+    - assert: remove
+      where: { todo: ?this }
+    - assert: todo
+      where: { this: ?this, due: ?due, done: ?done, title: ?title, bucket: ?bucket, created: ?created }
+
+rule!:
+  retract!: todo/assignment
+  when:
+    - assert: remove
+      where: { todo: ?this }
+    - assert: todo/assignment
+      where: { this: ?this, assignee: ?assignee }
 
 rule!:
   assert!: tagging
@@ -500,56 +583,18 @@ rule!:
       where: { tag: ?tag, todo: ?this }
 
 rule!:
-  assert!: todo
-  when:
-    - assert: toggle
-      where: { todo: ?this }
-    - assert: todo
-      where: { this: ?this, due: ?due, done: false, title: ?title, bucket: ?bucket, created: ?created, assignee: ?assignee }
-    - assert: ==
-      where: { this: true, is: ?done }
-
-rule!:
-  retract!: todo
-  when:
-    - assert: remove
-      where: { todo: ?this }
-    - assert: todo
-      where: { this: ?this, due: ?due, done: ?done, title: ?title, bucket: ?bucket, created: ?created, assignee: ?assignee }
-
-rule!:
-  assert!: todo
-  when:
-    - assert: toggle
-      where: { todo: ?this }
-    - assert: todo
-      where: { this: ?this, due: ?due, done: true, title: ?title, bucket: ?bucket, created: ?created, assignee: ?assignee }
-    - assert: ==
-      where: { this: false, is: ?done }
-
-rule!:
-  assert!: todo
-  when:
-    - assert: move
-      where: { todo: ?this, bucket: ?bucket }
-    - assert: todo
-      where: { this: ?this, due: _, done: ?done, title: ?title, bucket: _, created: ?created, assignee: ?assignee }
-    - assert: ==
-      where: { this: "none", is: ?due }
-
-rule!:
-  assert!: todo
-  when:
-    - assert: assign
-      where: { todo: ?this, member: ?assignee }
-    - assert: todo
-      where: { this: ?this, due: ?due, done: ?done, title: ?title, bucket: ?bucket, created: ?created, assignee: _ }
-
-rule!:
   retract!: tagging
   when:
     - assert: untag
       where: { tag: ?tag, todo: ?this }
+
+rule!:
+  assert: day
+  when:
+    - assert: day-slot
+      where: { this: ?this, date: ?date, rank: ?rank, label: ?label }
+    - assert: todo
+      where: { this: ?todo, due: ?date, bucket: "upcoming" }
 
 component!:
   this: id:todo-delete-v2
@@ -641,7 +686,7 @@ day-slot!:
   label: "Tue 3 Nov"
   rank: 2498
 
-xyz.tonk.todo!: &seed-td1
+todo!: &seed-td1
   this: did:key:z6Mk2aTy1nSjTADiwchKyn8qr4RD44fPq9d8x4Lv41hHg4q9
   bucket: "today"
   created: 1.0
@@ -1003,7 +1048,7 @@ tagging!: &seed-td5
   this: did:key:z6Mk9h5N97CqJYoUDNjHaAAg7c1Em8b9kEapZLszmfnDBRfH
   tag: "design"
 
-xyz.tonk.todo!:
+todo!:
   this: did:key:z6Mk9h5N97CqJYoUDNjHaAAg7c1Em8b9kEapZLszmfnDBRfH
   bucket: "upcoming"
   created: 5.0
@@ -1125,7 +1170,7 @@ day-slot!:
   label: "Fri 16 Oct"
   rank: 2480
 
-xyz.tonk.todo!: &seed-td2
+todo!: &seed-td2
   this: did:key:z6MkCXCvGqywbZiaMhDKDfD3zjiA5xBPaJqukZiXMYw8aquG
   bucket: "inbox"
   created: 2.0
@@ -1345,7 +1390,7 @@ tagging!: &seed-td4
   this: did:key:z6MkJA3bzgMh9qhwC5qAyGGA1bMKwhR6kXYPqsHimxo7QjZa
   tag: "design"
 
-xyz.tonk.todo!:
+todo!:
   this: did:key:z6MkJA3bzgMh9qhwC5qAyGGA1bMKwhR6kXYPqsHimxo7QjZa
   bucket: "today"
   created: 4.0
@@ -1363,7 +1408,7 @@ tagging!: &seed-td3
   this: did:key:z6MkdjjuvVAwEYwNa9YMhWsgA1L7nAfUZwUHFE6Q7tfGZqa
   tag: "engineering"
 
-xyz.tonk.todo!:
+todo!:
   this: did:key:z6MkdjjuvVAwEYwNa9YMhWsgA1L7nAfUZwUHFE6Q7tfGZqa
   bucket: "anytime"
   created: 3.0

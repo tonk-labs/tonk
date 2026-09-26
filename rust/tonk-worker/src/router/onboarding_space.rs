@@ -844,17 +844,12 @@ mod tests {
         );
         for document in [welcome, demos] {
             validate(document).unwrap();
-            // Attributes appear as a claim head's domain or an attribute's `the:`.
-            let attributes =
-                document
-                    .lines()
-                    .filter_map(|line| match line.trim_start().strip_prefix("the: ") {
-                        Some(the) => Some(format!("{the}/")),
-                        None if !line.starts_with(' ') => {
-                            line.split_once("!:").map(|(head, _)| format!("{head}/"))
-                        }
-                        None => None,
-                    });
+            // Facts are written by expression heads. A concept may still
+            // name roster attributes to read them.
+            let attributes = document
+                .lines()
+                .filter(|line| !line.starts_with(' '))
+                .filter_map(|line| line.split_once("!:").map(|(head, _)| format!("{head}/")));
             for attribute in attributes {
                 assert!(
                     ![
