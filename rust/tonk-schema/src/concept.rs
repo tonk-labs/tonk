@@ -401,38 +401,37 @@ impl AttributeById {
         Self { id: id.into() }
     }
 
-    /// Resolve the attribute against a branch: one
-    /// [`AnonymousAttribute`] query with the id pinned and the
-    /// entity free.
+    /// Resolve the attribute against a branch: find the entity whose
+    /// `db.attribute/id` is this id, then reconstruct it by entity.
+    ///
+    /// Two steps rather than one [`AnonymousAttribute`] query with the
+    /// id pinned: that query was planned from its free fields and read
+    /// every attribute on the branch to find one, tens of milliseconds
+    /// per claim-domain field.
     pub async fn resolve<Env: QueryEnv>(
         self,
         source: &Source<'_>,
         env: &Env,
     ) -> Result<Option<Attribute>, ConceptLookupError> {
-        use tonk_core::meta::attribute::Id;
-        let facts: Vec<AnonymousAttribute> = source
-            .select(Query::<AnonymousAttribute> {
-                this: Term::var("attribute"),
-                id: Term::from(Id(self.id)),
-                r#type: Term::var("type"),
-                cardinality: Term::var("cardinality"),
-                description: Term::var("description"),
-            })
+        let claims: Vec<dialog_query::Claim> = source
+            .select(dialog_query::AttributeQuery::from(
+                Term::<dialog_query::attribute::The>::from(meta_attr_typed("db.attribute", "id"))
+                    .of(Term::<Entity>::var("attribute"))
+                    .is(Term::from(self.id)),
+            ))
             .perform(env)
             .try_vec()
             .await
-            .map_err(|e| {
-                ConceptLookupError::query(format!("AnonymousAttribute query failed: {e:?}"))
-            })?;
-
-        let Some(facts) = facts.into_iter().next() else {
-            return Ok(None);
-        };
-        let descriptor = build_attribute_descriptor(&facts).map_err(ConceptLookupError::query)?;
-        Ok(Some(Attribute {
-            entity: facts.this,
-            descriptor,
-        }))
+            .map_err(|e| ConceptLookupError::query(format!("attribute id query failed: {e:?}")))?;
+        for claim in claims {
+            if let Some(attribute) = AttributeByEntity::new(claim.of)
+                .resolve(source, env)
+                .await?
+            {
+                return Ok(Some(attribute));
+            }
+        }
+        Ok(None)
     }
 }
 

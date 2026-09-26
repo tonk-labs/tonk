@@ -302,7 +302,11 @@ pub trait SyntaxEvaluateExt {
 
 impl SyntaxEvaluateExt for Syntax {
     fn evaluate<'a>(&self, txn: Transaction<&'a Branch>) -> Evaluate<'_, 'a> {
-        Evaluate { syntax: self, txn }
+        Evaluate {
+            syntax: self,
+            txn,
+            snapshots: true,
+        }
     }
 }
 
@@ -311,9 +315,19 @@ impl SyntaxEvaluateExt for Syntax {
 pub struct Evaluate<'s, 'a> {
     syntax: &'s Syntax,
     txn: Transaction<&'a Branch>,
+    snapshots: bool,
 }
 
 impl<'s, 'a> Evaluate<'s, 'a> {
+    /// Skip the snapshot queries the analyzer synthesizes to show what
+    /// each assertion wrote. They are only ever displayed, never joined
+    /// into the frames statements plan from, so a caller that reads no
+    /// matches (a library seed) saves reading every asserted entity back.
+    pub fn without_snapshots(mut self) -> Self {
+        self.snapshots = false;
+        self
+    }
+
     /// Analyze the syntax, run pre-mutation queries, plan every
     /// mutation `Statement` per match frame, apply the resulting
     /// claims, and run effect induction. The transaction is
@@ -330,7 +344,11 @@ impl<'s, 'a> Evaluate<'s, 'a> {
         self,
         env: &Env,
     ) -> Result<Evaluated<'a>, EvaluateError> {
-        let Evaluate { syntax, mut txn } = self;
+        let Evaluate {
+            syntax,
+            mut txn,
+            snapshots,
+        } = self;
 
         // Run `compile` under the hood. Resolution reads through
         // the txn overlay; pre-mutation overlay is empty so this
@@ -348,10 +366,15 @@ impl<'s, 'a> Evaluate<'s, 'a> {
         // Pre-mutation reads go through the txn's overlay, which
         // is empty at this point so the answer matches the branch.
         let user_queries = collect_queries(document);
-        let pre_results = if user_queries.is_empty() && document.synthesized.is_empty() {
+        let synthesized: &[SynthesizedQuery] = if snapshots {
+            &document.synthesized
+        } else {
+            &[]
+        };
+        let pre_results = if user_queries.is_empty() && synthesized.is_empty() {
             None
         } else {
-            Some(run_query(&user_queries, &document.synthesized, &txn, env).await?)
+            Some(run_query(&user_queries, synthesized, &txn, env).await?)
         };
         let pre_matches: Vec<Parameters> = match &pre_results {
             Some(r) if !r.joined.is_empty() => r.joined.clone(),
@@ -479,7 +502,11 @@ impl<'s, 'a> Evaluate<'s, 'a> {
         }
         commits.claims = claim_count;
 
-        let matches = render_match_blocks(&analysis.analysis, pre_results.as_ref());
+        let matches = if snapshots {
+            render_match_blocks(&analysis.analysis, pre_results.as_ref())
+        } else {
+            Vec::new()
+        };
 
         // Rule induction is part of COMMIT now: dialog's
         // `TransactionCommit::perform` fires installed rules over the
@@ -1546,6 +1573,59 @@ concept!: &note
     /// it does through a concept head. The domain head used to
     /// synthesize a cardinality-one descriptor, so each write
     /// replaced the prior value (last-write-wins).
+    #[dialog_common::test]
+    async fn it_writes_the_same_facts_without_snapshots() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+        let parsed = parse(
+            r#"concept!: &note
+  description: "A note"
+  with:
+    body:
+      description: "body"
+      the: xyz.tonk.note/body
+      as: text
+
+note!:
+  this: id:n
+  body: "hello"
+"#,
+        );
+        let syntax = parsed.syntax.expect("syntax");
+
+        let shown = syntax
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await?;
+        assert!(
+            !shown.matches.is_empty(),
+            "snapshots show what was asserted"
+        );
+
+        let seeded = syntax
+            .evaluate(branch.transaction())
+            .without_snapshots()
+            .perform(&operator)
+            .await?;
+        assert!(seeded.matches.is_empty());
+        seeded.commit().publish().perform(&operator).await?;
+
+        let n: dialog_artifacts::Entity = "id:n".parse()?;
+        let claims: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::<dialog_query::attribute::The>::from(the!("xyz.tonk.note/body"))
+                    .of(Term::<dialog_artifacts::Entity>::from(n))
+                    .is(Term::<String>::var("body")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert_eq!(claims.len(), 1, "the assertion is still written");
+        Ok(())
+    }
+
     #[dialog_common::test]
     async fn it_accumulates_many_valued_attributes_through_domain_heads() -> anyhow::Result<()> {
         let (operator, profile) = test_operator_with_profile().await;
