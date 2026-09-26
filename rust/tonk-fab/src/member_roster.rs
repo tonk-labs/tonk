@@ -16,23 +16,19 @@
 //!
 //! Renders names in the FABB's attached members panel.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use custom_elements::CustomElement;
 use js_sys::Reflect;
-use tonk_common::log;
 use wasm_bindgen::prelude::*;
-use wasm_bindgen_futures::{JsFuture, spawn_local};
-use web_sys::{CustomEvent, HtmlElement, Response, window};
+use web_sys::{HtmlElement, window};
 
-use crate::logic::{
-    member_roster_query_body, repository_endpoint, self_member_did_from_repository,
-};
-use crate::shadow::{self, Bound};
+use crate::logic::{member_roster_query_body, self_member_query_body};
 use crate::subscribing;
 
 const SUB_TAG: &str = "ui-member-roster";
+const VIEWER_TAG: &str = "ui-member-roster-viewer";
 
 #[derive(Default)]
 pub struct UiMemberRosterElement {
@@ -43,8 +39,6 @@ pub struct UiMemberRosterElement {
     members: Rc<RefCell<Vec<Member>>>,
     /// The current membership DID, used to mark its row as "you".
     viewer: Rc<RefCell<Option<String>>>,
-    viewer_request: Rc<Cell<u64>>,
-    listeners: Vec<Bound>,
 }
 
 impl CustomElement for UiMemberRosterElement {
@@ -59,40 +53,12 @@ impl CustomElement for UiMemberRosterElement {
     }
 
     fn connected_callback(&mut self, this: &HtmlElement) {
-        let behaviour: Rc<dyn subscribing::Subscribing> = Rc::new(MemberRosterBehaviour {
-            members: self.members.clone(),
-            viewer: self.viewer.clone(),
-        });
         render_rows(
             this,
             &self.members.borrow(),
             self.viewer.borrow().as_deref(),
         );
-        self.scaffold.connect(this, behaviour);
-        resolve_viewer(
-            this,
-            self.members.clone(),
-            self.viewer.clone(),
-            self.viewer_request.clone(),
-        );
-        if let Some(win) = window() {
-            let host = this.clone();
-            let members = self.members.clone();
-            let viewer = self.viewer.clone();
-            let request = self.viewer_request.clone();
-            self.listeners
-                .push(shadow::bind(&win, "tonk:task-closed", move |event| {
-                    if event
-                        .dyn_ref::<CustomEvent>()
-                        .and_then(|event| Reflect::get(&event.detail(), &"result".into()).ok())
-                        .and_then(|value| value.as_string())
-                        .as_deref()
-                        == Some("completed")
-                    {
-                        resolve_viewer(&host, members.clone(), viewer.clone(), request.clone());
-                    }
-                }));
-        }
+        self.connect(this);
     }
 
     fn attribute_changed_callback(
@@ -112,27 +78,31 @@ impl CustomElement for UiMemberRosterElement {
         self.members.borrow_mut().clear();
         self.viewer.borrow_mut().take();
         render_rows(this, &[], None);
-        let behaviour: Rc<dyn subscribing::Subscribing> = Rc::new(MemberRosterBehaviour {
-            members: self.members.clone(),
-            viewer: self.viewer.clone(),
-        });
-        self.scaffold.connect(this, behaviour);
-        resolve_viewer(
-            this,
-            self.members.clone(),
-            self.viewer.clone(),
-            self.viewer_request.clone(),
-        );
+        self.connect(this);
     }
 
     fn disconnected_callback(&mut self, _this: &HtmlElement) {
-        self.viewer_request
-            .set(self.viewer_request.get().wrapping_add(1));
-        self.listeners.clear();
         self.scaffold.disconnect();
         if let Some(panel) = member_panel(_this) {
             panel.set_text_content(None);
         }
+    }
+}
+
+impl UiMemberRosterElement {
+    /// Subscribe to the roster and to which member this device acts as, on
+    /// the space `with` points at. The worker keeps the latter current, so
+    /// a linked or forgotten account re-marks "you" without a refetch.
+    fn connect(&self, this: &HtmlElement) {
+        let roster: Rc<dyn subscribing::Subscribing> = Rc::new(MemberRosterBehaviour {
+            members: self.members.clone(),
+            viewer: self.viewer.clone(),
+        });
+        let viewer: Rc<dyn subscribing::Subscribing> = Rc::new(ViewerBehaviour {
+            members: self.members.clone(),
+            viewer: self.viewer.clone(),
+        });
+        self.scaffold.connect_all(this, vec![roster, viewer]);
     }
 }
 
@@ -289,63 +259,47 @@ fn render_rows(host: &HtmlElement, members: &[Member], viewer: Option<&str>) {
     }
 }
 
-/// Resolve the current member from the repository's `is_self` projection.
-/// Its DID is the account principal that owns the membership, which need not
-/// be this device's profile DID. Repaint rows delivered during the request.
-fn resolve_viewer(
-    host: &HtmlElement,
+/// The `state:self-member` subscription: which member row is "you".
+struct ViewerBehaviour {
     members: Rc<RefCell<Vec<Member>>>,
     viewer: Rc<RefCell<Option<String>>>,
-    request: Rc<Cell<u64>>,
-) {
-    let Some(win) = window() else { return };
-    let Some(space) = host.get_attribute("space") else {
-        return;
-    };
-    let Ok(endpoint) = repository_endpoint(&space) else {
-        return;
-    };
-    let current = request.get().wrapping_add(1);
-    request.set(current);
-    viewer.borrow_mut().take();
-    render_rows(host, &members.borrow(), None);
+}
 
-    let host = host.clone();
-    spawn_local(async move {
-        let response = match JsFuture::from(win.fetch_with_str(&endpoint)).await {
-            Ok(response) => response.dyn_into::<Response>().ok(),
-            Err(error) => {
-                log!("ui-member-roster repository lookup failed: {error:?}");
-                return;
-            }
-        };
-        let Some(response) = response.filter(Response::ok) else {
-            return;
-        };
-        let Ok(promise) = response.json() else {
-            return;
-        };
-        let Ok(info) = JsFuture::from(promise).await else {
-            return;
-        };
-        let Some(json) = js_sys::JSON::stringify(&info)
-            .ok()
-            .and_then(|json| json.as_string())
-        else {
-            return;
-        };
-        let Ok(info) = serde_json::from_str::<serde_json::Value>(&json) else {
-            return;
-        };
-        if request.get() != current
-            || !host.is_connected()
-            || host.get_attribute("space").as_deref() != Some(space.as_str())
-        {
-            return;
+impl ViewerBehaviour {
+    fn apply(&self, host: &HtmlElement, rows: &JsValue) {
+        let rows = js_sys::Array::from(rows);
+        let member = (0..rows.length()).find_map(|i| {
+            let fields = Reflect::get(&rows.get(i), &"fields".into()).ok()?;
+            Reflect::get(&fields, &"member".into()).ok()?.as_string()
+        });
+        if let Some(member) = member {
+            *self.viewer.borrow_mut() = Some(member);
+            render_rows(
+                host,
+                &self.members.borrow(),
+                self.viewer.borrow().as_deref(),
+            );
         }
-        *viewer.borrow_mut() = self_member_did_from_repository(&info);
-        render_rows(&host, &members.borrow(), viewer.borrow().as_deref());
-    });
+    }
+}
+
+impl subscribing::Subscribing for ViewerBehaviour {
+    fn query_body(&self, _this: &HtmlElement) -> Result<String, String> {
+        Ok(self_member_query_body())
+    }
+
+    fn render_reset(&self, host: &HtmlElement, payload: &JsValue) {
+        self.apply(host, payload);
+    }
+
+    fn render_update(&self, host: &HtmlElement, payload: &JsValue) {
+        let asserted = Reflect::get(payload, &"asserted".into()).unwrap_or(JsValue::UNDEFINED);
+        self.apply(host, &asserted);
+    }
+
+    fn tag(&self) -> &'static str {
+        VIEWER_TAG
+    }
 }
 
 /// Register `<ui-member-roster>`. Idempotent.

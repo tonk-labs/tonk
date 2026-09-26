@@ -6,7 +6,7 @@ use js_sys::{Array, Function, Object, Promise, Reflect};
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_test::wasm_bindgen_test_configure;
-use web_sys::{CustomEvent, CustomEventInit, Element, HtmlElement, window};
+use web_sys::{Element, HtmlElement, window};
 
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -36,9 +36,13 @@ fn shadow(bar: &HtmlElement, selector: &str) -> Element {
 }
 
 fn deliver(roster: &HtmlElement, method: &str, payload: serde_json::Value) {
+    deliver_tagged(roster, "ui-member-roster", method, payload);
+}
+
+fn deliver_tagged(roster: &HtmlElement, tag: &str, method: &str, payload: serde_json::Value) {
     let payload = js_sys::JSON::parse(&payload.to_string()).unwrap();
     let opts = Object::new();
-    Reflect::set(&opts, &"tag".into(), &"ui-member-roster".into()).unwrap();
+    Reflect::set(&opts, &"tag".into(), &tag.into()).unwrap();
     Reflect::get(roster, &method.into())
         .unwrap()
         .dyn_into::<Function>()
@@ -64,21 +68,16 @@ async fn settle() {
     JsFuture::from(promise).await.unwrap();
 }
 
+fn viewer(roster: &HtmlElement, method: &str, payload: serde_json::Value) {
+    deliver_tagged(roster, "ui-member-roster-viewer", method, payload);
+}
+
+fn self_member(did: &str) -> serde_json::Value {
+    serde_json::json!({ "this": "state:self-member", "fields": { "member": did } })
+}
+
 #[dialog_common::test]
-async fn repository_self_member_gets_a_separate_you_marker_and_refreshes_after_account_change() {
-    let win = window().unwrap();
-    let original_fetch = Reflect::get(&win, &"fetch".into()).unwrap();
-    let stub = |self_did: &str| {
-        Function::new_with_args(
-            "url",
-            &format!(
-                "return Promise.resolve(new Response(JSON.stringify({{members:[{{did:'did:key:owner',is_self:{}}},{{did:'did:key:member',is_self:{}}}]}}),{{status:200}}))",
-                self_did == "did:key:owner",
-                self_did == "did:key:member"
-            ),
-        )
-    };
-    Reflect::set(&win, &"fetch".into(), &stub("did:key:owner")).unwrap();
+async fn the_self_member_row_gets_a_separate_you_marker_and_follows_an_account_change() {
     let (bar, roster) = mount();
     deliver(
         &roster,
@@ -87,6 +86,11 @@ async fn repository_self_member_gets_a_separate_you_marker_and_refreshes_after_a
             { "this": "owner", "fields": { "name": "Owner", "member": "did:key:owner", "role": "tonk:founder" } },
             { "this": "member", "fields": { "name": "Member", "member": "did:key:member", "role": "tonk:member" } }
         ]),
+    );
+    viewer(
+        &roster,
+        "reset",
+        serde_json::json!([self_member("did:key:owner")]),
     );
     settle().await;
     let panel = shadow(&bar, ".members-list");
@@ -118,13 +122,12 @@ async fn repository_self_member_gets_a_separate_you_marker_and_refreshes_after_a
         Some("owner")
     );
 
-    Reflect::set(&win, &"fetch".into(), &stub("did:key:member")).unwrap();
-    let detail = Object::new();
-    Reflect::set(&detail, &"result".into(), &"completed".into()).unwrap();
-    let init = CustomEventInit::new();
-    init.set_detail(&detail);
-    win.dispatch_event(&CustomEvent::new_with_event_init_dict("tonk:task-closed", &init).unwrap())
-        .unwrap();
+    // The worker re-stamps `state:self-member` when the account changes.
+    viewer(
+        &roster,
+        "update",
+        serde_json::json!({ "asserted": [self_member("did:key:member")], "retracted": [] }),
+    );
     settle().await;
     assert_eq!(
         panel
@@ -155,7 +158,6 @@ async fn repository_self_member_gets_a_separate_you_marker_and_refreshes_after_a
     );
 
     bar.remove();
-    Reflect::set(&win, &"fetch".into(), &original_fetch).unwrap();
 }
 
 #[dialog_common::test]

@@ -63,10 +63,10 @@ revoked, wrong-recipient, and unavailable joins leave no visible replica.
 guest, beside the Hub. WebAuthn still runs in the top document on the
 `tonk.network` RP-ID origin: the guest sends a typed registration request with a
 visible anchor, and the top document owns account creation and passkey
-self-link. The account flow reads the local profile DID from `/api/identify`,
-sends root-signed ceremony bytes to the configured account service, then
-attaches provider metadata through `/api/account/attach`; it does not replace or
-own the local root.
+self-link. The account flow reads the local profile DID with a query on the
+profile branch, sends root-signed ceremony bytes to the configured account
+service, and records the result through commands the worker runs; it does not
+replace or own the local root.
 
 The page fetches `GET /.well-known/tonk` once and uses its typed
 `accountServiceUrl`. It never infers services from a

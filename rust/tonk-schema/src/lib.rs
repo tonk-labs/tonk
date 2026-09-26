@@ -123,7 +123,7 @@ pub use site::{
 };
 
 mod identity;
-pub use identity::{ProfileIdentity, ProfileName};
+pub use identity::{ProfileIdentity, ProfileName, SelfMember};
 
 mod recovery;
 mod roster;

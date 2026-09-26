@@ -147,8 +147,60 @@ pub async fn publish_self_identity(tonk: &crate::worker::TonkState, repo: &str, 
         }
     };
     session.state.assert_overlay(stamp);
+    if let Some(member) = self_member(tonk).await {
+        session.state.assert_overlay(member);
+    }
     tonk.reactor
         .schedule_poll(std::sync::Arc::clone(&session.state));
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+}
+
+/// The `state:self-member` row: the DID this device's membership rows are
+/// keyed on, which a roster marks as "you". Resolved like
+/// [`member_did`](crate::router::account::member_did) but read-only: that
+/// mints the onboarding account on first use, and stamping a row must not
+/// bring one into being. `None` before either exists, when this device can
+/// hold no membership anyway.
+async fn self_member(tonk: &crate::worker::TonkState) -> Option<tonk_schema::SelfMember> {
+    use dialog_varsig::Principal as _;
+    use tonk_schema::prelude::DidExt as _;
+
+    let member = match crate::router::identity::local_root(tonk).await {
+        Ok(root) => root.root_did,
+        Err(crate::TonkWorkerError::RootRequired) => match crate::onboarding::signer(tonk).await {
+            Ok(Some(signer)) => signer.did(),
+            Ok(None) => return None,
+            Err(error) => {
+                log!("self member not resolved: {error}");
+                return None;
+            }
+        },
+        Err(error) => {
+            log!("self member not resolved: {error}");
+            return None;
+        }
+    };
+    Some(tonk_schema::SelfMember {
+        this: tonk_schema::SelfMember::ENTITY.parse().ok()?,
+        member: tonk_schema::domain::self_member::Member(member.this()),
+    })
+}
+
+/// Re-stamp `state:self-member` on every open branch. The member changes
+/// when the local root is saved or forgotten, and a roster already showing
+/// must follow without the space being reopened.
+pub(crate) async fn publish_self_member(tonk: &crate::worker::TonkState) {
+    let member = self_member(tonk).await;
+    let Ok(entity) = tonk_schema::SelfMember::ENTITY.parse::<dialog_artifacts::Entity>() else {
+        return;
+    };
+    for state in tonk.reactor.cached_branch_states() {
+        state.retain_overlay_entities(|overlaid| overlaid != &entity);
+        if let Some(member) = &member {
+            state.assert_overlay(member.clone());
+        }
+        tonk.reactor.schedule_poll(state);
+    }
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 }
 
@@ -1518,6 +1570,8 @@ mod overlay_tests {
             std::sync::Arc::new(tokio::sync::RwLock::new(test_state().await));
         let key = put_repo(&state, "chip-space").await;
         let tonk = state.read().await;
+        // Founding the space settled which account this device acts for.
+        let member = crate::router::account::member_did(&tonk).await.unwrap();
         super::publish_self_identity(&tonk, &key, "main").await;
 
         let session = tonk
@@ -1553,6 +1607,31 @@ mod overlay_tests {
             rows[0].did.0,
             tonk.profile.did().this(),
             "did must match the profile DID for the sigil",
+        );
+
+        // Beside it, the member this device acts as: the account its
+        // membership rows are keyed on, not the device profile.
+        let rows: Vec<tonk_schema::SelfMember> = session
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::SelfMember> {
+                this: Term::from(
+                    tonk_schema::SelfMember::ENTITY
+                        .parse::<dialog_artifacts::Entity>()
+                        .unwrap(),
+                ),
+                member: Term::var("member"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1, "expected one state:self-member row");
+        assert_eq!(rows[0].member.0, member.this());
+        assert_ne!(
+            rows[0].member.0,
+            tonk.profile.did().this(),
+            "the member is the account, not the device profile",
         );
     }
 }

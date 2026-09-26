@@ -1609,16 +1609,21 @@ mod agent_handoff {
     }
 }
 
-/// The member DID marked `is_self` by the repository read model. Memberships
-/// are keyed to the account root, which can differ from this device's profile.
-pub fn self_member_did_from_repository(info: &Value) -> Option<String> {
-    info.get("members")?.as_array()?.iter().find_map(|member| {
-        if member.get("is_self").and_then(Value::as_bool) == Some(true) {
-            member.get("did").and_then(Value::as_str).map(str::to_owned)
-        } else {
-            None
+/// The subscribe body for which member this device acts as: the worker's
+/// `state:self-member` overlay row on the space. Memberships are keyed to
+/// the account, which can differ from this device's profile, so the roster
+/// marks "you" against this rather than the profile DID.
+pub fn self_member_query_body() -> String {
+    json!({
+        "predicate": { "with": {
+            "member": { "the": "xyz.tonk.self-member/member", "as": "Entity", "cardinality": "one" }
+        } },
+        "terms": {
+            "this": "state:self-member",
+            "member": { "?": { "name": "member" } }
         }
     })
+    .to_string()
 }
 
 /// Whether a member holding `role` runs the space: founders and admins
@@ -1633,18 +1638,12 @@ mod self_member_did {
     use super::*;
 
     #[test]
-    fn it_uses_the_repository_member_identity_instead_of_the_device_profile() {
-        let rows = json!({ "profile": "did:key:zDevice", "members": [
-            { "did": "did:key:zOther", "is_self": false },
-            { "did": "did:key:zAccount", "is_self": true }
-        ] });
+    fn it_reads_the_self_member_row() {
+        let body: Value = serde_json::from_str(&self_member_query_body()).unwrap();
+        assert_eq!(body["terms"]["this"], "state:self-member");
         assert_eq!(
-            self_member_did_from_repository(&rows).as_deref(),
-            Some("did:key:zAccount")
-        );
-        assert_eq!(
-            self_member_did_from_repository(&json!({ "members": [] })),
-            None
+            body["predicate"]["with"]["member"]["the"],
+            "xyz.tonk.self-member/member"
         );
     }
 

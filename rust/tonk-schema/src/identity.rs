@@ -54,6 +54,23 @@ impl ProfileIdentity {
     }
 }
 
+/// Which member this device acts as, on a branch's overlay: the DID its
+/// membership rows are keyed on. Distinct from [`ProfileIdentity`]'s DID,
+/// which is the device profile's: a roster marks "you" against this one.
+/// Transient: stamped on space load and whenever the local root changes.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SelfMember {
+    /// Always [`SelfMember::ENTITY`].
+    pub this: Entity,
+    /// The member DID.
+    pub member: crate::domain::self_member::Member,
+}
+
+impl SelfMember {
+    /// The single entity the row lives on.
+    pub const ENTITY: &str = "state:self-member";
+}
+
 #[cfg(test)]
 mod tests {
     use super::ProfileName;

@@ -1829,6 +1829,19 @@ pub mod identity {
     pub struct Name(pub String);
 }
 
+/// Attributes of the `state:self-member` overlay row.
+pub mod self_member {
+    use super::{Attribute, Entity};
+
+    /// The DID this device's membership rows are keyed on: the linked
+    /// account's root, or the onboarding account before one is linked.
+    /// Derived attribute: `xyz.tonk.self-member/member`.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.self-member")]
+    #[cardinality(one)]
+    pub struct Member(pub Entity);
+}
+
 /// Attributes on the profile's own identity facts, written to the
 /// profile's meta branch (private, never replicated) and keyed by the
 /// profile DID entity.

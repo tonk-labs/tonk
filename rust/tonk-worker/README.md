@@ -13,42 +13,42 @@ install/activate timing is sensitive and WASM init is async.
 
 ## API surface
 
-Routes are assembled in [`router.rs`](src/router.rs) under `/api/`, with one
-submodule per route family in [`router/`](src/router):
+The HTTP surface is pinned in [`router/route_table.rs`](src/router/route_table.rs)
+and is deliberately small. A page reads with a query and acts with a command it
+transacts; the worker answers with facts the page queries or subscribes to.
 
-- **Repository lifecycle** (`repository.rs`): `PUT/GET /api/repository/{repo}`
-  to create (each PUT mints a fresh `did:key` routing key) and read a repo;
-  `POST .../remote` to attach a remote and branch upstream.
 - **Query** (`query.rs`): `POST .../branch/{branch}/query` takes a serialized
   `ConceptQuery` and returns conclusions. With `Accept: text/event-stream` the
   response is an SSE subscription that re-broadcasts on every branch change.
+- **Transact** (`transact.rs`): `POST .../branch/{branch}/transact` takes a
+  typed `TransactRequest`, bypassing notation so per-mutation
+  transient/durable classification flows straight to the reactor's transaction
+  builder. A transient concept the worker registers is a command: its provider
+  runs after the commit (see [`router/command.rs`](src/router/command.rs)).
 - **Evaluate** (`evaluate.rs`): `POST .../branch/{branch}/evaluate` accepts an
   asserted-notation document (any mix of queries and mutations), runs the
   analyze to query to plan to commit pipeline (via `tonk-evaluator`), and
   returns matches plus a commit summary.
-- **Transact** (`transact.rs`): `POST .../branch/{branch}/transact` takes a
-  typed `TransactRequest`, bypassing notation so per-mutation
-  transient/durable classification flows straight to the reactor's transaction
-  builder.
-- **Claim** (`claim.rs`): low-level `assert`/`retract`/`select` over individual
-  `(entity, attribute)` facts.
-- **Sync** (`sync.rs`): `sync`, `sync/pull`, `sync/push`, `sync/status` per
-  branch, plus the background-sync sweep driven by the SW `sync` event.
-- **Transfer** (`transfer.rs`): CSV `export` (stream branch artifacts as
-  `text/csv`) and `import` (commit CSV rows as assertions).
-- **Invite / join** (`create_invite.rs`, `revoke_invite.rs`, `join.rs`): mint,
-  list, and revoke invitations for a repo; visit or durably join from one full
-  invite URL.
-- **Profile** (`profile.rs`, `identify.rs`): `GET /api/identify`,
-  `GET /api/profile`, and a parallel profile-as-repository surface
-  (`/api/profile/branch/{branch}/{query,evaluate,transact}`) since the profile is
-  its own repository outside the named-repo namespace.
-- **Inspect** (`inspect/`): read-only views of branch state, remote/remote-branch
-  status, and archive index blocks for debugging.
-- **Host/guest bridge** (`host.rs`, `bridge.rs`): the iframe bridge (see below).
+- **Blob** (`blob.rs`): `GET .../branch/{branch}/blob/{entity}` serves an
+  entity's bytes with their content type (what `<img src>` points at), and
+  `POST .../branch/{branch}/blob` ingests an upload. Raw bytes are not facts,
+  so these stay routes.
 - **LSP** (`lsp.rs`, `lsp_env.rs`): a language-server surface merged into the
   router, carrying its own `LspHub` state and an SSE event stream.
-- **Migration** (`migration.rs`): `GET /api/migrate/repo-vs-profile`.
+
+Each route exists for a space (`/api/repository/{repo}/branch/{branch}/…`) and
+for the profile, which is its own repository outside the named-repo namespace
+(`/api/profile/branch/{branch}/…`).
+
+Everything else is a command: creating, joining, and inviting to spaces;
+account, passkey, and device ceremonies; sync pause; profile switching;
+onboarding; and the inspector's diagnostics (`InspectBranch`). When a page has
+to wait on one outcome, the command carries an `at` stamp and the worker
+answers on a `state:*` overlay row carrying the same stamp. Background sync is
+paced by the page's `{type:"keepalive"}` message, not a route. Read
+`.claude/skills/commands-not-routes/SKILL.md` before adding a route.
+
+- **Host/guest bridge** (`host.rs`, `bridge.rs`): the iframe bridge (see below).
 
 ## TonkState and dialog-reactor
 
@@ -96,7 +96,7 @@ Renewal is local — parse, mint, retain — and adds no request to the account 
 access service. Expiry and revocation stay where they were: the access service
 checks them on the next ordinary remote call. Renewal only decides which
 credential that call presents. And it is still not membership: explicit
-promotion (`POST /api/repository/{repo}/membership`) remains the only path from
+promotion (the `PromoteMember` command) remains the only path from
 a guest to a durable member.
 
 ## Host/guest routing model
@@ -105,8 +105,8 @@ A view is rendered in a sandboxed iframe. Routing policy lives entirely in
 `on_fetch` / `route_for` (see [`worker.rs`](src/worker.rs)):
 
 - `/api/...` from an ordinary client routes through axum unchanged.
-- A registered guest iframe (recorded by client id against `{repo, branch}` via
-  `GET .../host/{host}/{entity}`) gets a virtual root: its subresource fetches
+- A registered guest iframe (recorded by client id against `{repo, branch}` in
+  the worker's view bindings) gets a virtual root: its subresource fetches
   are rewritten under `/api/repository/{repo}/branch/{branch}/...`, so a fetch
   for `/foo.js` lands inside its branch.
 - A view client hitting `/api/...` directly is rejected with a synthetic 404:
@@ -121,11 +121,9 @@ stale-while-revalidate in [`cache.rs`](src/cache.rs)).
 
 ## Browser contracts
 
-Browser JSON is camelCase. `POST /api/repository/{repo}/invite` accepts
-`baseUrl` and `recipientRoot`; omitted `baseUrl` becomes `/join` on the exact
-request origin. The input aliases `base_url` and `recipient_root` remain only
-for rollout compatibility and are scheduled for removal no earlier than
-2026-08-29. Unknown fields return 400.
+Browser JSON is camelCase. An invite is the `InviteRequest` command, asserted on
+the profile branch or on the space's own branch; its outcome lands as facts the
+share control subscribes to.
 
 Access and revocation relays are separate explicit metadata. A remote without a
 stored revocation relay remains readable and syncable, but cannot mint a

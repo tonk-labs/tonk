@@ -3848,7 +3848,7 @@ employee:
         let tonk = test_state().await;
         let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
         let (app, _lsp) = crate::api_router_from_state(app_state.clone());
-        let (repo, subject) = put_repo_info(&app, "test-reactor-poll-order").await;
+        let (repo, subject) = put_repo_info(&app_state, "test-reactor-poll-order").await;
 
         let guard = app_state.read().await;
         let session = guard
@@ -3932,7 +3932,7 @@ employee:
         let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
         let (app, _lsp) = crate::api_router_from_state(app_state.clone());
         let repo = "test-reactor-level";
-        let key = put_repo(&app, repo).await;
+        let key = put_repo(&app_state, repo).await;
         let repo = key.as_str();
         seed_named_entity(&app, repo).await;
 

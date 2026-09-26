@@ -228,6 +228,8 @@ pub(crate) async fn publish_local_root(state: &TonkState) {
         .reactor
         .schedule_poll(std::sync::Arc::clone(&branch.state));
     state.reactor.run_scheduled_polls(&state.operator).await;
+    // Which member this device acts as follows the root.
+    super::sync::publish_self_member(state).await;
 }
 
 /// Rewrite the local root record without its recipient: the shape of a
