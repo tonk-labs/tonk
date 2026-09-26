@@ -671,6 +671,7 @@ pub(crate) fn derive_head_intent(
                 ThisIntent::Uri(entity)
             }
             FieldValue::Literal(_)
+            | FieldValue::Include(_)
             | FieldValue::Blank
             | FieldValue::Nested(_)
             | FieldValue::Premises(_) => {
@@ -866,6 +867,11 @@ fn digest_into(
             // identity: a variable is not a value yet, a blank is an
             // absence, and premises are a rule body.
             FieldValue::Variable(_) | FieldValue::Blank | FieldValue::Premises(_) => continue,
+            FieldValue::Include(include) => {
+                return Err(
+                    super::field::unexpanded_include(include, None).with_range(field.value_range)
+                );
+            }
             // Handled above.
             FieldValue::Nested(_) => continue,
         };

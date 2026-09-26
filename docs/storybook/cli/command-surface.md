@@ -57,7 +57,7 @@ remote-required mutation. A rerun inspects current state and is safe.
 | `assert [CONCEPT] [ENTITY] ...` | `DATA-03`, `DATA-04` | Dynamic help, create/update/no-op, schema flags, notation/dry-run/no-sync/quiet. |
 | `query CONCEPT` | `DATA-05` | Empty/many, human/JSON, invalid/missing concept, broken pipe. |
 | `retract CONCEPT ENTITY [--field]` | `DATA-06` | Whole/field/many field, notation/dry-run/no-sync/quiet, already retracted. |
-| `eval` | `DATA-07` | `-c`, file, explicit `-`, implicit piped stdin, query/write/mixed, JSON/quiet/home/dry-run/no-sync. |
+| `eval` | `DATA-07` | `-c`, file, explicit `-`, implicit piped stdin, query/write/mixed, JSON/quiet/home/dry-run/no-sync; a file resolves `!include` / `!include-binary` next to itself, other sources refuse them. |
 | `render ROUTE [--out PATH]` | `DATA-09` | Directory/detail/explicit view, every matching view once in entity order, frame-wide portal mode, default fallback only for an empty renderable match, stdout/file, missing route/view, output failure. |
 
 ### Collaboration and sync

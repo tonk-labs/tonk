@@ -273,6 +273,32 @@ entity itself." Most user data wants the first; the second is
 for the rare cases where you need to manipulate the name as
 an object (rename it, query its target, etc.).
 
+### Including files
+
+A string or binary value can come from another file instead of
+being written inline:
+
+```yaml tonk=parse
+note!:
+  this: id:today
+  body: !include ./today.md               # the file's text
+  cover: !include-binary ../media/a.webp  # the file's bytes
+```
+
+The reference is a URI reference resolved against the location of
+the document it appears in, so `./today.md` is the file next to
+the document. `!include` requires UTF-8 text and yields a string;
+`!include-binary` keeps the bytes as they are, the same value
+`!!binary` spells in base64. The content is inlined as a value and
+is never read as notation, so an included file cannot include
+anything in turn.
+
+Only a document that has a location can include. `tonk eval
+note.yaml` reads includes relative to `note.yaml`; a document with
+no location — `tonk eval -c`, piped stdin, an editor buffer, a
+body posted to a space's evaluate endpoint — has nothing to resolve
+a relative reference against, and the include is rejected.
+
 ## Variables
 
 `?name` is a logic variable. Two rules:

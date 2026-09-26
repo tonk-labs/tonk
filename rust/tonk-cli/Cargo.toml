@@ -95,6 +95,10 @@ name = "data_verbs"
 path = "tests/data_verbs.rs"
 
 [[test]]
+name = "include"
+path = "tests/include.rs"
+
+[[test]]
 name = "authoring"
 path = "tests/authoring.rs"
 

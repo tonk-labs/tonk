@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use thiserror::Error;
 use tokio::io::AsyncReadExt as _;
 use tonk_evaluator::evaluate::{EvaluateError, SyntaxEvaluateExt};
-use tonk_notation::{Parsed, Syntax, parse};
+use tonk_notation::{INLINE_LOCATION, Load, Parsed, Syntax, Url, expand, parse_at};
 
 use crate::ExitCode;
 use crate::authoring::build_home_recipe;
@@ -34,6 +34,24 @@ impl Source {
             Source::Inline(_) => "<inline>".to_string(),
             Source::File(path) => path.display().to_string(),
             Source::Stdin => "<stdin>".to_string(),
+        }
+    }
+
+    /// Where the document lives, for resolving its `!include`s. A
+    /// file is its absolute `file:` URI; inline text and stdin have
+    /// no location, so they get [`INLINE_LOCATION`] and any include
+    /// in them is refused.
+    fn location(&self) -> Result<Url, EvalError> {
+        match self {
+            Source::File(path) => std::path::absolute(path)
+                .ok()
+                .and_then(|path| Url::from_file_path(path).ok())
+                .ok_or_else(|| {
+                    EvalError::Io(format!("cannot form a file URI for {}", path.display()))
+                }),
+            Source::Inline(_) | Source::Stdin => {
+                Ok(Url::parse(INLINE_LOCATION).expect("INLINE_LOCATION is a valid URI"))
+            }
         }
     }
 
@@ -142,6 +160,7 @@ pub async fn run_against_site(
     options: Options,
 ) -> Result<Outcome, EvalError> {
     let label = source.label();
+    let location = source.location()?;
     let mut text = source.read().await?;
     if let Some(model) = &options.home {
         text.push('\n');
@@ -153,7 +172,11 @@ pub async fn run_against_site(
         text.push_str(":\n\n");
         text.push_str(&build_home_recipe(std::slice::from_ref(model)));
     }
-    let syntax = parse_or_diagnose(&label, &text)?;
+    let mut syntax = parse_or_diagnose(&label, location, &text)?;
+    let unexpanded = expand(&mut syntax, &Files).await;
+    if !unexpanded.is_empty() {
+        return Err(EvalError::Parse(format_diagnostics(&label, &unexpanded)));
+    }
 
     let session = site
         .branch()
@@ -237,24 +260,49 @@ pub async fn run_against_site(
 
 /// Drive the parser and project diagnostics onto either a clean
 /// [`Syntax`] or a parse error formatted for stderr.
-fn parse_or_diagnose(source: &str, text: &str) -> Result<Syntax, EvalError> {
-    let parsed = parse(text);
+fn parse_or_diagnose(source: &str, location: Url, text: &str) -> Result<Syntax, EvalError> {
+    let parsed = parse_at(location, text);
     surface_parse_diagnostics(source, parsed)
 }
 
 fn surface_parse_diagnostics(source: &str, parsed: Parsed) -> Result<Syntax, EvalError> {
     if !parsed.diagnostics.is_empty() {
-        let messages = parsed
-            .diagnostics
-            .iter()
-            .map(|d| format_diagnostic(source, d))
-            .collect::<Vec<_>>()
-            .join("\n");
-        return Err(EvalError::Parse(messages));
+        return Err(EvalError::Parse(format_diagnostics(
+            source,
+            &parsed.diagnostics,
+        )));
     }
     parsed
         .syntax
         .ok_or_else(|| EvalError::Empty(format!("{source}: empty document")))
+}
+
+fn format_diagnostics(source: &str, diagnostics: &[lsp_types::Diagnostic]) -> String {
+    diagnostics
+        .iter()
+        .map(|d| format_diagnostic(source, d))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Loads `!include`d resources from the local filesystem. Only
+/// `file:` URIs are reachable; an include that names anything else
+/// is reported rather than fetched.
+struct Files;
+
+impl Load for Files {
+    async fn load(&self, uri: &Url) -> Result<Vec<u8>, String> {
+        if uri.scheme() != "file" {
+            return Err(format!(
+                "only `file:` resources can be included here, not `{}:`",
+                uri.scheme()
+            ));
+        }
+        let path = uri
+            .to_file_path()
+            .map_err(|()| "not a local file path".to_owned())?;
+        tokio::fs::read(&path).await.map_err(|e| e.to_string())
+    }
 }
 
 /// Format an LSP diagnostic as `source:line:col: message`. LSP

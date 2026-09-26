@@ -28,6 +28,7 @@
 //! [analyze]: https://github.com/dialog-db/tonk-workers/tree/main/rust/tonk-schema/src/interpret.rs
 
 use lsp_types::Range;
+use url::Url;
 
 /// A whole asserted-notation document: a list of expressions.
 #[derive(Clone, Debug, PartialEq)]
@@ -38,6 +39,13 @@ pub struct Syntax {
     /// diagnostics ("root must be a mapping") have something to
     /// point at.
     pub range: Range,
+    /// Where the document lives — the URI its `!include` references
+    /// resolve against. A document read from a file carries its
+    /// `file:` URI; text with no location (a request body, an editor
+    /// buffer, an inline string) carries the opaque
+    /// [`INLINE_LOCATION`][crate::parse::INLINE_LOCATION], which
+    /// cannot be a base, so any relative `!include` in it is refused.
+    pub base: Url,
 }
 
 /// One top-level entry. Two flavours, distinguished by the head's
@@ -271,6 +279,53 @@ pub enum FieldValue {
     /// with field-named nesting) so the analyzer can rely on
     /// per-premise ranges for diagnostics.
     Premises(Vec<Premise>),
+    /// `!include <reference>` — the content of another resource,
+    /// named relative to the document's [`Syntax::base`]. The parser
+    /// only records the reference; [`expand`][crate::include::expand]
+    /// loads it and replaces this node with a
+    /// [`Literal`](FieldValue::Literal). An include that survives to
+    /// analysis was never expanded and is rejected there.
+    Include(Include),
+}
+
+/// An `!include` reference, as written.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Include {
+    /// The URI reference after the tag — a relative path such as
+    /// `./intro.md`, or an absolute URI.
+    pub reference: String,
+    /// Which literal the loaded content becomes.
+    pub form: IncludeForm,
+}
+
+impl Include {
+    /// Resolve the reference against `base` per RFC 3986. Fails when
+    /// `base` cannot be a base (a `data:` URI, say) and the reference
+    /// is relative — the document has no location to be relative to.
+    pub fn resolve(&self, base: &Url) -> Result<Url, url::ParseError> {
+        base.join(&self.reference)
+    }
+}
+
+/// How an included resource's bytes become a literal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IncludeForm {
+    /// `!include` — the content is UTF-8 text and becomes a
+    /// [`Scalar::String`].
+    Text,
+    /// `!include-binary` — the content is kept byte for byte as a
+    /// [`Scalar::Bytes`], the same value `!!binary` spells inline.
+    Binary,
+}
+
+impl IncludeForm {
+    /// The YAML tag (without its `!` handle) that selects this form.
+    pub fn tag(self) -> &'static str {
+        match self {
+            IncludeForm::Text => "include",
+            IncludeForm::Binary => "include-binary",
+        }
+    }
 }
 
 /// A primitive value. Mirrors the shapes saphyr produces for

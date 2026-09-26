@@ -175,6 +175,9 @@ pub(crate) fn field_value_to_term(
                 range,
             ));
         }
+        FieldValue::Include(include) => {
+            return Err(unexpanded_include(include, None).with_range(range));
+        }
         FieldValue::Premises(_) => {
             // Premises only make sense as the value of `when:` /
             // `unless:` inside a `rule!:` claim body — the rule
@@ -336,4 +339,31 @@ pub(crate) fn collect_unbound_variables(
             out.insert(name);
         }
     }
+}
+
+/// The error for an `!include` that reached analysis unexpanded.
+/// `base` is the document's location when the caller has it: a
+/// reference that cannot resolve against it gets the precise reason,
+/// the rest the general one.
+pub(crate) fn unexpanded_include(
+    include: &tonk_notation::Include,
+    base: Option<&tonk_notation::Url>,
+) -> AnalyzeError {
+    let reason = match base.map(|base| (base, include.resolve(base))) {
+        Some((base, Err(_))) => format!(
+            "this document has no location to resolve it against (it is `{base}`); \
+             only a document read from a file or URL can include"
+        ),
+        Some((_, Ok(uri))) => format!(
+            "`{uri}` must be inlined before analysis, and this evaluation \
+             path does not load included resources"
+        ),
+        None => "included content must be inlined before analysis".to_owned(),
+    };
+    AnalyzeErrorKind::UnexpandedInclude {
+        tag: include.form.tag(),
+        reference: include.reference.clone(),
+        reason,
+    }
+    .into()
 }
