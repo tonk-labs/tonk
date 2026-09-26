@@ -1,11 +1,11 @@
-//! Fit-driven FABB behavior in a real browser DOM.
+//! Responsive v0.17 rail and attached-panel behavior in a real browser DOM.
 
 #![cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 
-use wasm_bindgen::JsCast;
-use wasm_bindgen::JsValue;
+use js_sys::{Object, Reflect};
+use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_test::wasm_bindgen_test_configure;
-use web_sys::{Element, HtmlElement, window};
+use web_sys::{CustomEvent, CustomEventInit, Element, HtmlElement, window};
 
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -21,7 +21,20 @@ async fn yield_for(ms: i32) {
         .expect("timeout resolves");
 }
 
-fn shadow_element(fab: &HtmlElement, selector: &str) -> Element {
+fn active_animations(element: &Element) -> u32 {
+    let get_animations = Reflect::get(element, &"getAnimations".into())
+        .expect("getAnimations")
+        .dyn_into::<js_sys::Function>()
+        .expect("getAnimations is callable");
+    get_animations
+        .call0(element)
+        .expect("read animations")
+        .dyn_into::<js_sys::Array>()
+        .expect("animation list")
+        .length()
+}
+
+fn shadow(fab: &HtmlElement, selector: &str) -> Element {
     fab.shadow_root()
         .expect("shadow root")
         .query_selector(selector)
@@ -40,684 +53,647 @@ fn visible(element: &Element) -> bool {
         != "none"
 }
 
-fn light_element(fab: &HtmlElement, selector: &str) -> Element {
-    fab.query_selector(selector)
-        .expect("valid selector")
-        .unwrap_or_else(|| panic!("missing {selector}"))
-}
-
-fn click_item(item: &Element) {
-    menu_row(item).unchecked_into::<HtmlElement>().click();
-}
-
-fn menu_row(item: &Element) -> Element {
-    item.shadow_root()
-        .expect("menu item shadow")
-        .query_selector(".row")
-        .expect("row selector")
-        .expect("menu row")
-}
-
-fn width(element: &Element) -> f64 {
-    element.get_bounding_client_rect().width()
-}
-
-async fn wait_for_width(element: &Element, expected: f64) {
-    for _ in 0..500 {
-        if (width(element) - expected).abs() < 1.0 {
-            return;
-        }
-        yield_for(10).await;
-    }
-    panic!("element width did not settle at {expected}px");
-}
-
-fn computed(element: &Element, property: &str) -> String {
-    window()
-        .expect("window")
-        .get_computed_style(element)
-        .expect("computed style call")
-        .expect("computed style")
-        .get_property_value(property)
-        .unwrap_or_default()
-}
-
-#[dialog_common::test]
-async fn an_unsaved_fab_enters_from_a_dot_at_the_top_right() {
+fn mount(width: i32) -> (HtmlElement, HtmlElement) {
     tonk_fab::register();
-    let win = window().expect("window");
-    let document = win.document().expect("document");
+    let document = window().expect("window").document().expect("document");
     let parent = document
         .create_element("div")
-        .expect("create parent")
+        .expect("parent")
         .dyn_into::<HtmlElement>()
-        .expect("html parent");
-    parent
-        .style()
-        .set_property("width", "500px")
-        .expect("parent width");
-    let fab = document
-        .create_element("tonk-fab")
-        .expect("create fab")
-        .dyn_into::<HtmlElement>()
-        .expect("html fab");
-    parent.append_child(&fab).expect("mount fab");
-    document
-        .body()
-        .expect("body")
-        .append_child(&parent)
-        .expect("mount parent");
-
-    let bar = shadow_element(&fab, ".bar");
-    let run = shadow_element(&fab, ".run");
-    assert_eq!(computed(&run, "animation-name"), "fabb-enter-run");
-    assert!(
-        (width(&bar) - 36.0).abs() < 1.0,
-        "the first rendered geometry must be the closed 36px dot"
-    );
-
-    wait_for_width(&bar, 396.0).await;
-    assert!(fab.class_list().contains("fab-dock-top"));
-    assert!(fab.class_list().contains("fab-dock-right"));
-    let rect = fab.get_bounding_client_rect();
-    let viewport_width = win
-        .inner_width()
-        .expect("viewport width")
-        .as_f64()
-        .expect("numeric viewport width");
-    assert!((rect.top() - 16.0).abs() < 1.0);
-    assert!((viewport_width - rect.right() - 16.0).abs() < 1.0);
-
-    parent.remove();
-}
-
-fn escape_event() -> web_sys::Event {
-    let init = js_sys::Object::new();
-    js_sys::Reflect::set(&init, &"bubbles".into(), &JsValue::TRUE).expect("bubbles");
-    js_sys::Reflect::set(&init, &"composed".into(), &JsValue::TRUE).expect("composed");
-    js_sys::Reflect::set(&init, &"key".into(), &"Escape".into()).expect("key");
-    let constructor = js_sys::Reflect::get(&window().expect("window"), &"KeyboardEvent".into())
-        .expect("KeyboardEvent constructor")
-        .dyn_into::<js_sys::Function>()
-        .expect("KeyboardEvent is constructable");
-    let args = js_sys::Array::new();
-    args.push(&"keydown".into());
-    args.push(&init);
-    js_sys::Reflect::construct(&constructor, &args)
-        .expect("construct keyboard event")
-        .dyn_into::<web_sys::Event>()
-        .expect("keyboard event")
-}
-
-async fn set_parent_width(
-    parent: &HtmlElement,
-    fab: &HtmlElement,
-    width: i32,
-    compact: bool,
-    share_visible: bool,
-) {
+        .expect("HTML parent");
     parent
         .style()
         .set_property("width", &format!("{width}px"))
-        .expect("set parent width");
-    // Same budget as `wait_for_width` above, and for the same reason:
-    // the settle is driven by a `ResizeObserver` callback, which a
-    // loaded CI browser can defer well past the naive
-    // 50-poll (~500ms) window this used to allow. The whole suite
-    // shares one browser, so the delay is not bounded by anything this
-    // test controls. Waiting longer costs nothing when the layout
-    // settles promptly — the loop returns on the first matching poll —
-    // and only the failing case pays.
-    for _ in 0..500 {
-        let wrapper = shadow_element(fab, ".w");
-        if wrapper.class_list().contains("compact") == compact
-            && visible(&shadow_element(fab, "[data-cell=share]")) == share_visible
-        {
-            return;
-        }
-        yield_for(10).await;
-    }
-    panic!("responsive layout did not settle for a {width}px parent");
-}
-
-#[dialog_common::test]
-async fn the_stack_uses_one_visible_gap_and_the_disc_collapses_it() {
-    tonk_fab::register();
-    let document = window().expect("window").document().expect("document");
-    let parent = document
-        .create_element("div")
-        .expect("create parent")
-        .dyn_into::<HtmlElement>()
-        .expect("html parent");
+        .expect("parent width");
     let fab = document
         .create_element("tonk-fab")
-        .expect("create fab")
+        .expect("fab")
         .dyn_into::<HtmlElement>()
-        .expect("html fab");
-    fab.set_attribute("label", "test").expect("label");
+        .expect("HTML fab");
+    fab.set_attribute("label", "Project Atlas").expect("label");
     parent.append_child(&fab).expect("mount fab");
     document
         .body()
         .expect("body")
         .append_child(&parent)
-        .expect("mount parent");
+        .expect("mount fixture");
+    (parent, fab)
+}
 
-    set_parent_width(&parent, &fab, 375, true, true).await;
-    fab.style()
-        .set_property("transition", "none")
-        .expect("disable fixture docking transition");
-    fab.style()
-        .set_property("transform", "none")
-        .expect("clear fixture docking transform");
-    fab.style()
-        .set_property("left", "100px")
-        .expect("seat fixture from left");
-    fab.style()
-        .set_property("right", "auto")
-        .expect("clear right seat");
-    fab.style()
-        .set_property("top", "400px")
-        .expect("seat upward-opening fixture in viewport");
-    fab.style()
-        .set_property("bottom", "auto")
-        .expect("clear bottom seat");
-    for selector in ["[data-cell=space]", "[data-cell=share]", "[data-cell=more]"] {
-        let trigger = shadow_element(&fab, selector);
-        assert!(
-            !trigger.has_attribute("aria-haspopup"),
-            "{selector} is a disclosure trigger, not a menu button"
-        );
-    }
-    for (selector, label) in [
-        ("tonk-menu[data-for=space]", "space actions"),
-        ("tonk-menu[slot=sub]", "spaces"),
-        ("tonk-menu[data-for=share]", "share actions"),
-        ("tonk-menu[data-for=overflow]", "more actions"),
-    ] {
-        let group = light_element(&fab, selector);
-        assert_eq!(group.get_attribute("role").as_deref(), Some("group"));
-        assert_eq!(group.get_attribute("aria-label").as_deref(), Some(label));
-    }
-    let actions = fab.query_selector_all("tonk-mi").expect("action selector");
-    for index in 0..actions.length() {
-        let action = actions
-            .item(index)
-            .expect("action")
-            .dyn_into::<Element>()
-            .expect("action element");
-        let row = menu_row(&action);
-        assert_eq!(row.tag_name(), "BUTTON", "stack actions stay real buttons");
-    }
-    fab.set_attribute("up", "").expect("open upward");
-    shadow_element(&fab, "[data-cell=space]")
-        .unchecked_into::<HtmlElement>()
-        .click();
-
-    let space_menu = light_element(&fab, "tonk-menu[data-for=space]");
-    let new_row = menu_row(&light_element(&fab, "[data-mi-new]"));
-    let open_row = menu_row(&light_element(&fab, "[data-mi-open]"));
-    let internal_gap =
-        open_row.get_bounding_client_rect().top() - new_row.get_bounding_client_rect().bottom();
-    let menu_wrapper = space_menu
+async fn resize(parent: &HtmlElement, width: i32) {
+    let previous_width = parent.client_width();
+    let fab = parent.query_selector("tonk-fab").unwrap().expect("fab");
+    let wrapper = fab
         .shadow_root()
-        .expect("menu shadow")
+        .unwrap()
         .query_selector(".w")
-        .expect("wrapper selector")
-        .expect("menu wrapper");
-    let bar = shadow_element(&fab, ".bar");
-    let bar_gap =
-        bar.get_bounding_client_rect().top() - menu_wrapper.get_bounding_client_rect().bottom();
-    assert!(
-        (bar_gap - internal_gap).abs() < 0.5,
-        "bar gap {bar_gap}px must match the {internal_gap}px row gap"
-    );
-
-    let open_item = light_element(&fab, "[data-mi-open]");
-    click_item(&open_item);
-    yield_for(20).await;
-    let flyout = open_item
-        .shadow_root()
-        .expect("open row shadow")
-        .query_selector(".fly")
-        .expect("flyout selector")
-        .expect("open row flyout");
-    let spaces = light_element(&fab, "tonk-menu[slot=sub]");
-    let open_rect = open_row.get_bounding_client_rect();
-    let spaces_rect = spaces.get_bounding_client_rect();
-    let flyout_gap = if spaces_rect.left() >= open_rect.right() {
-        spaces_rect.left() - open_rect.right()
-    } else {
-        open_rect.left() - spaces_rect.right()
-    };
-    assert!(
-        (flyout_gap - internal_gap).abs() < 0.5,
-        "flyout gap {flyout_gap}px must match the {internal_gap}px row gap"
-    );
-    let corridor = window()
-        .expect("window")
-        .get_computed_style_with_pseudo_elt(&flyout, "::before")
-        .expect("computed pseudo style call")
-        .expect("computed pseudo style");
-    assert_eq!(
-        corridor.get_property_value("content").expect("content"),
-        "\"\"",
-        "the flyout gap needs an invisible hit corridor"
-    );
-    assert_eq!(
-        corridor.get_property_value("width").expect("width"),
-        "9px",
-        "the hit corridor must overlap both sides of the 7px visual gap"
-    );
-    assert_eq!(
-        corridor
-            .get_property_value("background-color")
-            .expect("background color"),
-        "rgba(0, 0, 0, 0)",
-        "the hit corridor must not paint the pure-page gap"
-    );
-    assert_eq!(
-        corridor
-            .get_property_value("backdrop-filter")
-            .expect("backdrop filter"),
-        "none",
-        "the hit corridor must not frost the pure-page gap"
-    );
-    assert_eq!(
-        corridor
-            .get_property_value("pointer-events")
-            .expect("pointer events"),
-        "auto",
-        "the invisible corridor must participate in hit testing"
-    );
-    let gap_x = if spaces_rect.left() >= open_rect.right() {
-        (open_rect.right() + spaces_rect.left()) / 2.0
-    } else {
-        (spaces_rect.right() + open_rect.left()) / 2.0
-    };
-    let gap_y = open_rect.top() + open_rect.height() / 2.0;
-    let document = window().expect("window").document().expect("document");
-    let element_from_point =
-        js_sys::Reflect::get(document.as_ref(), &JsValue::from_str("elementFromPoint"))
-            .expect("document hit-test method")
-            .dyn_into::<js_sys::Function>()
-            .expect("elementFromPoint function");
-    let gap_hit = element_from_point
-        .call2(
-            document.as_ref(),
-            &JsValue::from_f64(gap_x),
-            &JsValue::from_f64(gap_y),
-        )
-        .expect("gap hit test");
-    assert!(
-        !gap_hit.is_null(),
-        "gap hit returned null at ({gap_x}, {gap_y}); open=({}, {}, {}, {}), spaces=({}, {}, {}, {}), viewport=({}, {})",
-        open_rect.left(),
-        open_rect.top(),
-        open_rect.right(),
-        open_rect.bottom(),
-        spaces_rect.left(),
-        spaces_rect.top(),
-        spaces_rect.right(),
-        spaces_rect.bottom(),
-        window()
-            .expect("window")
-            .inner_width()
-            .expect("viewport width")
-            .as_f64()
-            .expect("numeric viewport width"),
-        window()
-            .expect("window")
-            .inner_height()
-            .expect("viewport height")
-            .as_f64()
-            .expect("numeric viewport height"),
-    );
-    let gap_hit = gap_hit.dyn_into::<Element>().expect("gap hit element");
-    assert!(
-        gap_hit.is_same_node(Some(&open_item)),
-        "the midpoint of the visible gap must hit the open item through its shadow corridor"
-    );
-
-    assert!(
-        fab.query_selector("[data-overflow-collapse]")
-            .expect("collapse selector")
-            .is_none(),
-        "collapse belongs to the sync disc, not the overflow menu"
-    );
-    shadow_element(&fab, ".fab")
-        .unchecked_into::<HtmlElement>()
-        .click();
-    assert!(
-        shadow_element(&fab, ".w")
-            .class_list()
-            .contains("collapsed")
-    );
-    assert!(space_menu.has_attribute("hidden"));
-
-    parent.remove();
+        .unwrap()
+        .expect("wrapper");
+    let wrapper_style = wrapper.unchecked_ref::<HtmlElement>().style();
+    let previous_room = wrapper_style.get_property_value("--_room").unwrap();
+    parent
+        .style()
+        .set_property("width", &format!("{width}px"))
+        .expect("parent width");
+    // The ResizeObserver updates --_room before the width transition starts.
+    // Wait for that update and two settled samples so an idle frame before
+    // the observer callback cannot report the old rail as the new size.
+    let mut settled_samples = 0;
+    for _ in 0..60 {
+        yield_for(50).await;
+        let _ = wrapper.get_bounding_client_rect();
+        let room = wrapper_style.get_property_value("--_room").unwrap();
+        if (previous_width == width || room != previous_room)
+            && active_animations(&fab) == 0
+            && active_animations(&wrapper) == 0
+        {
+            settled_samples += 1;
+            if settled_samples == 2 {
+                return;
+            }
+        } else {
+            settled_samples = 0;
+        }
+    }
+    panic!("the {width}px rail did not finish resizing");
 }
 
 #[dialog_common::test]
-async fn the_action_partition_follows_usable_width_without_a_fold() {
-    tonk_fab::register();
-    let document = window().expect("window").document().expect("document");
-    let parent = document
-        .create_element("div")
-        .expect("create parent")
-        .dyn_into::<HtmlElement>()
-        .expect("html parent");
-    let fab = document
-        .create_element("tonk-fab")
-        .expect("create fab")
-        .dyn_into::<HtmlElement>()
-        .expect("html fab");
-    fab.set_attribute("label", "A deliberately long space name")
-        .expect("label");
-    parent.append_child(&fab).expect("mount fab");
-    document
-        .body()
-        .expect("body")
-        .append_child(&parent)
-        .expect("mount parent");
+async fn the_rail_uses_the_v017_anatomy_and_real_controls() {
+    let (parent, fab) = mount(1440);
+    yield_for(30).await;
 
+    let wrapper = shadow(&fab, ".w");
+    let header = shadow(&fab, ".header");
+    let disc = shadow(&fab, ".disc");
+    let agent_icon = shadow(&fab, ".agent svg");
+    assert!((wrapper.get_bounding_client_rect().width() - 360.0).abs() < 1.0);
+    assert!((header.get_bounding_client_rect().height() - 48.0).abs() < 1.0);
+    assert!((disc.get_bounding_client_rect().width() - 18.0).abs() < 1.0);
+    assert_eq!(agent_icon.get_attribute("fill").as_deref(), Some("none"));
+    assert_eq!(
+        agent_icon.get_attribute("stroke-width").as_deref(),
+        Some("1.7")
+    );
+
+    shadow(&fab, ".space")
+        .unchecked_into::<HtmlElement>()
+        .click();
+    let actions = shadow(&fab, ".run");
+    assert!(visible(&actions));
+    assert!((agent_icon.get_bounding_client_rect().width() - 21.0).abs() < 1.0);
+    assert_eq!(
+        actions.get_attribute("aria-label").as_deref(),
+        Some("space actions")
+    );
+    for selector in [".login", ".share", ".members", ".agent", ".home"] {
+        let control = shadow(&fab, selector);
+        assert_eq!(control.tag_name(), "BUTTON");
+        assert!((control.get_bounding_client_rect().height() - 48.0).abs() < 1.0);
+    }
+    fab.remove_attribute("data-account-required")
+        .expect("ready account fixture");
+    shadow(&fab, ".share")
+        .unchecked_into::<HtmlElement>()
+        .click();
     assert!(
-        fab.shadow_root()
-            .expect("shadow")
-            .query_selector("[data-cell=fold]")
-            .expect("selector")
+        shadow(&fab, "#share-panel").has_attribute("hidden"),
+        "a ready share answers in its action label without opening a panel"
+    );
+    assert_eq!(
+        shadow(&fab, ".share").get_attribute("aria-expanded"),
+        Some("false".into())
+    );
+    assert!(
+        fab.query_selector("tonk-menu")
+            .expect("legacy selector")
             .is_none()
     );
 
-    // 428 - 2*16 is the inclusive 396px exact fit. Repeating the same
-    // delivery must not flap back to compact.
-    set_parent_width(&parent, &fab, 428, false, true).await;
-    assert!(!shadow_element(&fab, ".w").class_list().contains("compact"));
-    set_parent_width(&parent, &fab, 428, false, true).await;
-    assert!(!shadow_element(&fab, ".w").class_list().contains("compact"));
+    parent.remove();
+}
 
-    set_parent_width(&parent, &fab, 500, false, true).await;
-    assert!(!shadow_element(&fab, ".w").class_list().contains("compact"));
-    assert!(visible(&shadow_element(&fab, "[data-cell=share]")));
-    assert!(!visible(&shadow_element(&fab, "[data-cell=more]")));
-    wait_for_width(&shadow_element(&fab, ".bar"), 396.0).await;
-    let full_label = shadow_element(&fab, ".fab")
-        .get_attribute("aria-label")
-        .expect("full disc label");
-    assert!(!full_label.contains("expand"));
-    assert!(!full_label.contains("collapse"));
+#[dialog_common::test]
+async fn a_completed_account_task_retires_the_add_account_action() {
+    let (parent, fab) = mount(768);
+    yield_for(30).await;
+    assert!(fab.has_attribute("data-account-required"));
 
-    shadow_element(&fab, ".fab")
+    shadow(&fab, ".space")
         .unchecked_into::<HtmlElement>()
         .click();
-    assert!(
-        shadow_element(&fab, ".w")
-            .class_list()
-            .contains("collapsed"),
-        "the sync disc must collapse the FABB in a full-width space too"
-    );
-    wait_for_width(&shadow_element(&fab, ".bar"), 36.0).await;
-    shadow_element(&fab, ".fab")
+    shadow(&fab, ".login")
         .unchecked_into::<HtmlElement>()
         .click();
-    assert!(
-        !shadow_element(&fab, ".w")
-            .class_list()
-            .contains("collapsed")
-    );
-    wait_for_width(&shadow_element(&fab, ".bar"), 396.0).await;
+    assert!(fab.has_attribute("data-task-hosted"));
 
-    set_parent_width(&parent, &fab, 390, true, true).await;
-    assert!(shadow_element(&fab, ".w").class_list().contains("compact"));
-    assert!(visible(&shadow_element(&fab, "[data-cell=share]")));
-    assert!(
-        !visible(&shadow_element(&fab, "[data-cell=more]")),
-        "with share visible the overflow would open empty — the cell stays out"
-    );
-    assert!((width(&shadow_element(&fab, ".bar")) - 358.0).abs() < 1.0);
-    assert!((width(&shadow_element(&fab, ".fab")) - 44.0).abs() < 0.1);
-    assert!((width(&shadow_element(&fab, ".disc")) - 14.0).abs() < 0.1);
+    let detail = Object::new();
+    Reflect::set(&detail, &"result".into(), &"completed".into()).expect("task result");
+    let init = CustomEventInit::new();
+    init.set_detail(&JsValue::from(detail));
+    let event = CustomEvent::new_with_event_init_dict("tonk:task-closed", &init)
+        .expect("task completion event");
+    window()
+        .expect("window")
+        .dispatch_event(&event)
+        .expect("dispatch completion");
 
-    // The visible share cell opens the canonical stack with no back.
-    shadow_element(&fab, "[data-cell=share]")
+    assert!(!fab.has_attribute("data-account-required"));
+    assert!(shadow(&fab, ".login").has_attribute("hidden"));
+    assert!(!fab.has_attribute("data-task-hosted"));
+    parent.remove();
+}
+
+#[dialog_common::test]
+async fn account_completion_returns_share_to_the_menu_without_a_drawer() {
+    let (parent, fab) = mount(1100);
+    yield_for(30).await;
+    shadow(&fab, ".space")
         .unchecked_into::<HtmlElement>()
         .click();
-    assert!(!light_element(&fab, "tonk-menu[data-for=share]").has_attribute("hidden"));
-    assert!(light_element(&fab, "[data-mi-back]").has_attribute("hidden"));
-
-    set_parent_width(&parent, &fab, 300, true, false).await;
-    assert!(shadow_element(&fab, ".w").class_list().contains("compact"));
-    assert!(!visible(&shadow_element(&fab, "[data-cell=share]")));
-    assert!(visible(&shadow_element(&fab, "[data-cell=more]")));
-
-    let more = shadow_element(&fab, "[data-cell=more]").unchecked_into::<HtmlElement>();
-    more.click();
-    let overflow = light_element(&fab, "tonk-menu[data-for=overflow]");
-    assert!(!overflow.has_attribute("hidden"));
-    assert!(!light_element(&fab, "[data-overflow-share]").has_attribute("hidden"));
+    shadow(&fab, ".share")
+        .unchecked_into::<HtmlElement>()
+        .click();
+    assert!(!shadow(&fab, "#share-panel").has_attribute("hidden"));
+    shadow(&fab, ".share-continue")
+        .unchecked_into::<HtmlElement>()
+        .click();
+    let detail = Object::new();
+    Reflect::set(&detail, &"result".into(), &"completed".into()).unwrap();
+    let init = CustomEventInit::new();
+    init.set_detail(&detail);
+    let event = CustomEvent::new_with_event_init_dict("tonk:task-closed", &init).unwrap();
+    window().unwrap().dispatch_event(&event).unwrap();
+    assert!(!fab.has_attribute("data-account-required"));
+    assert!(shadow(&fab, "#share-panel").has_attribute("hidden"));
     assert_eq!(
-        fab.query_selector_all("tonk-menu[data-for=share]")
-            .expect("canonical share selector")
-            .length(),
-        1
+        shadow(&fab, ".share").get_attribute("aria-expanded"),
+        Some("false".into())
     );
-    let menus = shadow_element(&fab, ".mw").unchecked_into::<HtmlElement>();
-    let menu_left = menus.style().get_property_value("left").expect("menu left");
-    let menu_right = menus
-        .style()
-        .get_property_value("right")
-        .expect("menu right");
-
-    click_item(&light_element(&fab, "[data-overflow-share]"));
-    assert!(overflow.has_attribute("hidden"));
-    assert!(!light_element(&fab, "tonk-menu[data-for=share]").has_attribute("hidden"));
-    assert!(!light_element(&fab, "[data-mi-back]").has_attribute("hidden"));
-    assert_eq!(
-        menus.style().get_property_value("left").expect("menu left"),
-        menu_left
-    );
-    assert_eq!(
-        menus
-            .style()
-            .get_property_value("right")
-            .expect("menu right"),
-        menu_right
-    );
-
-    click_item(&light_element(&fab, "[data-mi-back]"));
-    assert!(!overflow.has_attribute("hidden"));
-    assert!(light_element(&fab, "tonk-menu[data-for=share]").has_attribute("hidden"));
-
-    more.click();
-    document
-        .dispatch_event(&escape_event())
-        .expect("dispatch Escape");
-    assert!(overflow.has_attribute("hidden"));
-
-    more.click();
-    shadow_element(&fab, ".fab")
+    assert!(!shadow(&fab, ".run").has_attribute("hidden"));
+    shadow(&fab, ".share")
         .unchecked_into::<HtmlElement>()
         .click();
-    let wrapper = shadow_element(&fab, ".w");
-    assert!(wrapper.class_list().contains("collapsed"));
-    assert_eq!(
-        shadow_element(&fab, ".fab")
-            .get_attribute("aria-label")
-            .as_deref(),
-        Some("expand FABB · sync: synced · drag to move")
-    );
-    assert_eq!(
-        shadow_element(&fab, "[data-cell=more]")
-            .get_attribute("tabindex")
-            .as_deref(),
-        Some("-1")
-    );
-    wait_for_width(&shadow_element(&fab, ".bar"), 44.0).await;
+    assert!(shadow(&fab, "#share-panel").has_attribute("hidden"));
+    parent.remove();
+}
 
-    shadow_element(&fab, ".fab")
+#[dialog_common::test]
+async fn share_account_refusal_returns_to_an_already_open_menu() {
+    let (parent, fab) = mount(1100);
+    yield_for(30).await;
+    shadow(&fab, ".space")
         .unchecked_into::<HtmlElement>()
         .click();
-    yield_for(220).await;
-    assert!(!wrapper.class_list().contains("collapsed"));
-    assert!(!visible(&shadow_element(&fab, "[data-cell=share]")));
 
-    shadow_element(&fab, ".fab")
-        .unchecked_into::<HtmlElement>()
-        .click();
-    set_parent_width(&parent, &fab, 500, false, true).await;
-    assert!(!wrapper.class_list().contains("compact"));
-    assert!(wrapper.class_list().contains("collapsed"));
-    set_parent_width(&parent, &fab, 300, true, false).await;
-    assert!(wrapper.class_list().contains("compact"));
-    assert!(wrapper.class_list().contains("collapsed"));
+    let needed = CustomEventInit::new();
+    needed.set_detail(&"needs-account".into());
+    fab.dispatch_event(
+        &CustomEvent::new_with_event_init_dict("fabb-account-needed", &needed).unwrap(),
+    )
+    .unwrap();
+    assert!(fab.has_attribute("data-task-hosted"));
 
-    shadow_element(&fab, ".fab")
-        .unchecked_into::<HtmlElement>()
-        .click();
-    assert!(!fab.has_attribute("collapsed"));
-    assert!(!wrapper.class_list().contains("collapsed"));
-    shadow_element(&fab, ".fab")
-        .unchecked_into::<HtmlElement>()
-        .click();
-    assert!(wrapper.class_list().contains("collapsed"));
-
-    let mw = shadow_element(&fab, ".mw");
-    assert_eq!(computed(&mw, "transition-property"), "opacity");
-    assert_eq!(computed(&mw, "pointer-events"), "none");
+    let detail = Object::new();
+    Reflect::set(&detail, &"result".into(), &"completed".into()).unwrap();
+    let closed = CustomEventInit::new();
+    closed.set_detail(&detail);
+    window()
+        .unwrap()
+        .dispatch_event(
+            &CustomEvent::new_with_event_init_dict("tonk:task-closed", &closed).unwrap(),
+        )
+        .unwrap();
+    assert!(!shadow(&fab, ".run").has_attribute("hidden"));
+    assert!(shadow(&fab, "#share-panel").has_attribute("hidden"));
 
     parent.remove();
 }
 
 #[dialog_common::test]
-async fn the_share_stack_opens_a_scrollable_members_dialog() {
-    tonk_fab::register();
-    let document = window().expect("window").document().expect("document");
-    let parent = document
-        .create_element("div")
-        .expect("create parent")
-        .dyn_into::<HtmlElement>()
-        .expect("html parent");
-    parent
-        .style()
-        .set_property("position", "fixed")
-        .expect("fix parent position");
-    parent
-        .style()
-        .set_property("bottom", "8px")
-        .expect("dock parent at bottom");
-    let fab = document
-        .create_element("tonk-fab")
-        .expect("create fab")
-        .dyn_into::<HtmlElement>()
-        .expect("html fab");
-    fab.set_attribute("label", "test").expect("label");
-    fab.set_attribute("up", "").expect("open upward");
-    parent.append_child(&fab).expect("mount fab");
-    document
-        .body()
-        .expect("body")
-        .append_child(&parent)
-        .expect("mount parent");
+async fn long_agent_prompt_scrolls_without_growing_the_drawer() {
+    let (parent, fab) = mount(1100);
+    fab.remove_attribute("data-account-required").unwrap();
+    shadow(&fab, ".space")
+        .unchecked_into::<HtmlElement>()
+        .click();
+    shadow(&fab, ".agent")
+        .unchecked_into::<HtmlElement>()
+        .click();
+    yield_for(450).await;
 
-    set_parent_width(&parent, &fab, 500, false, true).await;
-    let share_rung = shadow_element(&fab, "[data-cell=share]");
-    share_rung.clone().unchecked_into::<HtmlElement>().click();
-
-    let menu = light_element(&fab, "tonk-menu[data-for=share]");
-    let copy = light_element(&fab, "[data-share-link]");
-    copy.remove_attribute("hidden").expect("show copy row");
-    let roster = light_element(&fab, "ui-member-roster");
-    roster
-        .set_attribute("space", "did:key:z6MkTestSpace")
-        .unwrap();
-    let rows: Vec<_> = (0..40).map(|index| serde_json::json!({
-        "this": format!("membership-{index}"),
-        "fields": { "name": format!("member {index}"), "member": format!("did:key:member{index}"), "role": "tonk:member" }
-    })).collect();
-    let reset = js_sys::Reflect::get(&roster, &"__tonkReset".into())
-        .unwrap()
-        .dyn_into::<js_sys::Function>()
-        .unwrap();
-    reset
-        .call1(
-            &roster,
-            &js_sys::JSON::parse(&serde_json::to_string(&rows).unwrap()).unwrap(),
-        )
-        .unwrap();
-    yield_for(20).await;
+    let bar = shadow(&fab, ".bar");
+    let panel = shadow(&fab, "#agent-panel");
+    let prompt = shadow(&fab, "#agent-panel .panel-copytext").unchecked_into::<HtmlElement>();
+    let original_height = bar.get_bounding_client_rect().height();
+    prompt.remove_attribute("hidden").unwrap();
+    prompt.set_text_content(Some(
+        &"Bearer link and complete agent instructions.\n".repeat(120),
+    ));
 
     assert!(
-        (width(&menu) - width(&share_rung)).abs() < 0.5,
-        "the share stack border box must match its rung"
+        (bar.get_bounding_client_rect().height() - original_height).abs() < 1.0,
+        "the menu keeps its height"
     );
-    assert_eq!(
-        menu.unchecked_ref::<HtmlElement>()
-            .style()
-            .get_property_value("--fabb-menu-w")
-            .expect("menu width"),
-        "144px"
+    assert!(
+        (panel.get_bounding_client_rect().height() - original_height).abs() < 1.0,
+        "the drawer stays aligned with the menu"
     );
+    assert!(
+        prompt.scroll_height() > prompt.client_height(),
+        "the prompt has its own scrollable area"
+    );
+    prompt.set_scroll_top(80.0);
+    assert!(prompt.scroll_top() > 0.0, "the prompt can scroll");
+    parent.remove();
+}
 
-    let count = light_element(&fab, "[data-share-members]");
-    assert_eq!(count.text_content().as_deref(), Some("40 members"));
-    assert_eq!(
-        menu.query_selector_all("[data-row-owner=ui-member-roster]")
-            .unwrap()
-            .length(),
-        1
-    );
-    for up in [true, false, true] {
-        if up {
-            fab.set_attribute("up", "").unwrap();
-        } else {
-            fab.remove_attribute("up").unwrap();
-        }
-        yield_for(20).await;
-        let copy_rect = menu_row(&copy).get_bounding_client_rect();
-        let members_rect = menu_row(&count).get_bounding_client_rect();
-        if up {
-            assert!(
-                copy_rect.top() > members_rect.bottom(),
-                "copy is the bottom row when opening upward"
-            );
-        } else {
-            assert!(
-                copy_rect.bottom() < members_rect.top(),
-                "copy is the top row when opening downward"
-            );
-        }
+#[dialog_common::test]
+async fn clicking_an_open_drawer_action_returns_to_the_menu() {
+    let (parent, fab) = mount(1100);
+    yield_for(30).await;
+    shadow(&fab, ".space")
+        .unchecked_into::<HtmlElement>()
+        .click();
+
+    for (action, panel) in [
+        (".share", "#share-panel"),
+        (".agent", "#agent-panel"),
+        (".members", "#members-panel"),
+    ] {
+        let button = shadow(&fab, action).unchecked_into::<HtmlElement>();
+        button.click();
+        assert!(
+            !shadow(&fab, panel).has_attribute("hidden"),
+            "{action} opens"
+        );
+        button.click();
+        assert_eq!(
+            shadow(&fab, panel).get_attribute("aria-hidden").as_deref(),
+            Some("true"),
+            "{action} drawer becomes inert while closing"
+        );
+        yield_for(450).await;
+        assert!(
+            shadow(&fab, panel).has_attribute("hidden"),
+            "{action} closes"
+        );
+        assert!(visible(&shadow(&fab, ".run")), "menu stays open");
+        assert!(shadow(&fab, ".w").class_list().contains("menu-open"));
+        assert_eq!(
+            button.get_attribute("aria-expanded").as_deref(),
+            Some("false")
+        );
     }
-    click_item(&count);
-    yield_for(20).await;
-    assert!(menu.has_attribute("hidden"));
-    let dialog = document.query_selector(".fabb-members").unwrap().unwrap();
-    let root = dialog.shadow_root().unwrap();
-    let native = root.query_selector("dialog").unwrap().unwrap();
-    assert!(native.has_attribute("open"));
-    assert_eq!(dialog.query_selector_all(".mem-row").unwrap().length(), 40);
-    let scrollport: HtmlElement = root
-        .query_selector(".body")
-        .unwrap()
-        .unwrap()
-        .unchecked_into();
-    assert_eq!(computed(scrollport.unchecked_ref(), "overflow-y"), "auto");
-    assert!(
-        scrollport.scroll_height() > scrollport.client_height(),
-        "members scroll inside the dialog"
-    );
-    let rect = native.get_bounding_client_rect();
-    assert!(rect.top() >= 0.0);
-    assert!(rect.bottom() <= window().unwrap().inner_height().unwrap().as_f64().unwrap());
-    roster
-        .set_attribute("space", "did:key:another-space")
-        .unwrap();
-    assert!(!native.has_attribute("open"));
-    assert_eq!(
-        light_element(&fab, "[data-share-members]")
-            .text_content()
-            .as_deref(),
-        Some("0 members")
-    );
-    assert_eq!(dialog.query_selector_all(".mem-row").unwrap().length(), 0);
+    parent.remove();
+}
 
+#[dialog_common::test]
+async fn closing_a_drawer_contracts_its_column_without_stretching_the_menu() {
+    let (parent, fab) = mount(1100);
+    yield_for(30).await;
+    shadow(&fab, ".space")
+        .unchecked_into::<HtmlElement>()
+        .click();
+    let button = shadow(&fab, ".agent").unchecked_into::<HtmlElement>();
+    button.click();
+    yield_for(450).await;
+    let wrapper = shadow(&fab, ".w");
+    let bar = shadow(&fab, ".bar");
+    let panel = shadow(&fab, "#agent-panel");
+    button.click();
+    yield_for(80).await;
+    let wrapper_width = wrapper.get_bounding_client_rect().width();
+    let bar_width = bar.get_bounding_client_rect().width();
+    let panel_width = panel.get_bounding_client_rect().width();
+    assert!(wrapper_width > 400.0, "drawer is still contracting");
+    assert!(bar_width < 362.0, "menu rail remains at its resting width");
+    assert!(panel_width > 40.0, "drawer column contracts with the shell");
+    button.click();
+    assert!(!wrapper.class_list().contains("closing-panel"));
+    assert!(!panel.has_attribute("hidden"));
+    yield_for(450).await;
+    assert!(wrapper.get_bounding_client_rect().width() > 500.0);
+    button.click();
+    // Width can settle before transitionend is delivered on a busy browser.
+    // Wait for the close handler, while still failing if it never hides the panel.
+    for _ in 0..60 {
+        if panel.has_attribute("hidden") {
+            break;
+        }
+        yield_for(50).await;
+    }
+    assert!(wrapper.get_bounding_client_rect().width() < 362.0);
+    assert!(panel.has_attribute("hidden"));
+    parent.remove();
+}
+
+#[dialog_common::test]
+async fn account_prompts_appear_after_the_drawer_finishes_widening() {
+    let (parent, fab) = mount(1100);
+    yield_for(30).await;
+    shadow(&fab, ".space")
+        .unchecked_into::<HtmlElement>()
+        .click();
+
+    for (action, prompt) in [(".share", ".share-continue"), (".agent", ".agent-continue")] {
+        shadow(&fab, action).unchecked_into::<HtmlElement>().click();
+        yield_for(80).await;
+        let prompt = shadow(&fab, prompt);
+        let style = window()
+            .unwrap()
+            .get_computed_style(&prompt)
+            .unwrap()
+            .unwrap();
+        let early_opacity: f64 = style
+            .get_property_value("opacity")
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(
+            early_opacity < 0.05,
+            "{action} text stays hidden while widening"
+        );
+        let mut late_opacity = 0.0;
+        for _ in 0..20 {
+            yield_for(50).await;
+            late_opacity = style
+                .get_property_value("opacity")
+                .unwrap()
+                .parse()
+                .unwrap();
+            if late_opacity > 0.95 {
+                break;
+            }
+        }
+        assert!(
+            late_opacity > 0.95,
+            "{action} text appears at full width; opacity={late_opacity}"
+        );
+        shadow(&fab, action).unchecked_into::<HtmlElement>().click();
+    }
+    parent.remove();
+}
+
+#[dialog_common::test]
+async fn it_adapts_at_320_390_768_and_1440_pixels() {
+    let (parent, fab) = mount(320);
+    for (width, expected_width, stacked) in [
+        (320, 288.0, true),
+        (390, 358.0, true),
+        (768, 360.0, false),
+        (1440, 360.0, false),
+    ] {
+        resize(&parent, width).await;
+        let wrapper = shadow(&fab, ".w");
+        assert_eq!(
+            wrapper.class_list().contains("stacked"),
+            stacked,
+            "{width}px"
+        );
+        let actual_width = wrapper.get_bounding_client_rect().width();
+        assert!(
+            (actual_width - expected_width).abs() < 1.0,
+            "{width}px rail: expected {expected_width}px, got {actual_width}px"
+        );
+    }
+    parent.remove();
+}
+
+#[dialog_common::test]
+async fn panels_join_inward_and_stack_on_short_room() {
+    let (parent, fab) = mount(768);
+    yield_for(30).await;
+    shadow(&fab, ".space")
+        .unchecked_into::<HtmlElement>()
+        .click();
+    shadow(&fab, ".agent")
+        .unchecked_into::<HtmlElement>()
+        .click();
+    yield_for(300).await;
+    let wrapper = shadow(&fab, ".w");
+    let bar = shadow(&fab, ".bar");
+    let panel = shadow(&fab, "#agent-panel");
+    assert!(!wrapper.class_list().contains("stacked"));
+    let bar_rect = bar.get_bounding_client_rect();
+    let panel_rect = panel.get_bounding_client_rect();
+    let initially_flipped = wrapper.class_list().contains("flip");
+    if initially_flipped {
+        assert!(
+            panel_rect.right() <= bar_rect.left() + 1.0,
+            "right seat: bar=[{}, {}], panel=[{}, {}]",
+            bar_rect.left(),
+            bar_rect.right(),
+            panel_rect.left(),
+            panel_rect.right(),
+        );
+        fab.remove_attribute("flip").expect("left-side seat");
+    } else {
+        assert!(
+            panel_rect.left() >= bar_rect.right() - 1.0,
+            "left seat: bar=[{}, {}], panel=[{}, {}]",
+            bar_rect.left(),
+            bar_rect.right(),
+            panel_rect.left(),
+            panel_rect.right(),
+        );
+        fab.set_attribute("flip", "").expect("right-side seat");
+    }
+    yield_for(300).await;
+    let bar_rect = bar.get_bounding_client_rect();
+    let panel_rect = panel.get_bounding_client_rect();
+    if initially_flipped {
+        assert!(panel_rect.left() >= bar_rect.right() - 1.0);
+    } else {
+        assert!(panel_rect.right() <= bar_rect.left() + 1.0);
+    }
+
+    resize(&parent, 390).await;
+    fab.set_attribute("up", "").expect("bottom seat");
+    yield_for(0).await;
+    assert!(wrapper.class_list().contains("stacked"));
+    assert!(
+        panel.get_bounding_client_rect().bottom() <= bar.get_bounding_client_rect().top() + 1.0
+    );
+    assert!(visible(&shadow(&fab, ".back")));
+
+    parent.remove();
+}
+
+#[dialog_common::test]
+async fn header_follows_the_horizontal_dock_and_menu_follows_the_vertical_dock() {
+    let (parent, fab) = mount(1100);
+    yield_for(30).await;
+    let wrapper = shadow(&fab, ".w");
+    let header = shadow(&fab, ".header");
+    let disc = shadow(&fab, ".fab");
+    let name = shadow(&fab, ".space");
+    let bar = shadow(&fab, ".bar");
+    let actions = shadow(&fab, ".run");
+    let panel = shadow(&fab, "#share-panel");
+
+    for flipped in [false, true] {
+        if flipped {
+            fab.set_attribute("flip", "").unwrap();
+            fab.style().set_property("right", "16px").unwrap();
+            fab.style().set_property("left", "auto").unwrap();
+        } else {
+            fab.remove_attribute("flip").unwrap();
+            fab.style().set_property("left", "16px").unwrap();
+            fab.style().set_property("right", "auto").unwrap();
+        }
+        // Docking applies this class directly alongside the host attribute.
+        wrapper
+            .class_list()
+            .toggle_with_force("flip", flipped)
+            .unwrap();
+        shadow(&fab, ".space")
+            .unchecked_into::<HtmlElement>()
+            .click();
+        shadow(&fab, ".share")
+            .unchecked_into::<HtmlElement>()
+            .click();
+        yield_for(450).await;
+        let disc_rect = disc.get_bounding_client_rect();
+        let name_rect = name.get_bounding_client_rect();
+        let header_rect = header.get_bounding_client_rect();
+        let style = window()
+            .unwrap()
+            .get_computed_style(&name)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            style.get_property_value("text-align").unwrap(),
+            if flipped { "right" } else { "left" }
+        );
+        if flipped {
+            assert!(disc_rect.right() > name_rect.right());
+            assert!(disc_rect.right() <= header_rect.right() + 1.0);
+        } else {
+            assert!(disc_rect.left() < name_rect.left());
+            assert!(disc_rect.left() >= header_rect.left() - 1.0);
+        }
+        let bar_style = window().unwrap().get_computed_style(&bar).unwrap().unwrap();
+        let divider = if flipped {
+            "border-left-width"
+        } else {
+            "border-right-width"
+        };
+        assert!(
+            bar_style
+                .get_property_value(divider)
+                .unwrap()
+                .trim_end_matches("px")
+                .parse::<f64>()
+                .unwrap()
+                > 0.0
+        );
+        assert!(
+            (bar.get_bounding_client_rect().height() - panel.get_bounding_client_rect().height())
+                .abs()
+                < 1.0,
+            "the drawer fills the full height of the menu"
+        );
+
+        for up in [false, true] {
+            if up {
+                fab.set_attribute("up", "").unwrap();
+            } else {
+                fab.remove_attribute("up").unwrap();
+            }
+            let header_rect = header.get_bounding_client_rect();
+            let actions_rect = actions.get_bounding_client_rect();
+            if up {
+                assert!(actions_rect.bottom() <= header_rect.top() + 1.0);
+            } else {
+                assert!(actions_rect.top() >= header_rect.bottom() - 1.0);
+            }
+        }
+        fab.remove_attribute("up").unwrap();
+        shadow(&fab, ".space")
+            .unchecked_into::<HtmlElement>()
+            .click();
+        assert!(!wrapper.class_list().contains("has-panel"));
+    }
+    parent.remove();
+}
+
+#[dialog_common::test]
+async fn space_name_lines_up_with_menu_labels_on_both_sides() {
+    let (parent, fab) = mount(1100);
+    yield_for(30).await;
+    let wrapper = shadow(&fab, ".w");
+    let name = shadow(&fab, ".space .n");
+    shadow(&fab, ".login").remove_attribute("hidden").unwrap();
+
+    for flipped in [false, true] {
+        if flipped {
+            fab.set_attribute("flip", "").unwrap();
+            fab.style().set_property("right", "16px").unwrap();
+            fab.style().set_property("left", "auto").unwrap();
+        } else {
+            fab.remove_attribute("flip").unwrap();
+            fab.style().set_property("left", "16px").unwrap();
+            fab.style().set_property("right", "auto").unwrap();
+        }
+        wrapper
+            .class_list()
+            .toggle_with_force("flip", flipped)
+            .unwrap();
+        shadow(&fab, ".space")
+            .unchecked_into::<HtmlElement>()
+            .click();
+        let name_rect = name.get_bounding_client_rect();
+        for selector in [
+            ".login span",
+            ".share span",
+            ".members span",
+            ".agent span",
+            ".home span",
+        ] {
+            let label_rect = shadow(&fab, selector).get_bounding_client_rect();
+            let offset = if flipped {
+                (name_rect.right() - label_rect.right()).abs()
+            } else {
+                (name_rect.left() - label_rect.left()).abs()
+            };
+            assert!(
+                offset <= 2.0,
+                "{selector} is {offset}px from the space name (flip={flipped}, name={}..{}, label={}..{})",
+                name_rect.left(),
+                name_rect.right(),
+                label_rect.left(),
+                label_rect.right()
+            );
+        }
+        shadow(&fab, ".space")
+            .unchecked_into::<HtmlElement>()
+            .click();
+    }
+
+    parent.remove();
+}
+
+#[dialog_common::test]
+async fn the_circle_collapses_and_expands_at_every_width() {
+    let (parent, fab) = mount(320);
+    for width in [320, 390, 768, 1440] {
+        resize(&parent, width).await;
+        let circle = shadow(&fab, ".fab").unchecked_into::<HtmlElement>();
+        circle.click();
+        yield_for(0).await;
+        let wrapper = shadow(&fab, ".w");
+        assert!(
+            wrapper.class_list().contains("collapsed"),
+            "collapse at {width}px"
+        );
+        assert!(wrapper.get_bounding_client_rect().width() >= 48.0);
+        circle.click();
+        yield_for(0).await;
+        assert!(
+            !wrapper.class_list().contains("collapsed"),
+            "expand at {width}px"
+        );
+    }
     parent.remove();
 }

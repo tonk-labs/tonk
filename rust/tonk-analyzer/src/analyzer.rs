@@ -2466,7 +2466,7 @@ branch:
             panic!("expected Concept application");
         };
         assert!(query.terms.contains("name"));
-        assert!(query.terms.contains("origin"));
+        assert!(query.terms.contains("replica"));
     }
 
     /// Built-in `attribute:` empty-body query surfaces every
@@ -5045,8 +5045,8 @@ seed/installed!:
         let profile = include_str!("../../tonk-core/assets/library/profile.yaml");
         let inlined = inlined_declarations("profile.yaml", profile);
         assert!(
-            inlined.contains(&"on/space-create".to_string()),
-            "profile.yaml's create form must carry its declaration inlined, got {inlined:?}",
+            inlined.contains(&"on/space-remove".to_string()),
+            "profile.yaml's remove form must carry its declaration inlined, got {inlined:?}",
         );
     }
 

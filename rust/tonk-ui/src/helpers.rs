@@ -145,6 +145,14 @@ mod native {
         }
 
         fn close(self) -> std::io::Result<()> {
+            // Keep the tree for a post-mortem when asked: with
+            // `TONK_E2E_CHROME_LOG` it holds Chrome's own log, console
+            // included, which is the only account of what the page did.
+            if std::env::var_os("TONK_E2E_KEEP_WORKSPACE").is_some() {
+                let kept = self.0.keep();
+                eprintln!("E2E DIAGNOSTIC: workspace kept at {}", kept.display());
+                return Ok(());
+            }
             // A child terminated a moment ago can still be flushing its
             // last writes while removal walks the tree — Chrome in
             // particular outlives `quit` by however long its profile
@@ -191,6 +199,14 @@ mod native {
                 .prefix("chrome-profile-")
                 .tempdir_in(&self.browser_profile_root)?
                 .keep();
+            self.chrome_capabilities_for_profile(&profile)
+        }
+
+        /// Reopens a saved profile with the same Chrome settings as new sessions.
+        pub fn chrome_capabilities_for_profile(
+            &self,
+            profile: &std::path::Path,
+        ) -> Result<ChromeCapabilities> {
             let mut caps = DesiredCapabilities::chrome();
             // NOTE: Discovered arcana while reverse engineering
             // wasm-bindgen-test-runner. TL;DR Chrome will crash when running as
@@ -590,7 +606,20 @@ mod native {
                 let test_server =
                     format!("git+file:{}#tonk-ui-test-server", repository_root.display());
                 let mut command = std::process::Command::new("nix");
-                command.args(["run", &test_server, "--"]);
+                // Spell the features out rather than relying on the
+                // ambient config: the child runs with `XDG_CONFIG_HOME`
+                // pinned below (for Caddy), which also hides a per-user
+                // `~/.config/nix/nix.conf`. CI gets these from the
+                // system-wide `/etc/nix/nix.conf` and so never noticed;
+                // a developer who enabled them per-user saw `nix run`
+                // fail before the web server ever bound.
+                command.args([
+                    "--extra-experimental-features",
+                    "nix-command flakes",
+                    "run",
+                    &test_server,
+                    "--",
+                ]);
                 command
             };
             test_server.args([
@@ -940,6 +969,21 @@ mod native {
             assert!(first.starts_with(&browser_profile_root));
             assert!(second.starts_with(&browser_profile_root));
             assert_ne!(first.parent(), Some(std::env::temp_dir().as_path()));
+            let reopened = env.chrome_capabilities_for_profile(&first)?;
+            let args = serde_json::to_value(reopened)?;
+            let args = args["goog:chromeOptions"]["args"]
+                .as_array()
+                .ok_or_else(|| anyhow::anyhow!("Chrome capabilities contain no arguments"))?;
+            assert!(args.iter().any(|arg| arg == "--no-sandbox"));
+            assert!(args.iter().any(|arg| arg == "--disable-dev-shm-usage"));
+            assert!(
+                args.iter()
+                    .any(|arg| arg == "--host-resolver-rules=MAP tonk.network 127.0.0.1")
+            );
+            assert_eq!(
+                profile_from(env.chrome_capabilities_for_profile(&first)?)?,
+                first
+            );
             workspace.close()?;
             Ok(())
         }

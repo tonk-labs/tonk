@@ -120,6 +120,15 @@ pub fn request_registration(payload: &str) {
     crate::page_effect::forward("register", payload);
 }
 
+/// Ask the trusted page to present or steer a typed contained FABB task.
+///
+/// The payload is a versioned portal task request JSON document.
+/// The portal validates its purpose and geometry at every frame boundary;
+/// arbitrary guest markup is never forwarded to the page.
+pub fn request_contained_task(payload: &str) {
+    crate::page_effect::forward("task", payload);
+}
+
 /// Navigate to `href` WITHOUT reloading: push it onto history and fire
 /// `popstate` so the top-level `<tonk-site>` re-resolves. The path change then
 /// updates the tab's site in the overlay, whose subscription re-renders the

@@ -30,6 +30,7 @@ wasm_bindgen_test_configure!(run_in_browser);
 /// so each one must be able to receive.
 const SUBSCRIBING_TAGS: &[&str] = &[
     "tonk-share",
+    "tonk-agent-panel",
     "ui-space-name",
     "ui-profile-name",
     "ui-member-roster",

@@ -59,12 +59,14 @@ revoked, wrong-recipient, and unavailable joins leave no visible replica.
 
 ## Account route
 
-`/settings` is mounted directly in the top document rather than inside a sealed
-`<tonk-site>` guest. WebAuthn must run on the `tonk.network` RP-ID origin, so
-`<tonk-account>` owns account creation and passkey self-link there. It reads the
-local profile DID from `/api/identify`, sends root-signed ceremony bytes to the
-configured account service, then attaches provider metadata through
-`/api/account/attach`; it does not replace or own the local root.
+`/settings` is a profile-library route rendered inside the sealed `<tonk-site>`
+guest, beside the Hub. WebAuthn still runs in the top document on the
+`tonk.network` RP-ID origin: the guest sends a typed registration request with a
+visible anchor, and the top document owns account creation and passkey
+self-link. The account flow reads the local profile DID from `/api/identify`,
+sends root-signed ceremony bytes to the configured account service, then
+attaches provider metadata through `/api/account/attach`; it does not replace or
+own the local root.
 
 The page fetches `GET /.well-known/tonk` once and uses its typed
 `accountServiceUrl`. It never infers services from a
@@ -80,7 +82,7 @@ The crate produces two Wasm bin targets, both referenced from `index.html` by a
 - **`ui`** ([`src/bin/ui.rs`](./src/bin/ui.rs), `data-type="main"`): the page
   entry point. It installs the panic hook, registers every custom element the app
   uses (`tonk-sigil`, `tonk-host`, `tonk-display`, `tonk-board`, `tonk-portal`,
-  `tonk-workspace`, the inspector, the `<tonk-code>` JS bundle, and `<tonk-tree>`),
+  `tonk-fab`, the inspector, the `<tonk-code>` JS bundle, and `<tonk-tree>`),
   then mounts the `TonkShell` Leptos component into the document body. Under debug
   builds (`trunk serve`) it also injects the dev-only `hot-swap.js` reload client;
   release builds never load it.
@@ -104,12 +106,30 @@ The load lifecycle has four cases:
   document, then continues without reloading.
 - An online warm load checks for a newer worker behind the boot overlay.
 - A real warm replacement activates through `skipWaiting()`. Activation
-  replaces the controller of already-controlled documents; each update-aware
-  page observes `controllerchange` and reloads once before the application root
-  mounts so the document, shell, and controller agree.
+  replaces the controller of already-controlled documents, and each
+  update-aware page observes `controllerchange`. A page whose
+  `tonk-page-build` matches the successor's `/api/health` `page` keeps running
+  and remounts each top-level `<tonk-site>`, so its guest boots from the new
+  worker. Any other page reloads once, so the document, shell, and controller
+  agree. A first-install document adopts later successors the same way.
+
+The page build is stamped over every published resource except the guest
+runtime, the lazily fetched editor bundles, and library data. Two builds with
+the same page build therefore differ only in worker and guest code. The host
+side of the host/guest bridge is compiled into the top page, so an unchanged
+page build also means an unchanged bridge.
 - An offline warm load keeps its existing controller and cached shell. A failed
   update check does not unregister the worker or clear CacheStorage, IndexedDB,
   or other local Tonk state.
+
+Chrome activates a waiting `skipWaiting()` successor only once the outgoing
+worker goes idle, and a request that lands while that worker stops restarts
+it without the prompt idle deadline. So while a successor waits, a page holds
+its own `/api/*` requests until `controllerchange` (at most ten seconds per
+successor). A restarted incumbent has lost that deadline and a repeated
+`skipWaiting()` does not restore it, but any in-scope navigation does, so a
+holding page loads `/api/health` in a hidden frame every second. It repeats
+because a navigation that lands while the incumbent stops restarts it too.
 
 Every incoming worker still obtains and verifies its own manifest. For each
 manifest member it may reuse a response from an older final Tonk generation,
@@ -190,20 +210,13 @@ The crate's library side (see [`src/lib.rs`](./src/lib.rs)) provides the pieces 
 
 ### Routing
 
-Routing is client-side (`leptos_router`), defined in
-[`src/components/launcher.rs`](./src/components/launcher.rs). Every space segment
-is a single `:space` param encoding `{branch}@{label}:{id}` (branch defaults to
-`main`), parsed by [`src/components/route.rs`](./src/components/route.rs). The
-routes:
-
-- `/`: the Tonk Hub (space picker), rendered bare.
-- `/space/:space/view/:entity`, `/space/:space/board/:board`, `/profile`, `/join`:
-  rendered inside the chromed `<wa-page>` shell.
-- `/space/:space` and `/space/:space/*subject`: the bare `<tonk-display>` route
-  (the `*subject` wildcard preserves entity URIs containing `/`).
-
-Static-keyword routes (`view`, `board`) are defined before the wildcard display
-routes because the router matches in definition order.
+The worker resolves paths through the profile library's `route!` records and
+mounts the selected model in `<tonk-site>`. The profile branch owns `/`,
+`/settings`, `/settings/link`, `/join`, `/inspector`, and `/diagnose`. Space paths
+mount the selected repository and branch, with `/space/:space/*subject`
+preserving entity URIs containing `/`. The Rust shell owns the sealed guest,
+navigation bridge, and top-document ceremonies; the schema-owned views own Hub
+and settings markup.
 
 ## Build and run
 

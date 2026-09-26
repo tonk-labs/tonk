@@ -144,13 +144,12 @@ event!: &on/toggle
 # ============================================================
 
 # The blank canvas: what a lean (no-template) repo renders. It is the
-# default target of the `tonk/space` alias (below). Mirrors the mock's
-# connect-an-agent frame: a prompt
-# (the same `tonk:invite` mint the share path uses, rendered via the
-# `tonk:agent-invite` prompt view).
+# default target of the `tonk/space` alias (below). Agent invitations are
+# opened explicitly from the host-owned FABB, so rendering an empty space does
+# not rotate a bearer credential or duplicate the invitation UI in content.
 concept!: &blank
   this: tonk:blank
-  description: A lean repo's starting canvas — connect an agent or build by hand.
+  description: A lean repo's empty starting canvas.
   with:
     subject:
       description: The repository's subject DID (the replica's subject).
@@ -169,51 +168,9 @@ view!:
             flex-direction: column;
             justify-content: center;
             min-height: 100dvh;
-            gap: var(--wa-space-2xl);
             width: 100%;
-            max-width: 620px;
-            margin: 0 auto;
-            padding: var(--wa-space-3xl) var(--wa-space-2xl);
-            color: var(--wa-color-text-normal);
-            font-family: var(--wa-font-family-body);
-          }
-          .blank-canvas__label {
-            font-family: var(--wa-font-family-code);
-            font-size: var(--wa-font-size-xs);
-            letter-spacing: 0.08em;
-            text-transform: uppercase;
-            color: var(--wa-color-text-quiet);
-          }
-          .blank-canvas__deeplink {
-            display: flex;
-            flex-direction: column;
-            gap: var(--wa-space-xs);
-            align-items: flex-start;
-          }
-          /* `tonk-display` is light DOM and projects lifecycle slots by
-             toggling `hidden`. Its custom-element display rule outranks the UA
-             default, so enforce the inactive state here. */
-          .blank-canvas__deeplink tonk-display > [slot][hidden] {
-            display: none !important;
           }
         </style>
-        <section class="blank-canvas__deeplink">
-          <tonk-page on:invite=tonk:agent-handoff></tonk-page>
-          <tonk-origin>
-            <tonk-display
-              entity={subject}
-              bind:base="data-base"
-              model=tonk:agent-invite
-              data-page="this repo">
-              <tonk-display
-                slot="no-entity"
-                entity={subject}
-                model=tonk:agent-handoff-state>
-                <div slot="no-entity" class="blank-canvas__label">Generating link…</div>
-              </tonk-display>
-            </tonk-display>
-          </tonk-origin>
-        </section>
       </div>
 
 # The Enable-sync command. Submitting the sync chip's "Enable sync" form
@@ -257,7 +214,7 @@ command!: &space/enable-sync
 # (never replicated). The repository is not a field here — the handler
 # reads it from the command's origin (the branch the commit landed in).
 #
-# How the share affordance's mount fills it. `<tonk-page>` raises `mount`
+# How the share affordance's mount fills it. `<page-mount>` raises `mount`
 # as a CustomEvent, so its `timeStamp` is what makes each dispatch
 # distinct.
 event!: &on/invite
@@ -434,7 +391,7 @@ concept!:
 
 concept!: &tonk/agent-handoff-state
   this: tonk:agent-handoff-state
-  description: Session-only account-scoped handoff response, independent of ordinary sharing.
+  description: Session-only agent invitation response, independent of ordinary sharing.
   with:
     status:
       description: Ready marker or a pending or failure explanation.
@@ -447,7 +404,7 @@ concept!: &tonk/agent-handoff-state
       as: text
       cardinality: one
     account:
-      description: Required account when ready; a device placeholder while unavailable.
+      description: Required account for legacy handoffs; a profile placeholder for bearer invitations.
       the: xyz.tonk.agent-handoff/account
       as: entity
       cardinality: one
@@ -457,10 +414,113 @@ view!:
   show:
     ui: |
       <p data-agent-handoff-status>{status}</p>
+      <tonk-display entity={this} model=tonk:connection-invite-controls>
+        <span slot="no-entity" hidden></span>
+      </tonk-display>
+
+# Explicit new invitation; automatic mount requests omit this marker.
+event!: &on/new-agent-invite
+  type: "click"
+  where:
+    time: ".timeStamp"
+    fresh: '"new"'
+
+concept!:
+  this: tonk:new-agent-invite
+  description: Create a separate agent invitation when the user asks for one.
+  with:
+    time:
+      description: The time a separate invitation was explicitly requested.
+      the: xyz.tonk.agent-handoff/time
+      as: float
+      cardinality: one
+    fresh:
+      description: Explicit new-invitation marker; absent from automatic mounts.
+      the: xyz.tonk.agent-handoff/fresh
+      as: text
+      cardinality: one
+
+# New-mode controls also remain reachable when a transient link is unavailable.
+concept!:
+  this: tonk:connection-invite-controls
+  description: Session-only explicit action for another scoped invitation.
+  with:
+    mode:
+      description: Marker emitted only by the scoped invitation adapter.
+      the: xyz.tonk.agent-handoff/mode
+      as: text
+      cardinality: one
+
+view!:
+  this: tonk:connection-invite-controls
+  show:
+    ui: |
+      <tonk-component>
+        <script type="tonk/module">
+          customElements.get("tonk-agent-invite-controls") ||
+            customElements.define("tonk-agent-invite-controls", class extends HTMLElement {
+              static observedAttributes = ["mode"];
+              connectedCallback() {
+                this.observer = new MutationObserver(() => this.render());
+                this.observer.observe(this, { childList: true, subtree: true });
+                this.afterRegistration = () => {
+                  if (["account", "activation"].includes(this.getAttribute("mode"))) {
+                    this.dispatchEvent(new CustomEvent("mount", { bubbles: true }));
+                  }
+                };
+                window.addEventListener("tonk:registration-closed", this.afterRegistration);
+                this.onclick = event => {
+                  const button = event.target.closest("[data-invite-account]");
+                  if (!button || button.hidden) return;
+                  globalThis.tonk.register(JSON.stringify({
+                    reason: this.getAttribute("mode") === "activation"
+                      ? "agent-invite-activation" : "agent-invite-account"
+                  }));
+                };
+                this.render();
+              }
+              disconnectedCallback() {
+                this.observer?.disconnect();
+                window.removeEventListener("tonk:registration-closed", this.afterRegistration);
+                this.onclick = null;
+              }
+              attributeChangedCallback() { if (this.isConnected) this.render(); }
+              render() {
+                const mode = this.getAttribute("mode");
+                for (const button of this.querySelectorAll("[data-invite-action]")) {
+                  button.hidden = !button.dataset.inviteAction.split(" ").includes(mode);
+                }
+                const account = this.querySelector("[data-invite-account]");
+                if (account) {
+                  const label = mode === "activation" ? "verify account" : "create an account or sign in";
+                  if (account.textContent !== label) account.textContent = label;
+                }
+              }
+            });
+        </script>
+      </tonk-component>
+      <tonk-agent-invite-controls mode={mode} on:invite=tonk:agent-handoff>
+        <button class="connection-invite-new" data-invite-account data-invite-action="account activation" hidden>create an account or sign in</button>
+        <button class="connection-invite-new" data-invite-action="retry" hidden on:new-agent-invite=tonk:new-agent-invite>try again</button>
+        <button class="connection-invite-new" data-invite-action="new" hidden on:new-agent-invite=tonk:new-agent-invite>new invite</button>
+        <button class="connection-invite-new" data-invite-action="sync" hidden on:new-agent-invite=tonk:new-agent-invite>turn on sync</button>
+      </tonk-agent-invite-controls>
+      <style>
+        tonk-agent-invite-controls [hidden] { display: none !important; }
+        .connection-invite-new {
+          min-height: 36px; padding: 0 16px; border: 0; border-radius: 0;
+          background: transparent; color: var(--wa-color-text-normal);
+          box-shadow: inset 0 0 0 1px currentColor;
+          font: 600 13px/1 'IBM Plex Sans Condensed', 'Bahnschrift', 'Arial Narrow', sans-serif;
+          letter-spacing: .02em; cursor: pointer;
+        }
+        .connection-invite-new:hover { background: color-mix(in srgb, currentColor 6%, transparent); }
+        .connection-invite-new:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
+      </style>
 
 concept!: &tonk/agent-invite
   this: tonk:agent-invite
-  description: An account-scoped handoff joined with the repository name for the agent prompt.
+  description: An agent invitation joined with the repository name for the copied prompt.
   with:
     name:
       description: The repository's display name.
@@ -468,12 +528,12 @@ concept!: &tonk/agent-invite
       cardinality: one
       as: text
     link:
-      description: The complete account-scoped handoff URL.
+      description: The complete agent invitation URL.
       the: xyz.tonk.agent-invite/link
       cardinality: one
       as: text
     account:
-      description: The browser account the agent must connect as.
+      description: The account required by legacy handoffs; unused by bearer invitations.
       the: xyz.tonk.agent-invite/account
       cardinality: one
       as: entity
@@ -553,11 +613,11 @@ view!:
         <p>{detail}</p>
       </div>
 
-# Only a ready account-scoped response can produce an agent prompt. Its
+# Only a ready invitation response can produce an agent prompt. Its
 # derived attributes must differ from the response attributes, or a pending
 # response with an empty link satisfies the prompt concept directly.
 rule!:
-  description: Joins the repository name with its ready account-scoped agent handoff.
+  description: Joins the repository name with its ready agent invitation.
   assert: tonk/agent-invite
   when:
     - assert: tonk/repository
@@ -576,16 +636,63 @@ view!:
   this: tonk:agent-invite
   show:
     ui: |
+      <tonk-component>
+        <script type="tonk/module">
+          customElements.get("tonk-agent-prompt") ||
+            customElements.define("tonk-agent-prompt", class extends HTMLElement {
+              static observedAttributes = ["link"];
+              connectedCallback() {
+                this.observer = new MutationObserver(() => this.render());
+                this.observer.observe(this, { childList: true, subtree: true });
+                this.render();
+              }
+              disconnectedCallback() { this.observer?.disconnect(); }
+              attributeChangedCallback() { if (this.isConnected) this.render(); }
+              render() {
+                let mode = "";
+                try {
+                  const hash = new URL(this.getAttribute("link")).hash;
+                  mode = /^#tonk-agent-v[12]=/.test(hash) ? "scoped" : "unsupported";
+                } catch (_) {}
+                for (const block of this.querySelectorAll("[data-agent-mode]")) {
+                  block.hidden = block.dataset.agentMode !== mode;
+                }
+                let page;
+                try { page = new URL(this.getAttribute("link")); } catch (_) {}
+                const local = page && ["localhost", "127.0.0.1", "[::1]"].includes(page.hostname);
+                const copy = this.querySelector(".agent-prompt__copy");
+                const prompt = copy?.getAttribute("value") || "";
+                if (page && page.origin !== "https://tonk.network" && prompt.includes("npx --yes @tonk/cli")) {
+                  const executable = local ? "tonk" : "npx --yes @tonk/cli";
+                  const selectedPrompt = prompt
+                    .replaceAll("npx --yes @tonk/cli", executable)
+                    .replace(
+                      `${executable} join '`,
+                      `${executable} join --via ${JSON.stringify(page.origin)} '`,
+                    );
+                  copy.setAttribute("value", selectedPrompt);
+                }
+              }
+            });
+        </script>
+      </tonk-component>
+      <tonk-agent-prompt link={link}>
       <div class="agent-prompt">
         <style>
+          tonk-agent-prompt [hidden] { display: none !important; }
+          tonk-agent-prompt [data-agent-mode] { display: flex; flex-direction: column; gap: var(--wa-space-m); }
           .agent-prompt { padding: var(--wa-space-l); border-radius: var(--wa-border-radius-l); background: var(--wa-color-surface-lowered); display: flex; flex-direction: column; gap: var(--wa-space-m); }
           .agent-prompt p { margin: 0; line-height: var(--wa-line-height-normal); text-wrap: pretty; }
-          .agent-prompt__action { display: flex; gap: var(--wa-space-s); align-items: center; }
+          .agent-prompt__action { display: flex; align-items: stretch; }
           .agent-prompt__copy {
-            --agent-copy-ink: var(--fabb-ink, #38182a);
-            --agent-copy-surface: var(--fabb-on-ink, #f7f6f5);
+            display: inline-flex;
+            align-self: flex-start;
+            max-inline-size: 100%;
+            --agent-copy-ink: var(--wa-color-neutral-on-loud);
+            --agent-copy-surface: var(--wa-color-text-normal);
           }
           .agent-prompt__copy::part(button) {
+            display: inline-flex;
             box-sizing: border-box;
             min-width: 144px;
             min-height: 44px;
@@ -614,7 +721,7 @@ view!:
           .agent-prompt__copy::part(button):focus-visible {
             background: var(--agent-copy-surface);
             color: var(--agent-copy-ink);
-            outline: 2px solid var(--agent-copy-ink);
+            outline: 2px solid var(--wa-color-text-normal);
             outline-offset: 3px;
           }
           .agent-prompt__copy::part(copy-icon),
@@ -629,26 +736,42 @@ view!:
             .agent-prompt__copy::part(button) { transition: none; }
             .agent-prompt__copy::part(button):active { scale: 1; }
           }
+          .agent-prompt__new {
+            min-height: 44px; padding: 0 16px; border: 0; border-radius: 0;
+            background: transparent; color: var(--wa-color-text-normal);
+            box-shadow: inset 0 0 0 1px currentColor;
+            font: 600 13px/1 'IBM Plex Sans Condensed', 'Bahnschrift', 'Arial Narrow', sans-serif;
+            letter-spacing: .02em; cursor: pointer;
+          }
+          .agent-prompt__new:hover { background: color-mix(in srgb, currentColor 6%, transparent); }
+          .agent-prompt__new:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
           .agent-prompt__note { color: var(--wa-color-text-quiet); font-size: var(--wa-font-size-s); }
         </style>
-        <p>Copy the prompt and give it to an agent of your choice. Then tell it what you want to build.</p>
-        <p class="agent-prompt__note">Your agent will connect to this space. If it needs to link your account, Tonk will open a browser approval. Keep this space open to see the connection confirmed and watch your changes arrive.</p>
+        <div data-agent-mode="unsupported" hidden>
+          <p class="agent-prompt__note">this tool link is no longer supported. reload tonk, then create a new link and use <code>tonk join</code>.</p>
+          <button class="agent-prompt__new" on:new-agent-invite=tonk:new-agent-invite>new link</button>
+        </div>
+        <div data-agent-mode="scoped" hidden>
+        <p>copy the prompt and give it to your tool. then tell it what you want to build.</p>
+        <p class="agent-prompt__note">anyone with this link can read and change this space until it expires or you revoke it. keep it private. you can close tonk after copying.</p>
         <div class="agent-prompt__action">
-          <wa-copy-button class="agent-prompt__copy" copy-label="Copy prompt" success-label="Prompt copied" error-label="Could not copy" value="You're helping build the &quot;{name}&quot; Tonk space.
+          <wa-copy-button class="agent-prompt__copy" copy-label="copy prompt" success-label="prompt copied" error-label="could not copy" value="You're helping build the &quot;{name}&quot; Tonk space.
 
       Connect to the exact space this prompt came from:
 
-        npx --yes @tonk/cli connect '{link}'
+        npx --yes @tonk/cli join '{link}'
 
-      The command uses the space’s synced name for local registration and prints the chosen local name. Use --name only if you want a different local alias. This handoff requires account {account}. If the CLI reports a different account, explain the mismatch and ask me before switching. Only after I consent, rerun the same command with `--switch-account {account}`. Browser passkey approval is still required; tell me to approve the requested account in my Tonk browser. Do not log out first. It pulls this space and sends a connection acknowledgement back to its UI. Allow the command to finish, including browser approval. Only report connected after it prints &quot;Agent connection confirmed&quot;. If interrupted after joining, run `npx --yes @tonk/cli --space NAME connect` (using the local name printed by the command). A synced status alone does not confirm the agent connection. If that resume reports revoked authority, rerun the original invite with a different local name: `npx --yes @tonk/cli connect INVITE --name NEW_NAME`.
+      This reusable bearer link contains a separate tool identity and the signed grants for this space. It does not sign the CLI into my account or create a human member. Keep it private. Run the command without CLI account login, browser approval, or account-switch flags. The command prints the chosen local name; use --name if you need a different local alias. Only report connected after it prints &quot;Agent connection confirmed&quot;, which follows a successful pull and acknowledged receipt push. If interrupted, resume without the link using `npx --yes @tonk/cli --space NAME join`. If access expires or is revoked, ask me for a fresh link. Local data and offline edits remain available. Multiple holders of this link share the same invitation authority and receipt; create a new link for an independently revocable identity. The receipt does not establish exclusive use or online presence.
 
-      Then run `npx --yes @tonk/cli status` and `npx --yes @tonk/cli help tutorial`. The command binds your working directory to the connected space; elsewhere, pass --space with the printed local name. Ask me what I want to build. Use `npx --yes @tonk/cli` for each CLI command that changes data, schemas, or views; changes sync directly into this space. Finish with `npx --yes @tonk/cli space home &lt;concept&gt;` to put the result on the space home.">
+      Then run `npx --yes @tonk/cli --space NAME status` and `npx --yes @tonk/cli help tutorial`. The command binds your original working directory to the connected space; elsewhere, pass --space with the printed local name. Ask me what I want to build. Use `npx --yes @tonk/cli` for each CLI command that changes data, schemas, or views; changes sync directly into this space. Finish with `npx --yes @tonk/cli space home &lt;concept&gt;` to put the result on the space home.">
             <span slot="copy-icon" aria-hidden="true">copy prompt</span>
             <span slot="success-icon" aria-hidden="true">prompt copied</span>
             <span slot="error-icon" aria-hidden="true">could not copy</span>
           </wa-copy-button>
         </div>
+        </div>
       </div>
+      </tonk-agent-prompt>
 
 # Connection receipt, written only after the CLI has pulled this space.
 # A durable acknowledgement, deliberately not an online/heartbeat signal.
@@ -665,34 +788,50 @@ concept!: &agent-connection
 view!:
   this: tonk:agent-connection
   show:
-    ui: |
-      <details open class="agent-connection" data-this={this}>
-        <summary aria-label="Dismiss agent connection notification">×</summary>
-        <span role="status">Your agent connected</span>
+    directory: |
+      <div class="agent-connection-receipts" aria-label="Agent connection receipts">
         <style>
-          .agent-connection {
+          .agent-connection-receipts {
             position: fixed;
             left: 50%;
             bottom: max(64px, calc(env(safe-area-inset-bottom) + 56px));
             z-index: 12;
+            width: min(432px, calc(100vw - 48px));
+            max-height: 40dvh;
+            overflow-y: auto;
+            transform: translateX(-50%);
+            display: flex;
+            flex-direction: column;
+            gap: 7px;
+          }
+        </style>
+        <tonk-display entity={this} model=tonk:agent-connection />
+      </div>
+    ui: |
+      <details open class="agent-connection" data-this={this}>
+        <summary aria-label="Dismiss agent connection notification">×</summary>
+        <span role="status">agent setup confirmed</span><span class="agent-connection-note">this confirms a completed sync, not whether the agent is online.</span>
+        <style>
+          .agent-connection {
+            position: relative;
             box-sizing: border-box;
             border: 0;
             border-radius: 0;
             margin: 0;
-            width: min(432px, calc(100vw - 48px));
+            width: 100%;
             min-height: 44px;
             padding: 12px 52px 12px 24px;
-            background: rgb(253 252 252 / 72%);
-            color: #38182a;
-            box-shadow: 0 0 0 1px rgb(56 24 42 / 85%);
+            background: var(--wa-color-surface-raised);
+            color: var(--wa-color-text-normal);
+            box-shadow: 0 0 0 1px var(--wa-color-neutral-border-normal);
             -webkit-backdrop-filter: blur(12px) saturate(1.5);
             backdrop-filter: blur(12px) saturate(1.5);
             font: 400 13px/1.45 var(--wa-font-family-body);
             text-align: center;
-            transform: translateX(-50%);
             animation: agent-connection-enter .4s cubic-bezier(.25,.46,.45,.94) both,
               agent-connection-exit .4s ease-out 120s forwards;
           }
+          .agent-connection-note { display: block; margin-top: 4px; color: var(--wa-color-text-quiet); }
           .agent-connection:not([open]) { display: none; }
           .agent-connection > summary {
             box-sizing: border-box;
@@ -721,21 +860,14 @@ view!:
             outline-offset: -3px;
           }
           @keyframes agent-connection-enter {
-            from { opacity: 0; transform: translateX(-50%) translateY(70px); }
-            to { opacity: 1; transform: translateX(-50%); }
+            from { opacity: 0; transform: translateY(12px); }
+            to { opacity: 1; transform: translateY(0); }
           }
           @keyframes agent-connection-exit {
-            from { opacity: 1; transform: translateX(-50%); }
-            to { opacity: 0; transform: translateX(-50%) translateY(12px); visibility: hidden; }
+            from { opacity: 1; transform: translateY(0); }
+            to { opacity: 0; transform: translateY(12px); visibility: hidden; }
           }
-          @media (prefers-color-scheme: dark) {
-            .agent-connection > summary:hover { background: rgb(226 223 221 / 9%); }
-            .agent-connection {
-              background: rgb(29 24 25 / 72%);
-              color: #e2dfdd;
-              box-shadow: 0 0 0 1px rgb(226 223 221 / 55%);
-            }
-          }
+
           @media (prefers-reduced-motion: reduce) {
             .agent-connection { animation-duration: 0s; }
           }
@@ -769,15 +901,8 @@ concept!: &member
       as: text
 
 # A single roster row — the default view for `model: tonk:member`. Each
-# member is one entry in the "shared with" list: a sigil-glyph avatar, the
-# member's display name (with the DID tail beneath as a fallback id), and a
-# role badge.
-#
-# The `<tonk-sigil>` avatar masks against a sprite that the sealed guest
-# loads over the host bridge and installs as the global default (see
-# `load_sigil_sprite` in tonk-guest) — so the identity glyph renders inside
-# the opaque iframe with no cross-origin fetch. `did={member}` seeds it from
-# the member DID so the glyph matches everywhere that member is shown.
+# member is one entry in the "shared with" list: the member's display name
+# (with the DID tail beneath as a fallback id), and a role badge.
 #
 # The DID's last 8 chars sit under the name as a stable disambiguator (the
 # full value is in `title`); CSS `direction:rtl` truncation clips the HEAD
@@ -809,7 +934,6 @@ view!:
   show:
     ui: |
       <div class="roster__row" data-role={role}>
-        <tonk-sigil class="roster__avatar" did={member}></tonk-sigil>
         <span class="roster__identity">
           <span class="roster__name">{name}</span>
           <span class="roster__did" title={member}><bdi>{member}</bdi></span>
@@ -866,14 +990,6 @@ view!:
              clips it round (matching the wireframe avatars). The sprite is
              supplied by the sealed guest, so it paints inside the opaque
              iframe. */
-          .roster__avatar {
-            flex: none;
-            width: 28px;
-            height: 28px;
-            border-radius: 50%;
-            border: 1px solid var(--wa-color-surface-border);
-            overflow: hidden;
-          }
           /* The DID's LAST 8 chars: `direction:rtl` makes the overflow clip
              the head (with a leading ellipsis), so the tail stays visible.
              `<bdi>` keeps the DID itself rendering left-to-right inside the
@@ -1004,6 +1120,12 @@ concept!: &tonk/repository
       the: xyz.tonk.repo/name
       cardinality: one
       as: text
+  maybe:
+    description:
+      description: A short description written by the space owner.
+      the: xyz.tonk.repo/description
+      cardinality: one
+      as: text
 
 # Agent working context carried by the repository itself. The instance is keyed
 # by the same stable repository subject DID as `tonk/repository`, so it syncs
@@ -1077,13 +1199,13 @@ view!:
   this: tonk:repository
   show:
     ui: |
-      <tonk-editable
+      <inline-editable
         class="workspace__title-input"
         value={name}
         data-subject={this}
         on:repository-rename=tonk/rename-repository
         aria-label="Space name"
-      ></tonk-editable>
+      ></inline-editable>
 
 # ============================================================
 # SELF-IDENTITY CHIP
@@ -1133,7 +1255,7 @@ command!: &profile/rename
 # `tonk/repository`, the cross-device source of truth) rather than an
 # editable banner. `title` — the browser tab's title: the space
 # chrome mounts `view=title` inside a per-space `with={id}` routing
-# context; `<tonk-title>` renders nothing — it pushes the text to the
+# context; `<tab-title>` renders nothing — it pushes the text to the
 # host page, which owns `document.title`. Distinct facets, so the
 # editable banner, the plain text, and the title never collide under
 # the default `ui` resolution.
@@ -1147,68 +1269,7 @@ view!:
   this: tonk:repository
   show:
     title: |
-      <tonk-title text="{name} — Tonk"></tonk-title>
-
-# ============================================================
-# BOARD
-# ============================================================
-#
-# v1 is the hierarchical shape: board owns columns; column owns
-# tiles. Future work projects this from a flat tile concept using
-# deductive rules; the view templates won't change when that
-# happens.
-
-concept!: &board
-  description: A named board (hierarchical v1, owns columns directly)
-  with:
-    name:
-      description: Display name
-      the: xyz.tonk.board/name
-      cardinality: one
-      as: text
-    column:
-      description: Columns in this board
-      the: xyz.tonk.board/column
-      cardinality: many
-      as: entity
-
-concept!: &column-view
-  description: A column on a board
-  with:
-    order:
-      description: LexoRank-style order key within the board
-      the: xyz.tonk.column/order
-      cardinality: one
-      as: text
-    width:
-      description: Column width in grid units (1 unit is 64px)
-      the: xyz.tonk.column/width
-      cardinality: one
-      as: unsigned-integer
-    tile:
-      description: Tiles in this column
-      the: xyz.tonk.column/tile
-      cardinality: many
-      as: entity
-
-concept!: &tile
-  description: One tile in a column
-  with:
-    order:
-      description: Order key within the column
-      the: xyz.tonk.tile/order
-      cardinality: one
-      as: text
-    model:
-      description: Concept the tile body renders
-      the: xyz.tonk.tile/model
-      cardinality: one
-      as: entity
-    entity:
-      description: Entity the tile body renders
-      the: xyz.tonk.tile/entity
-      cardinality: one
-      as: entity
+      <tab-title text="{name} — Tonk"></tab-title>
 
 concept!: &inspector
   description: An inspector tile body — renders <tonk-inspector source="…">
@@ -1238,168 +1299,6 @@ concept!: &portal
 # `view` attribute it resolves the view whose `model` matches. The
 # chain iterates one level of the hierarchy per template via
 # `subject={field}` and bottoms out in the tile's content display.
-
-view!:
-  this: board
-  show:
-    ui: |
-      <tonk-strip>
-        <style>
-          /* Board layout travels with the view, so any route that
-             mounts `model=board` renders the strip identically
-             (board route, bare display route, embedded tile). The strip
-             caps its OWN height at the viewport (`block-size: 100dvh`)
-             rather than borrowing a fixed height from the document — so
-             its columns scroll vertically inside a bounded box and the
-             strip scrolls horizontally, without locking the page. (Other
-             views let the page scroll; the board is a self-contained
-             fixed-height scroller.)
-
-             The `tonk-display`/`tonk-view` layers that wrap each
-             level are pure rendering wrappers, not layout boxes;
-             `display: contents` makes them transparent so the strip
-             is a flex container over real `<tonk-column>` items. */
-          tonk-display:has(> tonk-view > tonk-strip),
-          tonk-display > tonk-view:has(> tonk-strip) {
-            display: contents;
-          }
-
-          tonk-strip {
-            --pitch: 16px;
-            --cell: 64px;
-            /* Narrow gutter between columns — just enough that the
-               contrasting strip fill reads as a seam. */
-            --gap: 4px;
-
-            display: flex;
-            flex-direction: row;
-            align-items: stretch;
-            gap: var(--gap);
-            padding: 0;
-            box-sizing: border-box;
-            block-size: 100dvh;
-            inline-size: 100%;
-            overflow-x: auto;
-            overflow-y: hidden;
-            scroll-snap-type: x proximity;
-            /* The strip's fill shows through every seam — between
-               columns AND between tiles within a column (since
-               `<tonk-column>` is transparent). The neutral-fill token
-               adapts with dark / light mode. */
-            background-color: var(--wa-color-neutral-fill-normal);
-          }
-
-          /* The `tonk-display`/`tonk-view` wrappers between the strip
-             and each column are transparent to the strip's flex flow,
-             so each `<tonk-column>` is a direct flex item (its
-             `flex: 0 0 calc(--col-w * --cell)` sizes the column, not
-             the wrapping display). */
-          tonk-strip > tonk-display,
-          tonk-strip > tonk-display > tonk-view {
-            display: contents;
-          }
-        </style>
-        <tonk-display entity={column} model=column-view />
-      </tonk-strip>
-
-view!:
-  this: board
-  show:
-    directory: |
-      <tonk-display entity={this} model={dom.host/model} view={dom.host/view} />
-
-view!:
-  this: column-view
-  show:
-    ui: |
-      <tonk-column style="--col-w: {width};">
-        <style>
-          tonk-column {
-            /* Width is driven by `--col-w` set on the element by this
-               template (one --cell unit is 64px). Tiles stack
-               top-to-bottom inside; overflow is handled here at the
-               column level so the column's dot-grid background scrolls
-               together with the tiles. */
-            flex: 0 0 calc(var(--col-w, 12) * 64px);
-            block-size: 100%;
-            display: flex;
-            flex-direction: column;
-            gap: 4px;
-            overflow-y: auto;
-            overflow-x: hidden;
-            scroll-snap-align: start;
-            min-block-size: 0;
-            /* Transparent so the strip's seam fill shows through the
-               column-to-column and tile-to-tile gaps. The column's
-               grid layer still paints (a `background-image`, not a
-               fill) against whatever the strip provides underneath. */
-            background-color: transparent;
-          }
-
-          tonk-column::-webkit-scrollbar { display: none; }
-
-          /* Tiles size to their content along the column's main axis
-             and stack top-to-bottom. Overflow happens at the COLUMN
-             level (the column is the scroller), never inside a tile,
-             so a tile renders its content unclipped and the user
-             scrolls the whole column. Tiles paint the dark canvas
-             fill; the gaps expose the strip's lighter seam fill. */
-          tonk-column > .tile {
-            flex: 0 0 auto;
-            inline-size: 100%;
-            box-sizing: border-box;
-            background-color: var(--wa-color-neutral-fill-quiet);
-
-            /* Two-layer engineering graph-paper background, applied to
-               each tile (the surface the dark canvas occupies). The
-               grid travels with the tile content because the tile is
-               the visible canvas. `background-attachment: local` ties
-               the grid to the column's scroll so the dots travel with
-               vertical scroll. */
-            --dot-gap: 16px;
-            --dot-size-dim: 0.5px;
-            --dot-size-bright: 0.5px;
-            --dot-color-dim: color-mix(in oklab, currentColor 16%, transparent);
-            --dot-color-bright: color-mix(in oklab, currentColor 25%, transparent);
-            background-image:
-              radial-gradient(
-                circle,
-                var(--dot-color-bright) var(--dot-size-bright),
-                transparent calc(var(--dot-size-bright) + 0.5px)
-              ),
-              radial-gradient(
-                circle,
-                var(--dot-color-dim) var(--dot-size-dim),
-                transparent calc(var(--dot-size-dim) + 0.5px)
-              );
-            background-size:
-              calc(var(--dot-gap) * 4) calc(var(--dot-gap) * 4),
-              var(--dot-gap) var(--dot-gap);
-            background-position:
-              calc(var(--dot-gap) * -2) calc(var(--dot-gap) * -2),
-              calc(var(--dot-gap) / -2) calc(var(--dot-gap) / -2);
-            background-attachment: local;
-          }
-
-          /* The inner `<tonk-display>` participates in the column's
-             scroll — it must NOT clip or scroll on its own. */
-          tonk-column > .tile > tonk-display,
-          tonk-column > .tile > tonk-display > tonk-view {
-            display: block;
-            inline-size: 100%;
-            overflow: visible;
-          }
-        </style>
-        <div class="tile" subject={tile}>
-          <tonk-display entity={tile} model=tile />
-        </div>
-      </tonk-column>
-
-view!:
-  this: tile
-  show:
-    ui: |
-      <tonk-display entity={entity} model={model} />
 
 view!:
   this: inspector
@@ -1818,6 +1717,21 @@ concept!: &site
       the: xyz.tonk.site/replica
       cardinality: one
       as: entity
+    branch-entity:
+      description: >
+        The same branch as an entity, so a view can walk from where the
+        tab is to what that branch follows. The name beside it is a
+        location token; this is the graph node.
+      the: xyz.tonk.site/branch-entity
+      cardinality: one
+      as: entity
+    profile-branch:
+      description: >
+        The branch the profile is on, whichever repository this tab is
+        on: what reaches the profile as `{profile-branch}@profile:tonk`.
+      the: xyz.tonk.site/profile-branch
+      cardinality: one
+      as: text
     route:
       description: Matched route of this site.
       the: xyz.tonk.site/route
@@ -2018,7 +1932,7 @@ view!:
   show:
     ui: |
       <div class="workspace-shell" style="display:flex; flex-direction:column; min-height:100dvh;">
-        <tonk-display entity="id:tonk:agent-connection" model=tonk:agent-connection with="{branch}@{repo}">
+        <tonk-display model=tonk:agent-connection with="{branch}@{repo}">
           <span slot="no-entity"></span>
         </tonk-display>
         <div class='display-view-slot'>
@@ -2339,3 +2253,303 @@ view!:
         </tonk-component>
         <tonk-blob-media entity={this} content-type={content-type} name={name} with={dom.host/with}></tonk-blob-media>
       </div>
+
+# ── Elements ────────────────────────────────────────────────────────
+#
+# Custom elements carried as branch data. Each replaced a Rust element
+# that only ever needed the DOM: a method is a JS function of `self`,
+# `connected` and `disconnected` are its lifecycle, and a `getter` or
+# `setter` is a property.
+
+# A headless element that names the browser tab. It renders nothing:
+# its only job is to push its `text` to the host page, which owns
+# `document.title` — a sealed guest cannot set it. Nothing while
+# `hidden`, so a title a view keeps for a state it is not showing does
+# not win.
+element!: &tab-title
+  description: Names the browser tab from its `text` attribute, through the host page.
+  method:
+    push: |
+      (self) => {
+        if (self.hasAttribute('hidden')) return;
+        const text = self.getAttribute('text');
+        if (!text) return;
+        window.tonk?.setTitle?.(text);
+      }
+    connected: |
+      (self) => self.push()
+    attribute-changed: |
+      (self, name) => {
+        if (name === 'text' || name === 'hidden') self.push();
+      }
+
+# Surfaces the current location as a bubbling `mount` CustomEvent whose
+# `detail` is the parsed URL — `href`, `origin`, `pathname`, `search`,
+# `hash`, and `searchParams` as a plain object — so a view binds a
+# command to it (`on:join=tonk:join`) and the handler gets the URL as
+# data rather than reaching for a global. Inside a sealed guest the
+# location is the host's, relayed as `window.tonk.context`.
+#
+# It fires once the enclosing display is bound (`data-bound`), because
+# the binding that listens is installed with it, and again on every
+# `tonk:join-retry`.
+element!: &page-mount
+  description: Dispatches the parsed current location as a bubbling `mount` event.
+  method:
+    location: |
+      (self) => {
+        const context = window.tonk?.context;
+        const href = context?.origin
+          ? `${context.origin}${context.path ?? ''}${context.search ?? ''}${context.hash ?? ''}`
+          : window.location.href;
+        try {
+          const url = new URL(href);
+          return {
+            href: url.href, origin: url.origin, pathname: url.pathname,
+            search: url.search, hash: url.hash,
+            searchParams: Object.fromEntries(url.searchParams),
+          };
+        } catch {
+          return {};
+        }
+      }
+    mount: |
+      (self) => {
+        self.dispatchEvent(new CustomEvent('mount', { bubbles: true, detail: self.location() }));
+      }
+    ready: |
+      (self) => self.closest('tonk-display')?.hasAttribute('data-bound') === true
+    connected: |
+      (self) => {
+        if (!self.__retry) {
+          self.__retry = () => self.mount();
+          self.addEventListener('tonk:join-retry', self.__retry);
+        }
+        let fired = false;
+        const fire = () => {
+          if (fired || !self.ready()) return;
+          fired = true;
+          self.mount();
+        };
+        fire();
+        if (fired) return;
+        const display = self.closest('tonk-display');
+        if (!display) return;
+        self.__bound?.disconnect();
+        self.__bound = new MutationObserver(fire);
+        self.__bound.observe(display, { attributes: true, attributeFilter: ['data-bound'] });
+      }
+    disconnected: |
+      (self) => {
+        self.__bound?.disconnect();
+        self.__bound = null;
+      }
+
+# An inline-editable line of text, driven like a native input: its
+# `value` property is its text, a double-click makes it editable, Enter
+# commits — a blur, which fires `change` when the text changed — and
+# Escape restores the text the edit began with, so no `change` with a
+# new value is emitted. It holds no policy: the commit rides on the
+# consuming view's `onchange` binding.
+element!: &inline-editable
+  description: A contenteditable line of text with input-like `value` and `change`.
+  getter:
+    value: |
+      (self) => self.textContent ?? ''
+  setter:
+    value: |
+      (self, value) => {
+        if (self !== self.ownerDocument?.activeElement) self.textContent = value ?? '';
+      }
+  method:
+    connected: |
+      (self) => {
+        self.setAttribute('contenteditable', 'false');
+        self.setAttribute('role', 'textbox');
+        if (self.__wired) return;
+        self.__wired = true;
+        let before = '';
+        self.addEventListener('dblclick', () => {
+          self.setAttribute('contenteditable', 'plaintext-only');
+          self.focus();
+        });
+        self.addEventListener('focus', () => {
+          before = self.textContent ?? '';
+        });
+        self.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            self.blur();
+          } else if (event.key === 'Escape') {
+            event.preventDefault();
+            self.textContent = before;
+            self.blur();
+          }
+        });
+        self.addEventListener('blur', () => {
+          const current = self.textContent ?? '';
+          self.setAttribute('contenteditable', 'false');
+          if (current === before) return;
+          self.dispatchEvent(new Event('change', { bubbles: true }));
+        });
+      }
+
+# A frame that can be dragged around the viewport. It does not care what
+# it holds: the content is whatever the view puts inside, and the frame
+# only moves it. A press on the handle (the frame itself unless `handle`
+# names a part) that travels past the dead zone becomes a drag; the frame
+# tracks the pointer 1:1, stays inside the viewport, and on release docks
+# to the nearest edge at `inset` pixels, keeping its coordinate along
+# that edge, or merely clamps when `dock="none"`. A tap is left alone,
+# so whatever the content does on click still happens; the click that
+# ends a drag is swallowed, since it was not a click. A resize keeps a
+# docked frame on its edge and any frame inside the viewport.
+#
+# It reflects what it knows as attributes — `dragging` while a drag is
+# on, `docked` with the edge it rests on, `left`/`top` in pixels once
+# placed — and announces `drag-start` and `drag-end` (detail: `left`,
+# `top`, `edge`) so a view can persist or react.
+element!: &drag-frame
+  description: Drags its contents around the viewport and docks them to an edge.
+  attribute:
+    inset: "16"
+    dead-zone: "4"
+    dock: "edges"
+    handle: ""
+  method:
+    options: |
+      (self) => {
+        const number = (name, fallback) => {
+          const value = parseFloat(self.getAttribute(name));
+          return Number.isFinite(value) ? value : fallback;
+        };
+        return {
+          inset: number('inset', 16),
+          deadZone: number('dead-zone', 4),
+          dock: (self.getAttribute('dock') || 'edges') !== 'none',
+          handle: self.getAttribute('handle') || '',
+        };
+      }
+    handle-of: |
+      (self, target) => {
+        const selector = self.options().handle;
+        if (!selector) return self;
+        const part = target?.closest?.(selector);
+        return part && self.contains(part) ? part : null;
+      }
+    place: |
+      (self, left, top) => {
+        self.style.left = `${left}px`;
+        self.style.top = `${top}px`;
+      }
+    snap: |
+      (self, left, top, edge) => {
+        const { inset, dock } = self.options();
+        const rect = self.getBoundingClientRect();
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        let x = Math.max(inset, Math.min(left, vw - rect.width - inset));
+        let y = Math.max(inset, Math.min(top, vh - rect.height - inset));
+        if (!dock) return { left: x, top: y, edge: null };
+        if (!edge) {
+          const distances = [
+            ['left', x], ['right', vw - (x + rect.width)],
+            ['top', y], ['bottom', vh - (y + rect.height)],
+          ];
+          let nearest = distances[0];
+          for (const candidate of distances) if (candidate[1] < nearest[1]) nearest = candidate;
+          edge = nearest[0];
+        }
+        if (edge === 'left') x = inset;
+        else if (edge === 'right') x = vw - rect.width - inset;
+        else if (edge === 'top') y = inset;
+        else if (edge === 'bottom') y = vh - rect.height - inset;
+        return { left: Math.max(inset, x), top: Math.max(inset, y), edge };
+      }
+    settle: |
+      (self, left, top, edge) => {
+        const at = self.snap(left, top, edge);
+        self.place(at.left, at.top);
+        if (at.edge) self.setAttribute('docked', at.edge);
+        else self.removeAttribute('docked');
+        self.setAttribute('left', String(Math.round(at.left)));
+        self.setAttribute('top', String(Math.round(at.top)));
+        return at;
+      }
+    connected: |
+      (self) => {
+        if (getComputedStyle(self).position === 'static') self.style.position = 'fixed';
+        if (!self.style.touchAction) self.style.touchAction = 'none';
+        if (self.__wired) return;
+        self.__wired = true;
+        let press = null;
+        const finish = () => {
+          if (!press) return;
+          const { moved, touch, pointerId, handle } = press;
+          press = null;
+          window.removeEventListener('pointermove', move);
+          window.removeEventListener('pointerup', finish);
+          window.removeEventListener('pointercancel', finish);
+          try { (touch ? handle : self).releasePointerCapture(pointerId); } catch {}
+          if (!moved) return;
+          self.removeAttribute('dragging');
+          self.__justDragged = true;
+          setTimeout(() => { self.__justDragged = false; }, 0);
+          const rect = self.getBoundingClientRect();
+          const at = self.settle(rect.left, rect.top);
+          self.dispatchEvent(new CustomEvent('drag-end', { bubbles: true, detail: at }));
+        };
+        const move = (event) => {
+          if (!press) return;
+          if (event.buttons === 0) { finish(); return; }
+          const dx = event.clientX - press.x;
+          const dy = event.clientY - press.y;
+          if (!press.moved) {
+            const { deadZone } = self.options();
+            const zone = press.touch ? Math.max(deadZone, 9) : deadZone;
+            if (Math.hypot(dx, dy) < zone) return;
+            press.moved = true;
+            if (!press.touch) { try { self.setPointerCapture(press.pointerId); } catch {} }
+            self.removeAttribute('docked');
+            self.setAttribute('dragging', '');
+            self.dispatchEvent(new CustomEvent('drag-start', {
+              bubbles: true, detail: { left: press.left, top: press.top, edge: null },
+            }));
+          }
+          const rect = self.getBoundingClientRect();
+          const left = Math.max(0, Math.min(press.left + dx, window.innerWidth - rect.width));
+          const top = Math.max(0, Math.min(press.top + dy, window.innerHeight - rect.height));
+          self.place(left, top);
+        };
+        self.addEventListener('pointerdown', (event) => {
+          if (event.button !== 0 || press) return;
+          const handle = self.handleOf(event.target);
+          if (!handle) return;
+          const rect = self.getBoundingClientRect();
+          press = {
+            x: event.clientX, y: event.clientY, left: rect.left, top: rect.top,
+            pointerId: event.pointerId, touch: event.pointerType === 'touch',
+            moved: false, handle,
+          };
+          if (press.touch) { try { handle.setPointerCapture(event.pointerId); } catch {} }
+          window.addEventListener('pointermove', move);
+          window.addEventListener('pointerup', finish);
+          window.addEventListener('pointercancel', finish);
+        });
+        self.addEventListener('click', (event) => {
+          if (!self.__justDragged) return;
+          self.__justDragged = false;
+          event.stopPropagation();
+          event.preventDefault();
+        }, true);
+        self.__resize = () => {
+          if (press) return;
+          const rect = self.getBoundingClientRect();
+          self.settle(rect.left, rect.top, self.getAttribute('docked') || undefined);
+        };
+        window.addEventListener('resize', self.__resize);
+      }
+    disconnected: |
+      (self) => {
+        window.removeEventListener('resize', self.__resize);
+      }

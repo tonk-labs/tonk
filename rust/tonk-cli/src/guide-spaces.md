@@ -14,3 +14,17 @@ directory once.
 use <name>` binds the current directory and its descendants. `tonk space
 unbind` removes an exact binding; run it from the bound directory or pass its
 absolute path.
+
+To access an existing browser space, run `tonk join <invite-link>`. The
+link carries a reusable invitation key and scoped grants, so keep it private.
+Import works after the browser closes, without CLI account login. Resume an
+interrupted import with `tonk --space <name> join`.
+
+The space listing reports local roster facts only. Remote authority is checked
+when a sync operation uses it; removing or losing access keeps aliases,
+downloaded data and unsynced edits.
+
+Account management belongs in the Tonk UI. Existing replicas and credentials
+remain on disk; importing an invitation does not sign into an account, move
+ownership or transfer local edits into the newly connected replica. CLI-created
+spaces remain local until an authorized remote is configured.

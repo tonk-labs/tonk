@@ -38,6 +38,15 @@ concept!: &space
       cardinality: one
       as: entity
   maybe:
+    owner:
+      description: >
+        The providing account, when it is the account registered on this
+        branch. Derived by a rule from `provider`, so a row can tell a
+        space this account hosts (removing it deletes the hosted copy)
+        from one it was invited to (removing it leaves).
+      the: xyz.tonk.space/owner
+      cardinality: one
+      as: entity
     presence:
       description: >
         Where this space stands ON THIS DEVICE: case:remote when no
@@ -59,6 +68,14 @@ concept!: &space
         create and kept current by the rename command — so a device
         that has not replicated the space can still label its card.
       the: xyz.tonk.space/name
+      cardinality: one
+      as: text
+    description:
+      description: >
+        The optional account-directory mirror of the space's short
+        description. The repository copy remains authoritative; this mirror
+        keeps the Hub from mounting every space to render its cards.
+      the: xyz.tonk.space/description
       cardinality: one
       as: text
     provider:
@@ -97,26 +114,19 @@ concept!: &space
       cardinality: one
       as: unsigned-integer
 
-# The Add Space command. Asserted by the Hub's two create forms (the bar's
-# `new space` rung and the stack's ghost) and by the FAB's `new` row; the
-# worker's `create_space` handler decodes it and does the work (record the
-# replica, create + seed the repository, flip the status, navigate the
-# creator into the new space). `name` reads from the form on submit:
-# the hidden `<input name="name" value="Untitled">` inside the create
-# form. The command is transient: it fires the handler once and is swept
-# before the durable commit.
-#
-# How a submit fills it. `prevent-default` stops the page reloading;
-# without it the browser falls through to a GET submit and reloads with
-# the fields in the query string. It lives here rather than in the
-# command's `with:` map, where it used to be: a side effect declared as a
-# command field stores no value, so a rule premise over it matches zero
-# rows however successfully the command transacted.
+# The Add Space command. The Hub's named creation dialogs submit this shape.
+# The worker records the replica, seeds the repository, and navigates the
+# creator. The command is transient and is swept before the durable commit.
+# The worker also publishes a per-command completion receipt for subscribers.
 event!: &on/space-create
   type: "submit"
   prevent-default: true
+  # The collection is nested in the Hub view, which also binds this command.
+  # Only the nearest view may dispatch this submit.
+  stop-propagation: true
   where:
     name: ".currentTarget.elements.name.value"
+    description: ".currentTarget.elements.description.value"
     open: ".currentTarget.elements.open.value"
 
 command!: &space/create
@@ -124,25 +134,26 @@ command!: &space/create
   with:
     name:
       description: >
-        The space name. Nothing asks for one: every create carries the
-        "Untitled" sentinel, which the worker's
-        CreateSpaceHandler uniquifies against the existing space labels
-        ("Untitled", "Untitled 2", …), and the user renames the space in
-        place on arrival. The sentinel must be non-empty — the event
-        extractor omits blank fields, and with no `name` fact the
-        transient would never trigger the handler.
+        The space name supplied by the Hub creation dialog. Legacy callers
+        may send "Untitled", which the worker uniquifies against existing
+        space labels ("Untitled", "Untitled 2", …).
       the: xyz.tonk.command.create-space/name
       as: text
     open:
       description: >
         Whether to navigate into the space once it exists. Absent means
         create only — the space appears in the Hub and the person stays
-        where they are; the Hub's own form passes `true` because that IS
+        where they are; the Hub's create control passes `true` because that IS
         what clicking "create new space" asks for. Creating and opening
         are separate wants: an agent or script creating a space in the
         background must not yank the page out from under whoever is
         using it.
       the: xyz.tonk.command.create-space/open
+      as: text
+  maybe:
+    description:
+      description: The optional short description to persist with the space.
+      the: xyz.tonk.command.create-space/description
       as: text
 
 # Pull a space the account has but this device does not. The Hub's
@@ -168,7 +179,7 @@ command!: &space/replicate
 # delete submits this transient; the worker's `RemoveSpaceHandler` retracts
 # the replica record from this branch, evicts the space from the reactor
 # (stopping background sync), and deletes its local storage. An owned hosted
-# space does NOT submit it: `<ui-space-remove>` routes that verb through the
+# space does NOT submit it: `<space-remove>` routes that verb through the
 # reviewed account-space deletion flow instead.
 # The command is transient: it fires the handler once and is swept before
 # the durable commit.
@@ -180,14 +191,14 @@ command!: &space/replicate
 # distinct DOM read path doubled as the command's unique shape.
 # `xyz.tonk.command.remove-space/subject` is that distinctness by
 # construction, so the field is named for what it is. The DOM attribute
-# it is read FROM keeps its name: `<ui-space-remove>` locates this form
+# it is read FROM keeps its name: `<space-remove>` locates this form
 # by it.
 #
 # How the confirm's submit fills it.
 #
 # The source is the form's `data-remove`, not a `{subject}` template
 # field, because that attribute is load-bearing for something else:
-# `<ui-space-remove>` finds this form by `form[data-remove]` to write the
+# `<space-remove>` finds this form by `form[data-remove]` to write the
 # confirm copy into it. Stamping a second attribute carrying the same DID
 # just to feed the command would be two names for one fact. Reading the
 # one that already exists is what an `event!:` declaration is for —
@@ -204,6 +215,25 @@ command!: &space/remove
     subject:
       description: The subject DID of the space to remove.
       the: xyz.tonk.command.remove-space/subject
+      as: entity
+
+event!: &on/repository-rename-submit
+  type: "submit"
+  prevent-default: true
+  where:
+    space: ".currentTarget.dataset.space"
+    name: ".currentTarget.elements.name.value"
+
+command!: &tonk/rename-repository
+  description: Rename a space from the profile Hub.
+  with:
+    name:
+      description: The new repository name.
+      the: xyz.tonk.command.rename-repository/name
+      as: text
+    space:
+      description: The target space DID.
+      the: xyz.tonk.rename-repository/space
       as: entity
 
 # Load the requesting tab's site for its current path. Mirrors core.yaml's
@@ -244,20 +274,532 @@ command!: &tonk/load
 # profile meta branch.
 view!:
   this: space
+  style:
+    ui: |
+      /* The hub chrome: the space directory at `/` and the /settings route.
+         Both views render it (logo, column, two-cell bar, account view,
+         spaces stack), so it is declared once here and embedded by both —
+         `/settings` reads it as `ui@space`, which is why a change lands on
+         both pages or neither.
+
+         Self-contained on purpose: the tokens below are literal, so this
+         travels with the view rather than depending on a stylesheet the
+         host injects. */
+
+      :root{
+        --page:#dedbd8; --ink:#38182a; --on-ink:#f7f6f5; --soft:#5b4953;
+        /* the current role — a place you are in, split from the CTA register
+           (Aug 20): near-ink, one step toward the page, so a tab never
+           outshouts an action. Filled by the colour pass — same hue as the ink,
+           +10 points of lightness and a little less saturation. */
+        --cur:#552e44;
+        --ring:rgba(56,24,42,0.85); --sep:rgba(56,24,42,.28); --frost:rgba(253,252,252,0.72);
+        --frost-solid:#f7f6f5; /* frost pre-composited over the flat page — same look, no filter */
+        --name-field:#faf9f9; --collection:#e9e6e3; --panel:#d0ccc8; --card:#f7f6f5; --card-hover:#eeedec;
+        --wash:rgba(56,24,42,.06); --wash-2:rgba(56,24,42,.12);
+        /* wash-p is the hover for SOLID-INK surfaces, so it must be a wash of
+           on-ink, not of ink — a 16% ink wash over ink composites to exactly
+           the resting color (the generator derived the light twin from the
+           wrong end; the dark twin already derives from on-ink). rose-white,
+           the scheme's own light, not the old cream. */
+        --wash-p:rgba(247,246,245,.16);
+        --canvas:#e4e2e0; --stub-ink:#9f968e;
+        --veil:rgba(232,230,228,.9); --dim:rgba(56,24,42,.32); --track:rgba(56,24,42,.22);
+        --cond:"IBM Plex Sans Condensed","Bahnschrift","Arial Narrow",sans-serif;
+        --sans:"IBM Plex Sans",Helvetica,Arial,sans-serif;
+        --mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
+        --ease:cubic-bezier(.25,.46,.45,.94);
+      }
+      @font-face { font-family:Gestalte; font-weight:300; font-display:swap;
+        src:url('/fonts/gestalte-300.otf') format('opentype'); }
+      @media (prefers-color-scheme: dark){
+        :root{
+          --page:#161313; --ink:#e2dfdd; --on-ink:#221c1d; --soft:#c8c3bf;
+          --cur:#cdc9c5; /* the same step toward the page, inverted */
+          --ring:rgba(226,223,221,0.55); --sep:rgba(226,223,221,.28); --frost:rgba(29,24,25,0.78);
+          --frost-solid:#1b1718;
+          --name-field:#181416; --collection:#1c171a; --panel:#3c3335; --card:#261f23; --card-hover:#322a2b;
+          --wash:rgba(226,223,221,.09); --wash-2:rgba(226,223,221,.15); --wash-p:rgba(34,28,29,.14);
+          --canvas:#1c1718; --stub-ink:#736265;
+          /* in the dark the veil is the page itself — bone rings and labels punch
+             through any translucency and ghost false edges into the panel's seams,
+             so the spaces step back fully. the light twin keeps its .9 whisper. */
+          --veil:#161313; --dim:rgba(0,0,0,.45); --track:rgba(226,223,221,.25);
+        }
+      }
+
+      /* ── The Hub — the space directory at `/`.
+         Named `.hub-page`, not `.hub`: `tonk-ui/styles.css` still carries a
+         `.hub` block from an earlier launcher (a 56rem centred column),
+         which clipped this page to a band down the middle of the viewport.
+         That CSS is dead — nothing renders `.hub-card` / `.hub-route` any
+         more — but it is not this change's to delete.
+         Chrome, and it runs on the same material as the FAB: a neutral
+         page, 36px frost blocks with ink rings, lowercase condensed words
+         seated bottom-right, ink only.
+
+         COLORS LIVE ABOVE: the token block at the top of this style,
+         taken from the fabb wireframes as literal values rather than
+         aliases over a component library's theme. That is what lets this
+         page stand on its own — nothing has to be injected into the guest
+         for the hub to have its colors, and the dark twin is the media
+         query above, not a class someone else stamps. ── */
+      .hub-page {
+        display:flow-root; position:relative; min-height:100dvh; background:var(--page);
+        color:var(--ink); font-family:var(--cond);
+      }
+      .hub-page *, .hub-page *::before, .hub-page *::after { box-sizing:border-box; }
+      /* selection is chrome too — ink, never the browser's blue */
+      .hub-page ::selection { background:var(--ink); color:var(--on-ink); }
+      .hub-page :focus-visible { outline:none;
+        box-shadow:inset 0 0 0 2px var(--on-ink), inset 0 0 0 4px var(--ink); }
+      /* A real reset, not a token one. Web Awesome skins NATIVE controls
+         inside `@layer wa-native` — `button` gets `display:inline-flex`,
+         padding, a min-height, a radius and a border — so a cell built on
+         a <button> and one built on an <a> laid their words out
+         differently, and the mode cap came out a rounded slab instead of
+         an 18px pill. Unlayered author rules outrank layered ones, so this
+         wins without `!important`. */
+      /* `:where()` so the reset contributes NO specificity: a plain
+         `.hub-page button` is (0,1,1) and silently outranks every (0,1,0)
+         cell rule below — which stripped `.hcell`'s padding and left "new
+         space" flush against the corner while the anchor cell next to it
+         sat correctly. A reset must lose every tie it takes part in. */
+      .hub-page :where(button) {
+        font:inherit; letter-spacing:inherit; color:inherit; text-align:inherit;
+        background:none; border:0; border-radius:0; margin:0; padding:0;
+        min-width:0; min-height:0; block-size:auto; inline-size:auto;
+        box-shadow:none; appearance:none; -webkit-appearance:none;
+        cursor:pointer; }
+      .hub-page :where(a) { color:inherit; text-decoration:none; }
+
+      /* the block: 36px, frost + ink ring. every cell derives from it. */
+      .blk { height:36px; background:var(--frost);
+        -webkit-backdrop-filter:blur(12px) saturate(1.5); backdrop-filter:blur(12px) saturate(1.5);
+        box-shadow:0 0 0 1px var(--ring); }
+      .chrome { font-family:var(--cond); font-weight:600; font-size:13px;
+        line-height:1; letter-spacing:.02em; text-transform:lowercase; }
+
+      /* ── collection shell ── */
+      .hub-header { width:100%; min-height:100px; padding:0 42px;
+        display:flex; align-items:center; justify-content:space-between;
+        gap:32px; }
+      .hub-logo { display:flex; justify-content:center; color:var(--ink); user-select:none;
+        flex:none; }
+      .hub-logo svg { display:block; width:107px; height:auto; }
+      .hubcol { width:min(1166px, calc(100vw - 84px)); margin:18px auto 120px; }
+      .hubbar { position:relative; z-index:10; display:flex; align-items:center;
+        justify-content:flex-end; gap:14px; width:auto; min-height:44px; background:transparent; }
+      .hcell { display:flex; align-items:center; justify-content:center; gap:8px;
+        min-height:38px; height:38px; padding:0 18px; font-size:14px; line-height:1; white-space:nowrap;
+        text-decoration:none; color:inherit; flex:none; }
+      .hcell:hover { background:var(--wash); }
+      .hcell:active { background:var(--wash-2); }
+      .hc-acct { min-width:0; max-width:260px; justify-content:flex-start;
+        border:0; }
+      .hc-view { display:none; }
+      .header-new { display:block; }
+      .header-new .snew { min-width:120px; min-height:38px; height:38px; gap:16px; font-weight:500; box-shadow:none;
+        align-items:center; justify-content:center; padding:0 18px; }
+      .hubbar :is(.hcell, .header-new .snew) { box-sizing:border-box;
+        height:38px; min-height:38px; padding:0 18px; font:500 14px/1 var(--cond); }
+      .header-new .snew .g { font-size:20px; }
+      /* the view you are in wears CURRENT (near-ink) — solid ink stays the
+         CTA register, so a tab never outshouts an action */
+      .hc-acct[aria-current="page"], .hc-view[aria-current="page"] {
+        background:var(--cur); color:var(--on-ink); }
+      .hc-acct[aria-current="page"]:hover, .hc-view[aria-current="page"]:hover,
+      .hc-acct[aria-current="page"]:active, .hc-view[aria-current="page"]:active {
+        background:linear-gradient(var(--wash-p),var(--wash-p)), var(--cur); }
+      /* exactly one cell wears the CURRENT coat and it follows the view:
+         spaces while the roster shows, the account cell while its page
+         (linking ceremony or account stack) is up. The mock's solid-ink
+         account cell belongs only to its fully signed-out state, where
+         the roster is gone — an unlinked profile here still has one. */
+      hub-bar[linking="true"] .hc-acct { cursor:default; }
+      .hcell .g { font-size:14px; font-weight:500; }
+      .settings-icon { width:9px; height:9px; flex:none; margin-bottom:1px; }
+
+      /* ── the account view — the second tab's page: it REPLACES the
+         spaces list under the bar. The current account is the tab itself,
+         so the rows are only ways onward: settings first, one row per
+         other account carrying its switch verb, then the add door — the
+         page's one CTA, solid ink. ── */
+      .hub-page hub-bar { position:relative; display:block; width:auto; }
+      .hub-page:has(hub-bar[path^="/settings"]) .hub-header hub-bar { display:none; }
+      .hub-page:has(hub-bar[path^="/settings"]) .hub-header { border-bottom:0; }
+      /* The menu's own `open` attribute drives its visibility, rather
+         than a `hidden` attribute script has to remember to toggle. */
+      .account-trigger { overflow:hidden; }
+      .account-trigger [data-account-label] { overflow:hidden; text-overflow:ellipsis;
+        white-space:nowrap; text-transform:none; }
+      .account-menu { position:absolute; z-index:20; top:calc(100% + 8px); right:0;
+        display:flex; flex-direction:column; gap:7px; width:min(320px, calc(100vw - 32px));
+        color:var(--ink); }
+      .account-menu[hidden] { display:none; }
+      .account-menu__profiles { display:flex; flex-direction:column; gap:7px; }
+      .account-menu__profiles:empty { display:none; }
+      /* the account page's rows hang from the bar as bar-sized cells with
+         the stack's 7px gaps of page between them */
+      .account-menu__profiles-seat { display:flex; flex-direction:column; gap:7px; }
+      .account-menu__profiles-seat > span[data-when-linked] { display:contents; }
+      .account-menu__profiles-seat tonk-display { display:flex; flex-direction:column; gap:7px; }
+      .account-menu__profiles-seat tonk-display:not(:has(.account-menu__row:not([data-active]))) { display:none; }
+      /* the account you are on is the bar; the list holds the others */
+      .account-menu__row[data-active] { display:none; }
+      .account-menu__row { display:flex; align-items:flex-end; justify-content:flex-end;
+        gap:8px; width:100%; min-height:36px; padding:0 10px 9px 16px; text-align:left;
+        background:var(--frost-solid); font:inherit; color:inherit; cursor:pointer;
+        box-shadow:0 0 0 1px var(--ring); }
+      .account-menu__row:hover { background:linear-gradient(var(--wash),var(--wash)), var(--frost-solid); }
+      .account-menu__row:active { background:linear-gradient(var(--wash-2),var(--wash-2)), var(--frost-solid); }
+      /* the name holds the left end; user words ride untouched */
+      .account-menu__row .an { margin-right:auto; text-transform:none;
+        overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+        padding-bottom:4px; margin-bottom:-4px; }
+      .account-menu__row .g { font-size:14px; font-weight:500; }
+      /* the add door — the page's one CTA */
+      .account-menu__row--ink { background:var(--ink); color:var(--on-ink);
+        box-shadow:0 0 0 1px var(--ink); }
+      .account-menu__row--ink:hover, .account-menu__row--ink:active {
+        background:linear-gradient(var(--wash-p),var(--wash-p)), var(--ink); }
+      .account-menu__error { padding:10px 12px; background:var(--frost-solid);
+        color:var(--ink); font-family:var(--sans); font-size:12px; line-height:1.45;
+        text-wrap:pretty; overflow-wrap:anywhere; box-shadow:0 0 0 1px var(--ring); }
+      .account-menu__error[hidden] { display:none; }
+
+      /* ── settings — a page of the account tab (the wireframe's reading):
+         the stack steps aside and the section hangs from the same bar.
+         The panel's own styling (body and rows) is scoped to
+         `<account-settings>` in `tonk-ui/styles.css`; only the hub
+         seat's geometry lives here. ── */
+      .settings { display:flex; flex-direction:column; align-items:stretch;
+        margin-top:24px; }
+      .settings[hidden] { display:none; }
+      .hub-page > .hub-logo { margin:32px auto 0; }
+      .hub-page:has(hub-bar[path^="/settings"]) .hubcol { margin-top:24px; }
+      .settings-title { margin:0 0 34px; font:300 clamp(38px,4.5vw,60px)/1.08 Gestalte,Georgia,serif;
+        letter-spacing:-.02em; text-transform:none; }
+      .settings-back { position:absolute; right:42px; top:28px;
+        display:flex; align-items:center; min-height:44px; padding:0 18px;
+        font:600 14px/1.2 var(--cond); }
+      .settings-back:hover { background:var(--wash); }
+      .settings-back:active { background:var(--wash-2); }
+      .hub-page:has(hub-bar[path="/account"]) :is(.settings-title,.settings-back) { display:none; }
+      .hub-page account-settings { display:block; }
+      .hub-page account-settings .s-body { min-width:0; min-height:0; max-height:none;
+        overflow:visible; padding:0; background:transparent; border:0; color:var(--ink); }
+      .hub-page account-settings .pane[hidden] { display:none; }
+      .hub-page account-settings .account-panels { display:grid;
+        grid-template-columns:repeat(2,minmax(0,1fr)); gap:24px; align-items:stretch; }
+      .hub-page account-settings tonk-display[model="tonk:account/registered"],
+      .hub-page account-settings tonk-display[model="tonk:account/registered"] > tonk-view,
+      .hub-page account-settings [data-account-registered] { display:contents; }
+      .hub-page account-settings .account-panels tonk-dialog { display:contents; }
+      .hub-page account-settings .settings-panel { min-width:0; margin:0; padding:28px;
+        background:var(--card); font-family:var(--sans); text-transform:none; }
+      .hub-page account-settings .settings-panel h2 { margin:0 0 24px;
+        font:300 30px/1.15 Gestalte,Georgia,serif; text-transform:none; }
+      .hub-page account-settings .details-form { display:grid; gap:8px; }
+      .hub-page account-settings .details-form label,
+      .hub-page account-settings .settings-field > span { font:600 15px/1.4 var(--cond); }
+      .hub-page account-settings .sname { width:100%; min-height:48px; margin:0;
+        padding:13px 16px; border:0; background:var(--name-field); color:var(--ink);
+        font:400 16px/1.4 var(--sans); text-align:left; }
+      .hub-page account-settings .sname:focus-visible { box-shadow:inset 0 0 0 2px var(--ink); }
+      .hub-page account-settings .details-form .primary-action { justify-self:end;
+        width:auto; min-height:48px; margin-top:16px; padding:12px 18px;
+        border:0; text-decoration:none; font:600 16px/1.2 var(--cond); }
+      .hub-page account-settings .form-error { margin:0; color:var(--ink);
+        font:400 13px/1.45 var(--sans); }
+      .hub-page account-settings .form-error[hidden] { display:none; }
+      .hub-page account-settings .settings-field { display:grid; gap:8px; margin-top:12px; }
+      .hub-page account-settings .settings-field b { min-height:48px; padding:13px 16px;
+        background:var(--wash); font:400 16px/1.4 var(--sans); overflow-wrap:anywhere; }
+      .hub-page account-settings .passkey-list tonk-display { display:grid; gap:8px; }
+      .hub-page account-settings .passkey-card { display:flex; align-items:center; gap:12px;
+        min-height:64px; padding:16px; background:var(--wash); }
+      .hub-page account-settings .passkey-mark { width:28px; height:28px; padding:5px; flex:none; }
+      .hub-page account-settings .passkey-card b { display:block; font:600 16px/1.4 var(--cond); }
+      .hub-page account-settings .passkey-created { display:block; margin-top:2px;
+        color:var(--soft); font:400 13px/1.5 var(--sans); }
+      .hub-page account-settings .expl { max-width:60ch; margin:14px 0 0;
+        font:400 15px/1.6 var(--sans); }
+      .hub-page account-settings .panel-action,
+      .hub-page account-settings .switch-account { display:flex; align-items:center;
+        justify-content:space-between; gap:16px; width:100%; min-height:48px;
+        margin-top:20px; padding:12px 16px; border:0; background:var(--wash);
+        color:var(--ink); font:600 16px/1.25 var(--cond); text-align:left;
+        text-decoration:none; text-transform:none; }
+      .hub-page account-settings .switch-account { min-height:64px; margin:0 0 8px;
+        padding:16px; font:500 16px/1.4 var(--cond); }
+      .hub-page account-settings .switch-account:disabled { opacity:1; cursor:default; }
+      .hub-page account-settings .switch-state { margin-left:auto; font:400 14px/1.4 var(--cond); }
+      .hub-page account-settings .switch-account:not(:disabled) .switch-state::after { content:" ↗"; }
+      .hub-page account-settings .signout-panel .panel-action { width:fit-content; }
+      .hub-page account-settings .primary-action { background:var(--ink); color:var(--on-ink);
+        justify-content:center; }
+      .hub-page account-settings .settings-heading { display:flex; align-items:center;
+        justify-content:space-between; gap:16px; }
+      .hub-page account-settings .settings-heading h2 { margin:0; }
+      .hub-page account-settings .danger-panel { grid-column:1 / -1; }
+      .hub-page account-settings .danger-panel { display:flex; align-items:center;
+        justify-content:space-between; gap:24px; }
+      .hub-page account-settings .danger-panel h2 { margin-bottom:8px; }
+      .hub-page account-settings .danger-panel p,
+      .hub-page account-settings .signout-panel p { margin:0; font:400 15px/1.55 var(--sans); }
+      .hub-page account-settings .danger-panel .panel-action { width:auto; flex:none; margin:0; }
+      .hub-page account-settings .connection-record { margin-top:8px; padding:16px;
+        background:var(--wash); box-shadow:none; }
+
+      /* ── the spaces collection ── */
+      .stack { width:100%; display:grid;
+        grid-template-columns:repeat(3,minmax(0,1fr)); gap:34px 26px;
+        padding:25px 24px 22px; border:1px solid var(--sep);
+        background:var(--collection); }
+      .stack[hidden] { display:none; }
+      /* The account cell while its name is still replicating: a <wa-skeleton>
+         standing in for the name that has not arrived. A name is a fact; until
+         one arrives the cell shows the SHAPE of one rather than a guess (the
+         profile handle) or a word about the machinery.
+
+         `--color` is overridden so the bar is the page's own ink at low alpha
+         rather than the neutral fill: the wireframes' rule is that waiting
+         never takes a color. The sheen carries the motion, so nothing here
+         animates by hand. */
+      hub-bar [data-account-skeleton] {
+        display:block; width:88px; height:0.7em; align-self:center;
+        flex:0 0 auto; border-radius:2px;
+        /* A travelling highlight over a dim base -- the sheen, done in two
+           stops of the cell's OWN ink so waiting never takes a color. The
+           band is 400% wide and slides, which is what reads as motion; the
+           base stays put. */
+        background:linear-gradient(90deg,
+          color-mix(in srgb, currentColor 12%, transparent) 0%,
+          color-mix(in srgb, currentColor 12%, transparent) 35%,
+          color-mix(in srgb, currentColor 30%, transparent) 50%,
+          color-mix(in srgb, currentColor 12%, transparent) 65%,
+          color-mix(in srgb, currentColor 12%, transparent) 100%);
+        background-size:400% 100%;
+        animation:tonk-sheen 2.2s ease-in-out infinite; }
+      hub-bar [data-account-skeleton][hidden] { display:none; }
+      @keyframes tonk-sheen {
+        from { background-position:200% 0; }
+        to { background-position:-200% 0; } }
+      .srow-wrap { position:relative; display:flex; flex-direction:column; min-width:0; border:1px solid var(--ink);
+        background:var(--card); --fr-r:0px; --fr-b:0px; --fr-fb:1;
+        --fr-l:0px; --fr-fl:0; }
+      .srow-wrap:nth-of-type(3n+2) { top:7px; }
+      .srow-wrap::before { content:""; position:absolute; z-index:0; pointer-events:none;
+        top:-1px; right:calc(-1px - var(--fr-r)); bottom:calc(-1px - var(--fr-b));
+        left:calc(-1px - var(--fr-l));
+        background:linear-gradient(var(--ink),var(--ink)) right top/var(--fr-r) calc(100% - var(--fr-b)) no-repeat,
+          linear-gradient(var(--ink),var(--ink)) left bottom/calc(var(--fr-l) + var(--fr-fb)*(100% - var(--fr-l) - var(--fr-r))) var(--fr-b) no-repeat,
+          linear-gradient(var(--ink),var(--ink)) left bottom/var(--fr-l) calc(var(--fr-b) + var(--fr-fl)*(100% - var(--fr-b))) no-repeat; }
+      .srow { position:relative; z-index:1; display:flex; flex-direction:column;
+        flex:1; min-height:0; cursor:pointer; text-decoration:none; color:var(--ink);
+        background:var(--card); }
+      .srow:hover .n { text-decoration:underline; text-underline-offset:4px; }
+      .space-preview { position:relative; height:150px; overflow:hidden;
+        flex:none; border-bottom:1px solid var(--ink); background:var(--panel); }
+      .space-preview::before, .space-preview::after { content:""; position:absolute;
+        background:color-mix(in srgb, var(--ink) 13%, var(--card)); filter:blur(7px); }
+      .space-preview::before { width:72%; height:58%; inset:10% auto auto -8%; }
+      .space-preview::after { width:55%; height:80%; inset:auto -12% -22% auto;
+        background:color-mix(in srgb, var(--ink) 7%, var(--page)); }
+      .space-caption { display:flex; flex:1; min-height:60px; padding:16px 19px 22px;
+        flex-direction:column; align-items:flex-start; justify-content:flex-start; gap:9px; }
+      .srow .n { letter-spacing:-.02em; min-width:0; max-width:100%; overflow-wrap:anywhere;
+        text-transform:none; font:300 27px/1.1 Gestalte,Georgia,serif; }
+      .space-description { max-width:225px; overflow-wrap:anywhere; line-height:1.5;
+        color:var(--soft); font-family:var(--cond); font-size:12px; font-weight:400;
+        text-transform:none; }
+      .space-description:empty { display:none; }
+      /* a space still seeding, and one this device has not replicated:
+         quieter, but still openable — visiting replicates it */
+      .srow-wrap[data-presence="case:seeding"] .srow .n,
+      .srow-wrap[data-presence="case:remote"] .srow .n { color:var(--soft); }
+      .verbs { position:relative; z-index:1; display:flex; justify-content:flex-end;
+        gap:18px; min-height:49px; margin:0 19px 9px; padding:5px 0 0; border-top:1px solid var(--sep);
+        color:var(--soft); background:var(--card); }
+      space-actions { position:relative; z-index:2; display:block; }
+      space-remove { display:contents; }
+      .verbs button { display:inline-flex; min-width:44px; min-height:44px;
+        align-items:center; justify-content:flex-end; gap:6px;
+        color:inherit; font:500 12px/1 var(--cond); letter-spacing:normal;
+        text-transform:lowercase; cursor:pointer; }
+      [data-space-actions-open]::after { content:"▾"; font-size:12px; transition:transform .15s; }
+      [data-space-actions-open][aria-expanded="true"]::after { transform:rotate(180deg); }
+      .verbs button:hover { color:var(--ink);
+        text-decoration:underline; text-underline-offset:3px; }
+      .verbs button:disabled { opacity:.55; cursor:wait; text-decoration:none; }
+      .srow-wrap:has(.space-menu[open="true"]) { z-index:10; }
+      .space-menu { position:fixed; z-index:8; width:184px;
+        max-width:calc(100vw - 16px); padding:5px; border:1px solid var(--ink);
+        background:var(--frost-solid); color:var(--ink);
+        box-shadow:0 0 0 1px var(--ring); }
+      .space-menu[open="false"] { display:none; }
+      .space-menu tonk-share, .space-menu space-remove { display:contents; }
+      .space-menu button { display:flex; width:100%; min-height:44px; align-items:center;
+        padding:10px 12px; gap:16px; color:inherit; font:400 14px/1 var(--cond); text-align:left; }
+      .space-menu .verb-remove { border-top:1px solid var(--sep); margin-top:4px; }
+      .space-menu::before { content:""; position:absolute; pointer-events:none;
+        top:-1px; right:-5px; bottom:-5px; left:-1px;
+        background:linear-gradient(var(--ink),var(--ink)) right top/4px 100% no-repeat,
+          linear-gradient(var(--ink),var(--ink)) left bottom/66.667% 4px no-repeat; z-index:-1; }
+      .space-menu button:hover, .space-menu button:focus-visible { background:var(--wash); }
+      .space-menu [data-share-copy-label] { display:none; }
+      .space-menu tonk-share:not([data-share-state]) [data-share-copy-label="idle"],
+      .space-menu tonk-share[data-share-state="idle"] [data-share-copy-label="idle"],
+      .space-menu tonk-share[data-share-state="copying"] [data-share-copy-label="copying"],
+      .space-menu tonk-share[data-share-state="copied"] [data-share-copy-label="copied"],
+      .space-menu tonk-share[data-share-state="blocked"] [data-share-copy-label="failed"],
+      .space-menu tonk-share[data-share-state="failed"] [data-share-copy-label="failed"] { display:inline; }
+      /* creation is the collection's final card and the header's primary action */
+      space-create { display:block; }
+      .stack > space-create { min-height:0; }
+      .stack > space-create > .snew { min-height:100%; }
+      .stack > space-create > .snew { flex-direction:column; gap:18px;
+        border:1px dashed var(--sep); background:transparent; color:var(--ink);
+        box-shadow:none; font:400 15px/1.2 var(--cond); }
+      .stack > space-create > .snew .g { order:-1; font:300 40px/1 Gestalte,Georgia,serif; }
+      .stack > space-create > .snew:hover { background:var(--wash); }
+      .snew { display:flex; align-items:center; justify-content:center; gap:8px;
+        width:100%; height:100%; padding:20px; background:var(--ink);
+        color:var(--on-ink); box-shadow:0 0 0 1px var(--ink); cursor:pointer; }
+      .snew:hover { background:linear-gradient(var(--wash-p),var(--wash-p)), var(--ink); }.remove-form { margin:0; font-family:var(--sans); font-weight:600;
+        font-size:13.5px; line-height:1.6; text-transform:none; }
+      .space-create-form { display:grid; gap:19px; width:100%; min-width:0;
+        margin:0; font-family:var(--sans); text-transform:none; }
+      .space-create-field { display:grid; gap:7px; }
+      .space-create-field span { font:500 13px/1.2 var(--cond); text-transform:lowercase; }
+      .space-create-field input, .space-create-field textarea { width:100%; min-height:48px;
+        padding:10px; border:1px solid var(--ring); border-radius:0;
+        background:var(--card); color:var(--ink); font:400 16px/1.4 var(--sans); }
+      .space-create-field textarea { min-height:84px; resize:vertical; }
+      .space-create-field input:focus-visible, .space-create-field textarea:focus-visible {
+        outline:none; border-color:var(--ink); box-shadow:0 0 0 2px var(--ink); }
+      .space-create-help, .space-create-error { margin:0; color:var(--soft);
+        font:400 13px/1.45 var(--sans); }
+      .space-create-error { color:var(--ink); min-height:1.45em; }
+      .space-create-error:empty { min-height:0; }
+      .hub-page tonk-dialog[appearance="hub"] {
+        --fabb-panel:var(--card); --fabb-ink:var(--ink);
+        --fabb-ink-soft:var(--soft); --fabb-on-ink:var(--on-ink);
+        --fabb-ring:var(--ring); --fabb-dim:var(--dim); }
+      .hub-page tonk-dialog[appearance="hub"] .m-cancel,
+      .hub-page tonk-dialog[appearance="hub"] .m-go {
+        min-width:0; min-height:44px; height:auto; padding:10px 18px;
+        align-items:center; justify-content:center; box-shadow:none;
+        font:600 15px/1.2 var(--cond); }
+      .m-cancel { display:flex; align-items:flex-end; justify-content:flex-end;
+        min-width:144px; height:36px; padding:0 10px 9px 24px; border:0;
+        background:var(--card); color:var(--ink); font:inherit; font-size:13px;
+        cursor:pointer; }
+      .m-cancel:hover { background:linear-gradient(var(--wash),var(--wash)), var(--card); }
+      .m-go { height:36px; display:flex; align-items:flex-end; justify-content:flex-end;
+        min-width:144px; padding:0 10px 9px 24px; border:0; background:var(--ink);
+        color:var(--on-ink); box-shadow:0 0 0 1px var(--ink); font-size:13px;
+        cursor:pointer; white-space:nowrap; }
+      /* brightness on near-black reads as nothing — wash it instead */
+      .m-go:hover { background:linear-gradient(var(--wash-p),var(--wash-p)), var(--ink); }
+
+      @media (prefers-reduced-motion: reduce) {
+        .verbs, .account-menu__row { transition:none; }
+      }
+
+      .mobile-nav { display:none; }
+      .account-email-notice { position:fixed; z-index:29; right:24px; bottom:24px;
+        display:none; align-items:center; gap:24px; max-width:calc(100% - 48px);
+        padding:16px 20px; background:var(--ink); color:var(--on-ink);
+        font:400 17px/1.45 var(--cond); }
+      .account-email-notice[data-account-status="case:registered"] { display:flex; }
+      .hub-page:has(hub-bar[path="/account"]) .account-email-notice { display:none; }
+      .account-email-notice button { min-height:44px; padding:10px 12px; color:inherit;
+        font:600 15px/1.15 var(--cond); text-decoration:underline;
+        text-underline-offset:3px; white-space:nowrap; }
+      .visually-hidden { position:absolute; width:1px; height:1px; padding:0; margin:-1px;
+        overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+      @media (hover:none) {
+        .verbs { gap:24px; }
+        .verbs button:hover, .verbs .verb-remove:hover { text-decoration:none; }
+      }
+      @media (min-width:601px) and (max-width:1100px) {
+        .srow .n { font-size:25px; }
+        .space-caption { padding:14px 14px 22px; }
+        .verbs { margin-right:14px; margin-left:14px; }
+      }
+      @media (min-width:601px) and (max-width:900px) {
+        .hub-header { padding:0 24px; }
+        .hubcol { width:calc(100vw - 48px); }
+        .stack { grid-template-columns:repeat(2,minmax(0,1fr)); }
+      }
+      @media (max-width:600px) {
+        .hub-header { min-height:72px; padding:0 16px; justify-content:center; }
+        .hub-logo svg { width:98px; }
+        .hub-header hub-bar { display:none; }
+        .hubcol { width:calc(100vw - 32px); margin:12px auto 118px; }
+        .stack { grid-template-columns:1fr; gap:16px; padding:13px 10px 16px; }
+        .srow-wrap:nth-of-type(3n+2) { top:0; }
+        .srow-wrap { display:grid; grid-template-columns:minmax(0,1fr) 67px; --fr-r:var(--fr-r-mobile,0px); --fr-b:var(--fr-b-mobile,0px);
+          --fr-l:var(--fr-l-mobile,0px); }
+        .srow { min-height:64px; display:grid; grid-template-columns:64px minmax(0,1fr); }
+        .space-preview { height:100%; min-height:64px; border-bottom:0; border-right:1px solid var(--ink); }
+        .space-preview::before, .space-preview::after { filter:blur(4px); }
+        .space-caption { min-height:64px; padding:8px 10px; gap:5px; justify-content:center; }
+        .srow .n { font:500 16px/1.2 var(--sans); }
+        .space-description { min-width:0; max-width:100%; font:400 11px/1.4 var(--sans);
+          display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical; overflow:hidden; }
+        .space-description:empty { display:none; }
+        .srow-wrap > space-actions { display:flex; align-items:center; }
+        .verbs { min-height:44px; margin:0; padding:0 10px 0 0; border:0; }
+        .verbs button { min-width:57px; }
+        .stack > space-create { display:none; }
+        .mobile-nav { position:fixed; z-index:30; inset:auto 0 0; display:grid;
+          grid-template-columns:1fr 1.25fr 1fr; gap:7px; padding:7px 12px
+          calc(7px + env(safe-area-inset-bottom,0px)); background:var(--frost-solid);
+          border-top:1px solid var(--ring); }
+        .mobile-nav > a, .mobile-nav > space-create { min-width:0; min-height:54px; }
+        .mobile-nav > a, .mobile-nav button { display:flex; width:100%; min-height:54px;
+          flex-direction:column; align-items:center; justify-content:center; gap:3px; padding:8px;
+          font:500 13px/1 var(--cond); }
+        .nav-mark { display:grid; place-items:center; width:20px; height:20px; font:20px/1 var(--sans); }
+        .nav-square::before { content:""; width:10px; height:10px; background:currentColor; }
+        .nav-person::before { content:""; width:12px; height:12px; border-radius:50%; background:currentColor; }
+        .mobile-nav [aria-current="page"] { background:var(--wash); }
+        .mobile-nav .mobile-create { background:var(--ink); color:var(--on-ink); }
+        .account-email-notice { right:16px; bottom:calc(82px + env(safe-area-inset-bottom,0px));
+          left:16px; max-width:none; flex-wrap:wrap; gap:6px 16px; }
+        .account-email-notice button { margin-left:auto; white-space:normal; }
+        .account-menu__row { min-height:44px; }
+        .hub-page > .hub-logo { margin-top:20px; }
+        .hub-page:has(hub-bar[path^="/settings"]) .hubcol { margin-top:20px; }
+        .settings-title { font-size:40px; }
+        .settings-back { position:static; align-self:flex-end; margin-bottom:12px; }
+        .hubcol:has(.settings) > hub-bar > .hubbar { display:none; }
+        .settings { margin-top:0; }
+        .hub-page account-settings .account-panels { grid-template-columns:1fr; gap:16px; }
+        .hub-page account-settings .settings-panel { padding:22px 20px; }
+        .hub-page account-settings .danger-panel { grid-column:auto; align-items:stretch;
+          flex-direction:column; }
+        .hub-page account-settings .danger-panel .panel-action { width:100%; }
+        .m-cancel, .m-go { min-height:44px; }
+      }
+      /* One page: the bar's path says whether the stack or the account
+         section shows, and the section says whether its rows are for a
+         browser with an account here or without one. */
+      .hub-page:has(hub-bar[path^="/settings"]) [data-spaces-view],
+      .hub-page:has(hub-bar[path="/account"]):has(account-settings[data-linked="true"]):not(:has(account-settings[data-linking="true"])) [data-spaces-view] { display:none; }
+      .hub-page:not(:has(hub-bar[path^="/settings"])):not(:has(hub-bar[path="/account"])) [data-settings-view] { display:none; }
+      account-settings:not([data-linked="true"]) [data-when-linked] { display:none; }
+      /* An unlinked account opens its ceremony over the spaces collection. */
+      .hub-page:has(hub-bar[path="/account"]) [data-settings-view]:has(account-settings:not([data-linked="true"])) { display:none; }
+      .hub-page:has(account-settings[data-linking="true"]) [data-settings-view] { display:none; }
   show:
     directory: |
-      <div class="hub-page">
-        <!-- The hub chrome's CSS lives in `tonk-ui/styles.css` (the "hub
-             page" block), NOT here: the /settings route renders the same
-             chrome from its own view, and a style block scoped to this
-             view would leave that page bare. One file styles both. -->
-
-        <div class="hub-logo" role="img" aria-label="tonk"><svg viewBox="0 0 1024 343" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M337.41 169.57C337.41 136.215 363.983 109.171 396.764 109.171C429.539 109.171 456.112 136.215 456.112 169.57C456.112 202.932 429.539 229.975 396.764 229.975C363.983 229.975 337.41 202.932 337.41 169.57ZM643.51 54C614.396 54 589.91 61.6682 572.703 77.2353C563.913 85.1861 557.227 94.8795 552.759 105.986C552.206 97.3086 549.67 85.1977 540.937 75.1754C530.712 63.4453 515.039 55.8233 494.461 56.2041C488.76 56.3253 484.229 61.045 484.345 66.7514C484.46 72.3886 489.06 76.8833 494.668 76.8833C494.737 76.8833 494.812 76.8833 494.881 76.8833C509.044 76.6006 519.252 81.8339 525.282 88.6654C534.084 98.6415 532.072 113.834 532.02 114.197C531.167 119.817 535.012 125.079 540.626 125.962C541.168 126.048 545.537 126.602 547.612 124.565C546.673 130.203 546.171 136.076 546.171 142.192C546.171 183.349 531.225 224.038 507.39 247.764C488.403 266.66 465.219 275.805 434.911 279.382C479.549 263.671 511.569 221.038 511.569 170.874C511.569 107.365 460.262 55.8868 396.966 55.8868C333.675 55.8868 282.368 107.365 282.368 170.874C282.368 234.383 333.675 285.868 396.966 285.868C399.121 285.868 401.254 285.793 403.375 285.677C451.126 285.1 484.569 276.722 510.508 250.902C535.196 226.328 550.592 184.555 550.592 142.192C550.592 90.1771 586.197 57.8658 643.51 57.8658C737.703 57.8658 741.576 107.169 741.657 113.96C731.477 116.378 708.795 127.093 708.795 147.247V284.702H742.314C745.744 284.702 746.107 282.556 746.107 281.333V114.209C746.107 107.983 743.208 54 643.51 54Z" fill="currentColor"/><path d="M144.171 58.5683L129.662 58.5856C106.081 58.6318 91.4574 69.3695 83.3356 77.9031C72.9486 88.8081 67 103.873 67 119.221C67 148.151 86.5636 179.285 133.299 179.285V155.658C100.513 155.658 90.6043 136.029 90.6043 119.221C90.6043 104.029 99.7116 81.7516 130.135 81.7516L144.171 81.7458V261.448C131.691 261.448 124.786 248.968 124.786 238.08L104.974 238.092C104.974 267.316 130.095 284.383 143.98 284.706H170.432C195.829 284.706 215.053 259.717 215.053 196.924V107.306H225.924V155.658H274.164V58.5683H144.171Z" fill="currentColor"/><path d="M926.713 197.694L895.344 197.463C903.656 193.101 910.337 187.937 915.461 183.073C941.844 158.049 955.222 116.16 955.222 58.5828H938.99C938.99 111.527 927.318 149.447 904.302 171.286C893.817 181.227 875.475 192.721 847.444 191.544V58.5828H776.988V211.663C776.988 244.701 754.468 249.9 754.468 249.9C754.474 249.9 754.468 284.715 754.468 284.715H847.444V216.815C847.444 211.703 856.764 211.721 856.764 216.815C856.764 225.54 856.741 239.803 856.741 248.977C856.741 275.98 879.85 289.735 907.633 289.735C932.039 289.735 955.43 274.601 956.098 248.977C956.536 232.186 960.612 197.694 926.713 197.694Z" fill="currentColor"/></svg></div>
-
-        <main class="hubcol">
-          <ui-hub-account></ui-hub-account>
-
-        <div class="stack chrome" data-spaces-view aria-label="spaces">
+        <hub-collection class="stack chrome" with="main@profile:tonk"
+          data-spaces-view aria-label="spaces">
+          <link rel="stylesheet" with:src="ui">
           <!-- No empty-state bar. An account with no spaces and an
                account whose spaces are still arriving look identical
                from here, so any words this row could carry are wrong in
@@ -270,45 +812,67 @@ view!:
                while staying outside it: reaching for the action never opens the space.
                Each per-space consumer carries its OWN subject; the routing
                helpers read an element's own attribute and never walk ancestors. -->
-          <div class="srow-wrap" data-presence={presence} data-id={this}>
-            <a class="srow blk" href="/space/{subject}"><span class="n">{name}</span></a>
+          <div class="srow-wrap space-card" data-presence={presence} data-space-subject={subject} data-id={this}>
+            <a class="srow" href="/space/{subject}">
+              <span class="space-preview" aria-hidden="true"></span>
+              <span class="space-caption"><span class="n">{name}</span><span class="space-description">{description}</span></span>
+            </a>
             <!-- Both verbs sit outside the anchor and are laid over it: a
                  <button> inside an <a> is invalid markup the parser reshapes,
                  and a <label for> inside one navigates rather than opening the
                  confirm. Hovering the row reveals them (`.srow-wrap:hover`),
                  so the reveal still follows the row and not just the verbs. -->
-            <ui-space-remove data-space-subject={subject} data-space-name={name}
-              data-space-provider={provider} data-space-founded={founded-at}>
+            <space-actions>
               <span class="verbs">
-                <ui-copy-link space={subject} label="copy link"></ui-copy-link>
-                <button class="verb-remove" type="button" data-space-remove-open disabled>checking&hellip;</button>
+                <button type="button" data-space-actions-open aria-haspopup="menu"
+                  aria-expanded="false" aria-controls="space-menu-{subject}">more</button>
               </span>
-              <tonk-dialog data-space-remove-dialog heading="confirm leaving space">
-                <form id="remove-{subject}" class="remove-form" on:space-remove=space/remove data-remove={subject}>
-                  Leave {name}? This removes the space and its local data from this
-                  device. You'll need another invite link to join again. Other
-                  members keep access.
+              <hub-menu id="space-menu-{subject}" class="space-menu" role="menu">
+                <tonk-share space={subject}><button type="button" role="menuitem"><span data-share-copy-label="idle">copy link</span><span data-share-copy-label="copying">copying…</span><span data-share-copy-label="copied">copied</span><span data-share-copy-label="failed">couldn't copy</span></button></tonk-share>
+                <button type="button" role="menuitem" data-space-rename-open>rename</button>
+                <space-remove data-space-subject={subject} data-space-name={name}
+                  data-space-provider={provider} data-space-founded={founded-at}
+                  data-space-owner={owner}>
+                  <button class="verb-remove" type="button" role="menuitem"
+                    data-space-remove-open disabled>checking&hellip;</button>
+                  <tonk-dialog appearance="hub" data-space-remove-dialog heading="confirm leaving space">
+                    <form id="remove-{subject}" class="remove-form" on:space-remove=space/remove data-remove={subject}>
+                      Leave {name}? This removes the space and its local data from this
+                      device. You'll need another invite link to join again. Other
+                      members keep access.
+                    </form>
+                    <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
+                    <button class="m-go" slot="actions" type="submit" html:form="remove-{subject}" data-space-remove-submit>leave space</button>
+                  </tonk-dialog>
+                </space-remove>
+              </hub-menu>
+              <tonk-dialog appearance="hub" data-space-rename-dialog heading="Rename space">
+                <form id="rename-{subject}" class="space-create-form" data-space-rename-form
+                  data-space={subject} on:repository-rename-submit=tonk/rename-repository>
+                  <label class="space-create-field"><span>space name</span><input name="name" type="text"
+                    value={name} required maxlength="100" autocomplete="off" data-space-rename-input></label>
+                  <p class="space-create-error" data-space-rename-error role="alert"></p>
                 </form>
                 <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
-                <button class="m-go" slot="actions" type="submit" html:form="remove-{subject}" data-space-remove-submit>leave space</button>
+                <button class="m-go" slot="actions" type="submit" html:form="rename-{subject}"
+                  data-space-rename-submit>save changes</button>
               </tonk-dialog>
-            </ui-space-remove>
+            </space-actions>
           </div>
-          <!-- Creating asks nothing up front: the space starts "Untitled" (the
-               worker uniquifies the sentinel) and is renamed in place with the
-               bar's block cursor the moment you land in it. No remote is
-               carried: the worker resolves where a space syncs from the
-               account's own registration, so a space created before anyone
-               registers stays local until it is shared. -->
-          <form class="snew-form" on:space-create=space/create>
-            <input type="hidden" name="name" value="Untitled">
-            <input type="hidden" name="open" value="true">
-            <button class="snew chrome" type="submit">create new space<span class="g" aria-hidden="true">+</span></button>
-          </form>
-        </div>
-
-        </main>
-      </div>
+          <space-create>
+            <button class="snew chrome" type="button" data-new-space data-space-create-open>new space<span class="g" aria-hidden="true">+</span></button>
+            <tonk-dialog appearance="hub" data-space-create-dialog heading="New space">
+              <form id="create-space-card" class="space-create-form" data-space-create-form>
+                <label class="space-create-field"><span>space name</span><input name="name" type="text" required maxlength="100" autocomplete="off"></label>
+                <label class="space-create-field"><span>a short description <small>/ optional</small></span><textarea name="description" maxlength="240"></textarea></label>
+                <input type="hidden" name="open" value="true">
+                <p class="space-create-error" data-space-create-error role="alert"></p>
+              </form>
+              <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
+              <button class="m-go" slot="actions" type="submit" form="create-space-card" data-space-create-submit>create space</button>
+            </tonk-dialog>
+          </space-create>
+        </hub-collection>
     # The space page's waiting room. Reached only when the space's own
     # content has not arrived but the account's DIRECTORY ROW for it has
     # — so this device knows the space exists and is entitled to it, and
@@ -320,7 +884,7 @@ view!:
     # that has not replicated a space can still label it.
     downloading: |
       <div class="space-unknown">
-        <tonk-title text="{name} — Tonk"></tonk-title>
+        <tab-title text="{name} — Tonk"></tab-title>
         <a class="space-unknown-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
         <div class="space-unknown-wall">
           <h1 class="space-unknown-statement">downloading {name}</h1>
@@ -377,6 +941,20 @@ concept!: &profile/name
 # `tonk/rename-repository` both read `currentTarget.value` and a shape
 # matched on that attribute alone made every space rename also rename the
 # profile. Each command's own attribute namespace keeps them disjoint now.
+# The editable commits on `change`, the event a text input fires when
+# the value settles — a blur or Enter, not a keystroke. Mirrors
+# `on/repository-rename`, which edits a space's name the same way.
+event!: &on/profile-rename
+  type: "change"
+  where:
+    name: ".currentTarget.value"
+
+event!: &on/profile-rename-submit
+  type: "submit"
+  prevent-default: true
+  where:
+    name: ".currentTarget.elements.name.value"
+
 command!: &profile/rename
   description: Rename the signed-in member (set their display name).
   with:
@@ -384,6 +962,20 @@ command!: &profile/rename
       description: The new name, read from the editable's value on commit.
       the: xyz.tonk.command.profile-rename/name
       as: text
+
+event!: &on/resend-activation
+  type: "click"
+  prevent-default: true
+  where:
+    at: ".timeStamp"
+
+command!: &account/resend-activation
+  description: Ask the account service to send the pending activation email again.
+  with:
+    at:
+      description: The click timestamp, so every resend is a distinct request.
+      the: xyz.tonk.resend-activation/at
+      as: unsigned-integer
 
 # Toggle auto-sync (pause ⇄ resume) for a space. Dispatched by the FAB's
 # `<ui-sync-status onpause=…>` cap on alt/option-click. Defined here on the
@@ -529,7 +1121,7 @@ concept!: &fab/dock
 # JOIN — redeem an invite at /join (runs on the profile meta branch)
 # ============================================================
 
-# Redeem an invite URL. Fired by `<tonk-page on:join=tonk:join>` on the
+# Redeem an invite URL. Fired by `<page-mount on:join=tonk:join>` on the
 # /join view: the element reads the page location (the service worker can't
 # see the `#fragment`, where an open invite's seed rides) and delivers it in
 # the mount event's `detail` (a flat, URL-shaped record). The worker's
@@ -594,7 +1186,7 @@ concept!: &join/failure
 # The /join view — a directory view for `tonk:join/status`, mounted by a
 # no-entity `<tonk-display model=tonk:join/status>` (see the Leptos /join
 # route). Directory chrome renders even with zero instances, so the
-# `<tonk-page>` trigger mounts and fires `tonk:join` on load before any
+# `<page-mount>` trigger mounts and fires `tonk:join` on load before any
 # status exists. The per-instance repeat shows the shared pulse while pending and
 # the failure callout (`model=tonk:join/failure`) once a join fails. On
 # success there is no status to show: the worker posts a navigate message
@@ -674,6 +1266,23 @@ concept!: &site
     branch:
       description: The active branch name on this site (defaults to "main").
       the: xyz.tonk.site/branch
+      cardinality: one
+      as: text
+    branch-entity:
+      description: >
+        The same branch as an entity, so a view can walk from where the
+        tab is to what that branch follows: `branch-entity` ->
+        `tonk.dialog.branch/upstream` -> that branch's replica ->
+        its subject. The name beside it is a location token; this is
+        the graph node.
+      the: xyz.tonk.site/branch-entity
+      cardinality: one
+      as: entity
+    profile-branch:
+      description: >
+        The branch the profile is on, whichever repository this tab is
+        on: what reaches the profile as `{profile-branch}@profile:tonk`.
+      the: xyz.tonk.site/profile-branch
       cardinality: one
       as: text
     replica:
@@ -757,6 +1366,885 @@ route!: &route/home
   path: "/"
   concept: tonk:hub
 
+# The account's page: the same hub view with the account section
+# showing its choices — settings, the other accounts on this browser,
+# adding one — or, with no account here, signing up.
+route!: &route/account
+  this: id:tonk:route/account
+  path: "/account"
+  concept: tonk:hub
+
+# ============================================================
+# PROFILE SWITCHER — the accounts this browser holds
+# ============================================================
+
+# One row of the account switcher.
+#
+# One row per branch of the profile: the account it follows, named off
+# that branch, and where the account is served from. OVERLAY facts the
+# worker republishes each time it reads the roster. They have to be:
+# they describe OTHER branches, which a sealed guest cannot reach. The
+# worker can read every branch, so it stamps what it finds where the
+# guest is looking.
+#
+# Overlay rather than a durable mirror is what keeps them honest. A
+# committed copy would be a second home for a name owned elsewhere, free
+# to disagree after a rename on another device, with nothing to
+# invalidate it. These are rebuilt from source on every roster read.
+concept!: &profile/row
+  this: tonk:profile/row
+  description: A branch of this profile to switch to.
+  with:
+    name:
+      description: The branch's name — what a switch activates.
+      the: xyz.tonk.roster/name
+      cardinality: one
+      as: text
+    label:
+      description: The account name to show, as of this read.
+      the: xyz.tonk.roster/label
+      cardinality: one
+      as: text
+    provider:
+      description: The access service the account is attached to. Empty for a local workspace.
+      the: xyz.tonk.roster/provider
+      cardinality: one
+      as: text
+    active:
+      description: Whether this is the profile the browser is using now.
+      the: xyz.tonk.roster/active
+      cardinality: one
+      as: boolean
+
+# Switching reads the row's own handle off the clicked button, so a
+# command can only ever name a profile this device already has.
+event!: &on/switch-profile
+  type: "click"
+  prevent-default: true
+  where:
+    handle: ".currentTarget.dataset.handle"
+    time: ".timeStamp"
+
+# Adding an account rotates onto a fresh profile and opens the regular
+# signup ceremony on it. The rotation is worker work; the ceremony is a
+# top-page passkey dialog the worker asks the page to raise.
+event!: &on/add-profile
+  type: "click"
+  prevent-default: true
+  where:
+    time: ".timeStamp"
+
+command!: &profile/add
+  this: tonk:add-profile
+  description: Rotate onto a fresh profile and open the account ceremony.
+  with:
+    time:
+      description: The click's timestamp, so a retry after a cancelled ceremony re-fires.
+      the: xyz.tonk.command.add-profile/time
+      as: float
+
+command!: &profile/switch
+  this: tonk:switch-profile
+  description: Make another branch of this profile the active one.
+  with:
+    handle:
+      description: The name of the branch to switch to.
+      the: xyz.tonk.command.switch-profile/handle
+      as: text
+    time:
+      description: The click's timestamp, so switching back re-fires.
+      the: xyz.tonk.command.switch-profile/time
+      as: float
+
+# The settings page's acts. Each is a command the page fires with a
+# click; the worker does the work and reports where it got to as a
+# `state:ceremony` row the page reads back. Nothing here answers the
+# click with a response body.
+event!: &on/sign-out
+  type: "click"
+  prevent-default: true
+  where:
+    time: ".timeStamp"
+
+command!: &profile/sign-out
+  this: tonk:sign-out
+  description: Sign this device out of the account on the active branch.
+  with:
+    time:
+      description: The click's timestamp, so signing out again re-fires.
+      the: xyz.tonk.command.sign-out/time
+      as: float
+
+# The account entity is read off the control rather than typed here,
+# because a command field is a fact the click asserts, not a constant.
+event!: &on/add-passkey
+  type: "click"
+  prevent-default: true
+  where:
+    account: ".currentTarget.dataset.account"
+
+command!: &account/add-passkey
+  this: tonk:add-passkey
+  description: Seal the account under another passkey, proving with the current one.
+  with:
+    account:
+      description: The account, read off the control.
+      the: xyz.tonk.command.add-passkey/account
+      as: entity
+
+# The address rides on the control that armed the deletion, stamped
+# there by the registration view: the command carries the verified
+# email so the worker can bind it into the purge it signs.
+event!: &on/delete-account
+  type: "click"
+  prevent-default: true
+  where:
+    email: ".currentTarget.dataset.email"
+
+command!: &account/delete
+  this: tonk:delete-account
+  description: Delete this account from every service and this device.
+  with:
+    email:
+      description: The verified address the deletion is for.
+      the: xyz.tonk.delete-account/email
+      as: text
+
+# A terminal's request rides the location (`/settings/link?audience=…`);
+# the element copies it onto the approve control so the click can
+# assert it. `expected-account` is blank when the terminal named none,
+# and a blank field is omitted rather than asserted.
+event!: &on/authorize-device
+  type: "click"
+  prevent-default: true
+  where:
+    audience: ".currentTarget.dataset.audience"
+    callback: ".currentTarget.dataset.callback"
+    name: ".currentTarget.dataset.name"
+    expected-account: ".currentTarget.dataset.expectedAccount"
+
+command!: &device/authorize
+  this: tonk:authorize-device
+  description: Delegate the account to a waiting terminal.
+  with:
+    audience:
+      description: The terminal's DID.
+      the: xyz.tonk.authorize-device/audience
+      as: entity
+    callback:
+      description: >
+        Where the terminal listens, base58 over the URL: a bare URL
+        carries a `:` and would decode as an entity.
+      the: xyz.tonk.authorize-device/callback
+      as: text
+    name:
+      description: What the terminal calls itself.
+      the: xyz.tonk.authorize-device/name
+      as: text
+    expected-account:
+      description: The account the terminal expects, when it named one.
+      the: xyz.tonk.authorize-device/expected-account
+      as: entity
+
+# The switcher list. Renders every profile but the active one: the active
+# account is already named in the bar above, and offering to switch to
+# where you are is a no-op the worker would reject anyway.
+view!:
+  this: tonk:profile/row
+  show:
+    directory: |
+      <div class="account-menu__profiles" aria-label="other accounts on this browser">
+        <button class="account-menu__row" type="button" data-id={this} data-profile={name}
+          data-handle={name} html:data-active={active} on:switch-profile=tonk:switch-profile>
+          <span class="account-menu__name">{label}</span>
+        </button>
+      </div>
+    settings: |
+      <button class="switch-account" type="button" data-id={this} data-settings-profile data-profile={name}
+        data-handle={name} data-active={active} on:switch-profile=tonk:switch-profile>
+        <span>{label}</span><span class="switch-state" data-switch-state>switch</span>
+      </button>
+
+# The signup ceremony's progress, as the worker reports it.
+#
+# The hub used to hold "a signup is up" on the document body, because the
+# route view re-renders whenever profile facts land — the passkey itself
+# lands one — and that replaced the element mid-ceremony. An overlay row
+# survives re-renders by not living in the DOM at all.
+concept!: &ceremony/status
+  this: state:ceremony
+  description: Where a passkey-gated ceremony got to.
+  with:
+    ceremony:
+      description: Which ceremony this row describes.
+      the: xyz.tonk.ceremony/ceremony
+      cardinality: one
+      as: text
+    state:
+      description: Where it got to — pending-ceremony, working, done, failed, refused.
+      the: xyz.tonk.ceremony/state
+      cardinality: one
+      as: text
+    detail:
+      description: What refused or failed it, empty otherwise.
+      the: xyz.tonk.ceremony/detail
+      cardinality: one
+      as: text
+
+# ============================================================
+# ELEMENTS — custom elements this branch defines
+# ============================================================
+
+# The same concept `core.yaml` declares, repeated here for the same
+# reason `profile/rename` is: the hub and FAB are sealed to the profile
+# meta branch, and a guest resolves a definition by querying THIS
+# branch. A concept that lives only in core.yaml is unreachable from
+# here, however correct it is there.
+#
+# Kept verbatim rather than trimmed. The two copies describe one shape,
+# and a copy that has been edited down is one that has started to
+# disagree.
+concept!: &element
+  description: A custom element definition carried as branch data
+  with:
+    description:
+      description: |
+        What this element is for, in the author's own words — the same
+        thing a concept's `description` carries, and required for the
+        same reason: an element is read by people and by agents that
+        have only the branch to go on, and a tag name alone does not
+        say what `<tally-widget>` is meant to do.
+
+        It is an ordinary field, but it does reach the entity digest
+        along with the methods, so two elements that differ only in
+        their description are two different values. That is the right
+        reading: the description is part of what the definition says.
+      the: xyz.tonk.element/description
+      cardinality: one
+      as: text
+    method:
+      description: |
+        The element's methods, keyed by name, each a JS arrow-function
+        expression taking the element as its first argument.
+
+        Four keys are dispatched by the DOM lifecycle: `connected`,
+        `disconnected`, `adopted` — all `(self) => …` — and
+        `attribute-changed`, `(self, name, before, after) => …`.
+
+        Two more cover a definition being REPLACED while instances are
+        live, which the DOM has no notion of. `released`, `(self) =>
+        …`, runs on the OUTGOING definition before the swap: undo what
+        `connected` set up, and stash anything worth keeping on the
+        element. `swapped`, `(self) => …`, runs on the incoming one and
+        takes over the live instance; without it the runtime re-runs
+        `connected`, which is right only when nothing needed undoing.
+
+        The reserved `define` key is the escape hatch for what a method
+        table cannot express (`static formAssociated`, extending a
+        built-in): `() => class extends HTMLElement { … }`, whose
+        returned class the runtime registers INSTEAD of the generated
+        wrapper, ignoring every other key. Any other key becomes a
+        method on the element, callable as `el.<name>()`; a key that
+        would shadow a member of `HTMLElement.prototype` is refused.
+
+        That is also how one method calls another — `self.total()`
+        inside `connected`. The call resolves through the live table
+        rather than through the definition it was written in, so
+        re-authoring `total` alone changes what an untouched
+        `connected` computes.
+
+        There is no `observedAttributes` to declare.
+        `attribute-changed` is driven by a `MutationObserver` over
+        every attribute; `attributeChangedCallback`'s list is read once
+        when the tag is registered and so could never grow with an
+        edited method.
+      the: xyz.tonk.element.method
+      as: {[symbol]: text}
+      cardinality: one
+    getter:
+      description: |
+        Property reads, keyed by property name, each `(self) => …`.
+
+        `value: (self) => …` makes `el.value` read through the branch's
+        current definition the way `el.total()` calls through it, so a
+        re-authored getter changes what a page already reading the
+        property sees. A method could not do this job: `el.value` and
+        `el.value()` are different things, and a consumer written
+        against the DOM expects the first.
+
+        Its own dictionary rather than a prefix inside `method`,
+        because a getter, a setter and a method have three different
+        signatures and a key like `get.value` could not be told apart
+        from a method genuinely called that. The cost is one more live
+        query per watched tag.
+
+        A key that would shadow a member every element already has is
+        refused, the same as a method key.
+      the: xyz.tonk.element.getter
+      as: {[symbol]: text}
+      cardinality: one
+    setter:
+      description: |
+        Property writes, keyed by property name, each
+        `(self, next) => …`.
+
+        Paired with `getter` by name: declaring both makes the property
+        read-write, `getter` alone makes it read-only, and `setter`
+        alone makes it write-only — which is a real shape (a sink that
+        takes a value and renders it) rather than a mistake, so it is
+        allowed.
+      the: xyz.tonk.element.setter
+      as: {[symbol]: text}
+      cardinality: one
+    attribute:
+      description: |
+        Default values for the element's attributes, keyed by
+        attribute name. An instance missing one has it written on
+        before `connected` runs, so every hook, every CSS rule and
+        every `getAttribute` reads the same value whether the view
+        supplied it or not.
+
+        This is NOT `observedAttributes`, and it narrows nothing.
+        `attribute-changed` fires for every attribute whether or not
+        it appears here, because the runtime watches them with a
+        `MutationObserver` rather than declaring a list up front.
+        Narrowing to a declared list would only restore the footgun
+        that observer exists to avoid: an attribute left out of the
+        list goes silently unnoticed. So an attribute needs no entry
+        here to work — it needs one to have a DEFAULT, which is the
+        only thing this map supplies.
+
+        An attribute whose default is empty is written `size: ""` —
+        present and empty, like `<input disabled="">`.
+
+        Most elements declare none, and the map is then simply absent.
+        That is what a keyed collection means: zero-or-more, so an
+        `element!:` body omitting it is complete, not partial.
+
+        What all four dictionaries here cost, stated once: a GENERIC
+        concept query binds every field the concept declares, and a
+        keyed collection with no entries binds nothing — so `tonk query
+        element` answers only for an element that declares ALL FOUR,
+        which almost none do. `tonk element` reads the domains directly
+        and lists them all, which is why it exists, and the browser
+        registry runs one query per dictionary for the same reason.
+        Fixing it properly means teaching the query layer to widen an
+        empty collection, which is a dialog-query change rather than a
+        schema one.
+      the: xyz.tonk.element.attribute
+      as: {[symbol]: text}
+      cardinality: one
+
+# The account menu's keyboard and focus behaviour, as branch data.
+#
+# Everything here is DOM work with no fact behind it: which item holds
+# focus, whether the menu is open, where focus returns when it closes.
+# That is why it stayed in Rust while the bar's contents became views,
+# and why it can leave Rust without becoming one — an element is a
+# place for behaviour that is not data.
+#
+# `open` is an attribute rather than internal state so CSS, devtools
+# and `getAttribute` all agree on it, and so a view can render a menu
+# already open without a script having run first.
+#
+# The methods are `open`/`close`, not `show`/`hide`: `show` is what a
+# view calls its dictionary of templates, and one word meaning two
+# things across the two halves of the same file is a trap.
+element!: &hub-menu
+  description: A roving-focus menu — arrows move, Escape closes, focus returns to the opener.
+  attribute:
+    open: "false"
+  method:
+    # Focusable items only. A disabled or hidden row is still in the DOM
+    # and must not take focus, which is why this is a method rather than
+    # a selector each caller inlines.
+    items: |
+      (self) => [...self.querySelectorAll('[role=menuitem]')].filter(
+        (item) => !item.hidden
+          && item.getAttribute('aria-disabled') !== 'true'
+          && !item.matches(':disabled'))
+    # Move focus by `step`, wrapping. With nothing focused yet, entering
+    # forwards lands on the first item and backwards on the last, so
+    # ArrowUp from the trigger opens at the bottom, as a menu should.
+    move: |
+      (self, step) => {
+        const items = self.items();
+        if (!items.length) return;
+        const at = items.indexOf(document.activeElement);
+        const next = at < 0
+          ? (step > 0 ? 0 : items.length - 1)
+          : (at + step + items.length) % items.length;
+        items[next].focus({ preventScroll: true });
+      }
+    # The opener is whatever points at this menu with `aria-controls`.
+    # Read from the DOM rather than remembered, so a menu re-rendered
+    # under a fresh trigger still finds the right one.
+    opener: |
+      (self) => {
+        const id = self.getAttribute('id');
+        return id ? document.querySelector(`[aria-controls="${id}"]`) : null;
+      }
+    place: |
+      (self, trigger) => {
+        const viewport = window.visualViewport;
+        const leftEdge = viewport?.offsetLeft ?? 0;
+        const topEdge = viewport?.offsetTop ?? 0;
+        const rightEdge = leftEdge + (viewport?.width ?? window.innerWidth);
+        const nav = document.querySelector('.mobile-nav')?.getBoundingClientRect();
+        const bottomEdge = Math.min(topEdge + (viewport?.height ?? window.innerHeight),
+          nav?.height > 0 ? nav.top : Infinity);
+        const margin = 8;
+        const gap = 5;
+        const target = trigger.getBoundingClientRect();
+        self.style.maxHeight = `${Math.max(44, bottomEdge - topEdge - margin * 2)}px`;
+        self.style.overflowY = 'auto';
+        const width = self.offsetWidth;
+        const height = self.offsetHeight;
+        const left = Math.max(leftEdge + margin,
+          Math.min(target.right - width, rightEdge - width - margin));
+        const below = target.bottom + gap;
+        const above = target.top - height - gap;
+        const top = below + height <= bottomEdge - margin ? below
+          : above >= topEdge + margin ? above
+          : Math.max(topEdge + margin, Math.min(below, bottomEdge - height - margin));
+        self.style.left = `${left}px`;
+        self.style.top = `${top}px`;
+      }
+    open: |
+      (self) => {
+        self.setAttribute('open', 'true');
+        const trigger = self.opener();
+        if (trigger) {
+          trigger.setAttribute('aria-expanded', 'true');
+          self.place(trigger);
+        }
+        self._viewportChanged ??= () => self.close(false);
+        window.addEventListener('scroll', self._viewportChanged, { passive: true });
+        window.addEventListener('resize', self._viewportChanged);
+        window.visualViewport?.addEventListener('scroll', self._viewportChanged, { passive: true });
+        window.visualViewport?.addEventListener('resize', self._viewportChanged);
+        self.move(1);
+      }
+    # Closing returns focus to the opener, which is what makes the menu a
+    # detour rather than somewhere you get stranded. `restoreFocus` is
+    # false when the menu is closing because it is going away.
+    close: |
+      (self, restoreFocus) => {
+        self.setAttribute('open', 'false');
+        if (self._viewportChanged) {
+          window.removeEventListener('scroll', self._viewportChanged);
+          window.removeEventListener('resize', self._viewportChanged);
+          window.visualViewport?.removeEventListener('scroll', self._viewportChanged);
+          window.visualViewport?.removeEventListener('resize', self._viewportChanged);
+        }
+        const trigger = self.opener();
+        if (!trigger) return;
+        trigger.setAttribute('aria-expanded', 'false');
+        if (restoreFocus !== false) trigger.focus();
+      }
+    connected: |
+      (self) => {
+        self.addEventListener('keydown', (event) => {
+          switch (event.key) {
+            case 'ArrowDown': event.preventDefault(); self.move(1); break;
+            case 'ArrowUp': event.preventDefault(); self.move(-1); break;
+            case 'Home': event.preventDefault(); self.items()[0]?.focus({ preventScroll: true }); break;
+            case 'End': {
+              event.preventDefault();
+              const items = self.items();
+              items[items.length - 1]?.focus({ preventScroll: true });
+              break;
+            }
+            case 'Escape': {
+              // A modal nested under a menu owns Escape while it is open.
+              // Preventing the key here would cancel the native dialog's
+              // close action and strand focus inside an invisible menu.
+              if (event.target?.closest?.('tonk-dialog')?.open) break;
+              event.preventDefault(); self.close(true); break;
+            }
+          }
+        });
+      }
+    # A definition replaced while a menu is open would leave it open with
+    # no handlers. Closing without taking focus is the honest recovery:
+    # the page keeps whatever had focus, and the replacement starts shut.
+    released: |
+      (self) => self.close(false)
+
+# A passkey registered for this account.
+#
+# Directory-shaped: one row per passkey, so the settings page lists them
+# by iterating rather than by an element reading an array out of a fetch.
+concept!: &account/passkey
+  this: tonk:account/passkey
+  description: A passkey that can recover this account.
+  with:
+    created-on:
+      description: The device or browser the passkey was made on.
+      the: xyz.tonk.recovery/created-on
+      cardinality: one
+      as: text
+    created-at:
+      description: When it was made, unix seconds.
+      the: xyz.tonk.recovery/created-at
+      cardinality: one
+      as: unsigned-integer
+
+# The settings page's account pane.
+#
+# Every value here is a fact the worker already publishes: the name and
+# address off `tonk:account/registered`, the passkeys as their own rows.
+# The acts are commands. What is left for an element is the passkey
+# ceremony, which needs a live `navigator.credentials` call.
+view!:
+  this: tonk:account/registered
+  show:
+    email: |
+      <div class="settings-field">
+        <span>account email</span>
+        <b data-settings-email>{email}</b>
+      </div>
+    settings: |
+      <div data-account-registered>
+        <section class="settings-panel details-panel">
+          <h2>Your details</h2>
+          <tonk-display model="tonk:account/name" view="editable"></tonk-display>
+        </section>
+        <section class="settings-panel passkeys-panel">
+          <h2>Passkeys</h2>
+          <div class="passkey-list"><tonk-display model="tonk:account/passkey"></tonk-display></div>
+          <p class="expl">
+            Your passkey replaces a password and may be saved to a device, browser
+            profile, or password manager.
+          </p>
+          <button class="cta panel-action" type="button" data-add-passkey data-account="tonk:add-passkey"
+            on:add-passkey=tonk:add-passkey>add a passkey <span aria-hidden="true">+</span></button>
+        </section>
+        <!-- The deletion dialog lives on the registration because the
+             command carries the verified address, stamped on the submit
+             control here. What it deletes is listed from `space/owned`;
+             the element counts those rows into the sentence and arms
+             the submit once the phrase is typed. -->
+        <tonk-dialog data-delete-account-dialog heading="confirm account deletion">
+          <div class="confirm-body">
+            <span data-delete-scope>loading what this deletes&hellip;</span>
+            <span data-delete-owned hidden><tonk-display model="tonk:space/owned" view="deletion"></tonk-display></span>
+            <span data-delete-question>are you sure you want to delete all data associated with this account?</span>
+            <span data-delete-consequence>this action is permanent. there is no option to recover your data.</span>
+            <span data-delete-passkey>your passkey will be asked for.</span>
+            <div class="armrow">
+              <label for="delete-confirmation">type <b data-delete-confirm-label>delete account</b> to confirm:</label>
+              <input class="armfield" id="delete-confirmation" data-delete-confirm type="text"
+                autocomplete="off" autocapitalize="off" spellcheck="false"
+                aria-label="deletion confirmation" />
+            </div>
+          </div>
+          <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
+          <button class="m-go" slot="actions" type="button" data-delete-account-submit data-email={email}
+            on:delete-account=tonk:delete-account disabled><span data-delete-submit-label>delete account</span></button>
+        </tonk-dialog>
+      </div>
+
+# The name, editable in place: a text input whose `change` (Enter or
+# blur) is the rename command. Its own view because it is its own
+# concept, and because the FAB edits the same fact the same way.
+
+# The name as the hub bar shows it: the text and nothing else, so the
+# cell reads as the member's name. Without this facet the display fell
+# back to its default notation (`name: "Jack"`), which is a diagnostic,
+# not a label.
+view!:
+  this: tonk:account/name
+  show:
+    directory: |
+      <span data-account-name data-of={this}>{name}</span>
+
+view!:
+  this: tonk:account/name
+  show:
+    editable: |
+      <form class="details-form" data-profile-rename-form>
+        <label for="account-display-name">display name</label>
+        <input class="sname" id="account-display-name" name="name" type="text"
+          data-settings-name value={name} required maxlength="50" autocomplete="name"
+          aria-describedby="account-display-name-error">
+        <p id="account-display-name-error" class="form-error" data-profile-rename-error
+          role="alert" hidden></p>
+        <tonk-display model="tonk:account/registered" view="email"></tonk-display>
+        <button class="cta primary-action" type="submit" data-profile-rename-submit>save changes</button>
+      </form>
+
+view!:
+  this: tonk:account/passkey
+  show:
+    directory: |
+      <div class="passkey-card" data-id={this}>
+        <svg class="passkey-mark" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="9" r="4"></circle><path d="m11 12 8 8m-2-2 3-3m-6 0 3-3"></path></svg>
+        <span><b data-settings-passkey-device>{created-on}</b>
+          <span class="passkey-created">created <span data-settings-passkey-created>{created-at}</span></span></span>
+      </div>
+
+# Deals the decorative collection frames from stable space identities. The
+# list pass only adjusts adjacent repeated heavy rules; it never reads or
+# mounts a space. Re-running it over the same ordered subjects gives the same
+# CSS variables, including after a fact-driven rerender.
+element!: &hub-collection
+  description: A space-card collection with stable decorative frames.
+  method:
+    hash: |
+      (self, value) => {
+        let hash = 2166136261;
+        for (const char of value) {
+          hash ^= char.charCodeAt(0);
+          hash = Math.imul(hash, 16777619);
+        }
+        return hash >>> 0;
+      }
+    frame: |
+      (self, subject) => {
+        let seed = self.hash(subject);
+        const random = () => {
+          seed = seed + 0x6D2B79F5 | 0;
+          let value = Math.imul(seed ^ seed >>> 15, 1 | seed);
+          value = value + Math.imul(value ^ value >>> 7, 61 | value) ^ value;
+          return ((value ^ value >>> 14) >>> 0) / 4294967296;
+        };
+        const pick = (choices) => {
+          let value = random() * choices.reduce((sum, choice) => sum + choice[1], 0);
+          for (const choice of choices) if ((value -= choice[1]) < 0) return choice[0];
+          return choices[choices.length - 1][0];
+        };
+        if (random() < .15) return { right: 1, bottom: 1, bottomReach: 1, left: 1, leftReach: 0 };
+        let right = pick([[1,.2],[3,.3],[7,.4],[15,.1]]);
+        const bottom = pick([[1,.15],[3,.3],[7,.35],[15,.2]]);
+        if (right === 15 && bottom === 15) right = 7;
+        const bottomReach = bottom === 1 ? 1 : pick([[.5,.3],[2/3,.45],[.75,.25]]);
+        const left = bottom === 1 ? 1 : Math.min(bottom, pick([[1,.4],[3,.4],[7,.2]]));
+        const leftReach = left === 1 ? 0 : pick([[1/3,.35],[.5,.45],[2/3,.2]]);
+        return { right, bottom, bottomReach, left, leftReach };
+      }
+    deal: |
+      (self) => {
+        const cards = [...self.querySelectorAll('.space-card[data-space-subject]')];
+        const frames = cards.map(card => self.frame(card.dataset.spaceSubject ?? ''));
+        const stepDown = { 15: 7, 7: 3, 3: 1, 1: 1 };
+        frames.forEach((frame, index) => {
+          if (!index) return;
+          const previous = frames[index - 1];
+          const weight = Math.max(frame.right, frame.bottom);
+          const previousWeight = Math.max(previous.right, previous.bottom);
+          if (weight === 1 && previousWeight === 1) {
+            frame.right = 3;
+          } else if (weight >= 7 && weight === previousWeight) {
+            if (frame.right === weight) frame.right = stepDown[frame.right];
+            if (frame.bottom === weight) frame.bottom = stepDown[frame.bottom];
+            frame.left = Math.min(frame.left, frame.bottom);
+          }
+        });
+        const desktop = { 1: 0, 3: 2, 7: 6, 15: 14 };
+        const mobile = { 1: 0, 3: 2, 7: 4, 15: 7 };
+        cards.forEach((card, index) => {
+          const frame = frames[index];
+          card.style.setProperty('--fr-r', `${desktop[frame.right]}px`);
+          card.style.setProperty('--fr-b', `${desktop[frame.bottom]}px`);
+          card.style.setProperty('--fr-l', `${desktop[frame.left]}px`);
+          card.style.setProperty('--fr-r-mobile', `${mobile[frame.right]}px`);
+          card.style.setProperty('--fr-b-mobile', `${mobile[frame.bottom]}px`);
+          card.style.setProperty('--fr-l-mobile', `${mobile[frame.left]}px`);
+          card.style.setProperty('--fr-fb', frame.bottomReach.toFixed(3));
+          card.style.setProperty('--fr-fl', frame.leftReach.toFixed(3));
+        });
+      }
+    connected: |
+      (self) => {
+        self.deal();
+        self._observer?.disconnect();
+        const observer = new MutationObserver(() => self.deal());
+        observer.observe(self, { childList: true, subtree: true, attributes: true,
+          attributeFilter: ['data-space-subject'] });
+        self._observer = observer;
+      }
+    disconnected: |
+      (self) => self._observer?.disconnect()
+
+# Owns one New Space opener and its dialog. Capture owns dispatch so each
+# submission can subscribe to its exact command receipt before it is sent.
+element!: &space-create
+  description: Opens and validates a named space creation dialog.
+  method:
+    open: |
+      (self) => {
+        const form = self.querySelector('form[data-space-create-form]');
+        const error = self.querySelector('[data-space-create-error]');
+        if (self.hasAttribute('busy')) {
+          self.querySelector('[data-space-create-dialog]')?.show?.();
+          return;
+        }
+        form?.reset();
+        if (error) error.textContent = '';
+        self.removeAttribute('busy');
+        for (const control of self.querySelectorAll('[data-space-create-submit]')) {
+          control.disabled = false;
+        }
+        self.querySelector('[data-space-create-dialog]')?.show?.();
+        requestAnimationFrame(() => form?.elements?.name?.focus());
+      }
+    validate: |
+      (self, event) => {
+        const form = event.target;
+        if (!form?.matches?.('form[data-space-create-form]')) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        const name = form.elements.name;
+        const description = form.elements.description;
+        const error = self.querySelector('[data-space-create-error]');
+        name.value = name.value.trim();
+        description.value = description.value.trim();
+        if (!name.value) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          if (error) error.textContent = 'Enter a name for this space.';
+          name.focus();
+          return;
+        }
+        if (self.hasAttribute('busy')) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          return;
+        }
+        if (error) error.textContent = '';
+        self.setAttribute('busy', '');
+        for (const control of self.querySelectorAll('[data-space-create-submit]')) {
+          control.disabled = true;
+        }
+        self.create(form);
+      }
+    create: |
+      async (self, form) => {
+        let reader;
+        const error = self.querySelector('[data-space-create-error]');
+        const parameters = { name: form.elements.name.value,
+          description: form.elements.description.value, open: form.elements.open.value };
+        try {
+          await window.tonk.ready;
+          if (!self.isConnected) return;
+          const id = 'urn:uuid:' + Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(16).padStart(8, '0')).join('');
+          reader = window.tonk.subscribe({
+            predicate: { with: {
+              status: { the: 'xyz.tonk.space-creation/status', as: 'Text', cardinality: 'one' },
+              detail: { the: 'xyz.tonk.space-creation/detail', as: 'Text', cardinality: 'one' },
+            } },
+            terms: { this: id, status: { '?': { name: 'status' } }, detail: { '?': { name: 'detail' } } },
+          }).getReader();
+          self.__reader = reader;
+          await window.tonk.transact({ claims: [{ op: 'assert', application: {
+            predicate: { kind: 'transient', concept: { with: {
+              name: { the: 'xyz.tonk.command.create-space/name', as: 'Text' },
+              open: { the: 'xyz.tonk.command.create-space/open', as: 'Text' },
+              description: { the: 'xyz.tonk.command.create-space/description', as: 'Text' },
+            } } },
+            parameters: { this: id, ...parameters },
+          } }] });
+          while (self.isConnected) {
+            const { value, done } = await reader.read();
+            if (done) throw new Error('Creation status stream ended');
+            const result = value.find(row => row.this === id)?.fields;
+            if (result?.status === 'failed') {
+              if (error) error.textContent = result.detail;
+              return;
+            }
+            if (result?.status === 'created') {
+              self.querySelector('[data-space-create-dialog]')?.close?.();
+              window.tonk.navigate(result.detail);
+              return;
+            }
+          }
+        } catch (failure) {
+          if (error) error.textContent = "Couldn't confirm creation. Check your spaces before trying again.";
+        } finally {
+          if (reader) await reader.cancel().catch(() => {});
+          if (self.__reader === reader) self.__reader = null;
+          self.removeAttribute('busy');
+          for (const control of self.querySelectorAll('[data-space-create-submit]')) control.disabled = false;
+        }
+      }
+    disconnected: |
+      (self) => {
+        self.__reader?.cancel().catch(() => {});
+        self.__reader = null;
+      }
+    connected: |
+      (self) => {
+        if (self.__wired) return;
+        self.__wired = true;
+        self.addEventListener('submit', event => self.validate(event), true);
+        self.addEventListener('click', event => {
+          if (event.target?.closest?.('[data-space-create-open]')) self.open();
+        });
+      }
+    released: |
+      (self) => self.disconnected()
+
+# The hub bar's tab and ceremony behaviour, as branch data.
+#
+# What is left in the bar once its contents are views: which tab is
+# showing, whether a signup ceremony is up, and where that ceremony
+# should sit. All three are DOM state with no fact behind them, or —
+# in the ceremony's case — a measurement only this element can take.
+#
+# The ceremony cannot measure the bar itself. The hub is a sealed guest
+# at an opaque origin, so the top page that draws the dialog cannot
+# reach in; the bar measures and reports, and `reseat` repeats that
+# whenever the bar moves.
+#
+# `tab` is an attribute rather than internal state so CSS selects on it
+# (`[tab=account] .stack { display: none }`) instead of a script
+# toggling `hidden` on every switch.
+element!: &hub-bar
+  description: The hub's bar — two links, the account's page and home; the cell for where the page is reads as current.
+  attribute:
+    path: "/"
+  method:
+    # Where the page is, read off the host's context and mirrored onto
+    # `path`: the chrome's style keys the visible section on it, and the
+    # cell for that section reads as current. The guest's own location
+    # is about:srcdoc and says nothing.
+    route: |
+      (self) => {
+        const path = window.tonk?.context?.path;
+        if (typeof path !== 'string' || !path) return;
+        if (self.getAttribute('path') !== path) self.setAttribute('path', path);
+        const account = path === '/account' || path === '/settings' || path.startsWith('/settings/');
+        const page = self.closest('.hub-page') ?? self;
+        for (const [selector, current] of [
+          ['[data-account-trigger], [data-account-nav]', account],
+          ['[data-return-spaces]', !account],
+        ]) {
+          for (const cell of page.querySelectorAll(selector)) {
+            if (current) cell.setAttribute('aria-current', 'page');
+            else cell.removeAttribute('aria-current');
+          }
+        }
+      }
+    connected: |
+      (self) => {
+        self.route();
+        const moved = () => self.route();
+        window.addEventListener('tonk:context', moved);
+        self._moved = moved;
+      }
+    disconnected: |
+      (self) => {
+        if (self._moved) window.removeEventListener('tonk:context', self._moved);
+      }
+    released: |
+      (self) => self.disconnected()
+
+# The hub's account bar and menu.
+#
+# The account name comes from `tonk:account/name`, the switcher list from
+# `tonk:profile/row`, and whether a signup is up from the ceremony row —
+# all of them facts, so a re-render rebuilds the bar instead of losing it.
 # The Hub route model + its view: the space directory over this (profile) branch.
 # `tonk:hub` is the concept the `/` route resolves to; its view renders the
 # `space` directory view, the same picker the legacy `<tonk-hub>` element mounted.
@@ -777,49 +2265,149 @@ view!:
   this: tonk:hub
   show:
     ui: |
-      <div class="display-view-slot">
-        <tonk-title text="Tonk"></tonk-title>
-        <tonk-display model="space"></tonk-display>
+      <div class="hub-page">
+        <link rel="stylesheet" with:src="ui@space">
+        <!-- The hub chrome's CSS is the `space` view's own `style: ui`,
+             which also says which of the two sections below shows. -->
+        <tab-title text="Tonk"></tab-title>
+        <header class="hub-header">
+        <a class="hub-logo" href="/" aria-label="Tonk home"><svg viewBox="0 0 1024 343" width="132" height="44" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M337.41 169.57C337.41 136.215 363.983 109.171 396.764 109.171C429.539 109.171 456.112 136.215 456.112 169.57C456.112 202.932 429.539 229.975 396.764 229.975C363.983 229.975 337.41 202.932 337.41 169.57ZM643.51 54C614.396 54 589.91 61.6682 572.703 77.2353C563.913 85.1861 557.227 94.8795 552.759 105.986C552.206 97.3086 549.67 85.1977 540.937 75.1754C530.712 63.4453 515.039 55.8233 494.461 56.2041C488.76 56.3253 484.229 61.045 484.345 66.7514C484.46 72.3886 489.06 76.8833 494.668 76.8833C494.737 76.8833 494.812 76.8833 494.881 76.8833C509.044 76.6006 519.252 81.8339 525.282 88.6654C534.084 98.6415 532.072 113.834 532.02 114.197C531.167 119.817 535.012 125.079 540.626 125.962C541.168 126.048 545.537 126.602 547.612 124.565C546.673 130.203 546.171 136.076 546.171 142.192C546.171 183.349 531.225 224.038 507.39 247.764C488.403 266.66 465.219 275.805 434.911 279.382C479.549 263.671 511.569 221.038 511.569 170.874C511.569 107.365 460.262 55.8868 396.966 55.8868C333.675 55.8868 282.368 107.365 282.368 170.874C282.368 234.383 333.675 285.868 396.966 285.868C399.121 285.868 401.254 285.793 403.375 285.677C451.126 285.1 484.569 276.722 510.508 250.902C535.196 226.328 550.592 184.555 550.592 142.192C550.592 90.1771 586.197 57.8658 643.51 57.8658C737.703 57.8658 741.576 107.169 741.657 113.96C731.477 116.378 708.795 127.093 708.795 147.247V284.702H742.314C745.744 284.702 746.107 282.556 746.107 281.333V114.209C746.107 107.983 743.208 54 643.51 54Z" fill="currentColor"/><path d="M144.171 58.5683L129.662 58.5856C106.081 58.6318 91.4574 69.3695 83.3356 77.9031C72.9486 88.8081 67 103.873 67 119.221C67 148.151 86.5636 179.285 133.299 179.285V155.658C100.513 155.658 90.6043 136.029 90.6043 119.221C90.6043 104.029 99.7116 81.7516 130.135 81.7516L144.171 81.7458V261.448C131.691 261.448 124.786 248.968 124.786 238.08L104.974 238.092C104.974 267.316 130.095 284.383 143.98 284.706H170.432C195.829 284.706 215.053 259.717 215.053 196.924V107.306H225.924V155.658H274.164V58.5683H144.171Z" fill="currentColor"/><path d="M926.713 197.694L895.344 197.463C903.656 193.101 910.337 187.937 915.461 183.073C941.844 158.049 955.222 116.16 955.222 58.5828H938.99C938.99 111.527 927.318 149.447 904.302 171.286C893.817 181.227 875.475 192.721 847.444 191.544V58.5828H776.988V211.663C776.988 244.701 754.468 249.9 754.468 249.9C754.474 249.9 754.468 284.715 754.468 284.715H847.444V216.815C847.444 211.703 856.764 211.721 856.764 216.815C856.764 225.54 856.741 239.803 856.741 248.977C856.741 275.98 879.85 289.735 907.633 289.735C932.039 289.735 955.43 274.601 956.098 248.977C956.536 232.186 960.612 197.694 926.713 197.694Z" fill="currentColor"/></svg></a>
+        <hub-bar class="hub-bar">
+          <nav class="hubbar chrome" aria-label="hub">
+            <space-create class="header-new">
+              <button class="snew chrome" type="button" data-new-space data-space-create-open>new space<span class="g" aria-hidden="true">+</span></button>
+              <tonk-dialog appearance="hub" data-space-create-dialog heading="New space">
+                <form id="create-space-header" class="space-create-form" data-space-create-form>
+                  <label class="space-create-field"><span>space name</span><input name="name" type="text" required maxlength="100" autocomplete="off"></label>
+                  <label class="space-create-field"><span>a short description <small>/ optional</small></span><textarea name="description" maxlength="240"></textarea></label>
+                  <input type="hidden" name="open" value="true">
+                  <p class="space-create-error" data-space-create-error role="alert"></p>
+                </form>
+                <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
+                <button class="m-go" slot="actions" type="submit" form="create-space-header" data-space-create-submit>create space</button>
+              </tonk-dialog>
+            </space-create>
+            <!-- Two links: the account's page and home. The host pushes
+                 the path and this page re-routes in place, and the cell
+                 for where the page is reads as current. -->
+            <!-- The link, not the registration or the name: those are
+                 facts about the account and outlive a sign-out on this
+                 branch. The link row says whether THIS DEVICE holds the
+                 account here; the name renders through it. Directory
+                 mode (no `entity=`), where an absent row is `empty`. -->
+            <a class="hcell hc-acct account-trigger" href="/settings" data-account-trigger>
+              <span data-account-label><tonk-display model="state:account-link" view="label" data-account-link
+                ><span slot="empty">add an account</span></tonk-display></span>
+            </a>
+            <a class="hcell hc-view" href="/" data-return-spaces aria-current="page">spaces</a>
+          </nav>
+        </hub-bar>
+        </header>
+        <main class="hubcol">
+        <h1 class="visually-hidden">Spaces</h1>
+          <!-- One page for `/` and `/settings`: the stack and the panel
+               are both here, and the bar's `path` picks the one that
+               shows. The view reads nothing off the site, so a navigation
+               re-renders nothing here: the bar and the panel follow the
+               host's context on their own, and the stack keeps its rows,
+               its hover and its focus across the move. -->
+          <tonk-display model="space"></tonk-display>
+        <section class="settings chrome" data-settings-view>
+            <a class="settings-back" href="/" data-return-spaces>‹ back to spaces</a>
+            <h1 class="settings-title">account settings</h1>
+            <account-settings>
+              <div class="s-body">
+                <div class="pane" data-pane="account">
+                  <div class="account-panels">
+                    <tonk-display model="tonk:account/registered" view="settings"></tonk-display>
+                    <section class="settings-panel signout-panel">
+                      <h2>Sign out</h2>
+                      <p>Disconnect this account. Keep local spaces on this device.</p>
+                      <button class="cta panel-action" type="button" data-sign-out-open>sign out on this device <span aria-hidden="true">↗</span></button>
+                    </section>
+                    <section class="settings-panel danger-panel">
+                      <div><h2>Delete account</h2><p>Permanently delete all data associated with this account.</p></div>
+                      <button class="cta panel-action" type="button" data-delete-account-open>delete account (permanent)</button>
+                    </section>
+                  </div>
+                </div>
+                <div class="pane" data-pane="link" hidden data-link-approval>
+                  <div class="sect">a terminal is asking for access</div>
+                  <div class="srowd"><span>name</span><b data-link-name></b></div>
+                  <div class="srowd"><span>account</span><b class="lft" data-link-account></b></div>
+                  <div class="srowd"><span>device</span><b class="lft" data-link-did></b></div>
+                  <p class="expl">
+                    approving gives that terminal the same access to your account as this
+                    browser: every space, on every device. decline if you did not request
+                    account access from this device yourself.
+                  </p>
+                  <div class="link-foot">
+                    <button class="m-cancel" type="button" data-link-decline>decline</button>
+                    <button class="m-go" type="button" data-link-approve on:authorize-device=tonk:authorize-device
+                      data-audience="" data-callback="" data-name="" data-expected-account="">approve with passkey</button>
+                  </div>
+                </div>
+                <div class="pane" data-pane="local-link" hidden data-local-link-approval>
+                  <div class="sect">attach a local space to this account</div>
+                  <div class="srowd"><span>space</span><b data-local-link-name></b></div>
+                  <div class="srowd"><span>space ID</span><b class="lft" data-local-link-did></b></div>
+                  <p class="expl">
+                    approving preserves this exact local space and publishes it to the
+                    account selected in this browser. it does not sign the terminal into
+                    your account or grant access to any other space.
+                  </p>
+                  <div class="link-foot">
+                    <button class="m-cancel" type="button" data-local-link-decline>decline</button>
+                    <button class="m-go" type="button" data-local-link-approve>approve this space</button>
+                  </div>
+                </div>
+                <p class="expl" data-ceremony-status role="status" aria-live="polite" hidden></p>
+                <tonk-display model="state:ceremony" view="settings"></tonk-display>
+                <div data-custody-seat aria-hidden="true"></div>
+              </div>
+              <tonk-dialog data-sign-out-dialog heading="confirm sign out">
+                <div class="confirm-body">
+                  this disconnects the account from this browser. local spaces stay on this device, including spaces that have not been backed up or synced. you can sign into this or another account later.
+                </div>
+                <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
+                <button class="m-go" slot="actions" type="button" data-sign-out-submit on:sign-out=tonk:sign-out>sign out</button>
+              </tonk-dialog>
+            </account-settings>
+          </section>
+        </main>
+        <tonk-display model="tonk:account/status" view="notice"></tonk-display>
+        <nav class="mobile-nav" aria-label="main navigation">
+          <a href="/" data-return-spaces><span class="nav-mark nav-square" aria-hidden="true"></span>spaces</a>
+          <space-create>
+            <button class="mobile-create" type="button" data-new-space data-space-create-open><span class="nav-mark" aria-hidden="true">+</span>new space</button>
+            <tonk-dialog appearance="hub" data-space-create-dialog heading="New space">
+              <form id="create-space-mobile" class="space-create-form" data-space-create-form>
+                <label class="space-create-field"><span>space name</span><input name="name" type="text" required maxlength="100" autocomplete="off"></label>
+                <label class="space-create-field"><span>a short description <small>/ optional</small></span><textarea name="description" maxlength="240"></textarea></label>
+                <input type="hidden" name="open" value="true">
+                <p class="space-create-error" data-space-create-error role="alert"></p>
+              </form>
+              <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
+              <button class="m-go" slot="actions" type="submit" form="create-space-mobile" data-space-create-submit>create space</button>
+            </tonk-dialog>
+          </space-create>
+          <a href="/settings" data-account-nav><span class="nav-mark nav-person" aria-hidden="true"></span>account</a>
+        </nav>
       </div>
-
-# The /settings route — the account settings page, per the fabb wireframes:
-# the same hub chrome (logo, two-cell bar) with the settings section open
-# under it. `<ui-hub-account view="settings">` opens its settings page on
-# mount; its spaces cell navigates home rather than swapping in place,
-# because on this route there is no spaces stack behind it.
+# The /settings route is the hub with its settings section showing: the
+# same view as `/`, so moving between them is a path change the view
+# re-renders in place, not a page swap.
 route!: &route/settings
   this: id:tonk:route/settings
   path: "/settings"
-  concept: tonk:settings
+  concept: tonk:hub
 
 # `/settings/link` is the same page: a terminal opened it to ask for
 # access, and the settings panel reads the request off the location.
 route!: &route/settings/link
   this: id:tonk:route/settings/link
   path: "/settings/link"
-  concept: tonk:settings
-
-concept!: &settings-route
-  this: tonk:settings
-  description: The account settings page.
-  with:
-    path:
-      description: The active path, picked off the site.
-      the: xyz.tonk.site/path
-      cardinality: one
-      as: text
-
-view!:
-  this: tonk:settings
-  show:
-    ui: |
-      <div class="hub-page">
-        <tonk-title text="settings — Tonk"></tonk-title>
-        <div class="hub-logo" role="img" aria-label="tonk"><svg viewBox="0 0 1024 343" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M337.41 169.57C337.41 136.215 363.983 109.171 396.764 109.171C429.539 109.171 456.112 136.215 456.112 169.57C456.112 202.932 429.539 229.975 396.764 229.975C363.983 229.975 337.41 202.932 337.41 169.57ZM643.51 54C614.396 54 589.91 61.6682 572.703 77.2353C563.913 85.1861 557.227 94.8795 552.759 105.986C552.206 97.3086 549.67 85.1977 540.937 75.1754C530.712 63.4453 515.039 55.8233 494.461 56.2041C488.76 56.3253 484.229 61.045 484.345 66.7514C484.46 72.3886 489.06 76.8833 494.668 76.8833C494.737 76.8833 494.812 76.8833 494.881 76.8833C509.044 76.6006 519.252 81.8339 525.282 88.6654C534.084 98.6415 532.072 113.834 532.02 114.197C531.167 119.817 535.012 125.079 540.626 125.962C541.168 126.048 545.537 126.602 547.612 124.565C546.673 130.203 546.171 136.076 546.171 142.192C546.171 183.349 531.225 224.038 507.39 247.764C488.403 266.66 465.219 275.805 434.911 279.382C479.549 263.671 511.569 221.038 511.569 170.874C511.569 107.365 460.262 55.8868 396.966 55.8868C333.675 55.8868 282.368 107.365 282.368 170.874C282.368 234.383 333.675 285.868 396.966 285.868C399.121 285.868 401.254 285.793 403.375 285.677C451.126 285.1 484.569 276.722 510.508 250.902C535.196 226.328 550.592 184.555 550.592 142.192C550.592 90.1771 586.197 57.8658 643.51 57.8658C737.703 57.8658 741.576 107.169 741.657 113.96C731.477 116.378 708.795 127.093 708.795 147.247V284.702H742.314C745.744 284.702 746.107 282.556 746.107 281.333V114.209C746.107 107.983 743.208 54 643.51 54Z" fill="currentColor"/><path d="M144.171 58.5683L129.662 58.5856C106.081 58.6318 91.4574 69.3695 83.3356 77.9031C72.9486 88.8081 67 103.873 67 119.221C67 148.151 86.5636 179.285 133.299 179.285V155.658C100.513 155.658 90.6043 136.029 90.6043 119.221C90.6043 104.029 99.7116 81.7516 130.135 81.7516L144.171 81.7458V261.448C131.691 261.448 124.786 248.968 124.786 238.08L104.974 238.092C104.974 267.316 130.095 284.383 143.98 284.706H170.432C195.829 284.706 215.053 259.717 215.053 196.924V107.306H225.924V155.658H274.164V58.5683H144.171Z" fill="currentColor"/><path d="M926.713 197.694L895.344 197.463C903.656 193.101 910.337 187.937 915.461 183.073C941.844 158.049 955.222 116.16 955.222 58.5828H938.99C938.99 111.527 927.318 149.447 904.302 171.286C893.817 181.227 875.475 192.721 847.444 191.544V58.5828H776.988V211.663C776.988 244.701 754.468 249.9 754.468 249.9C754.474 249.9 754.468 284.715 754.468 284.715H847.444V216.815C847.444 211.703 856.764 211.721 856.764 216.815C856.764 225.54 856.741 239.803 856.741 248.977C856.741 275.98 879.85 289.735 907.633 289.735C932.039 289.735 955.43 274.601 956.098 248.977C956.536 232.186 960.612 197.694 926.713 197.694Z" fill="currentColor"/></svg></div>
-        <main class="hubcol">
-          <ui-hub-account view="settings"></ui-hub-account>
-        </main>
-      </div>
+  concept: tonk:hub
 
 # The /join route: redeem an invite. The shell's top-level `<tonk-site>`
 # routes every path against this table, so without an entry `/join` matched
@@ -827,7 +2415,7 @@ view!:
 # missing"). Mirrors the Hub: `/join` → `tonk:join/route`, whose entity view
 # (on the site entity) mounts the no-entity `<tonk-display
 # model="tonk:join/status">` directory. That directory's chrome carries the
-# `<tonk-page on:join=tonk:join>` trigger, which reads the page location
+# `<page-mount on:join=tonk:join>` trigger, which reads the page location
 # (the SW can't see the `#fragment` seed) and fires `tonk:join`.
 route!: &route/join
   this: id:tonk:route/join
@@ -852,7 +2440,7 @@ view!:
   show:
     ui: |
       <div class="display-view-slot">
-        <tonk-title text="Tonk"></tonk-title>
+        <tab-title text="Tonk"></tab-title>
         <main class="join-view">
           <style>
             .join-view {
@@ -917,7 +2505,7 @@ view!:
             }
           </style>
           <a class="edge-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
-          <tonk-page on:join=tonk:join></tonk-page>
+          <page-mount on:join=tonk:join></page-mount>
           <!-- Invite URLs are opened directly in the browser. Bare /join
                visits return home through the join handler. -->
           <tonk-display class="join-status-slot" model="tonk:join/status">
@@ -974,7 +2562,7 @@ view!:
   show:
     ui: |
       <div class="display-view-slot">
-        <tonk-title text="Tonk"></tonk-title>
+        <tab-title text="Tonk"></tab-title>
         <tonk-inspector with="{branch}@{repo}"></tonk-inspector>
       </div>
 
@@ -1008,7 +2596,7 @@ view!:
   show:
     ui: |
       <div class="display-view-slot">
-        <tonk-title text="Tonk"></tonk-title>
+        <tab-title text="Tonk"></tab-title>
         <tonk-tree with="{branch}@{repo}"></tonk-tree>
       </div>
 
@@ -1048,6 +2636,14 @@ concept!: &space-chrome
     id:
       description: The space repository id, picked off the site entity.
       the: xyz.tonk.site/id
+      cardinality: one
+      as: text
+    profile-branch:
+      description: >
+        The branch the profile is on, picked off the site entity: the
+        FAB and the access guidance talk to the profile, and the profile
+        is on its account's branch, not on `main`.
+      the: xyz.tonk.site/profile-branch
       cardinality: one
       as: text
   maybe:
@@ -1102,7 +2698,7 @@ view!:
           font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:13px;
           font-weight:400; line-height:1.55; text-wrap:pretty; }
         .space-unknown-run { display:flex; }
-        .space-unknown-run tonk-space-login { display:block; width:100%; }
+        .space-unknown-run space-login { display:block; width:100%; }
         .space-unknown-back { align-self:flex-start; min-height:44px;
           display:flex; align-items:center; color:var(--edge-ink);
           text-underline-offset:3px; }
@@ -1138,7 +2734,7 @@ view!:
         tonk-view:has(> tonk-display[data-state="no-model"]) > tonk-fab { display: none; }
       </style>
       <tonk-site with="main@{id}" allow="main@{id}" path={rest}></tonk-site>
-      <tonk-fab with="main@profile:tonk" space={id}></tonk-fab>
+      <tonk-fab with="{profile-branch}@profile:tonk" space={id}></tonk-fab>
       <tonk-display with={id} entity={id} model=tonk:repository view=title>
         <!-- `no-model` is now the absent-space panel below, which sets its
              own title; a second `no-model` child would render alongside it
@@ -1146,7 +2742,7 @@ view!:
              EVERY matching child, not the first). `no-entity` keeps the
              quiet placeholder: the concept resolved, the row just is not
              here yet. -->
-        <tonk-title slot="no-entity" hidden text="Untitled — Tonk"></tonk-title>
+        <tab-title slot="no-entity" hidden text="Untitled — Tonk"></tab-title>
         <!-- The absent-space case. A repository this device has not
              replicated answers every query with the EMPTY SET, so
              `tonk:repository` resolves to nothing and this display lands
@@ -1170,7 +2766,7 @@ view!:
         <!-- Light-DOM slots must be hidden in the template too: before the
              display initializes they otherwise paint as ordinary content. -->
         <div slot="no-model" hidden class="space-unknown">
-          <tonk-display with="main@profile:tonk" entity={id} model=space view=downloading>
+          <tonk-display with="{profile-branch}@profile:tonk" entity={id} model=space view=downloading>
             <!-- The account has this space: it is arriving, not missing.
                  When it lands, the OUTER display's standing subscription
                  delivers a real frame and this whole panel is replaced. -->
@@ -1179,28 +2775,28 @@ view!:
                  `no-model` as the same recovery for an older profile whose
                  directory concept has not arrived yet. -->
             <div slot="no-model" hidden>
-              <tonk-title text="Open this space — Tonk"></tonk-title>
+              <tab-title text="Open this space — Tonk"></tab-title>
               <a class="space-unknown-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
               <div class="space-unknown-wall">
                 <h1 class="space-unknown-statement">open this space</h1>
                 <p class="space-unknown-narrator">Already use this space? Sign in with your account. If you added Tonk to your Home Screen, you may need to sign in again here.</p>
                 <!-- The recovery control opens the top-page account ceremony. -->
                 <div class="space-unknown-run">
-                  <tonk-space-login><button type="button" class="space-unknown-home">sign in<span aria-hidden="true">&#9656;</span></button></tonk-space-login>
+                  <space-login><button type="button" class="space-unknown-home">sign in<span aria-hidden="true">&#9656;</span></button></space-login>
                 </div>
                 <p class="space-unknown-narrator">New to this space? Ask someone in it to send you an invite link from <strong>share</strong>.</p>
                 <a class="space-unknown-back" href="/">go to home</a>
               </div>
             </div>
             <div slot="no-entity" hidden>
-              <tonk-title text="Open this space — Tonk"></tonk-title>
+              <tab-title text="Open this space — Tonk"></tab-title>
               <a class="space-unknown-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
               <div class="space-unknown-wall">
                 <h1 class="space-unknown-statement">open this space</h1>
                 <p class="space-unknown-narrator">Already use this space? Sign in with your account. If you added Tonk to your Home Screen, you may need to sign in again here.</p>
                 <!-- The recovery control opens the top-page account ceremony. -->
                 <div class="space-unknown-run">
-                  <tonk-space-login><button type="button" class="space-unknown-home">sign in<span aria-hidden="true">&#9656;</span></button></tonk-space-login>
+                  <space-login><button type="button" class="space-unknown-home">sign in<span aria-hidden="true">&#9656;</span></button></space-login>
                 </div>
                 <p class="space-unknown-narrator">New to this space? Ask someone in it to send you an invite link from <strong>share</strong>.</p>
                 <a class="space-unknown-back" href="/">go to home</a>
@@ -1262,7 +2858,7 @@ view!:
                       color: var(--wa-color-text-normal); }
           .nf__home { margin-top: 8px; text-decoration: none; }
         </style>
-        <tonk-title text="Tonk"></tonk-title>
+        <tab-title text="Tonk"></tab-title>
         <div class="nf">
           <div class="nf__code">404</div>
           <div class="nf__msg">No page at <span class="nf__path">{path}</span></div>
@@ -1384,6 +2980,30 @@ concept!: &account/linking
       cardinality: one
       as: boolean
 
+# Whether THIS DEVICE holds the account's authority on this branch.
+# Overlay-only, published by the worker: the facts on a branch describe
+# the account and stay after a sign-out there, so a bar that read them
+# would call a signed-out branch linked. This row is what "linked" means.
+concept!: &account/link
+  this: state:account-link
+  description: This device is linked to an account on the active branch.
+  with:
+    account:
+      description: The linked account's DID.
+      the: xyz.tonk.link/account
+      cardinality: one
+      as: entity
+
+# The hub bar's account cell: a hidden marker the bar keys on, and the
+# account's name rendered THROUGH the link, so a branch whose link is
+# gone offers "add an account" however much it still knows about the
+# account it followed. Pinned to `this` so no row renders nothing.
+view!:
+  this: account/link
+  show:
+    label: |
+      <span data-account-link-row data-of={this}><span data-account-linked hidden></span><tonk-display model="tonk:account/name" entity={account} view="directory"><span slot="no-entity"></span></tonk-display></span>
+
 concept!: &account/active
   this: tonk:account/active
   description: The account confirmed its address and is served.
@@ -1494,6 +3114,15 @@ concept!: &account/status
       cardinality: one
       as: entity
 
+view!:
+  this: tonk:account/status
+  show:
+    notice: |
+      <aside class="account-email-notice" data-account-status={status} aria-label="account activation">
+        <span>Check your email to finish setting up this account.</span>
+        <button type="button" on:resend-activation=account/resend-activation>resend activation email</button>
+      </aside>
+
 # An onboarding account that has not been handed over is interim.
 # ---------------------------------------------------------------
 # PRESENCE — where a space stands on THIS device
@@ -1574,6 +3203,44 @@ concept!: &space/replicating
       the: xyz.tonk.space/replicating
       cardinality: one
       as: boolean
+
+# A space with a providing account: `provider` is optional on `space`, so
+# a rule binds it through this required field.
+concept!: &space/provided
+  this: tonk:space/provided
+  description: A space an account provides through the access service.
+  with:
+    provider:
+      description: The providing account's DID.
+      the: xyz.tonk.space/provider
+      cardinality: one
+      as: entity
+
+# A space the account on this branch provides. Removing such a space
+# releases its hosted copy, where removing an invited one only leaves it,
+# so the Hub row has to know which it is looking at — and reads it off
+# the facts rather than asking the worker who is signed in.
+concept!: &space/owned
+  this: tonk:space/owned
+  description: A space the account registered on this branch provides.
+  with:
+    owner:
+      description: The providing account, registered on this branch.
+      the: xyz.tonk.space/owner
+      cardinality: one
+      as: entity
+
+rule!:
+  description: A space provided by the account registered on this branch is owned
+  assert: space/owned
+  when:
+    - assert: space/provided
+      where:
+        this: ?this
+        provider: ?owner
+    - assert: account/registered
+      where:
+        this: ?owner
 
 concept!: &space/presence
   this: tonk:space/presence
@@ -2074,3 +3741,1153 @@ concept!: &device/profile
       the: xyz.tonk.roster/name
       cardinality: one
       as: text
+
+# ── Elements ────────────────────────────────────────────────────────
+#
+# Custom elements carried as branch data. Each replaced a Rust element
+# that only ever needed the DOM: a method is a JS function of `self`,
+# `connected` and `disconnected` are its lifecycle, and a `getter` or
+# `setter` is a property.
+
+# A headless element that names the browser tab. It renders nothing:
+# its only job is to push its `text` to the host page, which owns
+# `document.title` — a sealed guest cannot set it. Nothing while
+# `hidden`, so a title a view keeps for a state it is not showing does
+# not win.
+element!: &tab-title
+  description: Names the browser tab from its `text` attribute, through the host page.
+  method:
+    push: |
+      (self) => {
+        if (self.hasAttribute('hidden')) return;
+        const text = self.getAttribute('text');
+        if (!text) return;
+        window.tonk?.setTitle?.(text);
+      }
+    connected: |
+      (self) => self.push()
+    attribute-changed: |
+      (self, name) => {
+        if (name === 'text' || name === 'hidden') self.push();
+      }
+
+# Surfaces the current location as a bubbling `mount` CustomEvent whose
+# `detail` is the parsed URL — `href`, `origin`, `pathname`, `search`,
+# `hash`, and `searchParams` as a plain object — so a view binds a
+# command to it (`on:join=tonk:join`) and the handler gets the URL as
+# data rather than reaching for a global. Inside a sealed guest the
+# location is the host's, relayed as `window.tonk.context`.
+#
+# It fires once the enclosing display is bound (`data-bound`), because
+# the binding that listens is installed with it, and again on every
+# `tonk:join-retry`.
+element!: &page-mount
+  description: Dispatches the parsed current location as a bubbling `mount` event.
+  method:
+    location: |
+      (self) => {
+        const context = window.tonk?.context;
+        const href = context?.origin
+          ? `${context.origin}${context.path ?? ''}${context.search ?? ''}${context.hash ?? ''}`
+          : window.location.href;
+        try {
+          const url = new URL(href);
+          return {
+            href: url.href, origin: url.origin, pathname: url.pathname,
+            search: url.search, hash: url.hash,
+            searchParams: Object.fromEntries(url.searchParams),
+          };
+        } catch {
+          return {};
+        }
+      }
+    mount: |
+      (self) => {
+        self.dispatchEvent(new CustomEvent('mount', { bubbles: true, detail: self.location() }));
+      }
+    ready: |
+      (self) => self.closest('tonk-display')?.hasAttribute('data-bound') === true
+    connected: |
+      (self) => {
+        if (!self.__retry) {
+          self.__retry = () => self.mount();
+          self.addEventListener('tonk:join-retry', self.__retry);
+        }
+        let fired = false;
+        const fire = () => {
+          if (fired || !self.ready()) return;
+          fired = true;
+          self.mount();
+        };
+        fire();
+        if (fired) return;
+        const display = self.closest('tonk-display');
+        if (!display) return;
+        self.__bound?.disconnect();
+        self.__bound = new MutationObserver(fire);
+        self.__bound.observe(display, { attributes: true, attributeFilter: ['data-bound'] });
+      }
+    disconnected: |
+      (self) => {
+        self.__bound?.disconnect();
+        self.__bound = null;
+      }
+
+# An inline-editable line of text, driven like a native input: its
+# `value` property is its text, a double-click makes it editable, Enter
+# commits — a blur, which fires `change` when the text changed — and
+# Escape restores the text the edit began with, so no `change` with a
+# new value is emitted. It holds no policy: the commit rides on the
+# consuming view's `onchange` binding.
+element!: &inline-editable
+  description: A contenteditable line of text with input-like `value` and `change`.
+  getter:
+    value: |
+      (self) => self.textContent ?? ''
+  setter:
+    value: |
+      (self, value) => {
+        if (self !== self.ownerDocument?.activeElement) self.textContent = value ?? '';
+      }
+  method:
+    connected: |
+      (self) => {
+        self.setAttribute('contenteditable', 'false');
+        self.setAttribute('role', 'textbox');
+        if (self.__wired) return;
+        self.__wired = true;
+        let before = '';
+        self.addEventListener('dblclick', () => {
+          self.setAttribute('contenteditable', 'plaintext-only');
+          self.focus();
+        });
+        self.addEventListener('focus', () => {
+          before = self.textContent ?? '';
+        });
+        self.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            self.blur();
+          } else if (event.key === 'Escape') {
+            event.preventDefault();
+            self.textContent = before;
+            self.blur();
+          }
+        });
+        self.addEventListener('blur', () => {
+          const current = self.textContent ?? '';
+          self.setAttribute('contenteditable', 'false');
+          if (current === before) return;
+          self.dispatchEvent(new Event('change', { bubbles: true }));
+        });
+      }
+
+# Opens account recovery over the missing-space screen: a click asks the
+# top page to raise the passkey ceremony, which needs a `window` and a
+# user gesture this opaque realm has neither of.
+element!: &space-login
+  description: A click asks the top page to open account recovery.
+  method:
+    connected: |
+      (self) => {
+        if (self.__wired) return;
+        self.__wired = true;
+        self.addEventListener('click', () => {
+          window.tonk?.register?.('{"reason":"space-login"}');
+        });
+      }
+
+element!: &space-actions
+  description: Controls a space card menu and its rename dialog.
+  method:
+    close: |
+      (self, restoreFocus) => self.querySelector('hub-menu')?.close?.(restoreFocus)
+    validate: |
+      (self, event) => {
+        const form = event.target;
+        if (!form?.matches?.('form[data-space-rename-form]')) return;
+        const input = form.elements.name;
+        const error = self.querySelector('[data-space-rename-error]');
+        input.value = input.value.trim();
+        if (!input.value) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          if (error) error.textContent = 'Enter a name for this space.';
+          input.focus();
+          return;
+        }
+        if (self.hasAttribute('busy')) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          return;
+        }
+        if (error) error.textContent = '';
+        self.setAttribute('busy', '');
+        const submit = self.querySelector('[data-space-rename-submit]');
+        if (submit) submit.disabled = true;
+      }
+    connected: |
+      (self) => {
+        if (self.__wired) return;
+        self.__wired = true;
+        self.addEventListener('submit', event => self.validate(event), true);
+        self.addEventListener('click', event => {
+          const opener = event.target?.closest?.('[data-space-actions-open]');
+          if (opener) {
+            const menu = self.querySelector('hub-menu');
+            if (menu?.getAttribute('open') === 'true') menu.close(true);
+            else menu?.open?.();
+            return;
+          }
+          if (event.target?.closest?.('[data-space-rename-open]')) {
+            self.close(false);
+            self.removeAttribute('busy');
+            const submit = self.querySelector('[data-space-rename-submit]');
+            if (submit) submit.disabled = false;
+            const error = self.querySelector('[data-space-rename-error]');
+            if (error) error.textContent = '';
+            self.querySelector('[data-space-rename-dialog]')?.show?.();
+            requestAnimationFrame(() => {
+              const input = self.querySelector('[data-space-rename-input]');
+              input?.focus(); input?.select?.();
+            });
+            return;
+          }
+          if (event.target?.closest?.('[role=menuitem]')
+              && !event.target?.closest?.('[data-space-remove-open]')) self.close(false);
+        });
+        self._outside = event => {
+          if (!self.contains(event.target)) self.close(false);
+        };
+        document.addEventListener('pointerdown', self._outside, true);
+      }
+    disconnected: |
+      (self) => document.removeEventListener('pointerdown', self._outside, true)
+    released: |
+      (self) => self.disconnected()
+
+# Names and routes delete or leave for one Hub row. Which verb it is
+# comes off the row's own attributes: no provider means the space is
+# local (delete, or leave when it was joined rather than founded); a
+# provider this account registered as means the hosted copy goes too.
+# The click prepares the row's dialog for that verb and opens it; the
+# dialog's form submits the `space/remove` command the view bound.
+element!: &space-remove
+  description: Names delete or leave for a Hub row and opens its confirmation.
+  method:
+    action: |
+      (self) => {
+        const provider = (self.dataset.spaceProvider ?? '').trim();
+        if (!provider) return (self.dataset.spaceFounded ?? '').trim() ? 'delete-local' : 'leave';
+        return self.hasAttribute('data-space-owner') ? 'delete-hosted' : 'leave';
+      }
+    classify: |
+      (self) => {
+        const action = self.action();
+        if (self.getAttribute('data-space-action') !== action) {
+          self.setAttribute('data-space-action', action);
+        }
+        const opener = self.querySelector('[data-space-remove-open]');
+        if (!opener) return;
+        opener.textContent = action === 'leave' ? 'leave' : 'delete';
+        opener.removeAttribute('disabled');
+      }
+    prepare: |
+      (self, action) => {
+        const name = (self.dataset.spaceName ?? '').trim() || 'this space';
+        const texts = {
+          'delete-hosted': [
+            'confirm space deletion',
+            `Permanently delete ${name}? This account hosts it, so its copy on Tonk services is released along with the local data. Other members lose access. Your account and other spaces are untouched.`,
+            'delete space',
+          ],
+          'delete-local': [
+            'confirm space deletion',
+            `Permanently delete ${name} from this device? This space has no Tonk-hosted copy, so its local data will be gone for good.`,
+            'delete space',
+          ],
+          'leave': [
+            'confirm leaving space',
+            `Leave ${name}? This removes the space and its local data from this device. You'll need another invite link to join again. Other members keep access.`,
+            'leave space',
+          ],
+        };
+        const [heading, copy, submit] = texts[action] ?? texts.leave;
+        self.querySelector('[data-space-remove-dialog]')?.setAttribute('heading', heading);
+        const form = self.querySelector('form[data-remove]');
+        if (form) form.textContent = copy;
+        const button = self.querySelector('[data-space-remove-submit]');
+        if (button) button.textContent = submit;
+      }
+    connected: |
+      (self) => {
+        self.classify();
+        if (self.__wired) return;
+        self.__wired = true;
+        self.addEventListener('click', (event) => {
+          if (!event.target?.closest?.('[data-space-remove-open]')) return;
+          self.prepare(self.action());
+          self.querySelector('[data-space-remove-dialog]')?.show?.();
+        });
+      }
+    attribute-changed: |
+      (self, name) => {
+        if (name.startsWith('data-space-') && name !== 'data-space-action') self.classify();
+      }
+
+# A frame that can be dragged around the viewport. It does not care what
+# it holds: the content is whatever the view puts inside, and the frame
+# only moves it. A press on the handle (the frame itself unless `handle`
+# names a part) that travels past the dead zone becomes a drag; the frame
+# tracks the pointer 1:1, stays inside the viewport, and on release docks
+# to the nearest edge at `inset` pixels, keeping its coordinate along
+# that edge, or merely clamps when `dock="none"`. A tap is left alone,
+# so whatever the content does on click still happens; the click that
+# ends a drag is swallowed, since it was not a click. A resize keeps a
+# docked frame on its edge and any frame inside the viewport.
+#
+# It reflects what it knows as attributes — `dragging` while a drag is
+# on, `docked` with the edge it rests on, `left`/`top` in pixels once
+# placed — and announces `drag-start` and `drag-end` (detail: `left`,
+# `top`, `edge`) so a view can persist or react.
+element!: &drag-frame
+  description: Drags its contents around the viewport and docks them to an edge.
+  attribute:
+    inset: "16"
+    dead-zone: "4"
+    dock: "edges"
+    handle: ""
+  method:
+    options: |
+      (self) => {
+        const number = (name, fallback) => {
+          const value = parseFloat(self.getAttribute(name));
+          return Number.isFinite(value) ? value : fallback;
+        };
+        return {
+          inset: number('inset', 16),
+          deadZone: number('dead-zone', 4),
+          dock: (self.getAttribute('dock') || 'edges') !== 'none',
+          handle: self.getAttribute('handle') || '',
+        };
+      }
+    handle-of: |
+      (self, target) => {
+        const selector = self.options().handle;
+        if (!selector) return self;
+        const part = target?.closest?.(selector);
+        return part && self.contains(part) ? part : null;
+      }
+    place: |
+      (self, left, top) => {
+        self.style.left = `${left}px`;
+        self.style.top = `${top}px`;
+      }
+    snap: |
+      (self, left, top, edge) => {
+        const { inset, dock } = self.options();
+        const rect = self.getBoundingClientRect();
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        let x = Math.max(inset, Math.min(left, vw - rect.width - inset));
+        let y = Math.max(inset, Math.min(top, vh - rect.height - inset));
+        if (!dock) return { left: x, top: y, edge: null };
+        if (!edge) {
+          const distances = [
+            ['left', x], ['right', vw - (x + rect.width)],
+            ['top', y], ['bottom', vh - (y + rect.height)],
+          ];
+          let nearest = distances[0];
+          for (const candidate of distances) if (candidate[1] < nearest[1]) nearest = candidate;
+          edge = nearest[0];
+        }
+        if (edge === 'left') x = inset;
+        else if (edge === 'right') x = vw - rect.width - inset;
+        else if (edge === 'top') y = inset;
+        else if (edge === 'bottom') y = vh - rect.height - inset;
+        return { left: Math.max(inset, x), top: Math.max(inset, y), edge };
+      }
+    settle: |
+      (self, left, top, edge) => {
+        const at = self.snap(left, top, edge);
+        self.place(at.left, at.top);
+        if (at.edge) self.setAttribute('docked', at.edge);
+        else self.removeAttribute('docked');
+        self.setAttribute('left', String(Math.round(at.left)));
+        self.setAttribute('top', String(Math.round(at.top)));
+        return at;
+      }
+    connected: |
+      (self) => {
+        if (getComputedStyle(self).position === 'static') self.style.position = 'fixed';
+        if (!self.style.touchAction) self.style.touchAction = 'none';
+        if (self.__wired) return;
+        self.__wired = true;
+        let press = null;
+        const finish = () => {
+          if (!press) return;
+          const { moved, touch, pointerId, handle } = press;
+          press = null;
+          window.removeEventListener('pointermove', move);
+          window.removeEventListener('pointerup', finish);
+          window.removeEventListener('pointercancel', finish);
+          try { (touch ? handle : self).releasePointerCapture(pointerId); } catch {}
+          if (!moved) return;
+          self.removeAttribute('dragging');
+          self.__justDragged = true;
+          setTimeout(() => { self.__justDragged = false; }, 0);
+          const rect = self.getBoundingClientRect();
+          const at = self.settle(rect.left, rect.top);
+          self.dispatchEvent(new CustomEvent('drag-end', { bubbles: true, detail: at }));
+        };
+        const move = (event) => {
+          if (!press) return;
+          if (event.buttons === 0) { finish(); return; }
+          const dx = event.clientX - press.x;
+          const dy = event.clientY - press.y;
+          if (!press.moved) {
+            const { deadZone } = self.options();
+            const zone = press.touch ? Math.max(deadZone, 9) : deadZone;
+            if (Math.hypot(dx, dy) < zone) return;
+            press.moved = true;
+            if (!press.touch) { try { self.setPointerCapture(press.pointerId); } catch {} }
+            self.removeAttribute('docked');
+            self.setAttribute('dragging', '');
+            self.dispatchEvent(new CustomEvent('drag-start', {
+              bubbles: true, detail: { left: press.left, top: press.top, edge: null },
+            }));
+          }
+          const rect = self.getBoundingClientRect();
+          const left = Math.max(0, Math.min(press.left + dx, window.innerWidth - rect.width));
+          const top = Math.max(0, Math.min(press.top + dy, window.innerHeight - rect.height));
+          self.place(left, top);
+        };
+        self.addEventListener('pointerdown', (event) => {
+          if (event.button !== 0 || press) return;
+          const handle = self.handleOf(event.target);
+          if (!handle) return;
+          const rect = self.getBoundingClientRect();
+          press = {
+            x: event.clientX, y: event.clientY, left: rect.left, top: rect.top,
+            pointerId: event.pointerId, touch: event.pointerType === 'touch',
+            moved: false, handle,
+          };
+          if (press.touch) { try { handle.setPointerCapture(event.pointerId); } catch {} }
+          window.addEventListener('pointermove', move);
+          window.addEventListener('pointerup', finish);
+          window.addEventListener('pointercancel', finish);
+        });
+        self.addEventListener('click', (event) => {
+          if (!self.__justDragged) return;
+          self.__justDragged = false;
+          event.stopPropagation();
+          event.preventDefault();
+        }, true);
+        self.__resize = () => {
+          if (press) return;
+          const rect = self.getBoundingClientRect();
+          self.settle(rect.left, rect.top, self.getAttribute('docked') || undefined);
+        };
+        window.addEventListener('resize', self.__resize);
+      }
+    disconnected: |
+      (self) => {
+        window.removeEventListener('resize', self.__resize);
+      }
+
+# The ceremony row as the settings page reads it: a marker carrying the
+# fields, which the element words. Pinned to `this` so a directory with
+# no row renders nothing (see the linked marker above).
+view!:
+  this: state:ceremony
+  show:
+    settings: |
+      <span data-ceremony-row data-of={this} data-ceremony={ceremony}
+        data-ceremony-state={state} data-ceremony-detail={detail} hidden></span>
+
+# What deleting the account deletes: every space this account provides,
+# named through the space's own row.
+view!:
+  this: space/owned
+  show:
+    deletion: |
+      <span data-owned-space data-of={this}><tonk-display model="tonk:space" entity={this} view="name"></tonk-display></span>
+
+# Named by its alias, as the hub's own views of it are: a view naming
+# the URI is checked against the concept stored on the branch, which on
+# a profile still carrying an older library has no `name` yet.
+view!:
+  this: space
+  show:
+    name: |
+      <span data-space-name>{name}</span>
+
+# The settings panel's element: what a view cannot do. The terminal's
+# request is read off the location and copied onto the approve control
+# so the click can assert it; the deletion phrase arms the submit; the
+# ceremony row is worded; and the seat the top page's passkey cluster
+# anchors to is measured, which only this realm can do.
+element!: &account-settings
+  description: The settings panel's location-bound acts, deletion arming, ceremony wording and custody seat.
+  method:
+    # Where this page is, as the host injects it: the guest's own
+    # location is about:srcdoc.
+    context: |
+      (self) => {
+        const context = window.tonk?.context ?? {};
+        if (context.origin) {
+          return { origin: context.origin, path: context.path ?? '', search: context.search ?? '', hash: context.hash ?? '' };
+        }
+        const at = window.location;
+        return { origin: at.origin, path: at.pathname, search: at.search, hash: at.hash };
+      }
+    # The worker's HTTP API, reached the way any guest reaches it: the
+    # host relays a same-origin fetch. A refusal rejects with its status.
+    api: |
+      (self, path, body) => {
+        const init = body === undefined ? {} : { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) };
+        return window.fetch(`${self.context().origin}${path}`, init).then(async (response) => {
+          const text = await response.text();
+          if (!response.ok) { const error = new Error(text || String(response.status)); error.status = response.status; throw error; }
+          return text ? JSON.parse(text) : null;
+        });
+      }
+    # Agent access: the invites this account issued to terminals, each
+    # granting one space, and the removal of that access. The records
+    # come from the worker, which asks the service; a load that the
+    # service answers 404 hides the section, since it has none to list.
+    connections-status: |
+      (self, text) => {
+        const node = self.querySelector('[data-connections-status]');
+        if (node && node.textContent !== text) node.textContent = text;
+      }
+    connections-refresh: |
+      (self) => {
+        const generation = String((Number(self.getAttribute('data-connections-generation')) || 0) + 1);
+        if (!self.linked() || self.context().path !== '/settings' ||
+            !self.querySelector('[data-connections-list]')) return;
+        self.setAttribute('data-connections-generation', generation);
+        const current = () => self.isConnected && self.getAttribute('data-connections-generation') === generation;
+        const list = self.querySelector('[data-connections-list]');
+        if (list) list.textContent = '';
+        self.connectionsStatus('loading access records…');
+        self.api('/api/account/connections').then((groups) => {
+          if (!current()) return;
+          self.querySelector('[data-agent-connections]')?.removeAttribute('hidden');
+          groups = (groups ?? []).filter((group) => !group.requestId);
+          self.connectionsStatus(groups.length
+            ? 'saved access; permission to sync is checked when the terminal connects'
+            : 'no agent invites issued from this account');
+          for (const group of groups) list?.append(self.connectionRecord(group));
+        }, (error) => {
+          if (!current()) return;
+          const section = self.querySelector('[data-agent-connections]');
+          if (section) section.hidden = error.status === 404;
+          self.connectionsStatus('access records could not be loaded. refresh to try again.');
+        });
+      }
+    connection-record: |
+      (self, group) => {
+        const el = (tag, className, text, parent) => {
+          const node = document.createElement(tag);
+          if (className) node.className = className;
+          if (text) node.textContent = text;
+          parent.append(node);
+          return node;
+        };
+        const row = document.createElement('article');
+        row.className = 'connection-record';
+        row.dataset.connectionId = group.id;
+        row.setAttribute('aria-label', group.label);
+        const heading = el('div', 'srowd', '', row);
+        el('b', 'lft', group.label, heading);
+        const count = group.targets.filter((target) => target.acknowledged).length;
+        const all = group.targets.length > 0 && count === group.targets.length;
+        const retry = !all && (group.status === 'partial' || count > 0 || group.targets.some((target) => target.error));
+        const button = el('button', 'cta', retry ? 'retry removing access' : (group.requestId ? 'remove space access' : 'remove invite access'), heading);
+        button.type = 'button';
+        button.dataset.connectionRevoke = group.id;
+        button.setAttribute('aria-label', `${group.requestId ? 'remove space access for' : 'remove invite access'} ${group.label}`);
+        if (all) button.disabled = true;
+        const details = el('details', 'expl', '', row);
+        el('summary', '', 'access details', details);
+        el('p', 'expl', `space: ${group.subject}`, details);
+        el('p', 'expl', `recipient: ${group.recipient}`, details);
+        el('p', 'expl', 'can read and edit this space', row);
+        const date = new Date(group.expiresAt * 1000);
+        el('p', 'expl', `expires: ${Number.isFinite(date.getTime()) ? date.toISOString() : group.expiresAt}`, row);
+        if (group.status === 'expired') el('p', 'expl', 'expired; send a new invitation to allow syncing again', row);
+        el('p', 'expl', group.confirmed ? 'setup confirmation received' : 'no setup confirmation recorded', row);
+        el('p', 'expl', count === 0 && group.status === 'partial' ? 'access removal requested; waiting for confirmation'
+          : count === 0 ? 'access has not been removed'
+          : `access removal confirmed for ${count} of ${group.targets.length} permissions`, row);
+        if (group.targets.some((target) => target.error)) {
+          el('p', 'expl', 'some access could not be removed. retry to remove the remaining permissions.', row);
+        }
+        return row;
+      }
+    connections-revoke: |
+      (self, button) => {
+        if (button.disabled) return;
+        const id = button.dataset.connectionRevoke ?? '';
+        if (!/^[0-9a-f]{64}$/.test(id)) return;
+        button.disabled = true;
+        self.connectionsStatus('removing access…');
+        const generation = self.getAttribute('data-connections-generation');
+        const current = () => self.isConnected && self.getAttribute('data-connections-generation') === generation;
+        self.api(`/api/account/connections/${id}/revoke`, {}).then((group) => {
+          if (!current()) return;
+          if (!group || group.id !== id) { self.connectionsStatus('the access record changed. refresh before trying again.'); return; }
+          button.closest('[data-connection-id]')?.replaceWith(self.connectionRecord(group));
+          const count = group.targets.filter((target) => target.acknowledged).length;
+          self.connectionsStatus(`access removal confirmed for ${count} of ${group.targets.length} permissions. downloaded data stays on devices that already have it.`);
+          const status = self.querySelector('[data-connections-status]');
+          if (status) { status.tabIndex = -1; status.focus(); }
+        }, () => {
+          if (!current()) return;
+          button.disabled = false;
+          self.connectionsStatus('access removal could not be confirmed. retry or refresh to check progress.');
+        });
+      }
+    # A terminal asking to attach one local space to this account. The
+    # request rides the URL as an encoded blob only the worker can read,
+    # so the pane asks it what is being asked before showing anything.
+    local-link-request: |
+      (self) => {
+        const at = self.context();
+        if (at.path !== '/settings/link') return null;
+        const params = new URLSearchParams(at.search);
+        if (params.get('intent') !== 'local-space-link') return null;
+        const request = params.get('request');
+        if (!request) return null;
+        return { request, approval: params.get('approval'), consent: params.get('consent'),
+                 invite: params.get('invite'), provisioned: params.get('provisioned') };
+      }
+    # Answer on the terminal's own callback, fields in the fragment, the
+    # same loopback check the worker makes.
+    local-link-return: |
+      (self, callback, fields) => {
+        let target;
+        try { target = new URL(callback); } catch { self.status('the callback address is invalid'); return; }
+        const loopback = target.protocol === 'http:' && target.hostname === '127.0.0.1' && !!target.port
+          && target.pathname === '/' && !target.search && !target.hash && !target.username && !target.password;
+        if (!loopback) { self.status('the callback is not a Tonk loopback address'); return; }
+        target.hash = new URLSearchParams(fields).toString();
+        window.tonk?.navigate?.(target.toString());
+      }
+    local-link-show: |
+      (self) => {
+        const request = self.localLinkRequest();
+        if (!request) return false;
+        self.pane('local-link');
+        if (self.getAttribute('data-local-link-shown') !== request.request) {
+          self.setAttribute('data-local-link-shown', request.request);
+          self.api('/api/local-space-link/describe', { request: request.request }).then((described) => {
+            self.localLink = described;
+            self.text('[data-local-link-name]', described.name);
+            self.text('[data-local-link-did]', described.subject ?? 'unreadable request');
+            self.localLinkContinue(request);
+          }, () => { self.text('[data-local-link-did]', 'unreadable request'); });
+        }
+        return true;
+      }
+    # An approval and an invite came back on the URL: the terminal has
+    # done its half, and the space is provisioned, then published.
+    local-link-continue: |
+      (self, request) => {
+        if (!(request.approval && request.invite) || self.hasAttribute('data-local-link-finishing')) return;
+        self.setAttribute('data-local-link-finishing', '');
+        if (request.provisioned) self.localLinkFinish(request);
+        else if (request.consent) self.localLinkProvision(request);
+      }
+    local-link-approve: |
+      (self) => {
+        const request = self.localLinkRequest();
+        const described = self.localLink;
+        if (!request || !described) return;
+        self.status('Approving this local space…');
+        self.api('/api/local-space-link/approve', { request: request.request }).then((response) => {
+          const approval = response?.approval;
+          if (!approval) { self.status('The approval response was not readable.'); return; }
+          self.localLinkReturn(described.callback, [['approve', approval], ['correlation', described.correlation]]);
+        }, (error) => self.status(`Could not approve this space: ${error.message}`));
+      }
+    local-link-decline: |
+      (self) => {
+        const described = self.localLink;
+        if (!self.localLinkRequest() || !described) return;
+        self.localLinkReturn(described.callback, [['deny', 'declined in the browser'], ['correlation', described.correlation]]);
+      }
+    local-link-provision: |
+      (self, request) => {
+        const described = self.localLink;
+        if (!described) return;
+        self.status('Preparing this space for publication…');
+        self.api('/api/local-space-link/provision', { request: request.request, approval: request.approval, consent: request.consent }).then((response) => {
+          const provisioned = response?.provisioned;
+          if (!provisioned) { self.status('The provisioning receipt was not readable.'); return; }
+          self.localLinkReturn(described.callback, [['provisioned', provisioned], ['correlation', described.correlation]]);
+        }, (error) => {
+          self.removeAttribute('data-local-link-finishing');
+          self.status(`Publication stopped: ${error.message}. Reload to retry.`);
+        });
+      }
+    local-link-finish: |
+      (self, request) => {
+        const described = self.localLink;
+        if (!described) return;
+        self.status('Publishing this space to your account…');
+        self.api('/api/local-space-link/complete', { request: request.request, approval: request.approval, invite: request.invite, provisioned: request.provisioned }).then((response) => {
+          const completion = response?.completion;
+          if (!completion) { self.status('The publication receipt was not readable. Reload to retry.'); return; }
+          self.localLinkReturn(described.callback, [['complete', completion], ['correlation', described.correlation]]);
+        }, (error) => {
+          self.removeAttribute('data-local-link-finishing');
+          self.status(`Publication stopped: ${error.message}. Reload to retry.`);
+        });
+      }
+    # Keys are hyphenated: the runtime camelCases them onto the
+    # prototype, so `self.linkRequest()` is how a sibling calls this.
+    link-request: |
+      (self) => {
+        const at = self.context();
+        if (at.path !== '/settings/link') return null;
+        const params = new URLSearchParams(at.search);
+        const audience = params.get('audience');
+        const callback = params.get('callback');
+        if (!audience || !callback) return null;
+        const name = (params.get('name') ?? '').trim() || 'terminal';
+        return { audience, callback, name, expectedAccount: params.get('expectedAccount') };
+      }
+    # Base58 over the callback URL: a bare URL carries a `:` and would
+    # decode as an entity on the worker's side.
+    base58: |
+      (self, text) => {
+        const alphabet = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+        const bytes = new TextEncoder().encode(text);
+        let zeros = 0;
+        while (zeros < bytes.length && bytes[zeros] === 0) zeros += 1;
+        let n = 0n;
+        for (const byte of bytes) n = (n << 8n) | BigInt(byte);
+        let out = '';
+        while (n > 0n) { out = alphabet[Number(n % 58n)] + out; n /= 58n; }
+        return '1'.repeat(zeros) + out;
+      }
+    text: |
+      (self, selector, value) => {
+        const target = self.querySelector(selector);
+        if (target && target.textContent !== value) target.textContent = value;
+      }
+    pane: |
+      (self, name) => {
+        for (const pane of self.querySelectorAll('[data-pane]')) pane.hidden = pane.dataset.pane !== name;
+        if (self.getAttribute('data-pane') !== name) self.setAttribute('data-pane', name);
+      }
+    refresh: |
+      (self) => {
+        if (self.localLinkShow()) return;
+        const request = self.linkRequest();
+        if (!request) {
+          self.pane('account');
+          if (self.context().hash === '#delete-account') self.openDelete();
+          self.connectionsRefresh();
+          return;
+        }
+        self.text('[data-link-name]', request.name);
+        self.text('[data-link-did]', request.audience);
+        self.text('[data-link-account]', request.expectedAccount ?? 'your signed-in account');
+        const approve = self.querySelector('[data-link-approve]');
+        if (approve) {
+          approve.dataset.audience = request.audience;
+          approve.dataset.callback = self.base58(request.callback);
+          approve.dataset.name = request.name;
+          approve.dataset.expectedAccount = request.expectedAccount ?? '';
+        }
+        self.pane('link');
+      }
+    status: |
+      (self, text) => {
+        const line = self.querySelector('[data-ceremony-status]');
+        if (!line) return;
+        if (line.textContent !== text) line.textContent = text;
+        if (line.hidden !== !text) line.hidden = !text;
+        self.seat();
+      }
+    # Where the top page's passkey cluster sits: just above the seat.
+    seat: |
+      (self) => {
+        const seat = self.querySelector('[data-custody-seat]');
+        if (!seat) return;
+        const box = seat.getBoundingClientRect();
+        if (!(box.width > 0 && box.height > 0)) return;
+        window.tonk?.register?.(JSON.stringify({
+          reason: 'custody-anchor',
+          anchor: { left: box.left, bottom: box.top - 7, width: box.width },
+        }));
+      }
+    open-delete: |
+      (self) => {
+        const dialog = self.querySelector('[data-delete-account-dialog]');
+        if (!dialog) return;
+        const field = self.querySelector('[data-delete-confirm]');
+        if (field) field.value = '';
+        self.scope();
+        self.arm();
+        dialog.show?.();
+        field?.focus();
+      }
+    # The sentence the dialog opens on, counted off the owned-space rows
+    # the view renders.
+    scope: |
+      (self) => {
+        const owned = [...self.querySelectorAll('[data-owned-space]')];
+        const names = owned.map((row) => (row.querySelector('[data-space-name]')?.textContent ?? '').trim() || 'unnamed space');
+        const count = owned.length;
+        const listed = names.length ? `: ${names.join(', ')}` : '';
+        self.text('[data-delete-scope]',
+          `${count} owned hosted space${count === 1 ? '' : 's'} will be deleted${listed}. Spaces you joined are left intact.`);
+      }
+    # The submit fires the command, so it stays disabled until the exact
+    # phrase is typed and the address is on it.
+    arm: |
+      (self) => {
+        const field = self.querySelector('[data-delete-confirm]');
+        const submit = self.querySelector('[data-delete-account-submit]');
+        if (!field || !submit) return;
+        const expected = (self.querySelector('[data-delete-confirm-label]')?.textContent ?? '').trim();
+        const armed = !!expected && field.value.trim() === expected && !!submit.dataset.email;
+        if (armed === submit.hasAttribute('disabled')) {
+          if (armed) submit.removeAttribute('disabled'); else submit.setAttribute('disabled', '');
+        }
+      }
+    profiles: |
+      (self) => {
+        for (const button of self.querySelectorAll('[data-settings-profile]')) {
+          const active = button.dataset.active === 'true';
+          if (button.disabled !== active) button.disabled = active;
+          const state = button.querySelector('[data-switch-state]');
+          const label = active ? 'current' : 'switch';
+          if (state && state.textContent !== label) state.textContent = label;
+        }
+      }
+    passkey-dates: |
+      (self) => {
+        for (const date of self.querySelectorAll('[data-settings-passkey-created]')) {
+          const seconds = Number(date.textContent.trim());
+          if (!Number.isFinite(seconds) || seconds <= 0) continue;
+          const created = new Date(seconds * 1000);
+          if (Number.isNaN(created.getTime())) continue;
+          date.textContent = new Intl.DateTimeFormat(undefined, {
+            month: 'short', day: 'numeric', year: 'numeric'
+          }).format(created);
+        }
+      }
+    profile-name-submit: |
+      (self, event) => {
+        const form = event.target.closest?.('[data-profile-rename-form]');
+        if (!form) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        const input = form.elements?.name;
+        const submit = form.querySelector('[data-profile-rename-submit]');
+        const error = form.querySelector('[data-profile-rename-error]');
+        if (form.getAttribute('aria-busy') === 'true') {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          return;
+        }
+        const name = (input?.value ?? '').trim();
+        if (!name) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          if (input) {
+            input.setAttribute('aria-invalid', 'true');
+            input.focus();
+          }
+          if (error) {
+            error.textContent = 'Enter a display name.';
+            error.hidden = false;
+          }
+          return;
+        }
+        input.value = name;
+        input.removeAttribute('aria-invalid');
+        if (error) { error.textContent = ''; error.hidden = true; }
+        if (name === input.defaultValue.trim()) return;
+        form.setAttribute('aria-busy', 'true');
+        if (submit) submit.disabled = true;
+        self.profileNameSave(form, name);
+      }
+    profile-name-save: |
+      async (self, form, name) => {
+        let reader;
+        const error = form.querySelector('[data-profile-rename-error]');
+        try {
+          await window.tonk.ready;
+          if (!self.isConnected) return;
+          const id = 'urn:uuid:' + Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(16).padStart(8, '0')).join('');
+          reader = window.tonk.subscribe({
+            predicate: { with: {
+              status: { the: 'xyz.tonk.profile-rename/status', as: 'Text', cardinality: 'one' },
+              detail: { the: 'xyz.tonk.profile-rename/detail', as: 'Text', cardinality: 'one' },
+            } },
+            terms: { this: id, status: { '?': { name: 'status' } }, detail: { '?': { name: 'detail' } } },
+          }).getReader();
+          self._nameReader = reader;
+          await window.tonk.transact({ claims: [{ op: 'assert', application: {
+            predicate: { kind: 'transient', concept: { with: {
+              name: { the: 'xyz.tonk.command.profile-rename/name', as: 'Text' },
+            } } },
+            parameters: { this: id, name },
+          } }] });
+          while (self.isConnected) {
+            const { value, done } = await reader.read();
+            if (done) throw new Error('Rename status stream ended');
+            const result = value.find(row => row.this === id)?.fields;
+            if (result?.status === 'failed') {
+              if (error) { error.textContent = result.detail; error.hidden = false; }
+              return;
+            }
+            if (result?.status === 'renamed') {
+              form.elements.name.defaultValue = name;
+              return;
+            }
+          }
+        } catch (failure) {
+          if (error) {
+            error.textContent = "Couldn't confirm your display name was saved. Try again.";
+            error.hidden = false;
+          }
+        } finally {
+          if (reader) await reader.cancel().catch(() => {});
+          if (self._nameReader === reader) self._nameReader = null;
+          form.removeAttribute('aria-busy');
+          const submit = form.querySelector('[data-profile-rename-submit]');
+          if (submit) submit.disabled = false;
+        }
+      }
+    # Word the ceremony row. Every write is guarded, because this runs
+    # from an observer over the same subtree it writes into.
+    describe: |
+      (self) => {
+        const row = self.querySelector('[data-ceremony-row]');
+        if (!row) return;
+        const which = row.dataset.ceremony;
+        const state = row.dataset.ceremonyState;
+        const detail = row.dataset.ceremonyDetail ?? '';
+        const subject = {
+          'delete-account': 'Deleting the account',
+          'authorize-device': 'Approving the terminal',
+          'add-passkey': 'Adding the passkey',
+        }[which];
+        if (!subject) return;
+        const done = {
+          'delete-account': 'Account deleted.',
+          'authorize-device': 'Approved. Handing the terminal its access…',
+        }[which] ?? 'Done.';
+        const text = {
+          'pending-ceremony': `${subject}: waiting for passkey…`,
+          'working': `${subject}…`,
+          'done': done,
+          'refused': `${subject} did not finish: ${detail}`,
+          'failed': `${subject} did not finish: ${detail}`,
+        }[state];
+        if (!text) return;
+        if (self.getAttribute('data-ceremony') !== which) self.setAttribute('data-ceremony', which);
+        if (self.getAttribute('data-ceremony-state') !== state) self.setAttribute('data-ceremony-state', state);
+        if (which === 'authorize-device') {
+          const asking = state === 'pending-ceremony' || state === 'working';
+          if (asking !== self.hasAttribute('data-passkey-requested')) {
+            if (asking) self.setAttribute('data-passkey-requested', ''); else self.removeAttribute('data-passkey-requested');
+          }
+        }
+        self.status(text);
+      }
+    # Declining hands the terminal a deny on its own callback. The same
+    # loopback check the worker makes on approval: a callback that is
+    # not a Tonk loopback address gets nothing.
+    decline: |
+      (self) => {
+        const request = self.linkRequest();
+        if (!request) return;
+        let target;
+        try { target = new URL(request.callback); } catch { self.status('the authorization callback address is invalid'); return; }
+        const loopback = target.protocol === 'http:' && target.hostname === '127.0.0.1' && !!target.port
+          && target.pathname === '/' && !target.search && !target.hash && !target.username && !target.password;
+        if (!loopback) { self.status('the authorization callback is not a Tonk loopback address'); return; }
+        const fields = new URLSearchParams([['deny', 'declined in the browser'], ['redirect', `${self.context().origin}/settings`]]);
+        target.hash = fields.toString();
+        window.tonk?.navigate?.(target.toString());
+      }
+    # Whether this browser has an account here, read off the bar's link
+    # display: the link row says whether THIS DEVICE holds the account on
+    # this branch, and the name renders through it. Unlinked is KNOWN to
+    # have none: the display resolved to zero rows.
+    linked: |
+      (self) => !!document.querySelector('[data-account-linked], [data-account-name]')
+    unlinked: |
+      (self) => !self.linked() && document.querySelector('[data-account-link]')?.dataset.state === 'empty'
+    # A ceremony is up: the flag is an attribute so a re-render keeps it.
+    link: |
+      (self, reason) => {
+        self.setAttribute('data-linking', 'true');
+        self._shown = 'show';
+        self.place(reason);
+      }
+    unlink: |
+      (self) => { self._shown = null; self.setAttribute('data-linking', 'false'); }
+    # Pass the opener's bounds to the trusted top page. `reason`
+    # distinguishes an opening from a move: a move must never reopen a
+    # ceremony the person has just dismissed.
+    place: |
+      (self, reason) => {
+        const target = matchMedia('(max-width: 600px)').matches
+          ? document.querySelector('[data-account-nav]')
+          : document.querySelector('.hubbar');
+        const box = target?.getBoundingClientRect();
+        const anchor = box && box.width > 0 && box.height > 0 ? { left: box.left, bottom: box.bottom, width: box.width } : null;
+        if (!anchor && reason === 'reseat') return;
+        window.tonk?.register?.(JSON.stringify(anchor ? { reason, space: '', anchor } : { reason, space: '' }));
+      }
+    # The link state the account page's rows are keyed on, and the door:
+    # the account page or the settings page with no account raises the
+    # ceremony itself once the link display has resolved empty. With no
+    # account the spaces collection stays behind the modal. WebAuthn needs
+    # a `window` and a user gesture, which this
+    # opaque realm has neither of, so the top page raises it.
+    door: |
+      (self) => {
+        const linked = self.linked() ? 'true' : self.unlinked() ? 'false' : '';
+        const changed = self.getAttribute('data-linked') !== linked;
+        if (changed) self.setAttribute('data-linked', linked);
+        const trigger = document.querySelector('[data-account-trigger]');
+        const destination = linked === 'true' ? '/settings' : '/account';
+        if (trigger && trigger.getAttribute('href') !== destination) trigger.setAttribute('href', destination);
+        const path = self.context().path;
+        // Settings with no account here are the account page's business:
+        // it is where signing up happens, so a bare settings path goes
+        // there. A terminal's request page stays, and raises the ceremony
+        // itself, because the request rides its location.
+        if (path === '/settings' && self.unlinked()) {
+          window.tonk?.navigate?.('/account');
+          return;
+        }
+        const account = path === '/account' || path.startsWith('/settings/');
+        const linking = self.getAttribute('data-linking') === 'true';
+        if (linked === 'true' && path === '/account' && !linking) {
+          window.tonk?.navigate?.('/settings');
+          return;
+        }
+        if (changed && linked === 'true' && path === '/settings') self.connectionsRefresh();
+        if (account && self.unlinked() && !linking) self.link('needs-account');
+        // Route changes can suspend and restore the ceremony with its
+        // typed address intact.
+        const shown = account ? 'show' : 'suspend';
+        if (linking && self._shown !== shown) { self._shown = shown; self.place(shown); }
+      }
+    connected: |
+      (self) => {
+        self.addEventListener('submit', (event) => self.profileNameSubmit(event), true);
+        self.addEventListener('click', (event) => {
+          const hit = (selector) => event.target.closest(selector);
+          if (hit('[data-connections-refresh]')) {
+            self.connectionsRefresh();
+          } else if (hit('[data-connection-revoke]')) {
+            self.connectionsRevoke(hit('[data-connection-revoke]'));
+          } else if (hit('[data-local-link-approve]')) {
+            self.localLinkApprove();
+          } else if (hit('[data-local-link-decline]')) {
+            self.localLinkDecline();
+          } else if (hit('[data-sign-out-open]')) {
+            self.querySelector('[data-sign-out-dialog]')?.show?.();
+          } else if (hit('[data-delete-account-open]')) {
+            self.openDelete();
+          } else if (hit('[data-sign-out-submit]')) {
+            self.querySelector('[data-sign-out-dialog]')?.close?.();
+            self.status('Signing out…');
+          } else if (hit('[data-delete-account-submit]')) {
+            self.querySelector('[data-delete-account-dialog]')?.close?.();
+            self.status('Waiting for passkey…');
+          } else if (hit('[data-add-passkey]')) {
+            self.status('Waiting for passkey…');
+          } else if (hit('[data-link-approve]')) {
+            self.setAttribute('data-passkey-requested', '');
+            self.status('Waiting for passkey…');
+          } else if (hit('[data-link-decline]')) {
+            self.decline();
+          }
+        });
+        self.addEventListener('input', (event) => {
+          if (event.target.matches?.('[data-delete-confirm]')) self.arm();
+        });
+        // The rows this words and counts arrive after connect and change
+        // while the panel is up; one observer covers all three.
+        const rows = new MutationObserver(() => { self.describe(); self.scope(); self.arm(); self.profiles(); self.passkeyDates(); });
+        rows.observe(self, { childList: true, characterData: true, subtree: true, attributes: true,
+          attributeFilter: ['data-ceremony', 'data-ceremony-state', 'data-ceremony-detail', 'data-email'] });
+        const opened = () => {
+          if (self.hasAttribute('data-passkey-screen')) return;
+          self.setAttribute('data-passkey-screen', '');
+          self.seat();
+        };
+        const closed = () => {
+          self.removeAttribute('data-passkey-screen');
+          self.removeAttribute('data-passkey-requested');
+          if (!['refused', 'failed', 'done'].includes(self.getAttribute('data-ceremony-state'))) self.status('');
+        };
+        const reseat = () => self.seat();
+        window.addEventListener('tonk:custody-opened', opened);
+        window.addEventListener('tonk:custody-closed', closed);
+        window.addEventListener('scroll', reseat, true);
+        window.addEventListener('resize', reseat, true);
+        const sized = new ResizeObserver(reseat);
+        sized.observe(self);
+        self._teardown = () => {
+          rows.disconnect();
+          sized.disconnect();
+          window.removeEventListener('tonk:custody-opened', opened);
+          window.removeEventListener('tonk:custody-closed', closed);
+          window.removeEventListener('scroll', reseat, true);
+          window.removeEventListener('resize', reseat, true);
+        };
+        self.refresh();
+        const moved = () => { self.refresh(); self.door(); };
+        window.addEventListener('tonk:context', moved);
+        self._moved = moved;
+        self.door();
+        // The link display resolves after this connects and changes while
+        // the page is up; the bar is a sibling, so the observer watches
+        // the document.
+        const resolved = new MutationObserver(() => self.door());
+        resolved.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-state'] });
+        self._resolved = resolved;
+        // The top page tears the ceremony down, finished or dismissed.
+        const torn = () => { if (self.getAttribute('data-linking') === 'true') self.unlink(); };
+        window.addEventListener('tonk:registration-closed', torn);
+        self._torn = torn;
+        // Re-seat the ceremony on anything that can move the bar; the top
+        // page ignores the update when no ceremony is open.
+        const moveSeat = () => { if (self.getAttribute('data-linking') === 'true') self.place('reseat'); };
+        window.addEventListener('resize', moveSeat);
+        window.addEventListener('scroll', moveSeat, true);
+        self._moveSeat = moveSeat;
+        self.describe();
+        self.profiles();
+        self.passkeyDates();
+      }
+    disconnected: |
+      (self) => {
+        self._nameReader?.cancel().catch(() => {});
+        self._nameReader = null;
+        if (self._moved) window.removeEventListener('tonk:context', self._moved);
+        self._resolved?.disconnect();
+        if (self._torn) window.removeEventListener('tonk:registration-closed', self._torn);
+        if (self._moveSeat) {
+          window.removeEventListener('resize', self._moveSeat);
+          window.removeEventListener('scroll', self._moveSeat, true);
+        }
+        self._teardown?.();
+        self._teardown = null;
+      }
+    released: |
+      (self) => self.disconnected()

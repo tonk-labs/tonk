@@ -139,6 +139,59 @@ pub(crate) fn notify_profile_changed(except: Option<&crate::router::ClientId>) {
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub(crate) fn notify_profile_changed(_except: Option<&crate::router::ClientId>) {}
 
+/// Ask the ORIGINATING document to reload after the active branch changes
+/// under it. Its own requests are fenced from here on (a stale context
+/// generation answers 409), and a command cannot be awaited from the page
+/// the way the old endpoints were, so the worker says when the swap is
+/// done rather than the page guessing.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) fn notify_profile_changed_to(client: Option<&crate::router::ClientId>) {
+    use wasm_bindgen::{JsCast, JsValue};
+    use wasm_bindgen_futures::{JsFuture, spawn_local};
+
+    let Some(client) = client else {
+        log!("profile change: no originating client; nothing to reload");
+        return;
+    };
+    let client_id = client.0.clone();
+    let global: web_sys::ServiceWorkerGlobalScope = match js_sys::global().dyn_into() {
+        Ok(global) => global,
+        Err(_) => {
+            log!("profile change: not in a service worker scope; skipping reload");
+            return;
+        }
+    };
+    spawn_local(async move {
+        let client = match JsFuture::from(global.clients().get(&client_id)).await {
+            Ok(value) if !value.is_undefined() && !value.is_null() => value,
+            Ok(_) => {
+                log!("profile change: originating client {client_id} is gone; skipping reload");
+                return;
+            }
+            Err(error) => {
+                log!("profile change: clients.get failed: {error:?}");
+                return;
+            }
+        };
+        let Ok(client) = client.dyn_into::<web_sys::Client>() else {
+            log!("profile change: clients.get did not yield a Client; skipping reload");
+            return;
+        };
+        let message = js_sys::Object::new();
+        let _ = js_sys::Reflect::set(
+            &message,
+            &JsValue::from_str("type"),
+            &JsValue::from_str("profile-changed"),
+        );
+        if let Err(error) = client.post_message(&message) {
+            log!("profile change: reload message to the origin failed: {error:?}");
+        }
+    });
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub(crate) fn notify_profile_changed_to(_client: Option<&crate::router::ClientId>) {}
+
 /// Post a typed launch-funnel success to the originating page.
 ///
 /// The message never leaves the browser. It carries the local space routing

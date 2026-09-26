@@ -19,6 +19,9 @@ pub struct Subscribe<'a> {
     /// The client this subscriber serves, when known — see
     /// [`BranchState::retain_subscribers`](crate::BranchState::retain_subscribers).
     pub client: Option<String>,
+    /// Consumer nesting level, notified outermost first — see
+    /// [`BranchState::poll`](crate::BranchState::poll).
+    pub level: u32,
 }
 
 impl<'a> Subscribe<'a> {
@@ -28,6 +31,7 @@ impl<'a> Subscribe<'a> {
             branch,
             query,
             client: None,
+            level: 0,
         }
     }
 
@@ -35,6 +39,13 @@ impl<'a> Subscribe<'a> {
     /// can prune it once that client is no longer alive.
     pub fn client(mut self, client: impl Into<String>) -> Self {
         self.client = Some(client.into());
+        self
+    }
+
+    /// Set how deeply the consumer is nested, so its branch notifies
+    /// outer consumers of a change before inner ones.
+    pub fn level(mut self, level: u32) -> Self {
+        self.level = level;
         self
     }
 
@@ -46,10 +57,12 @@ impl<'a> Subscribe<'a> {
         Env: LoadProvider + BranchOpenProvider + SelectProvider,
     {
         let session = self.branch.acquire(env).await?;
-        let subscriber =
-            self.branch
-                .reactor()
-                .register_subscription(&session, self.query, self.client)?;
+        let subscriber = self.branch.reactor().register_subscription(
+            &session,
+            self.query,
+            self.client,
+            self.level,
+        )?;
         session
             .subscription(subscriber.hash.clone())
             .poll()

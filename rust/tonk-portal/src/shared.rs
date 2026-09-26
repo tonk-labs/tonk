@@ -16,6 +16,39 @@ use wasm_bindgen::closure::Closure;
 use web_sys::{Element, HtmlElement, HtmlIFrameElement, window};
 
 use crate::bridge::{self, PortalState};
+use crate::site_content::head_markup as build_head_markup;
+
+/// The tags an embedder may place in a portal's light DOM to style its
+/// guest. Anything else a caller nests is ignored: the head is not a
+/// general escape hatch for injecting markup into a sealed document.
+const HEAD_TAGS: [&str; 2] = ["STYLE", "LINK"];
+
+/// Serialize the embedder's `<style>` / `<link>` children for hoisting into
+/// the guest's document head.
+///
+/// Styling is the embedder's opinion, so the element takes it from markup:
+/// `<tonk-site>` mounts with whatever stylesheet its mounter nests inside
+/// it. Children of any other tag are skipped — the iframe itself is a child
+/// once mounted, and a portal's content belongs in `content`, not here.
+fn head_markup(host: &Element) -> String {
+    // `children()` is on `ParentNode`, not `Element`; walk the child nodes
+    // and keep the ones that are elements.
+    let children = host.child_nodes();
+    let mut parts: Vec<String> = Vec::new();
+    for i in 0..children.length() {
+        let Some(child) = children.item(i) else {
+            continue;
+        };
+        let Some(child) = child.dyn_ref::<Element>() else {
+            continue;
+        };
+        let tag: String = child.tag_name();
+        if HEAD_TAGS.contains(&tag.as_str()) {
+            parts.push(child.outer_html());
+        }
+    }
+    build_head_markup(&parts)
+}
 
 /// Create and wire up the portal iframe, then store the resulting state.
 ///
@@ -89,12 +122,16 @@ pub(crate) fn connect_portal(
     // `<tonk-display>`): the bootstrap additionally pulls in the
     // injected element runtime + CSS before `content` upgrades.
     let runtime = host.has_attribute("runtime");
+    // Read the embedder's head markup BEFORE appending the iframe: the
+    // iframe becomes a child too, and only the author's own `<style>` /
+    // `<link>` children belong in the guest's head.
+    let head = head_markup(&host);
     let _ = host.append_child(&iframe);
     let base = space_base(&state.borrow());
     let srcdoc = if runtime {
-        bridge::bootstrap_srcdoc_with_runtime(&content, &base)
+        bridge::bootstrap_srcdoc_with_runtime(&content, &base, &head)
     } else {
-        bridge::bootstrap_srcdoc(&content, &base)
+        bridge::bootstrap_srcdoc(&content, &base, &head)
     };
     let _ = iframe.set_attribute("srcdoc", &srcdoc);
 
@@ -108,15 +145,20 @@ pub(crate) fn connect_portal(
 /// Shared by both portal elements; `content`/`entity`/`model` attribute
 /// changes call this.
 pub(crate) fn reload_portal(host: &Element, state: &Rc<RefCell<PortalState>>) {
+    bridge::disconnect_task(state);
     let mut s = state.borrow_mut();
     s.clear_subs();
     if let Some(iframe) = s.iframe.as_ref() {
         let content = host.get_attribute("content").unwrap_or_default();
         let base = space_base(&s);
+        // Re-read the children rather than reusing the mount-time markup: a
+        // reload rebuilds the whole document, and the embedder may have
+        // changed its styles since.
+        let head = head_markup(host);
         let srcdoc = if host.has_attribute("runtime") {
-            bridge::bootstrap_srcdoc_with_runtime(&content, &base)
+            bridge::bootstrap_srcdoc_with_runtime(&content, &base, &head)
         } else {
-            bridge::bootstrap_srcdoc(&content, &base)
+            bridge::bootstrap_srcdoc(&content, &base, &head)
         };
         let _ = iframe.set_attribute("srcdoc", &srcdoc);
     }

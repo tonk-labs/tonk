@@ -69,12 +69,14 @@ pub(crate) mod rotation;
 
 mod join;
 pub use join::{JoinRequest, JoinResponse};
+mod local_space_link;
 
 pub(crate) mod account_devices;
 
 mod create_invite;
 pub use create_invite::{CreateInviteRequest, CreateInviteResponse};
 
+pub(crate) mod agent_connections;
 mod revoke_invite;
 
 /// Space membership management: admins and removals, as commands.
@@ -83,7 +85,7 @@ mod members;
 pub mod inspect;
 pub use inspect::{BranchStatusResponse, RemoteBranchStatusResponse, RemoteStatusResponse};
 
-mod repository;
+pub(crate) mod repository;
 pub(crate) use repository::ProfileLibraryCache;
 pub use repository::{
     BranchConfiguration, MemberInfo, RemoteConfiguration, RepositoryConfiguration, RepositoryInfo,
@@ -112,7 +114,7 @@ pub use lsp::LspHub;
 mod lsp_env;
 
 mod onboarding_space;
-mod profile;
+pub(crate) mod profile;
 pub use profile::{ProfileInfo, SpaceEntry};
 
 pub(crate) mod profiles;
@@ -229,10 +231,6 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         )
         .route("/api/account", get(account::get).delete(account::unlink))
         .route("/api/account/deletion/plan", get(account_deletion::plan))
-        .route(
-            "/api/account/spaces/delete",
-            post(account_deletion::delete_space),
-        )
         .route("/api/account/attach", post(account::link))
         .route("/api/account/display-name", post(account::set_display_name))
         // Customer registration with the same-origin access service.
@@ -308,6 +306,22 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         // access on an existing one. See `router/join.rs`.
         .route("/api/profile/join", post(join::join))
         .route(
+            "/api/local-space-link/approve",
+            post(local_space_link::approve),
+        )
+        .route(
+            "/api/local-space-link/describe",
+            post(local_space_link::describe),
+        )
+        .route(
+            "/api/local-space-link/provision",
+            post(local_space_link::provision),
+        )
+        .route(
+            "/api/local-space-link/complete",
+            post(local_space_link::complete),
+        )
+        .route(
             "/api/migrate/repo-vs-profile",
             get(migration::repo_vs_profile),
         )
@@ -328,6 +342,11 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             post(revoke_invite::revoke),
         )
         .route("/api/repository/{repo}/invites", get(revoke_invite::list))
+        .route("/api/account/connections", get(agent_connections::list))
+        .route(
+            "/api/account/connections/{id}/revoke",
+            post(agent_connections::revoke),
+        )
         // Opt-in remote attach — wires a remote (and branch upstream)
         // onto an existing repo, idempotently. See
         // `router/repository.rs::attach_remote`.
@@ -4345,6 +4364,145 @@ employee:
             session.state.subscriptions().lock().is_empty(),
             "dropped subscriber's subscription must be pruned after a change-driven poll"
         );
+    }
+
+    /// A branch polls its subscriptions lowest level first. The page gives
+    /// a display its nesting depth as its level, because a nested display must see
+    /// a change after its parent: otherwise it renders a frame for an
+    /// address its parent is about to replace. Creation order can't stand
+    /// in for level, because after a worker restart the page reconnects its
+    /// subscriptions in any order.
+    #[dialog_common::test]
+    async fn it_polls_outer_levels_before_nested_ones() {
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+        use tokio::sync::mpsc::unbounded_channel;
+        use tonk_schema::query::Query as WireQuery;
+
+        let tonk = test_state().await;
+        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let (app, _lsp) = crate::api_router_from_state(app_state.clone());
+        let (repo, subject) = put_repo_info(&app, "test-reactor-poll-order").await;
+
+        let guard = app_state.read().await;
+        let session = guard
+            .reactor
+            .repository(&repo)
+            .branch("main")
+            .acquire(&guard.operator)
+            .await
+            .expect("acquire");
+        session.state.assert_overlay(tonk_schema::SpaceLocal::new(
+            &subject.parse().unwrap(),
+            true,
+        ));
+
+        // Every query names its term differently, which gives it its own
+        // hash and tags its rows with the query they came from.
+        let query = |term: &str| {
+            let wire: WireQuery = serde_json::from_value(serde_json::json!({
+                "predicate": { "with": { term: {
+                    "the": "xyz.tonk.space/local", "as": "Boolean", "cardinality": "one"
+                } } },
+                "terms": { "this": subject, term: { "?": { "name": term } } }
+            }))
+            .expect("query decodes");
+            wire.into_concept_query().expect("concept query")
+        };
+
+        // Every subscriber shares one channel, so the receiver sees frames
+        // in the order the branch delivered them. Deeper levels register
+        // first (as nested displays can after a reconnect), four per level.
+        let (sender, mut receiver) = unbounded_channel();
+        // A query shared across levels is polled at its outermost, even
+        // though its deepest subscriber created it (first of all).
+        session
+            .state
+            .adopt_subscriber(query("shared"), None, 9, sender.clone());
+        let mut expected = Vec::new();
+        for level in (0..4u32).rev() {
+            for index in 0..4 {
+                let term = format!("l{level}n{index}");
+                session
+                    .state
+                    .adopt_subscriber(query(&term), None, level, sender.clone());
+                expected.push((level, term));
+            }
+        }
+        session
+            .state
+            .adopt_subscriber(query("shared"), None, 0, sender.clone());
+        expected.sort_by_key(|(level, _)| *level);
+        let mut expected: Vec<String> = expected.into_iter().map(|(_, term)| term).collect();
+        expected.insert(0, "shared".into());
+        expected.insert(0, "shared".into());
+        let terms = expected.clone();
+
+        session.state.poll(&guard.operator).await;
+
+        let mut delivered = Vec::new();
+        while let Ok(bytes) = receiver.try_recv() {
+            let frame: serde_json::Value = serde_json::from_slice(&bytes).expect("frame decodes");
+            let rows = frame["conclusions"].as_array().expect("a snapshot");
+            assert_eq!(rows.len(), 1, "each query matches the stamp: {frame}");
+            let row = rows[0].to_string();
+            let term = terms
+                .iter()
+                .find(|term| row.contains(&format!("\"{term}\"")))
+                .unwrap_or_else(|| panic!("row names its query: {frame}"));
+            delivered.push(term.clone());
+        }
+        assert_eq!(delivered, expected);
+    }
+
+    /// A subscription request carries its level in the URL, and the branch
+    /// records it on the subscriber.
+    #[dialog_common::test]
+    async fn it_records_the_level_a_subscription_request_names() {
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let tonk = test_state().await;
+        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let (app, _lsp) = crate::api_router_from_state(app_state.clone());
+        let repo = "test-reactor-level";
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
+        seed_named_entity(&app, repo).await;
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{repo}/branch/main/query?level=3"))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .header("accept", "text/event-stream")
+                    .body(Body::from(named_concept_wire_query().to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut body = SseReader::new(response.into_body());
+        let _snapshot = read_sse_frame(&mut body).await;
+
+        let guard = app_state.read().await;
+        let session = guard
+            .reactor
+            .repository(repo)
+            .branch("main")
+            .acquire(&guard.operator)
+            .await
+            .expect("acquire");
+        let levels: Vec<u32> = session
+            .state
+            .subscriptions()
+            .lock()
+            .values()
+            .flat_map(|subscription| subscription.subscribers.iter().map(|s| s.level))
+            .collect();
+        assert_eq!(levels, vec![3]);
     }
 
     /// One-shot `/query` projects every term named in the

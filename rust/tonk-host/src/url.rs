@@ -5,7 +5,7 @@
 //! | Op       | Path                                                |
 //! |----------|-----------------------------------------------------|
 //! | query    | `/api/repository/{space}/branch/{branch}/query`     |
-//! | subscribe| `/api/repository/{space}/branch/{branch}/query`     |
+//! | subscribe| `/api/repository/{space}/branch/{branch}/query?level=N` |
 //! | claim    | `/api/repository/{space}/branch/{branch}/transact`  |
 //! | evaluate | `/api/repository/{space}/branch/{branch}/evaluate`  |
 //!
@@ -34,6 +34,18 @@ const DEFAULT_BRANCH: &str = "main";
 /// header).
 pub(crate) fn query_url(space: Option<&str>, branch: Option<&str>, profile: bool) -> String {
     endpoint(space, branch, profile, "query")
+}
+
+/// Build the `/query` URL for `tonk-subscribe`. `level` is the
+/// consumer's nesting depth; the worker notifies lower levels first, so
+/// outer displays hear of a change before the displays nested in them.
+pub(crate) fn subscribe_url(
+    space: Option<&str>,
+    branch: Option<&str>,
+    profile: bool,
+    level: u32,
+) -> String {
+    format!("{}?level={level}", query_url(space, branch, profile))
 }
 
 /// Build the `/transact` URL for `tonk-claim`.

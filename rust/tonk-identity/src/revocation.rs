@@ -183,6 +183,37 @@ pub async fn mint_delegated_revocation(
     package(revocation, path, Some(proofs))
 }
 
+/// Mint a delegated withdrawal with the current signer's path included as
+/// ordinary witness evidence. Account siblings share an ancestor, but the
+/// original invitation path reaches only the browser that issued it.
+///
+/// Current-device hops lead the pool so the witness walk follows that branch
+/// at the shared account, while the original target and its ancestors remain
+/// available. No new authority is issued by this assembly.
+pub async fn mint_delegated_revocation_with_witness(
+    issuer: impl Into<Signer>,
+    path: &DelegationChain,
+    target: &Cid,
+    proofs: &DelegationChain,
+) -> Result<Vec<u8>> {
+    let subject = proofs
+        .subject()
+        .cloned()
+        .unwrap_or_else(|| proofs.issuer().clone());
+    let mut witness = proofs.proof_cids().to_vec();
+    for cid in path.proof_cids() {
+        if !witness.contains(cid) {
+            witness.push(*cid);
+        }
+    }
+    let revocation = RevocationBuilder::new(issuer.into(), *target)
+        .path(witness)
+        .try_build_with_proofs(proofs.proof_cids().to_vec(), &subject)
+        .await
+        .map_err(|err| anyhow::anyhow!("failed to mint the revocation: {err}"))?;
+    package(revocation, path, Some(proofs))
+}
+
 /// Parse and verify a self-contained revocation artifact.
 pub async fn verify(bytes: &[u8]) -> std::result::Result<VerifiedRevocation, VerifyError> {
     let chain = InvocationChain::<AnySignature>::try_from(bytes)
@@ -232,7 +263,9 @@ pub async fn verify(bytes: &[u8]) -> std::result::Result<VerifiedRevocation, Ver
         artifact_cid: chain.invocation.to_cid().to_string(),
         target_expires_at,
         issuer: chain.issuer().clone(),
-        subject: revocation.revocation().revoker().clone(),
+        // The signer can exercise an ancestor account's authority. Indexing
+        // the off-path signer would acknowledge a revocation that never matches.
+        subject: chain.subject().clone(),
         revoked_subject: match revocation.revoked().subject() {
             dialog_ucan_core::subject::Subject::Specific(did) => did.clone(),
             dialog_ucan_core::subject::Subject::Any => revocation.revoked().issuer().clone(),
@@ -663,9 +696,14 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            verified.subject,
+            verified.issuer,
             device.did(),
-            "the device is the one revoking"
+            "the device signs its withdrawal"
+        );
+        assert_eq!(
+            verified.subject,
+            space.did(),
+            "the powerline authenticates the issuing authority"
         );
         assert_eq!(
             verified.revoked_subject,
@@ -699,14 +737,10 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_records_the_revoker_as_subject() {
-        // `sub` is WHO IS REVOKING, not what the revoked delegation was
-        // about. Those are different questions, and filling the field from
-        // the second meant nothing downstream could tell them apart.
-        //
-        // The screen matches this against the issuers of a presented chain:
-        // a revocation bites where its revoker issued, and nowhere else.
-        let (_, _, invite, path) = invite_path().await;
+    async fn it_records_authenticated_subject_separately_from_signer() {
+        // A delegated invocation exercises its authenticated `sub`; the
+        // signing device stays separately available for diagnostics.
+        let (space, _, invite, path) = invite_path().await;
         let target = path.proof_cids()[1];
         let verified = verify(
             &mint_self_revocation(invite.clone(), &path, &target)
@@ -715,12 +749,11 @@ mod tests {
         )
         .await
         .unwrap();
-
         assert_eq!(verified.issuer, invite.did(), "the invite key signed it");
         assert_eq!(
             verified.subject,
-            invite.did(),
-            "and it is the revoker, so `sub` names it too"
+            space.did(),
+            "the proof authenticates the space authority"
         );
     }
 

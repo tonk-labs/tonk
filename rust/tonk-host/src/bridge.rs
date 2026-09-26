@@ -66,6 +66,86 @@ pub fn site_id() -> String {
     SITE_ID.with(|cell| cell.borrow().clone().unwrap_or_default())
 }
 
+thread_local! {
+    /// The branch the profile is on, once [`resolve_profile_branch`] has
+    /// read it off `meta`. `main` until then: what a profile that never
+    /// signed out is on, and the only answer available before the
+    /// worker can be asked.
+    static PROFILE_BRANCH: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The branch of the profile repository the profile is on.
+pub fn profile_branch() -> String {
+    PROFILE_BRANCH.with(|cell| cell.borrow().clone().unwrap_or_else(|| "main".to_owned()))
+}
+
+/// The location token that reaches the profile: `{branch}@profile:tonk`.
+pub fn profile_with() -> String {
+    format!("{}@profile:tonk", profile_branch())
+}
+
+/// [`resolve_profile_branch`], then [`profile_with`].
+pub async fn resolve_profile_with() -> String {
+    resolve_profile_branch().await;
+    profile_with()
+}
+
+/// Read which branch the profile is on off its `meta` branch and cache
+/// it, returning it.
+///
+/// Two ordinary queries, because a page has no site to read it from
+/// before it mounts one: `meta` records the active branch's entity, and
+/// that entity's `xyz.tonk.branch/name` is the branch. Either failing
+/// leaves the cache as it was, so the page still mounts, on `main`.
+#[cfg(target_arch = "wasm32")]
+pub async fn resolve_profile_branch() -> String {
+    const META_QUERY: &str = "/api/profile/branch/meta/query";
+    let active = r#"{"predicate":{"with":{"branch":{"the":"tonk.dialog.replica/active-branch","as":"Entity","cardinality":"one"}}},"terms":{"this":{"?":{"name":"this"}},"branch":{"?":{"name":"branch"}}}}"#;
+    let Some(entity) = query_field(META_QUERY, active, "branch").await else {
+        return profile_branch();
+    };
+    let name = format!(
+        r#"{{"predicate":{{"with":{{"name":{{"the":"xyz.tonk.branch/name","as":"Text","cardinality":"one"}}}}}},"terms":{{"this":{entity:?},"name":{{"?":{{"name":"name"}}}}}}}}"#
+    );
+    let Some(branch) = query_field(META_QUERY, &name, "name").await else {
+        return profile_branch();
+    };
+    PROFILE_BRANCH.with(|cell| *cell.borrow_mut() = Some(branch.clone()));
+    branch
+}
+
+/// Native stub: there is no worker to ask.
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn resolve_profile_branch() -> String {
+    profile_branch()
+}
+
+/// The first row's `field` from a one-shot query, as text.
+///
+/// Rows come back as `{"this": …, "fields": {…}}`; the field is read
+/// from `fields` first and the row itself second, the two spellings a
+/// conclusion has had.
+#[cfg(target_arch = "wasm32")]
+async fn query_field(url: &str, body: &str, field: &str) -> Option<String> {
+    use wasm_bindgen::JsValue;
+    use web_sys::js_sys::{Array, JSON, Reflect};
+
+    let text = crate::http::post_json(url, body).await.ok()?;
+    let rows = JSON::parse(&text).ok()?;
+    let row = Array::from(&rows).get(0);
+    if row.is_undefined() || row.is_null() {
+        return None;
+    }
+    let key = JsValue::from_str(field);
+    let fields = Reflect::get(&row, &JsValue::from_str("fields")).ok()?;
+    let value = if fields.is_object() {
+        Reflect::get(&fields, &key).ok()?
+    } else {
+        Reflect::get(&row, &key).ok()?
+    };
+    value.as_string().filter(|value| !value.is_empty())
+}
+
 /// Register this page's site with the service worker and cache the assigned id.
 ///
 /// On first load the navigation predates the SW (the page is served before the

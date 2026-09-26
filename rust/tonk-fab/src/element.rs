@@ -49,9 +49,9 @@ use web_sys::{
 
 use crate::bar;
 use crate::logic::{
-    DEFAULT_DOCK, DOCK_CLASSES, Dock, Edge, EdgeInsets, EdgeSnap, clamp_position,
+    DEFAULT_DOCK, DOCK_CLASSES, Dock, Edge, EdgeInsets, EdgeSnap, FabBox, clamp_position,
     collapsed_claim_json, collapsed_from_conclusions, dock_claim_json, dock_from_conclusions,
-    nearest_dock, pause_claim_json, repository_endpoint, snap_to_nearest_edge,
+    fit_panel, nearest_dock, pause_claim_json, repository_endpoint, snap_to_nearest_edge,
 };
 use crate::shadow::Bound;
 
@@ -90,6 +90,8 @@ const MIRROR_CLASS: &str = "fab-mirror";
 #[derive(Default)]
 pub(crate) struct TonkFab {
     state: bar::Shared,
+    tasks: crate::contained_tasks::Shared,
+    trusted_tasks: crate::trusted_tasks::Shared,
     listeners: Rc<RefCell<Vec<Bound>>>,
     responsive_observer: Option<ResizeObserver>,
     responsive_callback: Option<Closure<dyn FnMut(JsValue, JsValue)>>,
@@ -123,11 +125,20 @@ impl CustomElement for TonkFab {
     fn connected_callback(&mut self, this: &HtmlElement) {
         float(this);
         ensure_stacks_stylesheet();
+        let _ = crate::tool_connection::ensure_cluster();
         // Safe before the asynchronous account answer: never flash a live
         // copy action on a profile that may not have an account.
         apply_account_ready(this, false);
 
         let mut listeners = bar::build(this, &self.state);
+        apply_account_ready(this, false);
+        listeners.extend(crate::contained_tasks::install(this, &self.tasks));
+        listeners.extend(crate::trusted_tasks::install(
+            this,
+            &self.trusted_tasks,
+            &self.state,
+        ));
+        listeners.extend(attach_account_actions(this, &self.trusted_tasks));
         listeners.extend(attach_drag(this, &self.state));
         *self.listeners.borrow_mut() = listeners;
 
@@ -138,17 +149,29 @@ impl CustomElement for TonkFab {
         let (observer, callback) = attach_responsive(this, &self.state);
         self.responsive_observer = observer;
         self.responsive_callback = callback;
+        if let Some(win) = window() {
+            let host = this.clone();
+            let shared = self.state.clone();
+            self.listeners
+                .borrow_mut()
+                .push(crate::shadow::bind(&win, "resize", move |_| {
+                    if panel_is_open(&host) {
+                        fit_open_panel(&host, &shared);
+                    }
+                }));
+        }
         self.listeners
             .borrow_mut()
             .extend(attach_keyboard_lift(this));
-        mount_refusal_dialogs();
         restore_position(this);
         restore_collapse(this, &self.state);
         self.listeners.borrow_mut().extend(attach_presence(this));
         self.activation_watch = crate::activation::watch(this);
     }
 
-    fn disconnected_callback(&mut self, _this: &HtmlElement) {
+    fn disconnected_callback(&mut self, this: &HtmlElement) {
+        crate::contained_tasks::disconnect(this, &self.tasks);
+        crate::trusted_tasks::disconnect(this, &self.trusted_tasks);
         if let Some(observer) = self.responsive_observer.take() {
             observer.disconnect();
         }
@@ -188,6 +211,56 @@ impl CustomElement for TonkFab {
             _ => bar::update(this),
         }
     }
+}
+
+/// Start the trusted account presenter from either account entry point.
+fn attach_account_actions(this: &HtmlElement, tasks: &crate::trusted_tasks::Shared) -> Vec<Bound> {
+    let mut listeners = Vec::new();
+    let Some(root) = this.shadow_root() else {
+        return listeners;
+    };
+    for (selector, resume) in [
+        (".login", crate::trusted_tasks::Resume::None),
+        (".share-continue", crate::trusted_tasks::Resume::Share),
+        (".agent-continue", crate::trusted_tasks::Resume::Agent),
+    ] {
+        let Ok(Some(button)) = root.query_selector(selector) else {
+            continue;
+        };
+        let host = this.clone();
+        let shared = tasks.clone();
+        listeners.push(crate::shadow::on_click(&button, move || {
+            let _ = crate::trusted_tasks::open_account(
+                &host,
+                &shared,
+                match resume {
+                    crate::trusted_tasks::Resume::Agent => "agent-invite-account",
+                    crate::trusted_tasks::Resume::Share => {
+                        tonk_worker_api::share::BLOCKED_NEEDS_ACCOUNT
+                    }
+                    crate::trusted_tasks::Resume::None => "fabb-account",
+                },
+                resume,
+            );
+        }));
+    }
+    let host = this.clone();
+    let shared = tasks.clone();
+    listeners.push(crate::shadow::bind(
+        this,
+        "fabb-account-needed",
+        move |event| {
+            let share_reason = event
+                .dyn_ref::<web_sys::CustomEvent>()
+                .and_then(|event| event.detail().as_string());
+            let (reason, resume) = share_reason.as_deref().map_or(
+                ("agent-invite-account", crate::trusted_tasks::Resume::Agent),
+                |reason| (reason, crate::trusted_tasks::Resume::Share),
+            );
+            let _ = crate::trusted_tasks::open_account(&host, &shared, reason, resume);
+        },
+    ));
+    listeners
 }
 
 /// The id of the injected stack stylesheet, so injection is idempotent.
@@ -251,23 +324,6 @@ fn restamp_space(this: &HtmlElement, space: &str) {
 /// light-DOM child of a shadow host never renders, so a dialog parked inside
 /// `<tonk-fab>` could not be shown at all. Keyed off a stable id rather than
 /// an expando, so a bar landing in a fresh document still gets them.
-pub(crate) fn mount_refusal_dialogs() {
-    let Some(document) = window().and_then(|w| w.document()) else {
-        return;
-    };
-    if document.get_element_by_id("fabb-connect-cluster").is_some() {
-        return;
-    }
-    let Some(body) = document.body() else { return };
-    let Ok(holder) = document.create_element("div") else {
-        return;
-    };
-    holder.set_inner_html(crate::markup::REFUSAL_DIALOGS_HTML);
-    while let Some(child) = holder.first_element_child() {
-        let _ = body.append_child(&child);
-    }
-}
-
 /// Make the host a floating, fixed-position box.
 fn float(this: &HtmlElement) {
     let style = this.style();
@@ -275,20 +331,24 @@ fn float(this: &HtmlElement) {
     let _ = style.set_property("z-index", FAB_Z_INDEX);
 }
 
-/// The circle — the bar's only drag handle, and the target of the collapse
-/// and pause gestures.
+/// The 48px header is the drag handle; the circle inside it still owns
+/// collapse and pause gestures.
 ///
 /// Reached through the composed path rather than `event.target`: the circle
 /// lives in the shadow root, and an event crossing that boundary is
 /// retargeted to the host, so `target` is always `<tonk-fab>` itself.
 fn pressed_the_circle(this: &HtmlElement, event: &PointerEvent) -> Option<Element> {
-    let circle = this.shadow_root()?.query_selector(".fab").ok().flatten()?;
+    let handle = this
+        .shadow_root()?
+        .query_selector(".header")
+        .ok()
+        .flatten()?;
     let path = event.composed_path();
     for index in 0..path.length() {
         if let Ok(element) = path.get(index).dyn_into::<Element>()
-            && element == circle
+            && element == handle
         {
-            return Some(circle);
+            return Some(handle);
         }
     }
     None
@@ -377,7 +437,7 @@ fn attach_drag(this: &HtmlElement, state: &bar::Shared) -> Vec<Bound> {
             let Some(event) = event.dyn_ref::<PointerEvent>() else {
                 return;
             };
-            // Only the primary button drags, and only from the circle. A
+            // Only the primary button drags, and only from the header. A
             // press anywhere else on the bar is left entirely to native
             // click, which is what the cells are wired to.
             if event.button() != 0 {
@@ -506,6 +566,10 @@ fn attach_drag(this: &HtmlElement, state: &bar::Shared) -> Vec<Bound> {
                 host.dataset().delete("fabJustDragged");
                 return;
             }
+            if host.dataset().get("fabHeld").is_some() {
+                host.dataset().delete("fabHeld");
+                return;
+            }
             let on_circle = host
                 .shadow_root()
                 .and_then(|root| root.query_selector(".fab").ok().flatten())
@@ -530,6 +594,72 @@ fn attach_drag(this: &HtmlElement, state: &bar::Shared) -> Vec<Bound> {
                 persist_collapsed(true);
             }
         }));
+    }
+
+    if let Some(fab) = this
+        .shadow_root()
+        .and_then(|root| root.query_selector(".fab").ok().flatten())
+    {
+        let host = this.clone();
+        listeners.push(crate::shadow::bind(&fab, "keydown", move |event| {
+            let Some(event) = event.dyn_ref::<web_sys::KeyboardEvent>() else {
+                return;
+            };
+            if event.shift_key() && event.key() == " " {
+                event.prevent_default();
+                dispatch_pause(&host);
+            }
+        }));
+
+        let hold = Rc::new(RefCell::new(None::<(i32, Closure<dyn FnMut()>)>));
+        let host = this.clone();
+        let pending = hold.clone();
+        listeners.push(crate::shadow::bind(&fab, "pointerdown", move |event| {
+            let Some(event) = event.dyn_ref::<PointerEvent>() else {
+                return;
+            };
+            if event.button() != 0 {
+                return;
+            }
+            if let Some((timeout, _)) = pending.borrow_mut().take()
+                && let Some(win) = window()
+            {
+                win.clear_timeout_with_handle(timeout);
+            }
+            let held_host = host.clone();
+            let callback = Closure::<dyn FnMut()>::new(move || {
+                let _ = held_host.dataset().set("fabHeld", "1");
+                dispatch_pause(&held_host);
+            });
+            if let Some(win) = window()
+                && let Ok(timeout) = win.set_timeout_with_callback_and_timeout_and_arguments_0(
+                    callback.as_ref().unchecked_ref(),
+                    500,
+                )
+            {
+                *pending.borrow_mut() = Some((timeout, callback));
+            }
+        }));
+
+        for event_name in [
+            "pointermove",
+            "pointerup",
+            "pointercancel",
+            "lostpointercapture",
+        ] {
+            let host = this.clone();
+            let pending = hold.clone();
+            listeners.push(crate::shadow::bind(&win, event_name, move |_| {
+                if event_name == "pointermove" && host.dataset().get("fabMoved").is_none() {
+                    return;
+                }
+                if let Some((timeout, _)) = pending.borrow_mut().take() {
+                    if let Some(win) = window() {
+                        win.clear_timeout_with_handle(timeout);
+                    }
+                }
+            }));
+        }
     }
 
     listeners
@@ -637,6 +767,11 @@ fn attach_stack_verbs(this: &HtmlElement, state: &bar::Shared) -> Vec<Bound> {
             {
                 share.click();
             }
+            return;
+        }
+        if row.has_attribute("data-tool-connection") {
+            bar::close(&host, &shared);
+            crate::tool_connection::open(&host);
         }
     })];
     let host = this.clone();
@@ -710,11 +845,11 @@ fn finish_drag(this: &HtmlElement, pointer_id: i32) {
     let _ = dataset.set("fabJustDragged", "1");
 
     if touch {
-        if let Some(circle) = this
+        if let Some(handle) = this
             .shadow_root()
-            .and_then(|root| root.query_selector(".fab").ok().flatten())
+            .and_then(|root| root.query_selector(".header").ok().flatten())
         {
-            let _ = circle.release_pointer_capture(pointer_id);
+            let _ = handle.release_pointer_capture(pointer_id);
         }
     } else {
         let _ = this.release_pointer_capture(pointer_id);
@@ -884,6 +1019,10 @@ fn attach_responsive(
     let host = this.clone();
     let shared = state.clone();
     let callback = Closure::<dyn FnMut(JsValue, JsValue)>::new(move |_: JsValue, _: JsValue| {
+        if panel_is_open(&host) {
+            fit_open_panel(&host, &shared);
+            return;
+        }
         let parent_width = host
             .parent_element()
             .map(|p| p.client_width() as f64)
@@ -908,6 +1047,92 @@ fn attach_responsive(
         state,
     );
     (observer, Some(callback))
+}
+
+fn panel_is_open(this: &HtmlElement) -> bool {
+    this.shadow_root()
+        .and_then(|root| root.query_selector(".w.menu-open").ok().flatten())
+        .is_some()
+}
+
+/// Keep the header at its resting seat while the attached surface grows.
+/// The available width is measured from that seat, since a freely snapped
+/// top or bottom edge may leave much less room than the parent width implies.
+pub(crate) fn fit_open_panel(this: &HtmlElement, state: &bar::Shared) {
+    let Some(root) = this.shadow_root() else {
+        return;
+    };
+    let Ok(Some(header)) = root.query_selector(".header") else {
+        return;
+    };
+    let Some(wrapper) = root.query_selector(".w").ok().flatten() else {
+        return;
+    };
+    let rect = header.get_bounding_client_rect();
+    if rect.width() == 0.0 || rect.height() == 0.0 {
+        return;
+    }
+    let (vw, vh) = (viewport_width(), viewport_height());
+    let insets = float_insets(this);
+    let visible_actions = root
+        .query_selector_all(".run .action:not([hidden])")
+        .map(|actions| actions.length())
+        .unwrap_or(5);
+    let fit = fit_panel(
+        FabBox {
+            left: rect.left(),
+            top: rect.top(),
+            width: rect.width(),
+            height: rect.height(),
+        },
+        (vw, vh),
+        insets,
+        this.parent_element()
+            .map(|parent| parent.client_width() as f64)
+            .unwrap_or(vw),
+        visible_actions,
+        this.has_attribute("flip"),
+    );
+
+    set_flip(this, fit.flip);
+    if fit.up {
+        let _ = this.set_attribute("up", "");
+    } else {
+        let _ = this.remove_attribute("up");
+    }
+    // The measured seat belongs to the header, which sits inside the host's
+    // bordered wrapper. Positioning the host at that same coordinate adds
+    // the inset again on every open/close cycle. Re-measure after flip/up,
+    // since either can move the header to the opposite side of the host.
+    let positioned_header = header.get_bounding_client_rect();
+    let host_rect = this.get_bounding_client_rect();
+    let header_left_in_host = positioned_header.left() - host_rect.left();
+    let header_right_in_host = host_rect.right() - positioned_header.right();
+    let header_top_in_host = positioned_header.top() - host_rect.top();
+    let header_bottom_in_host = host_rect.bottom() - positioned_header.bottom();
+    invalidate_edge_anchor(this);
+    let style = this.style();
+    if fit.flip {
+        let _ = style.set_property("right", &format!("{}px", fit.right - header_right_in_host));
+        let _ = style.set_property("left", "auto");
+    } else {
+        let _ = style.set_property("left", &format!("{}px", fit.left - header_left_in_host));
+        let _ = style.set_property("right", "auto");
+    }
+    if fit.up {
+        let _ = style.set_property(
+            "bottom",
+            &format!("{}px", fit.bottom - header_bottom_in_host),
+        );
+        let _ = style.set_property("top", "auto");
+    } else {
+        let _ = style.set_property("top", &format!("{}px", fit.top - header_top_in_host));
+        let _ = style.set_property("bottom", "auto");
+    }
+    let wrapper_style = wrapper.unchecked_ref::<HtmlElement>().style();
+    let _ = wrapper_style.set_property("--_height", &format!("{}px", fit.height));
+    let _ = wrapper_style.set_property("--_rail-height", &format!("{}px", fit.rail_height));
+    bar::apply_responsive(this, fit.width, state);
 }
 
 /// The viewport height in CSS px, defaulting if unavailable.
@@ -1270,7 +1495,7 @@ fn apply_unknown_space(this: &HtmlElement) {
     let _ = this.set_attribute(UNKNOWN_SPACE_ATTR, "");
 }
 
-/// Swap the share menu between its safe account handoff and copy action.
+/// Swap the share menu between its safe account handoff and account actions.
 pub(crate) fn apply_account_ready(this: &HtmlElement, ready: bool) {
     if ready {
         let _ = this.remove_attribute(ACCOUNT_REQUIRED_ATTR);
@@ -1291,6 +1516,17 @@ pub(crate) fn apply_account_ready(this: &HtmlElement, ready: bool) {
             let _ = copy.set_attribute("hidden", "");
         }
     }
+    if let Some(login) = this
+        .shadow_root()
+        .and_then(|root| root.query_selector(".login").ok().flatten())
+    {
+        if ready {
+            let _ = login.set_attribute("hidden", "");
+        } else {
+            let _ = login.remove_attribute("hidden");
+        }
+    }
+    bar::update(this);
 }
 
 /// Return this bar's repository endpoint once its space binding is resolved.

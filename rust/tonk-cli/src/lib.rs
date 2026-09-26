@@ -44,6 +44,7 @@ pub mod auto_sync;
 pub mod blob;
 /// A loopback callback server for browser authorization ceremonies.
 pub mod callback;
+pub mod connections;
 pub mod context;
 pub mod custody;
 pub mod customer;
@@ -57,6 +58,7 @@ pub mod handoff;
 pub mod identity;
 pub mod inventory;
 pub mod invite;
+pub mod join;
 pub mod listing;
 pub mod migrate;
 pub mod onboarding;

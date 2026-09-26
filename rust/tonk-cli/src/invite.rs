@@ -107,10 +107,30 @@ pub struct ClaimOutcome {
     /// own record once content syncs — useful as a default label for
     /// the joined space.
     pub space_name: Option<String>,
+    /// Whether remote synchronization and membership publication completed.
+    pub completion: ClaimCompletion,
+}
+
+/// Structured completion state for a claimed ordinary invitation.
+#[derive(Debug)]
+pub enum ClaimCompletion {
+    /// The invitation has no remote; the local replica is ready for offline use.
+    LocalOnly,
+    /// Initial pull and membership publication both completed.
+    Complete,
+    /// Credentials and local data are retained, but the initial pull failed.
+    PullPending {
+        /// Redacted sync failure suitable for recovery output.
+        reason: String,
+    },
+    /// Pulled data and local membership are retained, but their push failed.
+    PublicationPending {
+        /// Redacted sync failure suitable for recovery output.
+        reason: String,
+    },
 }
 
 /// Validated invite information safe to use before changing local authority.
-#[derive(Debug)]
 pub struct InvitePreflight {
     /// Resolved long-form invite URL. Short links are expanded exactly once.
     pub url: String,
@@ -118,6 +138,18 @@ pub struct InvitePreflight {
     pub invitation: Invitation,
     /// Validated audience of a scoped invitation, absent for open invitations.
     pub expected_root: Option<Did>,
+    pub(crate) invite: Invite,
+}
+
+impl std::fmt::Debug for InvitePreflight {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("InvitePreflight")
+            .field("invitation", &self.invitation)
+            .field("expected_root", &self.expected_root)
+            .field("url", &"[REDACTED]")
+            .finish()
+    }
 }
 
 /// Failure modes for [`mint`] / [`claim`].
@@ -168,7 +200,7 @@ pub async fn mint(
     base_url: Option<&str>,
     remote_url: Option<&str>,
 ) -> Result<InviteOutcome, InviteError> {
-    mint_for(site, base_url, remote_url, None, None).await
+    mint_for(site, base_url, remote_url, None, None, true).await
 }
 
 /// Mint an audience-open invite with an explicit revocation relay.
@@ -178,7 +210,7 @@ pub async fn mint_with_relay(
     remote_url: Option<&str>,
     revocation_url: Option<&str>,
 ) -> Result<InviteOutcome, InviteError> {
-    mint_for(site, base_url, remote_url, revocation_url, None).await
+    mint_for(site, base_url, remote_url, revocation_url, None, true).await
 }
 
 /// Mint a seed-free invite targeted to an exact recipient root DID.
@@ -188,7 +220,27 @@ pub async fn mint_targeted(
     remote_url: Option<&str>,
     recipient_root: &str,
 ) -> Result<InviteOutcome, InviteError> {
-    mint_for(site, base_url, remote_url, None, Some(recipient_root)).await
+    mint_for(site, base_url, remote_url, None, Some(recipient_root), true).await
+}
+
+/// Mint a seed-free targeted invite without publishing its local invitation
+/// record yet. Local-space linking persists recovery state first, then records
+/// the invitation as an idempotent publication stage.
+pub(crate) async fn mint_targeted_unrecorded(
+    site: &TonkSite,
+    base_url: Option<&str>,
+    remote_url: Option<&str>,
+    recipient_root: &str,
+) -> Result<InviteOutcome, InviteError> {
+    mint_for(
+        site,
+        base_url,
+        remote_url,
+        None,
+        Some(recipient_root),
+        false,
+    )
+    .await
 }
 
 /// Mint a root-targeted invite with an explicit revocation relay.
@@ -205,6 +257,7 @@ pub async fn mint_targeted_with_relay(
         remote_url,
         revocation_url,
         Some(recipient_root),
+        true,
     )
     .await
 }
@@ -215,6 +268,7 @@ async fn mint_for(
     remote_url: Option<&str>,
     revocation_url: Option<&str>,
     recipient_root: Option<&str>,
+    record: bool,
 ) -> Result<InviteOutcome, InviteError> {
     // Push local state to the upstream before minting, so a joiner
     // receives current repo state — including the stdlib seed that
@@ -310,11 +364,28 @@ async fn mint_for(
 
     // Record the invitation on the repo's meta branch — the durable,
     // secret-free half of the invite (the seed stays in the URL).
-    let invitation = Invitation::from_chain(&invite.chain)
-        .expect("Invite invariant: chain has a specific subject");
+    if record {
+        record_invitation(site, &invite.chain, &invite.audience).await?;
+    }
+
+    Ok(InviteOutcome {
+        url,
+        subject: site.repository.did(),
+        audience,
+    })
+}
+
+/// Record a previously minted invitation after its recovery state is durable.
+pub(crate) async fn record_invitation(
+    site: &TonkSite,
+    chain: &dialog_ucan_core::DelegationChain,
+    audience: &InviteAudience,
+) -> Result<(), InviteError> {
+    let invitation =
+        Invitation::from_chain(chain).expect("Invite invariant: chain has a specific subject");
     let execution = InvitationExecution::new(
         &invitation,
-        if matches!(&invite.audience, InviteAudience::Open { .. }) {
+        if matches!(audience, InviteAudience::Open { .. }) {
             "open"
         } else {
             "scoped"
@@ -335,12 +406,7 @@ async fn mint_for(
         .perform(&site.operator)
         .await
         .map_err(|e| InviteError::Io(format!("failed to record invitation: {e}")))?;
-
-    Ok(InviteOutcome {
-        url,
-        subject: site.repository.did(),
-        audience,
-    })
+    Ok(())
 }
 
 /// Derive the invite base URL from a remote's endpoint — the CLI's
@@ -390,14 +456,33 @@ pub async fn claim(
     invite_url: &str,
     config: SiteConfig,
 ) -> Result<ClaimOutcome, InviteError> {
+    let preflight = preflight(invite_url).await?;
+    claim_prepared_inner(root, preflight, config, true).await
+}
+
+/// Claim a preflighted ordinary invitation without resolving or parsing it
+/// again. The outcome exposes incomplete remote work for strict CLI callers.
+pub async fn claim_prepared(
+    root: &Path,
+    preflight: InvitePreflight,
+    config: SiteConfig,
+) -> Result<ClaimOutcome, InviteError> {
+    claim_prepared_inner(root, preflight, config, false).await
+}
+
+async fn claim_prepared_inner(
+    root: &Path,
+    preflight: InvitePreflight,
+    config: SiteConfig,
+    print_recovery_warnings: bool,
+) -> Result<ClaimOutcome, InviteError> {
     if root.exists() {
         return Err(InviteError::SiteAlreadyExists(root.to_path_buf()));
     }
 
-    let invite_url = resolve_invite_url(invite_url).await?;
-    let invite = parse_invite_url(&invite_url).await?;
-    let invitation = Invitation::from_chain(&invite.chain)
-        .expect("Invite invariant: chain has a specific subject");
+    let InvitePreflight {
+        invitation, invite, ..
+    } = preflight;
     let invitation_execution = InvitationExecution::new(
         &invitation,
         if matches!(&invite.audience, InviteAudience::Open { .. }) {
@@ -491,6 +576,7 @@ pub async fn claim(
     // (carried through on the claim chain), not the joiner's.
     let mut auto_configured_remote: Option<String> = None;
     let mut synced = false;
+    let mut pull_failure = None;
     if let Some(url) = &remote_url {
         remote::add_with_revocation(
             &joined,
@@ -515,10 +601,15 @@ pub async fn claim(
         // `tonk pull` — but a real sync error is worth surfacing.
         match sync::pull(&joined).await {
             Ok(_) => synced = true,
-            Err(e) => eprintln!(
-                "warning: joined, but the initial pull from '{DEFAULT_REMOTE}' failed: {e}\n\
-                 run `tonk pull` before making changes so you don't diverge from upstream"
-            ),
+            Err(error) => {
+                pull_failure = Some(error.to_string());
+                if print_recovery_warnings {
+                    eprintln!(
+                        "warning: joined, but the initial pull from '{DEFAULT_REMOTE}' failed: {error}\n\
+                         run `tonk pull` before making changes so you don't diverge from upstream"
+                    );
+                }
+            }
         }
     }
 
@@ -530,12 +621,22 @@ pub async fn claim(
     // that otherwise completed, and the next `tonk push` carries the row.
     // Only when the pull succeeded — pushing onto an upstream this replica
     // never reconciled with is how a joiner diverges.
-    if synced && let Err(e) = sync::push(&joined).await {
-        eprintln!(
-            "warning: joined, but publishing this device's roster row failed: {e}\n\
-             run `tonk push` so the space's other members can see you"
-        );
-    }
+    let publication_failure = if synced {
+        match sync::push(&joined).await {
+            Ok(_) => None,
+            Err(error) => {
+                if print_recovery_warnings {
+                    eprintln!(
+                        "warning: joined, but publishing this device's roster row failed: {error}\n\
+                         run `tonk push` so the space's other members can see you"
+                    );
+                }
+                Some(error.to_string())
+            }
+        }
+    } else {
+        None
+    };
 
     joined.reactor.shutdown();
     drop(joined);
@@ -546,12 +647,22 @@ pub async fn claim(
         ))
     })?;
 
+    let completion = if remote_url.is_none() {
+        ClaimCompletion::LocalOnly
+    } else if let Some(reason) = pull_failure {
+        ClaimCompletion::PullPending { reason }
+    } else if let Some(reason) = publication_failure {
+        ClaimCompletion::PublicationPending { reason }
+    } else {
+        ClaimCompletion::Complete
+    };
     Ok(ClaimOutcome {
         subject,
         remote_url,
         auto_configured_remote,
         synced,
         space_name,
+        completion,
     })
 }
 
@@ -784,21 +895,30 @@ async fn resolve_shortcut(short_url: &str) -> Result<String, InviteError> {
 /// the later claim can reuse the result instead of making a second request.
 /// No local state is created and no authority is changed.
 pub async fn preflight(invite_url: &str) -> Result<InvitePreflight, InviteError> {
-    let invite_url = resolve_invite_url(invite_url).await?;
+    let invite_url = resolve_url(invite_url).await?;
+    preflight_resolved(invite_url).await
+}
+
+/// Validate an already-resolved ordinary invitation without another shortcut
+/// request. Callers must obtain the URL from [`resolve_url`].
+pub(crate) async fn preflight_resolved(invite_url: String) -> Result<InvitePreflight, InviteError> {
     let invite = parse_invite_url(&invite_url).await?;
     let invitation = Invitation::from_chain(&invite.chain)
         .expect("Invite invariant: chain has a specific subject");
     Ok(InvitePreflight {
         url: invite_url,
         invitation,
-        expected_root: match invite.audience {
+        expected_root: match &invite.audience {
             InviteAudience::Scoped => Some(invite.chain.audience().clone()),
             InviteAudience::Open { .. } => None,
         },
+        invite,
     })
 }
 
-async fn resolve_invite_url(invite_url: &str) -> Result<String, InviteError> {
+/// Resolve an invite shortcut to its complete URL, preserving its secret
+/// fragment. Full invite URLs pass through unchanged.
+pub async fn resolve_url(invite_url: &str) -> Result<String, InviteError> {
     if is_shortcut(invite_url) {
         resolve_shortcut(invite_url).await
     } else {

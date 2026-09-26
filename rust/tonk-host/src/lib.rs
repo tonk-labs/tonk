@@ -90,7 +90,7 @@ mod navigate;
 #[cfg(target_arch = "wasm32")]
 mod page_effect;
 #[cfg(target_arch = "wasm32")]
-pub use navigate::{navigate_to, reload_page, request_registration};
+pub use navigate::{navigate_to, reload_page, request_contained_task, request_registration};
 #[cfg(target_arch = "wasm32")]
 mod open;
 #[cfg(target_arch = "wasm32")]

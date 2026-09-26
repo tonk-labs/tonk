@@ -23,16 +23,17 @@ The engine alone is MIT/Apache-2.0, dependency-free, and initializes
 
 ## Lazy loading
 
-Three chunks, two lazy seams:
+Two built chunks, two lazy seams. The shell — the `<tonk-table>`
+custom element itself — is not a chunk: it is an `element!: &tonk-table`
+in `tonk-core/assets/library/table.yaml`, branch data the element
+registry resolves the first time the tag is rendered.
 
 | Chunk | Size | Role |
 | --- | --- | --- |
-| `tonk-table.js` | ~9 kB | The shell: registers the element, nothing else. |
 | `tonk-table-grid.js` | ~33 kB | Grid UI + IronCalc JS glue. Dynamically imported on the first element connect. |
 | `tonk-table-engine.js` | ~3.8 MB | The engine wasm, base64-embedded in a pure data leaf. Pulled by the grid, decoded, and passed to `init({ module_or_path: bytes })`. |
 
-Pages that ship the bundle but never render a `<tonk-table>` pay only
-for the shell. The engine leaf changes ONLY on an IronCalc version
+Pages that never render a `<tonk-table>` fetch nothing. The engine leaf changes ONLY on an IronCalc version
 bump, so grid iteration never rewrites the multi-megabyte artifact.
 The engine instantiates from bytes — never from a URL fetch — so the
 whole graph works at origins where fetch is dead (sealed guests).
@@ -41,12 +42,11 @@ whole graph works at origins where fetch is dead (sealed guests).
 
 | Path | Purpose |
 | --- | --- |
-| `src/` | Rust crate. The `web` feature exposes [`install`] which appends `<script type="module">` for the bundle. |
-| `src-js/index.ts` | The shell: registers `tonk-table`, lazy-loads the grid core. |
-| `src-js/grid/` | The grid core chunk (engine bootstrap, DOM grid, workbook helpers). |
+| `src/` | Rust crate. The `web` feature exposes [`install`], which points the branch-resident shell at the grid core's URL. |
+| `src-js/grid/` | The grid core chunk (engine bootstrap, DOM grid, workbook helpers), plus `grid/host.ts`, the helpers the shell reaches through the core. |
 | `src-js/engine.ts` | The engine-bytes leaf entry. |
 | `src-js/hlc.ts`, `content.ts`, `b64.ts` | The versioned-content protocol (shared shape with tonk-prose). |
-| `scripts/build.mjs` | esbuild driver. Produces the three `assets/` chunks. |
+| `scripts/build.mjs` | esbuild driver. Produces the two `assets/` chunks. |
 | `assets/` | Build output. **Committed** so consumers (and CI) don't need a Node toolchain to build the Rust workspace. |
 
 ## Building the bundle
@@ -190,9 +190,10 @@ Three layers, weakest to strongest — the whole look is overridable:
 
 ## Serving
 
-Copy `assets/` to its own directory and load the shell with the
-crate's `install("/tonk-table/tonk-table.js")` or a module script;
-all three chunks resolve as siblings of the shell's URL. `tonk-ui`'s
+Copy `assets/` to its own directory and point the shell at the grid
+core with the crate's `install("/tonk-table/tonk-table-grid.js")` (or
+set `globalThis.__tonkTableGrid` to that URL); the engine leaf resolves
+as a sibling of the grid's URL. `tonk-ui`'s
 `index.html` already ships the bundle at `/tonk-table/` (a `copy-dir`
 link next to tonk-prose's, with a matching `Trunk.toml` watch entry).
 

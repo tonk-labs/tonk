@@ -98,9 +98,24 @@ pub(crate) async fn ensure_space_mounted(
     if local {
         match reconcile_mounted_configuration(tonk, key, &subject).await {
             Ok(configuration) => {
+                if configuration
+                    .as_ref()
+                    .is_some_and(|(configuration, changed)| {
+                        *changed
+                            && configuration
+                                .branch
+                                .get(super::repository::CONTENT_BRANCH)
+                                .is_some_and(|branch| branch.upstream.is_some())
+                    })
+                {
+                    // A page's Load command stamps its route immediately after
+                    // admission. Fetch content before that stamp when legacy
+                    // mount facts have just repaired an empty local branch.
+                    pull_content_on_mount(tonk, &subject).await;
+                }
                 let upstreams = configuration
                     .into_iter()
-                    .flat_map(|configuration| configuration.branch)
+                    .flat_map(|(configuration, _)| configuration.branch)
                     .filter_map(|(name, branch)| {
                         branch
                             .upstream
@@ -327,7 +342,7 @@ async fn reconcile_mounted_configuration(
     tonk: &TonkState,
     key: &str,
     subject: &dialog_varsig::Did,
-) -> Result<Option<RepositoryConfiguration>, crate::TonkWorkerError> {
+) -> Result<Option<(RepositoryConfiguration, bool)>, crate::TonkWorkerError> {
     let Some(configuration) = directory_configuration_strict(tonk, subject).await? else {
         return Ok(None);
     };
@@ -343,7 +358,7 @@ async fn reconcile_mounted_configuration(
             ))
         })?;
     if mounted_configuration_is_current(tonk, key, &repository, &configuration).await? {
-        return Ok(Some(configuration));
+        return Ok(Some((configuration, false)));
     }
     super::repository::ensure_remote_config(tonk, &repository, key, &configuration)
         .await
@@ -352,7 +367,7 @@ async fn reconcile_mounted_configuration(
                 "reconcile mounted space '{subject}' from directory: {error}"
             ))
         })?;
-    Ok(Some(configuration))
+    Ok(Some((configuration, true)))
 }
 
 /// Check both durable replica meta and the reactor's cached branch handles.
@@ -416,7 +431,7 @@ impl MountedConfiguration {
             .select(Query::<Branch> {
                 this: Term::var("this"),
                 name: Term::var("name"),
-                origin: Term::var("origin"),
+                replica: Term::var("replica"),
             })
             .perform(&tonk.operator)
             .try_vec()
@@ -440,7 +455,7 @@ impl MountedConfiguration {
             .select(Query::<TrackingBranch> {
                 this: Term::var("this"),
                 upstream: Term::var("upstream"),
-                origin: Term::from(replica.this().clone()),
+                replica: Term::from(replica.this().clone()),
             })
             .perform(&tonk.operator)
             .try_vec()
@@ -461,13 +476,13 @@ impl MountedConfiguration {
         let tracking = branches
             .iter()
             .filter_map(|branch| {
-                if branch.origin.0 != *replica.this()
+                if branch.replica.0 != *replica.this()
                     || remotes_by_entity.contains_key(&branch.this)
                 {
                     return None;
                 }
                 let target = branches_by_entity.get(links_by_entity.get(&branch.this)?)?;
-                let remote = remotes_by_entity.get(&target.origin.0)?;
+                let remote = remotes_by_entity.get(&target.replica.0)?;
                 Some((
                     branch.name.0.clone(),
                     UpstreamConfiguration::new(remote.name.0.clone(), target.name.0.clone()),
@@ -546,7 +561,7 @@ pub(crate) async fn reconcile_account_spaces(tonk: &TonkState) {
     let directory_names: Option<HashMap<String, String>> = match tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
     {
@@ -679,7 +694,7 @@ mod tests {
         let main = tonk
             .reactor
             .profile_repository()
-            .branch(tonk_account::MAIN_BRANCH)
+            .branch(&tonk.active_branch)
             .acquire(&tonk.operator)
             .await
             .expect("profile main acquires");
@@ -1490,6 +1505,79 @@ mod tests {
             "a later reconcile over identical facts must not commit again",
         );
     }
+
+    /// B-08: a persisted directory branch from before the `/replica` rename
+    /// must still restore the upstream and enter the sync sweep.
+    #[dialog_common::test]
+    async fn it_recovers_a_mounted_space_from_old_directory_branch_facts() {
+        use dialog_artifacts::Entity;
+        use dialog_repository::SiteAddress;
+        use tonk_schema::domain::branch::{Name, Origin, Upstream};
+        use tonk_schema::domain::remote::Address;
+        use tonk_schema::prelude::{DidExt as _, EntityExt as _};
+        use tonk_schema::{LegacyBranch, LegacyTrackingBranch, Remote};
+
+        #[derive(serde::Serialize)]
+        enum OldHash<'a> {
+            Branch { origin: &'a Entity, name: &'a str },
+        }
+        let old_branch = |owner: &Entity, name: &str| LegacyBranch {
+            this: Entity::of(&OldHash::Branch {
+                origin: owner,
+                name,
+            }),
+            name: Name(name.to_owned()),
+            origin: Origin(owner.clone()),
+        };
+
+        let (app, state, _lsp) =
+            crate::router::api_router_with_state(crate::router::tests::test_state().await);
+        let key = crate::router::tests::put_repo(&app, "old-directory-branch").await;
+        let subject: dialog_varsig::Did = key.parse().unwrap();
+        let tonk = state.read().await;
+        let address = SiteAddress::from(dialog_remote_ucan::UcanAddress::new(
+            "https://sync.example.test/ucan/",
+        ));
+        let remote = Remote::at(
+            &subject.this(),
+            subject.clone(),
+            Address::encode(&address),
+            "origin",
+        );
+        let local = old_branch(&subject.this(), "main");
+        let upstream = old_branch(&remote.this, "main");
+        tonk.reactor
+            .profile_repository()
+            .branch(&tonk.active_branch)
+            .transaction()
+            .assert(remote)
+            .assert(local.clone())
+            .assert(upstream.clone())
+            .assert(LegacyTrackingBranch {
+                this: local.this,
+                upstream: Upstream(upstream.this),
+                origin: Origin(subject.this()),
+            })
+            .commit()
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+
+        assert!(ensure_space_mounted(&tonk, &key).await.unwrap());
+        let repository: dialog_repository::Repository = tonk
+            .profile
+            .repository(&key)
+            .load()
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        let info = super::super::repository::build_repository_info(&tonk, &key, &repository).await;
+        assert_eq!(
+            super::super::sync::branches_to_sync(&info.branch),
+            vec!["main".to_owned()],
+            "the repaired main branch must enter the sync sweep"
+        );
+    }
 }
 
 /// Stamp a space's device-locality into the profile-main OVERLAY so
@@ -1500,7 +1588,7 @@ pub(crate) async fn stamp_space_locality(tonk: &TonkState, subject: &dialog_vars
     let main = match tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
     {
@@ -1531,7 +1619,7 @@ pub(crate) async fn stamp_space_replicating(
     let main = match tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
     {
@@ -1596,7 +1684,7 @@ async fn directory_configuration_strict(
     let main = tonk
         .reactor
         .profile_repository()
-        .branch(tonk_account::MAIN_BRANCH)
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(|e| crate::TonkWorkerError::Internal(format!("open directory: {e}")))?;

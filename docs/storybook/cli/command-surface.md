@@ -1,5 +1,15 @@
 # The CLI command surface
 
+Current scope (Plan 005): `join TOOL_LINK` accepts only isolated scoped tool
+links. An ordinary person invite is recognized only to return the dedicated
+wrong-kind error before local mutation; it must be opened in a browser. There
+is no `--agent` selector.
+Account commands, `space link`, `migrate account`, `connect`,
+and top-level `link` are absent. The account entries below preserve the earlier
+source audit and are retired; account administration now belongs in the UI.
+CLI space creation and transplant are local-only. Existing replicas and keys
+are retained. See `ACCT-C14` / `HANDOFF-21` for the supported invitation journey.
+
 ## Summary
 
 `tonk` exposes setup, account, collaboration, authoring, data, rendering,
@@ -55,7 +65,7 @@ remote-required mutation. A rerun inspects current state and is safe.
 | Entry | Journey IDs | Variants that require coverage |
 | --- | --- | --- |
 | `invite` | `COLLAB-01`, `COLLAB-02` | Default/base URL, remote/no-remote, recipient root, shorten/no-shorten/env, zero/one/many remotes. |
-| `join URL --name NAME` | `COLLAB-03`, `COLLAB-05` | Open/restricted, remote/no remote, malformed/expired/revoked/already claimed, name/site collision. |
+| `join TOOL_URL [--name NAME] [--via ORIGIN]`, `--space NAME join` | `COLLAB-03`, `COLLAB-05`, `ACCT-C14` | Scoped v1/v2 full/short, default/explicit/environment deployment selection, route mismatch, malformed/mixed/expired/revoked/already imported, ordinary-link rejection, scoped resume, persisted legacy-person resume, name/site collision. |
 | `push` | `SYNC-02` | `R0`–`R6`, timeout/lost response/concurrent push, account/invite authority. |
 | `pull` | `SYNC-03` | `R0`–`R6`, divergence, concurrent local/remote change, restart before ref update. |
 | `remote`, `remote --json` | `CLI-03` | Empty/many, stable JSON, malformed registry. |

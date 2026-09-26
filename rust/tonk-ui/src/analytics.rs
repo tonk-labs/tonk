@@ -405,10 +405,48 @@ fn attach_worker_lifecycle_listener() {
     listener.forget();
 }
 
-/// Fetch the profile DID from the worker and identify with its hash,
-/// so web and CLI activity from one profile correlate. Best-effort.
+#[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
+export async function resolve_analytics_identity(lookup) {
+    // Bound readiness + fetch together. A late lookup cannot change identity:
+    // only the result returned here is passed to PostHog by the caller.
+    for (let attempt = 0; attempt < 3; attempt++) {
+        if (attempt) await new Promise(resolve => setTimeout(resolve, attempt * 500));
+        let timer;
+        try {
+            const id = await Promise.race([
+                Promise.resolve().then(lookup),
+                new Promise((_, reject) => {
+                    timer = setTimeout(() => reject(new Error("identity timeout")), 5000);
+                }),
+            ]);
+            if (typeof id === "string" && /^tonk:[a-f0-9]{64}$/.test(id)) return id;
+        } catch (_) {
+            // Retry transient worker/readiness failures without sending errors.
+        } finally {
+            clearTimeout(timer);
+        }
+    }
+    return null;
+}
+"#)]
+extern "C" {
+    async fn resolve_analytics_identity(lookup: &js_sys::Function) -> wasm_bindgen::JsValue;
+}
+
+/// Resolve a profile with bounded retries, without delaying product startup.
+/// Arrival events remain unresolved until this succeeds; they are traffic,
+/// never evidence of an active account. No analytics persistence is added.
 pub(crate) async fn identify() {
-    if let Ok(response) = api::identify().await {
-        tonk_analytics::web::identify(&tonk_analytics::distinct_id(&response.did));
+    let lookup = Closure::<dyn Fn() -> js_sys::Promise>::new(|| {
+        wasm_bindgen_futures::future_to_promise(async {
+            api::identify()
+                .await
+                .map(|response| tonk_analytics::distinct_id(&response.did).into())
+                .map_err(|_| wasm_bindgen::JsValue::NULL)
+        })
+    });
+    let id = resolve_analytics_identity(lookup.as_ref().unchecked_ref()).await;
+    if let Some(id) = id.as_string() {
+        tonk_analytics::web::identify(&id);
     }
 }

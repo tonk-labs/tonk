@@ -7,6 +7,11 @@
              worker API generation this DOCUMENT was emitted against; unlike
              /version.json it never changes during the document's lifetime. -->
         <meta name="tonk-worker-build" content="dev" />
+        <!-- Identity of this document's own resources, excluding the guest
+             runtime and library data. When a new worker reports the same
+             page build, this document keeps running and remounts its guests
+             instead of reloading. -->
+        <meta name="tonk-page-build" content="dev" />
         <script>
             (() => {
                 const build = document.querySelector(
@@ -421,12 +426,54 @@
                 } catch {}
             }
 
+            // While an installed successor waits, the page holds its IO on
+            // `serviceWorkerHandoff` (below). Chrome activates a skipWaiting
+            // successor only once the outgoing worker goes idle, and asks it
+            // to go idle at once only when activation is requested; a
+            // request that lands as the incumbent stops restarts it and
+            // forgets that, leaving the default 30 second idle delay (and
+            // none at all with DevTools attached). Every in-scope navigation
+            // requests activation again, so a hidden frame load does,
+            // repeated through the hold because one can itself land while
+            // the incumbent stops. Bounded: a successor that has not taken
+            // over after the hold is left alone rather than holding the page.
+            const HANDOVER_HOLD_MS = 10_000;
+            const ACTIVATION_REQUEST_MS = 1_000;
+            const requestActivation = () => {
+                const frame = document.createElement("iframe");
+                frame.hidden = true;
+                frame.tabIndex = -1;
+                frame.setAttribute("aria-hidden", "true");
+                const remove = () => frame.remove();
+                frame.addEventListener("load", remove, { once: true });
+                setTimeout(remove, HANDOVER_HOLD_MS);
+                frame.src = "/api/health";
+                document.documentElement.append(frame);
+            };
+            const holdForHandoff = (outcome) => {
+                serviceWorkerHandoff = outcome;
+                let repeat;
+                const request = () => {
+                    requestActivation();
+                    repeat = setTimeout(request, ACTIVATION_REQUEST_MS);
+                };
+                const release = () => {
+                    clearTimeout(repeat);
+                    clearTimeout(deadline);
+                    if (serviceWorkerHandoff === outcome) serviceWorkerHandoff = null;
+                };
+                const deadline = setTimeout(release, HANDOVER_HOLD_MS);
+                outcome.then(release);
+                request();
+            };
+
             // Begin registration and update detection eagerly, while the UI
             // Wasm downloads. Page readiness resolves once the current
             // generation controls the document; successor observation may
             // continue behind it without blocking the pre-mount gate.
             let markServiceWorkerReady;
             let failServiceWorkerReady;
+            let serviceWorkerHandoff = null;
             const serviceWorkerReadiness = new Promise((resolve, reject) => {
                 markServiceWorkerReady = resolve;
                 failServiceWorkerReady = reject;
@@ -439,28 +486,84 @@
                 }
 
                 const priorController = navigator.serviceWorker.controller;
+                // The worker this document runs against: its controller at
+                // load (or at first control), then each successor it adopted
+                // by remounting its guests in place.
+                let adoptedController = priorController;
                 let reloadRequested = false;
-                const onControllerReplacement = () => {
-                    if (
-                        !priorController ||
-                        !navigator.serviceWorker.controller ||
-                        navigator.serviceWorker.controller === priorController
-                    ) {
-                        return;
-                    }
+                let adoption = Promise.resolve("current");
+                const requestAlignmentReload = () => {
                     if (reloadRequested) return;
                     reloadRequested = true;
-                    // Successor activation replaces the controller of every
-                    // already-controlled tab. Each update-aware document records
-                    // and consumes one alignment reload.
+                    // Each update-aware document records and consumes one
+                    // alignment reload.
                     try {
                         sessionStorage.setItem(UPGRADE_RELOAD, "1");
                     } catch {}
                     location.reload();
                 };
+                // A successor with this document's page build changed only
+                // worker and guest code. Keep the document and remount each
+                // top-level site, so its guest boots from the new worker;
+                // the host re-subscribes every stream on `controllerchange`.
+                const remountGuests = async (controller) => {
+                    const page = document.querySelector(
+                        'meta[name="tonk-page-build"]',
+                    )?.content;
+                    if (!/^[0-9a-f]{16}$/.test(page || "")) return false;
+                    const response = await fetch("/api/health", {
+                        cache: "no-store",
+                    });
+                    const health = await response.json();
+                    if (
+                        health?.page !== page ||
+                        navigator.serviceWorker.controller !== controller
+                    ) {
+                        return false;
+                    }
+                    for (const site of document.querySelectorAll("tonk-site")) {
+                        const parent = site.parentNode;
+                        const next = site.nextSibling;
+                        parent.removeChild(site);
+                        parent.insertBefore(site, next);
+                    }
+                    return true;
+                };
+                // Successor activation replaces the controller of every
+                // already-controlled tab. Resolves to "remounted", "reloaded"
+                // or "current" (nothing to adopt).
+                const adoptReplacement = () => {
+                    adoption = adoption.then(async () => {
+                        const controller = navigator.serviceWorker.controller;
+                        if (reloadRequested) return "reloaded";
+                        if (
+                            !adoptedController ||
+                            !controller ||
+                            controller === adoptedController
+                        ) {
+                            return "current";
+                        }
+                        let remounted = false;
+                        try {
+                            remounted = await remountGuests(controller);
+                        } catch (error) {
+                            console.warn(
+                                "guest remount check failed; reloading",
+                                error,
+                            );
+                        }
+                        if (remounted) {
+                            adoptedController = controller;
+                            return "remounted";
+                        }
+                        requestAlignmentReload();
+                        return "reloaded";
+                    });
+                    return adoption;
+                };
                 navigator.serviceWorker.addEventListener(
                     "controllerchange",
-                    onControllerReplacement,
+                    adoptReplacement,
                 );
                 let resolveControlled;
                 const controlled = new Promise((resolve) => {
@@ -511,6 +614,10 @@
                         firstWorker.postMessage({ type: "claim" });
                         await controlled;
                     }
+                    // From here on a successor replaces this controller like
+                    // any other; this document adopts it rather than staying
+                    // on its first-install code.
+                    adoptedController = navigator.serviceWorker.controller;
                     navigator.serviceWorker.removeEventListener(
                         "controllerchange",
                         onFirstControl,
@@ -549,7 +656,8 @@
                 markServiceWorkerReady();
 
                 let incoming = null;
-                let retirementRequested = false;
+                let retirementChecks = 0;
+                let handoffHeld = false;
                 let settled = false;
                 let resolveOutcome;
                 const outcome = new Promise((resolve) => {
@@ -567,18 +675,38 @@
                     // A long-lived outgoing worker can miss `updatefound` and
                     // never restart, while its open streams keep an installed
                     // successor waiting. The update-aware page has durable
-                    // visibility of that state, so wake the incumbent once and
-                    // let it verify the waiting worker before releasing.
+                    // visibility of that state, so wake the incumbent and let
+                    // it verify the waiting worker before releasing.
                     if (
-                        !retirementRequested &&
                         incoming?.state === "installed" &&
-                        registration.waiting === incoming &&
-                        navigator.serviceWorker.controller === priorController
+                        navigator.serviceWorker.controller === priorController &&
+                        retirementChecks < 5
                     ) {
-                        retirementRequested = true;
-                        priorController.postMessage({
-                            type: "retire-if-superseded",
+                        // A new fetch can restart the incumbent after Chrome
+                        // stops it but before the successor takes control.
+                        // Let existing work settle and hold new page IO until
+                        // controller replacement (or a failed update).
+                        if (!handoffHeld) {
+                            handoffHeld = true;
+                            holdForHandoff(outcome);
+                        }
+                        // Installation has committed the full generation.
+                        // Repeat the activation request from the installed
+                        // successor if Chrome left it waiting after install.
+                        incoming.postMessage({
+                            type: "activate-if-installed",
                         });
+                        retirementChecks += 1;
+                        if (registration.waiting === incoming) {
+                            priorController.postMessage({
+                                type: "retire-if-superseded",
+                            });
+                        }
+                        // `statechange` can arrive before `waiting` is visible
+                        // to this document. The incumbent may also see the
+                        // registration change after the first message. Retry
+                        // briefly; retirement is idempotent in the worker.
+                        setTimeout(onWorkerState, 250);
                     }
                     // Browser activation replaces the incumbent controller;
                     // `controllerchange` below drives the guarded reload.
@@ -593,6 +721,7 @@
                     if (!worker || worker === incoming) return;
                     incoming?.removeEventListener("statechange", onWorkerState);
                     incoming = worker;
+                    retirementChecks = 0;
                     observingInstallLifecycle = true;
                     incoming.addEventListener("statechange", onWorkerState);
                     const status = document.querySelector("[data-boot-status]");
@@ -665,14 +794,10 @@
                 }
 
                 cleanup();
-                if (result === "replaced") {
-                    if (!reloadRequested) {
-                        reloadRequested = true;
-                        try {
-                            sessionStorage.setItem(UPGRADE_RELOAD, "1");
-                        } catch {}
-                        location.reload();
-                    }
+                if (
+                    result === "replaced" &&
+                    (await adoptReplacement()) === "reloaded"
+                ) {
                     await new Promise(() => {});
                     return;
                 }
@@ -705,7 +830,8 @@
                 }
                 presentBootFailure(GENERIC_BOOT_FAILURE);
             });
-            self.serviceWorkerActivates = () => serviceWorkerReadiness;
+            self.serviceWorkerActivates = () =>
+                serviceWorkerHandoff || serviceWorkerReadiness;
 
             // Register a one-shot background sync under `tag` so a
             // local commit reaches its upstream even if the tab goes
@@ -987,11 +1113,6 @@
        injects alongside the guest runtime. Only `wa.js` / `wa.css` live
        here now; the wasm/js/snippets are built by the rust link above. -->
         <link data-trunk rel="copy-dir" href="./assets/guest" />
-        <link
-            data-trunk
-            rel="copy-file"
-            href="../tonk-sigil/assets/sigils.svg"
-        />
         <!-- `<tonk-code>` web component bundle. On a plain page the crate's
        `install()` injects `<script type="module"
        src="/tonk-code/tonk-code.js">`; inside a sealed guest the bundle is

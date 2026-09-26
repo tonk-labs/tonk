@@ -29,6 +29,9 @@ function eventTarget(initial = {}) {
 }
 
 class FakeCacheStorage {
+  constructor() {
+    this.markerReads = 0;
+  }
   async open() {
     return {
       async add() {},
@@ -39,7 +42,10 @@ class FakeCacheStorage {
     };
   }
   async keys() { return []; }
-  async match() {}
+  async match(request) {
+    const raw = typeof request === "string" ? request : request?.url;
+    if (raw?.includes(".tonk-generation-")) this.markerReads += 1;
+  }
   async delete() { return false; }
 }
 
@@ -47,16 +53,22 @@ function loadServiceWorker({
   executingRole = "active",
   waitingAtStartup = false,
   retirementFailures = 0,
+  holdTimers = false,
 } = {}) {
+  const timers = new Map();
+  let nextTimer = 0;
   let claims = 0;
   let activationRequests = 0;
   let retirementAttempts = 0;
   let retirements = 0;
   let dataFetches = 0;
   const logs = [];
+  const successorMessages = [];
   const executingWorker = {};
   const activeWorker = executingRole === "active" ? executingWorker : {};
-  const waitingWorker = executingRole === "waiting" ? executingWorker : {};
+  const waitingWorker = executingRole === "waiting"
+    ? executingWorker
+    : { postMessage(message) { successorMessages.push(message); } };
   const registration = eventTarget({
     active: activeWorker,
     installing: null,
@@ -80,6 +92,7 @@ function loadServiceWorker({
     /^import init, \{ activate \} from "\.\/worker\.js";$/m,
     "const init = async () => {}; const activate = async () => ({ onactivate: async () => {}, onupdatefound: async () => recordRetirement(), onfetch: async () => recordDataFetch() });",
   );
+  const cacheStorage = new FakeCacheStorage();
   const quietConsole = {
     log(...args) { logs.push(args.join(" ")); },
     warn(...args) { logs.push(args.join(" ")); },
@@ -89,7 +102,7 @@ function loadServiceWorker({
     source,
     {
       self: scope,
-      caches: new FakeCacheStorage(),
+      caches: cacheStorage,
       fetch: async (input) => {
         const raw = typeof input === "string" ? input : input.url;
         if (new URL(raw, "https://tonk.test").pathname === "/worker_bg.wasm") {
@@ -103,8 +116,12 @@ function loadServiceWorker({
       Request,
       URL,
       Date,
-      setTimeout,
-      clearTimeout,
+      setTimeout: holdTimers ? callback => {
+        const id = ++nextTimer;
+        timers.set(id, callback);
+        return id;
+      } : setTimeout,
+      clearTimeout: holdTimers ? id => timers.delete(id) : clearTimeout,
       recordRetirement() {
         retirementAttempts += 1;
         if (retirementAttempts <= retirementFailures) throw new Error("release failed");
@@ -122,10 +139,29 @@ function loadServiceWorker({
     claims: () => claims,
     activationRequests: () => activationRequests,
     retirementAttempts: () => retirementAttempts,
+    timers,
     retirements: () => retirements,
     dataFetches: () => dataFetches,
+    successorMessages,
+    markerReads: () => cacheStorage.markerReads,
     logs,
   };
+}
+
+/// Whether every promise settles before `ms` elapses. An outgoing worker's
+/// pending `waitUntil` is exactly what holds a `skipWaiting` successor out of
+/// activation, so a lifetime that outlasts this window is the regression.
+async function settlesWithin(promises, ms) {
+  let timer;
+  const held = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(false), ms);
+  });
+  const settled = Promise.allSettled(promises).then(() => true);
+  try {
+    return await Promise.race([settled, held]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function activationBlock() {
@@ -249,8 +285,18 @@ function pageHarness({
   alignmentReload = false,
   updateFails = false,
   updatePending = false,
+  pageBuild,
+  successorPageBuild,
+  healthFails = false,
 } = {}) {
   const messages = [];
+  const fetched = [];
+  const remounts = [];
+  const sitesParent = {
+    removeChild(site) { remounts.push(`remove:${site.id}`); },
+    insertBefore(site) { remounts.push(`insert:${site.id}`); },
+  };
+  const sites = [{ id: "site", parentNode: sitesParent, nextSibling: null }];
   const storage = new Map();
   if (alignmentReload) storage.set("tonk:sw-upgrade-reload", "1");
   let reloads = 0;
@@ -292,17 +338,51 @@ function pageHarness({
     ready,
     async register() { return registration; },
   });
-  const self = eventTarget({ tonkBootLife() {} });
+  const self = eventTarget({
+    tonkBootLife() {},
+    async fetch(input) {
+      fetched.push(String(input));
+      return new Response("ok");
+    },
+  });
+  const frames = [];
+  // The page's repeated activation request and its hold deadline, driven by
+  // the test.
+  const repeats = new Map();
+  const deadlines = new Map();
+  let nextRepeat = 0;
   const document = eventTarget({
     visibilityState: "visible",
-    querySelector() { return { textContent: "", setAttribute() {} }; },
+    querySelector(selector) {
+      if (selector === 'meta[name="tonk-page-build"]') {
+        return pageBuild ? { content: pageBuild } : null;
+      }
+      return { textContent: "", setAttribute() {} };
+    },
+    querySelectorAll(selector) {
+      return selector === "tonk-site" ? sites : [];
+    },
+    createElement(tag) {
+      const frame = eventTarget({ tag, attributes: {}, removed: false });
+      frame.setAttribute = (name, value) => { frame.attributes[name] = value; };
+      frame.remove = () => { frame.removed = true; };
+      return frame;
+    },
+    documentElement: { append(frame) { frames.push(frame); } },
   });
+  const fetch = async (url) => {
+    assert.equal(url, "/api/health");
+    if (healthFails) throw new TypeError("worker unreachable");
+    return new Response(JSON.stringify({ page: successorPageBuild ?? "0".repeat(16) }));
+  };
   vm.runInNewContext(
     activationBlock(),
     {
       self,
       window: self,
       document,
+      fetch,
+      Response,
       navigator: { serviceWorker: serviceWorkers },
       BroadcastChannel: FakeBroadcastChannel,
       sessionStorage: {
@@ -310,13 +390,29 @@ function pageHarness({
         setItem(key, value) { storage.set(key, String(value)); },
         removeItem(key) { storage.delete(key); },
       },
-      location: { reload() { reloads += 1; } },
+      location: {
+        href: "https://tonk.test/",
+        origin: "https://tonk.test",
+        reload() { reloads += 1; },
+      },
+      URL,
+      Request,
+      Response,
       console: { log() {}, warn() {}, error() {} },
       Event,
       Number,
       Promise,
-      setTimeout,
-      clearTimeout,
+      setTimeout(callback, delay) {
+        const timers = delay === 1_000 ? repeats : delay === 10_000 ? deadlines : null;
+        if (!timers) return setTimeout(callback, delay);
+        nextRepeat += 1;
+        timers.set(`timer-${nextRepeat}`, callback);
+        return `timer-${nextRepeat}`;
+      },
+      clearTimeout(id) {
+        if (repeats.delete(id) || deadlines.delete(id)) return;
+        clearTimeout(id);
+      },
     },
     { filename: INDEX },
   );
@@ -326,6 +422,20 @@ function pageHarness({
     serviceWorkers,
     storage,
     messages,
+    fetched,
+    frames,
+    tickRepeats: () => {
+      const due = [...repeats.entries()];
+      repeats.clear();
+      for (const [, callback] of due) callback();
+    },
+    expireHold: () => {
+      const due = [...deadlines.entries()];
+      deadlines.clear();
+      for (const [, callback] of due) callback();
+    },
+    fetch: (...args) => self.fetch(...args),
+    remounts,
     reloads: () => reloads,
     updates: () => updates,
     releaseUpdate: () => resolveUpdate?.(),
@@ -450,6 +560,51 @@ test("an update-aware page can wake the incumbent to retire for a waiting succes
   assert.equal(result.retirements(), 1);
 });
 
+test("retirement releases scheduled offline work and prevents rearming it", async () => {
+  const result = loadServiceWorker({ holdTimers: true });
+  const lifetimes = [];
+  const ready = {
+    data: { type: "content-ready" },
+    waitUntil(promise) { lifetimes.push(promise); },
+  };
+  result.scope.onmessage(ready);
+  assert.equal(result.timers.size, 1);
+  let settled = false;
+  lifetimes[0].then(() => { settled = true; });
+  result.scope.registration.waiting = {};
+  const retirement = [];
+  result.scope.onmessage({
+    data: { type: "retire-if-superseded" },
+    waitUntil(promise) { retirement.push(promise); },
+  });
+  await Promise.all(retirement);
+  await new Promise(setImmediate);
+  assert.equal(result.timers.size, 0, "retirement must cancel the idle timer");
+  assert.equal(settled, true, "the outgoing event lifetime must settle");
+  result.scope.onmessage(ready);
+  assert.equal(result.timers.size, 0, "late content-ready must not rearm a retired worker");
+  assert.equal(lifetimes.length, 1, "late content-ready must not extend retirement");
+});
+
+test("only an installed successor repeats the activation request", async () => {
+  const result = loadServiceWorker();
+  const pending = [];
+  const request = () => result.scope.onmessage({
+    data: { type: "activate-if-installed" },
+    waitUntil(promise) { pending.push(promise); },
+  });
+  request();
+  assert.equal(result.activationRequests(), 0);
+  result.scope.registration.waiting = {};
+  request();
+  assert.equal(result.activationRequests(), 0);
+  result.scope.registration.active = {};
+  result.scope.registration.waiting = result.scope.serviceWorker;
+  request();
+  await Promise.all(pending);
+  assert.equal(result.activationRequests(), 1);
+});
+
 test("a failed stream release is retried on the next incumbent fetch", async () => {
   const result = loadServiceWorker({ retirementFailures: 1 });
   const candidate = eventTarget({ state: "installing" });
@@ -473,6 +628,51 @@ test("a failed stream release is retried on the next incumbent fetch", async () 
   assert.equal(result.retirementAttempts(), 2);
   assert.equal(result.retirements(), 1);
   assert.equal(result.dataFetches(), 1);
+});
+
+test("a successor's arrival releases the incumbent's deferred offline fill at once", async () => {
+  const result = loadServiceWorker();
+  const pending = [];
+  const waitUntil = (promise) => { pending.push(promise); };
+  result.scope.onmessage({ data: { type: "content-ready" }, waitUntil });
+  result.scope.onfetch({
+    request: {
+      method: "GET",
+      mode: "navigate",
+      url: "https://tonk.test/",
+      headers: new Headers(),
+    },
+    clientId: "",
+    resultingClientId: "incumbent-document",
+    waitUntil,
+    respondWith(promise) { Promise.resolve(promise).catch(() => {}); },
+  });
+  assert.ok(pending.length > 0, "a navigation defers the offline fill onto its lifetime");
+
+  const candidate = eventTarget({ state: "installing" });
+  result.scope.registration.installing = candidate;
+  await result.scope.registration.dispatch("updatefound");
+
+  assert.equal(
+    await settlesWithin(pending, 1_000),
+    true,
+    "the outgoing worker must not keep its lifetime extended for its own offline fill",
+  );
+  assert.equal(result.markerReads(), 0, "a superseded generation must not fill or prune caches");
+});
+
+test("an incumbent with a successor on the way schedules no offline fill", async () => {
+  for (const slot of ["installing", "waiting"]) {
+    const result = loadServiceWorker();
+    result.scope.registration[slot] = eventTarget({ state: slot === "waiting" ? "installed" : "installing" });
+    const pending = [];
+    result.scope.onmessage({
+      data: { type: "connectivity" },
+      waitUntil(promise) { pending.push(promise); },
+    });
+    assert.equal(await settlesWithin(pending, 1_000), true, slot);
+    assert.equal(result.markerReads(), 0, slot);
+  }
 });
 
 test("only the restarted active incumbent retires for a waiting successor", async () => {
@@ -538,6 +738,140 @@ test("successor activation replaces the controller and causes one guarded reload
   assert.equal(result.reloads(), 1);
 });
 
+/// Marks when the page's IO gate opens.
+const watchGate = (result) => {
+  const gate = { open: false };
+  result.ready().then(() => { gate.open = true; });
+  return gate;
+};
+
+const installSuccessor = async (result) => {
+  result.registration.installing = null;
+  result.registration.waiting = result.incoming;
+  result.incoming.state = "installed";
+  await result.incoming.dispatch("statechange");
+};
+
+test("a page holds its IO while a successor waits to take over", async () => {
+  const result = pageHarness({ mode: "warm-update" });
+  await new Promise(setImmediate);
+  await installSuccessor(result);
+
+  const gate = watchGate(result);
+  for (let turn = 0; turn < 5; turn++) await new Promise(setImmediate);
+  assert.equal(gate.open, false, "new IO waits for the successor");
+
+  await result.activateWarmWorker();
+  for (let turn = 0; turn < 5; turn++) await new Promise(setImmediate);
+  assert.equal(gate.open, true);
+});
+
+test("a page holding its IO asks Chrome to activate the successor again", async () => {
+  const result = pageHarness({ mode: "warm-update" });
+  await new Promise(setImmediate);
+  await installSuccessor(result);
+
+  assert.equal(result.frames.length, 1, "one navigation when the hold starts");
+  const [frame] = result.frames;
+  assert.equal(frame.tag, "iframe");
+  assert.equal(frame.src, "/api/health");
+  assert.equal(frame.hidden, true);
+  await frame.dispatch("load");
+  assert.equal(frame.removed, true);
+
+  // A navigation that lands while the incumbent stops restarts it, so the
+  // request repeats until the successor takes over.
+  result.tickRepeats();
+  assert.equal(result.frames.length, 2);
+
+  await result.activateWarmWorker();
+  for (let turn = 0; turn < 5; turn++) await new Promise(setImmediate);
+  result.tickRepeats();
+  assert.equal(result.frames.length, 2, "no navigation after the successor took over");
+});
+
+test("a successor that never takes over stops holding the page", async () => {
+  const result = pageHarness({ mode: "warm-update" });
+  await new Promise(setImmediate);
+  await installSuccessor(result);
+  const gate = watchGate(result);
+  await new Promise(setImmediate);
+  assert.equal(gate.open, false);
+
+  result.expireHold();
+  const after = watchGate(result);
+  for (let turn = 0; turn < 5; turn++) await new Promise(setImmediate);
+  assert.equal(after.open, true, "new IO proceeds once the hold expires");
+  result.tickRepeats();
+  assert.equal(result.frames.length, 1, "no more activation requests after the hold");
+});
+
+test("a page without a waiting successor opens its IO at once", async () => {
+  const result = pageHarness({ mode: "warm" });
+  await result.ready();
+  const gate = watchGate(result);
+  for (let turn = 0; turn < 3; turn++) await new Promise(setImmediate);
+  assert.equal(gate.open, true);
+  assert.equal(result.frames.length, 0);
+});
+
+test("a successor with the same page build remounts guests instead of reloading", async () => {
+  const page = "a".repeat(16);
+  const result = pageHarness({ mode: "warm-update", pageBuild: page, successorPageBuild: page });
+  await new Promise(setImmediate);
+  await result.activateWarmWorker();
+  await result.ready();
+  for (let turn = 0; turn < 5; turn++) await new Promise(setImmediate);
+  assert.equal(result.reloads(), 0);
+  assert.deepEqual(result.remounts, ["remove:site", "insert:site"]);
+  assert.equal(result.storage.has("tonk:sw-upgrade-reload"), false);
+});
+
+test("a successor with a different page build reloads once", async () => {
+  const result = pageHarness({
+    mode: "warm-update",
+    pageBuild: "a".repeat(16),
+    successorPageBuild: "b".repeat(16),
+  });
+  await new Promise(setImmediate);
+  await result.activateWarmWorker();
+  for (let turn = 0; turn < 5; turn++) await new Promise(setImmediate);
+  assert.equal(result.reloads(), 1);
+  assert.deepEqual(result.remounts, []);
+  assert.equal(result.storage.get("tonk:sw-upgrade-reload"), "1");
+});
+
+test("an unreadable successor page build falls back to one reload", async () => {
+  const page = "a".repeat(16);
+  const result = pageHarness({
+    mode: "warm-update",
+    pageBuild: page,
+    successorPageBuild: page,
+    healthFails: true,
+  });
+  await new Promise(setImmediate);
+  await result.activateWarmWorker();
+  for (let turn = 0; turn < 5; turn++) await new Promise(setImmediate);
+  assert.equal(result.reloads(), 1);
+  assert.deepEqual(result.remounts, []);
+});
+
+test("a first-install document adopts a later successor", async () => {
+  const page = "a".repeat(16);
+  const result = pageHarness({ mode: "cold", pageBuild: page, successorPageBuild: page });
+  await new Promise(setImmediate);
+  result.activateColdWorker();
+  await result.ready();
+  assert.deepEqual(result.remounts, [], "first control is not a replacement");
+
+  const successor = eventTarget({ state: "activated", postMessage() {} });
+  result.serviceWorkers.controller = successor;
+  await result.serviceWorkers.dispatch("controllerchange");
+  for (let turn = 0; turn < 5; turn++) await new Promise(setImmediate);
+  assert.equal(result.reloads(), 0);
+  assert.deepEqual(result.remounts, ["remove:site", "insert:site"]);
+});
+
 test("an installed successor asks the incumbent to release its streams", async () => {
   const result = pageHarness({ mode: "warm-update" });
   await new Promise(setImmediate);
@@ -547,8 +881,42 @@ test("an installed successor asks the incumbent to release its streams", async (
   await result.incoming.dispatch("statechange");
   assert.deepEqual(
     result.messages.map((message) => message.type),
-    ["connectivity", "retire-if-superseded"],
+    ["connectivity", "activate-if-installed", "retire-if-superseded"],
   );
+});
+
+test("new page requests wait while an installed successor replaces the incumbent", async () => {
+  const result = pageHarness({ mode: "warm-update" });
+  await result.ready();
+  result.registration.installing = null;
+  result.registration.waiting = result.incoming;
+  result.incoming.state = "installed";
+  await result.incoming.dispatch("statechange");
+  let resumed = false;
+  const request = result.ready().then(() => { resumed = true; });
+  await new Promise(setImmediate);
+  assert.equal(resumed, false, "new requests must not restart the retiring worker");
+  await result.activateWarmWorker();
+  await request;
+  assert.equal(resumed, true);
+});
+
+test("an installed successor still nudges the incumbent when waiting appears after statechange", async () => {
+  const result = pageHarness({ mode: "warm-update" });
+  await new Promise(setImmediate);
+  result.registration.installing = null;
+  result.incoming.state = "installed";
+  await result.incoming.dispatch("statechange");
+  result.registration.waiting = result.incoming;
+  for (let attempt = 0; attempt < 10 &&
+      !result.messages.some(message => message.type === "retire-if-superseded"); attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  assert.ok(
+    result.messages.some(message => message.type === "retire-if-superseded"),
+    "the page must retry after waiting becomes visible",
+  );
+  await result.activateWarmWorker();
 });
 
 test("two update-aware documents each reload once on one controller replacement", async () => {

@@ -406,11 +406,16 @@ mod when_defining_an_element {
             Default::default(),
         )
         .await?;
+        // The library seeds elements of its own; the one this test
+        // authored is what it asserts on.
         let listed = tonk_cli::elements::list(&test.site).await?;
-        assert_eq!(listed.len(), 1, "{listed:?}");
-        assert_eq!(listed[0].tag.as_deref(), Some("tally-widget"));
-        assert_eq!(listed[0].methods, vec!["connected", "disconnected"]);
-        assert!(!listed[0].deprecated);
+        let ours: Vec<_> = listed
+            .iter()
+            .filter(|row| row.tag.as_deref() == Some("tally-widget"))
+            .collect();
+        assert_eq!(ours.len(), 1, "{listed:?}");
+        assert_eq!(ours[0].methods, vec!["connected", "disconnected"]);
+        assert!(!ours[0].deprecated);
         Ok(())
     }
 
@@ -557,7 +562,12 @@ mod when_defining_an_element {
             "the descriptions match, so only the METHODS distinguish \
              these two — if they collapsed, the digest is dropping them",
         );
-        assert_eq!(tonk_cli::elements::list(&test.site).await?.len(), 2);
+        let ours = tonk_cli::elements::list(&test.site)
+            .await?
+            .into_iter()
+            .filter(|row| matches!(row.tag.as_deref(), Some("a-one") | Some("b-two")))
+            .count();
+        assert_eq!(ours, 2, "both definitions list, beside the library's own");
         Ok(())
     }
 
@@ -621,9 +631,15 @@ mod when_defining_an_element {
         )
         .await?;
 
+        // The library seeds elements of its own; the rows this test
+        // authored are what it asserts on.
         let listed = tonk_cli::elements::list(&test.site).await?;
-        assert_eq!(listed.len(), 2, "{listed:?}");
-        let new = listed
+        let ours: Vec<_> = listed
+            .iter()
+            .filter(|row| row.deprecated || row.tag.as_deref() == Some("new-widget"))
+            .collect();
+        assert_eq!(ours.len(), 2, "{listed:?}");
+        let new = ours
             .iter()
             .find(|row| !row.deprecated)
             .expect("element row present");
@@ -1010,8 +1026,13 @@ mod when_defining_an_element {
 
         // The listing people actually use is unaffected: it reads the
         // method domain, which both elements have.
+        // Among the library's own elements, the two this test authored.
         let listed = tonk_cli::elements::list(&test.site).await?;
-        let tags: Vec<Option<&str>> = listed.iter().map(|row| row.tag.as_deref()).collect();
+        let tags: Vec<Option<&str>> = listed
+            .iter()
+            .map(|row| row.tag.as_deref())
+            .filter(|tag| matches!(tag, Some("every-map") | Some("methods-only")))
+            .collect();
         assert_eq!(tags, vec![Some("every-map"), Some("methods-only")]);
         Ok(())
     }

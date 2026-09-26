@@ -65,7 +65,11 @@ pub mod element_source;
 // announcing half (`assets/element-runtime.js`) on purpose — neither
 // knows how the other works.
 #[cfg(target_arch = "wasm32")]
+mod embed;
+#[cfg(target_arch = "wasm32")]
 mod fallback;
+#[cfg(target_arch = "wasm32")]
+mod font;
 #[cfg(target_arch = "wasm32")]
 mod notation;
 #[cfg(target_arch = "wasm32")]
@@ -100,6 +104,7 @@ pub fn register() {
     notation::register();
     element::register();
     fallback::register();
+    font::register();
     component::register();
     upload::register();
 }

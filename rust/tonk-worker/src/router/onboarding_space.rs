@@ -133,7 +133,7 @@ pub async fn welcome(
     let session = tonk
         .reactor
         .profile_repository()
-        .branch("main")
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(internal)?;
@@ -202,8 +202,8 @@ pub async fn welcome(
     // cannot replay the snapshot (or the libraries) over subsequent edits.
     if !imported(&tonk, key, "welcome").await? {
         let scaffold = repository::fetch_standard_library("/library/core.yaml").await?;
-        let name =
-            repository::repository_name_body(&subject, "Welcome to Tonk").map_err(internal)?;
+        let name = repository::repository_name_body(&subject, "Welcome to Tonk", None)
+            .map_err(internal)?;
         repository::seed_standard_library(&tonk, key, "main", &format!("{scaffold}\n{name}"))
             .await?;
         let agent_library =
@@ -211,7 +211,7 @@ pub async fn welcome(
         repository::seed_standard_library(&tonk, key, "main", &agent_library).await?;
         import_snapshot(&tonk, key, snapshot, "welcome").await?;
     }
-    repository::set_replica_status(&tonk, &subject, Replica::initialized_status())
+    repository::set_replica_status(&tonk, &subject, Replica::initialized_status(), None)
         .await
         .map_err(internal)?;
     progress.welcome_ready = true;
@@ -225,7 +225,7 @@ async fn locally_mounted(tonk: &TonkState, key: &str) -> Result<bool, TonkWorker
     let session = tonk
         .reactor
         .profile_repository()
-        .branch("main")
+        .branch(&tonk.active_branch)
         .acquire(&tonk.operator)
         .await
         .map_err(internal)?;

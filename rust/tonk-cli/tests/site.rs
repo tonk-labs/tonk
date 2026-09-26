@@ -1732,3 +1732,46 @@ mod when_mounting_account_authority {
         Ok(())
     }
 }
+
+mod when_reopening_a_site {
+    use anyhow::Result;
+    use tonk_cli::site::TonkSite;
+
+    use crate::common;
+
+    async fn access_revision(site: &TonkSite) -> Result<Option<dialog_repository::Revision>> {
+        Ok(
+            dialog_repository::Repository::from(site.profile.signer().clone())
+                .branch(dialog_repository::ACCESS_BRANCH)
+                .open()
+                .perform(site.operator.inner())
+                .await?
+                .revision(),
+        )
+    }
+
+    /// Every CLI invocation (`tonk pull` on a heartbeat included) opens
+    /// the site afresh. Its signing session must stay in memory: a
+    /// durable grant per open grows the profile archive without bound.
+    #[dialog_common::test]
+    async fn it_does_not_commit_a_session_grant_per_open() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let parent = tmp.path().canonicalize()?;
+        let config = common::isolated_config(&parent)?;
+
+        let site = TonkSite::init_with(&parent, config.clone()).await?;
+        let revision = access_revision(&site).await?;
+        let did = site.operator.inner().did();
+        let root = site.root.clone();
+        drop(site);
+
+        for _ in 0..3 {
+            let site = TonkSite::open_with(&root, config.clone()).await?;
+            assert_eq!(access_revision(&site).await?, revision);
+            // The operator key is derived from a fixed context, so it
+            // stays the one every repository delegation names.
+            assert_eq!(site.operator.inner().did(), did);
+        }
+        Ok(())
+    }
+}

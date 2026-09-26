@@ -318,6 +318,46 @@ impl Command for EnableSync {
     type Output = ();
 }
 
+/// Rotate onto a fresh profile and open the account ceremony on it.
+///
+/// Adding an account IS the regular signup, run for a profile that has
+/// none. The worker does the rotation; the ceremony itself is a top-page
+/// dialog with a passkey prompt, which the worker asks the originating
+/// page to raise.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct AddProfile {
+    /// The command entity (a fresh id per click).
+    pub this: Entity,
+    /// The click's timestamp — one attempt from the next.
+    pub time: crate::domain::command::current::add_profile::Time,
+}
+
+/// `AddProfile` is a [`dialog_capability::Command`]; its handler rotates
+/// the profile and notifies the page to open the ceremony.
+impl Command for AddProfile {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Make another profile on this browser the active one.
+///
+/// Dispatched when a switcher row is clicked. Carries the target
+/// profile's storage `handle` and a timestamp so switching back to a
+/// profile re-fires rather than deduplicating.
+///
+/// Naming the handle rather than firing on the profile's own entity is
+/// what lets this dispatch from the ACTIVE profile's branch: the profile
+/// being switched TO has branches this guest cannot reach.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct SwitchProfile {
+    /// The command entity (a fresh id per click).
+    pub this: Entity,
+    /// The click's timestamp — one click from the next.
+    pub time: crate::domain::command::current::switch_profile::Time,
+    /// The storage handle of the profile to make active.
+    pub handle: crate::domain::command::current::switch_profile::Handle,
+}
+
 /// Toggle background sync for a space's replica.
 ///
 /// Dispatched when the FAB's sync cap is alt/option-clicked. Carries the
@@ -429,6 +469,33 @@ impl Command for PauseSync {
     type Output = ();
 }
 
+/// `SwitchProfile` is a [`dialog_capability::Command`]; its handler lives
+/// in `tonk-worker` and lands in the same `activate_named` the HTTP route
+/// uses, so both paths share one validation.
+impl Command for SwitchProfile {
+    type Input = Self;
+    type Output = ();
+}
+
+/// Sign this device out of the account on the active branch.
+///
+/// Dispatched from the settings page. The handler withdraws the device's
+/// authority, disconnects, and moves onto an empty branch, retaining the
+/// account's branch for a later sign-in; the originating tab is then
+/// reloaded onto the fresh branch.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct SignOut {
+    /// The command entity (a fresh id per click).
+    pub this: Entity,
+    /// The click's timestamp, so signing out twice re-fires.
+    pub time: crate::domain::command::current::sign_out::Time,
+}
+
+impl Command for SignOut {
+    type Input = Self;
+    type Output = ();
+}
+
 /// Rename a space's repository from the FAB.
 ///
 /// The space-side `tonk/rename-repository` rule (`core.yaml`) cannot
@@ -468,7 +535,7 @@ impl Command for RenameRepository {
 /// Rename the signed-in member (set their display name).
 ///
 /// Asserted transiently when the topbar identity chip's
-/// `<tonk-editable>` commits. The handler persists the override to the
+/// `<inline-editable>` commits. The handler persists the override to the
 /// profile meta branch and re-stamps `MemberName` on the origin space.
 ///
 /// See [`RenameRepository`] for the marker these two used to need.
@@ -500,7 +567,7 @@ impl Command for ProfileRename {
 ///
 /// Removal is device-local: a synced space can be rejoined via an invite
 /// link, and server-side data is untouched. An owned hosted space does
-/// NOT submit this — `<ui-space-remove>` routes that verb through the
+/// NOT submit this — `<space-remove>` routes that verb through the
 /// reviewed account-space deletion flow instead.
 ///
 /// The field is called `subject`, which is what it is. It used to be

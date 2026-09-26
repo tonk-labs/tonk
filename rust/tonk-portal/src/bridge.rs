@@ -22,6 +22,7 @@
 //!   setTitle(text)    -> void,
 //!   open(href)        -> void,
 //!   analytics(event)  -> void,
+//!   task(payload, cb)  -> void,
 //!   ready: Promise<void>,
 //! }
 //! ```
@@ -46,7 +47,7 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use js_sys::{Object, Reflect};
 use tonk_host::consumer::{self as host_consumer, Subscription as HostSubscription};
@@ -76,6 +77,8 @@ pub(crate) struct PortalState {
     /// drained) on teardown so no response keeps streaming into a
     /// destroyed guest realm.
     relays: Vec<AbortController>,
+    /// The one trusted-page task leased to this guest, if any.
+    active_task: Option<crate::task::Request>,
     /// The port bound by the latest `hello` handshake, used to relay
     /// results back to the iframe. `None` until the iframe says hello.
     port: Option<MessagePort>,
@@ -115,6 +118,7 @@ impl PortalState {
             next_tag: 0,
             subs: BTreeMap::new(),
             relays: Vec::new(),
+            active_task: None,
             port: None,
             _dispatcher: None,
             with: None,
@@ -172,6 +176,56 @@ impl PortalState {
     pub(crate) fn track_relay(&mut self, controller: AbortController) {
         self.relays.push(controller);
     }
+
+    fn accept_task(&mut self, request: &crate::task::Request) -> Result<(), &'static str> {
+        use crate::task::Action;
+
+        match request.action {
+            Action::Open => {
+                if self.active_task.is_some() {
+                    return Err("busy");
+                }
+                self.active_task = Some(request.clone());
+            }
+            Action::Reseat | Action::Suspend | Action::Show => {
+                let Some(active) = self.active_task.as_ref() else {
+                    return Err("stale");
+                };
+                if active.request_id != request.request_id {
+                    return Err("stale");
+                }
+                self.active_task = Some(request.clone());
+            }
+            Action::Dismiss => {
+                let Some(active) = self.active_task.as_ref() else {
+                    return Err("stale");
+                };
+                if active.request_id != request.request_id {
+                    return Err("stale");
+                }
+                self.active_task = None;
+            }
+        }
+        Ok(())
+    }
+
+    fn finish_task(&mut self, request_id: &str) {
+        if self
+            .active_task
+            .as_ref()
+            .is_some_and(|request| request.request_id == request_id)
+        {
+            self.active_task = None;
+        }
+    }
+
+    fn take_task_dismissal(&mut self) -> Option<crate::task::Request> {
+        self.active_task.take().map(|mut request| {
+            request.action = crate::task::Action::Dismiss;
+            request.presentation = None;
+            request
+        })
+    }
 }
 
 /// The bootstrap script prepended into the iframe's `srcdoc`. It defines
@@ -179,428 +233,7 @@ impl PortalState {
 /// port to the parent via `parent.postMessage(hello, "*", [port2])`.
 /// Posting to `"*"` is unavoidable from a null origin; the parent
 /// authenticates by `event.source`, not `event.origin`.
-const BOOTSTRAP_JS: &str = r#"(function(){
-  var nextId=0, pending=new Map(), streams=new Map(), subRows=new Map(), registerFocus=new Map();
-  var resolveReady; var ready=new Promise(function(r){resolveReady=r;});
-  var ch=new MessageChannel(), port=ch.port1;
-  function mint(){return "r"+(++nextId);}
-  // Merge an optional per-call routing context ({with}) into an envelope.
-  // The guest relay passes the `branch@repo` location its in-guest `with`
-  // ancestry resolved. The host parses it and honors it ONLY when the
-  // portal's `allow` permits it (denied with a typed error otherwise), so
-  // this is always safe to send.
-  function withRoute(extra,ctx){
-    if(ctx&&ctx.with){ extra.with=ctx.with; }
-    return extra;
-  }
-  // The request-context headers every relayed /api fetch carries, so the SW can
-  // tie the request to this tab's SITE and route/contain it. Site, path, and hash
-  // come from the injected context (the host's site id + the host's location;
-  // the guest's own location is about:srcdoc). They are explicit headers because
-  // a service worker reads request.headers, which never includes Referer (the
-  // browser exposes it only as request.referrer, not as a header). Returns
-  // [[name,value]] pairs prepended to any per-request headers.
-  function contextHeaders(){
-    var c=(window.tonk&&window.tonk.context)||{};
-    var headers=[];
-    if(c.site){ headers.push(["x-tonk-site",c.site]); }
-    if(c.path){ headers.push(["x-tonk-path",c.path]); }
-    if(c.hash){ headers.push(["x-tonk-hash",c.hash]); }
-    return headers;
-  }
-  function call(type,extra){
-    return ready.then(function(){
-      return new Promise(function(resolve,reject){
-        var id=mint(); pending.set(id,{resolve:resolve,reject:reject});
-        port.postMessage(Object.assign({v:1,type:type,id:id},extra));
-      });
-    });
-  }
-  // In-flight de-duplication for one-shot queries. Many <tonk-display>
-  // elements resolve the SAME concept descriptor (phase-1) or bookmark name
-  // on one page load — e.g. three displays of `tonk:repository` each fire an
-  // identical `db.meta/*` query. Coalesce identical concurrent queries
-  // onto one request keyed by (route + body); every caller shares the single
-  // promise. Purely in-flight (cleared when it settles), so no staleness —
-  // just fewer round-trips. A subscription is never deduped here (it's a
-  // long-lived stream), only the fire-and-forget `query`.
-  var inflightQ=new Map();
-  function dedupQuery(env){
-    var key;
-    try{ key=JSON.stringify(env); }catch(e){ return call("query",env); }
-    var hit=inflightQ.get(key);
-    if(hit) return hit;
-    var p=call("query",env).finally(function(){ inflightQ.delete(key); });
-    inflightQ.set(key,p);
-    return p;
-  }
-  var tonk={
-    context:{this:"",model:""},
-    ready:ready,
-    query:function(body,ctx){return dedupQuery(withRoute({body:body},ctx));},
-    transact:function(request,ctx){return call("transact",withRoute({request:request},ctx));},
-    // Evaluate an asserted-notation document against the branch. `detail` carries
-    // {document, transact}; the parent relays it to the installed host's
-    // consumer path, which performs the typed evaluate and returns its parsed result.
-    evaluate:function(detail){return call("evaluate",{document:(detail&&detail.document)||"",transact:!(detail&&detail.transact===false)});},
-    // Ask the HOST page to delegate: the account root lives behind the
-    // passkey, and WebAuthn exists only on the top-level window, inside a
-    // user gesture. A guest click posts {subject, command, audience} here;
-    // the parent runs the ceremony and answers with the minted hop (base58
-    // of the serialized chain), or rejects with the reason.
-    delegate:function(request){return call("delegate",request||{});},
-    // Navigate the HOST page: the opaque guest can't touch parent.location
-    // and has no router, so a link click posts its href here and the parent
-    // performs the real navigation. Fire-and-forget (no response).
-    navigate:function(href){
-      ready.then(function(){port.postMessage({v:1,type:"navigate",href:href});});
-    },
-    // Reload the HOST page after a whole-profile state swap. Unlike navigate,
-    // this is meaningful when the route itself has not changed: every portal
-    // and subscription owned by the previous profile must be rebuilt.
-    reload:function(){
-      ready.then(function(){port.postMessage({v:1,type:"reload"});});
-    },
-    // Retitle the HOST page's tab: the opaque guest can't touch
-    // parent.document.title. `<tonk-title>` posts its text here and the
-    // parent performs the real assignment. Fire-and-forget (no response).
-    setTitle:function(text){
-      ready.then(function(){port.postMessage({v:1,type:"title",text:text});});
-    },
-    // Open a link from the HOST: the opaque guest has neither `allow-popups`
-    // nor `allow-top-navigation`, so a click on an external link posts its
-    // raw href here and the parent decides — resolving it against the real
-    // origin, allowlisting the scheme, and confirming anything off-origin.
-    // Fire-and-forget (no response).
-    open:function(href){
-      ready.then(function(){port.postMessage({v:1,type:"open",href:href});});
-    },
-    // Carry a typed, pre-validated product event toward the top page. Every
-    // parent relays the same string and the final sink validates it again.
-    analytics:function(event){
-      ready.then(function(){port.postMessage({v:1,type:"analytics",event:event});});
-    },
-    // Raise the registration dialog on the HOST page. Sharing needs an
-    // account, and only the top page can run the ceremony: WebAuthn wants
-    // a `window` and a user gesture, which the guest's opaque realm and
-    // the service worker both lack. The guest posts the refusal class so
-    // the host can word the prompt. Fire-and-forget (no response).
-    register:function(reason){
-      var opener=document.activeElement;
-      // Even an unfocused opener needs the ceremony's terminal event.
-      var token=mint();
-      if(token){ registerFocus.set(token,opener); }
-      ready.then(function(){port.postMessage({v:1,type:"register",reason:reason,focusToken:token});});
-    },
-    // Same-origin request performed by the HOST: the opaque guest can't reach a
-    // same-origin, SW-routed `/api/...` endpoint itself. The host issues the
-    // request on its real origin and streams the response back; we rebuild a
-    // real `Response`. The full request (method, headers, body) is forwarded so
-    // POST query/subscribe/transact route through here, not just GET. See the
-    // `window.fetch` override below.
-    fetch:function(path,req){
-      req=req||{};
-      return ready.then(function(){
-        return new Promise(function(resolve,reject){
-          var id=mint(); pending.set(id,{resolve:resolve,reject:reject});
-          port.postMessage({v:1,type:"fetch",id:id,path:path,
-            method:req.method||"GET",headers:req.headers||[],body:req.body});
-        });
-      });
-    },
-    subscribe:function(body,ctx){
-      var id=mint();
-      return new ReadableStream({
-        start:function(controller){
-          streams.set(id,controller);
-          ready.then(function(){port.postMessage(withRoute({v:1,type:"subscribe",id:id,body:body},ctx));},
-                     function(err){streams.delete(id);controller.error(err);});
-        },
-        cancel:function(){
-          streams.delete(id);subRows.delete(id);
-          port.postMessage({v:1,type:"unsubscribe",id:id});
-        }
-      });
-    }
-  };
-  port.onmessage=function(event){
-    var env=event.data; if(!env) return;
-    switch(env.type){
-      case "ready": tonk.context=env.context; resolveReady(); return;
-      case "context": tonk.context=env.context; return;
-      case "query-result": case "transact-result": {
-        var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
-        h.resolve("rows" in env ? env.rows : env.receipt); return;
-      }
-      case "evaluate-result": {
-        var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
-        h.resolve(env.result); return;
-      }
-      case "delegate-result": {
-        var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
-        h.resolve(env.delegation); return;
-      }
-      case "custody-open": {
-        window.dispatchEvent(new Event("tonk:custody-opened")); return;
-      }
-      case "custody-focus":
-      case "register-focus": {
-        var opener=registerFocus.get(env.focusToken);
-        registerFocus.delete(env.focusToken);
-        // The top-page ceremony has been torn down. Its opener may have been
-        // replaced by a profile-fact render while the ceremony was running,
-        // so signal the guest window even when that old node can no longer
-        // take focus. Hub chrome uses this terminal event to clear its durable
-        // linking marker and restore the spaces page in one step.
-        window.dispatchEvent(new Event(env.type==="custody-focus" ? "tonk:custody-closed" : "tonk:registration-closed"));
-        if(opener&&opener.isConnected&&!opener.matches(":disabled")){
-          window.focus();
-          opener.focus({preventScroll:true});
-        }
-        return;
-      }
-      case "register-focus-discard": {
-        registerFocus.delete(env.focusToken); return;
-      }
-      case "fetch-result": {
-        var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
-        // Rebuild a real Response from the status/headers the host captured
-        // plus the body. The body arrives one of three ways:
-        //   - env.body is a transferred ReadableStream (fast path) — use it.
-        //   - env.streamPort is a transferred MessagePort (Safari fallback) —
-        //     wrap it in a ReadableStream that pulls chunks with credit-based
-        //     backpressure: grant credit when the consumer wants more, enqueue
-        //     each {type:"chunk"}, close on {type:"close"}, error on
-        //     {type:"error"}, and post {type:"cancel"} if the reader cancels.
-        //   - neither — a bodyless response.
-        var headers=new Headers(env.headers||[]);
-        var body=null;
-        if (env.body!==undefined) {
-          body=env.body;
-        } else if (env.streamPort) {
-          var sp=env.streamPort;
-          body=new ReadableStream({
-            start:function(controller){
-              sp.onmessage=function(ev){
-                var m=ev.data; if(!m) return;
-                if(m.type==="chunk"){
-                  controller.enqueue(new Uint8Array(m.chunk,m.byteOffset||0,m.byteLength!==undefined?m.byteLength:m.chunk.byteLength));
-                  // Ask for more while the consumer still has appetite.
-                  if(controller.desiredSize>0){ sp.postMessage({type:"credit",n:1}); }
-                } else if(m.type==="close"){
-                  controller.close(); sp.close();
-                } else if(m.type==="error"){
-                  controller.error(new Error(m.error||"stream error")); sp.close();
-                }
-              };
-              // Prime the pump: grant initial credit sized to the consumer's
-              // appetite (default 1 when desiredSize is null).
-              sp.postMessage({type:"credit",n:controller.desiredSize>0?controller.desiredSize:1});
-            },
-            pull:function(controller){
-              sp.postMessage({type:"credit",n:controller.desiredSize>0?controller.desiredSize:1});
-            },
-            cancel:function(){ sp.postMessage({type:"cancel"}); sp.close(); }
-          });
-        }
-        var rebuilt=new Response(body,
-          {status:env.status,statusText:env.statusText,headers:headers});
-        // `url` is a readonly getter the constructor can't populate, so a
-        // rebuilt response reports "". Consumers that parse it break on
-        // that: reqwest's wasm client does `Url::parse(resp.url()).
-        // expect_throw("url parse")` while converting EVERY response, so
-        // any Rust component fetching from inside the guest (e.g.
-        // `<tonk-default-remote>` reading /.well-known/tonk) throws
-        // instead of returning. Shadow the getter with an own property
-        // carrying the URL the host actually fetched.
-        try{ Object.defineProperty(rebuilt,"url",
-          {value:env.url||"",configurable:true}); }catch(e){}
-        h.resolve(rebuilt);
-        return;
-      }
-      case "query-error": case "transact-error": case "evaluate-error": case "fetch-error": case "delegate-error": {
-        var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
-        h.reject(new Error(env.error)); return;
-      }
-      case "subscribe-event": {
-        var c=streams.get(env.id); if(!c) return;
-        // The guest's window.tonk.subscribe() is documented as a stream of
-        // full Conclusion[] snapshots. The host sends either a full set
-        // (env.rows) or a delta (env.delta = {asserted,retracted}); keep a
-        // retained set per stream and always enqueue the full array so the
-        // author-facing contract is unchanged.
-        try{
-          var prev=subRows.get(env.id)||[];
-          var next;
-          if(env.delta){
-            var rej=env.delta.retracted||[];
-            var add=env.delta.asserted||[];
-            var keyOf=function(r){return JSON.stringify(r);};
-            // Value-equality retract, tracking which retracts found no
-            // matching row (drift) and which `this` the delta asserts.
-            // Mirrors tonk-display's apply_delta: an asserted row for an
-            // entity whose retract didn't match a retained row supersedes
-            // that entity's stale (drifted) rows, so a superseded field
-            // leaves ONE row for the entity, not two that a group-by-`this`
-            // fold would collapse to a stale/multi-valued field. Clean
-            // supersessions, pure retracts, and directory multi-valued
-            // entities (retract matches the changed tuple) are unaffected.
-            var gone={};for(var i=0;i<rej.length;i++){gone[keyOf(rej[i])]=true;}
-            var drifted={};for(var i=0;i<rej.length;i++){drifted[rej[i].this]=true;}
-            // Slot identity mirrors tonk-display's row_slots: each field,
-            // refined by the entry key when the value is a single-entry
-            // object (keyed collections arrive one row per entry). The
-            // heal replaces a drifted row only when an asserted row for
-            // the same entity claims one of ITS slots, so a superseded
-            // show{directory} never takes the sibling show{ui} with it.
-            var slotsOf=function(r){
-              var out={};var f=r.fields||{};
-              for(var k in f){ if(k==="this") continue;
-                var v=f[k];var entry=null;
-                if(v&&typeof v==="object"&&!Array.isArray(v)){
-                  var ks=Object.keys(v); if(ks.length===1) entry=ks[0];
-                }
-                out[k+"\u001e"+(entry===null?"":entry)]=true;
-              }
-              return out;
-            };
-            var asserts={};
-            for(var i=0;i<add.length;i++){
-              var t=add[i].this; var slots=asserts[t]||(asserts[t]={});
-              var s2=slotsOf(add[i]); for(var k2 in s2) slots[k2]=true;
-            }
-            next=prev.filter(function(r){
-              if(gone[keyOf(r)]){ delete drifted[r.this]; return false; }
-              return true;
-            }).filter(function(r){
-              if(!drifted[r.this]) return true;
-              var slots=asserts[r.this]; if(!slots) return true;
-              var mine=slotsOf(r);
-              for(var k3 in mine){ if(slots[k3]) return false; }
-              return true;
-            }).concat(add);
-          }else{
-            next=env.rows||[];
-          }
-          subRows.set(env.id,next);
-          c.enqueue(next);
-        }catch(e){streams.delete(env.id);subRows.delete(env.id);} return;
-      }
-      case "subscribe-error": {
-        var c=streams.get(env.id); if(!c) return; streams.delete(env.id);subRows.delete(env.id);
-        c.error(new Error(env.error)); return;
-      }
-    }
-  };
-  window.tonk=tonk;
-
-  // The product-owned agent prompt lives in rendered guest markup, outside
-  // the Rust component tree. Observe only its reviewed copy control and send
-  // a content-free lifecycle; never read or forward the copied value.
-  var agentCopies=new WeakMap();
-  function eventNode(event,selector){
-    var nodes=event.composedPath?event.composedPath():[event.target];
-    for(var i=0;i<nodes.length;i++){
-      var node=nodes[i];
-      if(node&&node.matches&&node.matches(selector)) return node;
-    }
-    return null;
-  }
-  function productAttemptId(){
-    try{
-      var bytes=new Uint8Array(16); crypto.getRandomValues(bytes);
-      return Array.from(bytes,function(value){return value.toString(16).padStart(2,"0");}).join("");
-    }catch(e){return null;}
-  }
-  function promptEvent(attempt,phase,result,failure){
-    var props={schema_version:1,journey:"handoff",action:"copy_agent_prompt",
-      phase:phase,stage:phase==="started"?"intent":"clipboard",
-      surface:"workspace",trigger:"user",attempt_id:attempt.id};
-    if(phase==="finished"){
-      props.duration_ms=Math.min(600000,Math.max(0,Math.floor(performance.now()-attempt.started)));
-      props.result=result;
-      if(failure) props.failure_kind=failure;
-    }
-    tonk.analytics(JSON.stringify({name:"product_event",props:props}));
-  }
-  document.addEventListener("click",function(event){
-    var target=eventNode(event,".agent-prompt__copy");
-    if(!target||target.disabled||target.isCopying||agentCopies.has(target)) return;
-    var id=productAttemptId(); if(!id) return;
-    var attempt={id:id,started:performance.now()};
-    agentCopies.set(target,attempt); promptEvent(attempt,"started");
-  },true);
-  document.addEventListener("wa-copy",function(event){
-    var target=eventNode(event,".agent-prompt__copy");
-    var attempt=target&&agentCopies.get(target); if(!attempt) return;
-    agentCopies.delete(target); promptEvent(attempt,"finished","success");
-  });
-  document.addEventListener("wa-error",function(event){
-    var target=eventNode(event,".agent-prompt__copy");
-    var attempt=target&&agentCopies.get(target); if(!attempt) return;
-    agentCopies.delete(target);
-    promptEvent(attempt,"finished","retryable_failure","unknown");
-  });
-
-  // Override window.fetch so guest code (and our own loaders) can fetch
-  // same-origin, SW-routed resources the opaque iframe can't reach itself.
-  // Host-relative requests (`/…`, not `//`) route through `tonk.fetch`, which
-  // has the host perform the real fetch and transfer the response stream back;
-  // everything else (absolute cross-origin, `blob:`, `data:`) passes through
-  // to the native fetch — notably the runtime bootstrap's own blob-URL module
-  // imports, which must never be intercepted.
-  var nativeFetch=window.fetch.bind(window);
-  // Normalize a fetch(input, init) call into {method, headers:[[k,v]], body}
-  // the relay can postMessage. `input` may be a string or a Request; `init`
-  // overrides Request fields. Body is read to text (our /api bodies are JSON
-  // strings); a Request body is consumed via .text() so we return a Promise.
-  function relayRequest(url,input,init){
-    var method="GET", headers=contextHeaders(), bodyP=Promise.resolve(undefined);
-    var reqLike=(typeof input==="object"&&input)?input:null;
-    if(reqLike){ method=reqLike.method||method; }
-    if(init&&init.method){ method=init.method; }
-    var hsrc=(init&&init.headers)||(reqLike&&reqLike.headers);
-    if(hsrc){
-      if(typeof hsrc.forEach==="function"){ hsrc.forEach(function(v,k){headers.push([k,v]);}); }
-      else if(Array.isArray(hsrc)){ headers=headers.concat(hsrc); }
-      else { for(var k in hsrc){ if(Object.prototype.hasOwnProperty.call(hsrc,k)){headers.push([k,hsrc[k]]);} } }
-    }
-    if(init&&"body"in init){ bodyP=Promise.resolve(init.body); }
-    else if(reqLike&&!reqLike.bodyUsed&&reqLike.body){ bodyP=reqLike.clone().text(); }
-    return bodyP.then(function(body){
-      return tonk.fetch(url,{method:method,headers:headers,body:body});
-    });
-  }
-  window.fetch=function(input,init){
-    var url=(typeof input==="string")?input:(input&&input.url)||"";
-    // Host-relative (`/…`, not `//`): route through the relay.
-    if(url.charAt(0)==="/"&&url.charAt(1)!=="/"){
-      return relayRequest(url,input,init);
-    }
-    // Absolute URL pointing at the HOST origin: some consumers resolve a path
-    // against `document.baseURI`, so a host API call can arrive fully-qualified
-    // (`http://host/api/…`). At the guest's opaque origin that would be a
-    // cross-origin fetch (CORS-blocked, origin `null`), so strip the origin
-    // prefix and relay the path. TWO origins qualify: the REAL host origin
-    // (`context.origin`), and the guest's SYNTHETIC per-space base origin
-    // (`context.base`, e.g. `https://{label}.tonk.network`) — with a `<base>` set
-    // to the latter, a relative `/api/…` resolves against it, so a `Request`
-    // built from it is fake-origin-absolute and must be stripped the same way.
-    var ctx=(window.tonk&&window.tonk.context)||{};
-    var origin=ctx.origin||"";
-    if(origin&&url.indexOf(origin+"/")===0){
-      return relayRequest(url.slice(origin.length),input,init);
-    }
-    // `context.base` carries a trailing slash; drop it to get the bare origin.
-    var baseOrigin=(ctx.base||"").replace(/\/$/,"");
-    if(baseOrigin&&url.indexOf(baseOrigin+"/")===0){
-      return relayRequest(url.slice(baseOrigin.length),input,init);
-    }
-    return nativeFetch(input,init);
-  };
-
-  parent.postMessage({v:1,type:"hello"},"*",[ch.port2]);
-})();"#;
+const BOOTSTRAP_JS: &str = include_str!("bootstrap.js");
 
 /// Runtime-injection bootstrap, appended after [`BOOTSTRAP_JS`] when the
 /// portal is in `runtime` mode. It receives the element runtime from the
@@ -614,379 +247,11 @@ const BOOTSTRAP_JS: &str = r#"(function(){
 ///
 /// The guest fetches NOTHING — the parent (trusted, networked) hands over
 /// every byte. `runtime-ready` tells the parent to send.
-const RUNTIME_BOOTSTRAP_JS: &str = r#"(function(){
-  // Surface guest errors to the parent log: an opaque (null) origin sanitizes
-  // `Uncaught (in promise)` / error details in the parent console to a bare
-  // message, so a sealed-guest failure is otherwise undebuggable. Forwarding the
-  // stack via the bridge keeps the sealed runtime diagnosable. The parent logs
-  // these under "portal guest runtime warn:".
-  window.addEventListener("unhandledrejection", function(ev){
-    var r=ev.reason;
-    parent.postMessage({__tonkRuntime:"warn",error:"unhandledrejection: "+(r&&r.stack?r.stack:String(r))},"*");
-  });
-  window.addEventListener("error", function(ev){
-    parent.postMessage({__tonkRuntime:"warn",error:"error: "+(ev.error&&ev.error.stack?ev.error.stack:ev.message)},"*");
-  });
-
-  // Global submit guard: the iframe sandbox grants `allow-forms` only so a
-  // `<form>`'s `submit` event fires (declarative `onsubmit=` bindings run on
-  // it). This capture-phase listener `preventDefault`s EVERY submission
-  // before its native action, so a form can never navigate the guest away or
-  // POST anywhere — the event is observable, the navigation is not. Runs on
-  // every submit regardless of whether the form has an app handler.
-  document.addEventListener("submit", function(ev){ ev.preventDefault(); }, true);
-
-  // A press in here is a press "outside" for every overlay an ancestor frame
-  // holds open. A nested guest fills its parent's whole viewport, so once
-  // content renders in one, NO click ever reaches the frame the FABB lives
-  // in, and its open stack could not be dismissed by clicking away at all.
-  // Events do not cross a frame boundary, so relay the fact of the press and
-  // let each ancestor redispatch it on its own document, where the existing
-  // dismiss listeners already handle it. Only the fact travels: no
-  // coordinates, no target, nothing the ancestor could use to observe what
-  // was pressed inside a sealed guest.
-  document.addEventListener("pointerdown", function(){
-    try{ parent.postMessage({__tonkRuntime:"press"},"*"); }catch(_){}
-  }, true);
-
-  window.addEventListener("message", function(e){
-    var d=e.data; if(!d||d.__tonkRuntime!=="press") return;
-    // Redispatch on THIS document so an overlay held open here closes, then
-    // keep it travelling so every ancestor up to the top page does the same.
-    document.dispatchEvent(new PointerEvent("pointerdown",{bubbles:true}));
-    try{ parent.postMessage({__tonkRuntime:"press"},"*"); }catch(_){}
-  });
-
-  // A light/dark change made in some ancestor frame, relayed down. The
-  // theme is a whole-app property, but each guest is its own document with
-  // its own root element, so the only way a toggle reaches nested content is
-  // to walk the frame tree. Each guest applies it and passes it on, so one
-  // message reaches every depth.
-  window.addEventListener("message", function(e){
-    var d=e.data; if(!d||d.__tonkRuntime!=="mode") return;
-    var isDark=d.mode==="dark";
-    var cls=document.documentElement.classList;
-    cls.toggle("wa-dark",isDark); cls.toggle("wa-light",!isDark);
-    var frames=document.querySelectorAll("iframe");
-    for(var i=0;i<frames.length;i++){
-      try{ frames[i].contentWindow.postMessage({__tonkRuntime:"mode",mode:d.mode},"*"); }catch(_){}
-    }
-  });
-
-  window.addEventListener("message", async function(e){
-    var d=e.data; if(!d||d.__tonkRuntime!=="inject") return;
-    try {
-      // Apply the parent document's exact root classes (WA theme + palette +
-      // dark/light), so the injected WA CSS resolves its custom properties
-      // identically to the host page.
-      if (d.rootClass) document.documentElement.className=d.rootClass;
-      // The injected rootClass is a one-time snapshot, so a later OS
-      // light/dark switch wouldn't reach the guest (the parent retoggles its
-      // own `wa-dark`/`wa-light` on `prefers-color-scheme`, but the guest's
-      // class is frozen). Watch the same OS signal here and keep the guest's
-      // dark/light class live — `prefers-color-scheme` is identical inside the
-      // iframe, so guest and parent stay in agreement. The theme/palette
-      // classes from rootClass are untouched (they don't change).
-      (function(){
-        var mq=window.matchMedia("(prefers-color-scheme: dark)");
-        var apply=function(isDark){
-          var cls=document.documentElement.classList;
-          cls.toggle("wa-dark",isDark); cls.toggle("wa-light",!isDark);
-        };
-        apply(mq.matches);
-        mq.addEventListener("change",function(ev){apply(ev.matches);});
-      })();
-      // Base layout: the guest fills the iframe and lays out as a column so
-      // the injected view (a `.display-route` chain) can flex to full height.
-      // `color-scheme:light dark` is load-bearing, not cosmetic: a NESTED
-      // guest is a cross-origin frame, and its `prefers-color-scheme` comes
-      // from THIS document's used color-scheme — leave it undeclared and the
-      // OS dark preference dies here, waking every deeper frame up light.
-      // (The app stylesheet declares it too; this covers the beat before it
-      // lands, and any guest injected without it.)
-      var base=document.createElement("style");
-      base.textContent="html{color-scheme:light dark}html,body{height:100%;margin:0}body{display:flex;flex-direction:column;min-height:100%}";
-      document.head.appendChild(base);
-      if (d.css) {
-        var style=document.createElement("style");
-        // Tag the injected app CSS so a NESTED guest (whose parent is THIS guest,
-        // not the top document) can discover it: the parent has no
-        // `<link rel=stylesheet href=/styles-*.css>` to read the href from — its
-        // app CSS lives in this inline `<style>` — so `app_stylesheet_css()`
-        // reads the content back off `[data-tonk-app-css]`.
-        style.setAttribute("data-tonk-app-css","");
-        style.textContent=d.css;
-        document.head.appendChild(style);
-      }
-      // Web Awesome component bundle: a self-contained ESM (no dynamic or
-      // relative imports). `d.wa` is the transferred ArrayBuffer (ownership
-      // moved, no copy); wrap it in a Blob (a zero-copy view over the bytes)
-      // and import the URL so the <wa-*> elements upgrade with no network.
-      if (d.wa) {
-        var waUrl=URL.createObjectURL(new Blob([d.wa],{type:"text/javascript"}));
-        await import(waUrl);
-      }
-      // Rewrite each snippet import statement to a guest-minted blob URL.
-      var glue=d.glue;
-      for (var i=0;i<d.snippets.length;i++){
-        var s=d.snippets[i];
-        var url=URL.createObjectURL(new Blob([s.src],{type:"text/javascript"}));
-        glue=glue.replace(s.stmt, s.stmt.replace(/from\s*['"][^'"]*['"]/, 'from "'+url+'"'));
-      }
-      var glueUrl=URL.createObjectURL(new Blob([glue],{type:"text/javascript"}));
-      var mod=await import(glueUrl);
-      await mod.default({ module_or_path: d.wasm });
-      mod.start();
-      // Code-split editor bundles load sibling chunks via RELATIVE imports,
-      // dead at this opaque origin. Mint a blob per file in DEPENDENCY ORDER
-      // so each file's relative imports rewrite to the FINAL blob URLs of
-      // already-minted deps. The esbuild chunk graph is a DAG (shared chunks
-      // are leaves), so repeated passes that mint any file whose deps are all
-      // minted converge; a file with an unminted relative dep is deferred to
-      // a later pass. `rewrite` hooks per-bundle source patching (runtime URL
-      // templates that the static "./<name>" rewrite can't reach).
-      var mintGraph=function(files, rewrite){
-        var srcByName={};
-        for (var ci=0; ci<files.length; ci++){ srcByName[files[ci].name]=files[ci].src; }
-        var relImports=function(src){
-          var out=[],re=/['"]\.\/([^'"$]+)['"]/g,m;
-          while((m=re.exec(src))) if(out.indexOf(m[1])<0) out.push(m[1]);
-          return out;
-        };
-        var blobs={};            // name -> final blob URL
-        var pending=Object.keys(srcByName);
-        var guard=0;
-        while (pending.length && guard++ < 20){
-          var next=[];
-          for (var pi=0; pi<pending.length; pi++){
-            var name=pending[pi];
-            var deps=relImports(srcByName[name]).filter(function(n){return srcByName[n]!==undefined;});
-            var ready=deps.every(function(n){return blobs[n];});
-            if(!ready){ next.push(name); continue; }
-            var out=srcByName[name];
-            for (var di=0; di<deps.length; di++){
-              out=out.split('"./'+deps[di]+'"').join('"'+blobs[deps[di]]+'"');
-              out=out.split("'./"+deps[di]+"'").join("'"+blobs[deps[di]]+"'");
-            }
-            if (rewrite) out=rewrite(out);
-            blobs[name]=URL.createObjectURL(new Blob([out],{type:"text/javascript"}));
-          }
-          pending=next;
-        }
-        return blobs;
-      };
-      // The <tonk-code> editor bundle. LAZY end-to-end: nothing rides the
-      // boot payload at all, not even a shell. Unlike tonk-prose/tonk-table
-      // — whose builds split a tiny registration shell from a heavy core —
-      // `tonk-code.js` IS the element definition, so there is nothing cheap
-      // to register up front. The whole ~659 kB graph (main + dialog-yaml
-      // pack + shared chunks) crosses the boundary only once something that
-      // needs it appears in the DOM.
-      //
-      // The trigger is the DOM, not a connectedCallback: with the element
-      // undefined, `<tonk-code>` gets no callbacks, so it cannot ask for
-      // itself. Both consumers (tonk-inspector, tonk-notebook) append a
-      // `<tonk-diagnostics-provider>` and THEN await
-      // `customElements.whenDefined("tonk-code")` before mounting an editor
-      // — a promise that simply stays pending until the import below runs
-      // `define`. So observing either tag's arrival catches every real use,
-      // and the consumers need no change: their existing wait resolves when
-      // the bundle lands. Both mount into LIGHT dom, so a document-wide
-      // subtree observer reaches them.
-      (function(){
-        var CODE_TAGS=["TONK-CODE","TONK-DIAGNOSTICS-PROVIDER"];
-        var requested=false;
-        var observer=null;
-        var wants=function(node){
-          if (!node || node.nodeType!==1) return false;
-          if (CODE_TAGS.indexOf(node.tagName)>=0) return true;
-          // A subtree can arrive in one mutation (a node view, an innerHTML
-          // swap), so the added node itself is not necessarily the match.
-          return typeof node.querySelector==="function"
-            && !!node.querySelector("tonk-code,tonk-diagnostics-provider");
-        };
-        var load=function(){
-          if (requested) return;
-          requested=true;
-          if (observer) { observer.disconnect(); observer=null; }
-          // A failed relay must not poison the trigger: clear `requested` and
-          // re-arm the observer so the next element to appear retries the
-          // whole handshake. (tonk-prose/tonk-table clear their cached core
-          // promise for the same reason — there the next connect retries; here
-          // the element is still undefined, so the next arrival is the retry.)
-          var retry=function(){
-            requested=false;
-            if (!observer) {
-              observer=new MutationObserver(onMutations);
-              observer.observe(document.documentElement,{childList:true,subtree:true});
-            }
-          };
-          var timer=setTimeout(function(){
-            window.removeEventListener("message",onCode);
-            parent.postMessage({__tonkRuntime:"warn",error:"tonk-code: no inject-code reply from parent"},"*");
-            retry();
-          },15000);
-          var onCode=function(e){
-            var m=e.data; if(!m||m.__tonkRuntime!=="inject-code") return;
-            clearTimeout(timer);
-            window.removeEventListener("message",onCode);
-            try {
-              var codeBlobs=mintGraph(m.code||[]);
-              // Seed the minted blob map BEFORE importing: the element's
-              // on-demand language loader reads `window.__tonkCodeChunks` at
-              // module-eval time and reuses these SHARED chunk-*.js blobs
-              // (esp. @codemirror/state/view/language). Re-minting them for a
-              // language pack would create a second @codemirror/state
-              // identity, and CodeMirror's instanceof checks reject the pack
-              // ("Unrecognized extension value … multiple instances of
-              // @codemirror/state").
-              window.__tonkCodeChunks=codeBlobs;
-              var entry=codeBlobs["tonk-code.js"];
-              if (!entry) throw new Error("tonk-code: element bundle missing from inject-code");
-              // Defining the element resolves the consumers' pending
-              // `whenDefined`, which is what actually mounts the editors.
-              import(entry).catch(function(importErr){
-                parent.postMessage({__tonkRuntime:"warn",error:"tonk-code import: "+String(importErr)+(importErr&&importErr.stack?"\n"+importErr.stack:"")},"*");
-                retry();
-              });
-            } catch(err) {
-              // A missing editor must not abort the rest of the guest runtime.
-              parent.postMessage({__tonkRuntime:"warn",error:"tonk-code inject: "+String(err)+(err&&err.stack?"\n"+err.stack:"")},"*");
-              retry();
-            }
-          };
-          window.addEventListener("message",onCode);
-          parent.postMessage({__tonkRuntime:"need-code"},"*");
-        };
-        var onMutations=function(records){
-          for (var ri=0; ri<records.length; ri++){
-            var added=records[ri].addedNodes;
-            for (var ai=0; ai<added.length; ai++){
-              if (wants(added[ai])) { load(); return; }
-            }
-          }
-        };
-        // Anything already in the document (a server-rendered view, or a
-        // fast consumer that mounted before this ran) counts as demand.
-        if (document.querySelector("tonk-code,tonk-diagnostics-provider")) { load(); return; }
-        observer=new MutationObserver(onMutations);
-        observer.observe(document.documentElement,{childList:true,subtree:true});
-      })();
-      // The <tonk-prose> markdown editor. LAZY end-to-end: the boot payload
-      // carries only the ~4 kB registration shell; the ~400 kB editor core
-      // crosses the boundary only when the first <tonk-prose> actually
-      // connects. The shell resolves the core via import.meta.url, dead at
-      // this origin — it consults window.__tonkProseEditor first, and
-      // accepts a FUNCTION returning a promised URL: ours asks the trusted
-      // parent for the core's bytes (`need-prose`), mints blobs from the
-      // `inject-prose` reply, and resolves the core's blob URL. Imported
-      // AFTER tonk-code so code blocks inside documents upgrade to embedded
-      // <tonk-code> editors (the node view checks for the element at draw
-      // time).
-      if (d.prose && d.prose.length) {
-        try {
-          var proseBlobs=mintGraph(d.prose);
-          var proseCore=null;
-          window.__tonkProseEditor=function(){
-            if (!proseCore) {
-              proseCore=new Promise(function(resolve,reject){
-                var timer=setTimeout(function(){
-                  window.removeEventListener("message",onProse);
-                  reject(new Error("tonk-prose: no inject-prose reply from parent"));
-                },15000);
-                var onProse=function(e){
-                  var m=e.data; if(!m||m.__tonkRuntime!=="inject-prose") return;
-                  clearTimeout(timer);
-                  window.removeEventListener("message",onProse);
-                  try {
-                    var blobs=mintGraph(m.prose||[]);
-                    var url=blobs["tonk-prose-editor.js"];
-                    if (url) resolve(url);
-                    else reject(new Error("tonk-prose: editor core missing from inject-prose"));
-                  } catch(err) { reject(err); }
-                };
-                window.addEventListener("message",onProse);
-                parent.postMessage({__tonkRuntime:"need-prose"},"*");
-              });
-              // A failed request must not poison the cache — the shell also
-              // clears its module promise on failure, so the next element
-              // connect retries the whole handshake.
-              proseCore.catch(function(){ proseCore=null; });
-            }
-            return proseCore;
-          };
-          await import(proseBlobs["tonk-prose.js"]);
-        } catch(proseErr) {
-          // Same containment as tonk-code: a missing markdown editor must not
-          // abort the rest of the guest runtime.
-          parent.postMessage({__tonkRuntime:"warn",error:"tonk-prose inject: "+String(proseErr)+(proseErr&&proseErr.stack?"\n"+proseErr.stack:"")},"*");
-        }
-      }
-      // The <tonk-table> spreadsheet. LAZY end-to-end, and now with
-      // NOTHING in the boot payload: the shell is branch data, resolved
-      // by the element registry when a <tonk-table> is first rendered,
-      // and the grid core plus the multi-megabyte engine-bytes leaf
-      // cross the boundary only when an element actually connects.
-      //
-      // All that is installed here is the seam the shell reaches for:
-      // window.__tonkTableGrid asks the trusted parent for the grid
-      // graph (`need-table`), mints blobs from the `inject-table` reply
-      // (the grid's relative import of the engine leaf rewrites to its
-      // blob in dependency order), and resolves the grid's blob URL.
-      // The engine then instantiates from the leaf's embedded bytes —
-      // no fetch, which is why it works at this opaque origin at all.
-      //
-      // Installed unconditionally: there is no longer a payload whose
-      // presence could gate it, and a guest whose parent cannot serve
-      // the core fails at first connect with the timeout below rather
-      // than silently having no spreadsheet.
-      {
-        try {
-          var tableGrid=null;
-          window.__tonkTableGrid=function(){
-            if (!tableGrid) {
-              tableGrid=new Promise(function(resolve,reject){
-                var timer=setTimeout(function(){
-                  window.removeEventListener("message",onTable);
-                  reject(new Error("tonk-table: no inject-table reply from parent"));
-                },15000);
-                var onTable=function(e){
-                  var m=e.data; if(!m||m.__tonkRuntime!=="inject-table") return;
-                  clearTimeout(timer);
-                  window.removeEventListener("message",onTable);
-                  try {
-                    var blobs=mintGraph(m.table||[]);
-                    var url=blobs["tonk-table-grid.js"];
-                    if (url) resolve(url);
-                    else reject(new Error("tonk-table: grid core missing from inject-table"));
-                  } catch(err) { reject(err); }
-                };
-                window.addEventListener("message",onTable);
-                parent.postMessage({__tonkRuntime:"need-table"},"*");
-              });
-              // A failed request must not poison the cache — the shell also
-              // clears its module promise on failure, so the next element
-              // connect retries the whole handshake.
-              tableGrid.catch(function(){ tableGrid=null; });
-            }
-            return tableGrid;
-          };
-        } catch(tableErr) {
-          // Same containment as tonk-prose: a broken seam must not abort
-          // the rest of the guest runtime.
-          parent.postMessage({__tonkRuntime:"warn",error:"tonk-table inject: "+String(tableErr)+(tableErr&&tableErr.stack?"\n"+tableErr.stack:"")},"*");
-        }
-      }
-    } catch(err) {
-      parent.postMessage({__tonkRuntime:"error",error:String(err)+(err&&err.stack?"\n"+err.stack:"")},"*");
-    }
-  });
-  parent.postMessage({__tonkRuntime:"runtime-ready"},"*");
-})();"#;
+const RUNTIME_BOOTSTRAP_JS: &str = include_str!("runtime_bootstrap.js");
 
 /// A `<base href>` element pinning the guest's document base to the
 /// per-space synthetic origin, so the BROWSER resolves every relative URL
-/// (links, forms, `new URL`, `<tonk-page>` location reads) under it. Empty
+/// (links, forms, `new URL`, `<page-mount>` location reads) under it. Empty
 /// when there is no space origin (the profile/Hub), leaving the guest's
 /// inherited base untouched. Prepended before everything so it applies from
 /// the first parsed node.
@@ -1003,16 +268,19 @@ fn base_tag(base: &str) -> String {
 /// Prepend the bootstrap script that wires `window.tonk` to this
 /// portal's bridge over a `MessagePort`. `base` is the per-space synthetic
 /// origin the guest should resolve URLs against (empty = leave inherited).
-pub(crate) fn bootstrap_srcdoc(content: &str, base: &str) -> String {
-    format!("{}<script>{BOOTSTRAP_JS}</script>{content}", base_tag(base))
+pub(crate) fn bootstrap_srcdoc(content: &str, base: &str, head: &str) -> String {
+    format!(
+        "{}{head}<script>{BOOTSTRAP_JS}</script>{content}",
+        base_tag(base)
+    )
 }
 
 /// Like [`bootstrap_srcdoc`], plus the runtime-injection bootstrap: the
 /// guest will ask the parent (`runtime-ready`) for the element runtime and
 /// bring it up before `content`'s custom elements upgrade.
-pub(crate) fn bootstrap_srcdoc_with_runtime(content: &str, base: &str) -> String {
+pub(crate) fn bootstrap_srcdoc_with_runtime(content: &str, base: &str, head: &str) -> String {
     format!(
-        "{}<script>{BOOTSTRAP_JS}</script><script>{RUNTIME_BOOTSTRAP_JS}</script>{content}",
+        "{}{head}<script>{BOOTSTRAP_JS}</script><script>{RUNTIME_BOOTSTRAP_JS}</script>{content}",
         base_tag(base)
     )
 }
@@ -1843,6 +1111,7 @@ fn make_dispatcher(
             "open" => handle_open(&state, &data),
             "analytics" => handle_analytics(&data),
             "register" => handle_register(&state, &port, &data),
+            "task" => handle_task(&state, &port, &data),
             "fetch" => handle_host_fetch(&state, &port, &data),
             "delegate" => handle_delegate(&port, &data),
             _ => {}
@@ -2143,7 +1412,7 @@ fn is_top_level_route(rest: &str) -> bool {
 }
 
 /// Set the host page's tab title on the guest's behalf. The guest's
-/// `<tonk-title>` posts `{v:1, type:"title", text}`; this runs in the
+/// `<tab-title>` posts `{v:1, type:"title", text}`; this runs in the
 /// parent document, which is where `document.title` lives.
 /// Raise the host's registration dialog for a share that needs an
 /// account.
@@ -2166,8 +1435,42 @@ fn handle_register(state: &Rc<RefCell<PortalState>>, port: &MessagePort, data: &
     REGISTER_HANDLER.with(|handler| {
         if let Some(handler) = handler.borrow().as_ref() {
             handler(&reason, focus_return);
+        } else if let Some(window) = window()
+            && let Ok(tonk) = Reflect::get(&window, &"tonk".into())
+            && let Ok(register) = Reflect::get(&tonk, &"register".into())
+            && let Some(register) = register.dyn_ref::<js_sys::Function>()
+        {
+            // A sealed guest may itself host portals. Only the outer shell
+            // owns account UI; relay through this guest's established port.
+            let _ = relay_register(register, &tonk, &reason, focus_return);
         }
     });
+}
+
+fn relay_register(
+    register: &js_sys::Function,
+    receiver: &JsValue,
+    reason: &str,
+    focus_return: Option<RegisterFocusReturn>,
+) -> Result<(), JsValue> {
+    let held = Rc::new(RefCell::new(focus_return));
+    let callback = Closure::<dyn FnMut(String)>::new(move |kind: String| {
+        if kind == "custody-open" {
+            if let Some(reply) = held.borrow().as_ref() {
+                reply.show_custody();
+            }
+        } else if let Some(reply) = held.borrow_mut().take() {
+            match kind.as_str() {
+                "register-focus" => reply.restore(),
+                "custody-focus" => reply.restore_custody(),
+                // Dropping an unhandled reply discards only this child's token.
+                _ => {}
+            }
+        }
+    })
+    .into_js_value();
+    register.call2(receiver, &reason.into(), &callback)?;
+    Ok(())
 }
 
 /// A one-shot return path to the exact control in a sealed guest that asked
@@ -2227,8 +1530,8 @@ type RegisterHandler = Box<dyn Fn(&str, Option<RegisterFocusReturn>)>;
 
 thread_local! {
     /// What to do when a guest asks for registration. `None` until the
-    /// shell installs one, which is correct for a page with no account
-    /// UI: the ask is dropped rather than half-performed.
+    /// shell installs one. Nested sealed guests relay through their existing
+    /// parent port; a page with neither handler nor bridge drops the request.
     static REGISTER_HANDLER: std::cell::RefCell<Option<RegisterHandler>> =
         const { std::cell::RefCell::new(None) };
 }
@@ -2253,6 +1556,186 @@ fn register_request(data: &JsValue) -> Option<(String, Option<String>)> {
     let reason = get_str(data, "reason").filter(|reason| !reason.is_empty())?;
     let token = get_str(data, "focusToken").filter(|token| !token.is_empty());
     Some((reason, token))
+}
+
+/// A one-shot result path from the trusted page to the exact sealed guest
+/// that requested a contained task.
+pub struct ContainedTaskReturn {
+    port: MessagePort,
+    frame: Option<HtmlIFrameElement>,
+    state: Weak<RefCell<PortalState>>,
+    request_id: Option<String>,
+    token: String,
+    handled: bool,
+}
+
+impl ContainedTaskReturn {
+    /// Finish the request, restore the connected guest frame and consume the
+    /// return token.
+    pub fn finish(mut self, result: &str) {
+        if let Some(frame) = self.frame.as_ref()
+            && frame.is_connected()
+        {
+            let _ = frame.focus();
+        }
+        self.release_task();
+        self.post(result);
+        self.handled = true;
+    }
+
+    fn release_task(&self) {
+        let Some(request_id) = self.request_id.as_deref() else {
+            return;
+        };
+        if let Some(state) = self.state.upgrade() {
+            state.borrow_mut().finish_task(request_id);
+        }
+    }
+
+    fn post(&self, result: &str) {
+        let envelope = Object::new();
+        set_v1(&envelope, "task-result");
+        let _ = Reflect::set(
+            &envelope,
+            &"focusToken".into(),
+            &JsValue::from_str(&self.token),
+        );
+        let _ = Reflect::set(&envelope, &"result".into(), &JsValue::from_str(result));
+        let _ = self.port.post_message(&envelope);
+    }
+}
+
+impl Drop for ContainedTaskReturn {
+    fn drop(&mut self) {
+        if !self.handled {
+            self.release_task();
+            self.post("disconnected");
+        }
+    }
+}
+
+type TaskHandler = Box<dyn Fn(crate::task::Request, Option<ContainedTaskReturn>)>;
+
+thread_local! {
+    static TASK_HANDLER: std::cell::RefCell<Option<TaskHandler>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Install what runs when a sealed guest asks for a trusted-page contained
+/// task. Later calls replace the handler so hot reload cannot stack hosts.
+pub fn on_task(handler: impl Fn(crate::task::Request, Option<ContainedTaskReturn>) + 'static) {
+    TASK_HANDLER.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(handler));
+    });
+}
+
+fn handle_task(state: &Rc<RefCell<PortalState>>, port: &MessagePort, data: &JsValue) {
+    let Some((payload, token)) = task_request(data) else {
+        return;
+    };
+    let make_return = |request_id: Option<&str>| {
+        token.as_ref().map(|token| ContainedTaskReturn {
+            port: port.clone(),
+            frame: state.borrow().iframe.clone(),
+            state: Rc::downgrade(state),
+            request_id: request_id.map(str::to_owned),
+            token: token.clone(),
+            handled: false,
+        })
+    };
+    let request = match crate::task::Request::parse(&payload).and_then(|request| {
+        let offset = state
+            .borrow()
+            .iframe
+            .as_ref()
+            .map(|frame| {
+                let element: &Element = frame.unchecked_ref();
+                let rect = element.get_bounding_client_rect();
+                (rect.left(), rect.top())
+            })
+            .unwrap_or((0.0, 0.0));
+        request.translated(offset.0, offset.1)
+    }) {
+        Ok(request) => request,
+        Err(_) => {
+            if let Some(reply) = make_return(None) {
+                reply.finish("invalid");
+            }
+            return;
+        }
+    };
+
+    if let Err(result) = state.borrow_mut().accept_task(&request) {
+        if let Some(reply) = make_return(None) {
+            reply.finish(result);
+        }
+        return;
+    }
+
+    let request_id = request.request_id.clone();
+    dispatch_task(request, make_return(Some(&request_id)), true);
+}
+
+fn dispatch_task(
+    request: crate::task::Request,
+    focus_return: Option<ContainedTaskReturn>,
+    relay: bool,
+) {
+    let mut request = Some(request);
+    let mut focus_return = focus_return;
+    TASK_HANDLER.with(|handler| {
+        if let Some(handler) = handler.borrow().as_ref() {
+            handler(request.take().expect("task request"), focus_return.take());
+        }
+    });
+    if request.is_none() {
+        return;
+    }
+    if !relay {
+        return;
+    }
+    if let Some(window) = window()
+        && let Ok(tonk) = Reflect::get(&window, &"tonk".into())
+        && let Ok(task) = Reflect::get(&tonk, &"task".into())
+        && let Some(task) = task.dyn_ref::<js_sys::Function>()
+        && let Ok(payload) = request.as_ref().expect("unhandled request").to_json()
+    {
+        let _ = relay_task(task, &tonk, &payload, focus_return.take());
+    }
+}
+
+/// Dismiss the task leased to a guest before its port and iframe disappear.
+pub(crate) fn disconnect_task(state: &Rc<RefCell<PortalState>>) {
+    let request = state.borrow_mut().take_task_dismissal();
+    if let Some(request) = request {
+        dispatch_task(request, None, true);
+    }
+}
+
+fn relay_task(
+    task: &js_sys::Function,
+    receiver: &JsValue,
+    payload: &str,
+    focus_return: Option<ContainedTaskReturn>,
+) -> Result<(), JsValue> {
+    let held = Rc::new(RefCell::new(focus_return));
+    let callback = Closure::<dyn FnMut(String)>::new(move |result: String| {
+        if let Some(reply) = held.borrow_mut().take() {
+            reply.finish(&result);
+        }
+    })
+    .into_js_value();
+    task.call2(receiver, &payload.into(), &callback)?;
+    Ok(())
+}
+
+fn task_request(data: &JsValue) -> Option<(String, Option<String>)> {
+    if get_str(data, "type")? != "task" {
+        return None;
+    }
+    let payload = get_str(data, "payload").filter(|payload| !payload.is_empty())?;
+    let token = get_str(data, "focusToken").filter(|token| !token.is_empty());
+    Some((payload, token))
 }
 
 fn handle_title(data: &JsValue) {
@@ -2916,7 +2399,7 @@ fn build_context(host: &Element, state: &Rc<RefCell<PortalState>>) -> Object {
     // The guest's own `window.location` is `about:srcdoc`; its REAL location is
     // the parent's. Pass the parent's path + search + hash so the guest stamps
     // them on its requests (the SW reads them to route/contain) and so a
-    // location-reading guest control (e.g. `<tonk-page>`, which couriers an
+    // location-reading guest control (e.g. `<page-mount>`, which couriers an
     // invite's `?access` + `#seed` into the join command) sees the real URL.
     // `search`/`hash` especially: browsers strip the query only from the
     // fragment, but the guest can't read EITHER off `about:srcdoc`, and the SW
@@ -3163,7 +2646,7 @@ mod tests {
     use js_sys::{Array, Function, Promise};
     use wasm_bindgen_futures::JsFuture;
     use wasm_bindgen_test::wasm_bindgen_test_configure;
-    use web_sys::{CustomEvent, Document, MessageChannel};
+    use web_sys::{CustomEvent, Document, HtmlDialogElement, HtmlElement, MessageChannel};
 
     wasm_bindgen_test_configure!(run_in_browser);
 
@@ -3660,7 +3143,7 @@ mod tests {
         assert_eq!(get_str(&context, "model").as_deref(), Some("counter"));
         // The host forwards its real `search` (the `?query`) into the guest
         // context — a sealed guest can't read it off its own `about:srcdoc`
-        // location, and `<tonk-page>` needs it to courier an invite's `?access`.
+        // location, and `<page-mount>` needs it to courier an invite's `?access`.
         assert!(
             get_str(&context, "search").is_some(),
             "context carries a `search` field forwarded from the host location",
@@ -4025,6 +3508,204 @@ mod tests {
             }
             JsValue::UNDEFINED
         }
+    }
+
+    #[dialog_common::test]
+    async fn it_presents_and_reseats_a_typed_task_across_a_real_opaque_portal() {
+        let host = FakeHost::install();
+        let probe = WindowProbe::install("task");
+        let standing = Rc::new(RefCell::new(None::<HtmlDialogElement>));
+        let reply = Rc::new(RefCell::new(None::<ContainedTaskReturn>));
+        let latest = Rc::new(RefCell::new(None::<crate::task::Request>));
+        let standing_for_handler = standing.clone();
+        let reply_for_handler = reply.clone();
+        let latest_for_handler = latest.clone();
+        on_task(move |request, focus_return| {
+            match request.action {
+                crate::task::Action::Open => {
+                    let dialog = document()
+                        .create_element("dialog")
+                        .expect("dialog")
+                        .dyn_into::<HtmlDialogElement>()
+                        .expect("native dialog");
+                    dialog.set_text_content(Some("trusted task probe"));
+                    document()
+                        .body()
+                        .expect("body")
+                        .append_child(&dialog)
+                        .expect("mount dialog");
+                    seat_probe(&dialog, &request);
+                    dialog.show_modal().expect("show modal");
+                    *standing_for_handler.borrow_mut() = Some(dialog);
+                    *reply_for_handler.borrow_mut() = focus_return;
+                }
+                crate::task::Action::Reseat => {
+                    if let Some(dialog) = standing_for_handler.borrow().as_ref() {
+                        seat_probe(dialog, &request);
+                    }
+                }
+                _ => {}
+            }
+            *latest_for_handler.borrow_mut() = Some(request);
+        });
+
+        let open = task_payload(crate::task::Action::Open, 10.0, 12.0);
+        let reseat = task_payload(crate::task::Action::Reseat, 30.0, 36.0);
+        let content = format!(
+            r#"<button id="opener">open task</button><main id="surface">space</main><script>
+            var opener=document.getElementById('opener'),surface=document.getElementById('surface');
+            opener.focus();surface.hidden=true;
+            window.addEventListener('tonk:task-closed',function(event){{
+              var wasHidden=surface.hidden;surface.hidden=false;
+              queueMicrotask(function(){{parent.postMessage({{__test:'task',result:event.detail.result,wasHidden:wasHidden,focused:document.activeElement===opener}},'*');}});
+            }},{{once:true}});
+            tonk.task({open:?});tonk.task({reseat:?});
+            </script>"#
+        );
+        let portal = mount_portal(&host, &content, None, None, None);
+        portal
+            .set_attribute(
+                "style",
+                "display:block;margin:29px 0 0 37px;width:320px;height:220px",
+            )
+            .expect("portal geometry");
+
+        for _ in 0..400 {
+            if standing
+                .borrow()
+                .as_ref()
+                .is_some_and(HtmlDialogElement::open)
+                && latest
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|request| request.action == crate::task::Action::Reseat)
+            {
+                break;
+            }
+            sleep(5).await;
+        }
+        let dialog = standing.borrow().clone().expect("standing top-page modal");
+        assert!(dialog.open(), "the native modal blocks the trusted page");
+        assert!(
+            dialog.matches(":modal").expect(":modal selector"),
+            "the request is modal in the top page rather than only the guest"
+        );
+        let iframe = portal
+            .query_selector("iframe")
+            .expect("iframe selector")
+            .expect("portal iframe")
+            .dyn_into::<HtmlElement>()
+            .expect("HTML iframe");
+        let frame = iframe.get_bounding_client_rect();
+        let latest_request = latest.borrow().clone().expect("reseat request");
+        let anchor = &latest_request.presentation.as_ref().unwrap().anchor;
+        assert!((anchor.left - (frame.left() + 30.0)).abs() < 0.5);
+        assert!((anchor.top - (frame.top() + 36.0)).abs() < 0.5);
+        assert_eq!(
+            latest_request.presentation.as_ref().unwrap().horizontal,
+            crate::task::Horizontal::Right
+        );
+        assert_eq!(
+            latest_request.presentation.as_ref().unwrap().vertical,
+            crate::task::Vertical::Bottom
+        );
+        assert!((dialog.get_bounding_client_rect().right() - anchor.right).abs() < 0.5);
+        assert!((dialog.get_bounding_client_rect().bottom() - anchor.bottom).abs() < 0.5);
+
+        reply
+            .borrow_mut()
+            .take()
+            .expect("task return")
+            .finish("completed");
+        let message = probe.wait().await;
+        assert_eq!(get_str(&message, "result").as_deref(), Some("completed"));
+        assert_eq!(
+            Reflect::get(&message, &"wasHidden".into())
+                .ok()
+                .and_then(|value| value.as_bool()),
+            Some(true),
+            "only the trusted task surface is visible while it is open"
+        );
+        assert_eq!(
+            Reflect::get(&message, &"focused".into())
+                .ok()
+                .and_then(|value| value.as_bool()),
+            Some(true),
+            "focus returns through the existing port token"
+        );
+        dialog.close();
+        dialog.remove();
+        portal.remove();
+    }
+
+    #[dialog_common::test]
+    async fn it_dismisses_the_trusted_task_when_its_guest_disconnects() {
+        let host = FakeHost::install();
+        let standing = Rc::new(RefCell::new(None::<HtmlDialogElement>));
+        let held_return = Rc::new(RefCell::new(None::<ContainedTaskReturn>));
+        let dismissed = Rc::new(std::cell::Cell::new(false));
+        let standing_for_handler = standing.clone();
+        let held_return_for_handler = held_return.clone();
+        let dismissed_for_handler = dismissed.clone();
+        on_task(move |request, focus_return| match request.action {
+            crate::task::Action::Open => {
+                let dialog = document()
+                    .create_element("dialog")
+                    .expect("dialog")
+                    .dyn_into::<HtmlDialogElement>()
+                    .expect("native dialog");
+                document()
+                    .body()
+                    .expect("body")
+                    .append_child(&dialog)
+                    .expect("mount dialog");
+                dialog.show_modal().expect("show modal");
+                *standing_for_handler.borrow_mut() = Some(dialog);
+                *held_return_for_handler.borrow_mut() = focus_return;
+            }
+            crate::task::Action::Dismiss => {
+                if let Some(dialog) = standing_for_handler.borrow_mut().take() {
+                    dialog.close();
+                    dialog.remove();
+                }
+                held_return_for_handler.borrow_mut().take();
+                dismissed_for_handler.set(true);
+            }
+            _ => {}
+        });
+
+        let open = task_payload(crate::task::Action::Open, 10.0, 12.0);
+        let portal = mount_portal(
+            &host,
+            &format!("<script>tonk.task({open:?})</script>"),
+            None,
+            None,
+            None,
+        );
+        for _ in 0..400 {
+            if standing
+                .borrow()
+                .as_ref()
+                .is_some_and(HtmlDialogElement::open)
+            {
+                break;
+            }
+            sleep(5).await;
+        }
+        assert!(standing.borrow().is_some(), "trusted task opened");
+
+        portal.remove();
+        for _ in 0..100 {
+            if dismissed.get() {
+                break;
+            }
+            sleep(5).await;
+        }
+        assert!(
+            dismissed.get(),
+            "guest teardown dispatches one typed dismissal"
+        );
+        assert!(standing.borrow().is_none(), "trusted modal is released");
     }
 
     #[dialog_common::test]
@@ -4509,6 +4190,223 @@ mod tests {
 
         let returned = listener.wait_for("register-focus").await;
         assert_eq!(get_str(&returned, "focusToken").as_deref(), Some("focus-2"));
+    }
+
+    fn task_payload(action: crate::task::Action, left: f64, top: f64) -> String {
+        crate::task::Request {
+            version: crate::task::VERSION,
+            request_id: "probe-1".into(),
+            purpose: crate::task::Purpose::Probe,
+            action,
+            account: None,
+            presentation: Some(crate::task::Presentation {
+                anchor: crate::task::Anchor {
+                    left,
+                    top,
+                    right: left + 120.0,
+                    bottom: top + 48.0,
+                    width: 120.0,
+                    height: 48.0,
+                },
+                horizontal: crate::task::Horizontal::Right,
+                vertical: crate::task::Vertical::Bottom,
+                dismissal: crate::task::Dismissal::Optional,
+            }),
+        }
+        .to_json()
+        .expect("task JSON")
+    }
+
+    fn seat_probe(dialog: &HtmlDialogElement, request: &crate::task::Request) {
+        let presentation = request.presentation.as_ref().expect("presentation");
+        let anchor = &presentation.anchor;
+        let width = 160.0;
+        let height = 96.0;
+        let left = match presentation.horizontal {
+            crate::task::Horizontal::Left => anchor.left,
+            crate::task::Horizontal::Right => anchor.right - width,
+        };
+        let top = match presentation.vertical {
+            crate::task::Vertical::Top => anchor.top,
+            crate::task::Vertical::Bottom => anchor.bottom - height,
+        };
+        let _ = dialog.style().set_property("margin", "0");
+        let _ = dialog.style().set_property("box-sizing", "border-box");
+        let _ = dialog.style().set_property("border", "0");
+        let _ = dialog.style().set_property("padding", "0");
+        let _ = dialog.style().set_property("width", &format!("{width}px"));
+        let _ = dialog
+            .style()
+            .set_property("height", &format!("{height}px"));
+        let _ = dialog.style().set_property("left", &format!("{left}px"));
+        let _ = dialog.style().set_property("top", &format!("{top}px"));
+    }
+
+    #[dialog_common::test]
+    async fn it_returns_a_contained_task_result_through_the_request_port() {
+        let state = Rc::new(RefCell::new(PortalState::new()));
+        let channel = MessageChannel::new().expect("message channel");
+        let listener = PortListener::attach(&channel.port2());
+        let held = Rc::new(RefCell::new(None));
+        let captured = held.clone();
+        on_task(move |request, focus_return| {
+            assert_eq!(request.purpose, crate::task::Purpose::Probe);
+            assert_eq!(request.action, crate::task::Action::Open);
+            *captured.borrow_mut() = focus_return;
+        });
+
+        let request = Object::new();
+        let _ = Reflect::set(&request, &"type".into(), &"task".into());
+        let _ = Reflect::set(
+            &request,
+            &"payload".into(),
+            &task_payload(crate::task::Action::Open, 10.0, 20.0).into(),
+        );
+        let _ = Reflect::set(&request, &"focusToken".into(), &"task-focus-1".into());
+        handle_task(&state, &channel.port1(), &request.into());
+        held.borrow_mut()
+            .take()
+            .expect("task return handle")
+            .finish("completed");
+
+        let returned = listener.wait_for("task-result").await;
+        assert_eq!(
+            get_str(&returned, "focusToken").as_deref(),
+            Some("task-focus-1")
+        );
+        assert_eq!(get_str(&returned, "result").as_deref(), Some("completed"));
+    }
+
+    #[dialog_common::test]
+    async fn it_rejects_invalid_task_geometry_before_the_presenter_runs() {
+        let state = Rc::new(RefCell::new(PortalState::new()));
+        let channel = MessageChannel::new().expect("message channel");
+        let listener = PortListener::attach(&channel.port2());
+        let handled = Rc::new(std::cell::Cell::new(false));
+        let seen = handled.clone();
+        on_task(move |_, _| seen.set(true));
+
+        let malformed = task_payload(crate::task::Action::Open, 10.0, 20.0)
+            .replace("\"width\":120.0", "\"width\":90.0");
+        let request = Object::new();
+        let _ = Reflect::set(&request, &"type".into(), &"task".into());
+        let _ = Reflect::set(&request, &"payload".into(), &malformed.into());
+        let _ = Reflect::set(&request, &"focusToken".into(), &"task-focus-2".into());
+        handle_task(&state, &channel.port1(), &request.into());
+
+        let returned = listener.wait_for("task-result").await;
+        assert!(
+            !handled.get(),
+            "invalid metadata never reaches the host presenter"
+        );
+        assert_eq!(get_str(&returned, "result").as_deref(), Some("invalid"));
+    }
+
+    /// A render can replace the guest control that opened registration
+    /// before registration is requested, before focus returns, or just
+    /// after. Focus follows the replacement.
+    #[dialog_common::test]
+    async fn it_returns_registration_focus_to_a_replaced_opener() {
+        let scenario = Function::new_with_args(
+            "bootstrap, replaced",
+            r#"return (async () => {
+                const frame = document.createElement("iframe");
+                document.body.append(frame);
+                const port = await new Promise(resolve => {
+                    const hello = event => {
+                        if (event.source !== frame.contentWindow || event.data?.type !== "hello") return;
+                        window.removeEventListener("message", hello);
+                        resolve(event.ports[0]);
+                    };
+                    window.addEventListener("message", hello);
+                    const doc = frame.contentDocument;
+                    doc.open();
+                    doc.write(`<button data-opener="account" data-state="ready">open</button><script>${bootstrap}<\/script>`);
+                    doc.close();
+                });
+                const doc = frame.contentDocument;
+                const requested = new Promise(resolve => {
+                    port.onmessage = event => {
+                        if (event.data?.type === "register") resolve(event.data.focusToken);
+                    };
+                });
+                port.postMessage({ v: 1, type: "ready", context: {} });
+                const replace = () => {
+                    const old = doc.querySelector("[data-opener]");
+                    const next = old.cloneNode(true);
+                    next.setAttribute("data-state", "loading");
+                    old.replaceWith(next);
+                    return next;
+                };
+                const settle = () => new Promise(resolve => setTimeout(resolve, 20));
+                doc.querySelector("[data-opener]").focus();
+                let next = replaced === "before-request" ? replace() : null;
+                frame.contentWindow.tonk.register("needs-account");
+                const token = await requested;
+                if (replaced === "before-return") next = replace();
+                port.postMessage({ v: 1, type: "register-focus", focusToken: token });
+                await settle();
+                if (replaced === "after-return") next = replace();
+                await settle();
+                const focused = doc.activeElement === next;
+                frame.remove();
+                return focused;
+            })();"#,
+        );
+        for replaced in ["before-request", "before-return", "after-return"] {
+            let promise = scenario
+                .call2(
+                    &JsValue::NULL,
+                    &JsValue::from_str(BOOTSTRAP_JS),
+                    &JsValue::from_str(replaced),
+                )
+                .expect("run the scenario");
+            let focused = JsFuture::from(Promise::from(promise))
+                .await
+                .expect("scenario settles");
+            assert_eq!(
+                focused.as_bool(),
+                Some(true),
+                "focus did not follow an opener replaced {replaced}"
+            );
+        }
+    }
+
+    #[dialog_common::test]
+    async fn it_relays_nested_registration_focus_and_discard_to_the_child_port() {
+        for terminal in ["register-focus", "custody-focus", "register-focus-discard"] {
+            let channel = MessageChannel::new().expect("message channel");
+            let listener = PortListener::attach(&channel.port2());
+            let reply = RegisterFocusReturn {
+                port: channel.port1(),
+                frame: None,
+                token: "inner-opener".into(),
+                handled: false,
+            };
+            let outer_register = js_sys::Function::new_with_args(
+                "reason, relay",
+                &format!(
+                    "if(reason!=='needs-account')throw Error('wrong reason');relay('custody-open');relay('{terminal}');"
+                ),
+            );
+            relay_register(
+                &outer_register,
+                &JsValue::NULL,
+                "needs-account",
+                Some(reply),
+            )
+            .unwrap();
+            let opened = listener.wait_for("custody-open").await;
+            assert_eq!(
+                get_str(&opened, "focusToken").as_deref(),
+                Some("inner-opener")
+            );
+            let returned = listener.wait_for(terminal).await;
+            assert_eq!(
+                get_str(&returned, "focusToken").as_deref(),
+                Some("inner-opener")
+            );
+        }
     }
 
     #[dialog_common::test]

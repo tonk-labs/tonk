@@ -366,6 +366,11 @@ pub struct TonkState {
     /// [`session`](crate::session) before its delegation lapses, so it
     /// is not stable for the life of the worker.
     pub operator: DefaultOperator,
+    /// The branch of the profile repository this state is on: the
+    /// account's branch when signed in, an upstream-less one when not.
+    /// Read from `meta` at boot; a switch records a new active branch
+    /// there and rebuilds the state, so it is fixed for one state's life.
+    pub active_branch: String,
     /// The storage pool every space is mounted in. Held so a rotated
     /// operator can be built over the *same* pool: a replacement with
     /// its own would leave the reactor's cached repository and branch
@@ -547,6 +552,42 @@ mod route_for_tests {
 
     // The scheduler's clock is passed in (not `Date::now()`), so these drive it
     // with fixed timestamps — no real time, fully deterministic.
+
+    #[dialog_common::test]
+    async fn it_does_not_extend_fetch_lifetimes_after_retirement() {
+        use wasm_bindgen::JsCast as _;
+
+        let state =
+            std::sync::Arc::new(tokio::sync::RwLock::new(router::tests::test_state().await));
+        let lifetimes = js_sys::Array::new();
+        let captured = lifetimes.clone();
+        let wait_until =
+            wasm_bindgen::closure::Closure::<dyn FnMut(Promise)>::new(move |promise: Promise| {
+                captured.push(&promise);
+            });
+        let event = js_sys::Object::new();
+        js_sys::Reflect::set(&event, &"waitUntil".into(), wait_until.as_ref()).unwrap();
+        let request =
+            Request::new_with_str("https://tonk.test/api/profile/branch/main/query").unwrap();
+        js_sys::Reflect::set(&event, &"request".into(), &request).unwrap();
+        let scheduler = SyncScheduler::default();
+
+        // A live worker still schedules its ordinary debounce lifetime.
+        schedule_sync_drain(event.unchecked_ref(), &scheduler, &state);
+        assert_eq!(lifetimes.length(), 1);
+        scheduler.stop();
+        let ticket = scheduler.generation.get();
+        for _ in 0..5 {
+            schedule_sync_drain(event.unchecked_ref(), &scheduler, &state);
+        }
+        assert_eq!(
+            lifetimes.length(),
+            1,
+            "retired query traffic must not keep rearming the debounce lifetime"
+        );
+        assert_eq!(scheduler.generation.get(), ticket);
+        JsFuture::from(Promise::all(&lifetimes)).await.unwrap();
+    }
 
     /// No repo holds un-pushed local commits: the ordinary reading, and the
     /// one under which the quiet interval applies.
@@ -1740,10 +1781,22 @@ pub(crate) async fn boot_state_with_profile_library(
     // failure cannot repair entropy, signing, or local reference errors;
     // surface them without touching the profile's durable contents.
     let session = crate::session::open(&profile, &storage).await?;
+    // Which branch the profile is on. Reading `meta` takes an operator,
+    // so the bootstrap session opens on `main`; a profile that is on
+    // another branch gets a session whose authority is that branch's.
+    let active_branch = crate::router::profile::active_branch_name(&reactor, &session.operator)
+        .await
+        .unwrap_or_else(|| crate::router::repository::PROFILE_BRANCH.to_owned());
+    let session = if active_branch == crate::router::repository::PROFILE_BRANCH {
+        session
+    } else {
+        crate::session::open_on(&profile, &storage, &active_branch).await?
+    };
 
     let state = TonkState {
         profile,
         operator: session.operator,
+        active_branch,
         storage,
         session_expires_at: session.expires_at,
         profile_name,
@@ -1855,6 +1908,18 @@ impl TonkServiceWorker {
             .await
             .map_err(|e| JsError::new(&format!("Failed to initialize the worker: {e}")))?;
 
+        // A predecessor retiring for this worker left its session overlay
+        // behind. Restore it before serving anything, so no read or
+        // subscription observes this worker without it.
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        if let Some(overlays) = crate::handoff::take().await {
+            let restored = state
+                .reactor
+                .import_overlays(overlays, &state.operator)
+                .await;
+            log!("Restored {restored} session overlay(s) from the previous worker");
+        }
+
         // 5. Wrap state in the router. `api_router_with_state`
         // returns the LSP hub *and* a cloneable `AppState` handle:
         // the worker keeps the latter so `on_fetch` can read the
@@ -1944,13 +2009,23 @@ impl TonkServiceWorker {
             // LSP shutdown ran first, the successor could activate and clear
             // `registration.waiting` while query reconnects still saw this
             // generation as live. The reactor gate makes the latch and every
-            // active/pending subscriber registration atomic.
-            {
+            // active/pending subscriber registration atomic. The overlay is
+            // exported first: shutdown drops the cached branches holding it.
+            let overlays = {
                 let tonk = state.read().await;
+                let overlays = tonk.reactor.export_overlays();
                 tonk.retire();
-            }
+                overlays
+            };
             lsp.shutdown().await;
             log!("Streams are released");
+            // Written even when empty: the successor's activation waits for
+            // this snapshot, and an empty one tells it there is nothing to
+            // carry rather than leaving it to time out.
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            crate::handoff::save(overlays).await;
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+            drop(overlays);
             Ok(JsValue::UNDEFINED)
         })
     }
@@ -2438,6 +2513,13 @@ async fn any_client_visible() -> bool {
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn schedule_sync_drain(event: &FetchEvent, scheduler: &SyncScheduler, state: &AppState) {
     use wasm_bindgen::JsCast;
+
+    // Handoff queries can arrive faster than the debounce expires. Refusing
+    // the drain only after sleeping still extends every fetch by 500ms and
+    // prevents the incumbent from becoming idle enough to activate its successor.
+    if scheduler.stopped() {
+        return;
+    }
 
     let ticket = scheduler.next(js_sys::Date::now());
     // Record the burst-opener (method + path + query — the query carries the

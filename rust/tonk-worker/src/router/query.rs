@@ -13,7 +13,7 @@
 
 use ::axum::Json;
 use ::axum::body::{Body, Bytes};
-use ::axum::extract::{Path, Request, State};
+use ::axum::extract::{Path, Query as UrlQuery, Request, State};
 use ::axum::http::{HeaderMap, StatusCode, header};
 use ::axum::response::{IntoResponse, Response};
 use axum_wasm_macros::wasm_compat;
@@ -43,6 +43,16 @@ pub struct QueryPath {
 pub struct ProfileQueryPath {
     /// The branch name.
     pub branch: String,
+}
+
+/// URL parameters for `/query`.
+#[derive(Debug, Default, Deserialize)]
+pub struct QueryParams {
+    /// How deeply the subscribing display is nested (0 when absent).
+    /// The branch notifies lower levels first, so a display learns of a
+    /// change before the displays nested inside it.
+    #[serde(default)]
+    pub level: u32,
 }
 
 /// Handler. Reads body, decides one-shot vs subscription based on
@@ -115,6 +125,8 @@ async fn query_on_branch<'a>(
     request: Request,
     client: Option<String>,
 ) -> Result<Response, TonkWorkerError> {
+    let UrlQuery(params) = UrlQuery::<QueryParams>::try_from_uri(request.uri())
+        .map_err(|e| TonkWorkerError::Router(format!("invalid query parameters: {e}")))?;
     let bytes = request
         .into_body()
         .collect()
@@ -169,7 +181,7 @@ async fn query_on_branch<'a>(
             return Ok(retry_later(snapshot));
         }
 
-        let mut subscribe = branch.subscribe(query.clone());
+        let mut subscribe = branch.subscribe(query.clone()).level(params.level);
         if let Some(client) = client.clone() {
             subscribe = subscribe.client(client);
         }
@@ -210,6 +222,7 @@ async fn query_on_branch<'a>(
                         dialog_reactor::PendingSubscription {
                             query,
                             client,
+                            level: params.level,
                             sender,
                         },
                     )

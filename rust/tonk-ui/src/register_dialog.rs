@@ -124,7 +124,10 @@ const PASSKEY_ROW: &str = "#tonk-register-passkey-row";
 const DIALOG_HTML: &str = r##"
 <div class="ocol">
   <div class="ostack" id="tonk-register-stack">
-    <div class="m-head mblk" id="tonk-register-head">add an account</div>
+    <div class="m-head mblk" id="tonk-register-head">
+      <span class="fabb-task-disc" aria-hidden="true"></span>
+      <span class="fabb-task-title">add an account</span>
+    </div>
     <div class="orow mblk editing" id="tonk-register-email-row">
       <span class="k">email</span>
       <span class="v"><input class="ed" id="tonk-register-email" type="email"
@@ -156,6 +159,127 @@ pub fn open_with_return_focus(restore: impl FnOnce() + 'static) {
     open_with_return(Some(Box::new(restore)));
 }
 
+/// Raise the account ceremony as the trusted surface replacing an in-space
+/// FABB, then seat it against the exact translated edge supplied by the guest.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub fn open_fabb_task(
+    presentation: &tonk_portal::task::Presentation,
+    restore: impl FnOnce() + 'static,
+) {
+    LAST_FABB_TASK_SUCCESS.with(|success| success.set(false));
+    open_with_return(Some(Box::new(restore)));
+    let Some(host) = host_element() else { return };
+    let _ = host.set_attribute("data-fabb-task", "");
+    prepare_compact_account_ui(&host);
+    position_fabb_task(&host, presentation);
+}
+
+/// Adapt the trusted ceremony's labels to the compact account form.
+///
+/// The account mechanics stay shared with the normal registration surface;
+/// only the presentation changes here. The Hub and in-space FABB share the
+/// reference flow's field label and introductory guidance.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn prepare_compact_account_ui(host: &Element) {
+    if let Ok(Some(label)) = host.query_selector(&format!("{EMAIL_ROW} .k")) {
+        label.set_text_content(Some("email address"));
+    }
+    if let Ok(Some(input)) = host.query_selector(EMAIL_INPUT) {
+        let _ = input.set_attribute("aria-label", "email address");
+        let _ = input.remove_attribute("placeholder");
+    }
+    if let Ok(Some(dismiss)) = host.query_selector(DISMISS) {
+        dismiss.set_text_content(Some("cancel"));
+    }
+    if let Ok(Some(action)) = host.query_selector(ACTION) {
+        action.set_text_content(Some("continue"));
+        let _ = action.remove_attribute("hidden");
+        let _ = action.class_list().remove_1("pre");
+        if let Some(button) = action.dyn_ref::<HtmlButtonElement>() {
+            button.set_disabled(true);
+        }
+        if host.has_attribute("data-fabb-task") {
+            if let Ok(Some(container)) = host.query_selector(".ocol") {
+                let _ = container.append_child(&action);
+            }
+        }
+    }
+    set_status(
+        "Enter your email to continue. We’ll check whether you already have a Tonk account.",
+    );
+}
+
+fn set_heading(text: &str) {
+    let Some(head) = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.get_element_by_id("tonk-register-head"))
+    else {
+        return;
+    };
+    if let Ok(Some(title)) = head.query_selector(".fabb-task-title") {
+        title.set_text_content(Some(text));
+    } else {
+        head.set_text_content(Some(text));
+    }
+}
+
+/// Reseat a standing in-space account task without rebuilding its inputs.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub fn reseat_fabb_task(presentation: &tonk_portal::task::Presentation) {
+    let Some(host) = host_element().filter(|host| host.has_attribute("data-fabb-task")) else {
+        return;
+    };
+    position_fabb_task(&host, presentation);
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn position_fabb_task(host: &Element, presentation: &tonk_portal::task::Presentation) {
+    use tonk_portal::task::{Horizontal, Vertical};
+
+    let viewport_width = web_sys::window()
+        .and_then(|window| window.inner_width().ok())
+        .and_then(|value| value.as_f64())
+        .unwrap_or(1024.0);
+    let viewport_height = web_sys::window()
+        .and_then(|window| window.inner_height().ok())
+        .and_then(|value| value.as_f64())
+        .unwrap_or(768.0);
+    let width = presentation
+        .anchor
+        .width
+        .min(480.0)
+        .min((viewport_width - 32.0).max(1.0));
+    let left = match presentation.horizontal {
+        Horizontal::Left => presentation.anchor.left,
+        Horizontal::Right => presentation.anchor.right - width,
+    }
+    .clamp(16.0, (viewport_width - width - 16.0).max(16.0));
+    let Some(column) = host
+        .query_selector(".ocol")
+        .ok()
+        .flatten()
+        .and_then(|column| column.dyn_into::<HtmlElement>().ok())
+    else {
+        return;
+    };
+    let style = column.style();
+    let _ = style.set_property("left", &format!("{left}px"));
+    let _ = style.set_property("width", &format!("{width}px"));
+    let _ = style.remove_property("top");
+    let _ = style.remove_property("bottom");
+    match presentation.vertical {
+        Vertical::Top => {
+            let top = presentation.anchor.top.clamp(16.0, viewport_height - 16.0);
+            let _ = style.set_property("top", &format!("{top}px"));
+        }
+        Vertical::Bottom => {
+            let bottom =
+                (viewport_height - presentation.anchor.bottom).clamp(16.0, viewport_height - 16.0);
+            let _ = style.set_property("bottom", &format!("{bottom}px"));
+        }
+    }
+}
+
 fn open_with_return(guest_restore: Option<Box<dyn FnOnce()>>) {
     if OPEN.with(|open| open.replace(true)) {
         return;
@@ -181,6 +305,10 @@ fn open_with_return(guest_restore: Option<Box<dyn FnOnce()>>) {
     host.set_class_name("tonk-ceremony tonk-cluster");
     let _ = host.set_attribute("aria-labelledby", "tonk-register-head");
     let _ = host.set_attribute("aria-describedby", "tonk-register-status");
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    if let Some(path) = current_local_space_link_path() {
+        let _ = host.set_attribute(RETURN_PATH, &path);
+    }
     host.set_inner_html(DIALOG_HTML);
     let _ = body.append_child(&host);
 
@@ -199,6 +327,9 @@ fn open_with_return(guest_restore: Option<Box<dyn FnOnce()>>) {
     on_click(&host, DISMISS, close);
     let cancel = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
         event.prevent_default();
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        return_to_previous();
+        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
         close();
     });
     let _ = host.add_event_listener_with_callback("cancel", cancel.as_ref().unchecked_ref());
@@ -231,17 +362,13 @@ fn open_when_upgraded(host: &Element) {
     };
     let host = host.clone();
     let raise = Closure::<dyn FnMut()>::new(move || {
+        if !host.is_connected() || host.has_attribute("data-suspended") {
+            return;
+        }
         if let Some(dialog) = host.dyn_ref::<HtmlDialogElement>()
             && !dialog.open()
         {
-            // Anchored under the hub bar, the ceremony is a PAGE the
-            // account tab shows — the bar's cells stay live tabs, so no
-            // modal: a modal would inert the iframe they live in.
-            if dialog.has_attribute("data-anchored") {
-                let _ = dialog.show();
-            } else {
-                let _ = dialog.show_modal();
-            }
+            let _ = dialog.show_modal();
         }
         focus_address(&host);
     });
@@ -312,7 +439,14 @@ fn add_row(host: &Element, id: &str, noun: &str, value: &str) -> Option<Element>
     row.set_id(id);
     row.set_class_name("orow mblk pre");
     settle(&row, noun, value);
-    // Before the action row, so the button stays at the foot of the stack.
+    // Before the action row, so the button stays at the foot of the ordinary
+    // ceremony stack. A contained FABB task moves that button into its fused
+    // footer, leaving subsequent ceremony rows in this stack.
+    if host.has_attribute("data-fabb-task") {
+        let _ = stack.append_child(&row);
+        unfold(&row);
+        return Some(row);
+    }
     let action = host.query_selector(ACTION).ok().flatten();
     match action {
         Some(action) => {
@@ -368,23 +502,27 @@ fn commit_on_enter(host: &Element) {
     let Some(field) = host.query_selector(EMAIL_INPUT).ok().flatten() else {
         return;
     };
-    let listener =
-        Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |event: web_sys::KeyboardEvent| {
-            if event.key() != "Enter" {
-                return;
-            }
-            // The field sits in no form, but Enter still submits on
-            // some platforms; stop it reaching anything else.
-            event.prevent_default();
-            // Only once the lookup has named a step. The action row is
-            // hidden until then, and starting a ceremony on Enter alone
-            // means one fires the moment a half-typed address happens to
-            // look plausible — before anyone has said which of create or
-            // sign in they meant.
-            if action_is_offered() {
-                submit();
-            }
-        });
+    let listener = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+        // Chrome's autofill fires `keydown` as a plain `Event`
+        // with no `key`; only a real key press is ours to read.
+        let Some(event) = event.dyn_ref::<web_sys::KeyboardEvent>() else {
+            return;
+        };
+        if event.key() != "Enter" {
+            return;
+        }
+        // The field sits in no form, but Enter still submits on
+        // some platforms; stop it reaching anything else.
+        event.prevent_default();
+        // Only once the lookup has named a step. The action row is
+        // hidden until then, and starting a ceremony on Enter alone
+        // means one fires the moment a half-typed address happens to
+        // look plausible — before anyone has said which of create or
+        // sign in they meant.
+        if action_is_offered() {
+            submit();
+        }
+    });
     let _ = field.add_event_listener_with_callback("keydown", listener.as_ref().unchecked_ref());
     listener.forget();
 
@@ -394,23 +532,27 @@ fn commit_on_enter(host: &Element) {
     // "copy share link" had to be clicked. The action row is the step
     // being offered wherever the cursor happens to be, so Enter runs it.
     let cluster = host.clone();
-    let anywhere =
-        Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |event: web_sys::KeyboardEvent| {
-            if event.key() != "Enter" {
-                return;
-            }
-            // A row taking input commits itself; its own handler decides
-            // what Enter means there.
-            let typing = event
-                .target()
-                .and_then(|target| target.dyn_into::<Element>().ok())
-                .is_some_and(|element| element.matches("input").unwrap_or(false));
-            if typing || !action_is_offered() {
-                return;
-            }
-            event.prevent_default();
-            submit();
-        });
+    let anywhere = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+        // Chrome's autofill fires `keydown` as a plain `Event`
+        // with no `key`; only a real key press is ours to read.
+        let Some(event) = event.dyn_ref::<web_sys::KeyboardEvent>() else {
+            return;
+        };
+        if event.key() != "Enter" {
+            return;
+        }
+        // A row taking input commits itself; its own handler decides
+        // what Enter means there.
+        let typing = event
+            .target()
+            .and_then(|target| target.dyn_into::<Element>().ok())
+            .is_some_and(|element| element.matches("input").unwrap_or(false));
+        if typing || !action_is_offered() {
+            return;
+        }
+        event.prevent_default();
+        submit();
+    });
     let _ = cluster.add_event_listener_with_callback("keydown", anywhere.as_ref().unchecked_ref());
     anywhere.forget();
 }
@@ -451,6 +593,13 @@ fn announce_account_change() {
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 thread_local! {
     static ANNOUNCED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static LAST_FABB_TASK_SUCCESS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Consume whether the account ceremony that just closed established an account.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) fn take_fabb_task_success() -> bool {
+    LAST_FABB_TASK_SUCCESS.with(|success| success.replace(false))
 }
 
 /// Take the dialog down.
@@ -467,7 +616,9 @@ pub fn close() {
         // banner never appears. A plain cancel changed nothing, and
         // must not re-read: the re-render would replace the very
         // opener this close is about to restore focus to.
-        ANNOUNCED.with(|announced| announced.set(false));
+        let changed = ANNOUNCED.with(|announced| announced.replace(false));
+        let was_fabb_task = host_element().is_some_and(|host| host.has_attribute("data-fabb-task"));
+        LAST_FABB_TASK_SUCCESS.with(|success| success.set(changed && was_fabb_task));
         finish_action();
         SETUP_WATCH.with(|held| {
             if let Some(listener) = held.borrow_mut().take()
@@ -549,38 +700,42 @@ fn restore_focus(return_focus: ReturnFocus) {
 /// under the platform dialog.
 fn contain_tab_focus(host: &Element) {
     let dialog = host.clone();
-    let listener =
-        Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |event: web_sys::KeyboardEvent| {
-            if event.key() != "Tab" {
-                return;
-            }
-            let focusables = registration_focusables(&dialog);
-            let (Some(first), Some(last)) = (focusables.first(), focusables.last()) else {
-                return;
-            };
-            let active = web_sys::window()
-                .and_then(|window| window.document())
-                .and_then(|document| document.active_element());
-            let target = if event.shift_key()
-                && active
-                    .as_ref()
-                    .is_some_and(|active| first.is_same_node(Some(active.as_ref())))
-            {
-                Some(last)
-            } else if !event.shift_key()
-                && active
-                    .as_ref()
-                    .is_some_and(|active| last.is_same_node(Some(active.as_ref())))
-            {
-                Some(first)
-            } else {
-                None
-            };
-            if let Some(target) = target {
-                event.prevent_default();
-                let _ = target.focus();
-            }
-        });
+    let listener = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+        // Chrome's autofill fires `keydown` as a plain `Event`
+        // with no `key`; only a real key press is ours to read.
+        let Some(event) = event.dyn_ref::<web_sys::KeyboardEvent>() else {
+            return;
+        };
+        if event.key() != "Tab" {
+            return;
+        }
+        let focusables = registration_focusables(&dialog);
+        let (Some(first), Some(last)) = (focusables.first(), focusables.last()) else {
+            return;
+        };
+        let active = web_sys::window()
+            .and_then(|window| window.document())
+            .and_then(|document| document.active_element());
+        let target = if event.shift_key()
+            && active
+                .as_ref()
+                .is_some_and(|active| first.is_same_node(Some(active.as_ref())))
+        {
+            Some(last)
+        } else if !event.shift_key()
+            && active
+                .as_ref()
+                .is_some_and(|active| last.is_same_node(Some(active.as_ref())))
+        {
+            Some(first)
+        } else {
+            None
+        };
+        if let Some(target) = target {
+            event.prevent_default();
+            let _ = target.focus();
+        }
+    });
     let _ = host.add_event_listener_with_callback("keydown", listener.as_ref().unchecked_ref());
     listener.forget();
 }
@@ -950,12 +1105,11 @@ pub(crate) fn answer_query_body() -> String {
 ///
 /// The host is installed on this page (`tonk_host::install()` in
 /// `bin/ui.rs`), so a plain `consumer::subscribe` works. The routing
-/// context is the fixed profile branch — the overlay row is written to
-/// `main@profile:tonk` — rather than anything derived from an
-/// attribute.
+/// context is the branch the profile is on — the overlay row is written
+/// there — rather than anything derived from an attribute.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn watch_answers(host: &Element) {
-    let _ = host.set_attribute("with", "main@profile:tonk");
+    let _ = host.set_attribute("with", &tonk_host::bridge::profile_with());
     REGISTRATION_WATCH.with(|held| {
         *held.borrow_mut() = Some(crate::account_observability::WebAccountAttempt::start(
             AccountAction::LoadRegistration,
@@ -1117,7 +1271,12 @@ fn show_answer(answer: &Answer) {
     if ACTION_PENDING.with(Cell::get) {
         return;
     }
-    set_status(status_for(&answer.state));
+    let contained = host.has_attribute("data-fabb-task");
+    set_status(if contained {
+        contained_status_for(&answer.state)
+    } else {
+        status_for(&answer.state)
+    });
 
     // The action row unfolds only once the lookup has named a step, and
     // says which one. Before that there is nothing to offer: an address
@@ -1145,7 +1304,7 @@ pub(crate) fn action_label(state: &str) -> Option<&'static str> {
     use tonk_schema::email_state as answer;
     match state {
         answer::UNREGISTERED => Some("create a passkey"),
-        answer::ACTIVE | answer::PENDING => Some("log in with your passkey"),
+        answer::ACTIVE | answer::PENDING => Some("log in with passkey"),
         // Checking, or an answer nothing can act on.
         _ => None,
     }
@@ -1168,6 +1327,20 @@ pub(crate) fn status_for(state: &str) -> &'static str {
         answer::UNAVAILABLE => "Could not reach the service. Check your connection.",
         answer::PENDING_CEREMONY => "Setting up your account…",
         _ => "",
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn contained_status_for(state: &str) -> &'static str {
+    use tonk_schema::email_state as answer;
+    match state {
+        answer::UNREGISTERED => {
+            "Create a passkey on your device or in your password manager to sign in next time."
+        }
+        answer::ACTIVE | answer::PENDING => {
+            "Use your existing passkey on your device or in your password manager."
+        }
+        _ => status_for(state),
     }
 }
 
@@ -1405,7 +1578,11 @@ async fn read_invite_link(space: &str) -> Option<String> {
             "url": { "?": { "name": "url" } }
         }
     });
-    let endpoint = format!("{}/api/profile/branch/main/query", crate::api::origin());
+    let endpoint = format!(
+        "{}/api/profile/branch/{}/query",
+        crate::api::origin(),
+        crate::api::profile_branch()
+    );
     let response = reqwest::Client::new()
         .post(endpoint)
         .json(&body)
@@ -1450,7 +1627,11 @@ async fn account_display_name() -> Option<String> {
             "name": { "?": { "name": "name" } }
         }
     });
-    let endpoint = format!("{}/api/profile/branch/main/query", crate::api::origin());
+    let endpoint = format!(
+        "{}/api/profile/branch/{}/query",
+        crate::api::origin(),
+        crate::api::profile_branch()
+    );
     let response = reqwest::Client::new()
         .post(endpoint)
         .json(&body)
@@ -1569,7 +1750,7 @@ pub(crate) fn run_signup_ceremony() {
     // While the platform holds the ceremony, the action row says so
     // rather than looking clickable. It blinks rather than spinning:
     // attention is earned by blinking, never by hue.
-    set_action("waiting for your device", false);
+    set_action("waiting for device", false);
 
     let account_action = if existing {
         AccountAction::LogIn
@@ -1653,7 +1834,7 @@ pub(crate) fn run_signup_ceremony() {
                 // refuses every later attempt.
                 set_action(
                     if existing {
-                        "log in with your passkey"
+                        "log in with passkey"
                     } else {
                         "create a passkey"
                     },
@@ -1862,7 +2043,7 @@ fn poll_lookup_until_active(email: String) {
                     // is one tap and a fresh assertion.
                     settle_named_row(CONFIRM_ROW, "email", "verified");
                     set_status("Your email is confirmed. Log in with your passkey to continue.");
-                    set_action("log in with your passkey", true);
+                    set_action("log in with passkey", true);
                     focus_action();
                     return;
                 }
@@ -2108,6 +2289,7 @@ pub(crate) fn finish_ceremony() {
             return;
         }
         if (signing_in || named.is_some()) && pending_share().is_none() {
+            // Close the ceremony, then return to the original space or the Hub.
             finish_account_navigation(&host);
             return;
         }
@@ -2200,7 +2382,12 @@ fn hand_over_to_the_hub(host: &Element) {
 /// Unfold the display-name input and focus it.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn ask_for_name(host: &Element) {
-    set_status("");
+    let contained = host.has_attribute("data-fabb-task");
+    set_status(if contained {
+        "This name appears to other people in your spaces."
+    } else {
+        ""
+    });
 
     let Some(document) = web_sys::window().and_then(|window| window.document()) else {
         return;
@@ -2213,19 +2400,29 @@ fn ask_for_name(host: &Element) {
     };
     row.set_id(NAME_ROW.trim_start_matches('#'));
     row.set_class_name("orow mblk pre editing");
-    row.set_inner_html(
-        r##"<span class="k">display name</span>
+    row.set_inner_html(&format!(
+        r##"<span class="k">{}</span>
             <span class="v"><input class="ed" id="tonk-register-name" type="text"
-                  enterkeyhint="go" aria-label="display name"></span>"##,
-    );
+                  enterkeyhint="go" autocomplete="nickname" maxlength="40"
+                  aria-label="display name"></span>"##,
+        if contained {
+            "what should people call you?"
+        } else {
+            "display name"
+        }
+    ));
     let action = host.query_selector(ACTION).ok().flatten();
-    match action {
-        Some(action) => {
-            let _ = stack.insert_before(&row, Some(&action));
-        }
-        None => {
-            let _ = stack.append_child(&row);
-        }
+    let inserted = if contained {
+        // The contained task moved the action into its footer, so it is no
+        // longer a child of this stack and cannot be an insertBefore anchor.
+        stack.append_child(&row)
+    } else if let Some(action) = action {
+        stack.insert_before(&row, Some(&action))
+    } else {
+        stack.append_child(&row)
+    };
+    if inserted.is_err() {
+        return;
     }
     unfold(&row);
     set_action(SAVE_NAME, true);
@@ -2246,14 +2443,18 @@ fn commit_name_on_enter(host: &Element) {
     let Some(field) = host.query_selector("#tonk-register-name").ok().flatten() else {
         return;
     };
-    let listener =
-        Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |event: web_sys::KeyboardEvent| {
-            if event.key() != "Enter" {
-                return;
-            }
-            event.prevent_default();
-            submit();
-        });
+    let listener = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+        // Chrome's autofill fires `keydown` as a plain `Event`
+        // with no `key`; only a real key press is ours to read.
+        let Some(event) = event.dyn_ref::<web_sys::KeyboardEvent>() else {
+            return;
+        };
+        if event.key() != "Enter" {
+            return;
+        }
+        event.prevent_default();
+        submit();
+    });
     let _ = field.add_event_listener_with_callback("keydown", listener.as_ref().unchecked_ref());
     listener.forget();
 }
@@ -2515,15 +2716,17 @@ pub fn is_open() -> bool {
         })
 }
 
-/// Hide the standing cluster without closing it: the account tab it is a
-/// page of went to the background, and everything typed must survive the
-/// switch back. The counterpart of [`resume`].
+/// Release native modal state while retaining the cluster and its inputs
+/// for the account tab's next visit. The counterpart of [`resume`].
 pub fn suspend() {
     if let Some(host) = web_sys::window()
         .and_then(|window| window.document())
         .and_then(|document| document.get_element_by_id(DIALOG_ID))
     {
         let _ = host.set_attribute("data-suspended", "");
+        if let Some(dialog) = host.dyn_ref::<HtmlDialogElement>() {
+            dialog.close();
+        }
     }
 }
 
@@ -2535,6 +2738,11 @@ pub fn resume() {
         .and_then(|document| document.get_element_by_id(DIALOG_ID))
     {
         let _ = host.remove_attribute("data-suspended");
+        if let Some(dialog) = host.dyn_ref::<HtmlDialogElement>()
+            && !dialog.open()
+        {
+            let _ = dialog.show_modal();
+        }
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         focus_address(&host);
         #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
@@ -2545,28 +2753,6 @@ pub fn resume() {
 /// The sessionStorage key carrying a blocked share's space across the
 /// navigation to the linking screen.
 const SHARE_STASH: &str = "tonk-pending-share";
-
-/// The anchored registration request to reopen after a profile-transition
-/// reload. Session scope keeps it in this tab and removal makes it one-shot.
-const REOPEN_STASH: &str = "tonk-reopen-registration";
-
-/// Park an account-linking request across the reload that gives the promoted
-/// profile a fresh service-worker client context.
-pub fn stash_reopen(payload: &str) {
-    if let Some(storage) =
-        web_sys::window().and_then(|window| window.session_storage().ok().flatten())
-    {
-        let _ = storage.set_item(REOPEN_STASH, payload);
-    }
-}
-
-/// Consume the account-linking request parked by [`stash_reopen`].
-pub fn take_reopen() -> Option<String> {
-    let storage = web_sys::window()?.session_storage().ok().flatten()?;
-    let payload = storage.get_item(REOPEN_STASH).ok().flatten()?;
-    let _ = storage.remove_item(REOPEN_STASH);
-    Some(payload)
-}
 
 /// Park a blocked share's space so it survives the navigation to
 /// `/settings`, where the linking ceremony picks it up.
@@ -2615,26 +2801,63 @@ pub fn adopt_stashed_share() {
 /// so "return to space" can actually return there.
 const SHARE_RETURN: &str = "tonk-share-return";
 
-/// Where the finished ceremony returns to — stamped on the dialog host by
-/// [`adopt_stashed_share`] for a blocked share, or [`describe`] for space login.
+/// Where the ceremony returns: the original space or the interrupted share
+/// adopted by [`adopt_stashed_share`].
 const RETURN_PATH: &str = "data-return-path";
 
-/// Ordinary login returns home; missing-space recovery keeps its destination.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn finish_account_navigation(host: &Element) {
-    let path = host
-        .get_attribute(RETURN_PATH)
-        .unwrap_or_else(|| "/".to_owned());
+    let saved = host.get_attribute(RETURN_PATH);
+    let destination = account_completion_destination(saved.as_deref());
+    let contained = host.has_attribute("data-fabb-task");
     close();
-    tonk_host::navigate_to(&path);
+    if !contained {
+        tonk_host::navigate_to(destination);
+    }
+}
+
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+fn account_completion_destination(saved: Option<&str>) -> &str {
+    saved
+        .filter(|value| value.starts_with("/space/") || is_local_space_link_destination(value))
+        .unwrap_or("/")
+}
+
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+fn is_local_space_link_destination(value: &str) -> bool {
+    let Ok(url) = url::Url::parse(&format!("https://tonk.local{value}")) else {
+        return false;
+    };
+    value.starts_with('/')
+        && !value.starts_with("//")
+        && url.origin().ascii_serialization() == "https://tonk.local"
+        && url.path() == "/settings/link"
+        && url.fragment().is_none()
+        && url
+            .query_pairs()
+            .any(|(key, value)| key == "intent" && value == "local-space-link")
+        && url
+            .query_pairs()
+            .any(|(key, value)| key == "request" && !value.is_empty())
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn current_local_space_link_path() -> Option<String> {
+    let location = web_sys::window()?.location();
+    let candidate = format!(
+        "{}{}{}",
+        location.pathname().ok()?,
+        location.search().ok()?,
+        location.hash().ok()?
+    );
+    is_local_space_link_destination(&candidate).then_some(candidate)
 }
 
 /// Return to the surface the ceremony replaced.
 ///
-/// A blocked share has an exact space path. An anchored ceremony is a page of
-/// the Hub's account tab, so closing it also returns the route to `/`; on the
-/// Hub itself that navigation is intentionally a no-op and the guest's
-/// terminal close event restores the spaces stack in place.
+/// A blocked share has an exact space path. A Hub account ceremony retains
+/// the `/account` route while open, so closing it also returns to `/`.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn return_to_previous() {
     let host = web_sys::window()
         .and_then(|window| window.document())
@@ -2671,8 +2894,45 @@ fn return_to_previous() {
 /// is unopened, so the dialog says so instead of offering to create a
 /// second one.
 pub fn describe(payload: &str) {
-    let request = parse_request(payload);
-    remember_space(&request.space);
+    let mut request = parse_request(payload);
+    let agent_invite = matches!(
+        request.reason.as_str(),
+        "agent-invite-account" | "agent-invite-activation"
+    );
+    if agent_invite || matches!(request.reason.as_str(), "space-login" | "fabb-account") {
+        if let Some(window) = web_sys::window()
+            && let Some(host) = window
+                .document()
+                .and_then(|document| document.get_element_by_id(DIALOG_ID))
+        {
+            let location = window.location();
+            let path = location.pathname().unwrap_or_default();
+            if path.starts_with("/space/") {
+                let destination = format!(
+                    "{}{}{}",
+                    path,
+                    location.search().unwrap_or_default(),
+                    location.hash().unwrap_or_default()
+                );
+                let _ = host.set_attribute(RETURN_PATH, &destination);
+            }
+        }
+        if request.reason == "agent-invite-activation" {
+            request.reason = tonk_worker_api::share::BLOCKED_NEEDS_ACTIVATION.into();
+        }
+    }
+    // Agent and tool connections keep their targets in the FAB. Account
+    // setup from those actions must not become a pending person share.
+    if agent_invite || matches!(request.reason.as_str(), "space-login" | "fabb-account") {
+        if let Some(host) = web_sys::window()
+            .and_then(|window| window.document())
+            .and_then(|document| document.get_element_by_id(DIALOG_ID))
+        {
+            let _ = host.remove_attribute(PENDING_SHARE);
+        }
+    } else {
+        remember_space(&request.space);
+    }
     let Some(document) = web_sys::window().and_then(|window| window.document()) else {
         return;
     };
@@ -2693,9 +2953,7 @@ pub fn describe(payload: &str) {
             );
             let _ = host.set_attribute(RETURN_PATH, &target);
         }
-        if let Ok(Some(head)) = document.query_selector("#tonk-register-head") {
-            head.set_text_content(Some("sign in to open this space"));
-        }
+        set_heading("sign in to open this space");
         set_status("Use the account you use for this space.");
     }
     if let Some(anchor) = &request.anchor
@@ -2703,39 +2961,26 @@ pub fn describe(payload: &str) {
             .get_element_by_id(DIALOG_ID)
             .and_then(|host| host.dyn_into::<HtmlElement>().ok())
     {
-        // Seat the cluster in the opener's column: no veil, the head row
-        // stays hidden (the tab that raised it IS the head), and the rows
-        // hang one gap under the bar at the bar's own width.
+        // The account action opens a trusted modal over the Hub. Keep the
+        // opener rectangle for related custody prompts and later reseating.
         let _ = host.set_attribute("data-anchored", "");
-        // The way out of the anchored page is the SPACES TAB in the bar
-        // above it — no ghost row of its own. And a non-modal dialog
-        // fires no `cancel` on Escape, so Escape is wired by hand.
-        if let Ok(Some(dismiss)) = host.query_selector(DISMISS) {
-            let _ = dismiss.set_attribute("hidden", "");
-        }
-        let escape = Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(
-            move |event: web_sys::KeyboardEvent| {
-                if event.key() == "Escape" {
-                    event.prevent_default();
-                    return_to_previous();
-                }
-            },
-        );
-        let _ = host.add_event_listener_with_callback("keydown", escape.as_ref().unchecked_ref());
-        escape.forget();
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        prepare_compact_account_ui(&host);
         position_at(&host, anchor);
     }
     if request.reason != tonk_worker_api::share::BLOCKED_NEEDS_ACTIVATION {
         return;
     }
-    set_status("Your account is waiting on its email. Open the link we sent, then share again.");
-    if let Some(head) = document
-        .query_selector("#tonk-register-head")
-        .ok()
-        .flatten()
-    {
-        head.set_text_content(Some("confirm your email to share"));
-    }
+    set_status(if agent_invite {
+        "open the verification email, then return here to invite your agent."
+    } else {
+        "Your account is waiting on its email. Open the link we sent, then share again."
+    });
+    set_heading(if agent_invite {
+        "verify your email"
+    } else {
+        "confirm your email to share"
+    });
 }
 
 /// A guest's position update: move an open anchored ceremony to the bar's
@@ -2791,6 +3036,141 @@ fn on_click(host: &Element, selector: &str, handler: impl Fn() + 'static) {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn suspension_releases_modality_and_resume_preserves_inputs() {
+        let document = web_sys::window().unwrap().document().unwrap();
+        let host = document.create_element("dialog").unwrap();
+        host.set_id(super::DIALOG_ID);
+        host.set_inner_html("<input value='kept@example.com'>");
+        document.body().unwrap().append_child(&host).unwrap();
+        let dialog = host.dyn_ref::<HtmlDialogElement>().unwrap();
+        dialog.show_modal().unwrap();
+        assert!(host.matches(":modal").unwrap());
+
+        // A queued initial opening must not undo a route's suspension.
+        super::open_when_upgraded(&host);
+        super::suspend();
+        super::wait_ms(10).await;
+        assert!(!dialog.open());
+        assert!(!host.matches(":modal").unwrap());
+        assert!(host.is_connected());
+        super::resume();
+        assert!(host.matches(":modal").unwrap());
+        assert_eq!(
+            host.query_selector("input")
+                .unwrap()
+                .unwrap()
+                .dyn_into::<web_sys::HtmlInputElement>()
+                .unwrap()
+                .value(),
+            "kept@example.com"
+        );
+        dialog.close();
+        host.remove();
+    }
+
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn tool_registration_does_not_queue_a_person_share() {
+        let document = web_sys::window().unwrap().document().unwrap();
+        for reason in ["agent-invite-account", "agent-invite-activation"] {
+            let host = document.create_element("dialog").unwrap();
+            host.set_id(super::DIALOG_ID);
+            document.body().unwrap().append_child(&host).unwrap();
+            super::describe(&format!(
+                r#"{{"reason":"{reason}","space":"did:key:tool-space"}}"#
+            ));
+            assert!(super::pending_share().is_none());
+            host.remove();
+        }
+
+        let host = document.create_element("dialog").unwrap();
+        host.set_id(super::DIALOG_ID);
+        document.body().unwrap().append_child(&host).unwrap();
+        super::describe(r#"{"reason":"needs-account","space":"did:key:person-space"}"#);
+        assert_eq!(
+            super::pending_share().as_deref(),
+            Some("did:key:person-space")
+        );
+        host.remove();
+    }
+
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn it_returns_agent_invite_setup_to_the_original_space() {
+        let window = web_sys::window().unwrap();
+        let document = window.document().unwrap();
+        let history = window.history().unwrap();
+        let original = window.location().href().unwrap();
+        let target = "/space/did:key:example/open/playground?view=agent#section";
+        for reason in [
+            "agent-invite-account",
+            "agent-invite-activation",
+            "space-login",
+            "fabb-account",
+        ] {
+            history
+                .replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(target))
+                .unwrap();
+            let host = document.create_element("dialog").unwrap();
+            host.set_id(super::DIALOG_ID);
+            host.set_attribute(super::PENDING_SHARE, "did:key:stale-share")
+                .unwrap();
+            document.body().unwrap().append_child(&host).unwrap();
+            super::describe(&format!(
+                r#"{{"reason":"{reason}","space":"did:key:example"}}"#
+            ));
+            assert!(
+                super::pending_share().is_none(),
+                "{reason} must not finish with a person share link"
+            );
+            assert_eq!(
+                host.get_attribute(super::RETURN_PATH).as_deref(),
+                Some(target)
+            );
+            history
+                .replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some("/"))
+                .unwrap();
+            super::finish_account_navigation(&host);
+            assert_eq!(
+                format!(
+                    "{}{}{}",
+                    window.location().pathname().unwrap(),
+                    window.location().search().unwrap(),
+                    window.location().hash().unwrap()
+                ),
+                target
+            );
+            assert!(!host.is_connected());
+        }
+        history
+            .replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&original))
+            .unwrap();
+    }
+
+    #[dialog_common::test]
+    fn account_completion_only_accepts_local_space_routes() {
+        assert_eq!(
+            super::account_completion_destination(Some("/space/example")),
+            "/space/example"
+        );
+        let local_link = "/settings/link?intent=local-space-link&request=bound-request";
+        assert_eq!(
+            super::account_completion_destination(Some(local_link)),
+            local_link
+        );
+        for destination in [
+            None,
+            Some("https://elsewhere.test/space/example"),
+            Some("//elsewhere.test/space/example"),
+            Some("/settings/link#tonk-terminal-v1=x"),
+            Some("/settings/link?intent=local-space-link"),
+            Some("/settings/link?request=bound-request"),
+        ] {
+            assert_eq!(super::account_completion_destination(destination), "/");
+        }
+    }
 
     use tonk_identity::custody::CustodyDenial;
 
@@ -2873,7 +3253,7 @@ mod tests {
         for state in [answer::ACTIVE, answer::PENDING] {
             assert_eq!(
                 action_label(state),
-                Some("log in with your passkey"),
+                Some("log in with passkey"),
                 "{state} has an account already",
             );
         }
@@ -3083,6 +3463,33 @@ mod space_login_tests {
     }
 
     #[wasm_bindgen_test]
+    fn contained_account_places_the_display_name_field_above_its_footer() {
+        let document = web_sys::window().unwrap().document().unwrap();
+        let host = document.create_element("dialog").unwrap();
+        host.set_id(DIALOG_ID);
+        host.set_inner_html(DIALOG_HTML);
+        host.set_attribute("data-fabb-task", "").unwrap();
+        document.body().unwrap().append_child(&host).unwrap();
+        prepare_compact_account_ui(&host);
+        let stack = host
+            .query_selector("#tonk-register-stack")
+            .unwrap()
+            .unwrap();
+        let action = host.query_selector(ACTION).unwrap().unwrap();
+        assert_ne!(action.parent_element(), Some(stack.clone()));
+
+        ask_for_name(&host);
+        let row = host
+            .query_selector(NAME_ROW)
+            .unwrap()
+            .expect("display name row");
+        assert_eq!(row.parent_element(), Some(stack));
+        assert!(row.query_selector("#tonk-register-name").unwrap().is_some());
+        assert_eq!(action.text_content().as_deref(), Some(SAVE_NAME));
+        host.remove();
+    }
+
+    #[wasm_bindgen_test]
     fn space_login_preserves_destination_and_cancel_does_not_leak_it() {
         let window = web_sys::window().unwrap();
         let history = window.history().unwrap();
@@ -3111,6 +3518,58 @@ mod space_login_tests {
         history
             .replace_state_with_url(&JsValue::NULL, "", Some(&original))
             .unwrap();
+    }
+
+    /// Chrome's autofill fires `keydown` as a plain `Event`, with no
+    /// `key`. The dialog's key handlers must pass it by rather than
+    /// read a key that isn't there.
+    #[wasm_bindgen_test]
+    fn it_ignores_a_keydown_that_carries_no_key() {
+        let document = web_sys::window().unwrap().document().unwrap();
+        let host = document.create_element("dialog").unwrap();
+        host.set_inner_html(
+            r#"<input id="tonk-register-email"><input id="tonk-register-name"><button></button>"#,
+        );
+        document.body().unwrap().append_child(&host).unwrap();
+        commit_on_enter(&host);
+        commit_name_on_enter(&host);
+        contain_tab_focus(&host);
+
+        // A listener that throws doesn't fail `dispatchEvent`; the
+        // browser reports it on the window instead, synchronously.
+        let window = web_sys::window().unwrap();
+        let reported = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        let record = reported.clone();
+        let on_error = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+            event.prevent_default();
+            let message = js_sys::Reflect::get(&event, &"message".into())
+                .ok()
+                .and_then(|message| message.as_string())
+                .unwrap_or_default();
+            record.borrow_mut().push(message);
+        });
+        window
+            .add_event_listener_with_callback("error", on_error.as_ref().unchecked_ref())
+            .unwrap();
+
+        for selector in [EMAIL_INPUT, "#tonk-register-name", "button"] {
+            let target = host.query_selector(selector).unwrap().unwrap();
+            let autofill = web_sys::Event::new_with_event_init_dict("keydown", &{
+                let init = web_sys::EventInit::new();
+                init.set_bubbles(true);
+                init
+            })
+            .unwrap();
+            assert!(
+                target.dispatch_event(&autofill).unwrap(),
+                "a keyless keydown is left alone"
+            );
+        }
+        window
+            .remove_event_listener_with_callback("error", on_error.as_ref().unchecked_ref())
+            .unwrap();
+        host.remove();
+        assert_eq!(*reported.borrow(), Vec::<String>::new());
     }
 
     #[wasm_bindgen_test]

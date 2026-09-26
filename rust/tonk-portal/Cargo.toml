@@ -35,6 +35,7 @@ web-sys = { workspace = true, features = [
     "CustomEventInit",
     "CustomElementRegistry",
     "Document",
+    "DomRect",
     "Element",
     "HtmlElement",
     "HtmlIFrameElement",

@@ -34,22 +34,27 @@ can synchronize within the delegated authority. If the owner revokes the
 invite, later remote operations are rejected while any already-local replica is
 handled according to the documented local authority boundary.
 
+This import is separate from `tonk space link NAME`: join creates a local
+replica from invitation authority, while space link attaches an existing local
+space to an account and hosted service.
+
 ### Share-menu presentation decision
 
-The browser calls the transferable artifact a **share link**. Opening Share
-shows **copy link** closest to the FABB, with the live member count farther
-away. Copy is the bottom row when opening upward and the top row when opening
-downward. Copy stays open while minting
-and writing the clipboard; only a successful browser write changes the label
-to **copied**. After 1.2 seconds the share stack closes. A failed write shows
-**couldn’t copy** and leaves the stack available for retry.
+The browser calls the transferable artifact a **share link**. The v0.17 FABB
+has one **copy share link** row. Selecting it opens an attached panel and starts
+the real invite mint once. Pending, copied, and retryable failure feedback stays
+in that panel; a double-click cannot rotate the credential twice. Accountless
+sharing keeps the initiating space visible, raises **add an account** through a
+typed contained task, then restores the share panel. Clipboard work still needs
+a fresh gesture after an account or sync repair.
 
-Selecting the member count opens a scrollable **members** dialog with names,
-owner/admin labels, and **you** marking the current profile. The share stack
-stays compact even with a long roster. Changing spaces closes the popup and
-clears the previous membership. Existing account and activation gates still
-apply to copying links. The members popup uses the opaque `#fcfbfb` card
-surface from `DESIGN.md`; the specified aubergine backdrop remains.
+Members has its own attached, scrollable panel. It renders the live count,
+names, owner/admin labels, and **you** marking the current profile. Reset,
+update, and retract frames repaint the panel without a body-mounted dialog.
+The current membership projection has no authoritative relationship kind,
+parent ID, or last-active timestamp, so the reference's people-agent map remains
+blocked on a data-contract decision. The product does not infer agent edges or
+activity from roles or row arrival time.
 
 Account linking migrates the founder membership together with its name and
 role. Account-name sweeps also repair older retired-founder rows when retained
@@ -79,20 +84,38 @@ This source-and-browser-tested binding decision restores `COLLAB-01`,
 `COLLAB-05`, `WEB-04`, and `WEB-05` on 2026-09-17. No screenshot was recaptured
 because every rendered state of the stack is unchanged.
 
-### FABB naming and blank-space prompt decision
+### FABB naming and explicit agent invitation decision
 
 The in-place FABB rename remains an edit while ordinary whitespace is typed;
 Enter or leaving the field commits the complete trimmed name. A blank space's
-agent prompt has one textual contract: the text on screen and the value copied
-by its button include the same task, commands, and final build guidance.
+content no longer mints an agent invitation automatically. **Connect agent** is
+available from every space and mints only on explicit panel intent. Its copied
+value contains the complete task, `tonk join` command, privacy warning, expiry
+and revocation guidance, and the literal `Agent connection confirmed` success
+boundary. The panel queries raw response attributes so previously seeded spaces
+do not depend on a new standard-library concept.
 The rename starts in a single-line text control with its caret after the current
 name, so Safari accepts the first typed character inside the FABB shadow root.
 
 This source-and-browser-tested interaction decision refines `SPACE-03`,
-`SPACE-04`, and `DATA-02` on 2026-09-02, with the Safari caret boundary refined
-by a focused Safari shadow-root reproduction and FABB browser regression on
-2026-09-17. No screenshot was recaptured because the resting FABB and prompt
-geometry are unchanged.
+`SPACE-04`, `ACCT-C14`, and `DATA-02`. Component coverage proves explicit mint,
+retry, old-space query compatibility, and complete prompt rendering. The local
+CLI import and fresh account browser journey remain separate integration gates.
+
+### In-space task ownership decision
+
+Share, agent, activation, sync-repair, and account decisions use one contained
+FABB presenter. A native modal in the trusted page provides whole-space
+modality, while the guest supplies only a versioned purpose, request identity,
+translated edge rectangle, and dismissal policy. It cannot supply privileged
+HTML. A second task is rejected as busy; stale results cannot settle a later
+request; resize, drag, and visual-viewport movement reseat the same form.
+
+Cancellation and completion restore the exact initiating panel and focus in
+the same space. Account setup is a distinct anchored presentation of the real
+registration ceremony: it keeps passkey, email activation, resend, retry, and
+recovery behavior, and does not route through Settings. Guest disconnect
+releases the trusted modal and its portal lease.
 
 ### Space-switcher and absent-space presentation decision
 

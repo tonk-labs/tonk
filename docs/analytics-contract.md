@@ -80,6 +80,13 @@ login, activation, custody, and native account commands. Existing
 of worker-confirmed create/join/mint success. They must not be added to
 `product_event` attempts as extra attempts.
 
+## Population metrics
+
+[Visitors, profiles, and accounts](analytics/metrics.md) defines separate
+traffic, successful user activity, signup receipts, activation attempts, and
+authoritative hosted account totals. Never label a profile hash or a PostHog
+person as an account.
+
 ## Dashboard questions
 
 The Product decisions dashboard answers these questions over a 30-day window:

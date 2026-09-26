@@ -25,6 +25,10 @@ const ASSET_MANIFEST_HASH = "dev";
 // it proved complete before publishing an offline generation.
 const ASSET_PATHS = ["dev"];
 const ASSET_PATH_SET = new Set(ASSET_PATHS);
+// Identity of the top-level document's own resources, excluding the guest
+// runtime and library data. A document whose `tonk-page-build` matches this
+// can stay open under this worker and remount only its guests.
+const PAGE_BUILD = "dev";
 
 const log = (...args) => console.log("[Tonk Service Worker]", ...args);
 
@@ -82,6 +86,7 @@ function healthResponse() {
     return new Response(
         JSON.stringify({
             build: BUILD_ID,
+            page: PAGE_BUILD,
             worker: workerHealth.state,
             workerWasm: workerHealth.workerWasm,
             error: workerHealth.error,
@@ -817,11 +822,15 @@ let offlineGenerationResolves;
 /// prerequisite. The shared promise prevents duplicate fills within one worker
 /// lifetime; the durable marker makes later worker instances return cheaply.
 function ensureOfflineGeneration() {
+    if (offlineFillSuperseded()) return Promise.resolve();
     if (offlineGenerationResolves == null) {
         offlineGenerationResolves = (async () => {
             const marker = await readGenerationMarker();
+            if (offlineFillSuperseded()) return;
             if (marker?.state !== "adopted") await installGeneration();
-            await pruneObsoleteGenerationCaches();
+            // Pruning keeps only this build's caches. Once a successor is on
+            // the way that would delete the caches it is installing into.
+            if (!offlineFillSuperseded()) await pruneObsoleteGenerationCaches();
         })().catch(error => {
             offlineGenerationResolves = null;
             log("Offline generation fill failed; it will retry later:", error);
@@ -831,25 +840,55 @@ function ensureOfflineGeneration() {
 }
 
 let offlineFillScheduled;
+let offlineGenerationStopped = false;
+let cancelOfflineDelay;
 let contentReady = false;
 let lastForegroundAssetAt = 0;
 let foregroundAssets = 0;
 const OFFLINE_QUIET_MS = 5_000;
 const OFFLINE_MAX_DELAY_MS = 60_000;
 
+function stopOfflineGeneration() {
+    offlineGenerationStopped = true;
+    cancelOfflineDelay?.();
+}
+
+/// Whether this worker's generation is on its way out, so filling its offline
+/// graph is wasted work. Chrome activates a `skipWaiting` successor only after
+/// the outgoing worker's events settle, so a fill held on an event's
+/// `waitUntil` would keep the incumbent alive and the successor waiting.
+function offlineFillSuperseded() {
+    return offlineGenerationStopped ||
+        self.registration.installing != null ||
+        self.registration.waiting != null;
+}
+
 function extendOfflineGeneration(event) {
-    if (typeof event.waitUntil !== "function") return;
+    if (offlineFillSuperseded() || typeof event.waitUntil !== "function") return;
     if (!offlineFillScheduled) {
         offlineFillScheduled = (async () => {
             const started = Date.now();
             // Leave startup's asset traffic alone. A deadline also permits
             // preparation on pages with continuous foreground activity.
             do {
-                await new Promise(resolve => setTimeout(resolve, OFFLINE_QUIET_MS));
+                await new Promise(resolve => {
+                    const finish = () => {
+                        cancelOfflineDelay = null;
+                        resolve();
+                    };
+                    const timer = setTimeout(finish, OFFLINE_QUIET_MS);
+                    cancelOfflineDelay = () => {
+                        clearTimeout(timer);
+                        finish();
+                    };
+                });
+                if (offlineFillSuperseded()) return;
             } while ((!contentReady || foregroundAssets > 0 || Date.now() - lastForegroundAssetAt < OFFLINE_QUIET_MS) &&
                 Date.now() - started < OFFLINE_MAX_DELAY_MS);
             await ensureOfflineGeneration();
-        })().finally(() => { offlineFillScheduled = null; });
+        })().finally(() => {
+            offlineFillScheduled = null;
+        });
     }
     event.waitUntil(offlineFillScheduled);
 }
@@ -941,6 +980,48 @@ self.oninstall = event => {
     log(`Installed (build ${BUILD_ID})`);
 };
 
+// ---- Session overlay handoff ----------------------------------------
+//
+// The Rust worker's session overlay lives in memory. When a successor
+// installs, the incumbent announces a handoff; on retirement its Rust side
+// writes a snapshot (see `handoff.rs`, which owns the same cache and key); the
+// successor holds activation until that snapshot exists and restores it while
+// booting, before it serves anything.
+const OVERLAY_HANDOFF_CACHE = "TONK_OVERLAY_HANDOFF";
+const OVERLAY_HANDOFF_URL = "/__tonk/overlay-handoff";
+const OVERLAY_HANDOFF_PENDING_URL = "/__tonk/overlay-handoff-pending";
+// A retiring incumbent writes its snapshot within milliseconds. The bound only
+// matters when it died after announcing, and must not stall activation.
+const OVERLAY_HANDOFF_WAIT_MS = 1_000;
+
+/// Announce that this incumbent's overlay will follow, dropping any snapshot
+/// an earlier, never-completed handoff left behind.
+async function announceOverlayHandoff() {
+    const cache = await caches.open(OVERLAY_HANDOFF_CACHE);
+    await cache.delete(OVERLAY_HANDOFF_URL);
+    await cache.put(OVERLAY_HANDOFF_PENDING_URL, new Response(String(Date.now())));
+}
+
+/// Withdraw an announcement whose successor failed to install.
+async function withdrawOverlayHandoff() {
+    const cache = await caches.open(OVERLAY_HANDOFF_CACHE);
+    await cache.delete(OVERLAY_HANDOFF_PENDING_URL);
+}
+
+/// Wait, bounded, for an announced predecessor's snapshot, then consume the
+/// announcement. Returns at once when nothing was announced.
+async function awaitOverlayHandoff() {
+    // `match` with a cache name creates nothing, so a worker with no
+    // predecessor leaves CacheStorage as it found it.
+    const stored = url => caches.match(url, { cacheName: OVERLAY_HANDOFF_CACHE });
+    if (!(await stored(OVERLAY_HANDOFF_PENDING_URL))) return;
+    const deadline = Date.now() + OVERLAY_HANDOFF_WAIT_MS;
+    while (!(await stored(OVERLAY_HANDOFF_URL)) && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    await (await caches.open(OVERLAY_HANDOFF_CACHE)).delete(OVERLAY_HANDOFF_PENDING_URL);
+}
+
 self.onactivate = event => {
     // Activation replaces this registration's active worker for clients that
     // it already controlled, and those documents receive `controllerchange`.
@@ -952,8 +1033,16 @@ self.onactivate = event => {
     // deadlocks the swap — the outgoing worker cannot die while its
     // in-flight fetches hang, the lock never frees, and this worker pins in
     // `activating` while every page waits on it.
+    //
+    // The predecessor's overlay snapshot is different: waiting for it needs
+    // only CacheStorage, never the lock, so activation holds for it. Booting
+    // after it lets the Rust worker restore the overlay before its first read.
+    const handoff = awaitOverlayHandoff().catch(error => {
+        log("Overlay handoff wait failed:", error);
+    });
     (async () => {
         try {
+            await handoff;
             const worker = await activateWorker();
             await worker.onactivate?.();
         } catch (err) {
@@ -961,9 +1050,12 @@ self.onactivate = event => {
         }
     })();
     event.waitUntil?.(
-        pruneObsoleteGenerationCaches().catch(error => {
-            log("Generation cache cleanup failed:", error);
-        }),
+        Promise.all([
+            handoff,
+            pruneObsoleteGenerationCaches().catch(error => {
+                log("Generation cache cleanup failed:", error);
+            }),
+        ]),
     );
     log(`Activated (build ${BUILD_ID})`);
 };
@@ -990,6 +1082,10 @@ let retirement = null;
 async function retire(reason) {
     if (retired) return true;
     if (retirement) return retirement;
+    // Offline preparation also extends fetch/message lifetimes. Release its
+    // idle delay and refuse late content/connection nudges, or those events
+    // can keep the incumbent alive after Rust has closed every stream.
+    stopOfflineGeneration();
     retirement = (async () => {
         log(`Retiring — ${reason}`);
         try {
@@ -1064,6 +1160,11 @@ function watchSuccessor(candidate) {
         log("Update found — this worker is not the active incumbent; staying live");
         return;
     }
+    if (candidate.state === "installing") {
+        announceOverlayHandoff().catch(error => {
+            log("Overlay handoff announcement failed:", error);
+        });
+    }
 
     const observe = () => {
         if (["installed", "activating", "activated"].includes(candidate.state)) {
@@ -1072,6 +1173,9 @@ function watchSuccessor(candidate) {
         }
         if (candidate.state === "redundant") {
             candidate.removeEventListener?.("statechange", observe);
+            withdrawOverlayHandoff().catch(error => {
+                log("Overlay handoff withdrawal failed:", error);
+            });
             log("Successor install failed — incumbent stays live");
         }
     };
@@ -1084,6 +1188,11 @@ function watchSuccessor(candidate) {
 // teardown begins only after its state proves installation succeeded.
 watchSuccessor(self.registration.installing);
 self.registration.addEventListener?.("updatefound", () => {
+    // Even a candidate that may still fail makes this generation's deferred
+    // offline fill pointless; wake its pending delay so it sees the candidate
+    // and releases its hold on this worker's lifetime now. Not a stop: if the
+    // candidate fails, a later nudge may still fill this generation.
+    cancelOfflineDelay?.();
     return watchSuccessor(self.registration.installing);
 });
 
@@ -1556,6 +1665,14 @@ self.onfetch = event => {
 // `controllerchange` on the page side, which the shell's
 // `serviceWorkerActivates()` Promise awaits.
 self.onmessage = event => {
+    if (event.data?.type === "activate-if-installed") {
+        // A fully installed successor may still be waiting after its
+        // install-time skipWaiting request. Only that successor can repeat it.
+        if (self.registration.waiting === self.serviceWorker) {
+            event.waitUntil?.(self.skipWaiting());
+        }
+        return;
+    }
     if (event.data?.type === "content-ready") {
         contentReady = true;
         extendOfflineGeneration(event);

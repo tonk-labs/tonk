@@ -57,8 +57,8 @@ def agent_library(core):
     rule = 'rule!:\n  description: Joins the repository name' + rule
     view = core.split('view!:\n  this: tonk:agent-invite\n', 1)[1].split('\n# Connection receipt', 1)[0]
     view = 'view!:\n  this: tonk:agent-invite\n' + view
-    view = view.replace('Then tell it what you want to build.', 'Then tell it what you want to build on the Agent playground page.')
-    view = view.replace('Your agent will connect to this space.', 'Your agent will connect to this space and be instructed to work only on the Agent playground page.')
+    view = view.replace('then tell it what you want to build.', 'then tell it what you want to build on the Agent playground page.')
+    view = view.replace('keep it private.', 'keep it private. the prompt asks your agent to work on the Agent playground page, but the link gives access to the whole space.')
     view = view.replace("You're helping build the &quot;{name}&quot; Tonk space.", "You're helping build only the &quot;Agent playground&quot; page in the &quot;{name}&quot; Tonk space.")
     view = view.replace('Ask me what I want to build.', 'Ask me what I want to build on the Agent playground page.')
     old = 'Finish with `npx --yes @tonk/cli space home &lt;concept&gt;` to put the result on the space home.'
@@ -66,7 +66,11 @@ def agent_library(core):
     view = view.replace(old, f'''Scope all work to the existing Agent playground page (entity {PAGE_ENTITY}, concept playground-page / {PAGE}). Inspect that page and its playground/* concepts first. Change only its page-specific view, components, and data; use new playground-specific concepts when needed. Preserve the page entity and its place in the navigation. Do not change the space home, other pages, shared components, shared schemas, or space-wide settings. Render the result inside the Agent playground page, not on the space home. If the requested work needs changes outside this page, explain why and ask me first.
 
       While working here, you may use playground/agent to report your status and playground/deed to record activity. Read their schemas before writing. Their time fields use epoch milliseconds as float literals. The playground checklist is optional; follow what I ask you to build.''')
-    body = '\n'.join([declaration, rule, view])
+    new_invite = core.split('# Explicit new invitation;', 1)[1].split('concept!: &tonk/agent-invite\n', 1)[0]
+    new_invite = '# Explicit new invitation;' + new_invite
+    state_view = core.split('view!:\n  this: tonk:agent-handoff-state\n', 1)[1].split('# Explicit new invitation;', 1)[0]
+    state_view = 'view!:\n  this: tonk:agent-handoff-state\n' + state_view
+    body = '\n'.join([new_invite, state_view, declaration, rule, view])
     # The imported space has a legacy agent-invite schema. Keep this variant
     # independent while retaining the current standard handoff attributes.
     body = body.replace('tonk/agent-invite', 'onboarding/agent-invite').replace('tonk:agent-invite', 'tonk:onboarding/agent-invite')
@@ -77,7 +81,7 @@ view!:
     playground-agent: |
       <div class="playground-agent">
         <style>.playground-agent tonk-display > [slot][hidden] { display: none !important; }</style>
-        <tonk-page on:invite=tonk:agent-handoff></tonk-page>
+        <page-mount on:invite=tonk:agent-handoff></page-mount>
         <tonk-origin>
           <tonk-display entity={subject} model=tonk:onboarding/agent-invite>
             <tonk-display slot="no-entity" entity={subject} model=tonk:agent-handoff-state>

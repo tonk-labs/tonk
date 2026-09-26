@@ -10,7 +10,15 @@ use dialog_artifacts::Entity;
 use dialog_query::Concept;
 
 use crate::Branch;
-use crate::domain::branch::{Origin, Upstream};
+use crate::domain::branch::{Origin, Replica, Upstream};
+
+/// Tracking facts written before `branch/replica` replaced `branch/origin`.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LegacyTrackingBranch {
+    pub this: Entity,
+    pub upstream: Upstream,
+    pub origin: Origin,
+}
 
 /// A local branch's tracking relationship with a remote branch.
 ///
@@ -78,7 +86,7 @@ pub struct TrackingBranch {
     /// mirrors `local.origin`, which is always the replica for a
     /// local branch. Stored so tracking-branch queries can scope
     /// to a single replica in one shot.
-    pub origin: Origin,
+    pub replica: Replica,
 }
 
 impl TrackingBranch {
@@ -93,7 +101,7 @@ impl TrackingBranch {
         Self {
             this: local.this.clone(),
             upstream: Upstream::from(upstream.this.clone()),
-            origin: local.origin.clone(),
+            replica: local.replica.clone(),
         }
     }
 }
@@ -153,6 +161,6 @@ mod tests {
     fn origin_mirrors_local_branch_origin() {
         let (local, upstream) = setup();
         let link = TrackingBranch::new(&local, &upstream);
-        assert_eq!(link.origin, local.origin);
+        assert_eq!(link.replica, local.replica);
     }
 }

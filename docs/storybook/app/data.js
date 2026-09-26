@@ -42,6 +42,13 @@ window.STORYBOOK_DATA = {
       "id": "B-07",
       "severity": "medium",
       "title": "Renamed account retains an old founder membership in a space"
+    },
+    {
+      "area": "Space adoption and sync",
+      "decision": "fixed in source",
+      "id": "B-08",
+      "severity": "high",
+      "title": "Returning device cannot open a space with old branch facts"
     }
   ],
   "coverage": [
@@ -332,12 +339,20 @@ window.STORYBOOK_DATA = {
       "variants": "Browser opens/fails; --no-open; signed out; stale subject."
     },
     {
-      "evidence": "Invite preflight, trusted approval routing, exact-invitation retry, receipt publication/isolation, naming fallback, parser, standard-library prompt, and browser authorization integration tests.",
-      "gaps": "Whole published-npm-to-browser-space run, remote-offline command test, process interruption at each post-claim boundary, duplicate original-invite process retry.",
+      "evidence": "Historical lower-layer evidence retained; new CLI refuses these entry points without mutation.",
+      "gaps": "People and agents now use ACCT-C14.",
       "group": "Accounts: CLI and browser handoff",
       "id": "ACCT-C13",
-      "title": "Copy an empty-space prompt and run tonk connect to link, join, pull, and acknowledge that space.",
-      "variants": "Active/unlinked CLI account; long/short/malformed invite; default/explicit approval page; synced name absent/colliding; interrupted before receipt."
+      "title": "Retired: account-bound agent setup through join or browser-mediated connect.",
+      "variants": "Old sharing/account handoffs and legacy resume metadata."
+    },
+    {
+      "evidence": "Local CLI import/recovery, exact-authority service tests, persisted KV/D1 revocation restart, checks. Earlier browser results precede this narrowed implementation; fresh browser execution is pending.",
+      "gaps": "Published CLI/browser matrix; staging, Safari and global revocation propagation.",
+      "group": "Accounts: CLI and browser handoff",
+      "id": "ACCT-C14",
+      "title": "Copy a scoped invitation for a person or agent, run one-way tonk join without browser/account approval, and revoke its grant group from Settings.",
+      "variants": "Empty or unrelated-account CLI; repeated bearer holders; independent invites; closed issuing browser; restart; offline or revoked authority."
     },
     {
       "evidence": "Whole browser revoke-CLI flow; DOM list tests; presenter tests require response uncertainty to lead to refresh before retry.",
@@ -808,6 +823,7 @@ window.STORYBOOK_DATA = {
       "id": "WEB-03",
       "journey_ids": [
         "ACCT-C13",
+        "ACCT-C14",
         "SPACE-09",
         "DATA-02",
         "DATA-09",
@@ -838,14 +854,16 @@ window.STORYBOOK_DATA = {
         "COLLAB-01",
         "CLI-03"
       ],
-      "name": "Space actions and switching",
+      "name": "Space actions and attached panels",
       "source_paths": [
         "rust/tonk-ui/src/bin/ui.rs",
         "rust/tonk-fab/src/markup.rs",
-        "rust/tonk-fab/src/skin.rs"
+        "rust/tonk-fab/src/bar.rs",
+        "rust/tonk-fab/src/agent_panel.rs",
+        "rust/tonk-fab/src/member_roster.rs"
       ],
       "status": "captured",
-      "summary": "The expanded floating action bar names the current space and lists every other account-directory space alongside renaming, sharing, sync, and appearance actions.",
+      "summary": "The v0.17 floating action bar names the current space and exposes share, members, connect-agent, and Tonk-home actions, with attached panels and a conditional account entry.",
       "surface": "browser"
     },
     {
@@ -860,14 +878,17 @@ window.STORYBOOK_DATA = {
         "COLLAB-04",
         "COLLAB-05"
       ],
-      "name": "Join and share ceremonies",
+      "name": "Share and contained account tasks",
       "source_paths": [
         "rust/tonk-ui/src/bin/ui.rs",
-        "rust/tonk-fab/src/markup.rs",
-        "rust/tonk-fab/src/share.rs"
+        "rust/tonk-ui/src/fabb_task.rs",
+        "rust/tonk-fab/src/contained_tasks.rs",
+        "rust/tonk-fab/src/trusted_tasks.rs",
+        "rust/tonk-fab/src/share.rs",
+        "rust/tonk-portal/src/task.rs"
       ],
       "status": "captured",
-      "summary": "Invite claim, accountless accreditation, share, and absent-space access states explain what will change and retain actionable Tonk navigation before authority moves.",
+      "summary": "Share, sync repair, activation, and account-required states stay attached to the originating FABB or replace it through one trusted contained task without leaving the space.",
       "surface": "browser"
     },
     {
@@ -892,7 +913,7 @@ window.STORYBOOK_DATA = {
     {
       "area": "Accounts",
       "artifact": "app/screens/web-07-account-choice.png",
-      "capture": "production-source fixture",
+      "capture": "running product",
       "id": "WEB-07",
       "journey_ids": [
         "ACCT-B01",
@@ -903,8 +924,9 @@ window.STORYBOOK_DATA = {
       ],
       "name": "Account choice",
       "source_paths": [
-        "rust/tonk-workspace/src/ui_account_settings.html",
-        "rust/tonk-workspace/src/ui_account_settings.rs"
+        "rust/tonk-ui/src/register_dialog.rs",
+        "rust/tonk-ui/styles.css",
+        "rust/tonk-ui/src/account_flow.rs"
       ],
       "status": "captured",
       "summary": "A provider-free profile can create an account, log in, choose a browser profile, or return to local Tonk.",
@@ -913,7 +935,7 @@ window.STORYBOOK_DATA = {
     {
       "area": "Accounts",
       "artifact": "app/screens/web-08-account-create.png",
-      "capture": "production-source fixture",
+      "capture": "running product",
       "id": "WEB-08",
       "journey_ids": [
         "ACCT-B02",
@@ -923,8 +945,9 @@ window.STORYBOOK_DATA = {
       ],
       "name": "Create account",
       "source_paths": [
-        "rust/tonk-workspace/src/ui_account_settings.html",
-        "rust/tonk-workspace/src/ui_account_settings.rs"
+        "rust/tonk-ui/src/register_dialog.rs",
+        "rust/tonk-ui/styles.css",
+        "rust/tonk-ui/src/account_flow.rs"
       ],
       "status": "captured",
       "summary": "The account creation form collects an email and turns passkey cancellation, unsupported authenticators, and remote failures into distinct recovery steps.",
@@ -933,7 +956,7 @@ window.STORYBOOK_DATA = {
     {
       "area": "Accounts",
       "artifact": "app/screens/web-09-account-login.png",
-      "capture": "production-source fixture",
+      "capture": "running product",
       "id": "WEB-09",
       "journey_ids": [
         "ACCT-B03",
@@ -942,8 +965,9 @@ window.STORYBOOK_DATA = {
       ],
       "name": "Log in with a passkey",
       "source_paths": [
-        "rust/tonk-workspace/src/ui_account_settings.html",
-        "rust/tonk-workspace/src/ui_account_settings.rs"
+        "rust/tonk-ui/src/register_dialog.rs",
+        "rust/tonk-ui/styles.css",
+        "rust/tonk-ui/src/account_flow.rs"
       ],
       "status": "captured",
       "summary": "The browser explains that a passkey ceremony will select the existing account before linking this profile.",
@@ -963,8 +987,8 @@ window.STORYBOOK_DATA = {
       ],
       "name": "CLI authorization handoff",
       "source_paths": [
-        "rust/tonk-workspace/src/ui_account_settings.html",
-        "rust/tonk-workspace/src/ui_account_settings.rs",
+        "rust/tonk-core/assets/library/profile.yaml",
+        "rust/tonk-ui/styles.css",
         "rust/tonk-cli/src/account.rs"
       ],
       "status": "captured",
@@ -986,8 +1010,8 @@ window.STORYBOOK_DATA = {
       ],
       "name": "Account settings",
       "source_paths": [
-        "rust/tonk-workspace/src/ui_account_settings.html",
-        "rust/tonk-workspace/src/ui_account_settings.rs"
+        "rust/tonk-core/assets/library/profile.yaml",
+        "rust/tonk-ui/styles.css"
       ],
       "status": "captured",
       "summary": "Account facts and management stay visible while pending email confirmation is named directly and authoritative edits remain disabled until account state is ready.",
@@ -1008,8 +1032,8 @@ window.STORYBOOK_DATA = {
       ],
       "name": "Devices and revocation",
       "source_paths": [
-        "rust/tonk-workspace/src/ui_account_settings.html",
-        "rust/tonk-workspace/src/ui_account_settings.rs"
+        "rust/tonk-core/assets/library/profile.yaml",
+        "rust/tonk-ui/styles.css"
       ],
       "status": "captured",
       "summary": "The devices panel identifies this device, confirms revocation, and requires a refresh before retry when the result cannot be confirmed.",
@@ -1027,8 +1051,8 @@ window.STORYBOOK_DATA = {
       ],
       "name": "Deletion review",
       "source_paths": [
-        "rust/tonk-workspace/src/ui_account_settings.html",
-        "rust/tonk-workspace/src/ui_account_settings.rs"
+        "rust/tonk-core/assets/library/profile.yaml",
+        "rust/tonk-ui/styles.css"
       ],
       "status": "captured",
       "summary": "The destructive confirmation enumerates exact scope, says when cancellation changed nothing, and treats a lost result as uncertain before retry.",
@@ -1706,7 +1730,7 @@ window.STORYBOOK_DATA = {
     },
     {
       "claim": "Empty-space prompt connects an agent CLI to the exact originating space (Agent handoff).",
-      "device": "hybrid + second-client",
+      "device": "historical / retired + second-client",
       "file": "verification/accounts.md",
       "id": "HANDOFF-19",
       "priority": "P1",
@@ -1714,11 +1738,19 @@ window.STORYBOOK_DATA = {
     },
     {
       "claim": "Agent connection validates before authority and retains a named recovery path after interruption (Interrupted agent connection).",
-      "device": "hybrid + offline + restart",
+      "device": "historical / retired",
       "file": "verification/accounts.md",
       "id": "HANDOFF-20",
       "priority": "P1",
       "result": "Automated preflight/approval/fallback/exact-invitation/spoof-rejection/receipt coverage; revoked-authority reclaim, command interruption, remote-offline recovery, and whole-process original-invite retry remain unrun."
+    },
+    {
+      "claim": "Scoped invitation imports without an account and revokes all holders (Scoped agent invitation).",
+      "device": "hybrid + restart + two-actor",
+      "file": "verification/accounts.md",
+      "id": "HANDOFF-21",
+      "priority": "P1",
+      "result": "Native protocol, CLI import/recovery and issuer/revocation checks passed at 199e9a599. Fresh browser execution remains unverified."
     },
     {
       "claim": "Device list identifies self separately from shared rows (Resolve).",
@@ -2081,12 +2113,12 @@ window.STORYBOOK_DATA = {
       "result": "—"
     },
     {
-      "claim": "Share shows copy link and member count; members opens a scrollable popup (Share-menu presentation decision).",
+      "claim": "Share, members, and recovery stay attached to the v0.17 FABB (Share-menu presentation decision).",
       "device": "browser + touch",
       "file": "verification/cli-spaces-ui.md",
       "id": "COLLAB-05",
       "priority": "P2",
-      "result": "—"
+      "result": "Partial (component, 2026-09-22): FABB Wasm suites cover double-click, refusal routing, contained task ownership, responsive panels, and 12-member reset/update/retract. Real copied-link use, account completion, touch device, and Safari remain unrun."
     },
     {
       "claim": "Concept and all view kinds round-trip through list/show/render (Inventory).",
@@ -2102,7 +2134,7 @@ window.STORYBOOK_DATA = {
       "file": "verification/cli-spaces-ui.md",
       "id": "DATA-02",
       "priority": "P1",
-      "result": "—"
+      "result": "Partial (component, 2026-09-22): explicit mint and complete prompt render pass; local import and running-product home replacement remain unrun."
     },
     {
       "claim": "Assert/update/no-op/retract preserve untouched fields and handle concurrent claims (Inventory).",
@@ -2201,12 +2233,12 @@ window.STORYBOOK_DATA = {
       "result": "—"
     },
     {
-      "claim": "Service-worker update never mixes asset generations (Cross a boundary).",
-      "device": "two-actor",
+      "claim": "Service-worker update preserves a usable account UI across library generations (Cross a boundary).",
+      "device": "two-actor + legacy-account",
       "file": "verification/cli-spaces-ui.md",
       "id": "UI-03",
       "priority": "P1",
-      "result": "—"
+      "result": "Exact pre-stack fixture reproduces schema-validation failure on staging d69c737ef. Worker regressions profile_library_upgrades_* check migration, decoded stylesheet bindings, preservation and idempotence. Deployed account recovery, Safari, and the full two-generation UI journey remain unverified."
     },
     {
       "claim": "Account gate permits provider-free/local use and blocks only authority-specific work (Exit early).",
@@ -2284,9 +2316,9 @@ window.STORYBOOK_DATA = {
   "verificationResults": {
     "blocked": 0,
     "fail": 0,
-    "other": 7,
+    "other": 11,
     "pass": 2,
-    "unrun": 110
+    "unrun": 107
   },
   "visualCommit": "49a873a23"
 };

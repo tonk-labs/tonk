@@ -4,16 +4,19 @@
 //! answered before the presign path: it writes to the revocation index
 //! rather than reading from it, so it is not a storage authorization.
 //!
-//! Three questions, in order. Have we recorded this already, in which
-//! case the answer is yes and nothing else needs asking. Is the subject
-//! one whose data we hold, since a revocation about a space we serve
-//! nothing for guards nothing. And does the evidence prove the subject
-//! could revoke the target, which
-//! [`tonk_identity::revocation::verify`] answers.
+//! First verify the signed revocation and its historical witnesses, then
+//! check that we hold the affected subject's data. An already-recorded
+//! fact is idempotent. Recording a new fact additionally requires current
+//! invocation authority whose proofs have not themselves been revoked.
 
+use dialog_common::ConditionalSync;
+use dialog_credentials::DidKeyResolver;
+use dialog_ucan_core::{ContainerError, Environment, InvocationChain, VerificationContext};
+use dialog_varsig::AnySignature;
 use tonk_account::customer::{RegistrationError, RevokeReceipt};
 use tonk_identity::revocation::{VerifyError, verify};
 
+use crate::revocation::checker::IndexedRevocations;
 use crate::revocation::index::RevocationIndex;
 use crate::store::{Store, StoreError};
 
@@ -57,7 +60,7 @@ fn internal(error: StoreError) -> RegistrationError {
 /// answers a compromised key, which is exactly when a bill may also be
 /// unpaid. A subject we never registered, or one whose data we already
 /// purged, is refused — otherwise the index is an open write surface.
-pub async fn revoke<S: Store, I: RevocationIndex>(
+pub async fn revoke<S: Store, I: RevocationIndex + ConditionalSync>(
     store: &S,
     index: &I,
     container: &[u8],
@@ -85,12 +88,48 @@ pub async fn revoke<S: Store, I: RevocationIndex>(
         return Err(RegistrationError::UnknownConsumer);
     }
 
-    let recorded = index
-        .record(&verified.target_cid, &subject)
+    let already_recorded = index
+        .subjects(&verified.target_cid)
         .await
         .map_err(|error| RegistrationError::Internal {
             message: error.to_string(),
+        })?
+        .contains(&subject);
+    if !already_recorded {
+        // Historical `pth` witnesses may already be revoked. Only the
+        // invocation's current `prf` authorizes a new write to the index.
+        // The ordinary chain verifier walks those proofs, not the witness
+        // pool. A valid replay needs no new authority or index mutation.
+        let chain = InvocationChain::<AnySignature>::try_from(container).map_err(|error| {
+            RegistrationError::Internal {
+                message: error.to_string(),
+            }
         })?;
+        let checker = IndexedRevocations(index);
+        let environment = Environment::new(chain.proof_store(), DidKeyResolver, &checker);
+        chain
+            .verify(&VerificationContext::new(&environment))
+            .await
+            .map_err(|error| match error {
+                ContainerError::Revoked { .. } => RegistrationError::Unauthorized {
+                    message: "revocation authority has been withdrawn".into(),
+                },
+                other => RegistrationError::Internal {
+                    message: other.to_string(),
+                },
+            })?;
+    }
+
+    let recorded = if already_recorded {
+        false
+    } else {
+        index
+            .record(&verified.target_cid, &subject)
+            .await
+            .map_err(|error| RegistrationError::Internal {
+                message: error.to_string(),
+            })?
+    };
 
     Ok(RevokeReceipt {
         revoked: verified
@@ -211,7 +250,7 @@ mod tests {
             .expect("grant");
         let target = grant.proof_cids()[0];
         let bytes =
-            tonk_identity::revocation::mint_self_revocation(device.clone(), &grant, &target)
+            tonk_identity::revocation::mint_root_revocation(device.clone(), &grant, &target)
                 .await
                 .expect("revocation");
 

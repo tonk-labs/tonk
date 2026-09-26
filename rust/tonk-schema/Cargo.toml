@@ -42,6 +42,7 @@ serde_json = { workspace = true, features = ["preserve_order"] }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 tonk-core = { workspace = true }
+url = { workspace = true }
 tonk-notation = { workspace = true }
 tonk-worker-api = { workspace = true }
 

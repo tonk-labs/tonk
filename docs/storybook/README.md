@@ -221,7 +221,7 @@ coverage only; it does not mean the corresponding checks pass.
 
 No document is verified yet. The first pass should run the account P1 items,
 then the hybrid browser/CLI items, then destructive space and account actions.
-The current map contains 26 screen families, 78 stable journey IDs, 112
+The current map contains 26 screen families, 80 stable journey IDs, 119
 verification items, and 6 source-pinned triage findings. Fifteen browser screen
 families have image evidence; the eleven CLI families use isolated transcripts
 captured from the binary at the visual commit.
@@ -238,8 +238,12 @@ The relevant source locations are:
   tests for command behavior.
 - [`rust/tonk-ui/src/bin/ui.rs`](../../rust/tonk-ui/src/bin/ui.rs): top-document
   route selection.
-- [`rust/tonk-workspace/src/ui_account_settings.rs`](../../rust/tonk-workspace/src/ui_account_settings.rs):
-  the hub's settings page, where every account interaction lives.
+- [`rust/tonk-core/assets/library/profile.yaml`](../../rust/tonk-core/assets/library/profile.yaml):
+  the hub and account-settings views and element declarations. Account settings
+  fixture captures predate the account-view refactor; their source paths identify
+  the successor view and ceremony implementations.
+- [`rust/tonk-ui/src/register_dialog.rs`](../../rust/tonk-ui/src/register_dialog.rs):
+  the trusted signup and sign-in ceremony used by the Hub and in-space tasks.
 - [`rust/tonk-ui/src/activate.rs`](../../rust/tonk-ui/src/activate.rs): emailed
   activation-link surface.
 - [`rust/tonk-ui/src/account_flow.rs`](../../rust/tonk-ui/src/account_flow.rs):
