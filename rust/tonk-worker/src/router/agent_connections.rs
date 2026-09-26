@@ -365,7 +365,7 @@ pub(crate) async fn mint(
         .await
         .map_err(failure)?;
     let url = invite
-        .to_url(origin.url().join("join").map_err(failure)?.as_str())
+        .to_url(origin.url().join("agent/").map_err(failure)?.as_str())
         .map_err(failure)?;
     let connection = summarize(&tonk, &group).await?;
     Ok(AgentConnectionInviteResponse { url, connection })

@@ -142,12 +142,16 @@ async fn it_accepts_supported_tool_links_and_rejects_other_kinds_without_fallbac
 
     let seed = [72; 32];
     let agent = agent_fixture("https://carrier.example.test/join", seed, false).await?;
-    let prepared =
-        tonk_cli::join::prepare(&agent.to_url("https://carrier.example.test/join")?).await?;
-    assert_eq!(
-        prepared.hint().remote.as_str(),
-        "https://access.example.test/ucan/"
-    );
+    for path in ["join", "agent/"] {
+        let prepared = tonk_cli::join::prepare(
+            &agent.to_url(&format!("https://carrier.example.test/{path}"))?,
+        )
+        .await?;
+        assert_eq!(
+            prepared.hint().remote.as_str(),
+            "https://access.example.test/ucan/"
+        );
+    }
 
     let mut mixed = url::Url::parse(&agent.to_url("https://carrier.example.test/join")?)?;
     mixed
@@ -227,7 +231,7 @@ async fn shortcuts_resolve_once_before_tool_only_routing() -> Result<()> {
     assert_eq!(requests.load(Ordering::SeqCst), 1);
 
     let agent = agent_fixture(&format!("{base}/join"), [74; 32], false).await?;
-    let agent_url = url::Url::parse(&agent.to_url(&format!("{base}/join"))?)?;
+    let agent_url = url::Url::parse(&agent.to_url(&format!("{base}/agent/"))?)?;
     let mut agent_location = agent_url.clone();
     agent_location.set_fragment(None);
     *location.write().await = agent_location.to_string();

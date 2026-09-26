@@ -36,6 +36,8 @@ function fixtureDist() {
   writeFileSync(join(dist, "worker_bg.wasm"), "worker-wasm-fixture\n");
   writeFileSync(join(dist, "ui-a1b2c3.js"), "export const ui = 1;\n");
   writeFileSync(join(dist, "ui-a1b2c3.js.map"), "source map fixture");
+  mkdirSync(join(dist, "agent"));
+  copyFileSync(join(UI, "assets", "agent", "index.html"), join(dist, "agent", "index.html"));
   mkdirSync(join(dist, "guest"));
   writeFileSync(
     join(dist, "guest", "manifest.json"),
@@ -73,6 +75,8 @@ test("the publisher emits the complete immutable UI and guest resource graph", (
     assert.equal(manifest.build, version.build);
     assert.deepEqual(manifest.assets, {
       "/": sha256(join(dist, "index.html")),
+      "/agent/": sha256(join(dist, "agent", "index.html")),
+      "/agent/index.html": sha256(join(dist, "agent", "index.html")),
       "/guest/guest-a1b2c3.js": sha256(
         join(dist, "guest", "guest-a1b2c3.js"),
       ),

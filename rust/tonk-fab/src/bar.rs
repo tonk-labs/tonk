@@ -255,7 +255,8 @@ pub(crate) fn build(this: &HtmlElement, state: &Shared) -> Vec<Bound> {
         }));
     }
     for (selector, event_name) in [
-        ("#agent-panel .panel-copy", "fabb-agent-copy"),
+        ("#agent-panel .agent-copy-prompt", "fabb-agent-copy"),
+        ("#agent-panel .agent-copy-link", "fabb-agent-copy-link"),
         ("#agent-panel .agent-retry", "fabb-agent-retry"),
     ] {
         if let Ok(Some(button)) = root.query_selector(selector) {

@@ -2862,6 +2862,16 @@ fn return_to_previous() {
     let host = web_sys::window()
         .and_then(|window| window.document())
         .and_then(|document| document.get_element_by_id(DIALOG_ID));
+    // The contained task owns its continuation (for example minting an agent
+    // invitation). Navigating to the saved space would replace its guest before
+    // the deferred close callback can deliver the result.
+    if host
+        .as_ref()
+        .is_some_and(|host| host.has_attribute("data-fabb-task"))
+    {
+        close();
+        return;
+    }
     let path = host
         .as_ref()
         .and_then(|host| host.get_attribute(RETURN_PATH))
@@ -3315,6 +3325,36 @@ mod tests {
     }
 
     use super::*;
+
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[dialog_common::test]
+    async fn contained_return_preserves_the_guest_until_completion() {
+        let returned = std::rc::Rc::new(std::cell::Cell::new(false));
+        let result = returned.clone();
+        open_with_return_focus(move || result.set(take_fabb_task_success()));
+        let host = host_element().unwrap();
+        host.set_attribute("data-fabb-task", "").unwrap();
+        host.set_attribute(RETURN_PATH, "/spaces/contained-return-fixture")
+            .unwrap();
+        ANNOUNCED.with(|announced| announced.set(true));
+        let before = web_sys::window().unwrap().location().href().unwrap();
+        return_to_previous();
+        assert_eq!(
+            web_sys::window().unwrap().location().href().unwrap(),
+            before
+        );
+        let wait = js_sys::Promise::new(&mut |resolve, _| {
+            web_sys::window()
+                .unwrap()
+                .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 10)
+                .unwrap();
+        });
+        wasm_bindgen_futures::JsFuture::from(wait).await.unwrap();
+        assert!(
+            returned.get(),
+            "the guest receives successful account completion"
+        );
+    }
 
     /// The dialog asks about addresses the browser would accept, and
     /// keeps half-typed ones out of the lookup.
