@@ -409,3 +409,13 @@ failed; it was not a failing browser assertion. Validation for this syntax-only
 fix passed `cargo clippy --locked -p tonk-cli --all-targets --all-features --
 -D warnings`, `cargo fmt --all -- --check`, and `git diff --check`. The full
 hosted lint gate must rerun on the follow-up commit.
+
+### Storybook conflict resolution, 2026-09-28
+
+Merged main at `349ea9df4` into PR 1021. Only generated Storybook `app/data.js`
+and `app/data.json` conflicted; regenerated both from the merged Markdown and
+screen sources. Main's self-describing invitation guide and Plan 007's named,
+confirmed-only access management documentation are both retained. Storybook
+build/check and all 176 local links passed, as did formatting and diff checks.
+No hand-written product conflict required resolution; runtime suites were not
+rerun for this generated-documentation resolution.

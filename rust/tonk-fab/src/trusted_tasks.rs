@@ -144,7 +144,11 @@ fn finish(this: &HtmlElement, state: &Shared, bar_state: &bar::Shared, result: &
                 && let Ok(Some(agent)) = this.query_selector("tonk-agent-panel")
                 && let Ok(agent) = agent.dyn_into::<HtmlElement>()
             {
-                shadow::emit(&agent, "fabb-agent-open", &wasm_bindgen::JsValue::NULL);
+                shadow::emit(
+                    &agent,
+                    "fabb-agent-account-ready",
+                    &wasm_bindgen::JsValue::NULL,
+                );
             }
         }
     }
