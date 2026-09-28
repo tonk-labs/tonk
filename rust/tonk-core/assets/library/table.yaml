@@ -510,6 +510,408 @@ view!:
       </div>
 
 # ---------------------------------------------------------------------------
+# The element — `<tonk-table>` as branch data.
+#
+# The grid core is still a built asset: the IronCalc engine is ~4MB of
+# wasm and the grid that drives it is a TypeScript program, neither of
+# which belongs in a fact. What lives here is the SHELL — the custom
+# element around that core: how it mounts, what it watches, what it
+# dispatches, what properties it exposes. That is the part a space
+# might want to change, and it is now a row on the branch like any
+# other, resolved by name the first time a `<tonk-table>` is rendered.
+#
+# The seam is `core.shell`, a single object the grid chunk exports
+# (`src-js/grid/host.ts`) holding the pure helpers this shell used to
+# import: the HLC clock, the content envelope, base64, and the
+# claim-row readers. A notation method is a bare arrow function — no
+# module scope, no imports — so everything more than a few lines long
+# has to arrive through the one handle it can get, which is the module
+# it dynamically imports.
+#
+# Per-instance state hangs off `self.__table` rather than living in
+# private class fields, for the same reason: there is no constructor to
+# initialise them in. `state` builds the record (and the shadow root)
+# on first use, because the runtime replays `attribute-changed` for
+# attributes already present BEFORE it calls `connected`, so a method
+# can be the first one to run.
+#
+# Two things the class did that this deliberately does not:
+#
+#   - `static observedAttributes`. The runtime watches every attribute
+#     with a MutationObserver, so the list is gone; `attribute-changed`
+#     filters on the names it handles instead.
+#   - `focus()`. Overriding a member every element already has is
+#     refused, and `delegatesFocus: true` on the shadow root already
+#     forwards focus into the grid — the override existed for the
+#     pre-mount fallback, which `delegatesFocus` covers.
+#
+# And one it could not: `released` / `swapped`. Re-authoring this
+# element while a spreadsheet is open now hands the live grid over
+# instead of losing it.
+element!: &tonk-table
+  description: |
+    An IronCalc spreadsheet: live formulas, sheets, and per-cell
+    claims. Renders a store subject when `subject` is set, and its own
+    text content otherwise.
+  attribute:
+    min-rows: "100"
+    min-cols: "26"
+  getter:
+    value: |
+      (self) => {
+        const s = self.state();
+        if (s.grid) return s.grid.toCsv();
+        const raw = s.pendingRaw ?? (self.lightContent() !== ''
+          ? self.lightContent()
+          : (self.getAttribute('content') ?? self.getAttribute('value')));
+        return raw === null ? '' : (s.core ? s.core.shell.parseContent(raw).value : raw);
+      }
+    content: |
+      (self) => {
+        const s = self.state();
+        if (s.grid && s.core) {
+          return s.core.shell.formatContent({
+            hlc: s.lastHlc,
+            contentType: s.core.shell.WORKBOOK_TYPE,
+            value: s.core.shell.bytesToBase64(s.grid.serialize()),
+          });
+        }
+        return s.pendingRaw ?? (self.lightContent() !== ''
+          ? self.lightContent()
+          : (self.getAttribute('content') ?? self.getAttribute('value'))) ?? '';
+      }
+    version: |
+      (self) => {
+        const s = self.state();
+        return s.core ? s.core.shell.formatHlc(s.lastHlc) : String(s.lastHlc);
+      }
+    grid: |
+      (self) => self.state().grid
+  setter:
+    value: |
+      (self, next) => { self.adopt(next); }
+    content: |
+      (self, next) => { self.adopt(next); }
+  method:
+    state: |
+      (self) => {
+        if (self.__table) return self.__table;
+        const shadow = self.shadowRoot
+          ?? self.attachShadow({ mode: 'open', delegatesFocus: true });
+        const host = document.createElement('style');
+        const mount = document.createElement('div');
+        mount.className = 'mount';
+        const userStyles = document.createElement('style');
+        shadow.append(host, mount, userStyles);
+        self.__table = {
+          shadow, host, mount, userStyles,
+          core: null, grid: null, token: 0,
+          pendingRaw: null, lastLight: null,
+          observer: null, rowsTimer: null, changeTimer: null,
+          dirty: false, clock: null, lastHlc: 0n, teardown: false,
+        };
+        return self.__table;
+      }
+    connected: |
+      (self) => {
+        const s = self.state();
+        s.teardown = false;
+        if (!s.observer) {
+          s.observer = new MutationObserver(() => {
+            self.syncStyles();
+            if (self.hasAttribute('subject')) self.scheduleRows();
+            else self.onLightContent();
+          });
+          s.observer.observe(self, {
+            childList: true, characterData: true, subtree: true,
+            attributes: true,
+            attributeFilter: [
+              'subject', 'data-table', 'data-name', 'data-order',
+              'data-sheet', 'data-at', 'data-content', 'data-style',
+              'data-width', 'data-height',
+            ],
+          });
+        }
+        self.syncStyles();
+        if (s.grid) return;
+        void self.mountGrid(++s.token);
+      }
+    disconnected: |
+      (self) => {
+        const s = self.state();
+        if (s.teardown) return;
+        s.teardown = true;
+        setTimeout(() => {
+          if (!s.teardown) return;
+          s.teardown = false;
+          if (self.isConnected) return;
+          if (s.changeTimer !== null) {
+            clearTimeout(s.changeTimer);
+            self.flushChange();
+          }
+          if (s.rowsTimer !== null) { clearTimeout(s.rowsTimer); s.rowsTimer = null; }
+          s.observer?.disconnect();
+          s.observer = null;
+          s.token++;
+          s.grid?.destroy();
+          s.grid = null;
+        }, 0);
+      }
+    attribute-changed: |
+      (self, name, before, next) => {
+        const s = self.state();
+        if (name === 'subject') {
+          if (before !== next && s.grid) {
+            s.grid.destroy();
+            s.grid = null;
+            const token = ++s.token;
+            if (self.isConnected) void self.mountGrid(token);
+          }
+        } else if (name === 'content') {
+          self.adopt(next ?? '');
+        } else if (name === 'value') {
+          if ((next ?? '') !== self.value) self.adopt(next ?? '');
+        } else if (name === 'readonly') {
+          s.grid?.setReadOnly(next !== null);
+        } else if (name === 'min-rows' || name === 'min-cols') {
+          s.grid?.setMinExtent(self.intAttr('min-rows'), self.intAttr('min-cols'));
+        }
+      }
+    released: |
+      (self) => {
+        // The outgoing definition hands the live grid over rather than
+        // dropping it: an author editing this element should not cost
+        // the person a spreadsheet's undo history and selection. The
+        // observer and timers ARE this definition's and are torn down;
+        // the grid and the clock are the document's and survive.
+        const s = self.state();
+        if (s.changeTimer !== null) { clearTimeout(s.changeTimer); s.changeTimer = null; }
+        if (s.rowsTimer !== null) { clearTimeout(s.rowsTimer); s.rowsTimer = null; }
+        s.observer?.disconnect();
+        s.observer = null;
+      }
+    swapped: |
+      (self) => {
+        // Take over the instance the previous definition left mounted.
+        // `connected` re-installs the observer and skips the mount
+        // because the grid is still there, which is exactly the
+        // handover — no reload, no lost state.
+        self.connected();
+      }
+    mount-grid: |
+      async (self, token) => {
+        const s = self.state();
+        let core;
+        try {
+          core = await self.core();
+        } catch (err) {
+          console.warn('[tonk-table] failed to load grid core:', err);
+          return;
+        }
+        if (token !== s.token || !self.isConnected) return;
+        s.core = core;
+        if (!s.clock) s.clock = new core.shell.Clock();
+
+        let mode;
+        const subject = self.getAttribute('subject');
+        if (subject !== null) {
+          mode = { kind: 'claims', subject };
+        } else {
+          let raw = s.pendingRaw;
+          if (raw === null) {
+            const light = self.lightContent();
+            raw = light !== ''
+              ? light
+              : (self.getAttribute('content') ?? self.getAttribute('value'));
+          }
+          s.pendingRaw = null;
+          const parsed = core.shell.parseContent(raw ?? '');
+          if (parsed.hlc !== null && parsed.hlc > s.lastHlc) {
+            s.lastHlc = s.clock.receive(parsed.hlc);
+          } else if (s.lastHlc > 0n) {
+            // A pre-mount `adopt` advanced the gate without a clock to
+            // reconcile against (the clock arrives with the core).
+            // Fold it in now, so the first outbound tick is ordered
+            // after everything already adopted.
+            s.lastHlc = s.clock.receive(s.lastHlc);
+          }
+          mode = { kind: 'standalone', source: core.shell.toSource(parsed) };
+        }
+
+        let grid;
+        try {
+          grid = await core.createGrid(s.mount, {
+            mode,
+            emit: (type, detail) => {
+              self.dispatchEvent(new CustomEvent(type, {
+                bubbles: true, composed: true, detail,
+              }));
+            },
+            readOnly: self.hasAttribute('readonly'),
+            minRows: self.intAttr('min-rows'),
+            minCols: self.intAttr('min-cols'),
+            onChange: mode.kind === 'standalone'
+              ? () => self.scheduleChange()
+              : undefined,
+          });
+        } catch (err) {
+          console.warn('[tonk-table] failed to mount grid:', err);
+          return;
+        }
+        if (token !== s.token || !self.isConnected) { grid.destroy(); return; }
+        s.grid = grid;
+
+        if (mode.kind === 'claims') {
+          self.applyRows();
+        } else if (s.pendingRaw !== null) {
+          const pending = core.shell.parseContent(s.pendingRaw);
+          s.pendingRaw = null;
+          grid.load(core.shell.toSource(pending));
+        }
+
+        self.dispatchEvent(new CustomEvent('ready', {
+          detail: { grid }, bubbles: true, composed: true,
+        }));
+
+        if (!self.hasAttribute('readonly') && self.hasAttribute('auto-focus')) {
+          setTimeout(() => { if (s.grid === grid) grid.focus(); }, 0);
+        }
+      }
+    core: |
+      (self) => {
+        // One in-flight load per realm, shared by every instance and
+        // cleared on failure so a later connect retries. It lives on
+        // `globalThis` because a notation method has no module scope
+        // to hold it in.
+        if (!globalThis.__tonkTableCore) {
+          const resolve = async () => {
+            const override = globalThis.__tonkTableGrid;
+            if (typeof override === 'string' && override) return override;
+            if (typeof override === 'function') {
+              const url = await override();
+              if (typeof url === 'string' && url) return url;
+            }
+            throw new Error('tonk-table: no grid core URL (__tonkTableGrid)');
+          };
+          globalThis.__tonkTableCore = resolve().then((url) => import(url));
+          globalThis.__tonkTableCore.catch(() => {
+            globalThis.__tonkTableCore = null;
+          });
+        }
+        return globalThis.__tonkTableCore;
+      }
+    sync-styles: |
+      (self) => {
+        const s = self.state();
+        // The host sheet comes from the core, so it is installed the
+        // first time the core is in hand rather than in `state` —
+        // before that the element is an unstyled box for the one frame
+        // it takes the chunk to arrive.
+        if (s.core && s.host.textContent !== s.core.hostStyles) {
+          s.host.textContent = s.core.hostStyles;
+        }
+        let css = '';
+        for (const child of Array.from(self.children)) {
+          if (child instanceof HTMLStyleElement) css += (child.textContent ?? '') + '\n';
+        }
+        if (s.userStyles.textContent !== css) s.userStyles.textContent = css;
+      }
+    light-content: |
+      (self) => {
+        let text = '';
+        for (const node of Array.from(self.childNodes)) {
+          if (node.nodeType === Node.TEXT_NODE) text += node.nodeValue ?? '';
+        }
+        return text;
+      }
+    on-light-content: |
+      (self) => {
+        if (self.hasAttribute('subject')) return;
+        const s = self.state();
+        const text = self.lightContent();
+        if (text === s.lastLight) return;
+        s.lastLight = text;
+        self.adopt(text);
+      }
+    schedule-rows: |
+      (self) => {
+        const s = self.state();
+        if (s.rowsTimer !== null) return;
+        s.rowsTimer = setTimeout(() => {
+          s.rowsTimer = null;
+          self.applyRows();
+        }, 30);
+      }
+    apply-rows: |
+      (self) => {
+        const s = self.state();
+        const subject = self.getAttribute('subject');
+        if (!s.grid || !s.core || subject === null) return;
+        const sheets = s.core.shell.readSheetRows(self, subject);
+        const ids = new Set(sheets.map((sheet) => sheet.id));
+        s.grid.applyRows(
+          sheets,
+          s.core.shell.readCellRows(self, ids),
+          s.core.shell.readColumnRows(self, ids),
+          s.core.shell.readRowSizeRows(self, ids),
+        );
+      }
+    int-attr: |
+      (self, name) => {
+        const raw = self.getAttribute(name);
+        if (raw === null) return undefined;
+        const n = Number(raw);
+        return Number.isInteger(n) && n >= 1 ? n : undefined;
+      }
+    adopt: |
+      (self, raw) => {
+        if (self.hasAttribute('subject')) return;
+        const s = self.state();
+        if (s.core) {
+          const parsed = s.core.shell.parseContent(raw);
+          if (parsed.hlc !== null) {
+            if (parsed.hlc <= s.lastHlc) return;
+            s.lastHlc = s.clock ? s.clock.receive(parsed.hlc) : parsed.hlc;
+          }
+          if (!s.grid) { s.pendingRaw = raw; return; }
+          s.grid.load(s.core.shell.toSource(parsed));
+          return;
+        }
+        // Before the core arrives there is no parser and no grid. The
+        // gate still holds — it is a BigInt comparison, not a clock —
+        // so buffer the write and let the mount reconcile it.
+        s.pendingRaw = raw;
+      }
+    schedule-change: |
+      (self) => {
+        const s = self.state();
+        s.dirty = true;
+        if (s.changeTimer !== null) clearTimeout(s.changeTimer);
+        s.changeTimer = setTimeout(() => self.flushChange(), 400);
+      }
+    flush-change: |
+      (self) => {
+        const s = self.state();
+        s.changeTimer = null;
+        if (!s.dirty) return;
+        s.dirty = false;
+        if (!s.grid || !s.core) return;
+        const hlc = s.clock.tick();
+        s.lastHlc = hlc;
+        self.dispatchEvent(new CustomEvent('change', {
+          detail: {
+            value: s.grid.toCsv(),
+            content: s.core.shell.formatContent({
+              hlc,
+              contentType: s.core.shell.WORKBOOK_TYPE,
+              value: s.core.shell.bytesToBase64(s.grid.serialize()),
+            }),
+          },
+          bubbles: true, composed: true,
+        }));
+      }
+
+# ---------------------------------------------------------------------------
 # Views — the live grid. `subject={this}` selects the element's claims
 # mode; the nested hidden displays materialize this branch's sheet and
 # cell claims where the element's observer can see them; each on* binds

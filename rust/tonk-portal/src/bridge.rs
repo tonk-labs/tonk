@@ -405,18 +405,18 @@ async fn build_inject_payload() -> Result<(JsValue, JsValue), String> {
     // injected above.
     let prose = bundle_graph_entries(fetch_tonk_prose_shell().await);
 
-    // The `<tonk-table>` spreadsheet SHELL only: same lazy contract as
-    // tonk-prose above — the grid core and the multi-megabyte IronCalc
-    // engine bytes stay out of the boot payload; the guest requests them
-    // over `need-table` the first time an element actually connects.
-    let table = bundle_graph_entries(fetch_tonk_table_shell().await);
+    // No `<tonk-table>` shell in the boot payload: the shell is branch
+    // data now (`library/table.yaml`), resolved by the element registry
+    // the first time a `<tonk-table>` is rendered. What still comes
+    // from here is the grid CORE — the IronCalc engine and the program
+    // that drives it — and it stays lazy: the guest asks for it over
+    // `need-table` when an element actually connects.
 
     let payload = Object::new();
     let _ = Reflect::set(&payload, &"__tonkRuntime".into(), &"inject".into());
     let _ = Reflect::set(&payload, &"glue".into(), &JsValue::from_str(&glue));
     let _ = Reflect::set(&payload, &"snippets".into(), &snippets);
     let _ = Reflect::set(&payload, &"prose".into(), &prose);
-    let _ = Reflect::set(&payload, &"table".into(), &table);
     let _ = Reflect::set(&payload, &"wasm".into(), &wasm);
     let _ = Reflect::set(&payload, &"css".into(), &JsValue::from_str(&css));
     let _ = Reflect::set(&payload, &"wa".into(), &wa);
@@ -679,25 +679,6 @@ fn inject_code_core(iframe: &HtmlIFrameElement) {
         let _ = Reflect::set(&payload, &"code".into(), &code);
         let _ = content_window.post_message(&payload, "*");
     });
-}
-
-/// Fetch ONLY the `<tonk-table>` registration shell for the guest boot
-/// payload. Deliberately not `fetch_bundle_graph`: the shell's source
-/// mentions `"./tonk-table-grid.js"` (its default-resolution fallback),
-/// and the graph walk would follow it — eagerly shipping the grid and
-/// the multi-megabyte engine-bytes leaf to every guest, which is
-/// exactly what the lazy split avoids.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn fetch_tonk_table_shell() -> Vec<(String, String)> {
-    match fetch_text("/tonk-table/tonk-table.js").await {
-        Ok(src) => vec![("tonk-table.js".to_owned(), src)],
-        Err(e) => {
-            web_sys::console::warn_1(&JsValue::from_str(&format!(
-                "/tonk-table inject: skipping tonk-table.js: {e}"
-            )));
-            Vec::new()
-        }
-    }
 }
 
 /// Fetch the `<tonk-table>` grid core for the on-demand `need-table`

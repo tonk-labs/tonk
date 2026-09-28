@@ -81,6 +81,12 @@ function ensureEngine(): Promise<void> {
 
 /** Mount a grid into `parent`. The first call also instantiates the
  *  engine wasm, once per page. */
+// The surface a branch-resident shell reaches through this module:
+// the pure helpers it would otherwise have imported, plus the host
+// stylesheet. Re-exported here so the shell needs exactly ONE dynamic
+// import — a notation method has no module scope to hold a second.
+export { hostStyles, shell, toSource } from "./host";
+
 export async function createGrid(
   parent: HTMLElement,
   options: GridOptions,
