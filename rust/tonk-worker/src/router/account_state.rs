@@ -323,14 +323,14 @@ async fn configure_account_upstream(
             TonkWorkerError::Internal(format!("failed to open account remote branch: {error}"))
         })?;
 
-    // A branch not yet tracking the linked account's main does now: with
-    // a linked account, the account IS profile main's upstream by
-    // definition.
+    // A branch not yet tracking the linked account's main does now, in
+    // place of what it tracked before: with a linked account, the account
+    // IS profile main's upstream by definition, and an earlier link's (a
+    // previous provider address, or an account this profile has since
+    // left) is no longer synced with.
     match tracks(branch, &remote, tonk_account::MAIN_BRANCH) {
         true => {}
-        false => branch
-            .set_upstream(&remote_branch)
-            .perform(&tonk.operator)
+        false => tonk_account::peer::repoint_upstream(branch, &remote_branch, &tonk.operator)
             .await
             .map_err(|error| {
                 TonkWorkerError::Internal(format!("failed to set profile main upstream: {error}"))

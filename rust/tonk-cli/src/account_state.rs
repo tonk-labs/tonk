@@ -215,7 +215,7 @@ pub async fn adopt_account_access_in(
         .context("failed to open the account access branch")?;
 
     if !tracks(&access, &remote, dialog_repository::ACCESS_BRANCH) {
-        access.set_upstream(&upstream).perform(operator).await?;
+        tonk_account::peer::repoint_upstream(&access, &upstream, operator).await?;
     }
     tonk_account::delegations::adopt_account_upstream(&access, upstream, &bound)
         .await
@@ -545,9 +545,11 @@ async fn mount(
         .await
         .context("failed to open local account branch")?;
     trace("mount: account branch open");
-    // A branch not yet tracking the linked account's main does now: with
-    // a linked account, the account IS the branch's upstream by
-    // definition.
+    // A branch not yet tracking the linked account's main does now, in
+    // place of what it tracked before: with a linked account, the account
+    // IS the branch's upstream by definition, and an earlier link's (a
+    // previous provider address, or an account this profile has since
+    // left) is no longer synced with.
     //
     // The remote branch is opened only then: opening it resolves the
     // remote head, and a mount on the steady path (every local read runs
@@ -569,9 +571,7 @@ async fn mount(
                 .perform(&bound)
                 .await
                 .context("failed to open account remote main")?;
-            branch
-                .set_upstream(&remote_branch)
-                .perform(operator)
+            tonk_account::peer::repoint_upstream(&branch, &remote_branch, operator)
                 .await
                 .context("failed to set account upstream")?
         }
@@ -1037,6 +1037,16 @@ mod tests {
             AccountStateStatus::Ready,
             "ensure warning: {:?}",
             outcome.warning
+        );
+        let operator = account_operator(&profile, &store).await;
+        let branch = open_account_branch_in(&profile, &operator, &store)
+            .await
+            .unwrap()
+            .expect("the account branch mounts");
+        assert_eq!(
+            branch.pulls().iter().count(),
+            1,
+            "the moved link replaces the upstream rather than adding to it"
         );
 
         // Moving back to the live address still mounts and pulls.

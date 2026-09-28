@@ -12,8 +12,8 @@ use dialog_effects::credential::{self as credential_fx, CredentialError, prelude
 use dialog_effects::storage::{self as storage_fx, Directory, Location, LocationExt as _};
 use dialog_peer::{Allowance, OpenCredential, Peer, PeerError, PeerSpace, SpaceVaultExt as _};
 use dialog_repository::{
-    ACCESS_BRANCH, AddAddressError, Branch, ConnectError, ConnectedReplica, PeersEnv, Repository,
-    SiteAddress, Upstream, contact, peer_did,
+    ACCESS_BRANCH, AddAddressError, Branch, ConnectError, ConnectedBranch, ConnectedReplica,
+    PeersEnv, Repository, ResolveEnv, SiteAddress, Upstream, contact, peer_did,
 };
 use dialog_storage::provider::storage::{CredentialStore, Storage};
 use dialog_ucan::UcanDelegation;
@@ -400,4 +400,42 @@ mod tests {
         assert_eq!(peer.authority().await?, account.did());
         Ok(())
     }
+}
+
+/// Make `target` what `branch` pulls from and pushes to, in place of any
+/// branch at a peer it tracked before: an account whose link moved is
+/// followed at its new place, and the old one is no longer synced with.
+pub async fn repoint_upstream<Env: ResolveEnv>(
+    branch: &Branch,
+    target: &ConnectedBranch,
+    env: &Env,
+) -> Result<(), RepointError> {
+    for upstream in branch.upstreams().iter() {
+        let Upstream::Remote {
+            remote,
+            branch: name,
+            ..
+        } = upstream
+        else {
+            continue;
+        };
+        if remote.same(target.repository()) && name == target.name() {
+            continue;
+        }
+        let previous = remote.branch(name.as_str()).open().perform(env).await?;
+        branch.unset_upstream(&previous).perform(env).await?;
+    }
+    branch.set_upstream(target).perform(env).await?;
+    Ok(())
+}
+
+/// Why [`repoint_upstream`] could not repoint a branch.
+#[derive(Debug, thiserror::Error)]
+pub enum RepointError {
+    /// The upstream tracked before could not be opened.
+    #[error(transparent)]
+    Open(#[from] dialog_repository::OpenRemoteBranchError),
+    /// The upstreams could not be recorded.
+    #[error(transparent)]
+    Record(#[from] dialog_repository::SetUpstreamError),
 }
