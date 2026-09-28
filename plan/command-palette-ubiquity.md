@@ -457,3 +457,26 @@ preview UI, because that is more discoverable and localizable. It did so
 - **Visibility.** The palette lives in the FABB, which is always on screen,
   rather than behind a hotkey alone. That answers the "I keep forgetting it's
   there" failure.
+
+## What the grammar did not have
+
+Ubiquity's grammar is **one verb plus role-marked arguments**. That is the whole
+of it. There are no adjectives, adverbs, quantifiers, negation, conjunction or
+chaining ("… and then …"). mitcho's paper states the scope deliberately:
+*"simply… composed of a single verb and its arguments"*.
+
+The pieces that sit nearest to those parts of speech:
+
+| Looks like | What it really is |
+| --- | --- |
+| adverbials ("tomorrow", "with google", "in German") | the `time`, `instrument` and `format` **roles**: prepositional arguments of the verb. `format` is used by `Wikipedia` (language) and the Amazon search. |
+| "of" / "for" phrases | the `modifier` role, the one role that is an argument of a *noun* rather than the verb. The Semantic Roles page calls it *"fundamentally different"*. No stock command in the standard feeds uses it. |
+| pronouns | `anaphora` ("this", "it", …), always resolved to the selection. |
+| clitic pronouns (*Envoyez-le*) | `clitics` declared in `ca`, `es`, `fr` and `it` (`{clitic: 'le', role: 'object'}`), but step 3 of the pipeline is unimplemented, so they are never read. |
+| articles ("the", "el") | stripped by `normalizeArgument`; they carry no meaning. |
+| a fixed argument ("to English") | `CreateAlias` with `givenArgs` (`anglicize`), or a separate verb. |
+| qualities ("high contrast", "bold") | either verbs (`bold`, `italicize`) or closed-set noun types filling a role. |
+
+Parser 1 had `takes` (the direct object) and `modifiers` keyed by English
+preposition. Parser 2 replaced these with roles, and Parser 1 commands were
+refused ("not compatible with Parser 2").
