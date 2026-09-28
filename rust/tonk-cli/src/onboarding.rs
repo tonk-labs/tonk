@@ -17,9 +17,10 @@
 //! envelope that is deliberately unopenable rather than absent.
 
 use anyhow::{Context, Result, bail};
-use dialog_credentials::{Credential, Ed25519Signer, Signer};
+use dialog_credentials::key::{ExtractableKey, KeyExport};
+use dialog_credentials::{Credential, Ed25519Signer, Extractable, Signer};
 use dialog_effects::credential::CredentialError;
-use dialog_operator::{Operator, Profile};
+use dialog_peer::{Peer, Session};
 use dialog_storage::provider::storage::NativeSpace;
 use dialog_varsig::{Did, Signer as VarsigSigner};
 use tonk_identity::clearance::Recovery;
@@ -41,7 +42,10 @@ const ONBOARDING_CUSTODIAN_KEY: &str = "tonk-onboarding-custodian-v1";
 pub const ONBOARDING_GRANT_SITE: &str = "tonk-onboarding-grant-v1";
 
 /// This device's onboarding account, minting one on first call.
-pub async fn account(profile: &Profile, operator: &Operator<NativeSpace>) -> Result<AccountSecret> {
+pub async fn account(
+    profile: &Peer<NativeSpace>,
+    operator: &Peer<NativeSpace, Session>,
+) -> Result<AccountSecret> {
     match read(profile, operator).await? {
         Some(secret) => Ok(secret),
         None => create(profile, operator).await,
@@ -50,7 +54,10 @@ pub async fn account(profile: &Profile, operator: &Operator<NativeSpace>) -> Res
 
 /// The onboarding account's DID, or `None` before one exists (or after
 /// retirement). Reads rather than creates.
-pub async fn did(profile: &Profile, operator: &Operator<NativeSpace>) -> Result<Option<Did>> {
+pub async fn did(
+    profile: &Peer<NativeSpace>,
+    operator: &Peer<NativeSpace, Session>,
+) -> Result<Option<Did>> {
     use dialog_varsig::Principal as _;
     let Some(secret) = read_if_openable_in(profile, operator).await? else {
         return Ok(None);
@@ -68,8 +75,8 @@ pub async fn did(profile: &Profile, operator: &Operator<NativeSpace>) -> Result<
 /// error rather than as absence, so nothing mints a second onboarding
 /// account on top of a rotated device.
 pub async fn read(
-    profile: &Profile,
-    operator: &Operator<NativeSpace>,
+    profile: &Peer<NativeSpace>,
+    operator: &Peer<NativeSpace, Session>,
 ) -> Result<Option<AccountSecret>> {
     let Some(envelope) = load_site(profile, operator, ONBOARDING_ENVELOPE_SITE).await? else {
         return Ok(None);
@@ -83,8 +90,8 @@ pub async fn read(
 /// [`read`], answering `None` instead of erroring on a retired
 /// account — for callers asking "is there anything left to rotate".
 pub async fn read_if_openable_in(
-    profile: &Profile,
-    operator: &Operator<NativeSpace>,
+    profile: &Peer<NativeSpace>,
+    operator: &Peer<NativeSpace, Session>,
 ) -> Result<Option<AccountSecret>> {
     let Some(envelope) = load_site(profile, operator, ONBOARDING_ENVELOPE_SITE).await? else {
         return Ok(None);
@@ -95,9 +102,12 @@ pub async fn read_if_openable_in(
     open(&custodian, &envelope).await.map(Some)
 }
 
-/// Retire the onboarding account: demote its custodian to the public
-/// half, so the envelope can never be opened again on this device.
-pub async fn retire(profile: &Profile, operator: &Operator<NativeSpace>) -> Result<()> {
+/// Retire the onboarding account: forget its custodian, so the envelope
+/// can never be opened again on this device.
+pub async fn retire(
+    profile: &Peer<NativeSpace>,
+    operator: &Peer<NativeSpace, Session>,
+) -> Result<()> {
     use dialog_credentials::Ed25519Verifier;
     use dialog_effects::credential::prelude::*;
     use dialog_varsig::Principal as _;
@@ -105,6 +115,8 @@ pub async fn retire(profile: &Profile, operator: &Operator<NativeSpace>) -> Resu
     let Some(custodian) = load_custodian(profile, operator).await? else {
         return Ok(());
     };
+    // A custodian kept before keys left the profile's storage is demoted
+    // there to its public half, as retirement always did.
     let verifier: Ed25519Verifier =
         custodian.did().to_string().parse().map_err(|error| {
             anyhow::anyhow!("the custodian DID is not an Ed25519 key: {error:?}")
@@ -114,20 +126,37 @@ pub async fn retire(profile: &Profile, operator: &Operator<NativeSpace>) -> Resu
         .credential()
         .key(ONBOARDING_CUSTODIAN_KEY)
         .save(Credential::from(verifier))
+        .perform(profile)
+        .await
+        .context("failed to demote the onboarding custodian")?;
+    profile
+        .secrets()
+        .site(ONBOARDING_CUSTODIAN_KEY)
+        .save(Vec::new())
         .perform(operator)
         .await
         .context("failed to demote the onboarding custodian")
 }
 
 /// Mint, wrap, and store a fresh onboarding account.
-async fn create(profile: &Profile, operator: &Operator<NativeSpace>) -> Result<AccountSecret> {
-    use dialog_effects::credential::prelude::*;
-
+async fn create(
+    profile: &Peer<NativeSpace>,
+    operator: &Peer<NativeSpace, Session>,
+) -> Result<AccountSecret> {
     let secret = AccountSecret::generate()
         .map_err(|error| anyhow::anyhow!("failed to generate the onboarding account: {error}"))?;
-    let custodian = Ed25519Signer::generate()
+    // The custodian is kept as a secret of the profile's peers, which
+    // holds its seed: a storage keeps no signing key.
+    let custodian = <Ed25519Signer<Extractable> as ExtractableKey>::generate()
         .await
         .map_err(|error| anyhow::anyhow!("failed to generate the onboarding custodian: {error}"))?;
+    let KeyExport::Extractable(seed) = custodian
+        .export()
+        .await
+        .map_err(|error| anyhow::anyhow!("failed to export the onboarding custodian: {error}"))?;
+    let custodian = Ed25519Signer::import(KeyExport::Extractable(seed.clone()))
+        .await
+        .map_err(|error| anyhow::anyhow!("failed to import the onboarding custodian: {error}"))?;
     let envelope = derive_kek(&custodian)
         .await?
         .seal(&secret, KekMethod::Local)
@@ -138,15 +167,14 @@ async fn create(profile: &Profile, operator: &Operator<NativeSpace>) -> Result<A
     // unopenable shape retirement leaves. Neither half alone can be
     // mistaken for a usable account.
     profile
-        .did()
-        .credential()
-        .key(ONBOARDING_CUSTODIAN_KEY)
-        .save(Credential::from(custodian))
+        .secrets()
+        .site(ONBOARDING_CUSTODIAN_KEY)
+        .save(seed)
         .perform(operator)
         .await
         .context("failed to save the onboarding custodian")?;
     profile
-        .credential()
+        .secrets()
         .site(ONBOARDING_ENVELOPE_SITE)
         .save(envelope.encode())
         .perform(operator)
@@ -173,7 +201,7 @@ async fn create(profile: &Profile, operator: &Operator<NativeSpace>) -> Result<A
         .to_bytes()
         .map_err(|error| anyhow::anyhow!("the onboarding grant does not serialize: {error}"))?;
     profile
-        .credential()
+        .secrets()
         .site(ONBOARDING_GRANT_SITE)
         .save(bytes)
         .perform(operator)
@@ -191,8 +219,8 @@ async fn create(profile: &Profile, operator: &Operator<NativeSpace>) -> Result<A
 /// Install the onboarding device grant into `operator`'s own reach,
 /// answering the chain. `None` before an onboarding account exists.
 pub async fn install_grant(
-    profile: &Profile,
-    operator: &Operator<NativeSpace>,
+    profile: &Peer<NativeSpace>,
+    operator: &Peer<NativeSpace, Session>,
 ) -> Result<Option<dialog_ucan_core::DelegationChain>> {
     let Some(bytes) = load_site(profile, operator, ONBOARDING_GRANT_SITE).await? else {
         return Ok(None);
@@ -227,12 +255,12 @@ async fn derive_kek(custodian: &Ed25519Signer) -> Result<Kek<Recovery>> {
 }
 
 async fn load_site(
-    profile: &Profile,
-    operator: &Operator<NativeSpace>,
+    profile: &Peer<NativeSpace>,
+    operator: &Peer<NativeSpace, Session>,
     site: &str,
 ) -> Result<Option<Vec<u8>>> {
     match profile
-        .credential()
+        .secrets()
         .site(site)
         .load::<Vec<u8>>()
         .perform(operator)
@@ -249,17 +277,38 @@ async fn load_site(
 /// demoted (verifier-only) record also reads as `None`, which is the
 /// retired state.
 async fn load_custodian(
-    profile: &Profile,
-    operator: &Operator<NativeSpace>,
+    profile: &Peer<NativeSpace>,
+    operator: &Peer<NativeSpace, Session>,
 ) -> Result<Option<Ed25519Signer>> {
     use dialog_effects::credential::prelude::*;
 
+    match profile
+        .secrets()
+        .site(ONBOARDING_CUSTODIAN_KEY)
+        .load::<Vec<u8>>()
+        .perform(operator)
+        .await
+    {
+        // Retired: the custodian was forgotten.
+        Ok(seed) if seed.is_empty() => return Ok(None),
+        Ok(seed) => {
+            let signer = Ed25519Signer::import(KeyExport::Extractable(seed))
+                .await
+                .map_err(|error| anyhow::anyhow!("the onboarding custodian is corrupt: {error}"))?;
+            return Ok(Some(signer));
+        }
+        Err(error) if missing_credential(&error) => {}
+        Err(error) => return Err(error).context("failed to load the onboarding custodian"),
+    }
+
+    // A custodian kept before keys left the profile's storage is still
+    // there, and only the profile acting as itself is handed it.
     let credential = match profile
         .did()
         .credential()
         .key(ONBOARDING_CUSTODIAN_KEY)
         .load()
-        .perform(operator)
+        .perform(profile)
         .await
     {
         Ok(credential) => credential,

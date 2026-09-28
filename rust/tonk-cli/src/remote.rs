@@ -2,7 +2,7 @@
 //! set-upstream` — register and link UCAN-S3 access-service
 //! remotes against the local site.
 //!
-//! The dialog primitives (`repository.remote(name).create(...)`,
+//! The dialog primitives (`contact(peer).add_address(...)`,
 //! `branch.set_upstream(&target)`) handle the wire-level wiring;
 //! this module's value-add is mirroring the writes onto the
 //! repo's meta branch as `Replica` / `Remote` / `TrackingBranch`
@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 
 use dialog_remote_ucan::UcanAddress;
-use dialog_repository::{Branch, LoadRemoteError, SiteAddress, Upstream};
+use dialog_repository::{Branch, ConnectedReplica, SiteAddress, Upstream};
 use dialog_varsig::Did;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -132,21 +132,10 @@ pub async fn add_with_revocation(
     }
     let address = SiteAddress::from(UcanAddress::new(endpoint));
 
-    // Dialog-side: provision the remote handle. This stamps a
-    // RemoteAddress cell so subsequent push/pull can reach the
-    // access service.
-    let mut create = site.repository.remote(name).create(address.clone());
-    let subject = match subject_override.clone() {
-        Some(did) => {
-            create = create.subject(did.clone());
-            did
-        }
-        None => site.repository.did(),
-    };
-    create
-        .perform(&site.operator)
-        .await
-        .map_err(|e| RemoteError::Io(format!("failed to create dialog remote: {e}")))?;
+    // Dialog-side: record the endpoint among the host's contacts, so
+    // subsequent push/pull can reach the access service.
+    let subject = subject_override.unwrap_or_else(|| site.repository.did());
+    connect(site, &address, &subject).await?;
 
     record_metadata(site, name, subject.clone(), &address, revocation_url).await?;
 
@@ -172,39 +161,16 @@ pub(crate) async fn ensure(
     subject: Did,
 ) -> Result<AddOutcome, RemoteError> {
     let address = SiteAddress::from(UcanAddress::new(endpoint));
-    match site
-        .repository
-        .remote(name)
-        .load()
-        .perform(&site.operator)
-        .await
+    if let Some(existing) = find(site, name).await?
+        && (SiteAddress::from(UcanAddress::new(&existing.endpoint)) != address
+            || existing.subject != subject)
     {
-        Ok(existing) => {
-            let existing = existing.address();
-            if existing.site() != &address || existing.subject() != &subject {
-                return Err(RemoteError::Io(format!(
-                    "remote '{name}' already exists with a different endpoint or subject; \
-                     refusing to replace it"
-                )));
-            }
-        }
-        Err(LoadRemoteError::NotFound { .. }) => {
-            site.repository
-                .remote(name)
-                .create(address.clone())
-                .subject(subject.clone())
-                .perform(&site.operator)
-                .await
-                .map_err(|error| {
-                    RemoteError::Io(format!("failed to create dialog remote: {error}"))
-                })?;
-        }
-        Err(error) => {
-            return Err(RemoteError::Io(format!(
-                "failed to inspect dialog remote '{name}': {error}"
-            )));
-        }
+        return Err(RemoteError::Io(format!(
+            "remote '{name}' already exists with a different endpoint or subject; \
+             refusing to replace it"
+        )));
     }
+    connect(site, &address, &subject).await?;
 
     record_metadata(site, name, subject.clone(), &address, None).await?;
     Ok(AddOutcome {
@@ -256,7 +222,7 @@ pub async fn upstream_configured(site: &TonkSite) -> Result<bool, RemoteError> {
         .branch()
         .await
         .map_err(|e| RemoteError::Io(format!("failed to acquire branch: {e}")))?;
-    Ok(session.handle().upstream().is_some())
+    Ok(tonk_account::peer::upstream(session.handle()).is_some())
 }
 
 /// Local name of the remote the site's `main` branch tracks, or
@@ -274,10 +240,25 @@ pub async fn upstream_remote(site: &TonkSite) -> Result<Option<String>, RemoteEr
         .branch()
         .await
         .map_err(|e| RemoteError::Io(format!("failed to acquire branch: {e}")))?;
-    Ok(match session.handle().upstream() {
-        Some(Upstream::Remote { remote, .. }) => Some(remote),
-        Some(Upstream::Local { .. }) | None => None,
-    })
+    let Some(Upstream::Remote { remote, .. }) = tonk_account::peer::upstream(session.handle())
+    else {
+        return Ok(None);
+    };
+    Ok(record_of(site, &remote).await?.map(|record| record.name))
+}
+
+/// The registered remote `remote` is a replica at: the one naming its
+/// subject at an address its peer is reached at.
+pub async fn record_of(
+    site: &TonkSite,
+    remote: &ConnectedReplica,
+) -> Result<Option<RemoteRecord>, RemoteError> {
+    Ok(list(site).await?.into_iter().find(|record| {
+        record.subject == remote.did()
+            && remote
+                .addresses()
+                .contains(&SiteAddress::from(UcanAddress::new(&record.endpoint)))
+    }))
 }
 
 /// Set the local `main` branch's upstream to `<remote>/main`,
@@ -293,15 +274,15 @@ pub async fn set_upstream(
         .await?
         .ok_or_else(|| RemoteError::UnknownRemote(remote_name.to_owned()))?;
 
-    // Dialog side: load the remote, open its `main` branch,
+    // Dialog side: connect to the remote, open its `main` branch,
     // wire the local `main` to track it.
-    let remote_handle = site
-        .repository
-        .remote(remote_name)
-        .load()
-        .perform(&site.operator)
-        .await
-        .map_err(|e| RemoteError::Io(format!("failed to load remote '{remote_name}': {e}")))?;
+    let remote_handle = connect(
+        site,
+        &SiteAddress::from(UcanAddress::new(&remote_record.endpoint)),
+        &remote_record.subject,
+    )
+    .await
+    .map_err(|e| RemoteError::Io(format!("failed to load remote '{remote_name}': {e}")))?;
 
     let upstream_branch = remote_handle
         .branch(site::BRANCH_NAME)
@@ -504,6 +485,18 @@ async fn open_meta(site: &TonkSite) -> Result<Branch, RemoteError> {
         .perform(&site.operator)
         .await
         .map_err(|e| RemoteError::Io(format!("failed to open meta branch: {e}")))
+}
+
+/// Connect to the replica of `subject` at `address`, recording the
+/// address among the host's contacts.
+async fn connect(
+    site: &TonkSite,
+    address: &SiteAddress,
+    subject: &Did,
+) -> Result<ConnectedReplica, RemoteError> {
+    tonk_account::peer::connect(address.clone(), subject.clone(), &site.operator)
+        .await
+        .map_err(|e| RemoteError::Io(format!("failed to create dialog remote: {e}")))
 }
 
 /// Build the `Replica` concept for the local site. Deterministic

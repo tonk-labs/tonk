@@ -6,13 +6,11 @@
 
 use anyhow::{Context, Result, ensure};
 use dialog_capability::{Subject, did};
-use dialog_credentials::{Credential, Ed25519Signer, Ed25519Verifier, SignerCredential};
-use dialog_effects::space::{Space, SpaceExt as _};
+use dialog_credentials::{Credential, Ed25519Signer, SignerCredential};
 use dialog_effects::storage::{self as storage_fx, Directory, Location, LocationExt as _};
-use dialog_operator::{DeriveOperator as _, Profile};
-use dialog_reactor::Reactor;
-use dialog_repository::{RepositoryExt as _, SiteAddress};
-use dialog_storage::provider::storage::{NativeSpace, Storage};
+use dialog_peer::Peer;
+use dialog_repository::SiteAddress;
+use dialog_storage::provider::storage::NativeSpace;
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::{DelegationChain, time::Timestamp};
 use dialog_varsig::Did;
@@ -423,14 +421,8 @@ fn profile_directory(root: &Path) -> Directory {
     )
 }
 
-async fn load_profile(
-    root: &Path,
-    storage: &Storage<NativeSpace>,
-    binding: &ConnectionBinding,
-) -> Result<Profile> {
-    let profile = Profile::load(PROFILE_NAME)
-        .at(profile_directory(root))
-        .perform(storage)
+async fn load_profile(root: &Path, binding: &ConnectionBinding) -> Result<Peer<NativeSpace>> {
+    let profile = crate::site::open_profile(PROFILE_NAME, profile_directory(root), false)
         .await
         .context("connection credential is missing or corrupt; no account fallback is permitted")?;
     ensure!(
@@ -576,27 +568,32 @@ pub async fn import_at(
             manifest.binding.id.as_bytes(),
         )?;
     }
-    let storage = Storage::<NativeSpace>::default();
-    let key_path = root
-        .join(CREDENTIAL_DIRECTORY)
-        .join(PROFILE_NAME)
+    // The identity's key is kept in the credential store beside its space;
+    // a connection imported before keys were kept apart has it in the
+    // space, and opening the profile moves it.
+    let credentials = root.join(CREDENTIAL_DIRECTORY);
+    let key_path = credentials
+        .join(format!("{PROFILE_NAME}.credentials"))
         .join("credential/key/self");
-    if !key_path.exists() {
+    let legacy_key_path = credentials.join(PROFILE_NAME).join("credential/key/self");
+    if !key_path.exists() && !legacy_key_path.exists() {
         ensure!(
             manifest.phase == Phase::Preparing,
             "connection credential is missing; refusing to regenerate it"
         );
         let signer = Ed25519Signer::import(connection.invite.secret_seed()).await?;
         let credential = Credential::Signer(SignerCredential::from(signer));
+        let (credentials, _) =
+            tonk_account::peer::open_system::<NativeSpace>(profile_directory(&root)).await?;
         Subject::from(did!("local:storage"))
             .attenuate(storage_fx::Storage)
             .attenuate(Location::new(profile_directory(&root), PROFILE_NAME))
             .create(credential)
-            .perform(&storage)
+            .perform(&credentials)
             .await
             .context("failed to persist invitation identity")?;
     }
-    let profile = load_profile(&root, &storage, &manifest.binding).await?;
+    let profile = load_profile(&root, &manifest.binding).await?;
     sync_private_tree(&root.join(CREDENTIAL_DIRECTORY))?;
     if manifest.phase == Phase::Preparing {
         manifest.phase = Phase::Credentials;
@@ -607,7 +604,6 @@ pub async fn import_at(
         &root,
         &manifest,
         profile,
-        storage,
         store,
         manifest.phase != Phase::Ready,
     )
@@ -648,10 +644,9 @@ pub async fn open_bound(
         std::fs::read_to_string(root.join(DATA_DIRECTORY).join(DATA_MARKER_FILE))? == binding.id,
         "connection data marker does not match its binding"
     );
-    let storage = Storage::<NativeSpace>::default();
-    let profile = load_profile(&root, &storage, binding).await?;
+    let profile = load_profile(&root, binding).await?;
     let incomplete = manifest.phase != Phase::Ready;
-    let site = assemble(&root, &manifest, profile, storage, store, incomplete).await?;
+    let site = assemble(&root, &manifest, profile, store, incomplete).await?;
     if incomplete {
         sync_private_tree(&root.join(CREDENTIAL_DIRECTORY))?;
         sync_private_tree(&root.join(DATA_DIRECTORY))?;
@@ -664,46 +659,44 @@ pub async fn open_bound(
 async fn assemble(
     root: &Path,
     manifest: &Manifest,
-    profile: Profile,
-    storage: Storage<NativeSpace>,
+    profile: Peer<NativeSpace>,
     store: crate::space::SpaceStore,
     initialize: bool,
 ) -> Result<crate::site::TonkSite> {
     let data = root.join(DATA_DIRECTORY);
     let expires = Timestamp::try_from((Timestamp::now().to_unix() + 3600) as i128)?;
     let operator = profile
-        .derive(b"tonk-scoped-connection")
+        .session(b"tonk-scoped-connection")
+        .space(profile.state())
         .base(Directory::At(data.to_string_lossy().into_owned()))
-        .allow_until(Subject::any(), expires)
-        .build(storage)
+        .grant(profile.access().claim(Subject::any()).expires(expires))
+        .build()
         .await?;
     let grants = validate_manifest(manifest).await?;
     if initialize {
         for chain in grants.chains() {
             profile
+                .access()
                 .save(UcanDelegation(chain.clone()))
                 .perform(&operator)
                 .await?;
         }
         // The subject is verifier-only; no ownership or account prefix is minted.
         if !data.join("main/credential/key/self").exists() {
-            let verifier: Ed25519Verifier = manifest
+            let subject: Did = manifest
                 .binding
                 .subject
                 .parse()
                 .map_err(|error| anyhow::anyhow!("invalid connection subject: {error:?}"))?;
-            Subject::from(profile.did())
-                .attenuate(Space::new(crate::site::REPO_NAME))
-                .create(Credential::from(verifier))
-                .perform(&operator)
-                .await?;
+            tonk_account::peer::mount_verifier(
+                profile.storage(),
+                crate::site::site_location(&data, crate::site::REPO_NAME)?,
+                &subject,
+            )
+            .await?;
         }
     }
-    let repository = profile
-        .repository(crate::site::REPO_NAME)
-        .load()
-        .perform(&operator)
-        .await?;
+    let repository = crate::site::load_repository(&profile, &operator, &data).await?;
     ensure!(
         matches!(repository.credential(), Credential::Verifier(_)),
         "connection replica unexpectedly contains owner signing authority"
@@ -726,40 +719,24 @@ async fn assemble(
         store.clone(),
         grants.chains().to_vec(),
     );
+    let reactor = crate::site::reactor_for(&profile, &repository);
     let site = crate::site::TonkSite {
         root: data,
         profile: profile.clone(),
         operator: wrapper,
         repository,
-        reactor: Reactor::new(profile),
+        reactor,
         account_store: store,
     };
+    let remote = tonk_account::peer::connect(
+        SiteAddress::from(dialog_remote_ucan::UcanAddress::new(
+            manifest.remote.clone(),
+        )),
+        site.repository.did(),
+        &site.operator,
+    )
+    .await?;
     if initialize {
-        match site
-            .repository
-            .remote("origin")
-            .load()
-            .perform(&site.operator)
-            .await
-        {
-            Ok(_) => {}
-            Err(dialog_repository::LoadRemoteError::NotFound { .. }) => {
-                site.repository
-                    .remote("origin")
-                    .create(SiteAddress::from(dialog_remote_ucan::UcanAddress::new(
-                        manifest.remote.clone(),
-                    )))
-                    .perform(&site.operator)
-                    .await?;
-            }
-            Err(error) => return Err(error.into()),
-        }
-        let remote = site
-            .repository
-            .remote("origin")
-            .load()
-            .perform(&site.operator)
-            .await?;
         let upstream = remote.branch("main").open().perform(&site.operator).await?;
         let branch = site.branch().await?;
         if branch.handle().upstreams().is_empty() {
@@ -770,22 +747,9 @@ async fn assemble(
                 .await?;
         }
     }
-    let remote = site
-        .repository
-        .remote("origin")
-        .load()
-        .perform(&site.operator)
-        .await?;
-    ensure!(
-        remote.address().site()
-            == &SiteAddress::from(dialog_remote_ucan::UcanAddress::new(
-                manifest.remote.clone()
-            )),
-        "connection remote does not match its trusted binding"
-    );
     let main_upstreams = site.branch().await?.handle().upstreams();
     ensure!(main_upstreams.iter().count() == 1 && main_upstreams.iter().all(|upstream| matches!(upstream,
-        dialog_repository::Upstream::Remote { remote, branch, .. } if remote == "origin" && branch == "main")),
+        dialog_repository::Upstream::Remote { remote: tracked, branch, .. } if tracked.same(&remote) && branch == "main")),
         "connection main branch must track exactly its trusted origin/main");
     let meta = site
         .repository

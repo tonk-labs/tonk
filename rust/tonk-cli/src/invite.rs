@@ -281,7 +281,7 @@ async fn mint_for(
             .branch()
             .await
             .map_err(|e| InviteError::Io(format!("acquire branch: {e}")))?;
-        session.handle().upstream().is_some()
+        tonk_account::peer::upstream(session.handle()).is_some()
     };
     if has_upstream {
         if let Err(e) = sync::pull(site).await {
@@ -529,8 +529,6 @@ async fn claim_prepared_inner(
                 let store_operator = crate::account_state::store_operator_with_config(
                     &profile,
                     &config.account_store,
-                    &config.profile_name,
-                    config.profile_directory.clone(),
                 )
                 .await
                 .map_err(|e| InviteError::Io(format!("{e:#}")))?;

@@ -429,7 +429,7 @@ async fn prepare_local_space_link_with_state(
         Some(Upstream::Remote { remote, branch, .. })
             if recovery.is_some()
                 && branch == crate::site::BRANCH_NAME
-                && crate::remote::find(&site, &remote)
+                && crate::remote::record_of(&site, &remote)
                     .await?
                     .is_some_and(|record| {
                         recovery.is_some_and(|state| record.endpoint == state.service_url)
@@ -1205,15 +1205,24 @@ async fn ensure_remote(
 async fn ensure_upstream(site: &crate::site::TonkSite, expected_remote: &str) -> Result<()> {
     match configured_upstream(site).await? {
         Some(Upstream::Remote { remote, branch, .. })
-            if remote == expected_remote && branch == crate::site::BRANCH_NAME => {}
+            if branch == crate::site::BRANCH_NAME
+                && crate::remote::record_of(site, &remote)
+                    .await?
+                    .is_some_and(|record| record.name == expected_remote) => {}
         Some(Upstream::Remote { remote, branch, .. }) => bail!(
             "the space already tracks '{remote}/{branch}'; refusing to replace it with \
              '{expected_remote}/{main}'",
+            remote = remote.name(),
             main = crate::site::BRANCH_NAME,
         ),
         Some(Upstream::Local { branch, .. }) => bail!(
             "the space already tracks local branch '{branch}'; refusing to replace it with \
              '{expected_remote}/{main}'",
+            main = crate::site::BRANCH_NAME,
+        ),
+        Some(Upstream::Unreachable { target, .. }) => bail!(
+            "the space already tracks an unreachable upstream '{target}'; refusing to replace \
+             it with '{expected_remote}/{main}'",
             main = crate::site::BRANCH_NAME,
         ),
         None => {}
@@ -1229,7 +1238,7 @@ async fn configured_upstream(site: &crate::site::TonkSite) -> Result<Option<Upst
         .branch()
         .await
         .context("failed to inspect the space's upstream")?;
-    Ok(session.handle().upstream())
+    Ok(tonk_account::peer::upstream(session.handle()))
 }
 
 async fn publication_stage<T>(
@@ -1297,16 +1306,14 @@ async fn preflight(
 ) -> Result<Option<String>> {
     let existing_remote = match configured_upstream(site).await? {
         Some(Upstream::Remote { remote, branch, .. }) if branch == crate::site::BRANCH_NAME => {
-            let endpoint = crate::remote::find(site, &remote)
-                .await?
-                .map(|record| record.endpoint);
-            if endpoint.as_deref() != Some(access) {
+            let record = crate::remote::record_of(site, &remote).await?;
+            if record.as_ref().map(|record| record.endpoint.as_str()) != Some(access) {
                 bail!(
                     "only a local-only space with no content upstream, or an interrupted \
                      link to this account's content endpoint, can be linked to an account"
                 );
             }
-            Some(remote)
+            record.map(|record| record.name)
         }
         Some(_) => bail!(
             "only a local-only space with no content upstream, or an interrupted link to \

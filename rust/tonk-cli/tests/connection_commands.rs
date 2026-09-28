@@ -593,25 +593,26 @@ async fn connection_command_imports_bearer_restarts_and_keeps_account_state() ->
     // A different default profile retains a live, broader grant to the same
     // subject. Scoped selection must never replace the revoked invitation with it.
     use dialog_effects::storage::Directory;
-    use dialog_operator::{DeriveOperator, Profile};
-    use dialog_storage::provider::storage::{NativeSpace, Storage};
+
     use dialog_ucan::UcanDelegation;
     #[cfg(target_os = "macos")]
     let profile_parent = home.join("Library/Application Support/dialog");
     #[cfg(not(target_os = "macos"))]
     let profile_parent = home.join("data/dialog");
     std::fs::create_dir_all(&profile_parent)?;
-    let storage = Storage::<NativeSpace>::default();
-    let ambient_profile = Profile::create(tonk_cli::site::PROFILE_NAME)
-        .at(Directory::At(profile_parent.to_string_lossy().into_owned()))
-        .perform(&storage)
-        .await?;
+    let ambient_profile = tonk_cli::site::open_profile(
+        tonk_cli::site::PROFILE_NAME,
+        Directory::At(profile_parent.to_string_lossy().into_owned()),
+        true,
+    )
+    .await?;
     let ambient_base = home.join("ambient-data");
     std::fs::create_dir(&ambient_base)?;
     let ambient_operator = ambient_profile
-        .derive("ambient-authority")
+        .session("ambient-authority")
+        .space(ambient_profile.state())
         .base(Directory::At(ambient_base.to_string_lossy().into_owned()))
-        .build(storage)
+        .build()
         .await?;
     let ambient_grant = DelegationBuilder::new()
         .issuer(Signer::from(owner.clone()))
@@ -624,6 +625,7 @@ async fn connection_command_imports_bearer_restarts_and_keeps_account_state() ->
         .try_build()
         .await?;
     ambient_profile
+        .access()
         .save(UcanDelegation(DelegationChain::new(ambient_grant)))
         .perform(&ambient_operator)
         .await?;
