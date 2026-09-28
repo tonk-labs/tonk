@@ -119,6 +119,7 @@ fn parse_documents(text: &str) -> Result<Vec<TopLevelDoc<'_>>, ScanError> {
     let mut state = LoaderState::Idle;
     let mut current_aliases: Vec<Span> = Vec::new();
     let mut current_duplicates: Vec<(Span, String)> = Vec::new();
+    let index = std::cell::OnceCell::new();
     while let Some(event) = parser.next_event() {
         let (event, span) = event?;
         if matches!(event, Event::Alias(_)) {
@@ -213,8 +214,13 @@ fn parse_documents(text: &str) -> Result<Vec<TopLevelDoc<'_>>, ScanError> {
                     // re-marks them, unreliably after block scalars),
                     // so a later source scan keyed off those spans
                     // silently mis-locates or drops the anchor.
-                    let anchor = anchor_id_of(&event)
-                        .and_then(|_| scan_anchor(text, key.span.end, span.start));
+                    let anchor = anchor_id_of(&event).and_then(|_| {
+                        scan_anchor(
+                            index.get_or_init(|| SourceIndex::new(text)),
+                            key.span.end,
+                            span.start,
+                        )
+                    });
                     let value = load_subtree(
                         &mut parser,
                         event,
@@ -859,9 +865,10 @@ fn is_attribute_identifier(name: &str) -> bool {
 /// offset after multi-byte content run short, mis-locating or
 /// dropping the anchor. (`anchor_id_of` is the reliable yes/no
 /// signal for whether an anchor is present at all.)
-fn scan_anchor(source: &str, after_key: Marker, before_value: Marker) -> Option<Anchor> {
-    let start = char_index_to_byte_offset(source, after_key.index());
-    let end = char_index_to_byte_offset(source, before_value.index());
+fn scan_anchor(index: &SourceIndex<'_>, after_key: Marker, before_value: Marker) -> Option<Anchor> {
+    let source = index.source;
+    let start = index.byte_of_char(after_key.index());
+    let end = index.byte_of_char(before_value.index());
     if end <= start {
         return None;
     }
@@ -887,8 +894,8 @@ fn scan_anchor(source: &str, after_key: Marker, before_value: Marker) -> Option<
     // Translate byte offsets back to LSP positions. We start from
     // the `&`'s line/column on the source — counting newlines from
     // the source start to the absolute offset.
-    let amp_pos_lsp = byte_offset_to_position(source, amp_abs);
-    let end_pos_lsp = byte_offset_to_position(source, amp_abs + 1 + name_len);
+    let amp_pos_lsp = index.position(amp_abs);
+    let end_pos_lsp = index.position(amp_abs + 1 + name_len);
     Some(Anchor {
         name: name.to_owned(),
         range: Range {
@@ -909,30 +916,60 @@ fn is_anchor_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '+' | '.' | '/')
 }
 
-/// Convert a saphyr `Marker::index()` (a **char** count) into a
-/// byte offset into `source`, so it can be used to slice the
-/// (byte-indexed) source string. An index past the end clamps to
-/// `source.len()`.
-fn char_index_to_byte_offset(source: &str, char_index: usize) -> usize {
-    source
-        .char_indices()
-        .nth(char_index)
-        .map(|(byte, _)| byte)
-        .unwrap_or(source.len())
+/// Where each line starts, and the byte offset of every
+/// [`SourceIndex::CHECKPOINT`]th char, so converting a saphyr marker
+/// or a byte offset does not rescan the source from its start. A
+/// document with hundreds of anchored heads otherwise parses in
+/// quadratic time.
+struct SourceIndex<'a> {
+    source: &'a str,
+    lines: Vec<usize>,
+    checkpoints: Vec<usize>,
 }
 
-/// Convert an absolute byte offset into the source into an LSP
-/// position. Linear scan; called at most once per anchor, so cost
-/// is fine.
-fn byte_offset_to_position(source: &str, offset: usize) -> Position {
-    let clamped = offset.min(source.len());
-    let prefix = &source[..clamped];
-    let line = prefix.bytes().filter(|b| *b == b'\n').count() as u32;
-    let line_start = prefix.rfind('\n').map(|i| i + 1).unwrap_or(0);
-    let column = source[line_start..clamped].chars().count() as u32;
-    Position {
-        line,
-        character: column,
+impl<'a> SourceIndex<'a> {
+    const CHECKPOINT: usize = 256;
+
+    fn new(source: &'a str) -> Self {
+        let lines = std::iter::once(0)
+            .chain(source.match_indices('\n').map(|(at, _)| at + 1))
+            .collect();
+        let checkpoints = source
+            .char_indices()
+            .step_by(Self::CHECKPOINT)
+            .map(|(byte, _)| byte)
+            .collect();
+        SourceIndex {
+            source,
+            lines,
+            checkpoints,
+        }
+    }
+
+    /// Convert a saphyr `Marker::index()` (a **char** count) into a
+    /// byte offset into the source, so it can be used to slice the
+    /// (byte-indexed) source string. An index past the end clamps to
+    /// the source length.
+    fn byte_of_char(&self, char_index: usize) -> usize {
+        let Some(&base) = self.checkpoints.get(char_index / Self::CHECKPOINT) else {
+            return self.source.len();
+        };
+        self.source[base..]
+            .char_indices()
+            .nth(char_index % Self::CHECKPOINT)
+            .map_or(self.source.len(), |(byte, _)| base + byte)
+    }
+
+    /// Convert an absolute byte offset into the source into an LSP
+    /// position.
+    fn position(&self, offset: usize) -> Position {
+        let clamped = offset.min(self.source.len());
+        let line = self.lines.partition_point(|start| *start <= clamped) - 1;
+        let column = self.source[self.lines[line]..clamped].chars().count();
+        Position {
+            line: line as u32,
+            character: column as u32,
+        }
     }
 }
 
@@ -1603,6 +1640,34 @@ second!: &two
                 .expect("second anchor present after multi-byte content")
                 .name,
             "two",
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_locates_an_anchor_past_many_multibyte_chars() {
+        // Far enough in that the char-to-byte conversion starts from a
+        // checkpoint rather than the source start.
+        let label = "é".repeat(700);
+        let syntax = parse_clean(&format!(
+            "\nfirst!: &one\n  label: \"{label}\"\n\nsecond!: &two\n  label: \"plain\"\n"
+        ));
+        let Expression::Claim(Effectful { anchor, inner: _ }) = &syntax.expressions[1] else {
+            panic!("expected second assertion");
+        };
+        let anchor = anchor.as_ref().expect("second anchor");
+        assert_eq!(anchor.name, "two");
+        assert_eq!(
+            (anchor.range.start, anchor.range.end),
+            (
+                Position {
+                    line: 4,
+                    character: 9
+                },
+                Position {
+                    line: 4,
+                    character: 13
+                }
+            )
         );
     }
 

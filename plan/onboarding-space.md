@@ -7,11 +7,10 @@ and records completion only after content is ready. A completed browser returns
 no redirect, even after the space is removed. Explicit routes are unaffected.
 Existing accounts and profiles with spaces go to the Hub.
 
-The bundled onboarding.yaml is a typed artifact snapshot in YAML's JSON subset,
-exported with `tonk --space product-wip export` and converted using
-`scripts/onboarding/export.py`. It preserves compiled rules and views while
-excluding credentials, governance, history, and the source repository identity.
-It is a private local copy, with ownership minted through normal space creation.
+The bundled onboarding.yaml and onboarding-demos.yaml are notation documents,
+evaluated into the new space (see `scripts/onboarding/README.md`). They began as
+an export of product-wip and were decompiled back into notation; the space is a
+private local copy, with ownership minted through normal space creation.
 
 Validation completed locally: the worker unit suite passed all 124 tests, and
 all four onboarding tests passed again after the final seed change. The UI built
@@ -21,10 +20,8 @@ Chrome 152; a separate isolated browser check confirmed the second visit shows
 the Hub with exactly one welcome space. Formatting and diff checks passed.
 
 The exported `vault-active` component contained a stale `autoOpen` reference
-that prevented the configured welcome page from opening. The export converter
-removes that condition in the bundled copy; the original local space is unchanged.
-Both referenced saved-game blobs are bundled with the snapshot. The converter
-accepts their `blob:<hash>=<local-file>` mappings as positional arguments.
+that prevented the configured welcome page from opening; the bundled copy drops
+that condition. Both referenced saved-game blobs are bundled beside the documents.
 
 The full account/browser suite, Safari, and hosted deployment were not run.
 No commit or deployment was requested.

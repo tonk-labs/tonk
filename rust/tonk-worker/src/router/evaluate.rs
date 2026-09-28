@@ -543,8 +543,16 @@ async fn evaluate_on_branch_with<'a>(
             }
         }
         let t_eval = web_time::Instant::now();
-        let evaluated = syntax
-            .evaluate(txn)
+        // A seed reads no matches, so it skips the readback of every
+        // entity it asserts, before and after.
+        let seeding = mode != EvaluationMode::Interactive;
+        let evaluation = syntax.evaluate(txn);
+        let evaluation = if seeding {
+            evaluation.without_snapshots()
+        } else {
+            evaluation
+        };
+        let evaluated = evaluation
             .perform(&tonk_state.operator)
             .await
             .map_err(map_evaluate_error)?;
@@ -553,10 +561,14 @@ async fn evaluate_on_branch_with<'a>(
         // mutation and induce-pass derivation, so this is the same answer a
         // post-commit branch query would give.
         let t_matches = web_time::Instant::now();
-        let matches_after = evaluated
-            .matches_after(&tonk_state.operator)
-            .await
-            .map_err(map_evaluate_error)?;
+        let matches_after = if seeding {
+            Vec::new()
+        } else {
+            evaluated
+                .matches_after(&tonk_state.operator)
+                .await
+                .map_err(map_evaluate_error)?
+        };
         let matches_ms = t_matches.elapsed().as_millis();
         Ok::<_, TonkWorkerError>((
             evaluated,
