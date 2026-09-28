@@ -359,6 +359,23 @@ neither copy action silently mints a second key. The CLI imports its separate
 identity without account login or browser approval. An unrelated or malformed
 legacy CLI account remains byte-for-byte outside identity selection.
 
+New tool links resolve to a passive `/agent/` page with CLI connection and
+recovery instructions readable without JavaScript. The agent passes the original
+complete URL, including its secret fragment, to `join`; fetching the page does
+not connect or redeem anything. Root and legacy join HTML advertise the guide
+through metadata without adding text to the human loading screen. Successful
+joins print commands for status, space agent instructions, schemas, and the
+tutorial.
+
+The attached **connect agent** panel offers **copy link** and **copy prompt**.
+Completing its account gate resumes invitation generation in place, including
+a previously reported account refusal. Returning from the contained ceremony
+must preserve the guest until it receives completion rather than navigating
+away first. The panel browser tests cover exact link copying and one mint after
+completion; the contained-return regression covers the deferred callback.
+Static routing and CLI import tests pass, but the full packaged signup-to-link
+journey and a fresh agent given only a link remain unverified for this change.
+
 Production links use the built-in deployment. A copied prompt from staging or
 a local preview includes `join --via ORIGIN`; this explicitly selects the
 deployment whose `/ucan/` route must match the signed grant. It is not a browser
@@ -377,8 +394,19 @@ after pulling and pushing its grant-specific setup receipt does it report
 those retained credentials. A receipt records completed setup, not exclusive
 ownership of the invite or live tool presence; several holders may use it.
 
-Settings lists the space, recipient, scope, expiry, setup confirmation and
-revocation acknowledgements. Tab moves between settings controls without
+`tonk join LINK --agent-name "Codex on work laptop"` supplies a self-reported
+connection name; without it, the CLI uses its OS-based device description.
+`--name` remains the local space alias. The installation name and random local
+identifier persist before receipt publication, so interrupted setup reuses them.
+
+Settings shows only completed connections issued by the active account, grouped
+by space identity and labeled with the current space name. Each row leads with
+reported installation names, followed by read/edit permission and expiry.
+Legacy confirmations show **Name unavailable**. Pending invitations are omitted
+but may still grant access; the receipt is a visibility criterion, not an
+authorization gate. Removed and expired connections are hidden, including space headings with no active connections. Incomplete removals remain visible for retry.
+Sign out and Delete account share a desktop row and stack on narrow screens.
+Tab moves between settings controls without
 dismissing the panel; Tab still dismisses the account menu itself. Revoking an
 invite withdraws its six grants for
 all holders and descendants. Partial delivery stays visible and retryable.
@@ -394,3 +422,16 @@ membership journey also passed. The broader Storybook item remains Drafted:
 390px layout, keyboard focus, reduced motion, profile switching while open,
 Safari, deployed compatibility, old-binary behavior, and global revocation
 propagation remain unverified. See `HANDOFF-21`.
+
+Plan 007 follow-up, based at `c1f3b4400` (2026-09-28): the native browser tests
+`settings_hides_unconfirmed_agent_invitations`,
+`settings_groups_named_agent_access_and_retries_removal`, and
+`it_adds_an_account_from_the_hub_in_one_step` passed with retries disabled.
+These prove mounted settings filtering, stable space grouping, literal labels,
+legacy rows, inactive-row filtering, partial-removal retry, error/stale-response handling, and
+the account grid. Desktop, 390px narrow, and short dark captures verify settings
+overflow, 44px actions, keyboard focus, and reduced motion. The named-access
+test passed again after fixing inherited list-item indentation. These focused
+settings results do not close the broader connect-dialog or deployed gaps above.
+Pre-rebase CLI, worker, and packaged remote-revocation evidence and artifact
+identities are recorded in [Plan 007](../../../plans/007-agent-access-management.md).

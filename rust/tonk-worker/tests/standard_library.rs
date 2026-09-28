@@ -960,9 +960,11 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
     assert!(!panel.contains("confirm device removal"));
     assert!(!panel.contains("remove all data associated with this account from this device"));
     assert!(PROFILE_LIBRARY.contains("data-add-passkey"));
-    // Agent access management is deferred; account switching is absent.
-    assert!(!panel.contains("data-agent-connections"));
-    assert!(!panel.contains("data-connections-refresh"));
+    // Agent access joins the current panel layout; the API feature gate
+    // controls visibility. Account switching remains absent.
+    assert!(panel.contains("class=\"settings-panel agent-access-panel\""));
+    assert!(panel.contains("data-agent-connections hidden"));
+    assert!(panel.contains("data-connections-refresh"));
     assert!(!panel.contains("switch-panel"));
     assert!(!panel.contains("data-add-profile"));
     assert_eq!(panel.matches("href=\"/settings\"").count(), 0);

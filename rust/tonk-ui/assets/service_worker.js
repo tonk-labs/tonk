@@ -1484,6 +1484,14 @@ async function routeFetch(event, path) {
         if (path.startsWith("/api/") || await isNestedClientRequest(event)) {
             return rustFetch(event);
         }
+        // Tool invitations land on passive instructions, not the app shell.
+        // Use only this generation's explicit document; unrelated app routes
+        // continue to resolve through the SPA.
+        if ((path === "/agent/" || path === "/agent/index.html") &&
+            (BUILD_ID === "dev" || ASSET_PATH_SET.has(path))) {
+            if (BUILD_ID === "dev") return fetch(event.request);
+            return serveAsset(event);
+        }
         return serveNavigation();
     }
     if (!isShellCacheable(event.request, path)) {

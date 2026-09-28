@@ -724,7 +724,9 @@
                       @historical header Cookie *tonk-test-generation=a*
                       root * "$TONK_UI_ROOT"
                       root @historical "$DEPLOYMENT_FIXTURE_ROOT/generation-a"
-                      try_files {path} /index.html
+                      # Resolve static directory pages before the SPA fallback.
+                      # /agent/ must serve the bytes stamped in the manifest.
+                      try_files {path} {path}/index.html /index.html
                       file_server
                   }
               }
