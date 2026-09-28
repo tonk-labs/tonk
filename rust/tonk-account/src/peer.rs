@@ -135,6 +135,7 @@ where
     Storage<S>: Provider<storage_fx::Load> + Provider<credential_fx::Save<Credential>>,
 {
     let credential = open_credential(&location, credentials, &storage, create).await?;
+    record_directory(&credential.did(), &location.directory);
     let peer = Peer::new(credential.clone())
         .at(location)
         .base(base)
@@ -147,6 +148,89 @@ where
         .await
         .map_err(|error| PeerError::State(error.to_string()))?;
     Ok(peer)
+}
+
+/// The directory each profile opened in this process lives in, by its
+/// DID: where the keys kept beside it are.
+fn directories() -> &'static std::sync::Mutex<std::collections::HashMap<String, Directory>> {
+    static DIRECTORIES: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, Directory>>,
+    > = std::sync::OnceLock::new();
+    DIRECTORIES.get_or_init(Default::default)
+}
+
+fn record_directory(profile: &dialog_varsig::Did, directory: &Directory) {
+    directories()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .insert(profile.to_string(), directory.clone());
+}
+
+/// Where the key `name` kept beside the profile `profile` lives: in the
+/// credential store of the profile's directory, under a name of the
+/// profile's own.
+fn kept_key(profile: &dialog_varsig::Did, name: &str) -> Result<Location, CredentialError> {
+    let directory = directories()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .get(&profile.to_string())
+        .cloned()
+        .ok_or_else(|| {
+            CredentialError::NotFound(format!("the profile {profile} was not opened here"))
+        })?;
+    let owner = blake3::hash(profile.to_string().as_bytes()).to_hex();
+    Ok(Location::new(directory, format!("{name}-{owner}")))
+}
+
+/// Open the key `name` kept for the profile `profile` in the credential
+/// store beside it: load it, or, with `create`, generate one when there is
+/// none. The key is generated as the platform generates keys, so in the
+/// browser it cannot be exported.
+pub async fn open_kept_key<S>(
+    profile: &dialog_varsig::Did,
+    name: &str,
+    create: bool,
+) -> Result<Option<SignerCredential>, CredentialError>
+where
+    S: PeerSpace,
+    CredentialStore<S>: Provider<storage_fx::Load> + Provider<storage_fx::Create>,
+{
+    let location = kept_key(profile, name)?;
+    let credentials = CredentialStore::<S>::new();
+    let loaded = OpenCredential::load(location.name.clone())
+        .at(location.directory.clone())
+        .perform(&credentials)
+        .await;
+    match loaded {
+        Ok(key) => return Ok(Some(key)),
+        Err(dialog_peer::IdentityError::NotFound) if !create => return Ok(None),
+        Err(dialog_peer::IdentityError::NotFound) => {}
+        Err(error) => return Err(CredentialError::Storage(error.to_string())),
+    }
+    OpenCredential::create(location.name)
+        .at(location.directory)
+        .perform(&credentials)
+        .await
+        .map(Some)
+        .map_err(|error| CredentialError::Storage(error.to_string()))
+}
+
+/// Destroy the key `name` kept for the profile `profile`: a later
+/// [`open_kept_key`] finds none.
+pub async fn forget_kept_key<S>(
+    profile: &dialog_varsig::Did,
+    name: &str,
+) -> Result<(), CredentialError>
+where
+    S: PeerSpace,
+    CredentialStore<S>: Provider<storage_fx::Load> + Provider<credential_fx::Retract<Credential>>,
+{
+    let location = kept_key(profile, name)?;
+    OpenCredential::forget(location.name)
+        .at(location.directory)
+        .perform(&CredentialStore::<S>::new())
+        .await
+        .map_err(|error| CredentialError::Storage(error.to_string()))
 }
 
 /// Onboard `peer`, unless its space already records an account: the space
@@ -257,7 +341,8 @@ pub fn upstream(branch: &Branch) -> Option<Upstream> {
 /// The grant is retained where the peer proves from, and the peer's
 /// [`ACCOUNT_VAULT`] is rotated to the account's DID, so the account the
 /// peer acts for is the one tonk signed in, not the one dialog made up
-/// at onboarding. A peer already acting for that account is left alone.
+/// at onboarding. A peer already acting for that account is left alone,
+/// and so is one acting for another account whose key it does not hold.
 pub async fn hand_over<S: PeerSpace>(
     peer: &Peer<S>,
     grant: &DelegationChain,
@@ -275,15 +360,15 @@ pub async fn hand_over<S: PeerSpace>(
         .refresh(peer)
         .await
         .map_err(|error| CredentialError::Storage(error.to_string()))?;
-    peer.state()
-        .vault(ACCOUNT_VAULT)
-        .load()
-        .perform(peer)
-        .await?
-        .rotate()
-        .to(account)
-        .perform(peer)
-        .await?;
+    let current = match peer.state().vault(ACCOUNT_VAULT).load().perform(peer).await {
+        Ok(current) => current,
+        // The peer already acts for an account whose key it does not
+        // hold: one it was handed over to before. Handing it over again
+        // takes that account's key, so the peer keeps acting for it.
+        Err(CredentialError::Withheld(_)) => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    current.rotate().to(account).perform(peer).await?;
     Ok(())
 }
 

@@ -17,8 +17,7 @@
 //! envelope that is deliberately unopenable rather than absent.
 
 use anyhow::{Context, Result, bail};
-use dialog_credentials::key::{ExtractableKey, KeyExport};
-use dialog_credentials::{Credential, Ed25519Signer, Extractable, Signer};
+use dialog_credentials::{Credential, Ed25519Signer, Signer};
 use dialog_effects::credential::CredentialError;
 use dialog_peer::{Peer, Session};
 use dialog_storage::provider::storage::NativeSpace;
@@ -115,8 +114,11 @@ pub async fn retire(
     let Some(custodian) = load_custodian(profile, operator).await? else {
         return Ok(());
     };
-    // A custodian kept before keys left the profile's storage is demoted
-    // there to its public half, as retirement always did.
+    tonk_account::peer::forget_kept_key::<NativeSpace>(&profile.did(), ONBOARDING_CUSTODIAN_KEY)
+        .await
+        .context("failed to forget the onboarding custodian")?;
+    // A custodian kept in the profile's space before keys left it is
+    // demoted there to its public half, as retirement always did.
     let verifier: Ed25519Verifier =
         custodian.did().to_string().parse().map_err(|error| {
             anyhow::anyhow!("the custodian DID is not an Ed25519 key: {error:?}")
@@ -126,13 +128,6 @@ pub async fn retire(
         .credential()
         .key(ONBOARDING_CUSTODIAN_KEY)
         .save(Credential::from(verifier))
-        .perform(profile)
-        .await
-        .context("failed to demote the onboarding custodian")?;
-    profile
-        .secrets()
-        .site(ONBOARDING_CUSTODIAN_KEY)
-        .save(Vec::new())
         .perform(profile)
         .await
         .context("failed to demote the onboarding custodian")
@@ -145,34 +140,26 @@ async fn create(
 ) -> Result<AccountSecret> {
     let secret = AccountSecret::generate()
         .map_err(|error| anyhow::anyhow!("failed to generate the onboarding account: {error}"))?;
-    // The custodian is kept as a secret of the profile's peers, which
-    // holds its seed: a storage keeps no signing key.
-    let custodian = <Ed25519Signer<Extractable> as ExtractableKey>::generate()
-        .await
-        .map_err(|error| anyhow::anyhow!("failed to generate the onboarding custodian: {error}"))?;
-    let KeyExport::Extractable(seed) = custodian
-        .export()
-        .await
-        .map_err(|error| anyhow::anyhow!("failed to export the onboarding custodian: {error}"))?;
-    let custodian = Ed25519Signer::import(KeyExport::Extractable(seed.clone()))
-        .await
-        .map_err(|error| anyhow::anyhow!("failed to import the onboarding custodian: {error}"))?;
+    // The custodian is kept in the credential store beside the profile:
+    // a storage keeps no signing key.
+    let custodian = tonk_account::peer::open_kept_key::<NativeSpace>(
+        &profile.did(),
+        ONBOARDING_CUSTODIAN_KEY,
+        true,
+    )
+    .await
+    .context("failed to generate the onboarding custodian")?
+    .context("the onboarding custodian was not kept")?;
+    let Signer::Ed25519(custodian) = custodian.signer().clone();
     let envelope = derive_kek(&custodian)
         .await?
         .seal(&secret, KekMethod::Local)
         .map_err(|error| anyhow::anyhow!("failed to seal the onboarding account: {error}"))?;
 
-    // Custodian first, envelope second: a custodian with no envelope
-    // reads as absent, while an envelope with no custodian is the
+    // Custodian first (kept above), envelope second: a custodian with no
+    // envelope reads as absent, while an envelope with no custodian is the
     // unopenable shape retirement leaves. Neither half alone can be
     // mistaken for a usable account.
-    profile
-        .secrets()
-        .site(ONBOARDING_CUSTODIAN_KEY)
-        .save(seed)
-        .perform(profile)
-        .await
-        .context("failed to save the onboarding custodian")?;
     profile
         .secrets()
         .site(ONBOARDING_ENVELOPE_SITE)
@@ -282,27 +269,20 @@ async fn load_custodian(
 ) -> Result<Option<Ed25519Signer>> {
     use dialog_effects::credential::prelude::*;
 
-    match profile
-        .secrets()
-        .site(ONBOARDING_CUSTODIAN_KEY)
-        .load::<Vec<u8>>()
-        .perform(profile)
-        .await
+    if let Some(custodian) = tonk_account::peer::open_kept_key::<NativeSpace>(
+        &profile.did(),
+        ONBOARDING_CUSTODIAN_KEY,
+        false,
+    )
+    .await
+    .context("failed to load the onboarding custodian")?
     {
-        // Retired: the custodian was forgotten.
-        Ok(seed) if seed.is_empty() => return Ok(None),
-        Ok(seed) => {
-            let signer = Ed25519Signer::import(KeyExport::Extractable(seed))
-                .await
-                .map_err(|error| anyhow::anyhow!("the onboarding custodian is corrupt: {error}"))?;
-            return Ok(Some(signer));
-        }
-        Err(error) if missing_credential(&error) => {}
-        Err(error) => return Err(error).context("failed to load the onboarding custodian"),
+        let Signer::Ed25519(custodian) = custodian.signer().clone();
+        return Ok(Some(custodian));
     }
 
-    // A custodian kept before keys left the profile's storage is still
-    // there, and only the profile acting as itself is handed it.
+    // A custodian kept in the profile's space before keys left it is
+    // still there, and only the profile acting as itself is handed it.
     let credential = match profile
         .did()
         .credential()
