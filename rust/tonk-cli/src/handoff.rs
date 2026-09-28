@@ -243,6 +243,24 @@ pub fn scoped_connection_entity(connection_id: &str) -> anyhow::Result<dialog_ar
 pub async fn record_scoped_connection(site: &TonkSite, connection_id: &str) -> anyhow::Result<()> {
     use dialog_query::the;
     let entity = scoped_connection_entity(connection_id)?;
+    // Scoped repository data is nested beneath the public local connection root.
+    let root = if site
+        .root
+        .join(crate::connections::DATA_MARKER_FILE)
+        .exists()
+    {
+        site.root
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("connection root missing"))?
+    } else {
+        &site.root
+    };
+    let receipt = crate::connections::installation_receipt(root, connection_id, None)?;
+    let installation_entity = format!(
+        "id:tonk:agent-installation:{connection_id}:{}",
+        receipt.installation
+    )
+    .parse()?;
     site.branch()
         .await?
         .handle()
@@ -251,6 +269,17 @@ pub async fn record_scoped_connection(site: &TonkSite, connection_id: &str) -> a
             the!("xyz.tonk.agent-connection/status")
                 .of(entity)
                 .is("Agent connection confirmed".to_owned()),
+        )
+        .assert(
+            tonk_schema::agent_connection::AgentInstallationConfirmation {
+                this: installation_entity,
+                grant: tonk_schema::agent_connection::Grant(receipt.grant),
+                installation: tonk_schema::agent_connection::Installation(receipt.installation),
+                name: tonk_schema::agent_connection::Name(receipt.name),
+                status: tonk_schema::agent_connection::InstallationStatus(
+                    "Agent connection confirmed".into(),
+                ),
+            },
         )
         .commit()
         .publish()

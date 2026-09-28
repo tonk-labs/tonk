@@ -30,6 +30,7 @@ use tonk_invite::connection::{
 use tonk_schema::{AgentGrantGroup, AgentGrantRevocation, agent_connection as fields};
 use tonk_worker_api::{
     AgentConnectionInviteResponse, AgentConnectionSummary, AgentConnectionTarget,
+    AgentReportedInstallation,
 };
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -479,7 +480,7 @@ async fn summarize(
     } else {
         "active"
     };
-    let confirmed = confirmation(tonk, group).await?;
+    let setup = confirmation(tonk, group).await?;
     Ok(AgentConnectionSummary {
         kind: group.terminal_request.as_ref().map(|_| "terminal".into()),
         request_id: group.terminal_request.clone(),
@@ -491,12 +492,35 @@ async fn summarize(
         scope: "Build space data and views (main)".into(),
         expires_at: bundle.expires_at().to_unix(),
         status: status.into(),
-        confirmed,
+        confirmed: setup.confirmed,
+        space_name: setup.space_name,
+        installations: setup.installations,
         targets,
     })
 }
 
-async fn confirmation(tonk: &TonkState, group: &PublicGroup) -> Result<bool, TonkWorkerError> {
+#[derive(Default)]
+struct ConnectionSetup {
+    confirmed: bool,
+    space_name: Option<String>,
+    installations: Vec<AgentReportedInstallation>,
+}
+
+fn unavailable_setup(
+    error: dialog_repository::LoadRepositoryError,
+) -> Result<ConnectionSetup, TonkWorkerError> {
+    match error {
+        dialog_repository::LoadRepositoryError::Storage(
+            dialog_effects::storage::StorageError::NotFound(_),
+        ) => Ok(ConnectionSetup::default()),
+        error => Err(failure(error)),
+    }
+}
+
+async fn confirmation(
+    tonk: &TonkState,
+    group: &PublicGroup,
+) -> Result<ConnectionSetup, TonkWorkerError> {
     use fields::AgentConnectionConfirmation;
     let repository = match tonk
         .profile
@@ -506,10 +530,10 @@ async fn confirmation(tonk: &TonkState, group: &PublicGroup) -> Result<bool, Ton
         .await
     {
         Ok(repository) => repository,
-        Err(_) => return Ok(false),
+        Err(error) => return unavailable_setup(error),
     };
     if repository.did().as_str() != group.subject {
-        return Ok(false);
+        return Err(failure("access record does not match the mounted space"));
     }
     let session = tonk
         .reactor
@@ -532,7 +556,64 @@ async fn confirmation(tonk: &TonkState, group: &PublicGroup) -> Result<bool, Ton
         .try_vec()
         .await
         .map_err(failure)?;
-    Ok(!rows.is_empty())
+    use tonk_schema::{RepositoryName, prelude::DidExt as _};
+    let names = session
+        .handle()
+        .query()
+        .select(Query::<RepositoryName> {
+            this: Term::from(repository.did().this()),
+            name: Term::var("name"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(failure)?;
+    let installations = session
+        .handle()
+        .query()
+        .select(Query::<fields::AgentInstallationConfirmation> {
+            this: Term::var("this"),
+            grant: Term::from(fields::Grant(group.id.clone())),
+            installation: Term::var("installation"),
+            name: Term::var("name"),
+            status: Term::from(fields::InstallationStatus(
+                "Agent connection confirmed".into(),
+            )),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(failure)?;
+    let installations = reported_installations(&group.id, installations);
+    Ok(ConnectionSetup {
+        confirmed: !rows.is_empty() || !installations.is_empty(),
+        space_name: names
+            .first()
+            .map(|row| row.name.0.clone())
+            .filter(|name| !name.trim().is_empty()),
+        installations,
+    })
+}
+
+fn reported_installations(
+    grant: &str,
+    rows: Vec<fields::AgentInstallationConfirmation>,
+) -> Vec<AgentReportedInstallation> {
+    let mut reports = std::collections::BTreeMap::new();
+    for row in rows {
+        let id = row.installation.0;
+        if row.grant.0 == grant
+            && fields::valid_installation_id(&id)
+            && fields::valid_agent_name(&row.name.0)
+            && row.this.to_string() == format!("id:tonk:agent-installation:{grant}:{id}")
+        {
+            reports.entry(id).or_insert(row.name.0);
+        }
+    }
+    reports
+        .into_iter()
+        .map(|(id, name)| AgentReportedInstallation { id, name })
+        .collect()
 }
 
 #[wasm_compat]
@@ -720,6 +801,158 @@ mod tests {
             now,
         )
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn connection_management_reads_legacy_and_named_receipts_with_current_space_name()
+    -> anyhow::Result<()> {
+        use dialog_credentials::{Credential, Ed25519Signer};
+        use dialog_effects::space::{Space, SpaceExt as _};
+        use dialog_effects::storage::Directory;
+        use dialog_operator::Profile;
+        use dialog_storage::provider::storage::Storage;
+        use tonk_schema::{RepositoryName, prelude::DidExt as _};
+        let directory =
+            std::env::temp_dir().join(format!("tonk-named-receipts-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&directory)?;
+        let location = Directory::At(directory.to_string_lossy().into_owned());
+        let storage = Storage::default();
+        let profile = Profile::open("receipt-projection")
+            .at(location.clone())
+            .perform(&storage)
+            .await?;
+        let registry = crate::device::Registry {
+            profile: "receipt-projection".into(),
+            directory: location,
+        };
+        let tonk =
+            crate::worker::boot_state(storage, "receipt-projection".into(), profile, registry)
+                .await?;
+        let signer = Ed25519Signer::import(&rand::random::<[u8; 32]>()).await?;
+        // Worker operators resolve named spaces from cwd on native targets.
+        // Keep the replica, as well as the profile, inside this fixture's directory.
+        let repo = directory
+            .join("reported-space")
+            .to_string_lossy()
+            .into_owned();
+        Subject::from(tonk.profile.did())
+            .attenuate(Space::new(&repo))
+            .create(Credential::from(signer.clone()))
+            .perform(&tonk.operator)
+            .await?;
+        let group = PublicGroup {
+            version: 1,
+            id: "a".repeat(64),
+            terminal_request: None,
+            account: tonk.profile.did().to_string(),
+            repo,
+            subject: signer.did().to_string(),
+            recipient: "did:key:reported".into(),
+            label: "old issue name".into(),
+            remote: "https://sync.example.test/ucan/".into(),
+            issued_at: 1,
+            chains: vec![],
+        };
+        let receipt: dialog_artifacts::Entity =
+            format!("id:tonk:agent-connection:{}", group.id).parse()?;
+        tonk.reactor
+            .repository(&group.repo)
+            .branch("main")
+            .transaction()
+            .assert(fields::AgentConnectionConfirmation {
+                this: receipt,
+                status: fields::Status("Agent connection confirmed".into()),
+            })
+            .assert(RepositoryName {
+                this: signer.did().this(),
+                name: tonk_schema::domain::repo::Name("Current name".into()),
+            })
+            .commit()
+            .perform(&tonk.operator)
+            .await?;
+        let legacy = confirmation(&tonk, &group).await?;
+        assert!(legacy.confirmed);
+        assert!(
+            legacy.installations.is_empty(),
+            "unexpected legacy reports in {}: {:?}",
+            group.subject,
+            legacy.installations
+        );
+        assert_eq!(legacy.space_name.as_deref(), Some("Current name"));
+        for id in ["1".repeat(32), "2".repeat(32)] {
+            tonk.reactor
+                .repository(&group.repo)
+                .branch("main")
+                .transaction()
+                .assert(fields::AgentInstallationConfirmation {
+                    this: format!("id:tonk:agent-installation:{}:{id}", group.id).parse()?,
+                    grant: fields::Grant(group.id.clone()),
+                    installation: fields::Installation(id),
+                    name: fields::Name("Codex · 日本語 <b>".into()),
+                    status: fields::InstallationStatus("Agent connection confirmed".into()),
+                })
+                .commit()
+                .perform(&tonk.operator)
+                .await?;
+        }
+        let named = confirmation(&tonk, &group).await?;
+        assert_eq!(named.installations.len(), 2);
+        assert_eq!(named.installations[0].name, "Codex · 日本語 <b>");
+        let mut other_grant = group.clone();
+        other_grant.id = "b".repeat(64);
+        assert!(!confirmation(&tonk, &other_grant).await?.confirmed);
+        let mut unavailable = group.clone();
+        unavailable.repo = directory.join("unmounted").to_string_lossy().into_owned();
+        let absent = confirmation(&tonk, &unavailable).await?;
+        assert!(!absent.confirmed && absent.space_name.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn connection_management_distinguishes_missing_replicas_from_load_failures() {
+        use dialog_effects::storage::StorageError;
+        assert!(
+            !unavailable_setup(StorageError::NotFound("unmounted".into()).into())
+                .unwrap()
+                .confirmed
+        );
+        assert!(unavailable_setup(StorageError::Storage("read failed".into()).into()).is_err());
+    }
+
+    #[test]
+    fn connection_management_reports_only_valid_installations_for_the_exact_grant() {
+        let grant = "a".repeat(64);
+        let make = |id: &str, name: &str| fields::AgentInstallationConfirmation {
+            this: format!("id:tonk:agent-installation:{grant}:{id}")
+                .parse()
+                .unwrap(),
+            grant: fields::Grant(grant.clone()),
+            installation: fields::Installation(id.into()),
+            name: fields::Name(name.into()),
+            status: fields::InstallationStatus("Agent connection confirmed".into()),
+        };
+        let first = make(&"1".repeat(32), "Codex · 日本語 <b>");
+        let second = make(&"2".repeat(32), "Tonk CLI on macOS");
+        let mut wrong_grant = make(&"3".repeat(32), "wrong grant");
+        wrong_grant.grant = fields::Grant("b".repeat(64));
+        let mut wrong_entity = make(&"4".repeat(32), "wrong entity");
+        wrong_entity.this = "id:tonk:unrelated".parse().unwrap();
+        let reports = reported_installations(
+            &grant,
+            vec![
+                first.clone(),
+                first,
+                second,
+                wrong_grant,
+                wrong_entity,
+                make("bad", "bad identity"),
+                make(&"5".repeat(32), "invalid\nlabel"),
+            ],
+        );
+        assert_eq!(reports.len(), 2);
+        assert_eq!(reports[0].name, "Codex · 日本語 <b>");
+        assert_ne!(reports[0].id, reports[1].id);
+    }
+
     #[test]
     fn connection_issuer_classifies_permission_refusal_without_hiding_retry() {
         use dialog_capability::access::{AuthorizeError, Recourse};

@@ -4337,21 +4337,28 @@ mod tests {
         wait_for_displayed(&driver, ".passkeys-panel").await?;
         wait_for_displayed(&driver, "[data-settings-passkey-created]").await?;
         wait_for_displayed(&driver, ".signout-panel").await?;
+        #[cfg(feature = "connection-invites")]
+        wait_for_displayed(&driver, "[data-agent-connections]").await?;
         let settings = driver
             .execute(
                 r#"const details = document.querySelector('.details-panel').getBoundingClientRect();
                    const passkeys = document.querySelector('.passkeys-panel').getBoundingClientRect();
                    const signout = document.querySelector('.signout-panel').getBoundingClientRect();
+                   const danger = document.querySelector('.danger-panel').getBoundingClientRect();
                    const email = document.querySelector('[data-settings-email]').getBoundingClientRect();
                    const save = document.querySelector('[data-profile-rename-submit]');
                    return {
                      saveAfterEmail: save.getBoundingClientRect().top >= email.bottom,
                      saveOwnsName: !!save.form?.querySelector('[data-settings-name]'),
                      agentAccess: !!document.querySelector('[data-agent-connections]'),
+                     agentAccessVisible: !document.querySelector('[data-agent-connections]')?.hidden,
                      pageBottom: document.querySelector('.hub-page').getBoundingClientRect().bottom,
                      contentBottom: document.querySelector('.hubcol').getBoundingClientRect().bottom,
                      signoutLeft: signout.left,
                      signoutTop: signout.top,
+                     signoutRight: signout.right,
+                     dangerLeft: danger.left,
+                     dangerTop: danger.top,
                      detailsLeft: details.left,
                      title: document.querySelector('.settings-title')?.textContent,
                      switchPanel: !!document.querySelector('.switch-panel'),
@@ -4373,7 +4380,17 @@ mod tests {
             settings["signoutLeft"], settings["detailsLeft"],
             "{settings}"
         );
-        assert_eq!(settings["agentAccess"], false, "{settings}");
+        assert_eq!(settings["agentAccess"], true, "{settings}");
+        assert!(
+            settings["dangerLeft"].as_f64().unwrap() > settings["signoutRight"].as_f64().unwrap(),
+            "delete account should sit beside sign out: {settings}"
+        );
+        assert_eq!(settings["dangerTop"], settings["signoutTop"], "{settings}");
+        assert_eq!(
+            settings["agentAccessVisible"],
+            cfg!(feature = "connection-invites"),
+            "{settings}"
+        );
         assert!(
             settings["pageBottom"].as_f64().unwrap()
                 >= settings["contentBottom"].as_f64().unwrap() + 119.0,
@@ -4397,6 +4414,13 @@ mod tests {
                 > settings["detailsRight"].as_f64().unwrap_or(f64::INFINITY),
             "details and passkeys should be separate columns: {settings}"
         );
+
+        #[cfg(feature = "connection-invites")]
+        {
+            driver.enter_default_frame().await?;
+            driver.set_window_rect(0, 0, 1200, 1200).await?;
+            capture_handoff_page(&driver, "account-grid").await?;
+        }
 
         driver.quit().await?;
         Ok(())
@@ -7653,7 +7677,14 @@ mod tests {
         let profile = tempfile::tempdir()?;
         let mut command = tonk_command_in(&env, &profile);
         command
-            .args(["join", &invite, "--name", "ordinary-agent"])
+            .args([
+                "join",
+                &invite,
+                "--name",
+                "ordinary-agent",
+                "--agent-name",
+                "Codex on work laptop",
+            ])
             .env("TONK_CONNECTION_ORIGIN", env.tonk_web.as_str())
             .kill_on_drop(true);
         let output = tokio::time::timeout(Duration::from_secs(120), command.output())
@@ -7714,6 +7745,12 @@ mod tests {
         let groups = successful_body("read retained grant group", &groups);
         assert_eq!(groups[0]["id"], group_id);
         assert_eq!(groups[0]["confirmed"], true);
+        assert_eq!(groups[0]["spaceName"], "Ordinary agent");
+        assert_eq!(groups[0]["installations"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            groups[0]["installations"][0]["name"],
+            "Codex on work laptop"
+        );
         let revoked = post_json(
             &browser,
             &format!("/api/account/connections/{group_id}/revoke"),
@@ -7745,6 +7782,277 @@ mod tests {
             "--no-sync".into(),
         ]).await?;
         assert!(retained.status.success(), "{}", retained.stderr);
+        Ok(())
+    }
+
+    #[cfg(feature = "connection-invites")]
+    #[dialog_common::test]
+    async fn settings_hides_unconfirmed_agent_invitations(env: TestEnvironment) -> Result<()> {
+        let browser = driver_with_prf(&env).await?;
+        sign_up(&browser, &env, "settings-agent-filter@example.com").await?;
+        goto(&browser, env.tonk_web.join("settings")?.as_str()).await?;
+        enter_hub(&browser).await?;
+        wait_for_displayed(&browser, "[data-connections-refresh]").await?;
+        let result = browser.execute_async(r#"
+            const done = arguments[arguments.length - 1];
+            const settings = document.querySelector('account-settings');
+            const original = settings.api;
+            const pending = Array.from({length: 20}, (_, i) => ({id: String(i).padStart(64, '0'), confirmed: false}));
+            settings.api = () => Promise.resolve(pending);
+            settings.connectionsRefresh();
+            const until = async predicate => {
+                const deadline = performance.now() + 5000;
+                while (!predicate()) {
+                    if (performance.now() > deadline) throw new Error('settings did not finish loading');
+                    await new Promise(resolve => requestAnimationFrame(resolve));
+                }
+            };
+            (async () => {
+                await until(() => settings.querySelector('[data-connections-status]').textContent !== 'Loading connections…');
+                const hidden = settings.querySelectorAll('[data-connection-id]').length;
+                settings.api = () => Promise.resolve([...pending, {
+                    id: 'a'.repeat(64), subject: 'did:key:fixture', label: 'confirmed fixture',
+                    confirmed: true, status: 'active', expiresAt: 2000000000,
+                    targets: [{cid: 'fixture', acknowledged: false}]
+                }]);
+                settings.connectionsRefresh();
+                await until(() => settings.querySelectorAll('[data-connection-id]').length === 1);
+                settings.api = original;
+                done({hidden, confirmed: settings.querySelectorAll('[data-connection-id]').length});
+            })().catch(error => { settings.api = original; done({error: error.message}); });
+        "#, vec![]).await?;
+        assert_eq!(result.json()["hidden"], 0);
+        assert_eq!(result.json()["confirmed"], 1);
+        browser.quit().await?;
+        Ok(())
+    }
+
+    #[cfg(feature = "connection-invites")]
+    #[dialog_common::test]
+    async fn settings_groups_named_agent_access_and_retries_removal(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        let browser = driver_with_prf(&env).await?;
+        sign_up(&browser, &env, "settings-named-agents@example.com").await?;
+        goto(&browser, env.tonk_web.join("settings")?.as_str()).await?;
+        enter_hub(&browser).await?;
+        wait_for_displayed(&browser, "[data-connections-refresh]").await?;
+        let result = browser.execute_async(r#"
+            const done = arguments[arguments.length - 1];
+            const settings = document.querySelector('account-settings');
+            const original = settings.api;
+            const until = async predicate => {
+                const deadline = performance.now() + 5000;
+                while (!predicate()) {
+                    if (performance.now() > deadline) throw new Error('settings did not settle');
+                    await new Promise(resolve => requestAnimationFrame(resolve));
+                }
+            };
+            const group = (id, subject, status = 'active') => ({
+                id: id.repeat(64), subject, recipient: 'did:key:recipient', label: 'issued label',
+                spaceName: 'Same display name', confirmed: true, status, expiresAt: 2000000000,
+                targets: [{cid: 'one', acknowledged: false}, {cid: 'two', acknowledged: false}]
+            });
+            const shared = group('a', 'did:key:first');
+            shared.installations = [{id: '1'.repeat(32), name: 'Codex on work laptop'},
+                {id: '2'.repeat(32), name: '<img src=x onerror=alert(1)>'}];
+            const legacy = group('b', 'did:key:second');
+            const partial = {...group('c', 'did:key:first', 'partial'),
+                targets: [{cid: 'one', acknowledged: true}, {cid: 'two', acknowledged: false, error: 'offline'}]};
+            const expired = group('d', 'did:key:second', 'expired');
+            const revoked = {...group('e', 'did:key:second', 'revoked'),
+                targets: [{cid: 'one', acknowledged: true}]};
+            const pending = {...group('f', 'did:key:hidden'), confirmed: false};
+            const terminal = {...group('0', 'did:key:terminal'), requestId: 'terminal'};
+            const fixtures = [shared, legacy, partial, expired, revoked, pending, terminal];
+            settings.api = () => Promise.resolve(fixtures);
+            settings.connectionsRefresh();
+            (async () => {
+                await until(() => settings.querySelectorAll('[data-connection-id]').length === 5);
+                const initial = {
+                    spaces: [...settings.querySelectorAll('[data-connection-space]')].map(node => node.dataset.connectionSpace),
+                    names: [...settings.querySelectorAll('.connection-space__name')].map(node => node.textContent),
+                    sharedButtons: settings.querySelectorAll('[data-connection-id="' + shared.id + '"] button').length,
+                    disclosures: settings.querySelectorAll('[data-connection-id] details').length,
+                    labels: [...settings.querySelectorAll('.connection-installations li')].map(node => node.textContent),
+                    injected: settings.querySelectorAll('[data-connections-list] img').length,
+                    legacy: settings.querySelector('[data-connection-id="' + legacy.id + '"]').textContent,
+                    history: settings.querySelectorAll('[data-connection-history] [data-connection-id]').length,
+                    retry: settings.querySelector('[data-connection-revoke="' + partial.id + '"]').textContent
+                };
+                settings.api = () => Promise.resolve({...partial, status: 'revoked',
+                    targets: partial.targets.map(target => ({...target, acknowledged: true, error: null}))});
+                settings.querySelector('[data-connection-revoke="' + partial.id + '"]').click();
+                await until(() => settings.querySelector('[data-connection-history] [data-connection-id="' + partial.id + '"]'));
+                initial.removed = settings.querySelector('[data-connection-revoke="' + partial.id + '"]').disabled;
+                // New names come from the current projection, not the issue-time label.
+                settings.api = () => Promise.resolve([{...shared, spaceName: 'Renamed space'}, {...legacy, spaceName: null}]);
+                settings.connectionsRefresh();
+                await until(() => settings.querySelectorAll('[data-connection-id]').length === 2);
+                initial.renamed = [...settings.querySelectorAll('.connection-space__name')].map(node => node.textContent);
+                // A late response must not repaint after the next refresh.
+                let late;
+                settings.api = () => new Promise(resolve => { late = resolve; });
+                settings.connectionsRefresh();
+                settings.api = () => Promise.reject(new Error('offline'));
+                settings.connectionsRefresh();
+                await until(() => settings.querySelector('[data-connections-status]').textContent.includes('could not be loaded'));
+                late(fixtures);
+                await new Promise(resolve => requestAnimationFrame(resolve));
+                initial.error = settings.querySelector('[data-connections-status]').textContent;
+                initial.staleRows = settings.querySelectorAll('[data-connection-id]').length;
+                initial.errorVisible = !settings.querySelector('[data-agent-connections]').hidden;
+                // Retain a rendered fixture for desktop/mobile visual inspection.
+                settings.api = () => Promise.resolve(fixtures);
+                settings.connectionsRefresh();
+                await until(() => settings.querySelectorAll('[data-connection-id]').length === 5);
+                done(initial);
+            })().catch(error => { settings.api = original; done({error: error.message}); });
+        "#, vec![]).await?;
+        let state = result.json();
+        assert_eq!(
+            state["spaces"],
+            serde_json::json!(["did:key:first", "did:key:second"]),
+            "{state}"
+        );
+        assert_eq!(
+            state["names"],
+            serde_json::json!(["Same display name", "Same display name"])
+        );
+        assert_eq!(state["sharedButtons"], 1);
+        assert_eq!(state["disclosures"], 0);
+        assert_eq!(
+            state["labels"],
+            serde_json::json!(["Codex on work laptop", "<img src=x onerror=alert(1)>"])
+        );
+        assert_eq!(state["injected"], 0);
+        assert!(
+            state["legacy"]
+                .as_str()
+                .unwrap()
+                .contains("Name unavailable")
+        );
+        assert_eq!(state["history"], 2);
+        assert_eq!(state["retry"], "retry removal");
+        assert_eq!(state["removed"], true);
+        assert_eq!(
+            state["renamed"],
+            serde_json::json!(["Renamed space", "did:key:second"])
+        );
+        assert_eq!(state["staleRows"], 0);
+        assert_eq!(state["errorVisible"], true);
+        assert!(
+            state["error"]
+                .as_str()
+                .unwrap()
+                .contains("could not be loaded")
+        );
+        capture_connection_management(&browser, &"a".repeat(64), "named-access").await?;
+        browser.quit().await?;
+        Ok(())
+    }
+
+    #[cfg(feature = "connection-invites")]
+    async fn capture_handoff_page(driver: &WebDriver, name: &str) -> Result<()> {
+        if let Some(directory) = std::env::var_os("TONK_HANDOFF_TEST_ARTIFACTS") {
+            let directory = std::path::PathBuf::from(directory);
+            std::fs::create_dir_all(&directory)?;
+            // Optional review capture waits for the shell's entrance animation;
+            // test readiness and actions do not depend on this delay.
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            driver
+                .screenshot(&directory.join(format!("{name}.png")))
+                .await?;
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "connection-invites")]
+    async fn capture_connection_management(
+        browser: &WebDriver,
+        group_id: &str,
+        prefix: &str,
+    ) -> Result<()> {
+        if std::env::var_os("TONK_HANDOFF_TEST_ARTIFACTS").is_some() {
+            for (name, width, height, dark) in [
+                ("desktop", 1200, 900, false),
+                ("narrow", 390, 844, false),
+                ("short-dark", 390, 540, true),
+            ] {
+                browser.enter_default_frame().await?;
+                browser.set_window_rect(0, 0, width, height).await?;
+                ChromeDevTools::new(browser.handle.clone()).execute_cdp_with_params(
+                    "Emulation.setDeviceMetricsOverride", serde_json::json!({
+                        "width": width, "height": height, "deviceScaleFactor": 1, "mobile": false,
+                    })).await?;
+                ChromeDevTools::new(browser.handle.clone()).execute_cdp_with_params(
+                    "Emulation.setEmulatedMedia", serde_json::json!({ "features": [
+                        { "name": "prefers-reduced-motion", "value": "reduce" },
+                        { "name": "prefers-color-scheme", "value": if dark { "dark" } else { "light" } },
+                    ] })).await?;
+                let outer=browser.execute("return {clientWidth:document.documentElement.clientWidth, scrollWidth:document.documentElement.scrollWidth}", vec![]).await?;
+                assert_eq!(outer.json()["clientWidth"], serde_json::json!(width));
+                assert!(
+                    outer.json()["scrollWidth"].as_u64().unwrap() <= u64::from(width),
+                    "outer document overflows: {}",
+                    outer.json()
+                );
+                enter_hub(browser).await?;
+                let before = browser.execute(r#"const node=document.querySelector('[data-connections-refresh]');node.focus();
+                    window.__connectionKeys=[];
+                    document.addEventListener('keydown',event=>{const key={target:event.target.tagName,cls:event.target.className,key:event.key};window.__connectionKeys.push(key);setTimeout(()=>key.prevented=event.defaultPrevented,0);},{once:true});
+                    return {focused:document.activeElement === node, documentFocus:document.hasFocus(),
+                        rect:node.getBoundingClientRect().toJSON(), disabled:node.disabled,
+                        hiddenAncestor:!!node.closest('[hidden]'), activeTag:document.activeElement.tagName,
+                        activeClass:document.activeElement.className,
+                        revokes:[...document.querySelectorAll('[data-connection-revoke]')].map(item=>({disabled:item.disabled,tabIndex:item.tabIndex,rect:item.getBoundingClientRect().toJSON(),hiddenAncestor:!!item.closest('[hidden]')}))};"#, vec![]).await?;
+                browser
+                    .find(By::Css("[data-connections-refresh]"))
+                    .await?
+                    .send_keys(Key::Tab)
+                    .await?;
+                let focused = browser.execute(r#"const node=document.activeElement;const style=getComputedStyle(node);
+                    return {settingsHidden:document.querySelector('[data-settings-view]')?.hidden, accountExpanded:document.querySelector('.account-trigger')?.getAttribute('aria-expanded'), keys:window.__connectionKeys, tag:node.tagName, class:node.className, refresh:node.matches('[data-connections-refresh]'), revoke:node.matches('[data-connection-revoke]'), visible:node.matches(':focus-visible'),
+                        ring:style.outlineStyle !== 'none' || style.boxShadow !== 'none',
+                        height:node.getBoundingClientRect().height, animation:style.animationName,
+                        clientWidth:document.documentElement.clientWidth, scrollWidth:document.documentElement.scrollWidth };"#, vec![]).await?;
+                let state = focused.json();
+                assert_eq!(
+                    state["revoke"],
+                    true,
+                    "keyboard focus did not reach revoke: {state}; before={}",
+                    before.json()
+                );
+                assert_eq!(
+                    state["visible"], true,
+                    "keyboard focus was not visible: {state}"
+                );
+                assert_eq!(
+                    state["ring"], true,
+                    "keyboard focus ring was absent: {state}"
+                );
+                assert!(
+                    state["height"].as_f64().unwrap() >= 44.0,
+                    "small revoke target: {state}"
+                );
+                assert_eq!(
+                    state["animation"], "none",
+                    "reduced-motion control animates: {state}"
+                );
+                assert_eq!(state["clientWidth"], serde_json::json!(width));
+                assert!(
+                    state["scrollWidth"].as_u64().unwrap()
+                        <= state["clientWidth"].as_u64().unwrap(),
+                    "management content overflows horizontally: {state}"
+                );
+                element(browser, &format!("[data-connection-revoke='{group_id}']"))
+                    .await?
+                    .scroll_into_view()
+                    .await?;
+                capture_handoff_page(browser, &format!("{prefix}-{name}")).await?;
+            }
+        }
+
         Ok(())
     }
 
@@ -8067,6 +8375,17 @@ mod tests {
                 .unwrap()
                 .iter()
                 .all(|row| row["confirmed"] == true)
+        );
+        let shared = confirmed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == first_id)
+            .unwrap();
+        assert_eq!(shared["installations"].as_array().unwrap().len(), 2);
+        assert_ne!(
+            shared["installations"][0]["id"],
+            shared["installations"][1]["id"]
         );
         let revoked = post_json(
             &browser,

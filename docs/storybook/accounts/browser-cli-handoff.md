@@ -377,8 +377,19 @@ after pulling and pushing its grant-specific setup receipt does it report
 those retained credentials. A receipt records completed setup, not exclusive
 ownership of the invite or live tool presence; several holders may use it.
 
-Settings lists the space, recipient, scope, expiry, setup confirmation and
-revocation acknowledgements. Tab moves between settings controls without
+`tonk join LINK --agent-name "Codex on work laptop"` supplies a self-reported
+connection name; without it, the CLI uses its OS-based device description.
+`--name` remains the local space alias. The installation name and random local
+identifier persist before receipt publication, so interrupted setup reuses them.
+
+Settings shows only completed connections issued by the active account, grouped
+by space identity and labeled with the current space name. Each row leads with
+reported installation names, followed by read/edit permission and expiry.
+Legacy confirmations show **Name unavailable**. Pending invitations are omitted
+but may still grant access; the receipt is a visibility criterion, not an
+authorization gate. Removed and expired connections remain in history.
+Sign out and Delete account share a desktop row and stack on narrow screens.
+Tab moves between settings controls without
 dismissing the panel; Tab still dismisses the account menu itself. Revoking an
 invite withdraws its six grants for
 all holders and descendants. Partial delivery stays visible and retryable.
@@ -394,3 +405,16 @@ membership journey also passed. The broader Storybook item remains Drafted:
 390px layout, keyboard focus, reduced motion, profile switching while open,
 Safari, deployed compatibility, old-binary behavior, and global revocation
 propagation remain unverified. See `HANDOFF-21`.
+
+Plan 007 follow-up, based at `c1f3b4400` (2026-09-28): the native browser tests
+`settings_hides_unconfirmed_agent_invitations`,
+`settings_groups_named_agent_access_and_retries_removal`, and
+`it_adds_an_account_from_the_hub_in_one_step` passed with retries disabled.
+These prove mounted settings filtering, stable space grouping, literal labels,
+legacy rows, history, partial-removal retry, error/stale-response handling, and
+the account grid. Desktop, 390px narrow, and short dark captures verify settings
+overflow, 44px actions, keyboard focus, and reduced motion. The named-access
+test passed again after fixing inherited list-item indentation. These focused
+settings results do not close the broader connect-dialog or deployed gaps above.
+Pre-rebase CLI, worker, and packaged remote-revocation evidence and artifact
+identities are recorded in [Plan 007](../../../plans/007-agent-access-management.md).

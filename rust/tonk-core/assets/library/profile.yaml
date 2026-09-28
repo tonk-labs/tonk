@@ -542,15 +542,16 @@ view!:
       .hub-page account-settings .settings-heading { display:flex; align-items:center;
         justify-content:space-between; gap:16px; }
       .hub-page account-settings .settings-heading h2 { margin:0; }
-      .hub-page account-settings .danger-panel { grid-column:1 / -1; }
-      .hub-page account-settings .danger-panel { display:flex; align-items:center;
-        justify-content:space-between; gap:24px; }
-      .hub-page account-settings .danger-panel h2 { margin-bottom:8px; }
+      .hub-page account-settings .agent-access-panel { grid-column:1 / -1; }
+      .hub-page account-settings .agent-access-panel .srowd h2 { margin:0; }
       .hub-page account-settings .danger-panel p,
       .hub-page account-settings .signout-panel p { margin:0; font:400 15px/1.55 var(--sans); }
-      .hub-page account-settings .danger-panel .panel-action { width:auto; flex:none; margin:0; }
-      .hub-page account-settings .connection-record { margin-top:8px; padding:16px;
+      .hub-page account-settings .danger-panel .panel-action { width:fit-content; }
+      .hub-page account-settings .connection-record { margin:0; padding:20px;
         background:var(--wash); box-shadow:none; }
+      .hub-page account-settings .agent-access-panel [data-connections-list] { gap:24px; margin-top:24px; }
+      .hub-page account-settings .connection-space { gap:12px; }
+      .hub-page account-settings .connection-space__name { font-size:20px; }
 
       /* ── the spaces collection ── */
       .stack { width:100%; display:grid;
@@ -780,9 +781,6 @@ view!:
         .settings { margin-top:0; }
         .hub-page account-settings .account-panels { grid-template-columns:1fr; gap:16px; }
         .hub-page account-settings .settings-panel { padding:22px 20px; }
-        .hub-page account-settings .danger-panel { grid-column:auto; align-items:stretch;
-          flex-direction:column; }
-        .hub-page account-settings .danger-panel .panel-action { width:100%; }
         .m-cancel, .m-go { min-height:44px; }
       }
       /* One page: the bar's path says whether the stack or the account
@@ -2320,13 +2318,20 @@ view!:
                 <div class="pane" data-pane="account">
                   <div class="account-panels">
                     <tonk-display model="tonk:account/registered" view="settings"></tonk-display>
+                    <section class="settings-panel agent-access-panel" data-agent-connections hidden aria-label="agent access">
+                      <div class="srowd"><h2>Agent access</h2><button class="cta" type="button" data-connections-refresh>refresh</button></div>
+                      <p class="expl">Completed connections created by this account.</p>
+                      <p class="expl" data-connections-status role="status" aria-live="polite"></p>
+                      <div data-connections-list></div>
+                    </section>
                     <section class="settings-panel signout-panel">
                       <h2>Sign out</h2>
                       <p>Disconnect this account. Keep local spaces on this device.</p>
                       <button class="cta panel-action" type="button" data-sign-out-open>sign out on this device <span aria-hidden="true">↗</span></button>
                     </section>
                     <section class="settings-panel danger-panel">
-                      <div><h2>Delete account</h2><p>Permanently delete all data associated with this account.</p></div>
+                      <h2>Delete account</h2>
+                      <p>Permanently delete all data associated with this account.</p>
                       <button class="cta panel-action" type="button" data-delete-account-open>delete account (permanent)</button>
                     </section>
                   </div>
@@ -4260,6 +4265,7 @@ element!: &account-settings
       (self, text) => {
         const node = self.querySelector('[data-connections-status]');
         if (node && node.textContent !== text) node.textContent = text;
+        if (node) node.hidden = !text;
       }
     connections-refresh: |
       (self) => {
@@ -4270,21 +4276,63 @@ element!: &account-settings
         const current = () => self.isConnected && self.getAttribute('data-connections-generation') === generation;
         const list = self.querySelector('[data-connections-list]');
         if (list) list.textContent = '';
-        self.connectionsStatus('loading access records…');
+        self.agentConnections = [];
+        self.connectionsStatus('Loading connections…');
         self.api('/api/account/connections').then((groups) => {
           if (!current()) return;
           self.querySelector('[data-agent-connections]')?.removeAttribute('hidden');
-          groups = (groups ?? []).filter((group) => !group.requestId);
-          self.connectionsStatus(groups.length
-            ? 'saved access; permission to sync is checked when the terminal connects'
-            : 'no agent invites issued from this account');
-          for (const group of groups) list?.append(self.connectionRecord(group));
+          groups = (groups ?? []).filter((group) => !group.requestId && group.confirmed);
+          self.connectionsStatus(groups.length ? '' : 'No completed connections yet.');
+          self.agentConnections = groups;
+          self.connectionsRender(groups);
         }, (error) => {
           if (!current()) return;
           const section = self.querySelector('[data-agent-connections]');
           if (section) section.hidden = error.status === 404;
-          self.connectionsStatus('access records could not be loaded. refresh to try again.');
+          self.connectionsStatus('Connections could not be loaded. Refresh to try again.');
         });
+      }
+    connections-render: |
+      (self, groups, revealId) => {
+        const list = self.querySelector('[data-connections-list]');
+        if (!list) return;
+        list.textContent = '';
+        const spaces = new Map();
+        for (const group of groups) {
+          if (group.requestId || !group.confirmed) continue;
+          if (!spaces.has(group.subject)) spaces.set(group.subject, []);
+          spaces.get(group.subject).push(group);
+        }
+        for (const [subject, records] of spaces) {
+          const section = document.createElement('section');
+          section.className = 'connection-space';
+          section.dataset.connectionSpace = subject;
+          const header = document.createElement('div');
+          header.className = 'connection-space__heading';
+          const label = document.createElement('span');
+          label.className = 'connection-space__label';
+          label.textContent = 'space';
+          const heading = document.createElement('h3');
+          heading.className = 'connection-space__name';
+          heading.textContent = records.find(group => group.spaceName)?.spaceName || subject;
+          header.append(label, heading);
+          section.append(header);
+          const active = records.filter(group => !['revoked', 'expired'].includes(group.status));
+          const history = records.filter(group => ['revoked', 'expired'].includes(group.status));
+          for (const group of active) section.append(self.connectionRecord(group));
+          if (history.length) {
+            const details = document.createElement('details');
+            details.className = 'connection-history';
+            details.dataset.connectionHistory = '';
+            details.open = history.some(group => group.id === revealId);
+            const summary = document.createElement('summary');
+            summary.textContent = 'previous access';
+            details.append(summary);
+            for (const group of history) details.append(self.connectionRecord(group));
+            section.append(details);
+          }
+          list.append(section);
+        }
       }
     connection-record: |
       (self, group) => {
@@ -4295,34 +4343,37 @@ element!: &account-settings
           parent.append(node);
           return node;
         };
+        const installations = group.installations ?? [];
+        const names = installations.map(installation => installation.name);
+        const count = group.targets.filter(target => target.acknowledged).length;
+        const all = group.targets.length > 0 && count === group.targets.length;
+        const expired = group.status === 'expired';
+        const retry = !all && (group.status === 'partial' || count > 0 || group.targets.some(target => target.error));
+        const date = new Date(group.expiresAt * 1000);
+        const validDate = Number.isFinite(date.getTime());
+        const expiry = validDate ? date.toLocaleDateString(undefined, {day: 'numeric', month: 'short', year: 'numeric'}) : String(group.expiresAt);
         const row = document.createElement('article');
         row.className = 'connection-record';
         row.dataset.connectionId = group.id;
-        row.setAttribute('aria-label', group.label);
-        const heading = el('div', 'srowd', '', row);
-        el('b', 'lft', group.label, heading);
-        const count = group.targets.filter((target) => target.acknowledged).length;
-        const all = group.targets.length > 0 && count === group.targets.length;
-        const retry = !all && (group.status === 'partial' || count > 0 || group.targets.some((target) => target.error));
-        const button = el('button', 'cta', retry ? 'retry removing access' : (group.requestId ? 'remove space access' : 'remove invite access'), heading);
+        row.setAttribute('aria-label', names.join(', ') || group.label);
+        const overview = el('div', 'connection-overview', '', row);
+        const identity = el('div', 'connection-identity', '', overview);
+        if (!group.requestId && installations.length) {
+          const list = el('ul', 'connection-installations', '', identity);
+          for (const name of names) el('li', '', name, list);
+        } else {
+          el('b', 'connection-title', group.requestId ? group.label : 'Name unavailable', identity);
+        }
+        el('p', 'connection-meta', all ? 'Access removed' : expired ? `Expired ${expiry}` : `Read & edit · Expires ${expiry}`, identity);
+        const actions = el('div', 'connection-actions', '', overview);
+        const button = el('button', 'cta connection-remove', all ? 'access removed' : expired ? 'expired' : retry ? 'retry removal' : 'remove access', actions);
         button.type = 'button';
         button.dataset.connectionRevoke = group.id;
-        button.setAttribute('aria-label', `${group.requestId ? 'remove space access for' : 'remove invite access'} ${group.label}`);
-        if (all) button.disabled = true;
-        const details = el('details', 'expl', '', row);
-        el('summary', '', 'access details', details);
-        el('p', 'expl', `space: ${group.subject}`, details);
-        el('p', 'expl', `recipient: ${group.recipient}`, details);
-        el('p', 'expl', 'can read and edit this space', row);
-        const date = new Date(group.expiresAt * 1000);
-        el('p', 'expl', `expires: ${Number.isFinite(date.getTime()) ? date.toISOString() : group.expiresAt}`, row);
-        if (group.status === 'expired') el('p', 'expl', 'expired; send a new invitation to allow syncing again', row);
-        el('p', 'expl', group.confirmed ? 'setup confirmation received' : 'no setup confirmation recorded', row);
-        el('p', 'expl', count === 0 && group.status === 'partial' ? 'access removal requested; waiting for confirmation'
-          : count === 0 ? 'access has not been removed'
-          : `access removal confirmed for ${count} of ${group.targets.length} permissions`, row);
-        if (group.targets.some((target) => target.error)) {
-          el('p', 'expl', 'some access could not be removed. retry to remove the remaining permissions.', row);
+        button.setAttribute('aria-label', `${group.requestId ? 'remove space access for' : 'remove access for everyone using'} ${names.join(', ') || group.label}`);
+        button.disabled = all || expired;
+        if (!group.requestId && !all && !expired) button.title = 'Removes access for everyone using this connection';
+        if (retry && !expired) {
+          el('p', 'connection-progress', `Removal incomplete · ${count} of ${group.targets.length} permissions confirmed`, row);
         }
         return row;
       }
@@ -4332,21 +4383,24 @@ element!: &account-settings
         const id = button.dataset.connectionRevoke ?? '';
         if (!/^[0-9a-f]{64}$/.test(id)) return;
         button.disabled = true;
-        self.connectionsStatus('removing access…');
+        self.connectionsStatus('Removing access…');
         const generation = self.getAttribute('data-connections-generation');
         const current = () => self.isConnected && self.getAttribute('data-connections-generation') === generation;
         self.api(`/api/account/connections/${id}/revoke`, {}).then((group) => {
           if (!current()) return;
-          if (!group || group.id !== id) { self.connectionsStatus('the access record changed. refresh before trying again.'); return; }
-          button.closest('[data-connection-id]')?.replaceWith(self.connectionRecord(group));
+          if (!group || group.id !== id) { self.connectionsStatus('This connection changed. Refresh before trying again.'); return; }
+          self.agentConnections = (self.agentConnections ?? []).map(saved => saved.id === id ? group : saved);
+          self.connectionsRender(self.agentConnections, id);
           const count = group.targets.filter((target) => target.acknowledged).length;
-          self.connectionsStatus(`access removal confirmed for ${count} of ${group.targets.length} permissions. downloaded data stays on devices that already have it.`);
+          self.connectionsStatus(count === group.targets.length
+            ? 'Removal confirmed. Enforcement may take time; downloaded data remains.'
+            : `Removal incomplete: ${count} of ${group.targets.length} permissions. Retry to finish.`);
           const status = self.querySelector('[data-connections-status]');
           if (status) { status.tabIndex = -1; status.focus(); }
         }, () => {
           if (!current()) return;
           button.disabled = false;
-          self.connectionsStatus('access removal could not be confirmed. retry or refresh to check progress.');
+          self.connectionsStatus('Removal could not be confirmed. Retry or refresh to check progress.');
         });
       }
     # A terminal asking to attach one local space to this account. The
