@@ -3,10 +3,10 @@
 Status: proposal. Nothing built.
 Date: 2026-09-28
 
-> **Superseded in part by [command-palette-sketch.md](command-palette-sketch.md).**
+> **Superseded in part by [command-palette-sketch.md](command-palette-sketch.md)** (a faithful Ubiquity port; see [command-palette-ubiquity.md](command-palette-ubiquity.md) for the source study).
 > The sketch drops separate verb concepts. Commands and concepts stay the
-> vocabulary, with `phrase!` (parse rules) and `suggest!` (candidates) declared
-> beside them. That is because the worker never hands rule-emitted transients to
+> vocabulary, with `verb!` (on a command), `noun!` (on a concept) and a per-locale
+> `grammar!` declared beside them. That is because the worker never hands rule-emitted transients to
 > Rust providers, so a verb → command bridge rule would run nothing. The context,
 > FABB, ranker and phasing sections here still stand.
 
