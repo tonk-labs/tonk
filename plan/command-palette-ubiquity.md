@@ -317,5 +317,143 @@ code above and are not yet design decisions.
 
 ## Documented intent
 
-*(Filled in from the wiki and blog research: design goals, why roles and not
-templates, known problems and lessons learned. Sources cited inline.)*
+From the Mozilla wiki (raw pages, including old revisions), mitcho's blog and
+his SIGIR 2009 paper, and Jono DiCarlo's blog. Aza Raskin's own posts are gone
+(azarask.in is squatted), so his position is known only through quotation.
+There is **no** wiki page for Parser 2 scoring, memory or noun types. That
+material lives in blog posts and the Parser 1 docs.
+
+### What it was for
+
+- **Efficiency, not natural language.** From the Roadmap: *"Natural language
+  and generativity are of interest mainly to developers. For the end-user, the
+  benefit… is that it gives a faster way to do common web tasks."*
+  ([Roadmap](https://wiki.mozilla.org/Labs/Ubiquity/Roadmap))
+- **Jono's riddle:** *"How can we make a UI with the efficiency and
+  expressiveness of the Unix command line, but that's easy to learn and that
+  won't shoot you in the foot?"* His requirements map one-to-one onto
+  features:
+  - preview;
+  - suggestions for the selected data type (noun-first);
+  - *"start with the noun or… the verb"*;
+  - memory of past choices;
+  - the selection as *"input for any of the multiple arguments — or for none of
+    them"*;
+  - ambiguity resolved by the user.
+
+  ([part 1](https://jonoscript.wordpress.com/2008/07/21/language-based-interfaces-part-1-the-problem/))
+- **Noun-first corrects Enso.** Enso, the predecessor, was strictly verb-noun
+  with one argument. Its users' top requests were abbreviations and
+  noun-first. Jono: *"I'm now convinced the users were right."*
+- **Natural syntax** (mitcho): *"The grammar must never conflict with a user's
+  natural intuitions about their own language's syntax."* The lexicon may be
+  restricted, but the syntax must not be. Input is deliberately limited to *"a
+  single verb and its arguments"*.
+  ([paper](https://mitcho.com/research/ubiquity.pdf),
+  [post](https://mitcho.com/blog/projects/how-natural-should-a-natural-interface-be/))
+- **Ambiguity is shown, not guessed.** From the paper: *"a list of possible
+  parses is presented to the user for confirmation before execution."*
+
+### Why roles
+
+- **Parser 1 had one English preposition per argument.** That broke on
+  case-marking languages and synonymous adpositions, and it *"requires command
+  authors to make localized versions of their commands."* With roles, `move
+  {object, source, goal}` works as *"move truck from Paris to London"* and as
+  *"truckをParisからLondonへmove"*. *"All that remains to be localized… is the
+  name of your verb."*
+  ([post](https://mitcho.com/blog/projects/writing-commands-with-semantic-roles/))
+- **Roles encode syntax, noun types encode content.** Roles *"should map to
+  morphological features in languages, not necessarily to the type of content
+  in the argument (which is why we also will keep the noun types)."* Time and
+  location share markers, so the noun type must disambiguate.
+  ([Semantic Roles](https://wiki.mozilla.org/Labs/Ubiquity/Parser_2/Semantic_Roles))
+- **The test for splitting a role:** *"would these markers translate to the
+  same markers in a different language?"* "With Jono" (と) and "with Google"
+  (で) are different roles.
+- **Principles and parameters.** One universal parser plus a language file of
+  *"ten to thirty lines"*. Localization *"reduced to little more than some native
+  speaker consultation and string translation."*
+- **Delimiters, not every substring,** because otherwise noun detection would
+  run on every substring of the input.
+  ([post](https://mitcho.com/blog/projects/in-case-of-case/))
+- **Verbs only initial or final,** from a typology survey of imperatives.
+  ([post](https://mitcho.com/blog/observation/wheres-the-verb/))
+
+### Scoring rationale
+
+- **Parser 1 ranked lexicographically, in Optimality Theory style:** memory
+  first, then verb match, then argument match. Synonyms scored below names *"to
+  prevent synonyms from colonizing the namespace."*
+  ([post](https://mitcho.com/blog/observation/scoring-and-ranking-suggestions/))
+- **Parser 2's additive form with a multiplier,** where all penalties go into the
+  multiplier early, exists so that the score only rises as detection completes.
+  That makes `maxScore` a sound upper bound, so async noun detection can be
+  skipped for parses that cannot reach the top n. It is the "Rising Sun"
+  model. A threshold was rejected because the UI expects a fixed number of
+  results. ([post](https://mitcho.com/blog/observation/scoring-for-optimization/))
+
+### Where the docs and the code disagree
+
+| Topic | Docs | Code (`11dc94e`) |
+| --- | --- | --- |
+| arbitrary text score | example uses 0.7 | 0.3 (`noun_arb_text`) |
+| step 10 formula | written as a product of noun probabilities | additive `m + Σ score·m` |
+| maxScore pruning | "has yet to be implemented" (mitcho) | implemented (`addIfGoodEnough`) |
+| suggestion memory | 0.6 plans "cover noun suggestions" | verbs only |
+| `rankLast` | Parser 1's specific-vs-generic flag | not read by Parser 2 |
+| `en` roles | tutorial still shows `position` | `location` + `time` |
+
+The code is authoritative for a port. The docs explain why.
+
+### Known limits, from the authors
+
+- **Strongly case-marked languages are out of scope on purpose.** The tutorial:
+  *"encourage the use of adpositions."* German works, because case sits on
+  determiners.
+- **Clitics** were designed (treat them like the selection) but never built.
+- **Unmarked arguments** (bare times) get no role.
+- **One argument per role.** `share-on-delicious` wanted two `alias` arguments,
+  and that was left open.
+- **Candidate lists grow geometrically** with ambiguity.
+- **Argument-first** makes it hard to know what arguments to type.
+
+### Jono's retrospective (Jan 2010)
+
+[Retrospective](https://jonoscript.wordpress.com/2010/01/20/retrospective-what-we-learned-from-ubiquity/):
+
+- *"This crazy thing can work"* (about 500k users) and *"can be localized"*.
+  But localization must be *"practical and useful… not just an academic
+  linguistics exercise."*
+- The hotkey overlay *"suffers from lack of visibility"*: *"I keep forgetting
+  that it's there."*
+- *"Nountypes are very powerful… but hard to get people to use well"*: they
+  were invisible, so authors re-invented them per command.
+- **Namespace collisions** were never solved.
+- **"Inputs are not just strings."**
+- *"Looking at a preview… can be more useful than actually doing it."*
+- *"It's not the system that is valuable to users, it's the individual
+  commands."*
+
+### Taskfox, the successor that dropped the parser
+
+[Taskfox](https://wiki.mozilla.org/Taskfox) *"will not feature natural language
+processing."* It moved modifiers out of the typed sentence and into the
+preview UI, because that is more discoverable and localizable. It did so
+*"at the cost of effortlessly typing what you want to do."*
+
+### What this adds for the port
+
+- **Noun invisibility was Ubiquity's own diagnosis of failure.** Attaching
+  `noun!` to concepts, which already carry descriptions, views and `label`
+  facets, answers it directly. A concept is visible, and every command over it
+  reuses the one declaration.
+- **The Taskfox move is our phase 1.** Prompting for arguments in the preview
+  is the documented fallback when typed grammar is too much. The port's
+  grammar layer can arrive later without changing any `verb!` or `noun!`.
+- **"Inputs are not just strings"** is where tonk is ahead. A selected block or
+  row is an entity, so it can be a direct noun hit instead of text re-parsed by
+  noun types.
+- **Visibility.** The palette lives in the FABB, which is always on screen,
+  rather than behind a hotkey alone. That answers the "I keep forgetting it's
+  there" failure.
