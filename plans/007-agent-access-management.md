@@ -398,3 +398,14 @@ source. Desktop, narrow, and short dark screenshots in
 `/private/tmp/agent-access-aligned-artifacts/` confirm aligned text and unchanged
 responsive actions. No new tests or Rust changes were needed for this CSS fix.
 200% zoom and RTL were not verified in this focused follow-up.
+
+### PR 1021 lint follow-up, 2026-09-28
+
+Hosted run `36446617656` rejected the nested optional-name validation in
+`join_command` with `clippy::collapsible_if` under `-D warnings`. Collapse the
+two conditions into a let-chain, retaining validation before local mutations.
+The end-to-end summary failure was downstream of skipped shards after lint
+failed; it was not a failing browser assertion. Validation for this syntax-only
+fix passed `cargo clippy --locked -p tonk-cli --all-targets --all-features --
+-D warnings`, `cargo fmt --all -- --check`, and `git diff --check`. The full
+hosted lint gate must rerun on the follow-up commit.

@@ -2543,10 +2543,10 @@ async fn join_command(
     via: Option<&str>,
     selected: Option<&str>,
 ) -> ExitCode {
-    if let Some(name) = agent_name {
-        if let Err(error) = tonk_cli::connections::validate_agent_name(name) {
-            return print_failure(error);
-        }
+    if let Some(name) = agent_name
+        && let Err(error) = tonk_cli::connections::validate_agent_name(name)
+    {
+        return print_failure(error);
     }
     match url {
         Some(url) => {
