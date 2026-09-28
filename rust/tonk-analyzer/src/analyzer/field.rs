@@ -141,17 +141,15 @@ pub(crate) fn field_value_to_term(
             }
         }
         FieldValue::Uri(uri) => {
-            let entity: Entity =
-                uri.parse()
-                    .map_err(|e: dialog_artifacts::DialogArtifactsError| {
-                        AnalyzeError::at(
-                            AnalyzeErrorKind::InvalidSubjectUri {
-                                subject: uri.clone(),
-                                reason: e.to_string(),
-                            },
-                            range,
-                        )
-                    })?;
+            let entity: Entity = uri.parse().map_err(|e: dialog_artifacts::IdentityError| {
+                AnalyzeError::at(
+                    AnalyzeErrorKind::InvalidSubjectUri {
+                        subject: uri.clone(),
+                        reason: e.to_string(),
+                    },
+                    range,
+                )
+            })?;
             Term::Constant(Value::Entity(entity))
         }
         FieldValue::Blank => {

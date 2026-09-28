@@ -556,7 +556,7 @@ mod tests {
     async fn old_branch_facts_recover_the_mount_upstream() {
         use crate::domain::branch::{Name, Upstream};
         use crate::prelude::EntityExt as _;
-        use dialog_operator::helpers;
+        use dialog_peer::helpers;
         use dialog_varsig::did;
 
         #[derive(serde::Serialize)]
@@ -572,7 +572,7 @@ mod tests {
             origin: BranchOrigin(owner.clone()),
         };
 
-        let (operator, profile) = helpers::test_operator_with_profile().await;
+        let (operator, profile) = helpers::test_session_with_peer().await;
         let repository = helpers::test_repo(&operator, &profile).await;
         let account = repository
             .branch("main")
@@ -666,9 +666,9 @@ mod tests {
 
     #[dialog_common::test]
     async fn strict_mount_record_accepts_local_absence_and_optional_facts() {
-        use dialog_operator::helpers;
+        use dialog_peer::helpers;
         use dialog_varsig::did;
-        let (operator, profile) = helpers::test_operator_with_profile().await;
+        let (operator, profile) = helpers::test_session_with_peer().await;
         let repository = helpers::test_repo(&operator, &profile).await;
         let branch = repository
             .branch("main")

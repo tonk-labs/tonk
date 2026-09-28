@@ -435,17 +435,15 @@ fn stub_attr() -> serde_json::Value {
 fn parse_concept_this(field: &tonk_notation::Field) -> Result<Option<Entity>, AnalyzeError> {
     match &field.value {
         FieldValue::Uri(uri) => {
-            let entity = uri
-                .parse()
-                .map_err(|e: dialog_artifacts::DialogArtifactsError| {
-                    AnalyzeError::at(
-                        AnalyzeErrorKind::InvalidSubjectUri {
-                            subject: uri.clone(),
-                            reason: e.to_string(),
-                        },
-                        field.value_range,
-                    )
-                })?;
+            let entity = uri.parse().map_err(|e: dialog_artifacts::IdentityError| {
+                AnalyzeError::at(
+                    AnalyzeErrorKind::InvalidSubjectUri {
+                        subject: uri.clone(),
+                        reason: e.to_string(),
+                    },
+                    field.value_range,
+                )
+            })?;
             Ok(Some(entity))
         }
         _ => Ok(None),
@@ -559,14 +557,12 @@ fn resolve_concept_field(
             })
         }
         FieldValue::Uri(uri) => {
-            let entity: Entity =
-                uri.parse()
-                    .map_err(|e: dialog_artifacts::DialogArtifactsError| {
-                        AnalyzeErrorKind::InvalidSubjectUri {
-                            subject: uri.clone(),
-                            reason: e.to_string(),
-                        }
-                    })?;
+            let entity: Entity = uri.parse().map_err(|e: dialog_artifacts::IdentityError| {
+                AnalyzeErrorKind::InvalidSubjectUri {
+                    subject: uri.clone(),
+                    reason: e.to_string(),
+                }
+            })?;
             scope.attribute_by_entity(&entity).ok_or_else(|| {
                 AnalyzeErrorKind::UnknownNameReference {
                     field: field_name.into(),

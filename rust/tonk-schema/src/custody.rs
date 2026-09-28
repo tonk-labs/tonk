@@ -167,7 +167,7 @@ impl SeedKind {
 mod tests {
     use super::*;
     use anyhow::Result;
-    use dialog_operator::helpers;
+    use dialog_peer::helpers;
     use dialog_query::{Output as _, Query, Term};
     use dialog_varsig::did;
     #[cfg(target_arch = "wasm32")]
@@ -205,7 +205,7 @@ mod tests {
     /// message it names is found by the entity it points at.
     #[dialog_common::test]
     async fn it_finds_a_principals_seed_through_the_message_it_names() -> Result<()> {
-        let (operator, profile) = helpers::test_operator_with_profile().await;
+        let (operator, profile) = helpers::test_session_with_peer().await;
         let repository = helpers::test_repo(&operator, &profile).await;
         let branch = repository.branch("main").open().perform(&operator).await?;
         let subject = did!("test:space");
@@ -259,7 +259,7 @@ mod tests {
     /// knowing which principals they belong to — the query rotation runs.
     #[dialog_common::test]
     async fn it_lists_every_message_sealed_to_one_recipient() -> Result<()> {
-        let (operator, profile) = helpers::test_operator_with_profile().await;
+        let (operator, profile) = helpers::test_session_with_peer().await;
         let repository = helpers::test_repo(&operator, &profile).await;
         let branch = repository.branch("main").open().perform(&operator).await?;
         let mine = did!("test:mine");
@@ -298,7 +298,7 @@ mod tests {
     /// principal entity carries no recipient, so nothing collides.
     #[dialog_common::test]
     async fn it_seals_one_seed_to_two_recipients() -> Result<()> {
-        let (operator, profile) = helpers::test_operator_with_profile().await;
+        let (operator, profile) = helpers::test_session_with_peer().await;
         let repository = helpers::test_repo(&operator, &profile).await;
         let branch = repository.branch("main").open().perform(&operator).await?;
         let subject = did!("test:space");

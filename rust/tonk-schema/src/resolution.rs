@@ -403,7 +403,7 @@ impl ListNames<'_> {
 mod tests {
     use super::*;
     use crate::concept::{AnonymousConcept, TransientConcept};
-    use dialog_operator::helpers::{test_operator_with_profile, test_repo};
+    use dialog_peer::helpers::{test_repo, test_session_with_peer};
     use dialog_query::ConceptDescriptor as DialogConceptDescriptor;
     use dialog_query::the;
     use tonk_core::meta::name;
@@ -473,7 +473,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_resolves_a_concept_by_entity() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -497,7 +497,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_resolves_a_concept_by_name() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -529,7 +529,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_resolves_a_transient_concept_to_the_transient_variant() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -557,7 +557,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_returns_none_for_an_unknown_named_concept() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -571,7 +571,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_lists_every_concept_on_the_branch() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -588,7 +588,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_lists_every_published_name() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
