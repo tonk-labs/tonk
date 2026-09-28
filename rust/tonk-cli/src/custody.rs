@@ -139,12 +139,9 @@ pub async fn site_seed(site: &crate::site::TonkSite) -> Result<Option<Zeroizing<
     if site.is_scoped() {
         return Ok(None);
     }
-    let Some(signer) = site.repository.credential().signer() else {
+    let Some(signer) = crate::site::space_signer(site).await? else {
         return Ok(None);
     };
-    // `Signer` gains arms only when dialog-credentials is built with
-    // another algorithm, which this crate never enables.
-    let dialog_credentials::Signer::Ed25519(signer) = signer;
     let exported = signer
         .export()
         .await

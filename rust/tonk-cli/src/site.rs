@@ -19,6 +19,7 @@ use std::sync::LazyLock;
 
 use anyhow::{Context, Result, bail};
 use dialog_capability::{Subject, did};
+use dialog_effects::credential::CredentialError;
 use dialog_credentials::key::ExtractableKey;
 use dialog_credentials::{Ed25519Signer, Extractable};
 use dialog_effects::storage::{self as storage_fx, Directory, Location, LocationExt as _};
@@ -949,7 +950,7 @@ pub async fn account_root_prefix(site: &TonkSite, account_root: &Did) -> Result<
                 .context("failed to retain account-root authority for this profile")?;
             Ok(chain)
         }
-        Err(profile_error) if site.repository.credential().signer().is_some() => {
+        Err(profile_error) if space_signer(site).await?.is_some() => {
             direct_account_root_prefix(site, account_root)
                 .await
                 .with_context(|| {
@@ -962,6 +963,21 @@ pub async fn account_root_prefix(site: &TonkSite, account_root: &Did) -> Result<
     }
 }
 
+/// The key of the site's repository, when this device holds one: the
+/// copy the peer kept of a space it created, or the key a space from
+/// before keys left the storage still carries.
+pub async fn space_signer(site: &TonkSite) -> Result<Option<Ed25519Signer>> {
+    if let Some(dialog_credentials::Signer::Ed25519(signer)) = site.repository.credential().signer()
+    {
+        return Ok(Some(signer.clone()));
+    }
+    match site.profile.key_of(&site.repository.did()).await {
+        Ok(signer) => Ok(Some(signer)),
+        Err(CredentialError::Withheld(_) | CredentialError::NotFound(_)) => Ok(None),
+        Err(error) => Err(error).context("failed to open the space's key"),
+    }
+}
+
 /// Mint and persist a direct `space -> account-root` prefix with the local
 /// repository signer. Provisioning consumes the first proof as the space's
 /// consent, so an otherwise valid adopted chain through an onboarding account
@@ -970,11 +986,10 @@ pub async fn direct_account_root_prefix(
     site: &TonkSite,
     account_root: &Did,
 ) -> Result<DelegationChain> {
-    let Some(dialog_credentials::Signer::Ed25519(signer)) = site.repository.credential().signer()
-    else {
+    let Some(signer) = space_signer(site).await? else {
         bail!("this device cannot sign directly for the selected local space");
     };
-    let minter = Repository::from(signer.clone());
+    let minter = Repository::from(signer);
     let delegation: UcanDelegation = minter
         .access()
         .claim(&minter)

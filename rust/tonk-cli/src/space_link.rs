@@ -358,13 +358,11 @@ impl LocalSpaceLinkCandidate {
         service: &tonk_invite::local_space_link::TrustedService,
         now: dialog_ucan_core::time::Timestamp,
     ) -> Result<tonk_invite::local_space_link::LocalSpaceLinkRequest> {
-        let Some(dialog_credentials::Signer::Ed25519(owner)) =
-            self.site.repository.credential().signer()
-        else {
+        let Some(owner) = crate::site::space_signer(&self.site).await? else {
             bail!("this device cannot sign for the selected local space")
         };
         tonk_invite::local_space_link::LocalSpaceLinkRequest::issue(
-            owner,
+            &owner,
             recipient,
             callback,
             correlation,
@@ -445,7 +443,7 @@ async fn prepare_local_space_link_with_state(
         .perform(site.operator.local())
         .await;
     if let Err(error) = profile_proof
-        && site.repository.credential().signer().is_none()
+        && crate::site::space_signer(&site).await?.is_none()
     {
         return Err(error).context("this device cannot prove authority over this space");
     }
@@ -1336,7 +1334,7 @@ async fn preflight(
         .perform(site.operator.local())
         .await;
     if let Err(error) = profile_proof
-        && site.repository.credential().signer().is_none()
+        && crate::site::space_signer(&site).await?.is_none()
     {
         return Err(error).context("this device cannot prove authority over this space");
     }
