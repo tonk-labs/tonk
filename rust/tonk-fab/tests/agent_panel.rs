@@ -181,6 +181,12 @@ async fn signed_out_agent_uses_the_account_gate_without_minting() {
     let value: serde_json::Value = serde_json::from_str(&payload).unwrap();
     assert_eq!(value["account"]["reason"], "agent-invite-account");
     assert_eq!(value["account"]["space"], "did:key:zAgentSpace");
+    let agent: HtmlElement = bar
+        .query_selector("tonk-agent-panel")
+        .unwrap()
+        .unwrap()
+        .unchecked_into();
+    deliver_reset(&agent, "add an account to connect an agent", "");
     let detail = Object::new();
     Reflect::set(&detail, &"result".into(), &"completed".into()).unwrap();
     let init = CustomEventInit::new();
@@ -252,10 +258,30 @@ async fn explicit_open_mints_once_and_a_ready_frame_renders_the_complete_prompt(
         .unwrap_or_default();
     assert!(prompt.contains(bearer), "the bearer is never truncated");
     assert!(prompt.contains("Agent connection confirmed"));
-    assert!(!shadow(&bar, "#agent-panel .panel-copy").has_attribute("hidden"));
+    assert!(!shadow(&bar, "#agent-panel .agent-copy-prompt").has_attribute("hidden"));
+    assert!(!shadow(&bar, "#agent-panel .agent-copy-link").has_attribute("hidden"));
+    let clipboard = window().unwrap().navigator().clipboard();
+    let previous_write = Reflect::get(&clipboard, &"writeText".into()).unwrap();
+    let copied = Rc::new(RefCell::new(String::new()));
+    let copied_sink = copied.clone();
+    let write = Closure::<dyn FnMut(String) -> js_sys::Promise>::new(move |text| {
+        *copied_sink.borrow_mut() = text;
+        js_sys::Promise::resolve(&wasm_bindgen::JsValue::UNDEFINED)
+    });
+    Reflect::set(&clipboard, &"writeText".into(), write.as_ref()).unwrap();
+    shadow(&bar, "#agent-panel .agent-copy-link")
+        .unchecked_into::<HtmlElement>()
+        .click();
+    assert_eq!(
+        copied.borrow().as_str(),
+        bearer,
+        "copy link writes only the complete bearer"
+    );
+    Reflect::set(&clipboard, &"writeText".into(), &previous_write).unwrap();
+
     assert_eq!(
         shadow(&bar, ".agent-status").text_content().as_deref(),
-        Some("copy the prompt and only share the link with the agent")
+        Some("copy the link and give it to your agent")
     );
 
     bar.remove();

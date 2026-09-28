@@ -376,6 +376,46 @@ describe("exact fetch routing", () => {
     assert.equal(await (await app.response()).text(), "APP SHELL");
   });
 
+  test("tool invite navigation serves its static document without booting Rust", async () => {
+    const { self, caches } = withGlobals();
+    self.clients.get = async () => ({ frameType: "top-level" });
+    const mod = await loadWith({
+      buildId: "published-build",
+      wasmHash: "dev",
+      assetPaths: ["/", "/agent/"],
+      activateSource: 'async () => { throw new Error("tool landing booted Rust"); }',
+      exports: ["SHELL_CACHE"],
+    });
+    const cache = await caches.open(mod.SHELL_CACHE);
+    await cache.put("/", new Response("APP SHELL"));
+    await cache.put("https://tonk.test/agent/", new Response("TOOL INSTRUCTIONS"));
+    const landing = fetchEvent({
+      method: "GET",
+      mode: "navigate",
+      url: "https://tonk.test/agent/?agent=fixture",
+    }, "controlled-top-level");
+    self.onfetch(landing.event);
+    assert.equal(await (await landing.response()).text(), "TOOL INSTRUCTIONS");
+  });
+
+  test("development tool landing uses the server without a stamped manifest", async () => {
+    const { self } = withGlobals({
+      fetchImpl: async () => new Response("DEV TOOL INSTRUCTIONS"),
+    });
+    await loadWith({
+      buildId: "dev",
+      wasmHash: "dev",
+      activateSource: 'async () => { throw new Error("tool landing booted Rust"); }',
+    });
+    const landing = fetchEvent({
+      method: "GET",
+      mode: "navigate",
+      url: "https://tonk.test/agent/",
+    });
+    self.onfetch(landing.event);
+    assert.equal(await (await landing.response()).text(), "DEV TOOL INSTRUCTIONS");
+  });
+
   test("doctor remains reachable when Rust initialization has failed", async () => {
     const { self, caches } = withGlobals();
     self.clients.get = async () => ({ frameType: "top-level" });

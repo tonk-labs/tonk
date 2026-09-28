@@ -592,3 +592,43 @@ async fn connection_rejects_local_upstream_without_silently_repairing_it() -> Re
     );
     Ok(())
 }
+
+#[test]
+fn named_installation_metadata_is_bounded_stable_and_local() -> Result<()> {
+    use tonk_cli::connections::{installation_receipt, validate_agent_name};
+    let first = tempfile::tempdir()?;
+    let second = tempfile::tempdir()?;
+    let grant = "a".repeat(64);
+    for invalid in [
+        "",
+        " ",
+        " leading",
+        "trailing ",
+        "line\nbreak",
+        "control\0",
+        "direction\u{202e}",
+        &"é".repeat(51),
+    ] {
+        assert!(validate_agent_name(invalid).is_err(), "{invalid:?}");
+        assert!(installation_receipt(first.path(), &grant, Some(invalid)).is_err());
+    }
+    assert_eq!(std::fs::read_dir(first.path())?.count(), 0);
+    let named = installation_receipt(first.path(), &grant, Some("Codex · 日本語 <b>"))?;
+    assert_eq!(named.name, "Codex · 日本語 <b>");
+    assert_eq!(installation_receipt(first.path(), &grant, None)?, named);
+    assert!(installation_receipt(first.path(), &grant, Some("Changed")).is_err());
+    assert_ne!(
+        installation_receipt(first.path(), &"b".repeat(64), None)?.installation,
+        named.installation
+    );
+    let copied = installation_receipt(second.path(), &grant, Some("Codex · 日本語 <b>"))?;
+    assert_ne!(named.installation, copied.installation);
+    assert_eq!(named.grant, copied.grant);
+    let saved = std::fs::read_to_string(
+        first
+            .path()
+            .join(format!("agent-installation-{grant}.json")),
+    )?;
+    assert!(!saved.contains("credentials") && !saved.contains(first.path().to_str().unwrap()));
+    Ok(())
+}

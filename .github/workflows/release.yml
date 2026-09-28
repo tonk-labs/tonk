@@ -1,0 +1,195 @@
+name: 'Release'
+
+# A pushed `v*` tag is a release. `v0.7.0-rc.1` is a staging pre-release,
+# `v0.7.0` is a stable release. Cut one with git:
+#
+#   git tag v0.7.0-rc.1 origin/main && git push origin v0.7.0-rc.1
+#
+# or from the GitHub UI by drafting a release with a new tag on `main`.
+# Either way GitHub pushes the tag, which starts this workflow alongside
+# `publish.yml` (web deployment) and `cli-npm.yml` (npm). A release made in
+# the UI already exists by the time this runs; the publish below updates it
+# rather than creating a second one, and the tag decides whether it is a
+# pre-release.
+#
+# This workflow builds the CLI from the tag and attaches it to the tag's
+# GitHub release. A stable release becomes GitHub's `latest`, which is what
+# `install.sh` and `tonk update` resolve for the stable channel. A staging
+# release also replaces the rolling `tonk-staging` release, which the
+# staging channel resolves.
+on:
+  push:
+    tags:
+      - 'v*'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: 'Resolve release'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      channel: ${{ steps.release.outputs.channel }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/resolve-release
+        id: release
+
+  build-cli:
+    name: 'Build ${{ matrix.artifact-name }}'
+    needs: ['resolve']
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact-name: tonk-linux-x86_64
+          - os: macos-latest
+            artifact-name: tonk-macos-arm64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/resolve-release
+      - uses: wimpysworld/nothing-but-nix@main
+        if: runner.os == 'Linux'
+      - uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+      - uses: cachix/cachix-action@v16
+        with:
+          name: tonk-test-cache
+          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+      - name: 'Build tonk'
+        run: nix build --accept-flake-config .#tonk-cli
+      # Nix store outputs are read-only. Sign a writable copy and upload
+      # exactly the bytes that passed notarization.
+      - name: 'Stage tonk artifact'
+        run: |
+          mkdir -p artifacts
+          cp result/bin/tonk artifacts/tonk
+          chmod 0755 artifacts/tonk
+      - name: 'Sign and notarize macOS artifact'
+        if: runner.os == 'macOS'
+        uses: ./.github/actions/sign-notarize-macos
+        with:
+          binary-path: artifacts/tonk
+          certificate-p12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          certificate-password: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          app-store-connect-key: ${{ secrets.APP_STORE_CONNECT_KEY_P8 }}
+          app-store-connect-key-id: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          app-store-connect-issuer-id: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: artifacts/tonk
+
+  publish:
+    name: 'Publish GitHub release'
+    needs: ['resolve', 'build-cli']
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.resolve.outputs.version }}
+      CHANNEL: ${{ needs.resolve.outputs.channel }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: tonk-macos-arm64
+          path: artifacts/macos-arm64
+      - uses: actions/download-artifact@v4
+        with:
+          name: tonk-linux-x86_64
+          path: artifacts/linux-x86_64
+      - name: Prepare release assets
+        run: |
+          set -euo pipefail
+          # Archive each binary as `tonk` so it extracts ready to run,
+          # with the executable bit preserved across the download.
+          install -m 0755 artifacts/macos-arm64/tonk tonk
+          tar -czf tonk-macos-arm64.tar.gz tonk
+          rm tonk
+          install -m 0755 artifacts/linux-x86_64/tonk tonk
+          tar -czf tonk-linux-x86_64.tar.gz tonk
+          rm tonk
+          # Checksums the installer verifies before installing.
+          sha256sum tonk-macos-arm64.tar.gz tonk-linux-x86_64.tar.gz > checksums.txt
+          # Release identity for `tonk update`.
+          cat > manifest.json <<EOF
+          {
+            "version": "$VERSION",
+            "commit": "$GITHUB_SHA",
+            "tag": "$GITHUB_REF_NAME",
+            "channel": "$CHANNEL",
+            "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+          python3 -c 'import json,sys; m=json.load(open("manifest.json")); [sys.exit(f"manifest missing {k}") for k in ("version","commit","channel","built_at") if not m.get(k)]'
+          cat manifest.json
+
+      - name: Publish the tag's release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: tonk ${{ github.ref_name }}
+          generate_release_notes: true
+          append_body: true
+          body: |
+            **Install (macOS / Linux):**
+            ```
+            curl -fsSL https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/install.sh \
+              | TONK_RELEASE=${{ github.ref_name }} sh
+            ```
+
+            The macOS binary is Developer ID signed and notarized by Apple.
+          prerelease: ${{ needs.resolve.outputs.prerelease }}
+          make_latest: ${{ needs.resolve.outputs.prerelease == 'false' }}
+          files: |
+            tonk-macos-arm64.tar.gz
+            tonk-linux-x86_64.tar.gz
+            checksums.txt
+            manifest.json
+            install.sh
+
+      # The staging channel resolves the rolling `tonk-staging` release, so a
+      # staging release replaces it. Stable needs no rolling release: it
+      # resolves GitHub's `latest`, which the release above just became.
+      - name: Delete the rolling staging release
+        if: needs.resolve.outputs.channel == 'staging'
+        run: gh release delete tonk-staging --yes --cleanup-tag || true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+      - name: Publish the rolling staging release
+        if: needs.resolve.outputs.channel == 'staging'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: tonk-staging
+          target_commitish: ${{ github.sha }}
+          name: tonk CLI (staging)
+          body: |
+            Rolling staging release of the tonk CLI, currently ${{ github.ref_name }}.
+
+            **Install this pre-release (macOS / Linux):**
+            ```
+            curl -fsSL https://github.com/${{ github.repository }}/releases/download/tonk-staging/install.sh | TONK_CHANNEL=staging sh
+            ```
+            (Drop `TONK_CHANNEL=staging` to install the stable release.)
+
+            The macOS binary is Developer ID signed and notarized by Apple.
+          prerelease: true
+          make_latest: false
+          files: |
+            tonk-macos-arm64.tar.gz
+            tonk-linux-x86_64.tar.gz
+            checksums.txt
+            manifest.json
+            install.sh
