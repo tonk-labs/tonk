@@ -88,3 +88,26 @@ Local evidence: `/tmp/pr1012-e2e.log`, `/tmp/pr1012-chrome150.log`, and
 with `connection-invites`; only the Caddy fixture and native test helpers were
 changed for this repair. Test environments used isolated profiles and localhost;
 CI uses tonk.network with its loopback mapping.
+
+
+## Copy-control readiness follow-up (2026-09-28)
+
+Run 36433609061 passed E2E shards 2 and 3. Shard 1 passed 35/36 tests;
+`tool_connection_rejects_person_links_and_confirms_the_cli` failed all three
+attempts with `agent copy control is not ready: #agent-panel .agent-copy-link`.
+The previous helper checked the button once after returning from the invitation
+readiness wait and switching browsing contexts. The local Chrome 150 baseline
+passed, so the CI timing has not been reproduced locally.
+
+The helper now waits for the current, visible, enabled copy control, checks and
+clicks it in one browser script, and times out with structural control state.
+Invitation readiness checks both explicit buttons. Copy steps carry phase
+context (initial, returning, repeated, or switched space). No product behavior,
+CI retries, or service-worker timeout was changed.
+
+Validation: five consecutive fresh-profile Chrome 150 runs passed without
+retries (12.48s, 10.18s, 10.30s, 11.10s, 10.63s). Native test compilation,
+Rust formatting, and whitespace checks passed. Evidence is in
+`/tmp/pr1012-copy-verify.log`. The baseline also passed locally; these results
+do not establish reproduction of the CI timing. Hosted verification remains
+pending.
