@@ -1,5 +1,23 @@
 # Implementation plans
 
+## Agent access management
+
+| Plan | Priority | Status | Execution order |
+| --- | --- | --- | --- |
+| [007: Separate invitations from named space access](007-agent-access-management.md) | P1 | DONE (checkpoints 1–3) | Confirmed-only settings, named resumable receipts, and per-space shared-holder access verified |
+
+007 preserves 005's invitation authority model for its first three checkpoints.
+Separate links are already independently revocable. Single-use redemption is
+out of scope; copies of one link continue to share its revocation boundary.
+Initial source drift was empty against `503a5d637`. Checkpoints 1–3 are complete:
+native, Wasm, and all four focused packaged browser/local-service journeys passed
+(browser retries=0), including revoked remote access and preserved downloaded
+data. Desktop/narrow/dark captures, artifact identities, setup failures, and
+unrun old-CLI/hosted checks are recorded in 007's execution log. Post-rebase
+settings layout and filtering checks also passed; remote journeys were not
+rerun after the rebase. This work is prepared for a pull request; deployment
+remains outside scope.
+
 Existing cold-start and Welcome plans are preserved. The CLI review plan below is grounded in `ea730cc18` and covers the two requested findings only.
 
 | Plan | Priority | Status | Execution order |

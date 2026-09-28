@@ -2107,6 +2107,32 @@ account-settings .srowd > .cta { flex: none; }
 account-settings :is([data-agent-connections], [data-terminal-connections])[hidden] { display: none; }
 account-settings :is([data-agent-connections], [data-terminal-connections]) { margin-top: 18px; }
 account-settings :is([data-connections-list], [data-terminal-connections-list]) { display: grid; gap: 7px; margin-top: 12px; }
+account-settings .connection-space { display: grid; gap: 7px; min-width: 0; }
+account-settings .connection-space__heading { display: flex; align-items: baseline;
+    flex-wrap: wrap; gap: 8px; min-width: 0; }
+account-settings .connection-space__label { font: 400 13px/1.4 var(--sans); color: var(--soft); }
+account-settings .connection-space__name { margin: 0; font: 600 18px/1.4 var(--cond);
+    overflow-wrap: anywhere; text-transform: none; }
+account-settings .connection-overview { display: grid; grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start; gap: 16px; }
+account-settings .connection-identity { min-width: 0; }
+account-settings .connection-installations { display: grid; gap: 4px; margin: 0; padding: 0;
+    list-style: none; overflow-wrap: anywhere; font: 600 16px/1.45 var(--sans); text-transform: none; }
+account-settings .connection-installations > li { margin-inline-start: 0; }
+account-settings .connection-title { font: 600 16px/1.45 var(--sans); text-transform: none; }
+account-settings .connection-meta { margin: 6px 0 0; font: 400 13px/1.55 var(--sans);
+    color: var(--soft); overflow-wrap: anywhere; }
+account-settings .connection-actions { display: flex; flex-direction: column; gap: 6px;
+    align-items: flex-end; }
+account-settings [data-agent-connections] button.connection-remove { padding: 10px 14px;
+    background: var(--card); border: 1px solid var(--sep); text-decoration: none; text-align: center;
+    white-space: normal; font: 600 14px/1.4 var(--cond); }
+account-settings [data-agent-connections] button.connection-remove:hover:not(:disabled) { background: var(--wash); }
+account-settings .connection-progress { margin: 12px 0 0; font: 600 13px/1.5 var(--sans); }
+@media (max-width: 560px) {
+    account-settings .connection-overview { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+    account-settings .connection-actions { align-items: flex-start; }
+}
 account-settings .connection-record { min-width: 0; padding: 12px;
     background: var(--card); box-shadow: 0 0 0 1px var(--ring); }
 account-settings .connection-record .expl { overflow-wrap: anywhere; }

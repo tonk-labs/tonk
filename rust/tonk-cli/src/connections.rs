@@ -34,6 +34,79 @@ const PROFILE_NAME: &str = "invitation";
 const DATA_DIRECTORY: &str = "data";
 const CREDENTIAL_DIRECTORY: &str = "credentials";
 
+/// Public setup identity stored outside the replicated repository and credential manifest.
+/// Each local import has an independent random identity; copying credentials still
+/// copies authority, and this identifier does not prove physical hardware.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct InstallationReceipt {
+    /// Metadata format version.
+    pub version: u8,
+    /// Original invitation grant set, not a label-derived selector.
+    pub grant: String,
+    /// Random identity retained before any receipt publication.
+    pub installation: String,
+    /// Bounded, self-reported name.
+    pub name: String,
+}
+
+/// Reject invalid labels before importing credentials or creating local state.
+pub fn validate_agent_name(name: &str) -> Result<()> {
+    ensure!(
+        tonk_schema::agent_connection::valid_agent_name(name),
+        "--agent-name must be 1–100 UTF-8 bytes, without controls or surrounding whitespace"
+    );
+    Ok(())
+}
+
+/// Durably choose setup metadata once. Retries cannot replace its name or identity.
+/// Older manifests need no migration; their first setup retry creates this sidecar.
+pub fn installation_receipt(
+    root: &Path,
+    grant: &str,
+    name: Option<&str>,
+) -> Result<InstallationReceipt> {
+    crate::handoff::scoped_connection_entity(grant)?;
+    if let Some(name) = name {
+        validate_agent_name(name)?;
+    }
+    let _lock = import_lock(root)?;
+    let file = format!("agent-installation-{grant}.json");
+    match std::fs::read(root.join(&file)) {
+        Ok(bytes) => {
+            let saved: InstallationReceipt = serde_json::from_slice(&bytes)?;
+            ensure!(
+                saved.version == 1
+                    && saved.grant == grant
+                    && tonk_schema::agent_connection::valid_installation_id(&saved.installation),
+                "connection_installation_metadata_mismatch"
+            );
+            validate_agent_name(&saved.name)?;
+            if let Some(name) = name {
+                ensure!(
+                    saved.name == name,
+                    "this connection already has a saved --agent-name; resume without changing it"
+                );
+            }
+            Ok(saved)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let saved = InstallationReceipt {
+                version: 1,
+                grant: grant.into(),
+                installation: hex::encode(rand::random::<[u8; 16]>()),
+                name: name
+                    .map(str::to_owned)
+                    .unwrap_or_else(crate::account::default_device_name),
+            };
+            validate_agent_name(&saved.name)?;
+            atomic_public(root, &file, &serde_json::to_vec(&saved)?)?;
+            Ok(saved)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
 /// Immutable public authority selector, duplicated in the space registry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

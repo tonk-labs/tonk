@@ -110,6 +110,15 @@ async fn removed_workflows_preserve_existing_local_state() -> Result<()> {
             ],
             "invalid invite",
         ),
+        (
+            vec![
+                "join",
+                "https://example.test/agent/#never-print-secret",
+                "--agent-name",
+                "invalid\nlabel",
+            ],
+            "--agent-name must be",
+        ),
         (vec!["join", "--agent"], "unexpected argument"),
         (vec!["connect"], "unrecognized subcommand"),
         (vec!["link"], "unrecognized subcommand"),
@@ -207,6 +216,37 @@ async fn connection_receipts_are_grant_set_specific_and_failed_pull_writes_none(
             .results
             .is_empty()
     );
+    // Publication retries reuse the saved identity and do not create duplicate setup reports.
+    use dialog_query::{Output as _, Query, Term};
+    use tonk_schema::agent_connection as fields;
+    let saved = tonk_cli::connections::installation_receipt(&site.site.root, &first, None)?;
+    tonk_cli::handoff::record_scoped_connection(&site.site, &first).await?;
+    assert!(tonk_cli::sync::push(&site.site).await.is_err());
+    assert_eq!(
+        tonk_cli::connections::installation_receipt(&site.site.root, &first, None)?,
+        saved
+    );
+    let reports = site
+        .site
+        .branch()
+        .await?
+        .handle()
+        .query()
+        .select(Query::<fields::AgentInstallationConfirmation> {
+            this: Term::var("this"),
+            grant: Term::from(fields::Grant(first.clone())),
+            installation: Term::var("installation"),
+            name: Term::var("name"),
+            status: Term::from(fields::InstallationStatus(
+                "Agent connection confirmed".into(),
+            )),
+        })
+        .perform(&site.site.operator)
+        .try_vec()
+        .await?;
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0].installation.0, saved.installation);
+    assert_eq!(reports[0].name.0, saved.name);
     let route = tonk_cli::render::RenderRoute::parse("tonk:agent-connection")?;
     let html = tonk_cli::render::render(&site.site, &route).await?;
     for id in [&first, &second] {
@@ -288,7 +328,7 @@ async fn connection_command_imports_bearer_restarts_and_keeps_account_state() ->
     }
     let invite = AgentInvite::new(seed, chains, &scopes, &remote, Timestamp::now()).await?;
     // Carrier and ambient selection cannot choose the service or space.
-    let link = invite.to_url("https://untrusted-carrier.example/join")?;
+    let link = invite.to_url("https://untrusted-carrier.example/agent/")?;
     let prepared = tonk_cli::connections::validate_link(&link, &remote).await?;
     let temp = tempfile::tempdir()?;
     let producer_root = temp.path().join("producer");
@@ -359,6 +399,15 @@ async fn connection_command_imports_bearer_restarts_and_keeps_account_state() ->
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(String::from_utf8_lossy(&output.stdout).contains("Agent connection confirmed"));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for next in [
+        "tonk --space agent status",
+        "tonk --space agent space agents get",
+        "tonk --space agent show",
+        "tonk help tutorial",
+    ] {
+        assert!(stdout.contains(next), "missing orientation command: {next}");
+    }
     assert!(!String::from_utf8_lossy(&output.stdout).contains(&link));
     assert!(!String::from_utf8_lossy(&output.stderr).contains(&link));
     assert_eq!(store.account()?, Some(unrelated.clone()));

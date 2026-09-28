@@ -55,3 +55,47 @@ pub struct AgentGrantRevocationIntent {
     pub this: Entity,
     pub requested_at: RequestedAt,
 }
+
+/// Invitation grant set acknowledged by a reported installation.
+#[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[domain("xyz.tonk.agent-connection")]
+pub struct Grant(pub String);
+/// Random local installation identifier. It is self-reported, not a device key.
+#[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[domain("xyz.tonk.agent-connection")]
+pub struct Installation(pub String);
+/// Bounded self-reported connection label, never an authority selector.
+#[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[domain("xyz.tonk.agent-connection")]
+pub struct Name(pub String);
+/// Completion status of an installation receipt, separate from legacy banners.
+#[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[domain("xyz.tonk.agent-installation")]
+pub struct InstallationStatus(pub String);
+/// Additive receipt; old status-only confirmation queries remain valid.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AgentInstallationConfirmation {
+    pub this: Entity,
+    pub grant: Grant,
+    pub installation: Installation,
+    pub name: Name,
+    pub status: InstallationStatus,
+}
+
+/// Labels allow Unicode and literal markup, but no controls or surrounding whitespace.
+pub fn valid_agent_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 100
+        && name.trim() == name
+        && !name.chars().any(|c| {
+            c.is_control() || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+        })
+}
+
+/// Public random installation identifiers use 128 bits encoded as lowercase hex.
+pub fn valid_installation_id(id: &str) -> bool {
+    id.len() == 32
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
