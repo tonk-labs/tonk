@@ -24,6 +24,10 @@ pub enum Source {
     File(PathBuf),
     /// Piped stdin or `-`. Diagnostics are labelled `<stdin>`.
     Stdin,
+    /// The standard library's `core.yaml`, compiled into this binary.
+    /// Its includes resolve to the files bundled with it (see
+    /// [`tonk_library`]).
+    Library(String),
 }
 
 impl Source {
@@ -34,6 +38,7 @@ impl Source {
             Source::Inline(_) => "<inline>".to_string(),
             Source::File(path) => path.display().to_string(),
             Source::Stdin => "<stdin>".to_string(),
+            Source::Library(_) => "<standard library>".to_string(),
         }
     }
 
@@ -52,6 +57,7 @@ impl Source {
             Source::Inline(_) | Source::Stdin => {
                 Ok(Url::parse(INLINE_LOCATION).expect("INLINE_LOCATION is a valid URI"))
             }
+            Source::Library(_) => Ok(tonk_library::location("core.yaml")),
         }
     }
 
@@ -59,7 +65,7 @@ impl Source {
     /// both go through tokio.
     async fn read(&self) -> Result<String, EvalError> {
         match self {
-            Source::Inline(text) => Ok(text.clone()),
+            Source::Inline(text) | Source::Library(text) => Ok(text.clone()),
             Source::File(path) => tokio::fs::read_to_string(path)
                 .await
                 .map_err(|e| EvalError::Io(format!("failed to read {}: {e}", path.display()))),
@@ -285,23 +291,28 @@ fn format_diagnostics(source: &str, diagnostics: &[lsp_types::Diagnostic]) -> St
         .join("\n")
 }
 
-/// Loads `!include`d resources from the local filesystem. Only
-/// `file:` URIs are reachable; an include that names anything else
-/// is reported rather than fetched.
+/// Loads `!include`d resources: `file:` URIs from the local
+/// filesystem, and the bundled standard library's includes from the
+/// binary. An include that names anything else is reported rather than
+/// fetched.
 struct Files;
 
 impl Load for Files {
     async fn load(&self, uri: &Url) -> Result<Vec<u8>, String> {
-        if uri.scheme() != "file" {
-            return Err(format!(
-                "only `file:` resources can be included here, not `{}:`",
-                uri.scheme()
-            ));
+        match uri.scheme() {
+            "file" => {
+                let path = uri
+                    .to_file_path()
+                    .map_err(|()| "not a local file path".to_owned())?;
+                tokio::fs::read(&path).await.map_err(|e| e.to_string())
+            }
+            _ if uri.as_str().starts_with(tonk_library::ROOT) => {
+                tonk_library::Bundled.load(uri).await
+            }
+            scheme => Err(format!(
+                "only `file:` resources can be included here, not `{scheme}:`"
+            )),
         }
-        let path = uri
-            .to_file_path()
-            .map_err(|()| "not a local file path".to_owned())?;
-        tokio::fs::read(&path).await.map_err(|e| e.to_string())
     }
 }
 

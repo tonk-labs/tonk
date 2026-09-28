@@ -3695,7 +3695,7 @@ impl ProfileLibraryCache {
         let library = fetch_profile_library()
             .await
             .map_err(|e| RepositoryError::Internal(format!("fetch profile library: {e}")))?;
-        let prepared = prepare_profile_library(library)?;
+        let prepared = prepare_profile_library(library).await?;
         *cached = Some(prepared.clone());
         Ok(prepared)
     }
@@ -3704,7 +3704,7 @@ impl ProfileLibraryCache {
         &self,
         library: String,
     ) -> Result<PreparedProfileLibrary, RepositoryError> {
-        let prepared = prepare_profile_library(library)?;
+        let prepared = prepare_profile_library(library).await?;
         let mut cached = self.input.lock().await;
         *cached = Some(prepared.clone());
         Ok(prepared)
@@ -4438,14 +4438,27 @@ const SEED_NONE: &str = "seed:none";
 /// creation fails loudly rather than seeding an empty repo.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(super) async fn fetch_standard_library(url: &str) -> Result<String, TonkWorkerError> {
+    String::from_utf8(fetch_library_bytes(url).await?)
+        .map_err(|_| TonkWorkerError::Internal(format!("library {url} is not UTF-8 text")))
+}
+
+/// Fetch a served library file's bytes: the document itself, or a file a
+/// library document includes (see [`super::library`]). Read from this
+/// worker's immutable generation first, then from the network with the
+/// HTTP cache sidestepped.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(super) async fn fetch_library_bytes(url: &str) -> Result<Vec<u8>, TonkWorkerError> {
     use wasm_bindgen::JsCast;
     use wasm_bindgen_futures::JsFuture;
     use web_sys::{Request, RequestCache, RequestInit, Response};
 
-    if let Some(library) = crate::cache::immutable_asset_text(url).await.map_err(|e| {
-        TonkWorkerError::Internal(format!("read {url} from worker generation: {e:?}"))
-    })? {
-        return Ok(library);
+    if let Some(bytes) = crate::cache::immutable_asset_bytes(url)
+        .await
+        .map_err(|e| {
+            TonkWorkerError::Internal(format!("read {url} from worker generation: {e:?}"))
+        })?
+    {
+        return Ok(bytes);
     }
 
     let init = RequestInit::new();
@@ -4466,15 +4479,14 @@ pub(super) async fn fetch_standard_library(url: &str) -> Result<String, TonkWork
             response.status()
         )));
     }
-    let text = JsFuture::from(
+    let buffer = JsFuture::from(
         response
-            .text()
-            .map_err(|e| TonkWorkerError::Internal(format!("library text(): {e:?}")))?,
+            .array_buffer()
+            .map_err(|e| TonkWorkerError::Internal(format!("library arrayBuffer(): {e:?}")))?,
     )
     .await
     .map_err(|e| TonkWorkerError::Internal(format!("library body: {e:?}")))?;
-    text.as_string()
-        .ok_or_else(|| TonkWorkerError::Internal("library body is not a string".to_owned()))
+    Ok(js_sys::Uint8Array::new(&buffer).to_vec())
 }
 
 /// Wasm profile-library tests run in the pooled browser harness rather than the
@@ -5717,22 +5729,17 @@ pub(crate) async fn retract_local_profile_library(
 /// so existing facts cannot suppress unchanged definitions from the result.
 /// `Changes` preserves whether each final write used cardinality-one replace
 /// semantics before any repository commit can deduplicate it.
-fn prepare_profile_library(library: String) -> Result<PreparedProfileLibrary, RepositoryError> {
+async fn prepare_profile_library(
+    library: String,
+) -> Result<PreparedProfileLibrary, RepositoryError> {
     use dialog_artifacts::{Changes, Instruction, Statement as _};
     use dialog_query::{Parameters, Term};
     use tonk_schema::transact::{Planner as _, Statement};
 
     let target = seed_version(&library);
-    let parsed = tonk_notation::parse(&library);
-    if let Some(diagnostic) = parsed.diagnostics.first() {
-        return Err(RepositoryError::Internal(format!(
-            "parse profile library: {}",
-            diagnostic.message
-        )));
-    }
-    let syntax = parsed
-        .syntax
-        .ok_or_else(|| RepositoryError::Internal("profile library is empty".to_owned()))?;
+    let syntax = super::library::parse(&library)
+        .await
+        .map_err(|error| RepositoryError::Internal(format!("profile library: {error}")))?;
     let analyzed = tonk_analyzer::analyzer::analyze_local(&syntax)
         .map_err(|error| RepositoryError::Internal(format!("analyze profile library: {error}")))?;
     let mut bindings = Parameters::new();
@@ -5995,7 +6002,7 @@ pub(crate) async fn reconcile_profile_library_from(
     tonk: &TonkState,
     library: String,
 ) -> Result<ProfileLibraryOutcome, RepositoryError> {
-    let prepared = prepare_profile_library(library)?;
+    let prepared = prepare_profile_library(library).await?;
     reconcile_prepared_profile_library(tonk, prepared).await
 }
 
@@ -8299,6 +8306,7 @@ mod profile_library_tests {
                 tonk,
                 &session,
                 &prepare_profile_library(CURRENT.to_owned())
+                    .await
                     .unwrap()
                     .assertions
             )
@@ -8360,7 +8368,7 @@ mod profile_library_tests {
         assert_eq!(spaces, vec![space]);
         let revision = session.handle().revision();
         // Discard the worker's receipt to exercise persisted idempotence.
-        let fresh = prepare_profile_library(CURRENT.to_owned()).unwrap();
+        let fresh = prepare_profile_library(CURRENT.to_owned()).await.unwrap();
         tonk.profile_library.receipt.lock().unwrap().clear();
         assert_eq!(
             reconcile_prepared_profile_library(tonk, fresh)
@@ -8935,6 +8943,7 @@ route!: &foreign-profile-route
                 .await
                 .expect("profile library installs");
             let expected = prepare_profile_library(CURRENT.to_owned())
+                .await
                 .expect("profile library prepares")
                 .assertions
                 .into_iter()

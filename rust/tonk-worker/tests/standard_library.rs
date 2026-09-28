@@ -41,12 +41,19 @@ const ISSUE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/issue.y
 const META_LIBRARY: &str = include_str!("../../tonk-core/assets/library/meta.yaml");
 
 /// Lower a library document the same way the seed does, asserting it
-/// parses, analyzes with no running system, and lowers to claims.
-fn assert_library_lowers(label: &str, document: &str) {
-    let parsed = tonk_notation::parse(document);
-    let syntax = parsed
+/// parses, analyzes with no running system, and lowers to claims. Like
+/// the seed, it is parsed where the library lives and what it
+/// `!include`s is inlined from the bundled copies first.
+async fn assert_library_lowers(label: &str, file: &str, document: &str) {
+    let parsed = tonk_notation::parse_at(tonk_library::location(file), document);
+    let mut syntax = parsed
         .syntax
         .unwrap_or_else(|| panic!("{label} must parse with no diagnostics"));
+    let unexpanded = tonk_notation::expand(&mut syntax, &tonk_library::Bundled).await;
+    assert!(
+        unexpanded.is_empty(),
+        "{label} must include only files beside it: {unexpanded:#?}"
+    );
     let tree = tonk_analyzer::analyzer::analyze_local(&syntax)
         .unwrap_or_else(|e| panic!("{label} must analyze with no running system: {e:#?}"));
 
@@ -74,8 +81,13 @@ fn css_rule<'a>(document: &'a str, selector: &str) -> &'a str {
 }
 
 #[dialog_common::test]
-fn it_lowers_the_standard_library() {
-    assert_library_lowers("standard library (core.yaml)", STANDARD_LIBRARY);
+async fn it_lowers_the_standard_library() {
+    assert_library_lowers(
+        "standard library (core.yaml)",
+        "core.yaml",
+        STANDARD_LIBRARY,
+    )
+    .await;
 }
 
 /// The meta library describes a real shape, not an aspirational one.
@@ -84,13 +96,18 @@ fn it_lowers_the_standard_library() {
 /// is one the worker actually writes to a `meta` branch, so lowering it
 /// is what keeps the description from drifting from the rows.
 #[dialog_common::test]
-fn it_lowers_the_meta_library() {
-    assert_library_lowers("meta library (meta.yaml)", META_LIBRARY);
+async fn it_lowers_the_meta_library() {
+    assert_library_lowers("meta library (meta.yaml)", "meta.yaml", META_LIBRARY).await;
 }
 
 #[dialog_common::test]
-fn it_lowers_the_profile_library() {
-    assert_library_lowers("profile library (profile.yaml)", PROFILE_LIBRARY);
+async fn it_lowers_the_profile_library() {
+    assert_library_lowers(
+        "profile library (profile.yaml)",
+        "profile.yaml",
+        PROFILE_LIBRARY,
+    )
+    .await;
 }
 
 /// The switcher row binds the handle a command can actually act on.
@@ -1250,28 +1267,36 @@ fn it_declares_mobile_target_and_input_floors_for_hub_and_join() {
 /// the standard library, whose `view` / `event` / `command` concepts it
 /// references. `analyze_local` resolves names within one document, so
 /// the concatenation is what stands in for "core is already seeded".
-fn assert_component_library_lowers(label: &str, document: &str) {
-    assert_library_lowers(label, &format!("{STANDARD_LIBRARY}\n{document}"));
+async fn assert_component_library_lowers(label: &str, file: &str, document: &str) {
+    assert_library_lowers(label, file, &format!("{STANDARD_LIBRARY}\n{document}")).await;
 }
 
 #[dialog_common::test]
-fn it_lowers_the_table_library() {
-    assert_component_library_lowers("table library (table.yaml)", TABLE_LIBRARY);
+async fn it_lowers_the_table_library() {
+    assert_component_library_lowers("table library (table.yaml)", "table.yaml", TABLE_LIBRARY)
+        .await;
 }
 
 #[dialog_common::test]
-fn it_lowers_the_notebook_library() {
-    assert_component_library_lowers("notebook library (notebook.yaml)", NOTEBOOK_LIBRARY);
+async fn it_lowers_the_notebook_library() {
+    assert_component_library_lowers(
+        "notebook library (notebook.yaml)",
+        "notebook.yaml",
+        NOTEBOOK_LIBRARY,
+    )
+    .await;
 }
 
 #[dialog_common::test]
-fn it_lowers_the_prose_library() {
-    assert_component_library_lowers("prose library (prose.yaml)", PROSE_LIBRARY);
+async fn it_lowers_the_prose_library() {
+    assert_component_library_lowers("prose library (prose.yaml)", "prose.yaml", PROSE_LIBRARY)
+        .await;
 }
 
 #[dialog_common::test]
-fn it_lowers_the_issue_library() {
-    assert_component_library_lowers("issue library (issue.yaml)", ISSUE_LIBRARY);
+async fn it_lowers_the_issue_library() {
+    assert_component_library_lowers("issue library (issue.yaml)", "issue.yaml", ISSUE_LIBRARY)
+        .await;
 }
 
 // The `on:` binding gates that used to live here — a dangling
@@ -1294,7 +1319,7 @@ fn it_lowers_the_issue_library() {
 /// been seeded — and a lean repo, the profile meta-branch, or a `tonk
 /// eval` fixture would all fail to parse one.
 #[dialog_common::test]
-fn an_event_declaration_lowers_without_the_library() {
+async fn an_event_declaration_lowers_without_the_library() {
     let document = r#"event!: &on/tap
   type: "click"
   prevent-default: true
@@ -1316,7 +1341,7 @@ command!: &bump
       as: float
       cardinality: one
 "#;
-    assert_library_lowers("a bare `event!:` document", document);
+    assert_library_lowers("a bare `event!:` document", "event.yaml", document).await;
 }
 
 /// The optional side-effect flags really are optional: a declaration
@@ -1324,13 +1349,13 @@ command!: &bump
 /// library omits them, so a regression here would break all of them at
 /// once.
 #[dialog_common::test]
-fn an_event_declaration_may_omit_the_side_effect_flags() {
+async fn an_event_declaration_may_omit_the_side_effect_flags() {
     let document = r#"event!: &on/plain
   type: "click"
   where:
     subject: "{this}"
 "#;
-    assert_library_lowers("an `event!:` with no flags", document);
+    assert_library_lowers("an `event!:` with no flags", "event.yaml", document).await;
 }
 
 /// The wire predicate `tonk-template` builds matches the built-in.

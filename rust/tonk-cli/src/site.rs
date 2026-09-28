@@ -356,7 +356,7 @@ impl TonkSite {
     async fn seed_standard_library(&self) -> Result<()> {
         crate::eval::run_against_site(
             self,
-            crate::eval::Source::Inline(STANDARD_LIBRARY.to_string()),
+            crate::eval::Source::Library(STANDARD_LIBRARY.to_string()),
             crate::eval::Options::default(),
         )
         .await

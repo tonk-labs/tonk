@@ -122,6 +122,7 @@ pub(crate) mod profiles;
 mod profile_name;
 
 mod evaluate;
+mod library;
 pub use evaluate::{CommitSummary, EvaluatePath, EvaluateResponse, QueryMatchBlock, QueryResult};
 
 mod query;
