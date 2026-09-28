@@ -68,7 +68,7 @@ pub async fn inspect_branch(
 
     let repo = tonk_state
         .profile
-        .repository(&params.repo)
+        .space(&params.repo)
         .load()
         .perform(&tonk_state.operator)
         .await
@@ -85,15 +85,23 @@ pub async fn inspect_branch(
             TonkWorkerError::Internal(format!("Failed to open branch '{}': {}", params.branch, e))
         })?;
 
-    let upstream = branch.upstream().map(|u| {
+    let names = crate::router::remotes::list(&repo, &tonk_state.operator).await?;
+    let upstream = tonk_account::peer::upstream(&branch).map(|u| {
         use dialog_repository::Upstream;
         match u {
             Upstream::Local { branch, .. } => UpstreamInfo::Local {
                 branch: branch.to_string(),
             },
             Upstream::Remote { remote, branch, .. } => UpstreamInfo::Remote {
-                remote: remote.to_string(),
+                remote: names
+                    .iter()
+                    .find_map(|(name, recorded)| recorded.is(&remote).then(|| name.clone()))
+                    .unwrap_or_else(|| remote.name()),
                 branch: branch.to_string(),
+            },
+            Upstream::Unreachable { target, .. } => UpstreamInfo::Remote {
+                remote: target.to_string(),
+                branch: String::new(),
             },
         }
     });

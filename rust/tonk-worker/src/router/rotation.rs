@@ -622,10 +622,10 @@ async fn install_prefix(
         .to_bytes()
         .map_err(|error| TonkWorkerError::Internal(format!("{subject}: serialize: {error}")))?;
     tonk.profile
-        .credential()
+        .secrets()
         .site(format!("{SPACE_ROOT_SITE_PREFIX}{subject}"))
         .save(bytes)
-        .perform(&tonk.operator)
+        .perform(&tonk.profile)
         .await
         .map_err(|error| TonkWorkerError::Internal(format!("{subject}: prefix: {error}")))?;
     Ok(())

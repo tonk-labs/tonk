@@ -11,8 +11,8 @@ use tonk_worker_api::{PasskeyMetadata, RootStatus, SaveRootRequest};
 
 use super::AppState;
 use crate::TonkWorkerError;
-use crate::worker::{DefaultOperator, TonkState};
-use dialog_operator::Profile;
+use crate::worker::DefaultProfile;
+use crate::worker::TonkState;
 
 const LOCAL_ROOT_SITE: &str = "tonk-local-root-v1";
 
@@ -87,22 +87,21 @@ pub(crate) async fn validate_grant(
 pub(crate) async fn load_record(
     state: &TonkState,
 ) -> Result<Option<LocalRootRecord>, TonkWorkerError> {
-    load_record_from(&state.profile, &state.operator, &state.active_branch).await
+    load_record_from(&state.profile, &state.active_branch).await
 }
 
 /// Load and validate the serialized root record belonging to an explicit
 /// profile. Account routing uses this without constructing a full TonkState
 /// for every inactive roster entry.
 async fn load_record_from(
-    profile: &Profile,
-    operator: &DefaultOperator,
+    profile: &DefaultProfile,
     branch: &str,
 ) -> Result<Option<LocalRootRecord>, TonkWorkerError> {
     let bytes = match profile
-        .credential()
+        .secrets()
         .site(crate::credential::branch_site(LOCAL_ROOT_SITE, branch).as_str())
         .load::<Vec<u8>>()
-        .perform(operator)
+        .perform(profile)
         .await
     {
         Ok(bytes) => bytes,
@@ -192,10 +191,10 @@ pub(crate) async fn forget_encryption_key(state: &TonkState) -> Result<(), TonkW
     })?;
     state
         .profile
-        .credential()
+        .secrets()
         .site(crate::credential::branch_site(LOCAL_ROOT_SITE, &state.active_branch).as_str())
         .save(encoded)
-        .perform(&state.operator)
+        .perform(&state.profile)
         .await
         .map_err(|error| TonkWorkerError::Internal(format!("failed to save local root: {error}")))
 }
@@ -208,10 +207,10 @@ pub(crate) async fn forget_encryption_key(state: &TonkState) -> Result<(), TonkW
 pub(crate) async fn forget_root(state: &TonkState) -> Result<(), TonkWorkerError> {
     state
         .profile
-        .credential()
+        .secrets()
         .site(crate::credential::branch_site(LOCAL_ROOT_SITE, &state.active_branch).as_str())
         .retract()
-        .perform(&state.operator)
+        .perform(&state.profile)
         .await
         .map_err(|error| TonkWorkerError::Internal(format!("failed to forget local root: {error}")))
 }
@@ -326,10 +325,10 @@ pub(crate) async fn persist_root(
     })?;
     state
         .profile
-        .credential()
+        .secrets()
         .site(crate::credential::branch_site(LOCAL_ROOT_SITE, &state.active_branch).as_str())
         .save(encoded)
-        .perform(&state.operator)
+        .perform(&state.profile)
         .await
         .map_err(|error| {
             TonkWorkerError::Internal(format!("failed to save local root: {error}"))

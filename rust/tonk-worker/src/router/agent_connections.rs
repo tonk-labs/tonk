@@ -255,7 +255,7 @@ pub(crate) async fn mint(
     let root = super::identity::local_root(&tonk).await?;
     let repository = tonk
         .profile
-        .repository(&repo)
+        .space(&repo)
         .load()
         .perform(&tonk.operator)
         .await
@@ -297,7 +297,7 @@ pub(crate) async fn mint(
     let ancestors = issuer_ancestors(&tonk, &scopes, now, expires).await?;
     let invite = issue(
         seed,
-        tonk.profile.signer().signer().clone(),
+        tonk.profile.credential().signer().clone(),
         ancestors,
         &scopes,
         &remote,
@@ -524,7 +524,7 @@ async fn confirmation(
     use fields::AgentConnectionConfirmation;
     let repository = match tonk
         .profile
-        .repository(&group.repo)
+        .space(&group.repo)
         .load()
         .perform(&tonk.operator)
         .await
@@ -638,7 +638,7 @@ async fn publish_target(
     path: &DelegationChain,
     target: &ipld_core::cid::Cid,
 ) -> Result<tonk_account::customer::RevokeReceipt, TonkWorkerError> {
-    let signer = tonk.profile.signer().signer().clone();
+    let signer = tonk.profile.credential().signer().clone();
     let artifact = if path
         .proofs()
         .last()
@@ -692,7 +692,7 @@ pub async fn revoke(
         })?;
     let repository = tonk
         .profile
-        .repository(&group.repo)
+        .space(&group.repo)
         .load()
         .perform(&tonk.operator)
         .await
@@ -1079,17 +1079,12 @@ mod tests {
     async fn it_keeps_the_invitation_ledger_on_the_branch_the_profile_is_on() -> anyhow::Result<()>
     {
         use dialog_effects::storage::Directory;
-        use dialog_operator::Profile;
-        use dialog_storage::provider::storage::Storage;
         let directory =
             std::env::temp_dir().join(format!("tonk-connection-branch-{}", rand::random::<u64>()));
         std::fs::create_dir_all(&directory)?;
         let location = Directory::At(directory.to_string_lossy().into_owned());
-        let storage = Storage::default();
-        let profile = Profile::open("ledger-branch")
-            .at(location.clone())
-            .perform(&storage)
-            .await?;
+        let (storage, profile) =
+            crate::device::open_profile_at("ledger-branch", location.clone()).await?;
         let registry = crate::device::Registry {
             profile: "ledger-branch".into(),
             directory: location.clone(),
@@ -1180,17 +1175,11 @@ mod tests {
     async fn connection_management_partial_receipts_survive_restart_and_retry_only_missing()
     -> anyhow::Result<()> {
         use dialog_effects::storage::Directory;
-        use dialog_operator::Profile;
-        use dialog_storage::provider::storage::Storage;
         let directory =
             std::env::temp_dir().join(format!("tonk-connection-ledger-{}", rand::random::<u64>()));
         std::fs::create_dir_all(&directory)?;
         let location = Directory::At(directory.to_string_lossy().into_owned());
-        let storage = Storage::default();
-        let profile = Profile::open("ledger")
-            .at(location.clone())
-            .perform(&storage)
-            .await?;
+        let (storage, profile) = crate::device::open_profile_at("ledger", location.clone()).await?;
         let registry = crate::device::Registry {
             profile: "ledger".into(),
             directory: location.clone(),
@@ -1254,14 +1243,13 @@ mod tests {
             .await?;
         assert_eq!(groups(&tonk).await?.len(), 1);
         assert!(has_issued_for_subject(&tonk, invite.grants().subject()).await?);
-        let other_profile = Profile::open("other-account")
-            .at(location.clone())
-            .perform(&tonk.storage)
-            .await?;
         let other_registry = crate::device::Registry {
             profile: "other-account".into(),
             directory: location.clone(),
         };
+        let other_profile = other_registry
+            .open_profile(&tonk.storage, "other-account")
+            .await?;
         let other = crate::worker::boot_state(
             tonk.storage.clone(),
             "other-account".into(),
@@ -1340,11 +1328,7 @@ mod tests {
             5
         );
         drop(tonk);
-        let storage = Storage::default();
-        let profile = Profile::load("ledger")
-            .at(location.clone())
-            .perform(&storage)
-            .await?;
+        let (storage, profile) = crate::device::open_profile_at("ledger", location.clone()).await?;
         let registry = crate::device::Registry {
             profile: "ledger".into(),
             directory: location,

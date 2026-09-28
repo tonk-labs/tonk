@@ -59,7 +59,7 @@ pub async fn serve(
     let tonk = state.read().await;
     let repo = tonk
         .profile
-        .repository(&params.repo)
+        .space(&params.repo)
         .load()
         .perform(&tonk.operator)
         .await
@@ -194,7 +194,7 @@ pub async fn upload(
     // graph, so it doesn't go through the reactor.
     let repository = tonk
         .profile
-        .repository(&path.repo)
+        .space(&path.repo)
         .load()
         .perform(&tonk.operator)
         .await
@@ -335,7 +335,7 @@ mod tests {
             let guard = app_state.read().await;
             let repository = guard
                 .profile
-                .repository(&repo)
+                .space(&repo)
                 .load()
                 .perform(&guard.operator)
                 .await

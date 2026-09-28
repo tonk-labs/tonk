@@ -20,8 +20,9 @@
 //! before: an attacker controls the pre-passkey spaces, not the account.
 
 use dialog_artifacts::Entity;
+use dialog_credentials::key::{ExtractableKey, KeyExport};
 use dialog_credentials::secret::SealedSecret;
-use dialog_credentials::{Credential, Ed25519Signer, Signer};
+use dialog_credentials::{Credential, Ed25519Signer, Extractable, Signer};
 use dialog_effects::credential::CredentialError;
 use dialog_effects::credential::prelude::*;
 use dialog_ucan::{Parameters, Scope, UcanDelegation};
@@ -43,15 +44,15 @@ use crate::worker::TonkState;
 /// re-read of bytes in the old shape.
 const ONBOARDING_ENVELOPE_SITE: &str = "tonk-onboarding-account-v1";
 
-/// Credential key holding the onboarding custodian: the keypair whose
+/// Credential site holding the onboarding custodian: the keypair whose
 /// agreement key reveals the KEK that opens [`ONBOARDING_ENVELOPE_SITE`].
 ///
-/// A key, not a site, because `.key()` stores a `CryptoKeyPair` handle
-/// that WebCrypto generates **non-extractable** by default. The KEK is
-/// on disk only sealed to this keypair ([`ONBOARDING_KEK_SITE`]), so no
-/// bytes on disk can open the envelope without it. That is what makes
-/// this a stand-in for a passkey rather than a password sitting next to
-/// the thing it locks.
+/// The custodian's seed, kept as a secret sealed to the profile's peers:
+/// a storage keeps no signing key, so the non-extractable `CryptoKeyPair`
+/// that used to live under this name as a `.key()` is only read back from
+/// profiles that stored one before. The KEK is on disk only sealed to
+/// this keypair ([`ONBOARDING_KEK_SITE`]), so no bytes on disk can open
+/// the envelope without it.
 ///
 /// Separate from the envelope on purpose: accreditation destroys the
 /// custodian and leaves the envelope unopenable, which makes "the
@@ -227,20 +228,21 @@ async fn create(state: &TonkState) -> Result<AccountSecret, TonkWorkerError> {
     let secret =
         AccountSecret::generate().map_err(|error| TonkWorkerError::Internal(format!("{error}")))?;
 
-    // The default `generate` is what we want: on wasm it produces a
-    // non-extractable WebCrypto keypair, and the extractable variant is
-    // an explicit opt-in we deliberately do not take.
-    let custodian = Ed25519Signer::generate().await.map_err(|error| {
-        TonkWorkerError::Internal(format!(
-            "failed to generate the onboarding custodian: {error}"
-        ))
-    })?;
+    // Extractable: a storage keeps no signing key, so the custodian is
+    // kept as its seed, a secret sealed to the profile's peers.
+    let custodian = <Ed25519Signer<Extractable> as ExtractableKey>::generate()
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!(
+                "failed to generate the onboarding custodian: {error}"
+            ))
+        })?;
 
     // Custodian first, envelope last: a custodian with no envelope reads
     // as absent, while an envelope with no custodian is the unopenable
     // shape accreditation leaves. Neither half alone can be mistaken for
     // a usable account.
-    save_custodian(state, custodian.clone()).await?;
+    let custodian = save_custodian(state, custodian).await?;
     wrap(state, &custodian, &secret).await?;
     Ok(secret)
 }
@@ -416,7 +418,16 @@ pub(crate) async fn describe_device_link(
         .map_err(|error| format!("open profile branch: {error}"))?;
     retain_device_delegation(state, &branch, chain).await?;
     let audience = chain.audience().to_string();
-    let entities = link_entities(state, branch.handle(), &audience).await?;
+    // Only the links this chain's issuer granted: the device also holds
+    // the powerline its own space's `account` vault delegates to it,
+    // which is no device link.
+    let issuer = chain.issuer().to_string();
+    let mut entities = Vec::new();
+    for entity in link_entities(state, branch.handle(), &audience).await? {
+        if issued_by(state, branch.handle(), &entity, &issuer).await? {
+            entities.push(entity);
+        }
+    }
     if entities.is_empty() {
         return Err(format!("no retained powerline names {audience}"));
     }
@@ -598,6 +609,37 @@ async fn link_entities(
     Ok(entities)
 }
 
+/// Whether the retained certificate at `entity` was issued by `issuer`.
+async fn issued_by(
+    state: &TonkState,
+    branch: &dialog_repository::Branch,
+    entity: &Entity,
+    issuer: &str,
+) -> Result<bool, String> {
+    use dialog_artifacts::{ArtifactSelector, Value};
+    use futures_util::StreamExt as _;
+
+    let selector = ArtifactSelector::new()
+        .the(
+            dialog_repository::DELEGATION_ISSUER
+                .parse()
+                .map_err(|error| format!("issuer attribute: {error:?}"))?,
+        )
+        .of(entity.clone());
+    let facts = branch
+        .claims()
+        .select(selector)
+        .perform(&state.operator)
+        .await
+        .map_err(|error| format!("select the link's issuer: {error}"))?
+        .collect::<Vec<_>>()
+        .await;
+    Ok(facts
+        .into_iter()
+        .flatten()
+        .any(|fact| matches!(fact.value(), Ok(Value::String(found)) if found == issuer)))
+}
+
 /// Whether the retained certificate at `entity` is subject-open.
 async fn is_powerline(
     state: &TonkState,
@@ -702,33 +744,68 @@ pub(crate) async fn retire(state: &TonkState) -> Result<(), TonkWorkerError> {
             "the custodian DID is not an Ed25519 key: {error:?}"
         ))
     })?;
+    // A custodian kept before keys left the profile's storage is demoted
+    // there to its public half, as retirement always did.
     state
         .profile
         .did()
         .credential()
-        .key(
-            crate::credential::branch_site(ONBOARDING_CUSTODIAN_KEY, &state.active_branch).as_str(),
-        )
+        .key(custodian_site(state).as_str())
         .save(Credential::from(verifier))
-        .perform(&state.operator)
+        .perform(&state.profile)
         .await
         .map_err(|error: CredentialError| {
             TonkWorkerError::Internal(format!(
                 "failed to demote the onboarding custodian: {error}"
             ))
-        })
+        })?;
+    save(state, ONBOARDING_CUSTODIAN_KEY, Vec::new()).await
+}
+
+/// Where the custodian is kept for the branch the profile is on.
+fn custodian_site(state: &TonkState) -> String {
+    crate::credential::branch_site(ONBOARDING_CUSTODIAN_KEY, &state.active_branch)
 }
 
 async fn load_custodian(state: &TonkState) -> Result<Option<Ed25519Signer>, TonkWorkerError> {
+    // The custodian's seed, kept as a secret of the profile's peers: a
+    // storage keeps no signing key. An empty one is a retired custodian.
+    match state
+        .profile
+        .secrets()
+        .site(custodian_site(state).as_str())
+        .load::<Vec<u8>>()
+        .perform(&state.profile)
+        .await
+    {
+        Ok(seed) if seed.is_empty() => return Ok(None),
+        Ok(seed) => {
+            let signer = Ed25519Signer::import(KeyExport::Extractable(seed))
+                .await
+                .map_err(|error| {
+                    TonkWorkerError::Internal(format!(
+                        "the onboarding custodian is corrupt: {error}"
+                    ))
+                })?;
+            return Ok(Some(signer));
+        }
+        Err(error) if crate::credential::is_missing(&error) => {}
+        Err(error) => {
+            return Err(TonkWorkerError::Internal(format!(
+                "failed to load the onboarding custodian: {error}"
+            )));
+        }
+    }
+
+    // A custodian kept before keys left the profile's storage is still
+    // there, and only the profile acting as itself is handed it.
     let credential = match state
         .profile
         .did()
         .credential()
-        .key(
-            crate::credential::branch_site(ONBOARDING_CUSTODIAN_KEY, &state.active_branch).as_str(),
-        )
+        .key(custodian_site(state).as_str())
         .load()
-        .perform(&state.operator)
+        .perform(&state.profile)
         .await
     {
         Ok(credential) => credential,
@@ -754,32 +831,36 @@ async fn load_custodian(state: &TonkState) -> Result<Option<Ed25519Signer>, Tonk
     Ok(Some(signer.clone()))
 }
 
+/// Keep the custodian's seed as a secret of the profile's peers, and
+/// answer the custodian to sign with.
 async fn save_custodian(
     state: &TonkState,
-    custodian: Ed25519Signer,
-) -> Result<(), TonkWorkerError> {
-    state
-        .profile
-        .did()
-        .credential()
-        .key(
-            crate::credential::branch_site(ONBOARDING_CUSTODIAN_KEY, &state.active_branch).as_str(),
-        )
-        .save(Credential::from(custodian))
-        .perform(&state.operator)
+    custodian: Ed25519Signer<Extractable>,
+) -> Result<Ed25519Signer, TonkWorkerError> {
+    let failed = |error: String| {
+        TonkWorkerError::Internal(format!("failed to save the onboarding custodian: {error}"))
+    };
+    #[allow(irrefutable_let_patterns)]
+    let KeyExport::Extractable(seed) = custodian
+        .export()
         .await
-        .map_err(|error: CredentialError| {
-            TonkWorkerError::Internal(format!("failed to save the onboarding custodian: {error}"))
-        })
+        .map_err(|error| failed(error.to_string()))?
+    else {
+        return Err(failed("the custodian is not extractable".to_string()));
+    };
+    save(state, ONBOARDING_CUSTODIAN_KEY, seed.clone()).await?;
+    Ed25519Signer::import(KeyExport::Extractable(seed))
+        .await
+        .map_err(|error| failed(error.to_string()))
 }
 
 async fn load(state: &TonkState, site: &str) -> Result<Option<Vec<u8>>, TonkWorkerError> {
     match state
         .profile
-        .credential()
+        .secrets()
         .site(crate::credential::branch_site(site, &state.active_branch).as_str())
         .load::<Vec<u8>>()
-        .perform(&state.operator)
+        .perform(&state.profile)
         .await
     {
         Ok(bytes) if bytes.is_empty() => Ok(None),
@@ -794,10 +875,10 @@ async fn load(state: &TonkState, site: &str) -> Result<Option<Vec<u8>>, TonkWork
 async fn save(state: &TonkState, site: &str, bytes: Vec<u8>) -> Result<(), TonkWorkerError> {
     state
         .profile
-        .credential()
+        .secrets()
         .site(crate::credential::branch_site(site, &state.active_branch).as_str())
         .save(bytes)
-        .perform(&state.operator)
+        .perform(&state.profile)
         .await
         .map_err(|error: CredentialError| {
             TonkWorkerError::Internal(format!("failed to save {site}: {error}"))
@@ -1057,14 +1138,20 @@ mod tests {
         use dialog_varsig::Principal as _;
 
         let tonk = crate::router::tests::test_state_without_root().await;
-        let custodian = Ed25519Signer::generate().await.unwrap();
+        let custodian = save_custodian(
+            &tonk,
+            <Ed25519Signer<Extractable> as ExtractableKey>::generate()
+                .await
+                .unwrap(),
+        )
+        .await
+        .unwrap();
         let secret = AccountSecret::generate().unwrap();
         let envelope = derive_kek(&custodian)
             .await
             .unwrap()
             .seal(&secret, KekMethod::Local)
             .unwrap();
-        save_custodian(&tonk, custodian).await.unwrap();
         save(&tonk, ONBOARDING_ENVELOPE_SITE, envelope.encode())
             .await
             .unwrap();
