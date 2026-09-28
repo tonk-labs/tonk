@@ -295,11 +295,11 @@ view!:
       <div class="playground-agent">
         <style>.playground-agent tonk-display > [slot][hidden] { display: none !important; }</style>
         <page-mount on:invite=tonk:agent-handoff></page-mount>
-        <tonk-origin>
+        <div>
           <tonk-display entity={subject} model=tonk:onboarding/agent-invite>
             <tonk-display slot="no-entity" entity={subject} model=tonk:agent-handoff-state>
               <p slot="no-entity">Preparing agent connection…</p>
             </tonk-display>
           </tonk-display>
-        </tonk-origin>
+        </div>
       </div>
