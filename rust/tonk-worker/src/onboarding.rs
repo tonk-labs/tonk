@@ -41,7 +41,7 @@ use crate::worker::{DefaultSpace, TonkState};
 ///
 /// Versioned so a format change is a new site rather than an ambiguous
 /// re-read of bytes in the old shape.
-const ONBOARDING_ENVELOPE_SITE: &str = "tonk-onboarding-account-v1";
+pub(crate) const ONBOARDING_ENVELOPE_SITE: &str = "tonk-onboarding-account-v1";
 
 /// Credential site holding the onboarding custodian: the keypair whose
 /// agreement key reveals the KEK that opens [`ONBOARDING_ENVELOPE_SITE`].
@@ -70,7 +70,7 @@ const ONBOARDING_CUSTODIAN_KEY: &str = "tonk-onboarding-custodian-v1";
 /// answer on every platform, where a signature does not (Safari
 /// randomizes Ed25519). Absent for an envelope written under the legacy
 /// [`KekMethod::Local`], which `read` reseals on its first open.
-const ONBOARDING_KEK_SITE: &str = "tonk-onboarding-kek-v1";
+pub(crate) const ONBOARDING_KEK_SITE: &str = "tonk-onboarding-kek-v1";
 
 /// This device's onboarding account, minting one on first call.
 ///

@@ -26,7 +26,7 @@ use tonk_identity::clearance::Recovery;
 use tonk_identity::envelope::{AccountSecret, CUSTODIAN_KEK_CONTEXT, Envelope, Kek, KekMethod};
 
 /// Credential site holding the onboarding account's wrapped secret.
-const ONBOARDING_ENVELOPE_SITE: &str = "tonk-onboarding-account-v1";
+pub(crate) const ONBOARDING_ENVELOPE_SITE: &str = "tonk-onboarding-account-v1";
 
 /// Credential key holding the onboarding custodian.
 const ONBOARDING_CUSTODIAN_KEY: &str = "tonk-onboarding-custodian-v1";

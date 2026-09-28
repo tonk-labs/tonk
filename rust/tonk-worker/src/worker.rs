@@ -1793,6 +1793,9 @@ pub(crate) async fn boot_state_with_profile_library(
     let session = if active_branch == crate::router::repository::PROFILE_BRANCH {
         session
     } else {
+        registry
+            .migrate_branch_secrets(&profile, &profile_name, &active_branch)
+            .await?;
         crate::session::open_on(&profile, &active_branch).await?
     };
 

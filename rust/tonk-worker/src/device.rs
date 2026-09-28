@@ -68,6 +68,35 @@ pub(crate) struct RosterEntry {
     pub display_name: Option<String>,
 }
 
+/// Every site secret the worker kept in a profile's space for `branch`
+/// before site secrets were sealed to its peer's vault. Secrets kept once
+/// per profile rather than per branch go with the main branch.
+fn legacy_sites(branch: &str) -> Vec<String> {
+    let mut sites: Vec<String> = [
+        crate::router::identity::LOCAL_ROOT_SITE,
+        tonk_account::ACCOUNT_PROVIDER_CREDENTIAL_SITE,
+        tonk_account::CUSTOMER_CREDENTIAL_SITE,
+        tonk_account::TRUSTED_BASE_CREDENTIAL_SITE,
+        crate::onboarding::ONBOARDING_ENVELOPE_SITE,
+        crate::onboarding::ONBOARDING_KEK_SITE,
+    ]
+    .into_iter()
+    .map(|site| crate::credential::branch_site(site, branch))
+    .collect();
+    if branch == crate::router::repository::PROFILE_BRANCH {
+        sites.extend(
+            [
+                ACTIVE_PROFILE_SITE,
+                tonk_account::PENDING_WORK_CREDENTIAL_SITE,
+                crate::router::onboarding_space::JOURNAL,
+            ]
+            .into_iter()
+            .map(String::from),
+        );
+    }
+    sites
+}
+
 /// Where the space `name` is stored: the directory every profile's
 /// spaces resolve against.
 pub(crate) fn space_location(name: &str) -> Location {
@@ -140,15 +169,45 @@ impl Registry {
             tonk_account::peer::open_system::<DefaultSpace>(self.directory.clone()).await?;
         // Space names resolve against the directory the worker has always
         // kept its spaces in.
-        tonk_account::peer::open_peer(
-            Location::new(self.directory.clone(), name),
+        let location = Location::new(self.directory.clone(), name);
+        let profile = tonk_account::peer::open_peer(
+            location.clone(),
             space_location("").directory,
             storage.clone(),
             &credentials,
             &system,
             create,
         )
+        .await?;
+        tonk_account::peer::migrate_site_secrets(
+            &profile,
+            &location,
+            &legacy_sites(crate::router::repository::PROFILE_BRANCH),
+        )
         .await
+        .map_err(|error| dialog_peer::PeerError::State(error.to_string()))?;
+        Ok(profile)
+    }
+
+    /// Move the site secrets the profile `name` kept in its space for the
+    /// branch `branch`, before site secrets were sealed to its peer's
+    /// vault, into the peer's.
+    pub(crate) async fn migrate_branch_secrets(
+        &self,
+        profile: &DefaultProfile,
+        name: &str,
+        branch: &str,
+    ) -> Result<(), TonkWorkerError> {
+        tonk_account::peer::migrate_site_secrets(
+            profile,
+            &Location::new(self.directory.clone(), name),
+            &legacy_sites(branch),
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("failed to move the site secrets: {error}"))
+        })
     }
 
     async fn open_self(

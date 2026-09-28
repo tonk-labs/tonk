@@ -14,7 +14,7 @@ use crate::TonkWorkerError;
 use crate::worker::DefaultProfile;
 use crate::worker::TonkState;
 
-const LOCAL_ROOT_SITE: &str = "tonk-local-root-v1";
+pub(crate) const LOCAL_ROOT_SITE: &str = "tonk-local-root-v1";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct LocalRootRecord {

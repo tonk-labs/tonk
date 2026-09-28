@@ -1382,9 +1382,37 @@ pub async fn open_profile(
         .context("failed to open the system key")?;
     let storage = Storage::<NativeSpace>::default().owned_by(system.did());
     let location = Location::new(directory.clone(), name);
-    tonk_account::peer::open_peer(location, directory, storage, &credentials, &system, create)
+    let profile = tonk_account::peer::open_peer(
+        location.clone(),
+        directory,
+        storage,
+        &credentials,
+        &system,
+        create,
+    )
+    .await
+    .with_context(|| format!("failed to open profile '{name}'"))?;
+    tonk_account::peer::migrate_site_secrets(&profile, &location, &legacy_sites())
         .await
-        .with_context(|| format!("failed to open profile '{name}'"))
+        .with_context(|| format!("failed to move the site secrets of profile '{name}'"))?;
+    Ok(profile)
+}
+
+/// Every site secret the CLI kept in a profile's space before site
+/// secrets were sealed to its peer's vault.
+fn legacy_sites() -> Vec<String> {
+    [
+        crate::identity::LOCAL_ROOT_SITE,
+        crate::account::ACCOUNT_LINK_SITE,
+        tonk_account::TRUSTED_BASE_CREDENTIAL_SITE,
+        tonk_account::CUSTOMER_CREDENTIAL_SITE,
+        tonk_account::PENDING_WORK_CREDENTIAL_SITE,
+        crate::onboarding::ONBOARDING_ENVELOPE_SITE,
+        crate::onboarding::ONBOARDING_GRANT_SITE,
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
 }
 
 /// Outcome of [`transplant_at_with`].

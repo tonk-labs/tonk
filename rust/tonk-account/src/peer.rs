@@ -378,6 +378,77 @@ mod tests {
     use dialog_credentials::{Ed25519Signer, Signer};
     use dialog_peer::helpers::test_peer;
 
+    /// A profile from before site secrets were sealed to vaults has them
+    /// moved into its peer's site secrets, once: the old copies are gone,
+    /// a secret the peer already keeps is not overwritten by a stale one,
+    /// and running again moves nothing.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_moves_site_secrets_kept_in_the_profile_space() -> anyhow::Result<()> {
+        use dialog_storage::provider::storage::NativeSpace;
+        use dialog_storage::resource::Resource as _;
+
+        let temp = tempfile::tempdir()?;
+        let directory = Directory::At(temp.path().to_string_lossy().into_owned());
+        let location = Location::new(directory.clone(), "legacy");
+        let (credentials, system) = open_system::<NativeSpace>(directory.clone()).await?;
+        let storage = Storage::<NativeSpace>::default().owned_by(system.did());
+        let peer = open_peer(
+            location.clone(),
+            directory,
+            storage,
+            &credentials,
+            &system,
+            true,
+        )
+        .await?;
+
+        // What a release before the move wrote: secrets in the profile's
+        // own space, under the profile's DID.
+        let space = NativeSpace::open(&location).await?;
+        let old = || dialog_peer::CredentialHandle::new(peer.did());
+        old()
+            .site("tonk-local-root-v1")
+            .save(b"root".to_vec())
+            .perform(&space)
+            .await?;
+        old()
+            .site("tonk-customer-v1")
+            .save(b"stale".to_vec())
+            .perform(&space)
+            .await?;
+        // A run stopped after copying this one, before retracting it, and
+        // the peer's copy updated since.
+        peer.secrets()
+            .site("tonk-customer-v1")
+            .save(b"current".to_vec())
+            .perform(&peer)
+            .await?;
+
+        let sites: Vec<String> = ["tonk-local-root-v1", "tonk-customer-v1", "tonk-absent-v1"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert_eq!(migrate_site_secrets(&peer, &location, &sites).await?, 1);
+        assert_eq!(migrate_site_secrets(&peer, &location, &sites).await?, 0);
+
+        let read = |site: &'static str| peer.secrets().site(site).load::<Vec<u8>>().perform(&peer);
+        assert_eq!(read("tonk-local-root-v1").await?, b"root".to_vec());
+        assert_eq!(read("tonk-customer-v1").await?, b"current".to_vec());
+        for site in ["tonk-local-root-v1", "tonk-customer-v1"] {
+            assert!(
+                old()
+                    .site(site)
+                    .load::<Vec<u8>>()
+                    .perform(&space)
+                    .await
+                    .is_err(),
+                "the old copy of {site} is retracted"
+            );
+        }
+        Ok(())
+    }
+
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_dedicated_worker);
 
@@ -438,4 +509,74 @@ pub enum RepointError {
     /// The upstreams could not be recorded.
     #[error(transparent)]
     Record(#[from] dialog_repository::SetUpstreamError),
+}
+
+/// Move the site secrets a profile from before site secrets were sealed to
+/// vaults kept in its space at `location` into `peer`'s site secrets, for
+/// each of `sites`, and retract the old copies. Answers how many moved.
+///
+/// Safe to run on every open, and to stop anywhere: a secret the peer
+/// already keeps is not overwritten, so a run stopped between copying and
+/// retracting only retracts on the next, and one with nothing left to
+/// move changes nothing.
+pub async fn migrate_site_secrets<S>(
+    peer: &Peer<S>,
+    location: &Location,
+    sites: &[String],
+) -> Result<usize, CredentialError>
+where
+    S: PeerSpace,
+{
+    let space = match S::load(location).await {
+        Ok(space) => space,
+        Err(error) if S::is_not_found(&error) => return Ok(0),
+        Err(error) => return Err(CredentialError::Storage(error.to_string())),
+    };
+    let old = || dialog_peer::CredentialHandle::new(peer.did());
+    let mut moved = 0;
+    for site in sites {
+        let bytes = match old()
+            .site(site.as_str())
+            .load::<Vec<u8>>()
+            .perform(&space)
+            .await
+        {
+            Ok(bytes) => bytes,
+            Err(error) if is_missing(&error) => continue,
+            Err(error) => return Err(error),
+        };
+        let kept = match peer
+            .secrets()
+            .site(site.as_str())
+            .load::<Vec<u8>>()
+            .perform(peer)
+            .await
+        {
+            Ok(_) => true,
+            Err(error) if is_missing(&error) => false,
+            Err(error) => return Err(error),
+        };
+        if !kept {
+            peer.secrets()
+                .site(site.as_str())
+                .save(bytes)
+                .perform(peer)
+                .await?;
+            moved += 1;
+        }
+        old().site(site.as_str()).retract().perform(&space).await?;
+    }
+    Ok(moved)
+}
+
+/// Whether `error` says a secret is absent: a store reports it as not
+/// found, a filesystem as a missing file.
+fn is_missing(error: &CredentialError) -> bool {
+    match error {
+        CredentialError::NotFound(_) => true,
+        CredentialError::Storage(message) => {
+            message.contains("No such file or directory") || message.contains("not found")
+        }
+        CredentialError::Corrupted(_) | CredentialError::Withheld(_) => false,
+    }
 }
