@@ -14,7 +14,7 @@
 use anyhow::Context as _;
 use dialog_artifacts::{ArtifactSelector, Entity};
 use dialog_capability::access::AuthorizeError;
-use dialog_operator::helpers::{test_operator_with_profile, unique_name};
+use dialog_peer::helpers::{test_session_with_peer, unique_name};
 use dialog_query::Attribute;
 use dialog_remote_ucan::UcanAddress;
 use dialog_repository::Blob;
@@ -31,10 +31,10 @@ struct Name(String);
 /// service, and then pull it back.
 #[dialog_common::test]
 async fn it_pushes_and_pulls_via_ucan(env: AccessServiceAddress) -> anyhow::Result<()> {
-    let (operator, profile) = test_operator_with_profile().await;
+    let (operator, profile) = test_session_with_peer().await;
 
     let repo = profile
-        .repository(unique_name("ucan-push-pull"))
+        .space(unique_name("ucan-push-pull"))
         .create()
         .perform(&operator)
         .await?;
@@ -53,11 +53,12 @@ async fn it_pushes_and_pulls_via_ucan(env: AccessServiceAddress) -> anyhow::Resu
 
     // Set up UCAN remote pointing at our access service
     let address = UcanAddress::new(&env.access_service_url);
-    let origin = repo
-        .remote("origin")
-        .create(address)
-        .perform(&operator)
-        .await?;
+    let origin = tonk_account::peer::connect(
+        dialog_repository::SiteAddress::from(address),
+        repo.did(),
+        &operator,
+    )
+    .await?;
 
     let branch = repo.branch("main").open().perform(&operator).await?;
     let upstream = origin.branch("main").open().perform(&operator).await?;
@@ -115,11 +116,11 @@ async fn it_pushes_and_pulls_via_ucan(env: AccessServiceAddress) -> anyhow::Resu
 /// Alice pulls Bob's changes.
 #[dialog_common::test]
 async fn it_collaborates_via_ucan_delegation(env: AccessServiceAddress) -> anyhow::Result<()> {
-    let (alice_op, alice_profile) = test_operator_with_profile().await;
+    let (alice_op, alice_profile) = test_session_with_peer().await;
 
     // Alice creates repo and delegates ownership to her profile
     let alice_repo = alice_profile
-        .repository(unique_name("collab-alice"))
+        .space(unique_name("collab-alice"))
         .create()
         .perform(&alice_op)
         .await?;
@@ -141,11 +142,12 @@ async fn it_collaborates_via_ucan_delegation(env: AccessServiceAddress) -> anyho
 
     // Alice sets up UCAN remote
     let address = UcanAddress::new(&env.access_service_url);
-    let alice_origin = alice_repo
-        .remote("origin")
-        .create(address.clone())
-        .perform(&alice_op)
-        .await?;
+    let alice_origin = tonk_account::peer::connect(
+        dialog_repository::SiteAddress::from(address.clone()),
+        alice_repo.did(),
+        &alice_op,
+    )
+    .await?;
 
     let alice_branch = alice_repo.branch("main").open().perform(&alice_op).await?;
     let upstream = alice_origin
@@ -170,7 +172,7 @@ async fn it_collaborates_via_ucan_delegation(env: AccessServiceAddress) -> anyho
     alice_branch.push().perform(&alice_op).await?;
 
     // Bob creates his own profile and operator
-    let (bob_op, bob_profile) = test_operator_with_profile().await;
+    let (bob_op, bob_profile) = test_session_with_peer().await;
 
     // Alice delegates repo access to Bob
     let invite = alice_profile
@@ -184,17 +186,17 @@ async fn it_collaborates_via_ucan_delegation(env: AccessServiceAddress) -> anyho
 
     // Bob creates his own repo pointing at Alice's remote subject
     let bob_repo = bob_profile
-        .repository(unique_name("collab-bob"))
+        .space(unique_name("collab-bob"))
         .open()
         .perform(&bob_op)
         .await?;
 
-    let bob_origin = bob_repo
-        .remote("origin")
-        .create(address)
-        .subject(alice_repo.did())
-        .perform(&bob_op)
-        .await?;
+    let bob_origin = tonk_account::peer::connect(
+        dialog_repository::SiteAddress::from(address),
+        alice_repo.did(),
+        &bob_op,
+    )
+    .await?;
 
     let bob_branch = bob_repo.branch("main").open().perform(&bob_op).await?;
     let remote_branch = bob_origin.branch("main").open().perform(&bob_op).await?;
@@ -250,10 +252,10 @@ async fn it_collaborates_via_ucan_delegation(env: AccessServiceAddress) -> anyho
 #[dialog_common::test]
 async fn it_syncs_blobs_via_ucan(env: AccessServiceAddress) -> anyhow::Result<()> {
     // --- Alice: create repo, delegate ownership, wire the UCAN remote. ---
-    let (operator, profile) = test_operator_with_profile().await;
+    let (operator, profile) = test_session_with_peer().await;
 
     let repo = profile
-        .repository(unique_name("ucan-blob"))
+        .space(unique_name("ucan-blob"))
         .create()
         .perform(&operator)
         .await?;
@@ -270,11 +272,12 @@ async fn it_syncs_blobs_via_ucan(env: AccessServiceAddress) -> anyhow::Result<()
     env.provision_subject(repo.did().as_str()).await?;
 
     let address = UcanAddress::new(&env.access_service_url);
-    let origin = repo
-        .remote("origin")
-        .create(address.clone())
-        .perform(&operator)
-        .await?;
+    let origin = tonk_account::peer::connect(
+        dialog_repository::SiteAddress::from(address.clone()),
+        repo.did(),
+        &operator,
+    )
+    .await?;
 
     let branch = repo.branch("main").open().perform(&operator).await?;
     let upstream = origin.branch("main").open().perform(&operator).await?;
@@ -303,7 +306,7 @@ async fn it_syncs_blobs_via_ucan(env: AccessServiceAddress) -> anyhow::Result<()
 
     // --- Bob: a second replica of the same repository. Alice delegates repo
     //     access to Bob, who opens his own repo pointing at Alice's subject. ---
-    let (operator_b, profile_b) = test_operator_with_profile().await;
+    let (operator_b, profile_b) = test_session_with_peer().await;
 
     let invite = profile
         .access()
@@ -314,17 +317,17 @@ async fn it_syncs_blobs_via_ucan(env: AccessServiceAddress) -> anyhow::Result<()
     profile_b.access().save(invite).perform(&operator_b).await?;
 
     let repo_b = profile_b
-        .repository(unique_name("ucan-blob-b"))
+        .space(unique_name("ucan-blob-b"))
         .open()
         .perform(&operator_b)
         .await?;
 
-    let origin_b = repo_b
-        .remote("origin")
-        .create(address)
-        .subject(repo.did())
-        .perform(&operator_b)
-        .await?;
+    let origin_b = tonk_account::peer::connect(
+        dialog_repository::SiteAddress::from(address),
+        repo.did(),
+        &operator_b,
+    )
+    .await?;
 
     let branch_b = repo_b.branch("main").open().perform(&operator_b).await?;
     let upstream_b = origin_b.branch("main").open().perform(&operator_b).await?;
