@@ -359,6 +359,23 @@ neither copy action silently mints a second key. The CLI imports its separate
 identity without account login or browser approval. An unrelated or malformed
 legacy CLI account remains byte-for-byte outside identity selection.
 
+New tool links resolve to a passive `/agent/` page with CLI connection and
+recovery instructions readable without JavaScript. The agent passes the original
+complete URL, including its secret fragment, to `join`; fetching the page does
+not connect or redeem anything. Root and legacy join HTML advertise the guide
+through metadata without adding text to the human loading screen. Successful
+joins print commands for status, space agent instructions, schemas, and the
+tutorial.
+
+The attached **connect agent** panel offers **copy link** and **copy prompt**.
+Completing its account gate resumes invitation generation in place, including
+a previously reported account refusal. Returning from the contained ceremony
+must preserve the guest until it receives completion rather than navigating
+away first. The panel browser tests cover exact link copying and one mint after
+completion; the contained-return regression covers the deferred callback.
+Static routing and CLI import tests pass, but the full packaged signup-to-link
+journey and a fresh agent given only a link remain unverified for this change.
+
 Production links use the built-in deployment. A copied prompt from staging or
 a local preview includes `join --via ORIGIN`; this explicitly selects the
 deployment whose `/ucan/` route must match the signed grant. It is not a browser

@@ -5267,7 +5267,10 @@ mod tests {
                    return {
                      visible: !!panel && !panel.hidden,
                      space: bar?.querySelector('tonk-agent-panel')?.getAttribute('space'),
-                     ready: panel?.querySelector('.panel-copy')?.hidden === false,
+                     ready: ['.agent-copy-link', '.agent-copy-prompt'].every(selector => {
+                       const button = panel?.querySelector(selector);
+                       return !!button && !button.hidden && !button.disabled;
+                     }),
                      scoped: prompt.includes('#tonk-agent-v2='),
                      fresh: !arguments[0] || !prompt.includes(arguments[0]),
                      status: panel?.querySelector('.agent-status')?.textContent
@@ -5294,36 +5297,66 @@ mod tests {
     }
 
     #[cfg(feature = "connection-invites")]
+    async fn copy_agent_connection_text(driver: &WebDriver, selector: &str) -> Result<String> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            enter_guest(driver).await?;
+            watch_clipboard(driver).await?;
+            // Readiness can change after the invitation wait while the guest
+            // reconciles its panel. Check the current control and click it in
+            // the same script, without carrying a stale ready state forward.
+            let clicked = driver
+                .execute(
+                    r#"const root = document.querySelector('tonk-fab')?.shadowRoot;
+                       const panel = root?.querySelector('#agent-panel');
+                       const button = root?.querySelector(arguments[0]);
+                       const state = {
+                         visible: !!panel && !panel.hidden,
+                         present: !!button,
+                         hidden: button?.hidden ?? null,
+                         disabled: button?.disabled ?? null,
+                         clicked: false
+                       };
+                       if (state.visible && button && !button.hidden && !button.disabled) {
+                         button.click();
+                         state.clicked = true;
+                       }
+                       return state;"#,
+                    vec![serde_json::json!(selector)],
+                )
+                .await?;
+            if clicked.json()["clicked"] == true {
+                let text = copied_text(driver).await?;
+                driver.enter_default_frame().await?;
+                return Ok(text);
+            }
+            driver.enter_default_frame().await?;
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "agent copy control did not become ready: {selector}: {}",
+                clicked.json()
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    #[cfg(feature = "connection-invites")]
     async fn copy_agent_connection_prompt(driver: &WebDriver) -> Result<String> {
-        enter_guest(driver).await?;
-        watch_clipboard(driver).await?;
-        let clicked = driver
-            .execute(
-                r#"const button = document.querySelector('tonk-fab')?.shadowRoot
-                   ?.querySelector('#agent-panel .panel-copy');
-               if (!button || button.hidden || button.disabled) return false;
-               button.click();
-               return true;"#,
-                Vec::new(),
-            )
-            .await?;
-        anyhow::ensure!(
-            clicked.json() == true,
-            "agent prompt copy control is not ready"
-        );
-        let prompt = copied_text(driver).await?;
-        driver.enter_default_frame().await?;
-        Ok(prompt)
+        copy_agent_connection_text(driver, "#agent-panel .agent-copy-prompt").await
     }
 
     #[cfg(feature = "connection-invites")]
     async fn copy_agent_connection_link(driver: &WebDriver) -> Result<String> {
-        let prompt = copy_agent_connection_prompt(driver).await?;
-        prompt
-            .split("'")
-            .find(|part| part.starts_with("http") && part.contains("#tonk-agent-v2="))
-            .map(str::to_owned)
-            .context("copied agent prompt has no scoped invitation")
+        let link = copy_agent_connection_text(driver, "#agent-panel .agent-copy-link").await?;
+        let url = url::Url::parse(&link).context("copied agent link is not a URL")?;
+        anyhow::ensure!(
+            url.path() == "/agent/"
+                && url
+                    .fragment()
+                    .is_some_and(|fragment| fragment.starts_with("tonk-agent-v2=")),
+            "copied agent link has no scoped invitation"
+        );
+        Ok(link)
     }
 
     /// The cluster's action row label, or empty while it is folded.
@@ -7374,7 +7407,9 @@ mod tests {
         // must retain that identity rather than minting another grant.
         click_agent_connection_action(&browser).await?;
         await_agent_connection_ready(&browser, &key).await?;
-        let tool_link = copy_agent_connection_link(&browser).await?;
+        let tool_link = copy_agent_connection_link(&browser)
+            .await
+            .context("copy initial tool link")?;
         anyhow::ensure!(
             tool_link.contains("#tonk-agent-v2="),
             "tool action copied a non-scoped link"
@@ -7413,9 +7448,13 @@ mod tests {
         wait_for_service_worker(&browser).await?;
         click_agent_connection_action(&browser).await?;
         await_agent_connection_ready(&browser, &key).await?;
-        let returning = copy_agent_connection_link(&browser).await?;
+        let returning = copy_agent_connection_link(&browser)
+            .await
+            .context("copy returning tool link")?;
         assert_eq!(
-            copy_agent_connection_link(&browser).await?,
+            copy_agent_connection_link(&browser)
+                .await
+                .context("copy returning tool link again")?,
             returning,
             "copying the returning agent prompt minted another grant"
         );
@@ -7427,7 +7466,9 @@ mod tests {
         await_url_containing(&browser, &format!("/space/{second}")).await?;
         click_agent_connection_action(&browser).await?;
         await_agent_connection_ready(&browser, &second).await?;
-        let switched = copy_agent_connection_link(&browser).await?;
+        let switched = copy_agent_connection_link(&browser)
+            .await
+            .context("copy tool link after switching spaces")?;
         anyhow::ensure!(
             switched != returning && switched != tool_link,
             "space switch exposed a stale tool bearer"
