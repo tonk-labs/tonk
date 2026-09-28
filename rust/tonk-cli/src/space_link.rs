@@ -1334,7 +1334,7 @@ async fn preflight(
         .perform(site.operator.local())
         .await;
     if let Err(error) = profile_proof
-        && crate::site::space_signer(&site).await?.is_none()
+        && crate::site::space_signer(site).await?.is_none()
     {
         return Err(error).context("this device cannot prove authority over this space");
     }
