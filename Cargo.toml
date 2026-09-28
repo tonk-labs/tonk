@@ -190,24 +190,24 @@ wasm-bindgen-test = "0.3"
 web-sys = { version = "0.3" }
 
 # Dialog DB
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/storage-principal" }
-dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/storage-principal" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/storage-principal" }
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/storage-principal" }
-dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/storage-principal" }
-dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/storage-principal" }
-dialog-peer = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/storage-principal" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/storage-principal" }
-dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/storage-principal" }
-dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/storage-principal" }
-dialog-remote-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/storage-principal" }
-dialog-did-web = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/storage-principal" }
-dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/storage-principal" }
-dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/storage-principal" }
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/storage-principal" }
-dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/storage-principal" }
-dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/storage-principal" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/storage-principal" }
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-store" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-store" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-store" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-store" }
+dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-store" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-store" }
+dialog-peer = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-store" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-store" }
+dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-store" }
+dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-store" }
+dialog-remote-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-store" }
+dialog-did-web = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-store" }
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-store" }
+dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-store" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-store" }
+dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-store" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-store" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/credential-store" }
 
 [profile.dev]
 opt-level = 1
