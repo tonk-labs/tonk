@@ -333,6 +333,9 @@ enum Command {
         /// Override the local name (defaults to the pulled space's synced name).
         #[arg(long)]
         name: Option<String>,
+        /// Self-reported connection label shown in the issuing account's settings.
+        #[arg(long, requires = "url")]
+        agent_name: Option<String>,
         /// Trust this Tonk deployment origin for the import.
         /// Overrides TONK_CONNECTION_ORIGIN and must match the signed /ucan/ route.
         #[arg(long, value_name = "ORIGIN", requires = "url")]
@@ -1236,8 +1239,20 @@ async fn main() {
             )
             .await
         }
-        Command::Join { url, name, via } => {
-            join_command(url, name, via.as_deref(), space.as_deref()).await
+        Command::Join {
+            url,
+            name,
+            agent_name,
+            via,
+        } => {
+            join_command(
+                url,
+                name,
+                agent_name.as_deref(),
+                via.as_deref(),
+                space.as_deref(),
+            )
+            .await
         }
         Command::Remote { command, json } => remote_op(command, json, space.as_deref()).await,
         Command::Blob { command, json } => blob_op(command, json, space.as_deref()).await,
@@ -2524,9 +2539,15 @@ fn print_invite_outcome(outcome: &InviteOutcome) {
 async fn join_command(
     url: Option<String>,
     name: Option<String>,
+    agent_name: Option<&str>,
     via: Option<&str>,
     selected: Option<&str>,
 ) -> ExitCode {
+    if let Some(name) = agent_name
+        && let Err(error) = tonk_cli::connections::validate_agent_name(name)
+    {
+        return print_failure(error);
+    }
     match url {
         Some(url) => {
             if selected.is_some() {
@@ -2535,7 +2556,9 @@ async fn join_command(
                 );
             }
             match tonk_cli::join::prepare(&url).await {
-                Ok(prepared) => connect_scoped_agent(prepared, name.as_deref(), via).await,
+                Ok(prepared) => {
+                    connect_scoped_agent(prepared, name.as_deref(), agent_name, via).await
+                }
                 Err(error) => print_failure(error),
             }
         }
@@ -2755,11 +2778,13 @@ async fn finish_ordinary_join(
 async fn connect_scoped_agent(
     prepared: tonk_cli::join::PreparedAgent,
     requested_name: Option<&str>,
+    agent_name: Option<&str>,
     via: Option<&str>,
 ) -> ExitCode {
     async fn import(
         prepared: &tonk_cli::join::PreparedAgent,
         requested_name: Option<&str>,
+        agent_name: Option<&str>,
         via: Option<&str>,
     ) -> anyhow::Result<(
         tonk_cli::space::SpaceStore,
@@ -2820,16 +2845,18 @@ async fn connect_scoped_agent(
             );
         }
         let installed = tonk_cli::connections::import_at(&root, &validated, store.clone()).await?;
+        tonk_cli::connections::installation_receipt(&root, &binding.id, agent_name)?;
         if let Some(name) = requested_name {
             tonk_cli::handoff::remember_connection_name(&root, name)?;
         }
         tonk_cli::space::register_connection_bound(&store, &name, &root, None, installed.clone())?;
         Ok((store, name, root, installed, cwd))
     }
-    let (store, name, root, binding, cwd) = match import(&prepared, requested_name, via).await {
-        Ok(imported) => imported,
-        Err(error) => return print_failure(error),
-    };
+    let (store, name, root, binding, cwd) =
+        match import(&prepared, requested_name, agent_name, via).await {
+            Ok(imported) => imported,
+            Err(error) => return print_failure(error),
+        };
     finish_scoped_connection(&store, &name, &root, &binding, Some(&cwd)).await
 }
 
@@ -3802,10 +3829,39 @@ mod account_spaces_parser_tests {
         ])
         .expect("copied handoff parses");
         assert!(
-            matches!(cli.command, Some(Command::Join { url: Some(url), name, via })
+            matches!(cli.command, Some(Command::Join { url: Some(url), name, via, agent_name: None })
             if url == invite
                 && name.as_deref() == Some("my-agent")
                 && via.as_deref() == Some("https://staging.tonk.xyz"))
+        );
+    }
+
+    #[test]
+    fn join_keeps_agent_label_separate_from_the_local_alias() {
+        let cli = Cli::try_parse_from([
+            "tonk",
+            "join",
+            "https://example.test/agent/#secret",
+            "--name",
+            "garden",
+            "--agent-name",
+            "Codex on work laptop",
+        ])
+        .unwrap();
+        assert!(
+            matches!(cli.command, Some(Command::Join {name: Some(name), agent_name: Some(label), ..})
+            if name == "garden" && label == "Codex on work laptop")
+        );
+        assert!(
+            Cli::try_parse_from([
+                "tonk",
+                "--space",
+                "garden",
+                "join",
+                "--agent-name",
+                "Changed"
+            ])
+            .is_err()
         );
     }
 

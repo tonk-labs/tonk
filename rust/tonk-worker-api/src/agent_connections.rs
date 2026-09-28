@@ -11,6 +11,14 @@ pub struct AgentConnectionTarget {
     pub error: Option<String>,
 }
 
+/// Self-reported setup metadata, not a verified device or separate authority.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentReportedInstallation {
+    pub id: String,
+    pub name: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentConnectionSummary {
@@ -27,6 +35,10 @@ pub struct AgentConnectionSummary {
     pub expires_at: u64,
     pub status: String,
     pub confirmed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub installations: Vec<AgentReportedInstallation>,
     pub targets: Vec<AgentConnectionTarget>,
 }
 
