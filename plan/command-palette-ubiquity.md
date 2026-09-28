@@ -448,9 +448,15 @@ preview UI, because that is more discoverable and localizable. It did so
   `noun!` to concepts, which already carry descriptions, views and `label`
   facets, answers it directly. A concept is visible, and every command over it
   reuses the one declaration.
-- **The Taskfox move is our phase 1.** Prompting for arguments in the preview
-  is the documented fallback when typed grammar is too much. The port's
-  grammar layer can arrive later without changing any `verb!` or `noun!`.
+- **Taskfox is a warning, not a model.** It dropped typed arguments for
+  discoverability and lost what made Ubiquity worth using. The source shows
+  the trade was never necessary. Argument finding (`argFinder`) is about 300
+  lines driven by a 20-line language file. The costly parts are noun
+  detection, async and scoring, and a palette needs those however arguments
+  are entered. Ubiquity already handled the discoverability case inside the
+  sentence: an unfilled role renders its label (`rename [notebook] to
+  [text]`), and defaults fill it at half score. The port keeps typed
+  arguments from the start.
 - **"Inputs are not just strings"** is where tonk is ahead. A selected block or
   row is an entity, so it can be a direct noun hit instead of text re-parsed by
   noun types.

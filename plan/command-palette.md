@@ -287,25 +287,23 @@ Each phase ships something usable and tests one risky assumption.
    with fuzzy match, the key relay, and a mode in `BarState`. There is no
    schema change. This tests the relay, the chord and whether people use it at
    all.
-1. **`verb!` as a transient concept, built-in layer.** Tonk's own verbs, with
-   `object` as the only role and `text`, `space` and `member` as nouns.
-   Execution goes through bridging rules or verb providers, which replaces the
-   hard-coded list from phase 0. The "is anything listening" check lands here.
-2. **Preview:** the `preview` facet and overlay rendering. Preview-only verbs
-   become possible here.
-3. **Roles, markers, `{this}`, noun-first** and context ranking.
-4. **Author-declared verbs** on space branches. The CLI's `tonk do` and locale
-   markers come here too.
+1. **The parser with the English `grammar!`**, plus `verb!`/`noun!` for tonk's own
+   commands in the built-in layer (see [command-palette-sketch.md](command-palette-sketch.md)).
+   This is the full Ubiquity pipeline: roles, anaphora, noun-first, defaults,
+   scoring and verb memory. It replaces the hard-coded list from phase 0.
+2. **Preview:** the `preview` facet and overlay rendering.
+3. **Selection** (DOM selection and selected entities) and noun memory.
+4. **Author-declared verbs and nouns** on space branches, other locales, and
+   the CLI's `tonk do`.
 
 ## Open questions, and a harder one
 
-- **Is free-form parsing worth it?** Ubiquity's parser was the hardest part of
-  Ubiquity, and it is the part that did not survive. Most of a palette's value
-  comes from fuzzy verb matching, contextual `{this}` and good noun suggestions,
-  and phases 0–1 deliver all of that with prompted arguments. Before building
-  phase 2, check whether people actually type "rename budget to q3" or pick
-  "rename" and then fill a prompt. The model above supports both, but the parser
-  is where the cost is.
+- **~~Is free-form parsing worth it?~~** Answered by reading the source
+  ([command-palette-ubiquity.md](command-palette-ubiquity.md)). The
+  role grammar is cheap: `argFinder` is about 300 lines, and a language is about
+  20 lines of data. The cost is in noun detection and scoring, which any version
+  needs. Taskfox's retreat to prompted arguments bought little and lost the
+  point, so typed arguments ship from phase 1.
 - **Can tonk's YAML express `conforms`?** Dialog has concept-typed fields, but
   no tonk library uses them, and the analyzer and notation may not lower them.
   Check this before phase 1. If they can't, `noun!` comes back as a separate
