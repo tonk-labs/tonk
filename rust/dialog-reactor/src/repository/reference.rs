@@ -8,7 +8,9 @@
 
 use std::sync::Arc;
 
+use dialog_capability::Principal as _;
 use dialog_credentials::Credential;
+use dialog_peer::SpaceHandle;
 use dialog_repository::{Repository, RepositoryExt as _};
 
 use crate::env::LoadProvider;
@@ -82,16 +84,17 @@ impl<'a> RepositoryReference<'a> {
                 }
 
                 // Slow path: load the repository outside the lock.
-                let repository = reactor
-                    .profile()
-                    .repository(*name)
-                    .load()
-                    .perform(env)
-                    .await
-                    .map_err(|e| ReactorError::RepositoryNotFound {
-                        repo: (*name).to_string(),
-                        reason: e.to_string(),
-                    })?;
+                let repository = SpaceHandle {
+                    peer: reactor.profile().did(),
+                    name: (*name).to_string(),
+                }
+                .load()
+                .perform(env)
+                .await
+                .map_err(|e| ReactorError::RepositoryNotFound {
+                    repo: (*name).to_string(),
+                    reason: e.to_string(),
+                })?;
 
                 // Insert under the lock — another caller may have
                 // raced; their entry wins.
@@ -113,7 +116,7 @@ impl<'a> RepositoryReference<'a> {
                 // `Repository<Credential>`, the default the cache
                 // stores). The direct `From<&Profile>` impl returns
                 // `Repository<SignerCredential>` which doesn't fit.
-                let credential = Credential::Signer(reactor.profile().signer().clone());
+                let credential = Credential::Signer(reactor.profile().clone());
                 let repository: Repository = Repository::from(credential);
                 let state = Arc::new(RepositoryState::new(Arc::new(repository)));
 

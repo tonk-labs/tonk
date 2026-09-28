@@ -10,7 +10,7 @@ use super::error::ReactorError;
 use dialog_artifacts::Index;
 use dialog_artifacts::tree::TreeStorageBridge;
 use dialog_common::Blake3Hash as NodeHash;
-use dialog_repository::{NetworkedIndex, PushError, RepositoryMemoryExt as _, Revision, Upstream};
+use dialog_repository::{NetworkedIndex, PushError, Revision, Upstream};
 use dialog_search_tree::{
     ContentAddressedStorage as TreeStorage, DialogSearchTreeError, TreeDifference,
 };
@@ -120,21 +120,21 @@ impl<'a> Push<'a> {
             Err(error) => return Err(error.into()),
         };
 
-        let (remote_name, base) = match cached.handle().upstream() {
-            Some(Upstream::Remote { remote, tree, .. }) => (remote, tree),
-            _ => return Err(error.into()),
+        let Some((remote, base)) =
+            cached
+                .handle()
+                .pushes()
+                .iter()
+                .find_map(|upstream| match upstream {
+                    Upstream::Remote { remote, tree, .. } => Some((remote.clone(), tree.clone())),
+                    _ => None,
+                })
+        else {
+            return Err(error.into());
         };
         let Some(revision) = cached.handle().revision() else {
             return Err(error.into());
         };
-        let remote = cached
-            .handle()
-            .subject()
-            .remote(remote_name)
-            .load()
-            .perform(env)
-            .await
-            .map_err(PushError::from)?;
         let store = NetworkedIndex::new(env, cached.handle().archive().index(), Some(remote));
         // The diff can traverse either side, so both sides hydrate through
         // the networked index; only tree nodes are cached — referenced blob
