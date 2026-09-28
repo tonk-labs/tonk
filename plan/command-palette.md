@@ -3,6 +3,13 @@
 Status: proposal. Nothing built.
 Date: 2026-09-28
 
+> **Superseded in part by [command-palette-sketch.md](command-palette-sketch.md).**
+> The sketch drops separate verb concepts. Commands and concepts stay the
+> vocabulary, with `phrase!` (parse rules) and `suggest!` (candidates) declared
+> beside them. That is because the worker never hands rule-emitted transients to
+> Rust providers, so a verb → command bridge rule would run nothing. The context,
+> FABB, ranker and phasing sections here still stand.
+
 `Cmd+Shift+P` switches the FABB into a palette: a text field and a ranked list of
 things you can do. Typing fuzzy-matches **verbs**, fills their roles with
 **nouns** from the profile and the active space, and shows a **preview** of the
