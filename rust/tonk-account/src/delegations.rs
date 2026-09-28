@@ -16,7 +16,6 @@
 //! that holds the account grant regains access to everything the account
 //! knows about.
 
-use dialog_artifacts::{Preload, Speculation};
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
 use dialog_credentials::Signer;
@@ -25,8 +24,8 @@ use dialog_effects::authority::{Attest, Identify};
 use dialog_effects::blob::{Import as BlobImport, Read as BlobRead, Write as BlobWrite};
 use dialog_effects::memory::{Publish, Resolve};
 use dialog_repository::{
-    Branch, CommitError, Hydrate, PullError, RemoteSite, Revision, SetUpstreamError, Upstream,
-    UpstreamBranch,
+    Branch, CommitError, Hydrate, PullError, RemoteSite, ResolveEnv, Revision, SetUpstreamError,
+    Upstream, UpstreamBranch,
 };
 use dialog_ucan::{Parameters, Scope, UcanDelegation};
 use dialog_ucan_core::command::Command;
@@ -107,28 +106,20 @@ pub async fn adopt_account_upstream<Env>(
     env: &Env,
 ) -> Result<Option<Revision>, AdoptError>
 where
-    Env: Provider<Get>
-        + Provider<Put>
-        + Provider<Import>
-        + Provider<Resolve>
-        + Provider<Publish>
-        + Provider<Identify>
-        + Provider<Attest>
+    Env: ResolveEnv
         + Provider<BlobRead>
         + Provider<BlobImport>
-        + Provider<Hydrate>
-        + Provider<Preload>
-        + Provider<Speculation>
         + Provider<Fork<RemoteSite, Get>>
-        + Provider<Fork<RemoteSite, Resolve>>
-        + Provider<Fork<RemoteSite, BlobRead>>
-        + ConditionalSync
-        + 'static,
+        + Provider<Fork<RemoteSite, BlobRead>>,
 {
-    match access.upstream() {
-        None => access.set_upstream(account.into()).perform(env).await?,
-        Some(Upstream::Remote { .. }) => {}
-        Some(_) => return Err(AdoptError::ForeignUpstream),
+    let pulls = access.pulls();
+    if pulls.is_empty() {
+        access.set_upstream(account.into()).perform(env).await?;
+    } else if pulls
+        .iter()
+        .any(|upstream| matches!(upstream, Upstream::Local { .. }))
+    {
+        return Err(AdoptError::ForeignUpstream);
     }
     // Pull-and-materialize, not a bare pull: a bare pull adopts the head
     // by root, leaving the access branch partially replicated — and the
