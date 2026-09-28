@@ -404,7 +404,7 @@ by space identity and labeled with the current space name. Each row leads with
 reported installation names, followed by read/edit permission and expiry.
 Legacy confirmations show **Name unavailable**. Pending invitations are omitted
 but may still grant access; the receipt is a visibility criterion, not an
-authorization gate. Removed and expired connections remain in history.
+authorization gate. Removed and expired connections are hidden, including space headings with no active connections. Incomplete removals remain visible for retry.
 Sign out and Delete account share a desktop row and stack on narrow screens.
 Tab moves between settings controls without
 dismissing the panel; Tab still dismisses the account menu itself. Revoking an
@@ -428,7 +428,7 @@ Plan 007 follow-up, based at `c1f3b4400` (2026-09-28): the native browser tests
 `settings_groups_named_agent_access_and_retries_removal`, and
 `it_adds_an_account_from_the_hub_in_one_step` passed with retries disabled.
 These prove mounted settings filtering, stable space grouping, literal labels,
-legacy rows, history, partial-removal retry, error/stale-response handling, and
+legacy rows, inactive-row filtering, partial-removal retry, error/stale-response handling, and
 the account grid. Desktop, 390px narrow, and short dark captures verify settings
 overflow, 44px actions, keyboard focus, and reduced motion. The named-access
 test passed again after fixing inherited list-item indentation. These focused

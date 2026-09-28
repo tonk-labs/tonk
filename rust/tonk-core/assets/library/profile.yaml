@@ -4281,8 +4281,8 @@ element!: &account-settings
         self.api('/api/account/connections').then((groups) => {
           if (!current()) return;
           self.querySelector('[data-agent-connections]')?.removeAttribute('hidden');
-          groups = (groups ?? []).filter((group) => !group.requestId && group.confirmed);
-          self.connectionsStatus(groups.length ? '' : 'No completed connections yet.');
+          groups = (groups ?? []).filter((group) => !group.requestId && group.confirmed && !['revoked', 'expired'].includes(group.status));
+          self.connectionsStatus(groups.length ? '' : 'No active connections.');
           self.agentConnections = groups;
           self.connectionsRender(groups);
         }, (error) => {
@@ -4293,13 +4293,13 @@ element!: &account-settings
         });
       }
     connections-render: |
-      (self, groups, revealId) => {
+      (self, groups) => {
         const list = self.querySelector('[data-connections-list]');
         if (!list) return;
         list.textContent = '';
         const spaces = new Map();
         for (const group of groups) {
-          if (group.requestId || !group.confirmed) continue;
+          if (group.requestId || !group.confirmed || ['revoked', 'expired'].includes(group.status)) continue;
           if (!spaces.has(group.subject)) spaces.set(group.subject, []);
           spaces.get(group.subject).push(group);
         }
@@ -4317,20 +4317,7 @@ element!: &account-settings
           heading.textContent = records.find(group => group.spaceName)?.spaceName || subject;
           header.append(label, heading);
           section.append(header);
-          const active = records.filter(group => !['revoked', 'expired'].includes(group.status));
-          const history = records.filter(group => ['revoked', 'expired'].includes(group.status));
-          for (const group of active) section.append(self.connectionRecord(group));
-          if (history.length) {
-            const details = document.createElement('details');
-            details.className = 'connection-history';
-            details.dataset.connectionHistory = '';
-            details.open = history.some(group => group.id === revealId);
-            const summary = document.createElement('summary');
-            summary.textContent = 'previous access';
-            details.append(summary);
-            for (const group of history) details.append(self.connectionRecord(group));
-            section.append(details);
-          }
+          for (const group of records) section.append(self.connectionRecord(group));
           list.append(section);
         }
       }
@@ -4390,7 +4377,7 @@ element!: &account-settings
           if (!current()) return;
           if (!group || group.id !== id) { self.connectionsStatus('This connection changed. Refresh before trying again.'); return; }
           self.agentConnections = (self.agentConnections ?? []).map(saved => saved.id === id ? group : saved);
-          self.connectionsRender(self.agentConnections, id);
+          self.connectionsRender(self.agentConnections);
           const count = group.targets.filter((target) => target.acknowledged).length;
           self.connectionsStatus(count === group.targets.length
             ? 'Removal confirmed. Enforcement may take time; downloaded data remains.'

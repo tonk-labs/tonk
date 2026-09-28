@@ -7900,7 +7900,7 @@ mod tests {
             const legacy = group('b', 'did:key:second');
             const partial = {...group('c', 'did:key:first', 'partial'),
                 targets: [{cid: 'one', acknowledged: true}, {cid: 'two', acknowledged: false, error: 'offline'}]};
-            const expired = group('d', 'did:key:second', 'expired');
+            const expired = group('d', 'did:key:inactive-only', 'expired');
             const revoked = {...group('e', 'did:key:second', 'revoked'),
                 targets: [{cid: 'one', acknowledged: true}]};
             const pending = {...group('f', 'did:key:hidden'), confirmed: false};
@@ -7909,7 +7909,7 @@ mod tests {
             settings.api = () => Promise.resolve(fixtures);
             settings.connectionsRefresh();
             (async () => {
-                await until(() => settings.querySelectorAll('[data-connection-id]').length === 5);
+                await until(() => settings.querySelectorAll('[data-connection-id]').length === 3);
                 const initial = {
                     spaces: [...settings.querySelectorAll('[data-connection-space]')].map(node => node.dataset.connectionSpace),
                     names: [...settings.querySelectorAll('.connection-space__name')].map(node => node.textContent),
@@ -7918,14 +7918,23 @@ mod tests {
                     labels: [...settings.querySelectorAll('.connection-installations li')].map(node => node.textContent),
                     injected: settings.querySelectorAll('[data-connections-list] img').length,
                     legacy: settings.querySelector('[data-connection-id="' + legacy.id + '"]').textContent,
-                    history: settings.querySelectorAll('[data-connection-history] [data-connection-id]').length,
+                    inactiveRows: settings.querySelectorAll('[data-connection-id="' + expired.id + '"], [data-connection-id="' + revoked.id + '"]').length,
                     retry: settings.querySelector('[data-connection-revoke="' + partial.id + '"]').textContent
                 };
                 settings.api = () => Promise.resolve({...partial, status: 'revoked',
                     targets: partial.targets.map(target => ({...target, acknowledged: true, error: null}))});
                 settings.querySelector('[data-connection-revoke="' + partial.id + '"]').click();
-                await until(() => settings.querySelector('[data-connection-history] [data-connection-id="' + partial.id + '"]'));
-                initial.removed = settings.querySelector('[data-connection-revoke="' + partial.id + '"]').disabled;
+                await until(() => !settings.querySelector('[data-connection-id="' + partial.id + '"]'));
+                initial.removed = !settings.querySelector('[data-connection-revoke="' + partial.id + '"]');
+                settings.api = () => Promise.resolve({...legacy, status: 'revoked',
+                    targets: legacy.targets.map(target => ({...target, acknowledged: true}))});
+                settings.querySelector('[data-connection-revoke="' + legacy.id + '"]').click();
+                await until(() => !settings.querySelector('[data-connection-space="did:key:second"]'));
+                initial.emptySpaceHidden = true;
+                settings.api = () => Promise.resolve([expired, revoked]);
+                settings.connectionsRefresh();
+                await until(() => settings.querySelector('[data-connections-status]').textContent === 'No active connections.');
+                initial.inactiveOnlySpaces = settings.querySelectorAll('[data-connection-space]').length;
                 // New names come from the current projection, not the issue-time label.
                 settings.api = () => Promise.resolve([{...shared, spaceName: 'Renamed space'}, {...legacy, spaceName: null}]);
                 settings.connectionsRefresh();
@@ -7946,7 +7955,7 @@ mod tests {
                 // Retain a rendered fixture for desktop/mobile visual inspection.
                 settings.api = () => Promise.resolve(fixtures);
                 settings.connectionsRefresh();
-                await until(() => settings.querySelectorAll('[data-connection-id]').length === 5);
+                await until(() => settings.querySelectorAll('[data-connection-id]').length === 3);
                 done(initial);
             })().catch(error => { settings.api = original; done({error: error.message}); });
         "#, vec![]).await?;
@@ -7973,7 +7982,9 @@ mod tests {
                 .unwrap()
                 .contains("Name unavailable")
         );
-        assert_eq!(state["history"], 2);
+        assert_eq!(state["inactiveRows"], 0);
+        assert_eq!(state["emptySpaceHidden"], true);
+        assert_eq!(state["inactiveOnlySpaces"], 0);
         assert_eq!(state["retry"], "retry removal");
         assert_eq!(state["removed"], true);
         assert_eq!(

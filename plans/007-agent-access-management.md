@@ -60,7 +60,7 @@ textual statuses, and existing responsive layouts.
    account and label that scope: this is not a complete space-wide agent census.
 3. Show only setup-confirmed delegations in management. Do not show pending
    invitations, counts, or empty space headings caused by unconfirmed invitations.
-   Expired/revoked confirmed records belong in history. Partial revocations of
+   Expired/revoked confirmed records are hidden, with no empty space headings. Partial revocations of
    managed delegations stay prominent with retry.
 4. Use the completed setup receipt as the visibility criterion, not an
    authorization gate. A missing receipt does not prove non-use; filtering
@@ -419,3 +419,15 @@ confirmed-only access management documentation are both retained. Storybook
 build/check and all 176 local links passed, as did formatting and diff checks.
 No hand-written product conflict required resolution; runtime suites were not
 rerun for this generated-documentation resolution.
+
+### Active access only, 2026-09-28
+
+User review removed the previous-access section entirely. Refresh and rendering
+now omit revoked/expired grants before grouping, so removing the last active
+grant also removes its space heading. Incomplete removals remain retryable.
+The existing browser regression now checks inactive-only spaces, immediate row
+removal, disappearance of the last space row, and the active-access empty state.
+The updated native browser regression passed once in 9.52s against a dev-build
+snapshot matching the current profile and CSS. Desktop and narrow captures
+confirm the history section is absent; existing focus/overflow checks also pass.
+Formatting, Storybook generation/check, all 176 local links, and diff checks pass.

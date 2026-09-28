@@ -2113,10 +2113,6 @@ account-settings .connection-space__heading { display: flex; align-items: baseli
 account-settings .connection-space__label { font: 400 13px/1.4 var(--sans); color: var(--soft); }
 account-settings .connection-space__name { margin: 0; font: 600 18px/1.4 var(--cond);
     overflow-wrap: anywhere; text-transform: none; }
-account-settings .connection-history { display: grid; min-width: 0; }
-account-settings .connection-history > summary { cursor: pointer; min-height: 44px;
-    box-sizing: border-box; padding: 12px 0; font: 600 13px/20px var(--cond); }
-account-settings .connection-history .connection-record { margin-top: 7px; }
 account-settings .connection-overview { display: grid; grid-template-columns: minmax(0, 1fr) auto;
     align-items: start; gap: 16px; }
 account-settings .connection-identity { min-width: 0; }
