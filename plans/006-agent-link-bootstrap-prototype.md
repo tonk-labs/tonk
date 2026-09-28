@@ -56,3 +56,35 @@ production invite redeemed or deployment performed.
   1 passed. Boot and build-artifact tests: 22 passed. Rust formatting and
   whitespace checks passed. Full real-account signup through the packaged app
   has not been rerun.
+
+## E2E CI repair (2026-09-28)
+
+Run 36400637578 at f2602b503 failed 12 tests across three shards:
+
+- Ten offline-generation-dependent tests could not finish cache adoption.
+  Caddy's `try_files {path} /index.html` served the SPA at `/agent/`, whose
+  manifest entry requires the static agent document. Add the directory index
+  candidate before the SPA fallback. A local HTTP probe reproduced the old
+  response and verified the corrected document hash, while `/space/example`
+  still receives the SPA.
+- Two connection tests used `.panel-copy`, which now selects the first of two
+  buttons (copy link). Select `.agent-copy-prompt` and `.agent-copy-link`
+  explicitly, exercising both and preserving the existing prompt checks.
+
+Current Nix preview, native E2E test binary, and CLI builds passed. Rust and
+Nix formatting and whitespace checks passed. On Chrome 154, the 12 previously
+failing tests ran serially without retries: 11 passed; the busy-page successor
+test reached complete generation adoption but timed out with the successor
+installed and waiting. This is a later boundary than the CI asset-hash error.
+The isolated busy-page test passed on Chrome/ChromeDriver 150.0.7871.115
+(CI uses 150.0.7871.114), in 124 seconds. The Chrome 154 failure remains a
+validation caveat: one comparison does not prove the browser version caused it.
+The 11-test success plus this focused pass covers all originally failing test
+names, but is not a clean single-browser suite run. A fresh hosted run remains
+pending.
+
+Local evidence: `/tmp/pr1012-e2e.log`, `/tmp/pr1012-chrome150.log`, and
+`/tmp/pr1012-artifacts.log`. The browser artifact was built from f2602b503
+with `connection-invites`; only the Caddy fixture and native test helpers were
+changed for this repair. Test environments used isolated profiles and localhost;
+CI uses tonk.network with its loopback mapping.

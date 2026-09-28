@@ -5294,22 +5294,22 @@ mod tests {
     }
 
     #[cfg(feature = "connection-invites")]
-    async fn copy_agent_connection_prompt(driver: &WebDriver) -> Result<String> {
+    async fn copy_agent_connection_text(driver: &WebDriver, selector: &str) -> Result<String> {
         enter_guest(driver).await?;
         watch_clipboard(driver).await?;
         let clicked = driver
             .execute(
                 r#"const button = document.querySelector('tonk-fab')?.shadowRoot
-                   ?.querySelector('#agent-panel .panel-copy');
+                   ?.querySelector(arguments[0]);
                if (!button || button.hidden || button.disabled) return false;
                button.click();
                return true;"#,
-                Vec::new(),
+                vec![serde_json::json!(selector)],
             )
             .await?;
         anyhow::ensure!(
             clicked.json() == true,
-            "agent prompt copy control is not ready"
+            "agent copy control is not ready: {selector}"
         );
         let prompt = copied_text(driver).await?;
         driver.enter_default_frame().await?;
@@ -5317,13 +5317,22 @@ mod tests {
     }
 
     #[cfg(feature = "connection-invites")]
+    async fn copy_agent_connection_prompt(driver: &WebDriver) -> Result<String> {
+        copy_agent_connection_text(driver, "#agent-panel .agent-copy-prompt").await
+    }
+
+    #[cfg(feature = "connection-invites")]
     async fn copy_agent_connection_link(driver: &WebDriver) -> Result<String> {
-        let prompt = copy_agent_connection_prompt(driver).await?;
-        prompt
-            .split("'")
-            .find(|part| part.starts_with("http") && part.contains("#tonk-agent-v2="))
-            .map(str::to_owned)
-            .context("copied agent prompt has no scoped invitation")
+        let link = copy_agent_connection_text(driver, "#agent-panel .agent-copy-link").await?;
+        let url = url::Url::parse(&link).context("copied agent link is not a URL")?;
+        anyhow::ensure!(
+            url.path() == "/agent/"
+                && url
+                    .fragment()
+                    .is_some_and(|fragment| fragment.starts_with("tonk-agent-v2=")),
+            "copied agent link has no scoped invitation"
+        );
+        Ok(link)
     }
 
     /// The cluster's action row label, or empty while it is folded.
