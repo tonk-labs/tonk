@@ -83,13 +83,13 @@ pub(crate) async fn local_root_for_store(
 /// Load the local root through an already-mounted site operator.
 pub(crate) async fn local_root_with_operator(
     profile: &Peer<NativeSpace>,
-    operator: &Peer<NativeSpace, Session>,
+    _operator: &Peer<NativeSpace, Session>,
 ) -> Result<Option<LocalRoot>> {
     let bytes = match profile
         .secrets()
         .site(LOCAL_ROOT_SITE)
         .load::<Vec<u8>>()
-        .perform(operator)
+        .perform(profile)
         .await
     {
         Ok(bytes) if bytes.is_empty() => return Ok(None),
@@ -150,7 +150,7 @@ pub async fn save_local_root_with_operator(
     // UCAN certificates remain installed for local repository writes.
     profile
         .access()
-        .save(UcanDelegation(chain))
+        .save(UcanDelegation(chain.clone()))
         .perform(operator)
         .await
         .context("failed to install the local-root delegation")?;
@@ -158,9 +158,13 @@ pub async fn save_local_root_with_operator(
         .secrets()
         .site(LOCAL_ROOT_SITE)
         .save(serde_json::to_vec(&record).context("failed to serialize the local root")?)
-        .perform(operator)
+        .perform(profile)
         .await
         .context("failed to persist the local root")?;
+    // The peer now acts for the account it signed in to.
+    tonk_account::peer::hand_over(profile, &chain)
+        .await
+        .context("failed to hand the profile's account over to the signed-in account")?;
     Ok(record)
 }
 

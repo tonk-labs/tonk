@@ -47,7 +47,7 @@ async fn it_pushes_a_space_whose_account_prefix_was_never_stored(
         .secrets()
         .site(prefix_site.clone())
         .save(Vec::<u8>::new())
-        .perform(&site.operator)
+        .perform(&fixture.profile)
         .await?;
     configure_upstream(&site, &env.access_service_url).await?;
     // What is under test is push authority, not provisioning; the space
@@ -62,7 +62,7 @@ async fn it_pushes_a_space_whose_account_prefix_was_never_stored(
         .secrets()
         .site(prefix_site)
         .load::<Vec<u8>>()
-        .perform(&site.operator)
+        .perform(&fixture.profile)
         .await?;
     assert!(
         !restored.is_empty(),
@@ -231,6 +231,11 @@ async fn it_installs_authority_from_a_callback_authorization(
     // confirmed its email.
     fixture.activate_with(&env).await?;
     let operator = fixture.pre_account_site.operator.inner();
+    assert_eq!(
+        fixture.profile.authority().await?,
+        fixture.link.issuer().clone(),
+        "signing in hands the profile's dialog account over to the tonk account"
+    );
 
     // Exactly what the page mints: the account's powerline to this profile,
     // plus the descriptor that says where the account repository lives.

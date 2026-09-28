@@ -133,7 +133,7 @@ pub async fn retire(
         .secrets()
         .site(ONBOARDING_CUSTODIAN_KEY)
         .save(Vec::new())
-        .perform(operator)
+        .perform(profile)
         .await
         .context("failed to demote the onboarding custodian")
 }
@@ -170,14 +170,14 @@ async fn create(
         .secrets()
         .site(ONBOARDING_CUSTODIAN_KEY)
         .save(seed)
-        .perform(operator)
+        .perform(profile)
         .await
         .context("failed to save the onboarding custodian")?;
     profile
         .secrets()
         .site(ONBOARDING_ENVELOPE_SITE)
         .save(envelope.encode())
-        .perform(operator)
+        .perform(profile)
         .await
         .context("failed to save the onboarding envelope")?;
 
@@ -204,7 +204,7 @@ async fn create(
         .secrets()
         .site(ONBOARDING_GRANT_SITE)
         .save(bytes)
-        .perform(operator)
+        .perform(profile)
         .await
         .context("failed to persist the onboarding grant")?;
     profile
@@ -256,14 +256,14 @@ async fn derive_kek(custodian: &Ed25519Signer) -> Result<Kek<Recovery>> {
 
 async fn load_site(
     profile: &Peer<NativeSpace>,
-    operator: &Peer<NativeSpace, Session>,
+    _operator: &Peer<NativeSpace, Session>,
     site: &str,
 ) -> Result<Option<Vec<u8>>> {
     match profile
         .secrets()
         .site(site)
         .load::<Vec<u8>>()
-        .perform(operator)
+        .perform(profile)
         .await
     {
         Ok(bytes) if bytes.is_empty() => Ok(None),
@@ -278,7 +278,7 @@ async fn load_site(
 /// retired state.
 async fn load_custodian(
     profile: &Peer<NativeSpace>,
-    operator: &Peer<NativeSpace, Session>,
+    _operator: &Peer<NativeSpace, Session>,
 ) -> Result<Option<Ed25519Signer>> {
     use dialog_effects::credential::prelude::*;
 
@@ -286,7 +286,7 @@ async fn load_custodian(
         .secrets()
         .site(ONBOARDING_CUSTODIAN_KEY)
         .load::<Vec<u8>>()
-        .perform(operator)
+        .perform(profile)
         .await
     {
         // Retired: the custodian was forgotten.

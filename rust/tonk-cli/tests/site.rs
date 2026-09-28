@@ -649,7 +649,7 @@ mod when_recording_roster_facts {
             .secrets()
             .site(tonk_cli::onboarding::ONBOARDING_GRANT_SITE)
             .load::<Vec<u8>>()
-            .perform(&joined.operator)
+            .perform(&joined.profile)
             .await?;
         let chain = dialog_ucan_core::DelegationChain::try_from(root_bytes.as_slice())
             .map_err(|error| anyhow::anyhow!("{error}"))?;
@@ -1558,7 +1558,7 @@ mod when_mounting_account_authority {
             .secrets()
             .site(tonk_cli::onboarding::ONBOARDING_GRANT_SITE)
             .load::<Vec<u8>>()
-            .perform(&site.operator)
+            .perform(&site.profile)
             .await?;
         let chain = dialog_ucan_core::DelegationChain::try_from(bytes.as_slice())
             .map_err(|error| anyhow::anyhow!("{error}"))?;
@@ -1598,7 +1598,7 @@ mod when_mounting_account_authority {
             .secrets()
             .site(space_root_site(&subject, &account_root))
             .load::<Vec<u8>>()
-            .perform(&mounted.operator)
+            .perform(&mounted.profile)
             .await?;
         assert_eq!(persisted, expected);
 
@@ -1674,7 +1674,7 @@ mod when_mounting_account_authority {
             .secrets()
             .site(key.clone())
             .save(Vec::<u8>::new())
-            .perform(&test.site.operator)
+            .perform(&test.site.profile)
             .await?;
 
         let recovered = site::account_root_prefix(&test.site, &root).await?;
@@ -1686,7 +1686,7 @@ mod when_mounting_account_authority {
             .secrets()
             .site(key)
             .load::<Vec<u8>>()
-            .perform(&test.site.operator)
+            .perform(&test.site.profile)
             .await?;
         assert_eq!(persisted, recovered.to_bytes()?);
         Ok(())
@@ -1712,7 +1712,7 @@ mod when_mounting_account_authority {
             .secrets()
             .site(space_root_site(&test.site.repository.did(), &account_root))
             .load::<Vec<u8>>()
-            .perform(&test.site.operator)
+            .perform(&test.site.profile)
             .await?;
         assert_eq!(persisted, adopted.to_bytes()?);
         Ok(())

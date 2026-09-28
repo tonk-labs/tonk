@@ -341,7 +341,7 @@ async fn projected_active(
             .secrets()
             .site(crate::account::ACCOUNT_LINK_SITE)
             .load::<Vec<u8>>()
-            .perform(operator)
+            .perform(profile)
             .await,
     )?
     else {
@@ -591,7 +591,7 @@ pub async fn logout_transition_for_store(
             .secrets()
             .site(crate::account::ACCOUNT_LINK_SITE)
             .save(Vec::<u8>::new())
-            .perform(operator)
+            .perform(profile)
             .await;
     }
     Ok(detached)

@@ -16,6 +16,8 @@ use dialog_repository::{
     SiteAddress, Upstream, contact, peer_did,
 };
 use dialog_storage::provider::storage::{CredentialStore, Storage};
+use dialog_ucan::UcanDelegation;
+use dialog_ucan_core::DelegationChain;
 use dialog_varsig::Principal as _;
 
 /// The name the key of the system tonk runs as is kept under, in the
@@ -247,4 +249,70 @@ pub enum ConnectReplicaError {
 /// from several; tonk sets at most one, so the first is the one it set.
 pub fn upstream(branch: &Branch) -> Option<Upstream> {
     branch.pulls().iter().next().cloned()
+}
+
+/// Hand `peer`'s account over to the account `grant` comes from: the
+/// account → device powerline tonk holds once the device signs in.
+///
+/// The grant is retained where the peer proves from, and the peer's
+/// [`ACCOUNT_VAULT`] is rotated to the account's DID, so the account the
+/// peer acts for is the one tonk signed in, not the one dialog made up
+/// at onboarding. A peer already acting for that account is left alone.
+pub async fn hand_over<S: PeerSpace>(
+    peer: &Peer<S>,
+    grant: &DelegationChain,
+) -> Result<(), CredentialError> {
+    let account = grant.issuer().clone();
+    if peer.authority().await? == account {
+        return Ok(());
+    }
+    peer.access()
+        .save(UcanDelegation(grant.clone()))
+        .perform(peer)
+        .await
+        .map_err(|error| CredentialError::Storage(error.to_string()))?;
+    peer.state()
+        .refresh(peer)
+        .await
+        .map_err(|error| CredentialError::Storage(error.to_string()))?;
+    peer.state()
+        .vault(ACCOUNT_VAULT)
+        .load()
+        .perform(peer)
+        .await?
+        .rotate()
+        .to(account)
+        .perform(peer)
+        .await?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dialog_credentials::{Ed25519Signer, Signer};
+    use dialog_peer::helpers::test_peer;
+
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_dedicated_worker);
+
+    /// Signing in hands the account dialog made up at onboarding over to
+    /// the account tonk signed in, and doing it again changes nothing.
+    #[dialog_common::test]
+    async fn it_hands_the_peer_account_over_at_sign_in() -> anyhow::Result<()> {
+        let peer = test_peer().await;
+        let onboarded = peer.authority().await?;
+        let account = Ed25519Signer::generate().await?;
+        let grant =
+            crate::delegations::mint_account_union(&Signer::from(account.clone()), &peer.did())
+                .await?;
+        assert_ne!(onboarded, account.did());
+
+        hand_over(&peer, &grant).await?;
+        assert_eq!(peer.authority().await?, account.did());
+
+        hand_over(&peer, &grant).await?;
+        assert_eq!(peer.authority().await?, account.did());
+        Ok(())
+    }
 }

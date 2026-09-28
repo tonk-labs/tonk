@@ -354,7 +354,7 @@ pub async fn rotate_from_onboarding(
                             account_root_ref,
                         ))
                         .save(bytes)
-                        .perform(operator_ref)
+                        .perform(profile_ref)
                         .await
                         .map_err(|error| format!("{subject}: prefix: {error}"))?;
                     // Every write for this row goes through one fresh

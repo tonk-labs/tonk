@@ -548,7 +548,7 @@ async fn self_account_handoff_retains_a_reusable_prefix() -> anyhow::Result<()> 
             account.link.issuer(),
         ))
         .save(Vec::<u8>::new())
-        .perform(&owned.operator)
+        .perform(&account.profile)
         .await?;
     let root = account.tmp.path().join("self-handoff");
     tonk_cli::invite::claim(&root, &minted.url, account.config.clone()).await?;

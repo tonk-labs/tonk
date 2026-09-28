@@ -494,7 +494,7 @@ pub(crate) async fn project_account_with_checkpoint(
         .secrets()
         .site(ACCOUNT_LINK_SITE)
         .save(provider.encode()?)
-        .perform(operator)
+        .perform(profile)
         .await
         .context("failed to persist the account link")?;
     Ok(())
@@ -963,8 +963,9 @@ pub async fn attach_for_integration_test(
         .secrets()
         .site(crate::identity::LOCAL_ROOT_SITE)
         .save(serde_json::to_vec(&record)?)
-        .perform(operator)
+        .perform(profile)
         .await?;
+    tonk_account::peer::hand_over(profile, &link).await?;
     let provider = AccountProviderRecord::attach(
         remote,
         std::time::SystemTime::now()
@@ -976,7 +977,7 @@ pub async fn attach_for_integration_test(
         .secrets()
         .site(ACCOUNT_LINK_SITE)
         .save(provider.encode()?)
-        .perform(operator)
+        .perform(profile)
         .await?;
     let session = crate::account_session::AccountSessionState {
         version: 2,
@@ -1453,7 +1454,7 @@ mod tests {
             .secrets()
             .site(ACCOUNT_LINK_SITE)
             .save(provider.encode().unwrap())
-            .perform(&operator)
+            .perform(&profile)
             .await
             .unwrap();
         crate::account_session::finalize_activation(&profile, &operator, guard, &account)
@@ -1464,7 +1465,7 @@ mod tests {
                 .secrets()
                 .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
                 .save(root_did.as_str().as_bytes().to_vec())
-                .perform(&operator)
+                .perform(&profile)
                 .await
                 .unwrap();
         }
@@ -1581,21 +1582,21 @@ mod tests {
             .secrets()
             .site(crate::identity::LOCAL_ROOT_SITE)
             .save(local_root_bytes.clone())
-            .perform(&operator)
+            .perform(&profile)
             .await
             .unwrap();
         profile
             .secrets()
             .site(ACCOUNT_LINK_SITE)
             .save(provider)
-            .perform(&operator)
+            .perform(&profile)
             .await
             .unwrap();
         profile
             .secrets()
             .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
             .save(trusted_base.clone())
-            .perform(&operator)
+            .perform(&profile)
             .await
             .unwrap();
         let sentinel = store.account_dir().join("sentinel");
@@ -1628,7 +1629,7 @@ mod tests {
                 .secrets()
                 .site(ACCOUNT_LINK_SITE)
                 .load::<Vec<u8>>()
-                .perform(&operator)
+                .perform(&profile)
                 .await
                 .unwrap(),
             Vec::<u8>::new()
@@ -1638,7 +1639,7 @@ mod tests {
                 .secrets()
                 .site(crate::identity::LOCAL_ROOT_SITE)
                 .load::<Vec<u8>>()
-                .perform(&operator)
+                .perform(&profile)
                 .await
                 .unwrap(),
             local_root_bytes
@@ -1648,7 +1649,7 @@ mod tests {
                 .secrets()
                 .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
                 .load::<Vec<u8>>()
-                .perform(&operator)
+                .perform(&profile)
                 .await
                 .unwrap(),
             trusted_base

@@ -19,9 +19,9 @@ use std::sync::LazyLock;
 
 use anyhow::{Context, Result, bail};
 use dialog_capability::{Subject, did};
-use dialog_effects::credential::CredentialError;
 use dialog_credentials::key::ExtractableKey;
 use dialog_credentials::{Ed25519Signer, Extractable};
+use dialog_effects::credential::CredentialError;
 use dialog_effects::storage::{self as storage_fx, Directory, Location, LocationExt as _};
 use dialog_peer::{Peer, Session};
 use dialog_reactor::{BranchSession, Reactor, ReactorError, RepositoryState};
@@ -536,7 +536,7 @@ async fn onboarding_grant_issuer(site: &TonkSite) -> Option<String> {
         .secrets()
         .site(crate::onboarding::ONBOARDING_GRANT_SITE)
         .load::<Vec<u8>>()
-        .perform(site.operator.local())
+        .perform(&site.profile)
         .await
         .ok()?;
     let chain = DelegationChain::try_from(bytes.as_slice()).ok()?;
@@ -714,7 +714,7 @@ async fn bootstrap_repository(
         .secrets()
         .site(space_root_site(&signer_repo.did(), &durable_did))
         .save(prefix_bytes)
-        .perform(operator)
+        .perform(profile)
         .await
         .context("failed to persist repo→root delegation")?;
 
@@ -896,7 +896,7 @@ async fn mount_delegated_inner(
             .secrets()
             .site(space_root_site(&subject, &authority_root))
             .save(prefix_bytes)
-            .perform(&operator)
+            .perform(&profile)
             .await
             .context("failed to persist delegated account-root prefix")?;
     }
@@ -1033,14 +1033,14 @@ async fn validate_prefix(bytes: Vec<u8>, account_root: &Did) -> Result<Delegatio
 /// Read one credential site, treating absence and emptiness alike.
 async fn optional_credential(
     profile: &Peer<NativeSpace>,
-    operator: &Peer<NativeSpace, Session>,
+    _operator: &Peer<NativeSpace, Session>,
     site: String,
 ) -> Result<Option<Vec<u8>>> {
     match profile
         .secrets()
         .site(site)
         .load::<Vec<u8>>()
-        .perform(operator)
+        .perform(profile)
         .await
     {
         Ok(bytes) if bytes.is_empty() => Ok(None),
@@ -1144,7 +1144,7 @@ pub async fn account_root_prefix_for(
 
 async fn save_prefix(
     profile: &Peer<NativeSpace>,
-    operator: &Peer<NativeSpace, Session>,
+    _operator: &Peer<NativeSpace, Session>,
     site: &str,
     bytes: Vec<u8>,
 ) -> Result<()> {
@@ -1152,7 +1152,7 @@ async fn save_prefix(
         .secrets()
         .site(site.to_string())
         .save(bytes)
-        .perform(operator)
+        .perform(profile)
         .await?;
     Ok(())
 }

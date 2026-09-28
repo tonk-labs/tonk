@@ -173,7 +173,7 @@ impl AccountFixture {
                 .secrets()
                 .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
                 .save(link.issuer().as_str().as_bytes().to_vec())
-                .perform(&test.site.operator)
+                .perform(&profile)
                 .await?;
 
             // Real accounts publish their encryption key: the ceremony

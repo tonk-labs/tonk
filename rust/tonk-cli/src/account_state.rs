@@ -53,13 +53,13 @@ pub(crate) fn credential_is_missing(error: &CredentialError) -> bool {
 
 async fn marker(
     profile: &Peer<NativeSpace>,
-    operator: &Peer<NativeSpace, Session>,
+    _operator: &Peer<NativeSpace, Session>,
 ) -> Result<Option<Vec<u8>>> {
     match profile
         .secrets()
         .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
         .load::<Vec<u8>>()
-        .perform(operator)
+        .perform(profile)
         .await
     {
         Ok(marker) => Ok(Some(marker)),
@@ -981,19 +981,13 @@ mod tests {
                 .await
                 .unwrap()
         }
-        async fn attach(
-            profile: &Peer<NativeSpace>,
-            store: &crate::space::SpaceStore,
-            remote: &str,
-            at: u64,
-        ) {
+        async fn attach(profile: &Peer<NativeSpace>, remote: &str, at: u64) {
             let attachment = tonk_account::AccountProviderRecord::attach(remote, at).unwrap();
-            let operator = account_operator(profile, store).await;
             profile
                 .secrets()
                 .site(crate::account::ACCOUNT_LINK_SITE)
                 .save(attachment.encode().unwrap())
-                .perform(&operator)
+                .perform(profile)
                 .await
                 .unwrap();
         }
@@ -1013,10 +1007,10 @@ mod tests {
             .secrets()
             .site(crate::identity::LOCAL_ROOT_SITE)
             .save(serde_json::to_vec(&local_root).unwrap())
-            .perform(&account_operator(&profile, &store).await)
+            .perform(&profile)
             .await
             .unwrap();
-        attach(&profile, &store, &live_remote, 1).await;
+        attach(&profile, &live_remote, 1).await;
         let outcome = ensure_with_operator(&profile, account_operator(&profile, &store).await)
             .await
             .unwrap();
@@ -1030,7 +1024,7 @@ mod tests {
         // The link moves to an unreachable address. The mount must
         // follow it — the old strict-equality check errored here,
         // permanently.
-        attach(&profile, &store, "http://127.0.0.1:9/ucan/", 2).await;
+        attach(&profile, "http://127.0.0.1:9/ucan/", 2).await;
         let outcome = ensure_with_operator(&profile, account_operator(&profile, &store).await)
             .await
             .expect("a moved link must repoint, not refuse to mount");
@@ -1046,7 +1040,7 @@ mod tests {
         );
 
         // Moving back to the live address still mounts and pulls.
-        attach(&profile, &store, &live_remote, 3).await;
+        attach(&profile, &live_remote, 3).await;
         let outcome = ensure_with_operator(&profile, account_operator(&profile, &store).await)
             .await
             .unwrap();
@@ -1122,7 +1116,7 @@ mod tests {
             .secrets()
             .site(crate::identity::LOCAL_ROOT_SITE)
             .save(serde_json::to_vec(&local_root).unwrap())
-            .perform(&account_operator)
+            .perform(&profile)
             .await
             .unwrap();
         let attachment = tonk_account::AccountProviderRecord::attach(&remote, 1).unwrap();
@@ -1130,7 +1124,7 @@ mod tests {
             .secrets()
             .site(crate::account::ACCOUNT_LINK_SITE)
             .save(attachment.encode().unwrap())
-            .perform(&account_operator)
+            .perform(&profile)
             .await
             .unwrap();
         assert_eq!(

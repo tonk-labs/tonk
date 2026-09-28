@@ -333,6 +333,14 @@ pub(crate) async fn persist_root(
         .map_err(|error| {
             TonkWorkerError::Internal(format!("failed to save local root: {error}"))
         })?;
+    // The peer now acts for the account it signed in to.
+    tonk_account::peer::hand_over(&state.profile, &chain)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!(
+                "failed to hand the profile's account over to the signed-in account: {error}"
+            ))
+        })?;
 
     let encryption_key = record
         .encryption_key
