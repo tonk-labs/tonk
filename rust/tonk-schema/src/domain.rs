@@ -85,7 +85,7 @@ pub mod replica {
 /// Attributes tonk adds to dialog's peer model.
 ///
 /// A peer and a profile are one entity in two roles:
-/// `dialog.replica/profile` names the peer holding a replica — this
+/// `dialog.replica/peer` names the peer holding a replica — this
 /// device in the local role, the serving service in the remote one.
 /// So an address is an attribute on that entity, not a concept of its
 /// own: there is no peer to identify separately from the profile.

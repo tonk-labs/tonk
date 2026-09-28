@@ -393,7 +393,7 @@ impl SpaceStatus {
 
 /// Where a peer is reachable.
 ///
-/// Keyed on the PEER entity — the one `dialog.replica/profile` names.
+/// Keyed on the PEER entity — the one `dialog.replica/peer` names.
 /// A peer and a profile are the same entity in two roles: this device
 /// in the local role, a serving service in the remote one, so there is
 /// no peer to identify apart from the profile.
