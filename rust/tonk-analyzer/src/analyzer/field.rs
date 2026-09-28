@@ -256,6 +256,12 @@ pub(crate) fn scalar_to_value(
         Scalar::UnsignedInteger(u) => Value::UnsignedInt(*u),
         Scalar::Float(f) => Value::Float(*f),
         Scalar::Bytes(bytes) => Value::Bytes(bytes.clone()),
+        // Included content is text where the field says text, and bytes
+        // everywhere else, an untyped field included.
+        Scalar::Included(bytes) if expected == Some(Type::String) => {
+            Value::String(included_text(bytes)?)
+        }
+        Scalar::Included(bytes) => Value::Bytes(bytes.clone()),
         Scalar::Null => {
             return Err(AnalyzeErrorKind::UnsupportedFieldValue {
                 field: "<scalar>".into(),
@@ -301,6 +307,8 @@ pub(crate) fn scalar_to_string(scalar: &Scalar) -> Result<String, AnalyzeError> 
             }
             .into());
         }
+        // A slot that wants text reads included content as text.
+        Scalar::Included(bytes) => included_text(bytes)?,
         Scalar::Null => {
             return Err(AnalyzeErrorKind::UnsupportedFieldValue {
                 field: "<scalar>".into(),
@@ -366,4 +374,17 @@ pub(crate) fn unexpanded_include(
         reason,
     }
     .into()
+}
+
+/// Included content read as text, for a slot that holds text. Content
+/// that is not UTF-8 has no text reading, so it is refused rather than
+/// decoded lossily.
+pub(crate) fn included_text(bytes: &[u8]) -> Result<String, AnalyzeError> {
+    String::from_utf8(bytes.to_vec()).map_err(|_| {
+        AnalyzeErrorKind::UnsupportedFieldValue {
+            field: "<scalar>".into(),
+            form: "included content that is not UTF-8 text",
+        }
+        .into()
+    })
 }

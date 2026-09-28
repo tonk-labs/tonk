@@ -310,20 +310,22 @@ impl Include {
 /// How an included resource's bytes become a literal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IncludeForm {
-    /// `!include` — the content is UTF-8 text and becomes a
-    /// [`Scalar::String`].
+    /// `!include` — the content as it is, a [`Scalar::Included`]. The
+    /// analyzer reads it as text where the field is declared text and
+    /// as bytes everywhere else, an untyped field included.
+    Bytes,
+    /// `!include/text` — the content is UTF-8 text and becomes a
+    /// [`Scalar::String`] wherever it is written. For an untyped field
+    /// that should hold text.
     Text,
-    /// `!include-binary` — the content is kept byte for byte as a
-    /// [`Scalar::Bytes`], the same value `!!binary` spells inline.
-    Binary,
 }
 
 impl IncludeForm {
     /// The YAML tag (without its `!` handle) that selects this form.
     pub fn tag(self) -> &'static str {
         match self {
-            IncludeForm::Text => "include",
-            IncludeForm::Binary => "include-binary",
+            IncludeForm::Bytes => "include",
+            IncludeForm::Text => "include/text",
         }
     }
 }
@@ -348,6 +350,12 @@ pub enum Scalar {
     /// standard tag). Carried decoded so nothing downstream has to
     /// know the transfer encoding.
     Bytes(Vec<u8>),
+    /// Content an `!include` loaded. Bytes, like [`Scalar::Bytes`],
+    /// except that a slot declared to hold text reads them as UTF-8.
+    /// Kept apart from `Bytes` because `!!binary` is the author saying
+    /// "bytes" outright, and that must not turn into text by landing in
+    /// a text field.
+    Included(Vec<u8>),
     /// A `null` literal.
     Null,
 }

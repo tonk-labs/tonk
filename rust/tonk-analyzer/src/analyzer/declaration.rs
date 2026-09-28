@@ -997,6 +997,8 @@ fn stringify_simple_value(field: &tonk_notation::Field) -> Result<String, Analyz
 fn require_string_description(field: &tonk_notation::Field) -> Result<String, AnalyzeError> {
     match &field.value {
         FieldValue::Literal(Scalar::String(s)) => Ok(s.clone()),
+        // Prose kept in its own file is still prose.
+        FieldValue::Literal(Scalar::Included(bytes)) => super::field::included_text(bytes),
         FieldValue::Symbol(s) => Err(AnalyzeErrorKind::InvalidAttributeBody {
             reason: format!(
                 "`description:` value {s:?} looks like a bare symbol — write a \

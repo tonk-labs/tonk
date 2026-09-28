@@ -659,7 +659,10 @@ fn parse_rule_body(application: &SyntaxApplication) -> Result<RuleBody<'_>, Anal
                 // Description is preserved on the descriptor through
                 // dialog's planner; we don't model it on the analyzer
                 // side beyond shape validation.
-                if !matches!(&field.value, FieldValue::Literal(Scalar::String(_))) {
+                if !matches!(
+                    &field.value,
+                    FieldValue::Literal(Scalar::String(_) | Scalar::Included(_))
+                ) {
                     return Err(AnalyzeError::at(
                         AnalyzeErrorKind::UnsupportedFieldValue {
                             field: "description".into(),

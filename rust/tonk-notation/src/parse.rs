@@ -319,14 +319,14 @@ fn scalar_to_marked_yaml<'input>(event: Event<'input>, span: Span) -> MarkedYaml
     MarkedYaml { span, data }
 }
 
-/// The [`IncludeForm`] a local `!include` / `!include-binary` tag
+/// The [`IncludeForm`] a local `!include` / `!include/text` tag
 /// selects, or `None` for any other tag.
 fn include_form(tag: Option<&saphyr_parser::Tag>) -> Option<IncludeForm> {
     let tag = tag?;
     if tag.handle != "!" {
         return None;
     }
-    [IncludeForm::Text, IncludeForm::Binary]
+    [IncludeForm::Bytes, IncludeForm::Text]
         .into_iter()
         .find(|form| tag.suffix == form.tag())
 }
@@ -1987,9 +1987,9 @@ person:
             r#"
 note!:
   this: ?n
-  body: !include ./body.md
+  body: !include/text ./body.md
   quoted: !include "notes/a b.md"
-  image: !include-binary ../media/a.webp
+  image: !include ../media/a.webp
 "#,
         );
         let fields = &syntax.expressions[0].application().fields;
@@ -2008,7 +2008,7 @@ note!:
             }
         );
         assert_eq!(include("quoted").reference, "notes/a b.md");
-        assert_eq!(include("image").form, IncludeForm::Binary);
+        assert_eq!(include("image").form, IncludeForm::Bytes);
         assert_eq!(syntax.base.as_str(), INLINE_LOCATION);
     }
 

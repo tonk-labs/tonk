@@ -191,6 +191,9 @@ fn scalar_text(scalar: &Scalar) -> String {
         // a constant is text. Treated as "no value" rather than
         // re-encoded: the same way a blank control is handled.
         Scalar::Bytes(_) => String::new(),
+        // Included content is text here when it is UTF-8, and otherwise
+        // has no text reading, the same as `Bytes`.
+        Scalar::Included(bytes) => String::from_utf8(bytes.clone()).unwrap_or_default(),
         // `null` reads as "no value", which the runtime treats the way
         // it treats a blank control: the field is omitted, the command
         // still posts.

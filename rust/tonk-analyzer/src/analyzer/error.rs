@@ -298,7 +298,7 @@ pub enum AnalyzeErrorKind {
     /// does not load included resources.
     #[error("`!{tag} {reference}` cannot be included: {reason}")]
     UnexpandedInclude {
-        /// The tag as written (`include` / `include-binary`).
+        /// The tag as written (`include` / `include/text`).
         tag: &'static str,
         /// The reference as written.
         reference: String,

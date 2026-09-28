@@ -111,9 +111,12 @@ async fn inline<L: Load>(include: &Include, base: &Url, loader: &L) -> Result<Sc
         .await
         .map_err(|failure| format!("`!{tag}` could not load `{uri}`: {failure}"))?;
     match include.form {
-        IncludeForm::Binary => Ok(Scalar::Bytes(bytes)),
+        IncludeForm::Bytes => Ok(Scalar::Included(bytes)),
         IncludeForm::Text => String::from_utf8(bytes).map(Scalar::String).map_err(|_| {
-            format!("`!{tag}` content of `{uri}` is not UTF-8 text; use `!include-binary`")
+            format!(
+                "`!{tag}` content of `{uri}` is not UTF-8 text; use `!{}` to keep its bytes",
+                IncludeForm::Bytes.tag()
+            )
         }),
     }
 }
@@ -171,7 +174,7 @@ mod tests {
     async fn it_inlines_text_relative_to_the_document() {
         let mut syntax = at(
             "file:///notes/today.yaml",
-            "note!:\n  this: ?n\n  body: !include ./body.md\n",
+            "note!:\n  this: ?n\n  body: !include/text ./body.md\n",
         );
         let loader = Fixtures::new(&[("file:///notes/body.md", b"# Hello\n")]);
         let diagnostics = expand(&mut syntax, &loader).await;
@@ -182,11 +185,28 @@ mod tests {
         );
     }
 
+    /// Plain `!include` keeps the content as loaded; whether it is text
+    /// is the analyzer's call, made from the field's declared type.
+    #[dialog_common::test]
+    async fn it_keeps_plain_include_content_as_loaded() {
+        let mut syntax = at(
+            "file:///notes/today.yaml",
+            "note!:\n  this: ?n\n  body: !include ./body.md\n",
+        );
+        let loader = Fixtures::new(&[("file:///notes/body.md", b"# Hello\n")]);
+        let diagnostics = expand(&mut syntax, &loader).await;
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        assert_eq!(
+            field(&syntax, "body"),
+            &FieldValue::Literal(Scalar::Included(b"# Hello\n".to_vec()))
+        );
+    }
+
     #[dialog_common::test]
     async fn it_inlines_bytes_and_nested_values() {
         let mut syntax = at(
             "file:///notes/today.yaml",
-            "note!:\n  this: ?n\n  meta:\n    image: !include-binary ../media/a.webp\n",
+            "note!:\n  this: ?n\n  meta:\n    image: !include ../media/a.webp\n",
         );
         let loader = Fixtures::new(&[("file:///media/a.webp", &[0xff, 0x00, 0x7f])]);
         let diagnostics = expand(&mut syntax, &loader).await;
@@ -196,7 +216,7 @@ mod tests {
         };
         assert_eq!(
             meta[0].value,
-            FieldValue::Literal(Scalar::Bytes(vec![0xff, 0x00, 0x7f]))
+            FieldValue::Literal(Scalar::Included(vec![0xff, 0x00, 0x7f]))
         );
     }
 
@@ -222,7 +242,7 @@ mod tests {
     async fn it_reports_load_failures_and_non_text_content() {
         let mut syntax = at(
             "file:///d/doc.yaml",
-            "note!:\n  this: ?n\n  missing: !include gone.md\n  binary: !include blob.bin\n",
+            "note!:\n  this: ?n\n  missing: !include gone.md\n  binary: !include/text blob.bin\n",
         );
         let loader = Fixtures::new(&[("file:///d/blob.bin", &[0xff, 0xfe])]);
         let diagnostics = expand(&mut syntax, &loader).await;

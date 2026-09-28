@@ -888,6 +888,10 @@ fn scalar_to_value(scalar: &Scalar) -> Value {
         Scalar::Float(f) => Value::Float(*f),
         Scalar::Boolean(b) => Value::Boolean(*b),
         Scalar::Bytes(bytes) => Value::Bytes(bytes.clone()),
+        // Digested as the bytes it was loaded as. The digest only has to
+        // be deterministic, and the field's declared type is not known
+        // here to say whether the stored value will be text.
+        Scalar::Included(bytes) => Value::Bytes(bytes.clone()),
         // dialog's `Value` has no Null variant; encode an explicit
         // absence as an empty string so the digest stays total.
         // This only matters for `null` literals in `with:` slots,

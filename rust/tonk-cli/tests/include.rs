@@ -22,7 +22,7 @@ mod when_the_document_is_a_file {
         let document = dir.join("note.yaml");
         std::fs::write(
             &document,
-            "xyz.example!:\n  this: id:note\n  body: !include ./body.md\n",
+            "xyz.example!:\n  this: id:note\n  body: !include/text ./body.md\n",
         )?;
 
         eval::run_against_site(&test.site, Source::File(document), eval::Options::default())

@@ -275,23 +275,26 @@ an object (rename it, query its target, etc.).
 
 ### Including files
 
-A string or binary value can come from another file instead of
-being written inline:
+A value can come from another file instead of being written inline:
 
 ```yaml tonk=parse
 note!:
   this: id:today
-  body: !include ./today.md               # the file's text
-  cover: !include-binary ../media/a.webp  # the file's bytes
+  body: !include/text ./today.md   # the file's text
+  cover: !include ../media/a.webp  # the file's bytes
 ```
 
 The reference is a URI reference resolved against the location of
-the document it appears in, so `./today.md` is the file next to
-the document. `!include` requires UTF-8 text and yields a string;
-`!include-binary` keeps the bytes as they are, the same value
-`!!binary` spells in base64. The content is inlined as a value and
-is never read as notation, so an included file cannot include
-anything in turn.
+the document it appears in, so `./today.md` is the file next to the
+document. The content is inlined as a value and is never read as
+notation, so an included file cannot include anything in turn.
+
+`!include` keeps the content as it is. Where the field is declared
+text (`as: text`), it is read as UTF-8 text; everywhere else,
+including a field with no declared type, it stays bytes.
+`!include/text` asks for text outright, which is what an untyped
+field needs to hold text. Content that is not UTF-8 is refused
+wherever text is asked for, rather than decoded lossily.
 
 Only a document that has a location can include. `tonk eval
 note.yaml` reads includes relative to `note.yaml`; a document with

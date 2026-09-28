@@ -1392,7 +1392,7 @@ holder!: &my-holder
     fn it_rejects_an_unexpanded_include_in_a_located_document() {
         let parsed = tonk_notation::parse_at(
             tonk_notation::Url::parse("file:///notes/today.yaml").unwrap(),
-            "note!:\n  this: ?n\n  meta:\n    image: !include-binary a.webp\n",
+            "note!:\n  this: ?n\n  meta:\n    image: !include a.webp\n",
         );
         let syntax = parsed.syntax.unwrap();
         let err = analyze_local(&syntax).unwrap_err();
@@ -2431,6 +2431,86 @@ xyz.tonk.person!:
         assert!(
             matches!(term, Some(Term::Constant(Value::UnsignedInt(3)))),
             "a bare integer on an untyped claim field is unsigned by spelling, got {term:?}"
+        );
+    }
+
+    /// `syntax` with the named top-level field of its first expression
+    /// replaced by content an `!include` loaded — what
+    /// [`tonk_notation::expand`] leaves behind.
+    fn with_included(mut syntax: Syntax, name: &str, bytes: &[u8]) -> Syntax {
+        let application = match &mut syntax.expressions[0] {
+            Expression::Query(application) => application,
+            Expression::Claim(claim) => &mut claim.inner,
+        };
+        let field = application
+            .fields
+            .iter_mut()
+            .find(|field| field.name == name)
+            .expect("field to replace");
+        field.value =
+            tonk_notation::FieldValue::Literal(tonk_notation::Scalar::Included(bytes.to_vec()));
+        syntax
+    }
+
+    /// Included content in a field declared `as: text` is read as text.
+    #[dialog_common::test]
+    async fn it_reads_included_content_as_text_for_a_text_field() {
+        let syntax = with_included(
+            must_parse(
+                "person!:\n  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv\n  bio: \"_\"\n",
+            ),
+            "bio",
+            b"# About me\n",
+        );
+        let resolver = fixed_concept_typed("person", &[("bio", "xyz.tonk.person/bio", "Text")]);
+        let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
+        let Statement::Assert(Application::Concept { query: q, .. }) =
+            &analysis.mutate.statements[0]
+        else {
+            panic!("expected Assert(Concept)");
+        };
+        assert!(
+            matches!(q.terms.get("bio"), Some(Term::Constant(Value::String(s))) if s == "# About me\n"),
+            "included content in a text field should be text, got {:?}",
+            q.terms.get("bio")
+        );
+    }
+
+    /// Included content that is not UTF-8 has no text reading, so a
+    /// text field refuses it rather than decoding it lossily.
+    #[dialog_common::test]
+    async fn it_refuses_included_content_that_is_not_text_for_a_text_field() {
+        let syntax = with_included(
+            must_parse(
+                "person!:\n  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv\n  bio: \"_\"\n",
+            ),
+            "bio",
+            &[0xff, 0xfe],
+        );
+        let resolver = fixed_concept_typed("person", &[("bio", "xyz.tonk.person/bio", "Text")]);
+        let err = analyze_with(&syntax, &resolver).await.unwrap_err();
+        assert!(err.to_string().contains("not UTF-8"), "{err}");
+    }
+
+    /// An untyped field says nothing about text, so included content
+    /// stays the bytes it was loaded as.
+    #[dialog_common::test]
+    async fn it_keeps_included_content_as_bytes_for_an_untyped_field() {
+        let syntax = with_included(
+            must_parse(
+                "xyz.tonk.person!:\n  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv\n  bio: \"_\"\n",
+            ),
+            "bio",
+            b"# About me\n",
+        );
+        let analysis = flat(analyze_empty(&syntax).await.unwrap());
+        let Statement::Assert(application) = &analysis.mutate.statements[0] else {
+            panic!("expected an Assert statement");
+        };
+        let term = application.parameters().get("bio").cloned();
+        assert!(
+            matches!(&term, Some(Term::Constant(Value::Bytes(bytes))) if bytes == b"# About me\n"),
+            "included content on an untyped field should stay bytes, got {term:?}"
         );
     }
 
