@@ -624,7 +624,7 @@
       "group": "Authoring, data, rendering, and transfer",
       "id": "DATA-07",
       "title": "Evaluate notation from inline text, file, explicit -, or piped stdin.",
-      "variants": "Query/write/mixed; JSON/quiet/home/dry-run/no-sync."
+      "variants": "Query/write/mixed; JSON/quiet/home/dry-run/no-sync; file-relative !include (inline/stdin refuse it)."
     },
     {
       "evidence": "Listing/schema tests.",

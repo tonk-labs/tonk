@@ -493,8 +493,13 @@ async fn evaluate_on_branch_with<'a>(
         .map_err(|e| TonkWorkerError::Router(format!("body is not valid UTF-8: {e}")))?;
 
     let t_parse = web_time::Instant::now();
-    let parsed = parse(text);
-    let syntax = surface_parse_diagnostics(parsed)?;
+    // A library seed is parsed where the library lives, so it can
+    // `!include` the files beside it. Anything else arrived as a request
+    // body with no location of its own, and may not.
+    let syntax = match mode {
+        EvaluationMode::Interactive => surface_parse_diagnostics(parse(text))?,
+        _ => super::library::parse(text).await?,
+    };
     let parse_ms = t_parse.elapsed().as_millis();
 
     let exprs = syntax.expressions.len();

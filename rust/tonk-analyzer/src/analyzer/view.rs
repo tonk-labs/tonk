@@ -169,6 +169,8 @@ fn field_source(value: &FieldValue) -> Option<Source> {
 fn field_text(value: &FieldValue) -> Option<String> {
     match value {
         FieldValue::Literal(Scalar::String(text)) => Some(text.clone()),
+        // A template read from a file is text like any other.
+        FieldValue::Literal(Scalar::Included(bytes)) => String::from_utf8(bytes.clone()).ok(),
         FieldValue::Literal(Scalar::Integer(number)) => Some(number.to_string()),
         FieldValue::Literal(Scalar::UnsignedInteger(number)) => Some(number.to_string()),
         FieldValue::Literal(Scalar::Float(number)) => Some(number.to_string()),

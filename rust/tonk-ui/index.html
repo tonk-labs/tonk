@@ -1056,38 +1056,17 @@
         <link data-trunk rel="copy-file" href="./assets/hot-swap.js" />
         <link data-trunk rel="copy-dir" href="./assets/posthog" />
         <!-- The standard library (built-in concepts, views, commands,
-       rules). Served as a static asset so the service
-       worker can fetch and seed it at repository creation, instead of
-       embedding it at compile time. Editing core.yaml updates the
-       library without rebuilding the wasm. -->
+       rules, templates, and the media they use). Served as static
+       assets so the service worker can fetch and seed it at repository
+       creation, instead of embedding it at compile time; editing
+       core.yaml updates the library without rebuilding the wasm. The
+       whole directory is copied, not a list of files: a library
+       document can `!include` a file beside it, and the worker fetches
+       that file from the same served `/library/` directory. -->
         <link
             data-trunk
-            rel="copy-file"
-            href="../tonk-core/assets/library/core.yaml"
-            data-target-path="library"
-        />
-        <link data-trunk rel="copy-file" href="../tonk-core/assets/library/onboarding.yaml" data-target-path="library" />
-        <link data-trunk rel="copy-file" href="../tonk-core/assets/library/onboarding-demos.yaml" data-target-path="library" />
-        <link data-trunk rel="copy-file" href="../tonk-core/assets/library/onboarding-media.json" data-target-path="library" />
-        <link data-trunk rel="copy-file" href="../tonk-core/assets/library/welcome-CmZq5URy2ucFKNyZCFUtHiNvEaUNK4Z8UstvzwbjREFG.webp" data-target-path="library" />
-        <link data-trunk rel="copy-file" href="../tonk-core/assets/library/welcome-9hKHdfALCDKRL5z3Xkn2JUM72DWSzsSBwAvdbyaPF2sU.webp" data-target-path="library" />
-        <link data-trunk rel="copy-file" href="../tonk-core/assets/library/onboarding-agent.yaml" data-target-path="library" />
-        <!-- Lean profile library: only the space concept + Hub view,
-       seeded onto the profile meta branch (which backs only the Hub)
-       instead of the full core.yaml. -->
-        <link
-            data-trunk
-            rel="copy-file"
-            href="../tonk-core/assets/library/profile.yaml"
-            data-target-path="library"
-        />
-        <!-- The notebook template. The generic template-at-creation
-       mechanism was removed in staging, so this is served to be installed
-       into an existing space by evaluating it against the branch. -->
-        <link
-            data-trunk
-            rel="copy-file"
-            href="../tonk-core/assets/library/notebook.yaml"
+            rel="copy-dir"
+            href="../tonk-core/assets/library"
             data-target-path="library"
         />
         <link data-trunk rel="copy-dir" href="./assets/fonts" />

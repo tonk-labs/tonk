@@ -152,6 +152,8 @@ pub fn analyze_local(syntax: &Syntax) -> Result<Tree<Syntax>, AnalyzeError> {
         ));
     }
 
+    reject_unexpanded_includes(syntax)?;
+
     // push → resolve(LocalOnly) → build. The graph's resolve phase
     // is genuinely synchronous when the resolver does no IO:
     // `LocalOnly` answers every external need with `None` without
@@ -164,6 +166,41 @@ pub fn analyze_local(syntax: &Syntax) -> Result<Tree<Syntax>, AnalyzeError> {
     let resolved = poll_ready(graph.resolve(syntax, &scope, &graph::LocalOnly))?;
     rule::check_overlapping_transient_rule_triggers(syntax, &scope)?;
     expand(syntax, &scope, resolved)
+}
+
+/// Refuse a document that still carries an `!include`.
+///
+/// Included content is inlined by [`tonk_notation::expand`] before
+/// analysis, so one that survives was never loaded: its document has
+/// no location to resolve against (an inline body, whose base is
+/// [`tonk_notation::INLINE_LOCATION`]), or the pipeline that ran it
+/// does not load included resources. Checked up front, against the
+/// document's base, so the error says which of the two it was.
+fn reject_unexpanded_includes(syntax: &Syntax) -> Result<(), AnalyzeError> {
+    fn find(fields: &[tonk_notation::Field]) -> Option<&tonk_notation::Field> {
+        fields.iter().find_map(|field| match &field.value {
+            tonk_notation::FieldValue::Include(_) => Some(field),
+            tonk_notation::FieldValue::Nested(nested) => find(nested),
+            tonk_notation::FieldValue::Premises(premises) => {
+                premises.iter().find_map(|premise| find(&premise.bindings))
+            }
+            _ => None,
+        })
+    }
+    let found = syntax
+        .expressions
+        .iter()
+        .find_map(|expression| find(&expression.application().fields));
+    match found {
+        Some(field) => {
+            let tonk_notation::FieldValue::Include(include) = &field.value else {
+                unreachable!("find only returns includes");
+            };
+            Err(field::unexpanded_include(include, Some(&syntax.base))
+                .with_range(field.value_range))
+        }
+        None => Ok(()),
+    }
 }
 
 /// Drive a future that performs no real IO to completion on the
@@ -223,6 +260,8 @@ impl<'s, 'a> Analyze<'s, 'a> {
                 syntax.range,
             ));
         }
+
+        reject_unexpanded_includes(syntax)?;
 
         let scope = Scope::new();
         let graph = graph::push(syntax)?;
@@ -1326,9 +1365,42 @@ holder!: &my-holder
         let syntax = Syntax {
             expressions: Vec::new(),
             range: lsp_types::Range::default(),
+            base: tonk_notation::Url::parse(tonk_notation::INLINE_LOCATION).unwrap(),
         };
         let err = analyze_empty(&syntax).await.unwrap_err();
         assert!(matches!(err.kind, AnalyzeErrorKind::EmptyDocument));
+    }
+
+    /// A document with no location of its own cannot `!include`: the
+    /// reference has nothing to be relative to.
+    #[dialog_common::test]
+    async fn it_rejects_an_include_in_an_inline_document() {
+        let syntax = must_parse("note!:\n  this: ?n\n  body: !include ./body.md\n");
+        let err = analyze_empty(&syntax).await.unwrap_err();
+        let AnalyzeErrorKind::UnexpandedInclude { reference, .. } = &err.kind else {
+            panic!("expected UnexpandedInclude, got {err:?}");
+        };
+        assert_eq!(reference, "./body.md");
+        assert!(err.to_string().contains("no location"), "{err}");
+        assert_eq!(err.range.map(|r| r.start.line), Some(2));
+    }
+
+    /// A located document whose includes were never expanded is still
+    /// refused — nested under a mapping too — rather than analyzed as
+    /// if the value were missing.
+    #[dialog_common::test]
+    fn it_rejects_an_unexpanded_include_in_a_located_document() {
+        let parsed = tonk_notation::parse_at(
+            tonk_notation::Url::parse("file:///notes/today.yaml").unwrap(),
+            "note!:\n  this: ?n\n  meta:\n    image: !include a.webp\n",
+        );
+        let syntax = parsed.syntax.unwrap();
+        let err = analyze_local(&syntax).unwrap_err();
+        assert!(
+            matches!(err.kind, AnalyzeErrorKind::UnexpandedInclude { .. }),
+            "{err:?}"
+        );
+        assert!(err.to_string().contains("file:///notes/a.webp"), "{err}");
     }
 
     /// `attribute!: &foo` declares a content-derived attribute
@@ -2359,6 +2431,86 @@ xyz.tonk.person!:
         assert!(
             matches!(term, Some(Term::Constant(Value::UnsignedInt(3)))),
             "a bare integer on an untyped claim field is unsigned by spelling, got {term:?}"
+        );
+    }
+
+    /// `syntax` with the named top-level field of its first expression
+    /// replaced by content an `!include` loaded — what
+    /// [`tonk_notation::expand`] leaves behind.
+    fn with_included(mut syntax: Syntax, name: &str, bytes: &[u8]) -> Syntax {
+        let application = match &mut syntax.expressions[0] {
+            Expression::Query(application) => application,
+            Expression::Claim(claim) => &mut claim.inner,
+        };
+        let field = application
+            .fields
+            .iter_mut()
+            .find(|field| field.name == name)
+            .expect("field to replace");
+        field.value =
+            tonk_notation::FieldValue::Literal(tonk_notation::Scalar::Included(bytes.to_vec()));
+        syntax
+    }
+
+    /// Included content in a field declared `as: text` is read as text.
+    #[dialog_common::test]
+    async fn it_reads_included_content_as_text_for_a_text_field() {
+        let syntax = with_included(
+            must_parse(
+                "person!:\n  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv\n  bio: \"_\"\n",
+            ),
+            "bio",
+            b"# About me\n",
+        );
+        let resolver = fixed_concept_typed("person", &[("bio", "xyz.tonk.person/bio", "Text")]);
+        let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
+        let Statement::Assert(Application::Concept { query: q, .. }) =
+            &analysis.mutate.statements[0]
+        else {
+            panic!("expected Assert(Concept)");
+        };
+        assert!(
+            matches!(q.terms.get("bio"), Some(Term::Constant(Value::String(s))) if s == "# About me\n"),
+            "included content in a text field should be text, got {:?}",
+            q.terms.get("bio")
+        );
+    }
+
+    /// Included content that is not UTF-8 has no text reading, so a
+    /// text field refuses it rather than decoding it lossily.
+    #[dialog_common::test]
+    async fn it_refuses_included_content_that_is_not_text_for_a_text_field() {
+        let syntax = with_included(
+            must_parse(
+                "person!:\n  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv\n  bio: \"_\"\n",
+            ),
+            "bio",
+            &[0xff, 0xfe],
+        );
+        let resolver = fixed_concept_typed("person", &[("bio", "xyz.tonk.person/bio", "Text")]);
+        let err = analyze_with(&syntax, &resolver).await.unwrap_err();
+        assert!(err.to_string().contains("not UTF-8"), "{err}");
+    }
+
+    /// An untyped field says nothing about text, so included content
+    /// stays the bytes it was loaded as.
+    #[dialog_common::test]
+    async fn it_keeps_included_content_as_bytes_for_an_untyped_field() {
+        let syntax = with_included(
+            must_parse(
+                "xyz.tonk.person!:\n  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv\n  bio: \"_\"\n",
+            ),
+            "bio",
+            b"# About me\n",
+        );
+        let analysis = flat(analyze_empty(&syntax).await.unwrap());
+        let Statement::Assert(application) = &analysis.mutate.statements[0] else {
+            panic!("expected an Assert statement");
+        };
+        let term = application.parameters().get("bio").cloned();
+        assert!(
+            matches!(&term, Some(Term::Constant(Value::Bytes(bytes))) if bytes == b"# About me\n"),
+            "included content on an untyped field should stay bytes, got {term:?}"
         );
     }
 

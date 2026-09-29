@@ -1,23 +1,16 @@
 [package]
-name = "tonk-notation"
+name = "tonk-library"
+description = "The files the standard library includes, bundled for hosts that seed it from a compiled-in copy"
 version.workspace = true
 authors.workspace = true
 license.workspace = true
 edition.workspace = true
 
-[lib]
-crate-type = ["rlib"]
-
 [dependencies]
-base64 = { workspace = true }
-dialog-common = { workspace = true }
-lsp-types = { workspace = true }
-saphyr = { workspace = true }
-saphyr-parser = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
-thiserror = { workspace = true }
-url = { workspace = true }
+tonk-notation = { workspace = true }
+
+[build-dependencies]
+tonk-notation = { workspace = true }
 
 [dev-dependencies]
 dialog-common = { workspace = true, features = ["helpers"] }

@@ -175,6 +175,9 @@ pub(crate) fn field_value_to_term(
                 range,
             ));
         }
+        FieldValue::Include(include) => {
+            return Err(unexpanded_include(include, None).with_range(range));
+        }
         FieldValue::Premises(_) => {
             // Premises only make sense as the value of `when:` /
             // `unless:` inside a `rule!:` claim body — the rule
@@ -253,6 +256,12 @@ pub(crate) fn scalar_to_value(
         Scalar::UnsignedInteger(u) => Value::UnsignedInt(*u),
         Scalar::Float(f) => Value::Float(*f),
         Scalar::Bytes(bytes) => Value::Bytes(bytes.clone()),
+        // Included content is text where the field says text, and bytes
+        // everywhere else, an untyped field included.
+        Scalar::Included(bytes) if expected == Some(Type::String) => {
+            Value::String(included_text(bytes)?)
+        }
+        Scalar::Included(bytes) => Value::Bytes(bytes.clone()),
         Scalar::Null => {
             return Err(AnalyzeErrorKind::UnsupportedFieldValue {
                 field: "<scalar>".into(),
@@ -298,6 +307,8 @@ pub(crate) fn scalar_to_string(scalar: &Scalar) -> Result<String, AnalyzeError> 
             }
             .into());
         }
+        // A slot that wants text reads included content as text.
+        Scalar::Included(bytes) => included_text(bytes)?,
         Scalar::Null => {
             return Err(AnalyzeErrorKind::UnsupportedFieldValue {
                 field: "<scalar>".into(),
@@ -336,4 +347,44 @@ pub(crate) fn collect_unbound_variables(
             out.insert(name);
         }
     }
+}
+
+/// The error for an `!include` that reached analysis unexpanded.
+/// `base` is the document's location when the caller has it: a
+/// reference that cannot resolve against it gets the precise reason,
+/// the rest the general one.
+pub(crate) fn unexpanded_include(
+    include: &tonk_notation::Include,
+    base: Option<&tonk_notation::Url>,
+) -> AnalyzeError {
+    let reason = match base.map(|base| (base, include.resolve(base))) {
+        Some((base, Err(_))) => format!(
+            "this document has no location to resolve it against (it is `{base}`); \
+             only a document read from a file or URL can include"
+        ),
+        Some((_, Ok(uri))) => format!(
+            "`{uri}` must be inlined before analysis, and this evaluation \
+             path does not load included resources"
+        ),
+        None => "included content must be inlined before analysis".to_owned(),
+    };
+    AnalyzeErrorKind::UnexpandedInclude {
+        tag: include.form.tag(),
+        reference: include.reference.clone(),
+        reason,
+    }
+    .into()
+}
+
+/// Included content read as text, for a slot that holds text. Content
+/// that is not UTF-8 has no text reading, so it is refused rather than
+/// decoded lossily.
+pub(crate) fn included_text(bytes: &[u8]) -> Result<String, AnalyzeError> {
+    String::from_utf8(bytes.to_vec()).map_err(|_| {
+        AnalyzeErrorKind::UnsupportedFieldValue {
+            field: "<scalar>".into(),
+            form: "included content that is not UTF-8 text",
+        }
+        .into()
+    })
 }

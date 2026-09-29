@@ -198,7 +198,8 @@ fn walk_value(
             to,
             decoration: Decoration::Name,
         }),
-        FieldValue::Uri(_) => out.push(Mark {
+        // An `!include` names another resource, as a URI does.
+        FieldValue::Uri(_) | FieldValue::Include(_) => out.push(Mark {
             from,
             to,
             decoration: Decoration::Entity,
