@@ -1124,6 +1124,48 @@ command!: &tonk/home
   with:
     time: home/time
 
+# The bar's own acts, as commands: each records a request on the asking tab's
+# site (`site/request`), which that tab's bar performs.
+attribute!: &add-account/time
+  description: When it was asked, so asking again re-fires.
+  the: xyz.tonk.command.add-account/time
+  as: float
+
+command!: &account/add
+  description: Start adding an account to this profile, from the bar.
+  with:
+    time: add-account/time
+
+attribute!: &share-link/time
+  description: When it was asked, so asking again re-fires.
+  the: xyz.tonk.command.share-link/time
+  as: float
+
+command!: &space/share-link
+  description: Copy a link that invites someone into this space, from the bar.
+  with:
+    time: share-link/time
+
+attribute!: &view-members/time
+  description: When it was asked, so asking again re-fires.
+  the: xyz.tonk.command.view-members/time
+  as: float
+
+command!: &space/view-members
+  description: Show who is in this space, in the bar.
+  with:
+    time: view-members/time
+
+attribute!: &connect-agent/time
+  description: When it was asked, so asking again re-fires.
+  the: xyz.tonk.command.connect-agent/time
+  as: float
+
+command!: &agent/connect
+  description: Invite an agent to work in this space, from the bar.
+  with:
+    time: connect-agent/time
+
 # The FAB fallback seat — the nearest corner restored on the next page load,
 # stored on `state:fab`. The live page keeps the exact point along the nearest
 # edge; element.rs persists this compatible corner after every pointer-up drop.
@@ -1327,6 +1369,27 @@ view!:
   show:
     ui: |
       <tonk-display entity={this} model={concept} />
+
+# What a tab's bar was last asked to do. The bar's own acts (add an account,
+# copy a share link, view members, connect an agent) are commands like any
+# other; what their handlers can do is record the request here, on the
+# asking tab's site, in the session overlay. The bar that tab shows
+# subscribes to its own site and, on a newer request, performs it as a press
+# of the matching control would. A separate concept from `&site`, so the
+# route stamp keeps its identity.
+concept!: &site/request
+  description: The bar action a tab was last asked to perform, and when.
+  with:
+    request:
+      description: The act — `account`, `share`, `members` or `agent`.
+      the: xyz.tonk.site/request
+      cardinality: one
+      as: text
+    time:
+      description: When it was asked, so the same act asked twice is two requests.
+      the: xyz.tonk.site/request-time
+      cardinality: one
+      as: float
 
 # The route table concept. Mirrors core.yaml's `&route`.
 concept!: &route
@@ -5115,15 +5178,61 @@ lingo/verb!:
   this: tonk/home
   name: "go to tonk home"
 
-# The command palette is the FABB's command line. It sits in the bar's
-# `command` slot, between the header and the actions, while the menu is open,
-# and takes the cursor whenever it is shown; Cmd/Ctrl+K (or Cmd/Ctrl+Shift+P)
-# opens the menu. It stands in for the bar's actions (`commanding` on the
-# bar): with nothing typed it lists what can be done without saying more,
-# and as you type, what the typing says. Until its rows arrive the bar's
-# own actions stand in. The top reading completes inline, as a selection
-# ahead of the cursor: typing goes on over it, Tab or → takes it, ↑/↓
-# (Ctrl+N/P) move to another reading and the selection follows.
+lingo/verb!:
+  this: account/add
+  name: "add an account"
+
+lingo/argument!:
+  command: account/add
+  field: add-account/time
+  role: lingo/now
+
+lingo/verb!:
+  this: space/share-link
+  name: "copy share link"
+
+lingo/verb!:
+  this: space/share-link
+  name: "share"
+
+lingo/argument!:
+  command: space/share-link
+  field: share-link/time
+  role: lingo/now
+
+lingo/verb!:
+  this: space/view-members
+  name: "view members"
+
+lingo/verb!:
+  this: space/view-members
+  name: "members"
+
+lingo/argument!:
+  command: space/view-members
+  field: view-members/time
+  role: lingo/now
+
+lingo/verb!:
+  this: agent/connect
+  name: "connect agent"
+
+lingo/argument!:
+  command: agent/connect
+  field: connect-agent/time
+  role: lingo/now
+
+# The command palette is the FABB's command mode. Cmd/Ctrl+K (or
+# Cmd/Ctrl+Shift+P) puts the bar in it (`commanding` on `<tonk-fab>`): the
+# header's space name gives way to this command line (the bar's `command`
+# slot), and what it suggests is listed below the header (the `command-list`
+# slot) in the place of the actions. A folded bar opens out of its dot to
+# hold it. The menu itself is untouched: clicking the space name still opens
+# it. With nothing typed the list is what can run as it is; as you type, what
+# the typing says. The top reading completes inline, as a selection ahead of
+# the cursor: typing goes on over it, Tab or → takes it, ↑/↓ (Ctrl+N/P) move
+# to another reading and the selection follows. Escape clears the line, then
+# leaves; so does leaving the line.
 #
 # It only queries and transacts. What the line could mean is the named query
 # `lingo/suggest` — `{input, this, now}` in, one row per reading out —
@@ -5156,85 +5265,86 @@ element!: &command-palette
           }
         };
         document.addEventListener('keydown', self.__keys);
-        // Shown whenever the bar's menu opens: take the cursor then, and
-        // start over when it closes.
-        self.__shown = new ResizeObserver(() => {
-          const visible = self.getClientRects().length > 0;
-          if (visible && !self.__visible) {
-            self.update();
-            self.__input.focus({ preventScroll: true });
-          } else if (!visible && self.__visible) {
-            self.__typed = '';
-            self.__input.value = '';
-          }
-          self.__visible = visible;
-        });
-        self.__shown.observe(self);
       }
     disconnected: |
       (self) => {
         document.removeEventListener('keydown', self.__keys);
         self.__keys = null;
-        if (self.__shown) self.__shown.disconnect();
-        self.__shown = null;
-        self.__visible = false;
         self.__asked = null;
+        if (self.__list) self.__list.remove();
       }
     summon: |
       (self) => {
-        const input = self.__input;
+        // The chord toggles command mode. Entering it closes the bar's menu:
+        // the command line is not the menu, it stands in the header's place.
         const fab = self.closest('tonk-fab');
-        const shown = input.getClientRects().length > 0;
-        // The chord toggles: from the command line it closes the menu.
-        if (shown && document.activeElement === input) {
-          self.reset();
-          if (fab && fab.close) fab.close();
+        if (!fab) return;
+        if (fab.hasAttribute('commanding')) {
+          self.dismiss();
           return;
         }
-        if (!shown && fab && fab.open) fab.open('space');
-        requestAnimationFrame(() => input.focus());
+        if (fab.close) fab.close();
+        fab.setAttribute('commanding', '');
+        self.reset();
+        requestAnimationFrame(() => self.__input.focus({ preventScroll: true }));
+      }
+    dismiss: |
+      (self) => {
+        const fab = self.closest('tonk-fab');
+        if (fab) fab.removeAttribute('commanding');
+        self.__asked = null;
+        self.__typed = '';
+        self.__input.value = '';
+        self.__proposals = [];
+        self.render();
       }
     build: |
       (self) => {
         self.innerHTML = `
           <style>
-            command-palette { display: flex; flex-direction: column; min-width: 0;
-              font: 400 17px/1.3 'IBM Plex Sans Condensed', 'Arial Narrow', sans-serif; }
-            tonk-fab[up] > command-palette,
-            tonk-fab[up] > command-palette ol { flex-direction: column-reverse; }
-            command-palette .line { display: flex; align-items: center; gap: 18px; min-height: 48px;
-              padding: 0 16px; box-shadow: inset 0 -1px 0 color-mix(in srgb, currentColor 22%, transparent); }
-            tonk-fab[up] > command-palette .line {
-              box-shadow: inset 0 1px 0 color-mix(in srgb, currentColor 22%, transparent); }
-            command-palette .prompt { width: 21px; flex: none; text-align: center; font-weight: 600; }
+            command-palette { display: flex; align-items: center; gap: 18px; flex: 1; min-width: 0;
+              padding: 0 16px 0 6px; font: 600 17px/1.1 'IBM Plex Sans Condensed', 'Arial Narrow', sans-serif; }
+            command-palette .prompt { flex: none; font-weight: 600; }
             command-palette input { flex: 1; min-width: 0; border: 0; padding: 0; background: transparent;
               color: inherit; font: inherit; outline: none; }
             command-palette input::placeholder { color: inherit; opacity: .55; }
             command-palette input::selection { background: var(--_hover, rgb(56 24 42 / 14%)); color: var(--_ink, #38182a); }
-            command-palette ol { display: flex; flex-direction: column; list-style: none; margin: 0; padding: 0; }
-            command-palette li { display: flex; flex-wrap: wrap; align-items: center; column-gap: 6px;
-              row-gap: 4px; min-height: 48px; box-sizing: border-box; margin: 0; padding: 8px 28px 8px 55px;
-              cursor: pointer; }
-            command-palette li:hover { background: color-mix(in srgb, currentColor 8%, transparent); }
-            command-palette li[aria-selected="true"] { background: var(--_cur, #38182a); color: var(--_on, #fcfbfb); }
-            command-palette .note { cursor: default; opacity: .7; }
-            command-palette .verb { font-weight: 600; }
-            command-palette .delimiter { opacity: .65; }
-            command-palette .noun, command-palette .missing { display: inline-flex; align-items: baseline;
+            tonk-fab > ol.command-suggestions { display: flex; flex-direction: column; list-style: none;
+              margin: 0; padding: 0; font: 400 17px/1.3 'IBM Plex Sans Condensed', 'Arial Narrow', sans-serif;
+              box-shadow: inset 0 1px 0 color-mix(in srgb, currentColor 22%, transparent); }
+            tonk-fab[up] > ol.command-suggestions { flex-direction: column-reverse;
+              box-shadow: inset 0 -1px 0 color-mix(in srgb, currentColor 22%, transparent); }
+            tonk-fab > ol.command-suggestions:empty { display: none; }
+            tonk-fab > ol.command-suggestions li { display: flex; flex-wrap: wrap; align-items: center;
+              column-gap: 6px; row-gap: 4px; min-height: 44px; box-sizing: border-box; margin: 0;
+              padding: 8px 20px; cursor: pointer; }
+            tonk-fab > ol.command-suggestions li:hover { background: color-mix(in srgb, currentColor 8%, transparent); }
+            tonk-fab > ol.command-suggestions li[aria-selected="true"] {
+              background: var(--_cur, #38182a); color: var(--_on, #fcfbfb); }
+            tonk-fab > ol.command-suggestions .note { cursor: default; opacity: .7; }
+            tonk-fab > ol.command-suggestions .verb { font-weight: 600; }
+            tonk-fab > ol.command-suggestions .delimiter { opacity: .65; }
+            tonk-fab > ol.command-suggestions .noun,
+            tonk-fab > ol.command-suggestions .missing { display: inline-flex; align-items: baseline;
               gap: 5px; padding: 0 6px; border: 1.5px solid currentColor; border-radius: 4px; }
-            command-palette .missing { border-style: dashed; opacity: .7; }
-            command-palette .kind { font-size: 12px; opacity: .7; }
-            command-palette .text::before { content: '“'; opacity: .6; }
-            command-palette .text::after { content: '”'; opacity: .6; }
+            tonk-fab > ol.command-suggestions .missing { border-style: dashed; opacity: .7; }
+            tonk-fab > ol.command-suggestions .kind { font-size: 12px; opacity: .7; }
+            tonk-fab > ol.command-suggestions .text::before { content: '“'; opacity: .6; }
+            tonk-fab > ol.command-suggestions .text::after { content: '”'; opacity: .6; }
           </style>
-          <div class="line">
-            <span class="prompt" aria-hidden="true">&rsaquo;</span>
-            <input type="text" role="combobox" aria-autocomplete="both" aria-controls="command-list"
-              aria-label="command" placeholder="type a command" autocomplete="off" spellcheck="false">
-          </div>
-          <ol id="command-list" role="listbox"></ol>`;
+          <span class="prompt" aria-hidden="true">&rsaquo;</span>
+          <input type="text" role="combobox" aria-autocomplete="both" aria-controls="command-suggestions"
+            aria-label="command" placeholder="type a command" autocomplete="off" spellcheck="false">`;
         self.__input = self.querySelector('input');
-        self.__list = self.querySelector('ol');
+        // The suggestions go in the bar's `command-list` slot, below its
+        // header, so they are the bar's sibling child rather than ours.
+        const list = document.createElement('ol');
+        list.className = 'command-suggestions';
+        list.id = 'command-suggestions';
+        list.setAttribute('role', 'listbox');
+        list.setAttribute('slot', 'command-list');
+        self.parentElement.append(list);
+        self.__list = list;
         self.__typed = '';
         self.__input.addEventListener('input', (event) => {
           const input = self.__input;
@@ -5246,8 +5356,10 @@ element!: &command-palette
           self.update();
         });
         self.__input.addEventListener('keydown', (event) => self.key(event));
-        self.__list.addEventListener('mousedown', (event) => event.preventDefault());
-        self.__list.addEventListener('click', (event) => {
+        // Leaving the line leaves command mode.
+        self.__input.addEventListener('blur', () => self.dismiss());
+        list.addEventListener('mousedown', (event) => event.preventDefault());
+        list.addEventListener('click', (event) => {
           const row = event.target.closest('li[data-index]');
           if (!row) return;
           self.__index = Number(row.dataset.index);
@@ -5278,11 +5390,12 @@ element!: &command-palette
           self.accept();
           return;
         }
-        if (event.key === 'Escape' && input.value) {
-          // First Escape clears the line; the next one closes the menu.
+        if (event.key === 'Escape') {
+          // First Escape clears the line; the next one leaves command mode.
           event.preventDefault();
           event.stopPropagation();
-          self.reset();
+          if (input.value) self.reset();
+          else self.dismiss();
           return;
         }
         if (event.key === 'Enter') {
@@ -5329,11 +5442,13 @@ element!: &command-palette
         const asked = {};
         self.__asked = asked;
         const space = self.getAttribute('space');
-        if (!space || !window.tonk) return;
+        const fab = self.closest('tonk-fab');
+        if (!space || !window.tonk || !(fab && fab.hasAttribute('commanding'))) return;
         const branches = [`main@${space}`, self.getAttribute('profile')].filter(Boolean);
         const body = {
           predicate: 'lingo/suggest',
-          terms: { input: typed, this: space, now: Date.now(), max: 5 },
+          // Nothing typed lists everything that runs as it is; a line, its best.
+          terms: { input: typed, this: space, now: Date.now(), max: typed ? 5 : 12 },
         };
         const read = (branch, row) => {
           const fields = row.fields || {};
@@ -5358,7 +5473,7 @@ element!: &command-palette
               console.warn('<command-palette> lingo/suggest failed on', branch, error);
               return [];
             })));
-        if (self.__asked !== asked) return;
+        if (self.__asked !== asked || !fab.hasAttribute('commanding')) return;
         let readings = answers.flat();
         if (typed) {
           // One ranking across both branches, the way one branch ranks its
@@ -5369,10 +5484,6 @@ element!: &command-palette
         }
         self.__proposals = readings;
         self.__note = '';
-        const fab = self.closest('tonk-fab');
-        // The palette takes the actions' place once it has something to show;
-        // until its rows arrive the bar's own actions stand in.
-        if (fab) fab.toggleAttribute('commanding', typed.length > 0 || readings.length > 0);
         self.__index = 0;
         self.suggest();
         self.render();
@@ -5441,16 +5552,13 @@ element!: &command-palette
           self.accept();
           return;
         }
+        // Leave command mode first: a command's outcome may be the bar
+        // opening one of its own panels (a site request).
+        self.dismiss();
         try {
           await window.tonk.transact(proposal.claim, { with: proposal.branch });
           self.remember(proposal);
-          self.reset();
-          const fab = self.closest('tonk-fab');
-          if (fab && fab.close) fab.close();
         } catch (error) {
           console.error('<command-palette> run failed', error);
-          self.__proposals = [];
-          self.__note = 'that command could not be run';
-          self.render();
         }
       }

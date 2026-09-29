@@ -1233,6 +1233,46 @@ pub mod command {
             pub struct Time(pub f64);
         }
 
+        /// `account/add` — start adding an account to this profile.
+        pub mod add_account {
+            use dialog_query::Attribute;
+
+            /// The moment it was asked, so asking again re-fires.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("xyz.tonk.command.add-account")]
+            pub struct Time(pub f64);
+        }
+
+        /// `space/share-link` — copy a link that invites someone into the space.
+        pub mod share_link {
+            use dialog_query::Attribute;
+
+            /// The moment it was asked, so asking again re-fires.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("xyz.tonk.command.share-link")]
+            pub struct Time(pub f64);
+        }
+
+        /// `space/view-members` — show who is in the space.
+        pub mod view_members {
+            use dialog_query::Attribute;
+
+            /// The moment it was asked, so asking again re-fires.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("xyz.tonk.command.view-members")]
+            pub struct Time(pub f64);
+        }
+
+        /// `agent/connect` — invite an agent into the space.
+        pub mod connect_agent {
+            use dialog_query::Attribute;
+
+            /// The moment it was asked, so asking again re-fires.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("xyz.tonk.command.connect-agent")]
+            pub struct Time(pub f64);
+        }
+
         /// `tonk/home` — take the page that asked back to the hub.
         pub mod home {
             use dialog_query::Attribute;

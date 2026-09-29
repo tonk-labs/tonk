@@ -151,6 +151,7 @@ mod blob;
 mod migration;
 
 mod navigate;
+mod site_request;
 
 mod command;
 pub use command::{CommandEnv, CommandOrigin, CommandProviders, command_providers, dispatch};

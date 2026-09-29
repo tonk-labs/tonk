@@ -956,6 +956,12 @@ fn install_imperative_api(this: &HtmlElement, state: &bar::Shared) {
 
     let host = this.clone();
     let shared = state.clone();
+    let expand = Closure::<dyn FnMut()>::new(move || bar::expand(&host, &shared));
+    let _ = Reflect::set(this, &"expand".into(), expand.as_ref());
+    expand.forget();
+
+    let host = this.clone();
+    let shared = state.clone();
     let edit = Closure::<dyn FnMut()>::new(move || bar::edit_space(&host, &shared));
     let _ = Reflect::set(this, &"editSpace".into(), edit.as_ref());
     edit.forget();

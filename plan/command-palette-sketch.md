@@ -158,6 +158,27 @@ a worker command.
 | `tonk-lingo` | tonk, `rust/tonk-lingo` | Joins subscription rows into a registry (labels rendered with `tonk-template`), parses, builds the command claim. `web::install` puts `window.tonk.palette.parse` on the guest. |
 | `<command-palette>` | `profile.yaml`, an `element!` (not `tonk-`: the element runtime never announces `tonk-` or `wa-` tags) | The FABB's command line: slotted into `<tonk-fab>`'s `command` slot, between the header and the actions, shown while the menu is open. With nothing typed the bar's actions show (the menu is the empty palette); typing sets `commanding` on the bar and the proposals take the actions' place. The top proposal completes inline as a selection (Tab/→ takes it, ↑/↓ or Ctrl+N/P move and the selection follows). Rows show the verb bold, things boxed with their kind (`space`, `member`), typed text quoted, and empty arguments dashed. On Cmd/Ctrl+K or Cmd/Ctrl+Shift+P it subscribes to the palette rows on `main@<space>` and the profile branch, resolves each noun concept the way `<tonk-display>` resolves a model (descriptor from `db.meta/source`, rows, `label` facet), calls `parse` per keystroke, and transacts the chosen claim. |
 
+## The bar's acts
+
+"add an account", "copy share link", "view members" and "connect agent" are
+regular commands (`account/add`, `space/share-link`, `space/view-members`,
+`agent/connect`), handled by the worker like any other. Their effect lives in
+the page (a panel, the account ceremony, the clipboard), so each handler
+records a request on the asking tab's site, in the profile's session
+overlay: `site/request {request, time}` on `site:<client>`. The bar's
+headless `<ui-site-request>` subscribes to its own tab's site and, on a
+newer request, unfolds the bar and presses the control that performs it,
+so the act runs through the one implementation the bar already has. The
+bar's own buttons still act directly.
+
+## Command mode
+
+Cmd/Ctrl+K puts the bar in command mode (`commanding` on `<tonk-fab>`):
+the header's space name gives way to the command line (the `command`
+slot), and suggestions are listed below the header (the `command-list`
+slot) in place of the actions. A folded bar opens out of its dot to hold
+it. The menu itself is unchanged.
+
 ## Memory
 
 Ubiquity's suggestion memory, as facts: every run asserts a
@@ -200,6 +221,10 @@ Nothing prunes them yet.
   Tonk to Q3" is also "rename [Welcome…] to [Tonk to Q3]"; both score
   alike, so both are offered. Ubiquity has the same ambiguity; quoting, or
   preferring readings whose noun text is a whole label, would settle it.
+- **"copy share link" and the clipboard.** The request is performed after
+  a worker round trip; whether the browser still counts that as the
+  keypress's activation (so the copy lands) is unverified, because a fresh
+  profile has no account to share with.
 - **No palette on the hub.** The element is mounted in the space chrome, so
   after "go home" there is nothing to open until a space is.
 

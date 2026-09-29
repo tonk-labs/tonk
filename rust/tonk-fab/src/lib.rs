@@ -74,6 +74,10 @@ mod sync_status;
 #[cfg(target_arch = "wasm32")]
 mod space_switcher;
 
+/// Performing what the tab was asked to do (`xyz.tonk.site/request`).
+#[cfg(target_arch = "wasm32")]
+mod site_request;
+
 /// Rendering subscription results as rows of a stack.
 #[cfg(target_arch = "wasm32")]
 mod stack_rows;
@@ -102,6 +106,7 @@ pub fn register() {
     profile_name::register();
     member_roster::register();
     space_switcher::register();
+    site_request::register();
     element::register();
 }
 

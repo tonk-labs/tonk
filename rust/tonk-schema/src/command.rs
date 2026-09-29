@@ -496,6 +496,51 @@ impl Command for SignOut {
     type Output = ();
 }
 
+/// The FABB's own acts, as commands. Each asks the tab that ran it to
+/// perform one of the bar's actions: the handler records the request on the
+/// tab's site (`xyz.tonk.site/request`), and the bar that tab shows acts on
+/// it as a press of the matching control would. A request, not the effect:
+/// opening a panel, the account ceremony and the clipboard all live in the
+/// page.
+macro_rules! bar_command {
+    ($(#[$doc:meta])* $name:ident, $module:ident) => {
+        $(#[$doc])*
+        #[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+        pub struct $name {
+            /// The command entity (a fresh id per invocation).
+            pub this: Entity,
+            /// The moment it was asked, so asking again re-fires.
+            pub time: crate::domain::command::current::$module::Time,
+        }
+
+        impl Command for $name {
+            type Input = Self;
+            type Output = ();
+        }
+    };
+}
+
+bar_command!(
+    /// Start adding an account to this profile (the bar's "add an account").
+    AddAccount,
+    add_account
+);
+bar_command!(
+    /// Copy a link that invites someone into the space (the bar's share).
+    ShareLink,
+    share_link
+);
+bar_command!(
+    /// Show who is in the space (the bar's members panel).
+    ViewMembers,
+    view_members
+);
+bar_command!(
+    /// Invite an agent into the space (the bar's agent panel).
+    ConnectAgent,
+    connect_agent
+);
+
 /// Take the page that asked back to the hub.
 ///
 /// What the FAB's home button does with a link, as a command, so it can be

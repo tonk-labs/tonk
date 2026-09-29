@@ -236,6 +236,12 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         .command::<tonk_schema::command::SwitchProfile>()
         .command::<tonk_schema::command::SignOut>()
         .command::<tonk_schema::command::Home>()
+        // The bar's own acts: each records a request on the asking tab's
+        // site, which that tab's bar performs (see `site_request`).
+        .command::<tonk_schema::command::AddAccount>()
+        .command::<tonk_schema::command::ShareLink>()
+        .command::<tonk_schema::command::ViewMembers>()
+        .command::<tonk_schema::command::ConnectAgent>()
         .command::<tonk_schema::command::ReplicateSpace>()
         .command::<tonk_schema::command::ForgetInvite>()
         .command::<tonk_schema::command::CheckUpdate>()
