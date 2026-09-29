@@ -20,3 +20,16 @@ Validation:
   Motion fixtures explicitly wait for initial docking and configure orientation.
 
 Full application, Safari, and device testing were not run.
+
+## Web debug follow-up
+
+The circle regression assumed twelve 40 ms sleeps completed a 400 ms CSS
+transition. Concurrent browser rendering does not share that timer schedule.
+The test now pauses the actual width transition, verifies its 400 ms duration,
+and samples its timeline directly, retaining all geometry and endpoint checks.
+A concurrent nextest run also exposed an 80 ms drawer sampling race; that test
+now samples the transition directly and waits for both closing and width to settle.
+
+Validation: all 18 `responsive_overflow` and `drag_snap` tests passed under
+nextest with four workers and again with eight workers; formatting and diff
+checks passed. The full web-debug CI suite remains to be rerun on the new commit.
