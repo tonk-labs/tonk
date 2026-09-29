@@ -113,7 +113,6 @@ pub use lsp::LspHub;
 
 mod lsp_env;
 
-mod onboarding_space;
 pub(crate) mod profile;
 pub use profile::{ProfileInfo, SpaceEntry};
 
@@ -290,7 +289,6 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         // The page calls this on load and on each client-side navigation; the
         // SW asserts the tab's `tonk:site` and returns the site id. Reads never
         // stamp — see `router/session.rs`.
-        .route("/api/profile/welcome", post(onboarding_space::welcome))
         .route("/api/site", post(session::register_site))
         // Per-branch site registration: the branch comes from the URL (like
         // `/query` and `/transact`), not from parsing the document path. A
@@ -435,10 +433,6 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .route(
             "/api/repository/{repo}/branch/{branch}/host/{host}/{entity}",
             get(host::guest),
-        )
-        .route(
-            "/api/repository/{repo}/branch/{branch}/onboarding",
-            post(onboarding_space::prepare),
         )
         // Content-addressed blob bytes: GET serves an entity's bytes; POST
         // ingests a new blob into the branch store and returns its ref.

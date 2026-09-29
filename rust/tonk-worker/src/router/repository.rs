@@ -4227,6 +4227,40 @@ async fn commit_replica_stamp(
     }
 }
 
+// Preserve authored snapshots created by older Welcome-space builds.
+async fn has_welcome_snapshot(tonk: &TonkState, key: &str) -> Result<bool, RepositoryError> {
+    use dialog_artifacts::ArtifactSelector;
+    use futures_util::StreamExt as _;
+    fn internal(error: impl std::fmt::Display) -> RepositoryError {
+        RepositoryError::Internal(format!("welcome marker: {error}"))
+    }
+    let repository = tonk
+        .profile
+        .repository(key)
+        .load()
+        .perform(&tonk.operator)
+        .await
+        .map_err(internal)?;
+    let branch = repository
+        .branch("main")
+        .open()
+        .perform(&tonk.operator)
+        .await
+        .map_err(internal)?;
+    let stream = branch
+        .claims()
+        .select(
+            ArtifactSelector::new()
+                .the("xyz.tonk.onboarding/imported".parse().map_err(internal)?)
+                .of("id:tonk/onboarding-v2/welcome".parse().map_err(internal)?),
+        )
+        .perform(&tonk.operator)
+        .await
+        .map_err(internal)?;
+    tokio::pin!(stream);
+    Ok(stream.next().await.transpose().map_err(internal)?.is_some())
+}
+
 /// Bring a space's seed up to the one this worker ships, if it is behind.
 ///
 /// One atomic batch: the previous seed's assertions are retracted and the
@@ -4267,7 +4301,7 @@ pub(crate) async fn upgrade_seed(tonk: &TonkState, key: &str) -> Result<bool, Re
     // Replaying that library over the imported app replaces its home alias.
     // Snapshot spaces have no single replaceable library; preserve their
     // authored state, including custom home aliases and agent-page changes.
-    if super::onboarding_space::has_welcome_snapshot(tonk, key)
+    if has_welcome_snapshot(tonk, key)
         .await
         .map_err(|e| RepositoryError::Internal(format!("read welcome marker: {e}")))?
     {
@@ -4615,15 +4649,6 @@ fn embedded_standard_library(url: &str) -> Result<String, TonkWorkerError> {
         }
         PROFILE_LIBRARY_URL => {
             Ok(include_str!("../../../tonk-core/assets/library/profile.yaml").to_owned())
-        }
-        "/library/onboarding-agent.yaml" => {
-            Ok(include_str!("../../../tonk-core/assets/library/onboarding-agent.yaml").to_owned())
-        }
-        "/library/onboarding-demos.yaml" => {
-            Ok(include_str!("../../../tonk-core/assets/library/onboarding-demos.yaml").to_owned())
-        }
-        "/library/onboarding.yaml" => {
-            Ok(include_str!("../../../tonk-core/assets/library/onboarding.yaml").to_owned())
         }
         other => Err(TonkWorkerError::Internal(format!(
             "no embedded library for '{other}'"

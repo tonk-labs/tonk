@@ -1988,7 +1988,7 @@ describe("immutable generation caches", () => {
     assert.deepEqual(cache.mutations, [], "no old entry may be overwritten or deleted");
   });
 
-  test("Rust deferred imports read their sealed library generation offline", async () => {
+  test("Rust bundled assets read their sealed library generation offline", async () => {
     let fetches = 0;
     const { caches } = withGlobals({ fetchImpl: async () => {
       fetches++;
@@ -1996,7 +1996,7 @@ describe("immutable generation caches", () => {
     }});
     const mod = await loadWith({ exports: ["SHELL_CACHE"] });
     const cache = await caches.open(mod.SHELL_CACHE);
-    for (const path of ["/library/onboarding-demos.yaml", "/library/welcome-image.webp"]) {
+    for (const path of ["/library/core.yaml", "/library/welcome-image.webp"]) {
       await cache.put("https://tonk.test" + path, new Response("retained bytes"));
       assert.equal(await (await self.tonkBundledAsset(path)).text(), "retained bytes");
     }

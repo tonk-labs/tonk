@@ -1237,7 +1237,6 @@ mod tests {
         for library in [
             include_str!("../../../tonk-core/assets/library/core.yaml"),
             include_str!("../../../tonk-core/assets/library/profile.yaml"),
-            include_str!("../../../tonk-core/assets/library/onboarding-agent.yaml"),
         ] {
             let single_before = facts(&single, &single_repo).await;
             let interactive_before = facts(&interactive, &interactive_repo).await;

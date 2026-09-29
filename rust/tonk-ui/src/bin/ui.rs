@@ -134,17 +134,6 @@ async fn main() {
         return;
     }
     tonk_ui::analytics::startup_checkpoint(tonk_analytics::product::Stage::Worker);
-    if let Err(error) = open_welcome_space().await {
-        tonk_ui::analytics::finish_startup(
-            tonk_analytics::product::Stage::Welcome,
-            tonk_analytics::product::ProductResult::RetryableFailure,
-            Some(tonk_analytics::product::FailureKind::Network),
-        );
-        web_sys::console::error_1(&JsValue::from_str(&error.to_string()));
-        show_readiness_failure();
-        return;
-    }
-    tonk_ui::analytics::startup_checkpoint(tonk_analytics::product::Stage::Welcome);
     mount_root();
     if web_sys::window().is_some_and(|window| {
         matches!(
@@ -158,41 +147,6 @@ async fn main() {
             None,
         );
     }
-}
-
-/// Root visits alone consume first-use onboarding; deep links keep their destination.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn open_welcome_space() -> anyhow::Result<()> {
-    let window = web_sys::window().ok_or_else(|| anyhow::anyhow!("no window"))?;
-    let path = window.location().pathname().unwrap_or_default();
-    if path != "/" {
-        return Ok(());
-    }
-    #[derive(serde::Deserialize)]
-    struct Welcome {
-        path: Option<String>,
-    }
-    let response = reqwest::Client::new()
-        .post(format!(
-            "{}/api/profile/welcome",
-            window.location().origin().unwrap_or_default()
-        ))
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<Welcome>()
-        .await?;
-    if let Some(destination) = response.path {
-        // A navigation while setup was in flight wins over the automatic visit.
-        if window.location().pathname().unwrap_or_default() == "/" {
-            window
-                .history()
-                .map_err(|e| anyhow::anyhow!("history: {e:?}"))?
-                .replace_state_with_url(&JsValue::NULL, "", Some(&destination))
-                .map_err(|e| anyhow::anyhow!("welcome navigation: {e:?}"))?;
-        }
-    }
-    Ok(())
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
