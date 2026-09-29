@@ -5121,17 +5121,17 @@ palette/verb!:
 # opens the menu. It stands in for the bar's actions (`commanding` on the
 # bar): with nothing typed it lists what can be done without saying more,
 # and as you type, what the typing says. Until its rows arrive the bar's
-# own actions stand in. The top proposal completes inline, as a selection ahead of the
-# cursor: typing goes on over it, Tab or → takes it, ↑/↓ (Ctrl+N/P) move to
-# another proposal and the selection follows.
+# own actions stand in. The top reading completes inline, as a selection
+# ahead of the cursor: typing goes on over it, Tab or → takes it, ↑/↓
+# (Ctrl+N/P) move to another reading and the selection follows.
 #
-# What it can say is data — `palette/verb`, `palette/argument`,
-# `palette/role`, `palette/noun` on the space branch and the profile — read
-# through ordinary subscriptions, with the rows of every concept an argument
-# names matched by that concept's `label` facet. The parse is
-# `window.tonk.palette.parse` (the `dialog-palette` parser, in the guest's
-# wasm); running a proposal transacts the command it names, as a button
-# bound to that command would.
+# It only queries and transacts. What the line could mean is the named query
+# `palette/suggest` — `{input, this, now}` in, one row per reading out —
+# asked of the space branch and of the profile, whose readings are merged by
+# score. Running one transacts its `claim` on the branch it came from, as a
+# button bound to that command would, and records a `palette/choice` on the
+# profile. What can be said is data (`palette/verb`, `palette/argument`,
+# `palette/role`, `palette/noun`); the query reads it.
 #
 # Keys pressed inside the space's own frame are relayed to this document by
 # the portal bridge, so the shortcut works wherever focus is.
@@ -5161,7 +5161,6 @@ element!: &command-palette
         self.__shown = new ResizeObserver(() => {
           const visible = self.getClientRects().length > 0;
           if (visible && !self.__visible) {
-            if (!self.__sources) self.start();
             self.update();
             self.__input.focus({ preventScroll: true });
           } else if (!visible && self.__visible) {
@@ -5179,7 +5178,7 @@ element!: &command-palette
         if (self.__shown) self.__shown.disconnect();
         self.__shown = null;
         self.__visible = false;
-        self.stop();
+        self.__asked = null;
       }
     summon: |
       (self) => {
@@ -5237,7 +5236,6 @@ element!: &command-palette
         self.__input = self.querySelector('input');
         self.__list = self.querySelector('ol');
         self.__typed = '';
-        self.__input.addEventListener('focus', () => { if (!self.__sources) self.start(); });
         self.__input.addEventListener('input', (event) => {
           const input = self.__input;
           self.__typed = input.value;
@@ -5323,158 +5321,60 @@ element!: &command-palette
         if (self.__input) self.__input.value = '';
         self.update();
       }
-    start: |
-      (self) => {
-        self.stop();
+    update: |
+      async (self) => {
+        // Ask both branches what the line could mean. An answer that lands
+        // after a newer question is dropped.
+        const typed = self.__typed || '';
+        const asked = {};
+        self.__asked = asked;
         const space = self.getAttribute('space');
         if (!space || !window.tonk) return;
-        // The space's commands live on its branch; the FABB's on the profile.
         const branches = [`main@${space}`, self.getAttribute('profile')].filter(Boolean);
-        const generation = {};
-        self.__generation = generation;
-        self.__readers = [];
-        self.__sources = branches.map((branch) => self.source(branch, generation));
-        self.__memory = [];
-        const profile = self.getAttribute('profile');
-        if (profile) {
-          const v = (name) => ({ '?': { name } });
-          const reader = window.tonk.subscribe({ predicate: { with: {
-              command: { the: 'xyz.tonk.palette.choice/command', as: 'Entity', cardinality: 'one' },
-              input: { the: 'xyz.tonk.palette.choice/input', as: 'Text', cardinality: 'one' },
-              time: { the: 'xyz.tonk.palette.choice/time', as: 'Float', cardinality: 'one' },
-            } },
-            terms: { this: v('this'), command: v('command'), input: v('input'), time: v('time') } },
-            { with: profile }).getReader();
-          self.__readers.push(reader);
-          (async () => {
-            for (;;) {
-              const { value, done } = await reader.read();
-              if (done || self.__generation !== generation) return;
-              self.__memory = value || [];
-              self.update(true);
-            }
-          })().catch((error) => console.warn('<command-palette> memory ended', error));
-        }
-      }
-    source: |
-      (self, branch, generation) => {
-        const context = { with: branch };
-        const source = { branch, verbs: [], arguments: [], roles: [], nouns: [],
-          attributes: [], concepts: {} };
-        const v = (name) => ({ '?': { name } });
-        const watch = (body, apply) => {
-          const reader = window.tonk.subscribe(body, context).getReader();
-          self.__readers.push(reader);
-          (async () => {
-            for (;;) {
-              const { value, done } = await reader.read();
-              if (done || self.__generation !== generation) return;
-              apply(value || []);
-              self.update(true);
-            }
-          })().catch((error) => console.warn('<command-palette> subscription ended', branch, error));
+        const body = {
+          predicate: 'palette/suggest',
+          terms: { input: typed, this: space, now: Date.now(), max: 5 },
         };
-        const text = (the, cardinality = 'one') => ({ the, as: 'Text', cardinality });
-        const entity = (the, optional) =>
-          ({ the, as: 'Entity', cardinality: 'one', ...(optional ? { optional: true } : {}) });
-        watch({ predicate: { with: { name: text('xyz.tonk.palette.verb/name', 'many') } },
-          terms: { this: v('this'), name: v('name') } }, (rows) => { source.verbs = rows; });
-        watch({ predicate: { with: { name: text('xyz.tonk.palette.noun/name', 'many') } },
-          terms: { this: v('this'), name: v('name') } }, (rows) => { source.nouns = rows; });
-        watch({ predicate: { with: { name: text('xyz.tonk.palette.role/name') } },
-          terms: { this: v('this'), name: v('name') } }, (rows) => { source.roles = rows; });
-        watch({ predicate: { with: { id: text('db.attribute/id'), type: text('db.attribute/type') } },
-          terms: { this: v('this'), id: v('id'), type: v('type') } },
-          (rows) => { source.attributes = rows; });
-        watch({ predicate: { with: {
-            command: entity('xyz.tonk.palette.argument/command'),
-            field: entity('xyz.tonk.palette.argument/field'),
-            role: entity('xyz.tonk.palette.argument/role'),
-            noun: entity('xyz.tonk.palette.argument/noun', true),
-          } },
-          terms: { this: v('this'), command: v('command'), field: v('field'), role: v('role'),
-            noun: v('noun') } },
-          (rows) => {
-            source.arguments = rows;
-            for (const row of rows) {
-              const noun = row.fields && row.fields.noun;
-              if (noun && !source.concepts[noun]) self.noun(noun, source, context, watch, generation);
-            }
-          });
-        return source;
-      }
-    noun: |
-      async (self, concept, source, context, watch, generation) => {
-        // A noun is a concept: read its descriptor the way <tonk-display>
-        // resolves a model, then hold its rows and its `label` facet.
-        source.concepts[concept] = { label: null, rows: [] };
-        const v = (name) => ({ '?': { name } });
-        const meta = (the, as) => ({ the, as, cardinality: 'one' });
-        const found = await window.tonk.query({
-          predicate: { with: {
-            concept: meta('db.meta/concept', 'Entity'), name: meta('db.meta/name', 'Text'),
-            description: meta('db.meta/description', 'Text'), source: meta('db.meta/source', 'Text'),
-            transient: meta('dialog.concept/transient', 'Boolean'),
-          } },
-          terms: { this: concept, name: v('name'), source: v('source') },
-        }, context);
-        const rows = Array.isArray(found) ? found : (found && found.rows) || [];
-        const described = rows.find((row) => row.fields && row.fields.source);
-        if (!described || self.__generation !== generation) return;
-        const descriptor = JSON.parse(described.fields.source);
-        const terms = { this: v('this') };
-        for (const field of Object.keys(descriptor.with || {})) terms[field] = v(field);
-        watch({ predicate: descriptor, terms }, (rows) => { source.concepts[concept].rows = rows; });
-        watch({ predicate: { with: { show: {
-            the: { domain: 'xyz.tonk.view', keyed: 'dictionary' }, as: 'Text', cardinality: 'one',
-          } } },
-          terms: { this: concept, show: v('show'), 'show/key': v('show/key') } },
-          (rows) => {
-            const label = rows.find((row) => row.fields && row.fields['show/key'] === 'label');
-            source.concepts[concept].label = label ? label.fields.show : null;
-          });
-      }
-    stop: |
-      (self) => {
-        for (const reader of self.__readers || []) reader.cancel().catch(() => {});
-        self.__readers = [];
-        self.__sources = null;
-        self.__generation = null;
-      }
-    update: |
-      (self, keep) => {
-        const typed = self.__typed || '';
-        const fab = self.closest('tonk-fab');
-        const palette = window.tonk && window.tonk.palette;
-        const previous = self.__index || 0;
-        self.__proposals = [];
-        self.__note = '';
-        if (self.__sources && palette) {
-          const request = {
-            input: typed,
-            max: 5,
-            context: { this: { text: '', entity: self.getAttribute('space') }, selection: null },
-            sources: self.__sources,
-            memory: self.__memory || [],
-            now: Date.now(),
+        const read = (branch, row) => {
+          const fields = row.fields || {};
+          const json = (text, fallback) => { try { return JSON.parse(text); } catch { return fallback; } };
+          return {
+            branch,
+            command: fields.command,
+            score: fields.score || 0,
+            rank: fields.rank || 0,
+            input: fields.input || '',
+            display: json(fields.display, []),
+            nouns: json(fields.nouns, {}),
+            completion: fields.completion || null,
+            claim: fields.claim ? json(fields.claim, null) : null,
           };
-          try {
-            // Nothing typed: what can be done without saying more.
-            const proposals = typed ? palette.parse(request) : palette.menu(request);
-            self.__proposals = proposals;
-          } catch (error) {
-            console.error('<command-palette> parse failed', error);
-          }
-        } else if (typed && self.__sources) {
-          self.__note = 'the palette parser is not loaded in this page';
+        };
+        const answers = await Promise.all(branches.map((branch) =>
+          window.tonk.query(body, { with: branch })
+            .then((found) => (Array.isArray(found) ? found : (found && found.rows) || [])
+              .map((row) => read(branch, row)))
+            .catch((error) => {
+              console.warn('<command-palette> palette/suggest failed on', branch, error);
+              return [];
+            })));
+        if (self.__asked !== asked) return;
+        let readings = answers.flat();
+        if (typed) {
+          // One ranking across both branches, the way one branch ranks its
+          // own: best first, and nothing under half the best.
+          readings.sort((a, b) => b.score - a.score);
+          const best = readings.length ? readings[0].score : 0;
+          readings = readings.filter((reading) => reading.score >= best * 0.5).slice(0, 5);
         }
+        self.__proposals = readings;
+        self.__note = '';
+        const fab = self.closest('tonk-fab');
         // The palette takes the actions' place once it has something to show;
         // until its rows arrive the bar's own actions stand in.
-        if (fab) fab.toggleAttribute('commanding', typed.length > 0 || self.__proposals.length > 0);
-        // A subscription tick keeps the proposal the person moved to.
-        self.__index = keep && previous < self.__proposals.length ? previous : 0;
-        // Data landing under a line with no completion shown yet may offer one.
-        if (!keep || self.__input.value === typed) self.suggest();
+        if (fab) fab.toggleAttribute('commanding', typed.length > 0 || readings.length > 0);
+        self.__index = 0;
+        self.suggest();
         self.render();
       }
     render: |
@@ -5501,7 +5401,7 @@ element!: &command-palette
           row.setAttribute('role', 'option');
           row.dataset.index = String(index);
           row.setAttribute('aria-selected', String(index === self.__index));
-          for (const segment of proposal.parse.display) {
+          for (const segment of proposal.display) {
             const kind = segment.role && proposal.nouns && proposal.nouns[segment.role];
             if (segment.kind === 'argument' && kind) {
               // A thing: boxed, with what kind of thing it is.
@@ -5528,7 +5428,7 @@ element!: &command-palette
           predicate: { kind: 'durable', concept: { with: {
             command: field('command', 'Entity'), input: field('input', 'Text'), time: field('time', 'Float'),
           } } },
-          parameters: { command: proposal.command, input: proposal.parse.input || '', time: Date.now() },
+          parameters: { command: proposal.command, input: proposal.input || '', time: Date.now() },
         } }] }, { with: profile }).catch((error) => console.warn('<command-palette> not remembered', error));
       }
     run: |

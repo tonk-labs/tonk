@@ -244,15 +244,42 @@ async fn handle_query(
     };
     let query: dialog_query::ConceptQuery = match wire.into_concept_query() {
         Ok(q) => q,
-        Err(_) => {
-            send_error(
-                &state,
-                &client,
-                "query-error",
-                &id,
-                "formula queries are not supported on the bridge",
-            )
-            .await;
+        // A named query (`tree/*`, `palette/suggest`) is answered by the
+        // reactor, as the HTTP `/query` route answers it.
+        Err(wire) => {
+            let result = {
+                let tonk = state.read().await;
+                match tonk
+                    .reactor
+                    .repository(&binding.repo)
+                    .branch(&binding.branch)
+                    .acquire(&tonk.operator)
+                    .await
+                {
+                    Ok(session) => {
+                        crate::reactor::resolve_formula(session.handle(), &tonk.operator, &wire)
+                            .await
+                            .map_err(|e| e.to_string())
+                    }
+                    Err(e) => Err(format!("reactor acquire: {e}")),
+                }
+            };
+            match result {
+                Ok(rows) => {
+                    send_envelope(
+                        &state,
+                        &client,
+                        serde_json::json!({
+                            "v": 1,
+                            "type": "query-result",
+                            "id": id,
+                            "rows": rows,
+                        }),
+                    )
+                    .await;
+                }
+                Err(e) => send_error(&state, &client, "query-error", &id, &e).await,
+            }
             return;
         }
     };

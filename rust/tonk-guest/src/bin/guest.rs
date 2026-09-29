@@ -28,11 +28,6 @@ pub fn start() {
     // binding. `window.tonk` stays app sugar, not the elements' transport.
     tonk_guest::guest_host::install();
 
-    // `window.tonk.palette.parse`: the command-palette parser, for the
-    // `<command-palette>` author element. Pure and synchronous; the element
-    // brings the rows from its own subscriptions.
-    tonk_palette::web::install();
-
     // Author elements: the runtime that ANNOUNCES an undefined custom
     // element, and the listener that ANSWERS by resolving the tag and
     // registering it. Installed here, at the one place every sealed

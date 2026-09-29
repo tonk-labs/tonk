@@ -115,6 +115,9 @@ pub async fn resolve_formula<Env: SelectProvider>(
             None => Ok(vec![]),
         },
 
+        // What a typed command could mean. See [`crate::palette`].
+        crate::palette::NAME => crate::palette::suggest(branch, env, query).await,
+
         other => Err(FormulaError::Unknown(other.into())),
     }
 }

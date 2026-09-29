@@ -30,6 +30,7 @@ mod export;
 mod formula;
 mod import;
 mod overlay;
+mod palette;
 mod pull;
 mod push;
 mod query;

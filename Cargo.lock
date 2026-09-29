@@ -1290,6 +1290,7 @@ dependencies = [
  "dialog-credentials",
  "dialog-effects",
  "dialog-operator",
+ "dialog-palette",
  "dialog-query",
  "dialog-repository",
  "dialog-search-tree",
@@ -1304,6 +1305,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tonk-evaluator",
+ "tonk-palette",
  "tonk-schema",
  "wasm-bindgen-test",
  "web-sys",
@@ -4980,7 +4982,6 @@ dependencies = [
  "tonk-fab",
  "tonk-host",
  "tonk-inspector",
- "tonk-palette",
  "tonk-portal",
  "tonk-tree",
  "wasm-bindgen",
@@ -5157,13 +5158,9 @@ version = "0.6.16-rc.1"
 dependencies = [
  "dialog-palette",
  "ipld-core",
- "js-sys",
  "serde",
- "serde-wasm-bindgen",
  "serde_json",
  "tonk-template",
- "wasm-bindgen",
- "web-sys",
 ]
 
 [[package]]
@@ -5396,7 +5393,6 @@ dependencies = [
  "dialog-csv",
  "dialog-effects",
  "dialog-operator",
- "dialog-palette",
  "dialog-query",
  "dialog-reactor",
  "dialog-remote-ucan",
@@ -5438,7 +5434,6 @@ dependencies = [
  "tonk-invite",
  "tonk-language-server",
  "tonk-notation",
- "tonk-palette",
  "tonk-router",
  "tonk-schema",
  "tonk-template",

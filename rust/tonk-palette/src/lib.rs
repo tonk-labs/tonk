@@ -1,16 +1,15 @@
 //! The command palette's glue between tonk's data and `dialog-palette`.
 //!
-//! The `<command-palette>` element (an `element!:` in the profile library)
-//! holds ordinary subscriptions — to `palette/verb`, `palette/argument`,
-//! `palette/role`, `palette/noun`, the attributes those arguments name,
-//! and the rows and `label` facet of every noun concept — and hands the
-//! rows it has, as delivered, to [`propose`]. This crate joins them into
-//! a [`dialog_palette::Registry`], parses the input, and answers with
-//! ranked proposals, each carrying the transient claim that runs it.
+//! The rows of `palette/verb`, `palette/argument`, `palette/role`,
+//! `palette/noun`, the attributes those arguments name, and the rows and
+//! `label` facet of every noun concept come in as [`Source`]s; this crate
+//! joins them into a [`dialog_palette::Registry`], parses the input, and
+//! answers with ranked proposals, each carrying the transient claim that
+//! runs it.
 //!
-//! Nothing here reads a store: every row comes from the element's
-//! subscriptions, so a change on the branch reaches the next keystroke
-//! without any invalidation of its own.
+//! Nothing here reads a store. `palette/suggest` (in `dialog-reactor`)
+//! reads the rows with ordinary concept queries and calls in here, so the
+//! page asks one query and gets readings back.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -21,9 +20,6 @@ use dialog_palette::{
 use ipld_core::ipld::Ipld;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub mod web;
 
 /// A subscription row as the bridge delivers it: the matched entity and
 /// its projected fields. A cardinality-many field arrives as one row per
