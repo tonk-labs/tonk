@@ -393,6 +393,23 @@
   };
   window.tonk=tonk;
 
+  // The command palette's chord (Ctrl/Cmd+K, Ctrl/Cmd+Shift+P) belongs to the
+  // chrome, but focus is usually inside a sealed frame like this one, whose
+  // keys never reach the parent document. Forward it; the portal re-dispatches
+  // it from its own element, so it bubbles through the parent as if pressed
+  // there. Only a chord nothing here handled (an editor binding Ctrl+K keeps
+  // it), and only a trusted one: the re-dispatched event is untrusted, so a
+  // chord climbs at most one frame per press.
+  document.addEventListener("keydown",function(event){
+    if(!event.isTrusted||event.defaultPrevented) return;
+    if(!(event.metaKey||event.ctrlKey)) return;
+    var key=(event.key||"").toLowerCase();
+    if(!(key==="k"||(event.shiftKey&&key==="p"))) return;
+    event.preventDefault();
+    ready.then(function(){port.postMessage({v:1,type:"key",key:event.key,
+      ctrlKey:event.ctrlKey,metaKey:event.metaKey,shiftKey:event.shiftKey,altKey:event.altKey});});
+  });
+
   // The product-owned agent prompt lives in rendered guest markup, outside
   // the Rust component tree. Observe only its reviewed copy control and send
   // a content-free lifecycle; never read or forward the copied value.

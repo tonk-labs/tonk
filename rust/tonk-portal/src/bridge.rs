@@ -1133,6 +1133,7 @@ fn make_dispatcher(
             "task" => handle_task(&state, &port, &data),
             "fetch" => handle_host_fetch(&state, &port, &data),
             "delegate" => handle_delegate(&port, &data),
+            "key" => handle_key(&host, &data),
             _ => {}
         }
     }) as Box<dyn FnMut(MessageEvent)>)
@@ -1755,6 +1756,30 @@ fn task_request(data: &JsValue) -> Option<(String, Option<String>)> {
     let payload = get_str(data, "payload").filter(|payload| !payload.is_empty())?;
     let token = get_str(data, "focusToken").filter(|token| !token.is_empty());
     Some((payload, token))
+}
+
+/// A keyboard chord pressed inside the guest (the bootstrap forwards only
+/// the command palette's): re-dispatch it from this portal element, so it
+/// bubbles through the document the portal lives in as if pressed there.
+fn handle_key(host: &Element, data: &JsValue) {
+    let flag = |name: &str| {
+        Reflect::get(data, &name.into())
+            .ok()
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+    };
+    let init = web_sys::KeyboardEventInit::new();
+    init.set_key(&get_str(data, "key").unwrap_or_default());
+    init.set_ctrl_key(flag("ctrlKey"));
+    init.set_meta_key(flag("metaKey"));
+    init.set_shift_key(flag("shiftKey"));
+    init.set_alt_key(flag("altKey"));
+    init.set_bubbles(true);
+    init.set_composed(true);
+    init.set_cancelable(true);
+    if let Ok(event) = web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init) {
+        let _ = host.dispatch_event(&event);
+    }
 }
 
 fn handle_title(data: &JsValue) {
