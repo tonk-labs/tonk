@@ -93,13 +93,6 @@ impl Registry {
         }
     }
 
-    /// The name of the profile a device starts with — the registry's
-    /// own. Valid as an activation target even when no roster entry
-    /// names it.
-    pub(crate) fn initial_profile(&self) -> &str {
-        &self.profile
-    }
-
     async fn open_self(&self, storage: &Storage<DefaultSpace>) -> Result<Profile, TonkWorkerError> {
         // PROBE (temporary): surface the raw storage::Load error that
         // `Profile::open` swallows before falling back to `Create`.

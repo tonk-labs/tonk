@@ -31,3 +31,10 @@ whitespace checks, the focused Node bundled-asset offline test, and all three
 retained agent-prompt tests executed in a standalone Rust harness. Repository
 search found no remaining active references to the removed scripts or YAMLs.
 Browser execution remains unverified as noted above.
+
+CI lint follow-up: remove the unused worker `seed_standard_library`,
+`set_replica_status`, and registry `initial_profile` helpers. Keep
+`seed_on_branch` only in test builds and update references to removed helpers.
+Validation: `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
+passed locally on macOS, as did formatting and whitespace checks. The earlier
+Cargo checks did not deny dead-code warnings. Linux Nix CI remains to rerun.
