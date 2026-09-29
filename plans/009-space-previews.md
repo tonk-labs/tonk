@@ -77,3 +77,25 @@ server-side capture, background space mounting or new dependencies. Firefox,
 Safari, physical mobile-device performance, complex media/shadow fidelity,
 and hosted CI remain unverified. Blur is presentation, not redaction of the
 locally cached image. The browser smoke check is not an automated E2E suite.
+
+## Starter space follow-up
+
+- Reproduced with a fresh copy of the published Starter template in an isolated
+  browser against localhost:8080. The visible Welcome note failed at node 601
+  after roughly 3ms. Hidden vault panels and component definitions consumed the
+  DOM budget; its embedded PNG was 971KB, and duplicate runtime CSS also exceeded
+  the CSS limit (290KB before deduplication, 195KB after).
+- Skip hidden subtrees, templates and component definitions, discard oversized
+  attributes and inline images, and retain one copy of each CSS rule in its last
+  cascade position. The existing node, time, CSS and output limits are unchanged.
+- A diagnostic Starter capture fit in 490 nodes and 235KB of SVG, with about 7ms
+  preparation, and reached the real session cache. The Hub decoded a 256px image
+  with its existing 6px blur.
+- Added an executable browser regression fixture using the unmodified production
+  script in opaque iframes. All three cases passed: Starter-like hidden/code/asset
+  pruning succeeds; excessive visible nodes and unique CSS still refuse capture.
+- Focused preview Node tests (3) and the offline Wasm portal check passed.
+- Verified the rebuilt app contained the final capture script, reopened Welcome,
+  and let its normal idle timer run without instrumentation: a 5.4KB cache record
+  appeared. Returning to the Hub decoded the preview with no pending fallback.
+  Visual evidence: `bench/space-preview/starter-preview.png` (1200x900).

@@ -26,7 +26,7 @@
       budget();
       if (node.nodeType === Node.TEXT_NODE) return snapshot.createTextNode(node.textContent.slice(0, 4000).replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, ''));
       if (node.nodeType !== Node.ELEMENT_NODE) return snapshot.createTextNode('');
-      if (node.matches('script, style, link, iframe, video, audio, input, textarea, select, [contenteditable]')) {
+      if (node.matches('script, style, link, template, [hidden], tonk-component, iframe, video, audio, input, textarea, select, [contenteditable]')) {
         return snapshot.createTextNode('');
       }
       if (node instanceof HTMLCanvasElement) {
@@ -41,17 +41,20 @@
       for (const attr of [...out.attributes]) {
         // Tonk's data-tonk-models carries record/unit separators. They are
         // legal in HTML DOM attributes but make SVG/XML undecodable.
-        if (attr.name.startsWith('on') || ['src', 'srcset', 'href'].includes(attr.name) ||
+        if (attr.value.length > 4096 || attr.name.startsWith('on') || ['src', 'srcset', 'href'].includes(attr.name) ||
             /[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(attr.value) ||
             (!attr.namespaceURI && attr.name.includes(':'))) out.removeAttribute(attr.name);
       }
       if (out.hasAttribute('style')) out.setAttribute('style', out.getAttribute('style').replace(/url\([^)]*\)/gi, 'none'));
-      if (node instanceof HTMLImageElement && node.currentSrc.startsWith('data:')) out.src = node.currentSrc;
+      // A single embedded full-size image must not consume the whole snapshot.
+      if (node instanceof HTMLImageElement && node.currentSrc.length <= 32000 && node.currentSrc.startsWith('data:')) out.src = node.currentSrc;
       for (const child of (node.shadowRoot || node).childNodes) out.append(clone(child));
       return out;
     }
     const body = clone(document.body);
     let css = '', rules = 0;
+    const cssRules = new Map();
+    let cssBytes = 0;
     for (const sheet of document.styleSheets) {
       budget();
       try {
@@ -61,12 +64,18 @@
           // Runtime fonts are embedded as large data URLs. Omit them before
           // counting bytes, rather than rejecting otherwise small views.
           if (rule.type === CSSRule.FONT_FACE_RULE || rule.type === CSSRule.IMPORT_RULE) continue;
-          css += rule.cssText.replace(/url\([^)]*\)/gi, 'none');
-          if (css.length > 256000) throw new Error('preview CSS budget');
+          const text = rule.cssText.replace(/url\([^)]*\)/gi, 'none');
+          // Runtime/component styles can repeat entire theme blocks. Keep the
+          // last copy in cascade order rather than spending the budget twice.
+          if (cssRules.has(text)) cssRules.delete(text);
+          else cssBytes += text.length;
+          cssRules.set(text, text);
+          if (cssBytes > 256000) throw new Error('preview CSS budget');
         }
       }
       catch (error) { if (error.name !== 'SecurityError') throw error; }
     }
+    css = [...cssRules.values()].join('');
     // No resource loading during capture. Blob fonts and remote images may be
     // absent; retain their layout and fall back to the browser's fonts.
     const style = snapshot.createElement('style'); style.textContent = css;

@@ -1,5 +1,19 @@
 # Space thumbnail feasibility spike
 
+## Production capture regression
+
+Serve the **repository root** with
+`python3 -m http.server 8772 --bind 127.0.0.1`, then open
+`http://127.0.0.1:8772/bench/space-preview/capture-regression.html` in an isolated
+test browser. After about 20 seconds, `window.done` is true and every entry in
+`window.results` must have `passed: true`. The fixture runs the current production
+script unchanged in opaque iframes, with real SVG decode and WebP export.
+It covers hidden vault panels, component code, oversized embedded assets and
+duplicate runtime CSS, and verifies visible-node and unique-CSS limits remain
+enforced. This is a browser regression fixture, not part of the Node test suite.
+
+## Original spike
+
 2026-09-29. Conclusion: cheap cached thumbnails are plausible for simple DOM
 views; arbitrary Tonk space capture is not yet proven. No production code changed.
 
