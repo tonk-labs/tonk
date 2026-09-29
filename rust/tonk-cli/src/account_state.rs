@@ -70,14 +70,15 @@ async fn marker(
 
 async fn save_marker(
     profile: &Peer<NativeSpace>,
-    operator: &Peer<NativeSpace, Session>,
+    _operator: &Peer<NativeSpace, Session>,
     subject: &dialog_varsig::Did,
 ) -> Result<()> {
+    // Saved by the profile: a session writes nothing to its peer's space.
     profile
         .secrets()
         .site(tonk_account::TRUSTED_BASE_CREDENTIAL_SITE)
         .save(subject.as_str().as_bytes().to_vec())
-        .perform(operator)
+        .perform(profile)
         .await
         .context("failed to save account trusted-base marker")
 }
