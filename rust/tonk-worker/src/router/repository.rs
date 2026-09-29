@@ -5170,9 +5170,9 @@ where
                     ))
                 })?;
 
-            branch
-                .set_upstream(&target)
-                .perform(&tonk.operator)
+            // A configured upstream replaces the one configured before: a
+            // branch tracks the one remote branch its configuration names.
+            tonk_account::peer::repoint_upstream(&branch, &target, &tonk.operator)
                 .await
                 .map_err(|e| {
                     RepositoryError::Internal(format!(
@@ -6985,9 +6985,9 @@ where
                         upstream.remote, upstream.branch, e
                     ))
                 })?;
-            branch
-                .set_upstream(&target)
-                .perform(&tonk.operator)
+            // A configured upstream replaces the one configured before: a
+            // branch tracks the one remote branch its configuration names.
+            tonk_account::peer::repoint_upstream(&branch, &target, &tonk.operator)
                 .await
                 .map_err(|e| {
                     RepositoryError::Internal(format!(

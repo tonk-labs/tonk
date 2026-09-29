@@ -300,10 +300,8 @@ pub async fn set_upstream(
         .branch()
         .await
         .map_err(|e| RemoteError::Io(format!("failed to acquire branch: {e}")))?;
-    session
-        .handle()
-        .set_upstream(&upstream_branch)
-        .perform(&site.operator)
+    // The remote named replaces the one tracked before.
+    tonk_account::peer::repoint_upstream(session.handle(), &upstream_branch, &site.operator)
         .await
         .map_err(|e| RemoteError::Io(format!("failed to set upstream: {e}")))?;
 
@@ -317,9 +315,7 @@ pub async fn set_upstream(
         .await
         .map_err(|e| RemoteError::Io(format!("failed to open remote meta branch: {e}")))?;
     let local_meta = open_meta(site).await?;
-    local_meta
-        .set_upstream(&remote_meta)
-        .perform(&site.operator)
+    tonk_account::peer::repoint_upstream(&local_meta, &remote_meta, &site.operator)
         .await
         .map_err(|e| RemoteError::Io(format!("failed to set meta upstream: {e}")))?;
 
