@@ -280,6 +280,16 @@ async fn release_glides_to_the_nearest_edge_without_losing_its_free_coordinate()
         .append_child(&fab)
         .expect("mount fab");
 
+    // Let the deferred persisted-seat restore finish before beginning a gesture.
+    wait_for_corner_settled(&fab, &fab.shadow_root().unwrap(), false).await;
+    // Start on the left so this test isolates release motion from the
+    // separate mid-drag bookend mirroring behavior.
+    fab.style().set_property("left", "16px").unwrap();
+    fab.style().set_property("right", "auto").unwrap();
+    fab.remove_attribute("flip").unwrap();
+    fab.class_list().remove_1("fab-mirror").unwrap();
+    wait_for_corner_settled(&fab, &fab.shadow_root().unwrap(), false).await;
+
     let snapped = Rc::new(RefCell::new(None));
     let sink = snapped.clone();
     let on_snap = Closure::<dyn FnMut(CustomEvent)>::new(move |event: CustomEvent| {
@@ -318,6 +328,7 @@ async fn release_glides_to_the_nearest_edge_without_losing_its_free_coordinate()
         .expect("window")
         .dispatch_event(&pointer_event("pointermove", 80.0, target_y, 1))
         .expect("pointer move");
+    let release_left = fab.get_bounding_client_rect().left();
     window()
         .expect("window")
         .dispatch_event(&pointer_event("pointerup", 80.0, target_y, 0))
@@ -332,6 +343,23 @@ async fn release_glides_to_the_nearest_edge_without_losing_its_free_coordinate()
         "the release must keep its free y coordinate: expected about {}, got {top}",
         target_y - half_height
     );
+
+    // Inline coordinates describe the destination, but the rendered surface
+    // must travel there instead of jumping on the release frame.
+    let start = fab.get_bounding_client_rect().left();
+    assert!(
+        (start - release_left).abs() < 2.0,
+        "release jumped: {release_left} -> {start}"
+    );
+    assert!(active_animations(&fab) > 0, "edge glide must be active");
+    yield_for(100).await;
+    let intermediate = fab.get_bounding_client_rect().left();
+    assert!(
+        intermediate > 16.0 && intermediate < start,
+        "expected intermediate glide position, got {intermediate}"
+    );
+    yield_for(400).await;
+    assert!((fab.get_bounding_client_rect().left() - 16.0).abs() < 1.0);
 
     fab.remove();
     drop(on_snap);

@@ -679,21 +679,68 @@ async fn the_circle_collapses_and_expands_at_every_width() {
     let (parent, fab) = mount(320);
     for width in [320, 390, 768, 1440] {
         resize(&parent, width).await;
-        let circle = shadow(&fab, ".fab").unchecked_into::<HtmlElement>();
-        circle.click();
-        yield_for(0).await;
-        let wrapper = shadow(&fab, ".w");
-        assert!(
-            wrapper.class_list().contains("collapsed"),
-            "collapse at {width}px"
-        );
-        assert!(wrapper.get_bounding_client_rect().width() >= 48.0);
-        circle.click();
-        yield_for(0).await;
-        assert!(
-            !wrapper.class_list().contains("collapsed"),
-            "expand at {width}px"
-        );
+        for flipped in [false, true] {
+            if flipped {
+                fab.set_attribute("flip", "").unwrap();
+            } else {
+                fab.remove_attribute("flip").unwrap();
+            }
+            let circle = shadow(&fab, ".fab").unchecked_into::<HtmlElement>();
+            let wrapper = shadow(&fab, ".w");
+            // Production docking updates both the host attribute and wrapper.
+            // Set that same orientation explicitly in this motion fixture.
+            wrapper
+                .class_list()
+                .toggle_with_force("flip", flipped)
+                .unwrap();
+            let rail = shadow(&fab, ".bar");
+            let full_width = wrapper.get_bounding_client_rect().width();
+            let rail_height = wrapper.get_bounding_client_rect().height();
+            let rail_width = rail.get_bounding_client_rect().width();
+            for collapsed in [true, false] {
+                circle.click();
+                let mut previous = wrapper.get_bounding_client_rect().width();
+                let mut intermediate = false;
+                for _ in 0..12 {
+                    yield_for(40).await;
+                    let rect = wrapper.get_bounding_client_rect();
+                    let handle = circle.get_bounding_client_rect();
+                    assert!(
+                        (rect.height() - rail_height).abs() < 1.0,
+                        "rail stretched to {}",
+                        rect.height()
+                    );
+                    assert!(
+                        (rail.get_bounding_client_rect().width() - rail_width).abs() < 1.0,
+                        "rail must not reflow during telescope"
+                    );
+                    assert!((handle.width() - 48.0).abs() < 1.0);
+                    assert!((handle.height() - 48.0).abs() < 1.0);
+                    let seat = if flipped {
+                        rect.right() - handle.right()
+                    } else {
+                        handle.left() - rect.left()
+                    };
+                    assert!(
+                        (seat - 1.5).abs() < 1.0,
+                        "circle lost its anchored end: {seat}, width={width}, flipped={flipped}, collapsed={collapsed}, host_flip={}, classes={}",
+                        fab.has_attribute("flip"),
+                        wrapper.class_name()
+                    );
+                    if collapsed {
+                        assert!(rect.width() <= previous + 1.0);
+                    } else {
+                        assert!(rect.width() >= previous - 1.0);
+                    }
+                    intermediate |= rect.width() > 52.0 && rect.width() < full_width - 1.0;
+                    previous = rect.width();
+                }
+                assert!(intermediate, "expected visible telescope frames");
+                assert_eq!(wrapper.class_list().contains("collapsed"), collapsed);
+                let target = if collapsed { 51.0 } else { full_width };
+                assert!((wrapper.get_bounding_client_rect().width() - target).abs() < 1.0);
+            }
+        }
     }
     parent.remove();
 }
