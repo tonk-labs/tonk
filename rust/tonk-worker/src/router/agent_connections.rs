@@ -805,21 +805,17 @@ mod tests {
     #[tokio::test]
     async fn connection_management_reads_legacy_and_named_receipts_with_current_space_name()
     -> anyhow::Result<()> {
-        use dialog_credentials::{Credential, Ed25519Signer};
+        use dialog_credentials::key::ExtractableKey;
+        use dialog_credentials::{Ed25519Signer, Extractable};
         use dialog_effects::space::{Space, SpaceExt as _};
         use dialog_effects::storage::Directory;
-        use dialog_operator::Profile;
-        use dialog_storage::provider::storage::Storage;
         use tonk_schema::{RepositoryName, prelude::DidExt as _};
         let directory =
             std::env::temp_dir().join(format!("tonk-named-receipts-{}", rand::random::<u64>()));
         std::fs::create_dir_all(&directory)?;
         let location = Directory::At(directory.to_string_lossy().into_owned());
-        let storage = Storage::default();
-        let profile = Profile::open("receipt-projection")
-            .at(location.clone())
-            .perform(&storage)
-            .await?;
+        let (storage, profile) =
+            crate::device::open_profile_at("receipt-projection", location.clone()).await?;
         let registry = crate::device::Registry {
             profile: "receipt-projection".into(),
             directory: location,
@@ -827,7 +823,9 @@ mod tests {
         let tonk =
             crate::worker::boot_state(storage, "receipt-projection".into(), profile, registry)
                 .await?;
-        let signer = Ed25519Signer::import(&rand::random::<[u8; 32]>()).await?;
+        let signer =
+            <Ed25519Signer<Extractable> as ExtractableKey>::import(&rand::random::<[u8; 32]>())
+                .await?;
         // Worker operators resolve named spaces from cwd on native targets.
         // Keep the replica, as well as the profile, inside this fixture's directory.
         let repo = directory
@@ -836,7 +834,7 @@ mod tests {
             .into_owned();
         Subject::from(tonk.profile.did())
             .attenuate(Space::new(&repo))
-            .create(Credential::from(signer.clone()))
+            .create_with(signer.clone())
             .perform(&tonk.operator)
             .await?;
         let group = PublicGroup {

@@ -527,10 +527,25 @@ mod tests {
     /// next run's differently-ordered tests would inherit the last
     /// run's pointers. Rotation is persistent, so that reads as "a
     /// profile that never rotated has rotated".
+    ///
+    /// Natively each registry also gets a directory of its own: the key
+    /// of the system tonk runs as is kept per directory, and tests running
+    /// in parallel processes that create it at once would each keep a
+    /// different one.
     fn scratch() -> Registry {
+        let name = format!("device-test-{}", hex::encode(rand::random::<[u8; 8]>()));
+        #[cfg(not(target_arch = "wasm32"))]
+        let directory = Directory::At(
+            std::env::temp_dir()
+                .join(&name)
+                .to_string_lossy()
+                .into_owned(),
+        );
+        #[cfg(target_arch = "wasm32")]
+        let directory = Directory::Temp;
         Registry {
-            profile: format!("device-test-{}", hex::encode(rand::random::<[u8; 8]>())),
-            directory: Directory::Temp,
+            profile: name,
+            directory,
         }
     }
 
