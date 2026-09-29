@@ -68,14 +68,14 @@ function bridge(outcome, { reject = false, ended = false } = {}) {
   return { calls: () => calls, cancelled: () => cancelled, sent: () => sent };
 }
 
-test('Discover resolves its seed against the host and preserves retry after refusal', async () => {
+test('Discover submits a remote catalog reference and preserves retry after refusal', async () => {
   const { self, form, error, submit, run, pending } = fixture('create');
-  form.elements.seed = { value: '/discover/seeds/kanoodel.yaml' };
+  form.elements.template = { value: 'https://example.com/catalog.json#demo' };
   const failed = bridge({ status: 'failed', detail: 'Template could not be read' });
   window.tonk.context = { origin: 'https://tonk.example' };
   run();
   await pending();
-  assert.equal(failed.sent().seed, 'https://tonk.example/discover/seeds/kanoodel.yaml');
+  assert.equal(failed.sent().template, 'https://example.com/catalog.json#demo');
   assert.equal(error.textContent, 'Template could not be read');
   assert.equal(form.elements.name.value, 'Ada');
   assert.equal(submit.disabled, false);

@@ -1,84 +1,46 @@
 # Discover templates in the Hub
 
-- [x] Vendor a pinned Honky Tonks catalog with original sources, previews, and licenses.
-- [x] Add Discover collection tabs and in-page preview/copy dialogs to the Hub.
-- [x] Verify seed compatibility, creation, failure recovery, and responsive rendering.
+- [x] Load the live Honky Tonks catalog and previews in production.
+- [x] Keep templates exclusively on Discover and match the Hub wireframe.
+- [x] Split details/photo preview from copy name and description options.
+- [x] Remove all copied upstream sources, generated seeds and catalog generator.
+- [x] Verify remote installation, failure recovery and current upstream compatibility.
+- [x] Prepare PR #1030 update with runtime catalog integration.
 
 ## Implementation
 
-Upstream: `https://github.com/goblinoats/honky-tonks` at
-`6468d614151832ac1614b470003db4baf7877107`. Five templates are bundled in
-`rust/tonk-core/assets/discover`. The checkout was clean; URL seeding (#1022)
-and duplication (#1029) were already present.
+Discover fetches https://goblinoats.github.io/honky-tonks/catalog.json on first
+opening the tab. This is the upstream repository's published catalog; no submodule,
+GitHub API credentials, copied templates, or build-time catalog snapshot is used.
+The UI resolves preview URLs against the catalog, escapes metadata and provides
+loading, empty, error and retry states. Revisiting the tab reuses its loaded cards.
 
-`node scripts/build-discover.mjs` verifies the source hashes and generates seeds
-and the marked Hub cards. Required files retain manifest order. Each new space
-opens at its template's entrypoint. Starter space already supplies its home;
-other seeds receive the CLI's home recipe. Kanoodel and Welcome repeat core's
-`component` anchor, so generated seeds omit that redundant anchor while keeping
-its entity and descriptor. Original vendored files remain unchanged. Optional
-Nightsky demo media is excluded; its dialog explains the relay requirement.
+Make a copy sends a catalog URL with the selected slug as its fragment. The worker
+fetches that catalog and its required files in declared order, verifies SHA-256
+hashes, expands scoped includes, supplies the manifest entrypoint as home and
+checks the result against core before allocating a new space. Optional files are
+not installed. Files must be under the catalog directory, HTTPS (loopback HTTP
+for tests), without credentials or redirects, and within the existing size limit.
+Kanoodel/Welcome's redundant component anchors and Starter's existing home keep
+the compatibility adaptations used by the previous implementation.
 
-The Hub reuses `space-create`, creation receipts, busy/error/retry behavior, and
-existing card frames. Bundled seed URLs resolve against the host's origin because
-the Hub runs in an opaque-origin guest. Templates appear exclusively on Discover, including for empty profiles. Both tabs sit
-inside the wireframe collection panel; cards use its divided author/open footer.
+The two-step dialogs retain creation receipts and busy/error/retry behavior.
+Tests use small Tonk-authored fixtures, not copied community applications. An
+opt-in native test checks all current live templates without putting them in Git.
 
 ## Verification
 
-- All 53 `tonk-worker --test standard_library` tests pass, including parsing and
-  analyzing all five seeds against the current core library.
-- `it_creates_spaces_from_all_vendored_discover_seeds` passes: all five templates
-  go through real native `space/create` and report successful creation.
-- Nine Node tests pass: vendored hashes/generated assets, relative seed URL
-  resolution, duplicate-submit prevention, receipt and transport failure recovery.
-- Fresh Trunk build passes. Final YAML/CSS assets were copied and restamped with
-  the repository packaging script; initial tested artifact: `6d566228ae5a6812`.
-- Chrome 154 with matching ChromeDriver passes the new Discover regression:
-  cancel creates nothing, missing seed creates nothing, retry creates exactly one
-  space, and its Kanoodel home renders. Existing Hub duplication and collection
-  card creation regressions also pass against the initial artifact.
-- Running-product visual checks pass at 1200 × 900 and 390 × 844, including the
-  mobile copy dialog. Captures: `/private/tmp/tonk-discover-desktop.png`,
-  `/private/tmp/tonk-discover-mobile.png`, `/private/tmp/tonk-discover-dialog.png`.
-- Formatting, tracked diff whitespace, generated catalog consistency, Storybook
-  generation, and 177 local Storybook link checks pass. SPACE-15 and WEB-02 updated.
+Passed: native remote catalog creation and changed-checksum refusal; optional-file
+omission; existing URL-seed success and failure regressions; all five live upstream
+templates fetched, hash-checked and analyzed; ten Node catalog/form tests; live
+browser catalog/previews fetched from upstream with the two-step dialog intact.
+Fresh Trunk build passed (artifact `79cfdbd216a68205`). The deterministic
+cross-origin browser regression passed in 5.24s, covering catalog failure/retry,
+tab exclusivity, photo expansion, separate copy options, missing-source refusal,
+retry and exactly one copy whose remote-defined home renders. Formatting,
+Storybook generation and all 177 link checks pass. Full workspace, Safari, physical
+devices, hosted sync and all internal community-app interactions are out of scope.
 
-Resolved check failures: duplicate upstream anchors; a missing description in the
-initial generated home recipe; a test helper that only lowers concept claims
-instead of exported domain facts; and a browser test whose injected hidden-input
-URL survived form.reset(). Visual inspection caught inherited nowrap styles and
-a mobile menu column; template-specific styles correct both. No worker runtime
-or duplication logic changed.
-
-Not run: full workspace suite, hosted/cross-device sync, Safari or physical-device
-checks, and all internal interactions in every community template. Existing
-creation behavior still applies if storage fails after space allocation or a
-response is lost. The vendored catalog is updated by review, not fetched live.
-
-## Wireframe correction
-
-Removed the empty-profile inline Discover fallback and introductory heading.
-Copied the joined icon tabs, panel padding, and desktop/mobile card footer layout
-from the supplied wireframe. The browser regression now checks initial hidden
-templates and both directions of tab switching before exercising copy/retry.
-
-Final correction artifact: `4e4d241b51d993ed`. Focused Chrome tab/copy regression,
-nine Node checks, formatting and diff whitespace checks pass. Desktop panel and
-mobile compact cards inspected in isolated Chrome. Asset stamping initially raced
-a local dist staging update; rerunning after staging completed succeeded.
-
-## Two-step template flow
-
-The card opens details with description, author, licensing and an expandable photo.
-Make a copy closes details and opens a separate name/description form using the
-existing creation flow. Back to details closes the form and restores details.
-Photo expansion uses a native modal above details; closing it returns to details.
-The focused browser regression exercises the separate steps and image expansion.
-
-Two-step validation: Chrome regression passed against isolated artifact
-`a9d9e7a1aafbd4d4` (11.94s), covering hidden form fields on details, image
-expansion/close, back navigation, failed seed recovery and exactly one working
-copy. Details and copy dialogs were visually inspected at 1200x900 and 390x844;
-Escape from expanded photo restores focus to its opener. Nine Node tests,
-formatting, generated catalog consistency, Storybook build and 177 links pass.
+Final live browser smoke: fetched little writer directly from the public catalog,
+created a fresh local copy and opened its editor (document title/content controls
+and word count visible). No production account or shared space was used.

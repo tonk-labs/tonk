@@ -32,6 +32,12 @@ pub(super) async fn prepare(reference: &str, core: &Syntax) -> Result<Syntax, St
     let bytes = fetch(&url).await?;
     let text = String::from_utf8(bytes).map_err(|_| format!("{url} is not UTF-8 text"))?;
 
+    let syntax = parse_source(url.clone(), &text).await?;
+    check(core, &syntax).map_err(|error| format!("{url} does not fit a new space: {error}"))?;
+    Ok(syntax)
+}
+
+async fn parse_source(url: Url, text: &str) -> Result<Syntax, String> {
     let parsed = parse_at(url.clone(), &text);
     if let Some(first) = parsed.diagnostics.first() {
         return Err(format!(
@@ -54,7 +60,121 @@ pub(super) async fn prepare(reference: &str, core: &Syntax) -> Result<Syntax, St
         return Err(first.message.clone());
     }
 
-    check(core, &syntax).map_err(|error| format!("{url} does not fit a new space: {error}"))?;
+    Ok(syntax)
+}
+
+/// Fetch a published catalog and install its selected template. The fragment
+/// identifies a slug; the catalog owns file ordering, hashes and entrypoint.
+/// Nothing is allocated until every required file has been checked.
+pub(super) async fn prepare_template(reference: &str, core: &Syntax) -> Result<Syntax, String> {
+    use sha2_0_10::{Digest, Sha256};
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Catalog {
+        schema_version: u32,
+        templates: Vec<Template>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Template {
+        slug: String,
+        entrypoint: String,
+        files: Vec<File>,
+    }
+    #[derive(serde::Deserialize)]
+    struct File {
+        url: String,
+        sha256: String,
+        #[serde(default)]
+        optional: bool,
+    }
+
+    let mut url = Url::parse(reference).map_err(|e| e.to_string())?;
+    let slug = url
+        .fragment()
+        .filter(|s| !s.is_empty())
+        .ok_or("Choose a template from the catalog")?
+        .to_owned();
+    url.set_fragment(None);
+    admit(&url)?;
+    let catalog: Catalog = serde_json::from_slice(&fetch(&url).await?)
+        .map_err(|e| format!("Invalid template catalog: {e}"))?;
+    if catalog.schema_version != 1 {
+        return Err("Unsupported template catalog version".into());
+    }
+    let template = catalog
+        .templates
+        .into_iter()
+        .find(|t| t.slug == slug)
+        .ok_or("This template is no longer in the catalog")?;
+    if template.entrypoint.is_empty()
+        || !template
+            .entrypoint
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-/_:".contains(c))
+    {
+        return Err("Invalid template entrypoint".into());
+    }
+    let root = url.join("./").map_err(|e| e.to_string())?;
+    let mut result: Option<Syntax> = None;
+    let mut total = 0;
+    for file in template.files.into_iter().filter(|f| !f.optional) {
+        let source_url = url.join(&file.url).map_err(|e| e.to_string())?;
+        if !super::library::within(&root, &source_url) {
+            return Err("Template files must be under the catalog directory".into());
+        }
+        admit(&source_url)?;
+        let bytes = fetch(&source_url).await?;
+        total += bytes.len();
+        if total > MAX_BYTES {
+            return Err("Template is too large".into());
+        }
+        if hex::encode(Sha256::digest(&bytes)) != file.sha256.to_ascii_lowercase() {
+            return Err("Template files changed since the catalog was published. Try again after its update completes.".into());
+        }
+        let mut text = String::from_utf8(bytes).map_err(|_| "Template source is not UTF-8")?;
+        // These community exports repeat core's component anchor. Retain the
+        // entity and descriptor, letting core own the name during analysis.
+        if matches!(slug.as_str(), "kanoodel" | "welcome") {
+            text = text.replace("concept!: &component\n", "concept!:\n");
+        }
+        let syntax = parse_source(source_url, &text).await?;
+        match &mut result {
+            Some(combined) => combined.expressions.extend(syntax.expressions),
+            None => result = Some(syntax),
+        }
+    }
+    let mut syntax = result.ok_or("Template has no required source files")?;
+    // Starter space already defines its home. Other catalog entries rely on
+    // the installer's --home option; supply the same home recipe here.
+    if slug != "starter-space" {
+        let home = format!(
+            r#"concept!: &space-home
+  this: space:home
+  description: The space home page.
+  with:
+    subject:
+      description: The repository's subject DID.
+      the: dialog.replica/subject
+      as: entity
+      cardinality: one
+
+view!:
+  this: space:home
+  show:
+    ui: |
+      <tonk-display model={} />
+
+name!:
+  this: id:tonk/space
+  entity: space:home
+"#,
+            template.entrypoint
+        );
+        syntax
+            .expressions
+            .extend(parse_source(url.clone(), &home).await?.expressions);
+    }
+    check(core, &syntax).map_err(|e| format!("Template does not fit a new space: {e}"))?;
     Ok(syntax)
 }
 
@@ -189,4 +309,29 @@ async fn fetch(url: &Url) -> Result<Vec<u8>, String> {
         }
     }
     Ok(bytes)
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    /// Opt-in smoke check against today's public catalog. CI uses the tiny
+    /// deterministic fixtures in the command and browser regressions instead.
+    #[tokio::test]
+    #[ignore = "requires the public Honky Tonks service"]
+    async fn it_prepares_the_live_discover_catalog() {
+        let url =
+            super::Url::parse("https://goblinoats.github.io/honky-tonks/catalog.json").unwrap();
+        let catalog: serde_json::Value =
+            serde_json::from_slice(&super::fetch(&url).await.unwrap()).unwrap();
+        let core = crate::router::library::parse(include_str!(
+            "../../../tonk-core/assets/library/core.yaml"
+        ))
+        .await
+        .unwrap();
+        for template in catalog["templates"].as_array().unwrap() {
+            let slug = template["slug"].as_str().unwrap();
+            super::prepare_template(&format!("{url}#{slug}"), &core)
+                .await
+                .unwrap_or_else(|error| panic!("{slug}: {error}"));
+        }
+    }
 }

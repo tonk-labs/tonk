@@ -40,52 +40,6 @@ const PROSE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/prose.y
 const ISSUE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/issue.yaml");
 const META_LIBRARY: &str = include_str!("../../tonk-core/assets/library/meta.yaml");
 
-/// These are the exact seeds served by Discover. Check every template against
-/// the current library, including multi-file ordering and the home adaptation.
-#[dialog_common::test]
-async fn it_analyzes_all_vendored_discover_seeds() {
-    for (name, seed) in [
-        (
-            "kanoodel",
-            include_str!("../../tonk-core/assets/discover/seeds/kanoodel.yaml"),
-        ),
-        (
-            "little-writer",
-            include_str!("../../tonk-core/assets/discover/seeds/little-writer.yaml"),
-        ),
-        (
-            "nightsky",
-            include_str!("../../tonk-core/assets/discover/seeds/nightsky.yaml"),
-        ),
-        (
-            "starter-space",
-            include_str!("../../tonk-core/assets/discover/seeds/starter-space.yaml"),
-        ),
-        (
-            "welcome",
-            include_str!("../../tonk-core/assets/discover/seeds/welcome.yaml"),
-        ),
-    ] {
-        let parsed = tonk_notation::parse_at(
-            tonk_library::location("discover.yaml"),
-            &format!("{STANDARD_LIBRARY}\n{seed}"),
-        );
-        assert!(
-            parsed.diagnostics.is_empty(),
-            "{name}: {:?}",
-            parsed.diagnostics
-        );
-        let mut syntax = parsed.syntax.expect("seed syntax");
-        assert!(
-            tonk_notation::expand(&mut syntax, &tonk_library::Bundled)
-                .await
-                .is_empty()
-        );
-        tonk_analyzer::analyzer::analyze_local(&syntax)
-            .unwrap_or_else(|error| panic!("{name} must fit a new space: {error:?}"));
-    }
-}
-
 /// Lower a library document the same way the seed does, asserting it
 /// parses, analyzes with no running system, and lowers to claims. Like
 /// the seed, it is parsed where the library lives and what it

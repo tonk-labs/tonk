@@ -578,6 +578,7 @@ pub(crate) struct CreateSpaceRequest {
     description: Option<String>,
     /// The optional seed URL, read from the transient's raw facts.
     seed: Option<String>,
+    template: Option<String>,
     /// Source space whose main-branch content should be copied.
     copy_from: Option<String>,
 }
@@ -606,6 +607,14 @@ impl crate::reactor::Decode for CreateSpaceRequest {
             remote: remote_from_facts(facts),
             description: description_from_facts(facts),
             seed: seed_from_facts(facts),
+            template: facts
+                .iter()
+                .find(|fact| fact.the.as_str() == "xyz.tonk.command.create-space/template")
+                .and_then(|fact| match &fact.is {
+                    dialog_artifacts::Value::String(value) => Some(value.clone()),
+                    dialog_artifacts::Value::Entity(value) => Some(value.to_string()),
+                    _ => None,
+                }),
             copy_from: facts
                 .iter()
                 .find(|fact| fact.the.as_str() == COPY_FROM_ATTR)
@@ -683,9 +692,19 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
     // A seed is fetched and checked before anything is created, so one that
     // cannot be used fails the create instead of leaving a space without the
     // definitions it was made for.
-    let seed = match &request.seed {
+    if request.template.is_some() && (request.seed.is_some() || request.copy_from.is_some()) {
+        report_space_creation(
+            env.state(),
+            &receipt,
+            "failed",
+            "Choose either a template, seed, or duplicate source.",
+        )
+        .await;
+        return;
+    }
+    let seed = match request.template.as_ref().or(request.seed.as_ref()) {
         None => None,
-        Some(reference) => match prepare_seed(reference).await {
+        Some(reference) => match prepare_seed(reference, request.template.is_some()).await {
             Ok(syntax) => Some(syntax),
             Err(error) => {
                 log!(
@@ -863,14 +882,18 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
 
 /// Fetch and check the seed at `reference` against the standard library a
 /// new space is seeded with first. See [`super::seed::prepare`].
-async fn prepare_seed(reference: &str) -> Result<tonk_notation::Syntax, String> {
+async fn prepare_seed(reference: &str, template: bool) -> Result<tonk_notation::Syntax, String> {
     let library = fetch_standard_library(STANDARD_LIBRARY_URL)
         .await
         .map_err(|error| format!("the standard library is unavailable: {error}"))?;
     let core = super::library::parse(&library)
         .await
         .map_err(|error| format!("the standard library does not parse: {error}"))?;
-    super::seed::prepare(reference, &core).await
+    if template {
+        super::seed::prepare_template(reference, &core).await
+    } else {
+        super::seed::prepare(reference, &core).await
+    }
 }
 
 /// Per-command feedback is local overlay state, never account data. A fresh
