@@ -33,3 +33,14 @@ now samples the transition directly and waits for both closing and width to sett
 Validation: all 18 `responsive_overflow` and `drag_snap` tests passed under
 nextest with four workers and again with eight workers; formatting and diff
 checks passed. The full web-debug CI suite remains to be rerun on the new commit.
+
+## Edge-fit web debug follow-up
+
+The edge-docked viewport test still used fixed mount, glide, and drawer sleeps,
+and opened the drawer before the menu's header re-anchor had settled. Replace
+those waits with flushed layout and two consecutive samples with no host or
+wrapper transitions, including between menu and drawer opening. Keep the 15 px
+viewport bounds unchanged.
+
+Validation: all 125 `tonk-fab` Wasm tests passed under nextest with eight workers;
+formatting and diff checks passed. Full web-debug CI remains unverified locally.

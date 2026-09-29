@@ -76,11 +76,20 @@ fn active_animations(element: &Element) -> u32 {
 
 async fn wait_for_corner_settled(fab: &HtmlElement, root: &ShadowRoot, panel_open: bool) {
     let wrapper = root.query_selector(".w").unwrap().expect("wrapper");
+    let mut settled_samples = 0;
     for _ in 0..60 {
         yield_for(50).await;
+        // Flush pending style changes before asking whether transitions have
+        // finished, and require two frames so observer work can be delivered.
+        let _ = fab.get_bounding_client_rect();
         let open = root.query_selector(".w.has-panel").unwrap().is_some();
         if open == panel_open && active_animations(fab) == 0 && active_animations(&wrapper) == 0 {
-            return;
+            settled_samples += 1;
+            if settled_samples == 2 {
+                return;
+            }
+        } else {
+            settled_samples = 0;
         }
     }
     panic!("corner layout did not settle with panel_open={panel_open}");
@@ -195,8 +204,8 @@ async fn an_edge_docked_open_panel_stays_inside_the_viewport() {
             .unwrap();
         fab.set_attribute("label", "Viewport fit").unwrap();
         document.body().unwrap().append_child(&fab).unwrap();
-        yield_for(30).await;
         let root = fab.shadow_root().unwrap();
+        wait_for_corner_settled(&fab, &root, false).await;
         let circle = root.query_selector(".fab").unwrap().unwrap();
         let circle_rect = circle.get_bounding_client_rect();
         circle
@@ -211,7 +220,7 @@ async fn an_edge_docked_open_panel_stays_inside_the_viewport() {
             .unwrap();
         win.dispatch_event(&pointer_event("pointerup", x, y, 0))
             .unwrap();
-        yield_for(500).await;
+        wait_for_corner_settled(&fab, &root, false).await;
         assert_eq!(fab.has_attribute("up"), bottom);
         root.query_selector(".space")
             .unwrap()
@@ -219,13 +228,16 @@ async fn an_edge_docked_open_panel_stays_inside_the_viewport() {
             .dyn_into::<HtmlElement>()
             .unwrap()
             .click();
+        // Opening the menu can re-anchor the header. Let that position
+        // settle before the drawer measures its available viewport space.
+        wait_for_corner_settled(&fab, &root, false).await;
         root.query_selector(".agent")
             .unwrap()
             .unwrap()
             .dyn_into::<HtmlElement>()
             .unwrap()
             .click();
-        yield_for(450).await;
+        wait_for_corner_settled(&fab, &root, true).await;
         let outer = fab.get_bounding_client_rect();
         let header = root
             .query_selector(".header")
