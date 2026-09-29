@@ -1113,6 +1113,17 @@ command!: &tonk/pause-sync
     time: pause-sync/time
     space: pause-sync/space
 
+attribute!: &home/time
+  description: The moment it was asked; makes each dispatch a distinct transient.
+  the: xyz.tonk.command.home/time
+  as: float
+
+command!: &tonk/home
+  this: tonk:home
+  description: Take the page back to the hub.
+  with:
+    time: home/time
+
 # The FAB fallback seat — the nearest corner restored on the next page load,
 # stored on `state:fab`. The live page keeps the exact point along the nearest
 # edge; element.rs persists this compatible corner after every pointer-up drop.
@@ -5000,6 +5011,29 @@ concept!: &palette/argument
       cardinality: one
       as: entity
 
+# Suggestion memory, as Ubiquity kept it: which command was run for which
+# verb words. One fact per run rather than a counter, so runs on two devices
+# both count; the palette counts them. Kept on the profile, because it is
+# the person's habit, not the space's.
+concept!: &palette/choice
+  description: A command run from the palette, and the words typed for its verb.
+  with:
+    command:
+      description: The command that was run.
+      the: xyz.tonk.palette.choice/command
+      cardinality: one
+      as: entity
+    input:
+      description: The words typed for the verb; empty when it was suggested from a noun.
+      the: xyz.tonk.palette.choice/input
+      cardinality: one
+      as: text
+    time:
+      description: When it was run, so two runs are two choices.
+      the: xyz.tonk.palette.choice/time
+      cardinality: one
+      as: float
+
 palette/role!: &palette/object
   name: "object"
 
@@ -5059,6 +5093,19 @@ palette/argument!:
   field: rename-space/name
   role: palette/goal
 
+palette/verb!:
+  this: tonk/home
+  name: "home"
+
+palette/verb!:
+  this: tonk/home
+  name: "go home"
+
+palette/argument!:
+  command: tonk/home
+  field: home/time
+  role: palette/now
+
 # The command palette: Cmd/Ctrl+K (or Cmd/Ctrl+Shift+P) opens it over the
 # space. What it can say is data on the space branch — `palette/verb`,
 # `palette/argument`, `palette/role`, `palette/noun` (declared in the core
@@ -5068,8 +5115,8 @@ palette/argument!:
 # guest's wasm); running a proposal transacts the command it names, as a
 # button bound to that command would.
 #
-# Keys pressed inside the space's own frame do not reach this document, so
-# the shortcut works while the chrome has focus.
+# Keys pressed inside the space's own frame are relayed to this document by
+# the portal bridge, so the shortcut works wherever focus is.
 #
 # Not `tonk-palette`: the element runtime leaves `tonk-` and `wa-` tags to
 # their built-in definitions and never announces them, so an author element
@@ -5180,6 +5227,27 @@ element!: &command-palette
         self.__generation = generation;
         self.__readers = [];
         self.__sources = branches.map((branch) => self.source(branch, generation));
+        self.__memory = [];
+        const profile = self.getAttribute('profile');
+        if (profile) {
+          const v = (name) => ({ '?': { name } });
+          const reader = window.tonk.subscribe({ predicate: { with: {
+              command: { the: 'xyz.tonk.palette.choice/command', as: 'Entity', cardinality: 'one' },
+              input: { the: 'xyz.tonk.palette.choice/input', as: 'Text', cardinality: 'one' },
+              time: { the: 'xyz.tonk.palette.choice/time', as: 'Float', cardinality: 'one' },
+            } },
+            terms: { this: v('this'), command: v('command'), input: v('input'), time: v('time') } },
+            { with: profile }).getReader();
+          self.__readers.push(reader);
+          (async () => {
+            for (;;) {
+              const { value, done } = await reader.read();
+              if (done || self.__generation !== generation) return;
+              self.__memory = value || [];
+              self.update();
+            }
+          })().catch((error) => console.warn('<command-palette> memory ended', error));
+        }
       }
     source: |
       (self, branch, generation) => {
@@ -5279,7 +5347,7 @@ element!: &command-palette
               max: 8,
               context: { this: { text: '', entity: self.getAttribute('space') }, selection: null },
               sources: self.__sources,
-              memory: [],
+              memory: self.__memory || [],
               now: Date.now(),
             });
           } catch (error) {
@@ -5316,6 +5384,18 @@ element!: &command-palette
           list.append(row);
         });
       }
+    remember: |
+      (self, proposal) => {
+        const profile = self.getAttribute('profile');
+        if (!profile) return;
+        const field = (name, as) => ({ the: `xyz.tonk.palette.choice/${name}`, as });
+        window.tonk.transact({ claims: [{ op: 'assert', application: {
+          predicate: { kind: 'durable', concept: { with: {
+            command: field('command', 'Entity'), input: field('input', 'Text'), time: field('time', 'Float'),
+          } } },
+          parameters: { command: proposal.command, input: proposal.parse.input || '', time: Date.now() },
+        } }] }, { with: profile }).catch((error) => console.warn('<command-palette> not remembered', error));
+      }
     run: |
       async (self) => {
         const proposal = (self.__proposals || [])[self.__index];
@@ -5332,6 +5412,7 @@ element!: &command-palette
         try {
           await window.tonk.transact(proposal.claim, { with: proposal.branch });
           self.close();
+          self.remember(proposal);
         } catch (error) {
           console.error('<command-palette> run failed', error);
           self.__note = 'That command could not be run.';

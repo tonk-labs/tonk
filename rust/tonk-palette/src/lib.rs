@@ -94,7 +94,9 @@ pub struct Request {
     /// The branches read.
     #[serde(default)]
     pub sources: Vec<Source>,
-    /// Suggestion memory: rows of `{input, verb, count}` in `fields`.
+    /// Suggestion memory: `palette/choice` rows, one per command run
+    /// from the palette, with `command` (the command entity) and `input`
+    /// (the words typed for its verb, "" when none were).
     #[serde(default)]
     pub memory: Vec<Row>,
     /// The moment of the keystroke, in milliseconds, for arguments in the
@@ -162,7 +164,7 @@ struct Fields {
 /// best proposals, best first.
 pub fn propose(request: &Request) -> Vec<Proposal> {
     let (registry, fields) = registry(&request.sources);
-    let memory = memory(&request.memory);
+    let memory = memory(&request.memory, &registry);
     let context = labelled(&request.context, &registry);
     parse(
         &Grammar::english(),
@@ -416,16 +418,21 @@ fn text(html: &str) -> String {
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn memory(rows: &[Row]) -> Memory {
+/// Count the choices: each one reinforces its command's verbs, on every
+/// branch that declares the command, for the words typed and overall.
+/// A choice is a fact, not a counter, so two devices choosing at once
+/// both count.
+fn memory(rows: &[Row], registry: &Registry) -> Memory {
     let mut memory = Memory::default();
     for row in rows {
-        if let (Some(input), Some(verb)) = (row.text("input"), row.text("verb")) {
-            let count = row
-                .fields
-                .get("count")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or_default();
-            memory.set(input, verb, u32::try_from(count).unwrap_or(u32::MAX));
+        let Some(command) = row.text("command") else {
+            continue;
+        };
+        let input = row.text("input");
+        for verb in &registry.verbs {
+            if verb.id.split_once(JOIN).map(|(_, id)| id) == Some(command) {
+                memory.remember(input, &verb.id);
+            }
         }
     }
     memory

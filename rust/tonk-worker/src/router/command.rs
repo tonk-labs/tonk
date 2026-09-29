@@ -235,6 +235,7 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         .command::<tonk_schema::command::AddProfile>()
         .command::<tonk_schema::command::SwitchProfile>()
         .command::<tonk_schema::command::SignOut>()
+        .command::<tonk_schema::command::Home>()
         .command::<tonk_schema::command::ReplicateSpace>()
         .command::<tonk_schema::command::ForgetInvite>()
         .command::<tonk_schema::command::CheckUpdate>()

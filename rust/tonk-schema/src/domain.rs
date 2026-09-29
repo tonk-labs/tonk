@@ -1233,6 +1233,16 @@ pub mod command {
             pub struct Time(pub f64);
         }
 
+        /// `tonk/home` — take the page that asked back to the hub.
+        pub mod home {
+            use dialog_query::Attribute;
+
+            /// The moment it was asked, so going home twice re-fires.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("xyz.tonk.command.home")]
+            pub struct Time(pub f64);
+        }
+
         /// `tonk/add-profile` — rotate onto a fresh profile and open the
         /// account ceremony on it.
         pub mod add_profile {

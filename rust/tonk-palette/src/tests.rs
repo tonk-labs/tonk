@@ -212,3 +212,32 @@ fn it_fills_the_now_role_from_the_callers_clock_without_asking_for_it() {
         json!({ "space": "did:key:space", "time": 1_000.5 })
     );
 }
+
+#[test]
+fn it_scores_a_command_higher_for_the_words_it_was_chosen_for() {
+    let score = |request: &Request, command: &str| {
+        propose(request)
+            .into_iter()
+            .find(|proposal| proposal.command == command)
+            .map(|proposal| proposal.parse.score)
+            .expect("proposed")
+    };
+    let choices = |input: &str| {
+        (0..3)
+            .map(|n| {
+                row(
+                    &format!("choice:{n}"),
+                    json!({ "command": "concept:expel", "input": input }),
+                )
+            })
+            .collect()
+    };
+    let mut request = request("re");
+    let before = score(&request, "concept:expel");
+    request.memory = choices("re");
+    let after = score(&request, "concept:expel");
+    assert!(after > before, "{before} -> {after}");
+    // Only for those words: chosen after "rem", it does not move for "re".
+    request.memory = choices("rem");
+    assert_eq!(score(&request, "concept:expel"), before);
+}

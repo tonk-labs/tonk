@@ -496,6 +496,24 @@ impl Command for SignOut {
     type Output = ();
 }
 
+/// Take the page that asked back to the hub.
+///
+/// What the FAB's home button does with a link, as a command, so it can be
+/// said: the handler posts a navigation to the originating page, the way a
+/// join lands its tab on the new space.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct Home {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The moment it was asked, so going home twice re-fires.
+    pub time: crate::domain::command::current::home::Time,
+}
+
+impl Command for Home {
+    type Input = Self;
+    type Output = ();
+}
+
 /// Rename a space's repository from the FAB.
 ///
 /// The space-side `tonk/rename-repository` rule (`core.yaml`) cannot

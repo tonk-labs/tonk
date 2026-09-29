@@ -142,9 +142,13 @@ palette/argument!:
   role: palette/now
 ```
 
-The FABB's other actions are not commands: home navigates, members, agent
-and account open panels, and share mints an invite whose result the FABB
-itself copies. Those would need commands of their own first.
+Home is a command now too: `tonk/home {time}` ("home", "go home"), whose
+handler posts a navigation to `/` back to the page that asked — the way a
+join lands its tab on the new space. The FABB's other actions are not
+commands: members, agent and account open panels, and share mints an invite
+whose result the FABB itself copies. Opening a panel is page state, not a
+fact; making those sayable wants a different answer (a page-side verb) than
+a worker command.
 
 ## The pieces
 
@@ -153,6 +157,16 @@ itself copies. Those would need commands of their own first.
 | `dialog-palette` | dialog-db, `rust/dialog-palette` | The Parser 2 port: grammar, registry, 11-step pipeline, scoring, memory. Pure, no IO, native and wasm. |
 | `tonk-palette` | tonk, `rust/tonk-palette` | Joins subscription rows into a registry (labels rendered with `tonk-template`), parses, builds the command claim. `web::install` puts `window.tonk.palette.parse` on the guest. |
 | `<command-palette>` | `profile.yaml`, an `element!` (not `tonk-`: the element runtime never announces `tonk-` or `wa-` tags) | Mounted in the space chrome beside `<tonk-fab>`. On Cmd/Ctrl+K or Cmd/Ctrl+Shift+P it subscribes to the palette rows on `main@<space>` and the profile branch, resolves each noun concept the way `<tonk-display>` resolves a model (descriptor from `db.meta/source`, rows, `label` facet), calls `parse` per keystroke, and transacts the chosen claim. |
+
+## Memory
+
+Ubiquity's suggestion memory, as facts: every run asserts a
+`palette/choice {command, input, time}` on the profile — one fact per run,
+not a counter, so choices made on two devices both count after they sync.
+The element subscribes to them and passes them to `parse`; `tonk-palette`
+counts them per command (under the verb words typed, and overall), and the
+parser raises a verb's score to the power `1/(1 + count)`, as Ubiquity did.
+Nothing prunes them yet.
 
 ## Verified
 
@@ -165,18 +179,40 @@ itself copies. Those would need commands of their own first.
   to Palette test", and Enter renames the space — the FABB shows "Palette
   test". That rename is the profile's Rust-handled command, the one the
   FABB dispatches.
+- In the browser: Ctrl+K inside the space's own frame opens the palette
+  (the portal bridge relays the chord).
+- In the browser: "go home" navigates the tab from `/space/…` to `/`; back
+  in the space, the profile holds `palette/choice {command: tonk:home,
+  input: "go home"}`.
+- In the browser: "pause sync" writes `xyz.tonk.sync/enabled = false` on
+  the space, "resume sync" writes `true`.
+
+## Known defects
+
+- **"pause sync" and "resume sync" are one toggle.** `tonk/pause-sync`
+  flips the preference, so "resume sync" on a running space pauses it. The
+  words promise a direction the command does not have. Either the command
+  takes the desired state (an `enabled` field, with "pause" and "resume" as
+  two verbs filling it differently — which the argument model cannot yet
+  express, since a verb has no fixed field values), or the palette says
+  only "toggle sync".
+- **No palette on the hub.** The element is mounted in the space chrome, so
+  after "go home" there is nothing to open until a space is.
 
 ## What the proof of concept does not do yet
 
-- **Keys inside the space frame.** The element listens on the chrome
-  document; the space content is a nested sealed frame whose keys never reach
-  it. A relay over the portal bridge is the fix.
 - **Existing spaces.** The palette rows ship in `core.yaml`, which seeds new
   spaces. Existing ones get them through the seed-upgrade path.
-- **Notebook and table commands.** Their libraries lower standalone, so they
-  cannot reference `palette/*` from `core.yaml`. Either the schema becomes
-  built-in (as `event` did, for the same reason), or each library declares it.
-- **Memory.** Verb choices are not yet recorded as facts.
+- **Notebook commands.** None is worth saying. `notebook/retitle` sets the
+  title *from* the leading heading, so a palette retitle would leave title
+  and heading disagreeing; `block/*` are the element's own plumbing
+  (positions, chain pointers). A sayable notebook command ("add a heading",
+  "rename notebook" that edits the heading) has to be designed first. If
+  one is, the library lowers standalone and would redeclare `palette/*` the
+  way the profile does — or the schema becomes built-in, as `event` did.
+- **The active view.** `this` is the space. The entity the page shows (the
+  notebook open in it) is not passed yet, so "rename this" cannot mean the
+  notebook.
 - **Preview.** A `preview` facet on the command, rendered with
   `tonk-render` against the parse's field values, is designed but not built.
 - **Commands with fields no argument covers.** The claim carries only the
