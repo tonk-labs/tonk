@@ -2863,7 +2863,7 @@ pub(crate) async fn remove_space_inner(
         let _admission_mutation = tonk.admission.mutation(subject.repo_key());
         remove_replica_from_profile(&tonk, subject).await?;
         // Drain the poll the retraction scheduled so the Hub's meta
-        // subscription reflects the removal (mirrors set_replica_status).
+        // subscription reflects the removal (mirrors the seed completion path).
         tonk.reactor.run_scheduled_polls(&tonk.operator).await;
         tonk.reactor.evict(subject.repo_key());
         // Same repo, same lock: a dirty stamp left in the sync queue would
@@ -3539,7 +3539,7 @@ fn spawn_seed(
 /// Whether `subject` still has a recorded [`Replica`] on the profile's
 /// meta branch. The replica entity is content-derived from `(profile,
 /// subject)` — the same hash [`Replica::new`] uses (see
-/// [`set_replica_status`]) — so its presence is checked directly rather
+/// [`write_replica_status`]) — so its presence is checked directly rather
 /// than searched for.
 ///
 /// Guards [`seed_and_initialize`] against a `RemoveSpace` landing
@@ -4227,6 +4227,40 @@ async fn commit_replica_stamp(
     }
 }
 
+// Preserve authored snapshots created by older Welcome-space builds.
+async fn has_welcome_snapshot(tonk: &TonkState, key: &str) -> Result<bool, RepositoryError> {
+    use dialog_artifacts::ArtifactSelector;
+    use futures_util::StreamExt as _;
+    fn internal(error: impl std::fmt::Display) -> RepositoryError {
+        RepositoryError::Internal(format!("welcome marker: {error}"))
+    }
+    let repository = tonk
+        .profile
+        .repository(key)
+        .load()
+        .perform(&tonk.operator)
+        .await
+        .map_err(internal)?;
+    let branch = repository
+        .branch("main")
+        .open()
+        .perform(&tonk.operator)
+        .await
+        .map_err(internal)?;
+    let stream = branch
+        .claims()
+        .select(
+            ArtifactSelector::new()
+                .the("xyz.tonk.onboarding/imported".parse().map_err(internal)?)
+                .of("id:tonk/onboarding-v2/welcome".parse().map_err(internal)?),
+        )
+        .perform(&tonk.operator)
+        .await
+        .map_err(internal)?;
+    tokio::pin!(stream);
+    Ok(stream.next().await.transpose().map_err(internal)?.is_some())
+}
+
 /// Bring a space's seed up to the one this worker ships, if it is behind.
 ///
 /// One atomic batch: the previous seed's assertions are retracted and the
@@ -4267,7 +4301,7 @@ pub(crate) async fn upgrade_seed(tonk: &TonkState, key: &str) -> Result<bool, Re
     // Replaying that library over the imported app replaces its home alias.
     // Snapshot spaces have no single replaceable library; preserve their
     // authored state, including custom home aliases and agent-page changes.
-    if super::onboarding_space::has_welcome_snapshot(tonk, key)
+    if has_welcome_snapshot(tonk, key)
         .await
         .map_err(|e| RepositoryError::Internal(format!("read welcome marker: {e}")))?
     {
@@ -4616,48 +4650,10 @@ fn embedded_standard_library(url: &str) -> Result<String, TonkWorkerError> {
         PROFILE_LIBRARY_URL => {
             Ok(include_str!("../../../tonk-core/assets/library/profile.yaml").to_owned())
         }
-        "/library/onboarding-agent.yaml" => {
-            Ok(include_str!("../../../tonk-core/assets/library/onboarding-agent.yaml").to_owned())
-        }
-        "/library/onboarding-demos.yaml" => {
-            Ok(include_str!("../../../tonk-core/assets/library/onboarding-demos.yaml").to_owned())
-        }
-        "/library/onboarding.yaml" => {
-            Ok(include_str!("../../../tonk-core/assets/library/onboarding.yaml").to_owned())
-        }
         other => Err(TonkWorkerError::Internal(format!(
             "no embedded library for '{other}'"
         ))),
     }
-}
-
-/// Seed a notation document into `branch` by running it through the
-/// evaluate pipeline — the same `parse → analyze → commit` path as
-/// the `/evaluate` route, which commits concept claims and `rule!:`
-/// installs alike. A bad library is a deployment fault, surfaced as
-/// an internal error.
-pub(super) async fn seed_standard_library(
-    tonk: &TonkState,
-    repo: &str,
-    branch: &str,
-    library: &str,
-) -> Result<(), TonkWorkerError> {
-    // Onboarding composes a scaffold, a named repository, an agent supplement,
-    // and an imported application snapshot. These bytes are not core.yaml and
-    // must not advertise it as an upgrade source. Ordinary space creation uses
-    // seed_and_initialize, which records the actual seed separately.
-    super::evaluate::seed_on_branch(
-        tonk,
-        tonk.reactor.repository(repo).branch(branch),
-        library.to_owned(),
-    )
-    .await
-    .map(|_| ())
-    .map_err(|e| {
-        TonkWorkerError::Internal(format!(
-            "failed to seed standard library on branch '{branch}': {e}"
-        ))
-    })
 }
 
 /// Build the notation document asserting the repository's own
@@ -5535,27 +5531,6 @@ async fn record_replica_visibility(
         },
     );
 
-    Ok(())
-}
-
-/// Flip a replica's seeding [`Status`] by stamping a [`SpaceStatus`]
-/// on its entity. `status` is cardinality-one, so the new value
-/// supersedes the prior one. Goes through the reactor (like
-/// [`record_replica_in_profile`]) so the Hub's subscription re-polls
-/// and the card reflects the change.
-///
-/// The replica entity is re-derived from `(profile, subject)` — the
-/// same hash `Replica::new` uses — so no read is needed to find it.
-///
-/// Called from the background seed path, which only runs in the worker.
-pub(super) async fn set_replica_status(
-    tonk: &TonkState,
-    subject: &Did,
-    status: tonk_schema::domain::replica::Status,
-    description: Option<&str>,
-) -> Result<(), RepositoryError> {
-    write_replica_status(tonk, subject, status, description).await?;
-    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
     Ok(())
 }
 

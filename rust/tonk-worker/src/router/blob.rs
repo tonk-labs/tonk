@@ -20,7 +20,7 @@ use tonk_common::log;
 use super::AppState;
 use super::claim::RawClaim;
 use super::evaluate::EvaluatePath;
-use crate::TonkWorkerError;
+use crate::{TonkWorkerError, worker::TonkState};
 
 /// Path parameters for the blob route.
 #[derive(Debug, Deserialize)]
@@ -54,7 +54,7 @@ pub async fn serve(
         )));
     }
 
-    super::onboarding_space::hydrate_media(&state, &params.repo, &params.branch, &entity).await?;
+    hydrate_media(&state, &params.repo, &params.branch, &entity).await?;
 
     let tonk = state.read().await;
     let repo = tonk
@@ -621,5 +621,138 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+}
+
+// Compatibility for images deferred by older Welcome-space builds.
+fn internal(error: impl std::fmt::Display) -> TonkWorkerError {
+    TonkWorkerError::Internal(format!("welcome media: {error}"))
+}
+#[derive(Deserialize)]
+struct Media {
+    entity: dialog_artifacts::Entity,
+    url: String,
+}
+
+fn bundled_media() -> Result<Vec<Media>, TonkWorkerError> {
+    serde_json::from_str(include_str!(
+        "../../../tonk-core/assets/library/onboarding-media.json"
+    ))
+    .map_err(internal)
+}
+
+async fn import_blob(
+    tonk: &TonkState,
+    branch: &dialog_repository::Branch,
+    expected: &dialog_artifacts::Entity,
+    bytes: Vec<u8>,
+) -> Result<(), TonkWorkerError> {
+    // Verify before writing anything, including the branch's blob index.
+    if &dialog_artifacts::Entity::from_blob(blake3::hash(&bytes).as_bytes()).map_err(internal)?
+        != expected
+    {
+        return Err(internal("bundled blob hash mismatch"));
+    }
+    let chunks = futures_util::stream::iter(vec![Ok::<_, dialog_effects::blob::BlobError>(bytes)]);
+    let entity = Blob::import(chunks)
+        .write(branch.blobs())
+        .perform(&tonk.operator)
+        .await
+        .map_err(internal)?;
+    if &entity != expected {
+        return Err(internal("bundled blob hash mismatch"));
+    }
+    Ok(())
+}
+
+async fn hydrate_media(
+    state: &AppState,
+    key: &str,
+    branch_name: &str,
+    entity: &dialog_artifacts::Entity,
+) -> Result<(), TonkWorkerError> {
+    if !bundled_media()?.iter().any(|media| &media.entity == entity) {
+        return Ok(());
+    }
+    // Blob imports advance the branch index; serialize with other writer routes.
+    let tonk = state.write().await;
+    let repository = tonk
+        .profile
+        .repository(key)
+        .load()
+        .perform(&tonk.operator)
+        .await
+        .map_err(internal)?;
+    let branch = repository
+        .branch(branch_name)
+        .open()
+        .perform(&tonk.operator)
+        .await
+        .map_err(internal)?;
+    ensure_media(&tonk, &branch, entity).await?;
+    Ok(())
+}
+
+/// Only this immutable, compiled-in allowlist can fill a missing starter image.
+/// The caller has already resolved its authorized repository and branch. Bytes
+/// become ordinary branch blobs, so export/sync and later offline reads work.
+async fn ensure_media(
+    tonk: &TonkState,
+    branch: &dialog_repository::Branch,
+    entity: &dialog_artifacts::Entity,
+) -> Result<bool, TonkWorkerError> {
+    let Some(media) = bundled_media()?
+        .into_iter()
+        .find(|media| &media.entity == entity)
+    else {
+        return Ok(false);
+    };
+    match Blob::from(entity.clone())
+        .read(branch.blobs())
+        .perform(&tonk.operator)
+        .await
+    {
+        Ok(_) => return Ok(true),
+        Err(dialog_repository::CommitError::Blob(dialog_effects::blob::BlobError::NotFound(_))) => {
+        }
+        Err(error) => return Err(internal(error)),
+    }
+    let bytes = fetch_media(&media.url).await?;
+    import_blob(tonk, branch, entity, bytes).await?;
+    Ok(true)
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn fetch_media(url: &str) -> Result<Vec<u8>, TonkWorkerError> {
+    use wasm_bindgen::JsCast as _;
+    use wasm_bindgen_futures::JsFuture;
+    #[wasm_bindgen::prelude::wasm_bindgen]
+    extern "C" {
+        #[wasm_bindgen(catch, js_name = tonkBundledAsset)]
+        async fn bundled_asset(path: &str) -> Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue>;
+    }
+    let response: web_sys::Response = bundled_asset(url)
+        .await
+        .and_then(|v| v.dyn_into())
+        .map_err(|e| internal(format!("fetch {url}: {e:?}")))?;
+    if !response.ok() {
+        return Err(internal(format!("fetch {url}: HTTP {}", response.status())));
+    }
+    let bytes = JsFuture::from(
+        response
+            .array_buffer()
+            .map_err(|e| internal(format!("media body: {e:?}")))?,
+    )
+    .await
+    .map_err(|e| internal(format!("media body: {e:?}")))?;
+    Ok(js_sys::Uint8Array::new(&bytes).to_vec())
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+async fn fetch_media(url: &str) -> Result<Vec<u8>, TonkWorkerError> {
+    match url {
+        "/library/welcome-CmZq5URy2ucFKNyZCFUtHiNvEaUNK4Z8UstvzwbjREFG.webp" => Ok(include_bytes!("../../../tonk-core/assets/library/welcome-CmZq5URy2ucFKNyZCFUtHiNvEaUNK4Z8UstvzwbjREFG.webp").to_vec()),
+        "/library/welcome-9hKHdfALCDKRL5z3Xkn2JUM72DWSzsSBwAvdbyaPF2sU.webp" => Ok(include_bytes!("../../../tonk-core/assets/library/welcome-9hKHdfALCDKRL5z3Xkn2JUM72DWSzsSBwAvdbyaPF2sU.webp").to_vec()),
+        _ => Err(internal("unknown bundled media")),
     }
 }

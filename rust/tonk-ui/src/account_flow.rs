@@ -4,7 +4,7 @@
     not(target_arch = "wasm32"),
     any(feature = "integration-tests", feature = "web-integration-tests")
 ))]
-mod tests {
+pub(crate) mod tests {
     use std::path::PathBuf;
     use std::process::{ExitStatus, Stdio};
     use std::time::Duration;
@@ -51,9 +51,7 @@ mod tests {
         env: TestEnvironment,
     ) -> Result<()> {
         let driver = env.driver().await?;
-        // The first visit opens the welcome space; a second lands on the Hub.
-        enter_space_view(&driver).await?;
-        wait_for_displayed(&driver, ".wp-outer").await?;
+        create_space(&driver, "Navigation test").await?;
         goto(&driver, env.tonk_web.as_str()).await?;
         enter_hub(&driver).await?;
         wait_for_displayed(&driver, ".space-card > a.srow").await?;
@@ -118,7 +116,7 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
             enter_space_view(&driver).await?;
-            wait_for_displayed(&driver, ".wp-outer").await?;
+            wait_for_displayed(&driver, ".blank-canvas").await?;
             driver.enter_default_frame().await?;
             driver.execute("history.back()", Vec::new()).await?;
             enter_hub(&driver).await?;
@@ -147,241 +145,22 @@ mod tests {
         Ok(())
     }
 
-    // Storybook UI-01: first-root onboarding, playground prompt, and returning Hub.
     #[dialog_common::test]
-    async fn it_opens_the_welcome_space_once_then_the_hub(env: TestEnvironment) -> Result<()> {
+    async fn it_opens_the_hub_without_creating_a_welcome_space(env: TestEnvironment) -> Result<()> {
         let driver = env.blank_driver().await?;
-        driver.set_window_rect(0, 0, 1200, 900).await?;
-        // Hold optional preparation at the host fetch boundary: Welcome must
-        // remain usable, and an early page selection must wait for its content.
-        ChromeDevTools::new(driver.handle.clone())
-            .execute_cdp_with_params(
-                "Page.addScriptToEvaluateOnNewDocument",
-                serde_json::json!({"source": r#"
-              if (window === top) {
-                const nativeFetch = window.fetch.bind(window);
-                window.__welcomeBlobRequests = [];
-                const gate = new Promise(resolve => window.__releaseOnboarding = resolve);
-                window.fetch = (input, init) => {
-                  const url = typeof input === 'string' ? input : input.url;
-                  if (/\/branch\/main\/onboarding$/.test(url)) {
-                    window.__onboardingRequested = true;
-                    return gate.then(() => nativeFetch(input, init));
-                  }
-                  if (/\/blob\/blob:/.test(url)) window.__welcomeBlobRequests.push(url);
-                  return nativeFetch(input, init);
-                };
-              }
-            "#}),
-            )
-            .await?;
-        goto(&driver, env.tonk_web.as_str()).await?;
-        enter_space_view(&driver).await?;
-        let welcome = wait_for_displayed(&driver, ".wp-outer").await?;
-        anyhow::ensure!(
-            welcome.text().await?.contains("makes your small software"),
-            "the seeded welcome page must render"
-        );
-        driver.enter_default_frame().await?;
-        anyhow::ensure!(driver.current_url().await?.path().starts_with("/space/"));
-
-        anyhow::ensure!(
-            driver
-                .execute("return window.__welcomeBlobRequests.length", vec![])
-                .await?
-                .json()
-                == &serde_json::json!(0),
-            "below-fold images must not request branch bytes before scrolling"
-        );
-        enter_space_view(&driver).await?;
-        let images = driver.execute(r#"return (async () => {
-          const images = [...document.querySelectorAll('welcome-image img')];
-          for (const img of images) {
-            img.scrollIntoView();
-            for (let n=0; !img.hasAttribute('src') && n<1000; n++) await new Promise(r=>setTimeout(r,10));
-            await img.decode();
-          }
-          return images.map(img => [img.naturalWidth, img.naturalHeight]);
-        })()"#, vec![]).await?;
-        anyhow::ensure!(images.json() == &serde_json::json!([[1024, 604], [1024, 643]]));
-        driver.enter_default_frame().await?;
-
-        let current_path = driver.current_url().await?.path().to_owned();
-        let repo = current_path
-            .strip_prefix("/space/")
-            .and_then(|path| path.split('/').next())
-            .expect("space route")
-            .to_owned();
-        let space_path = format!("/space/{repo}");
-        enter_space_view(&driver).await?;
-        driver
-            .find(By::XPath("//*[text()='Agent playground']"))
-            .await?
-            .click()
-            .await?;
-        anyhow::ensure!(
-            driver
-                .find_all(By::Css(".playground-agent"))
-                .await?
-                .is_empty(),
-            "the optional page must wait for its seed"
-        );
-        driver.enter_default_frame().await?;
-        driver
-            .execute("window.__releaseOnboarding(); return true", vec![])
-            .await?;
-        enter_space_view(&driver).await?;
-        wait_for_displayed(&driver, ".playground-agent [data-agent-handoff-status]")
-            .await
-            .context("the focused playground page did not render before reload")?;
-        driver.enter_default_frame().await?;
-        let playground = "did:key:z6MkF65VFoAVjUMUBsQ7uMzEe5cfxPeJ2M6WZi2ENNqXi4fo";
-        let focused_path = format!("{space_path}/open/{playground}");
-        await_url_path(&driver, &focused_path)
-            .await
-            .context("focusing a bundled page must route the top document")?;
-        driver.refresh().await?;
-        driver
-            .execute("window.__releaseOnboarding(); return true", vec![])
-            .await?;
-        enter_space_view(&driver).await?;
-        wait_for_displayed(&driver, ".playground-agent [data-agent-handoff-status]")
-            .await
-            .context("the focused playground page did not render after reload")?;
-        await_url_path(&driver, &focused_path)
-            .await
-            .context("reloading a bundled page route must preserve its focus")?;
-        // Supply a prompt fixture to test the page's actual copy value.
-        // Account authorization and CLI confirmation have their own full-flow tests.
-        let mut playground_invite = env.tonk_web.join("playground-invite")?;
-        playground_invite.set_fragment(Some("tonk-agent-v1=fixture"));
-        let body = format!(
-            "onboarding/agent-invite!:\n  this: {repo}\n  name: \"Welcome to Tonk\"\n  link: \"{playground_invite}\"\n  account: {repo}\n"
-        );
-        let reply = post_yaml(
-            &driver,
-            &format!("/api/repository/{repo}/branch/main/evaluate?transact=true"),
-            &body,
-        )
-        .await?;
-        successful_body("seed playground prompt", &reply);
-        enter_space_view(&driver).await?;
-        wait_for_displayed(&driver, ".playground-agent .agent-prompt__copy").await?;
-        watch_clipboard(&driver).await?;
-        click(&driver, ".playground-agent .agent-prompt__copy").await?;
-        let prompt = copied_text(&driver).await?;
-        assert_prompt_command(&prompt, &env.tonk_web, playground_invite.as_str())?;
-        anyhow::ensure!(!prompt.contains("--switch-account"));
-        anyhow::ensure!(prompt.contains("Scope all work to the existing Agent playground page"));
-        anyhow::ensure!(!prompt.contains("tonk space home"));
-        anyhow::ensure!(
-            driver
-                .find_all(By::Css(".pg-onboard__pre"))
-                .await?
-                .is_empty()
-        );
-        driver.enter_default_frame().await?;
-
-        goto(&driver, env.tonk_web.as_str()).await?;
-        enter_hub(&driver).await?;
-        wait_for_displayed(&driver, ".hub-page").await?;
-        driver.enter_default_frame().await?;
-        anyhow::ensure!(driver.current_url().await?.path() == "/");
-        // Full preparation means the authored pages and image bytes survive a
-        // real offline reload, in addition to the shell's cache adoption.
-        driver
-            .execute(
-                r#"return (async () => {
-          for (let n=0; n<3000; n++) {
-            for (const name of await caches.keys()) {
-              if (!name.startsWith('TONK_GENERATION_')) continue;
-              const cache = await caches.open(name);
-              for (const request of await cache.keys()) {
-                if ((await (await cache.match(request)).json()).state === 'adopted') return true;
-              }
-            }
-            await new Promise(r=>setTimeout(r,10));
-          }
-          throw Error('offline generation was not adopted');
-        })()"#,
-                Vec::new(),
-            )
-            .await?;
-        let devtools = ChromeDevTools::new(driver.handle.clone());
-        devtools.execute_cdp("Network.enable").await?;
-        devtools
-            .execute_cdp_with_params(
-                "Network.emulateNetworkConditions",
-                serde_json::json!({
-                    "offline": true, "latency": 0, "downloadThroughput": 0, "uploadThroughput": 0,
-                }),
-            )
-            .await?;
-        goto(
-            &driver,
-            &format!(
-                "{}{}",
-                env.tonk_web.as_str().trim_end_matches('/'),
-                space_path
-            ),
-        )
-        .await?;
-        driver
-            .execute("window.__releaseOnboarding(); return true", vec![])
-            .await?;
-        enter_space_view(&driver).await?;
-        wait_for_displayed(&driver, ".wp-outer").await?;
-        let offline_images = driver.execute(r#"return (async () => {
-          const images = [...document.querySelectorAll('welcome-image img')];
-          for (const img of images) {
-            img.scrollIntoView();
-            for (let n=0; !img.hasAttribute('src') && n<1000; n++) await new Promise(r=>setTimeout(r,10));
-            await img.decode();
-          }
-          return images.map(img => [img.naturalWidth, img.naturalHeight]);
-        })()"#, vec![]).await?;
-        anyhow::ensure!(offline_images.json() == &serde_json::json!([[1024, 604], [1024, 643]]));
-        let pages = driver.execute("const known = new Set([...document.querySelectorAll('.vault-node-row')].map(row => row.dataset.node)); return [...document.querySelectorAll('.vault-page-row')].map(row => row.dataset.node).filter(id => known.has(id))", vec![]).await?;
-        anyhow::ensure!(
-            pages.json().as_array().context("page directory")?.len() == 8,
-            "all eight navigable bundled pages must be present"
-        );
-        for page in pages.json().as_array().context("page directory")? {
-            let entity = page.as_str().context("page identity")?;
-            driver.execute("const tree=document.querySelector('vault-tree'); globalThis.__vaultLib.emit(tree, 'navigate', {open:arguments[0], deviceOpen:arguments[0]});", vec![serde_json::json!(entity)]).await?;
-            let selector = format!("vault-active > tonk-display[entity=\"{entity}\"] > tonk-view");
-            if let Err(error) = wait_for_displayed(&driver, &selector).await {
-                let display = driver
-                    .execute(
-                        "const display = document.querySelector('vault-active > tonk-display');
-                         const active = document.querySelector('vault-active');
-                         const root = active && active.closest('.vault-root');
-                         const vault = active ? {
-                           connected: active.isConnected, navigated: !!active.__navigated, chosen: active.__chosen,
-                           optimistic: active.__optimistic, current: active.__current, landed: !!active.__landed,
-                           awaited: active.__rowsAwaited, nodeRows: root ? root.querySelectorAll('.vault-node-row').length : null,
-                           hereActive: root && root.querySelector('.vault-here-row') && root.querySelector('.vault-here-row').dataset.active,
-                           trees: document.querySelectorAll('vault-tree').length, actives: document.querySelectorAll('vault-active').length,
-                           unselected: !!(active.closest('.vault-doc') && active.closest('.vault-doc').classList.contains('is-unselected')),
-                         } : null;
-                         return display ? { vault,
-                           attributes: [...display.attributes].map((a) => a.name + '=' + a.value),
-                           children: [...display.children].map((c) => c.tagName + (c.getAttribute('slot') ? '[' + c.getAttribute('slot') + ']' : '')),
-                           text: display.textContent.trim().slice(0, 200),
-                         } : null;",
-                        vec![],
-                    )
-                    .await
-                    .map(|value| value.json().clone())
-                    .unwrap_or(serde_json::Value::Null);
-                return Err(error.context(format!(
-                    "the vault never displayed {entity}; display={display}"
-                )));
-            }
+        for _ in 0..2 {
+            goto(&driver, env.tonk_web.as_str()).await?;
+            enter_hub(&driver).await?;
+            driver.enter_default_frame().await?;
+            assert_eq!(driver.current_url().await?.path(), "/");
+            let reply = get_json(&driver, "/api/profile").await?;
+            let profile = successful_body("list spaces after a root visit", &reply);
+            let profile: tonk_worker::ProfileInfo = serde_json::from_value(profile.clone())?;
+            assert!(
+                profile.space.is_empty(),
+                "root visits must not create spaces"
+            );
         }
-        devtools.execute_cdp_with_params("Network.emulateNetworkConditions", serde_json::json!({
-            "offline": false, "latency": 0, "downloadThroughput": -1, "uploadThroughput": -1,
-        })).await?;
         driver.quit().await?;
         Ok(())
     }
@@ -4175,12 +3954,12 @@ mod tests {
     async fn it_signs_up_to_share_and_hands_over_the_link(env: TestEnvironment) -> Result<()> {
         let (driver, authenticator) = driver_with_prf_authenticator(&env).await?;
 
-        // 1–2. The Hub, with the seeded Welcome space.
+        // 1–2. The Hub starts without spaces.
         driver.goto(env.tonk_web.as_str()).await?;
         let spaces = space_keys(&driver).await?;
         assert!(
-            spaces.len() == 1,
-            "a fresh profile has one Welcome space, got {spaces:?}"
+            spaces.is_empty(),
+            "a fresh profile has no spaces, got {spaces:?}"
         );
 
         // 3–4. Create one, and land in it.
@@ -6128,7 +5907,7 @@ mod tests {
     /// outcome lands as facts the page subscribes to, and the worker
     /// navigates the originating client itself — so a test discovers the
     /// key the way the Hub does, by watching the profile's space list.
-    async fn create_space(driver: &WebDriver, name: &str) -> Result<String> {
+    pub(crate) async fn create_space(driver: &WebDriver, name: &str) -> Result<String> {
         create_space_awaiting_remote(driver, name, false).await
     }
 
@@ -6937,20 +6716,19 @@ mod tests {
         .await?;
         successful_body("push synced space", &pushed);
 
-        // The pre-account Welcome space is provisioned by activation's pending
-        // work replay. Wait for its provider record before reviewing deletion.
+        // Wait for the created space's provider record before reviewing deletion.
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
             let reply = get_json(&driver, "/api/account/deletion/plan").await?;
             let plan = successful_body("review the deletion plan", &reply);
             assert_eq!(plan["email"], email, "plan reveals the verified email");
-            if plan["spaces"].as_array().map(Vec::len) == Some(2) {
+            if plan["spaces"].as_array().map(Vec::len) == Some(1) {
                 assert_eq!(plan["joinedSpaces"], 0);
                 break;
             }
             anyhow::ensure!(
                 tokio::time::Instant::now() < deadline,
-                "the Welcome space and Doomed Garden must both be hosted before deletion: {plan}"
+                "Doomed Garden must be hosted before deletion: {plan}"
             );
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -6959,7 +6737,7 @@ mod tests {
         // where the deletion controls live.
         open_hub_settings(&driver, &env).await?;
         click(&driver, "[data-delete-account-open]").await?;
-        wait_for_text_containing(&driver, "[data-delete-scope]", "2 owned hosted spaces").await?;
+        wait_for_text_containing(&driver, "[data-delete-scope]", "1 owned hosted space").await?;
 
         // The explicit confirmation phrase is the gate: a mistyped one leaves the solid
         // verb off, and nothing is asked of the worker.

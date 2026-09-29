@@ -446,6 +446,7 @@ impl Retractions<'_> {
 
 /// Libraries are known mutation documents. Take the writer lock before their
 /// first evaluation, sharing the interactive path's commit, refresh and retry.
+#[cfg(test)]
 pub(super) async fn seed_on_branch<'a>(
     tonk_state: &'a crate::worker::TonkState,
     tonk_branch: crate::reactor::BranchReference<'a>,
@@ -464,8 +465,9 @@ pub(super) async fn seed_on_branch<'a>(
     .map(|(Json(response), _)| response)
 }
 
-/// [`seed_on_branch`] for a document already parsed at its own location,
-/// with what it includes inlined: a seed fetched from a URL.
+/// Seed a document already parsed at its own location, with its includes
+/// inlined. Take the writer lock before evaluation and share commit/retry
+/// behavior with the interactive path.
 pub(super) async fn seed_syntax_on_branch<'a>(
     tonk_state: &'a crate::worker::TonkState,
     tonk_branch: crate::reactor::BranchReference<'a>,
@@ -1237,7 +1239,6 @@ mod tests {
         for library in [
             include_str!("../../../tonk-core/assets/library/core.yaml"),
             include_str!("../../../tonk-core/assets/library/profile.yaml"),
-            include_str!("../../../tonk-core/assets/library/onboarding-agent.yaml"),
         ] {
             let single_before = facts(&single, &single_repo).await;
             let interactive_before = facts(&interactive, &interactive_repo).await;
