@@ -879,6 +879,51 @@ pub(crate) mod tests {
             changes
         }
 
+        #[dialog_common::test]
+        async fn it_dispatches_duplicate_space_only_from_the_profile() {
+            let state = test_state().await;
+            dispatch(
+                &state,
+                CommandOrigin::default(),
+                create_space_transient("Original"),
+            )
+            .await;
+            let original = space_subjects(&state).await[0].clone();
+            let copy_command = || {
+                let mut changes = create_space_transient("Copy of Original");
+                the!("xyz.tonk.command.create-space/copy-from")
+                    .of("cmd:create".parse::<Entity>().unwrap())
+                    .is(original.this())
+                    .assert(&mut changes);
+                changes
+            };
+            dispatch(
+                &state,
+                CommandOrigin {
+                    repo: original.repo_key().to_owned(),
+                    branch: "main".into(),
+                    client: None,
+                },
+                copy_command(),
+            )
+            .await;
+            assert_eq!(space_subjects(&state).await.len(), 1);
+            dispatch(&state, CommandOrigin::default(), copy_command()).await;
+            let spaces = space_subjects(&state).await;
+            assert_eq!(spaces.len(), 2);
+            assert!(spaces.contains(&original));
+            assert_ne!(spaces[0], spaces[1]);
+
+            // A malformed source is a failed copy, never a fallback to blank creation.
+            let mut invalid = create_space_transient("Invalid copy");
+            the!("xyz.tonk.command.create-space/copy-from")
+                .of("cmd:create".parse::<Entity>().unwrap())
+                .is(false)
+                .assert(&mut invalid);
+            dispatch(&state, CommandOrigin::default(), invalid).await;
+            assert_eq!(space_subjects(&state).await.len(), 2);
+        }
+
         const SEED_FILES: &[(&str, &str)] = &[
             (
                 "/lib/seed.yaml",

@@ -252,3 +252,17 @@ cargo test -p tonk-ui --features integration-tests
 
 Set `NO_HEADLESS` to watch the browser, or `CHROME` to point at a specific Chrome
 binary.
+
+## Duplicating a space
+
+The Hub space menu offers **duplicate**, with an editable “Copy of …” name.
+It copies the current durable `main` data, definitions, and indexed blobs into a
+new space DID. Other branches, history, membership, invitations, source grants,
+repository metadata, and seed-installation records are not copied. The new space
+receives fresh creator ownership and follows the usual new-space sync policy.
+The source must be available on this device; unreadable content fails preparation
+before a new space is allocated. Storage failures after allocation can leave an
+unfinished copy, reported through the existing creation receipt.
+
+The profile `space/create` command accepts an optional `copy-from` source DID
+(`xyz.tonk.command.create-space/copy-from`), mutually exclusive with `seed`.
