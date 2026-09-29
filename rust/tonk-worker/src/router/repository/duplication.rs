@@ -43,7 +43,7 @@ pub(super) async fn prepare(tonk: &TonkState, source: &str) -> Result<Copy, Repo
     // source for a typo, an unmounted space, or an inaccessible subject.
     let repository = tonk
         .profile
-        .repository(source)
+        .space(source)
         .load()
         .perform(&tonk.operator)
         .await
@@ -65,15 +65,8 @@ pub(super) async fn prepare(tonk: &TonkState, source: &str) -> Result<Copy, Repo
     // Materialize the pinned revision before reading it. A pulled branch may
     // only have its root locally; failure must precede destination creation.
     let mut export = snapshot.clone().export();
-    if let Some(Upstream::Remote { remote, .. }) = branch.upstream() {
-        export = export.download(
-            repository
-                .remote(remote)
-                .load()
-                .perform(&tonk.operator)
-                .await
-                .map_err(error)?,
-        );
+    if let Some(Upstream::Remote { remote, .. }) = tonk_account::peer::upstream(branch) {
+        export = export.download(remote);
     }
     let stream = export.perform(&tonk.operator);
     tokio::pin!(stream);

@@ -678,7 +678,7 @@ async fn hydrate_media(
     let tonk = state.write().await;
     let repository = tonk
         .profile
-        .repository(key)
+        .space(key)
         .load()
         .perform(&tonk.operator)
         .await

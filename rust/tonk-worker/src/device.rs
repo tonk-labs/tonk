@@ -88,7 +88,6 @@ fn legacy_sites(branch: &str) -> Vec<String> {
             [
                 ACTIVE_PROFILE_SITE,
                 tonk_account::PENDING_WORK_CREDENTIAL_SITE,
-                crate::router::onboarding_space::JOURNAL,
             ]
             .into_iter()
             .map(String::from),

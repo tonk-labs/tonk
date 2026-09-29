@@ -4270,7 +4270,7 @@ async fn has_welcome_snapshot(tonk: &TonkState, key: &str) -> Result<bool, Repos
     }
     let repository = tonk
         .profile
-        .repository(key)
+        .space(key)
         .load()
         .perform(&tonk.operator)
         .await
