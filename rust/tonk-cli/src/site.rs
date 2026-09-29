@@ -964,13 +964,22 @@ pub async fn account_root_prefix(site: &TonkSite, account_root: &Did) -> Result<
 }
 
 /// The key of the site's repository, when this device holds one: the
-/// copy the peer kept of a space it created, or the key a space from
-/// before keys left the storage still carries.
+/// copy the peer kept of a space it created or adopted. A repository from
+/// before keys left the storage, whose key is still in its space, is
+/// adopted first: its key moves into the credential store and into the
+/// account's custody, with a copy for this peer, and is opened from that.
 pub async fn space_signer(site: &TonkSite) -> Result<Option<Ed25519Signer>> {
-    if let Some(dialog_credentials::Signer::Ed25519(signer)) = site.repository.credential().signer()
-    {
-        return Ok(Some(signer.clone()));
+    if let Some(signer) = kept_space_key(site).await? {
+        return Ok(Some(signer));
     }
+    if !adopt_legacy_space(site).await? {
+        return Ok(None);
+    }
+    kept_space_key(site).await
+}
+
+/// The key of the site's repository, from the copy the peer kept of it.
+async fn kept_space_key(site: &TonkSite) -> Result<Option<Ed25519Signer>> {
     match site
         .profile
         .space_key(&site.repository.did())
@@ -981,6 +990,43 @@ pub async fn space_signer(site: &TonkSite) -> Result<Option<Ed25519Signer>> {
         Err(CredentialError::Withheld(_) | CredentialError::NotFound(_)) => Ok(None),
         Err(error) => Err(error).context("failed to open the space's key"),
     }
+}
+
+/// Take the site's repository into the account's custody when its space
+/// still holds the signing key a release before keys left the storage
+/// kept there. Answers whether it did. The key leaves the space only into
+/// the credential store beside it, the one way a key leaves a space.
+async fn adopt_legacy_space(site: &TonkSite) -> Result<bool> {
+    let location = site_location(&site.root, REPO_NAME)?;
+    let adopted = dialog_storage::provider::storage::CredentialStore::<NativeSpace>::new()
+        .adopt_from(site.profile.storage(), &location)
+        .await;
+    let signer = match adopted {
+        Ok(dialog_credentials::Credential::Signer(signer)) => signer,
+        Ok(dialog_credentials::Credential::Verifier(_))
+        | Err(storage_fx::StorageError::NotFound(_)) => {
+            return Ok(false);
+        }
+        Err(error) => return Err(error).context("failed to adopt the space's stored key"),
+    };
+    let dialog_credentials::Signer::Ed25519(key) = signer.signer().clone();
+    // Natively every export of a key is its seed.
+    let dialog_credentials::KeyExport::Extractable(seed) = key
+        .export()
+        .await
+        .map_err(|error| anyhow::anyhow!("failed to export the space's key: {error:?}"))?;
+    let seed: [u8; 32] = seed
+        .as_slice()
+        .try_into()
+        .context("the space's stored key is not a key")?;
+    let key = <Ed25519Signer<Extractable> as ExtractableKey>::import(&seed)
+        .await
+        .map_err(|error| anyhow::anyhow!("failed to import the space's key: {error:?}"))?;
+    site.profile
+        .adopt_space(key)
+        .await
+        .context("failed to take the space into the account's custody")?;
+    Ok(true)
 }
 
 /// Mint and persist a direct `space -> account-root` prefix with the local
