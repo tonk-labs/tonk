@@ -38,7 +38,7 @@ pub(super) async fn prepare(reference: &str, core: &Syntax) -> Result<Syntax, St
 }
 
 async fn parse_source(url: Url, text: &str) -> Result<Syntax, String> {
-    let parsed = parse_at(url.clone(), &text);
+    let parsed = parse_at(url.clone(), text);
     if let Some(first) = parsed.diagnostics.first() {
         return Err(format!(
             "{url} does not parse at {}:{}: {}",
