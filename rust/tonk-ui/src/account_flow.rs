@@ -3314,6 +3314,42 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// SPACE-14: the Hub creates one independently identified copy.
+    #[dialog_common::test]
+    async fn it_duplicates_a_space_from_the_hub_menu(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        driver.goto(env.tonk_web.as_str()).await?;
+        let source = create_space(&driver, "Original space").await?;
+        await_url_containing(&driver, &format!("/space/{source}")).await?;
+        let before = space_keys(&driver).await?;
+        goto(&driver, env.tonk_web.as_str()).await?;
+        enter_hub(&driver).await?;
+        let card = format!(".space-card[data-space-subject='{source}']");
+        click(&driver, &format!("{card} [data-space-actions-open]")).await?;
+        click(&driver, &format!("{card} [data-space-duplicate-open]")).await?;
+        let form = format!("{card} [data-space-duplicate]");
+        let input = wait_for_displayed(&driver, &format!("{form} input[name=name]")).await?;
+        assert_eq!(
+            input.value().await?.as_deref(),
+            Some("Copy of Original space")
+        );
+        click(&driver, &format!("{form} [data-space-create-submit]")).await?;
+        driver.enter_default_frame().await?;
+        await_url_containing(&driver, "/space/").await?;
+        let after = space_keys(&driver).await?;
+        let created: Vec<_> = after.iter().filter(|key| !before.contains(key)).collect();
+        assert_eq!(
+            created.len(),
+            1,
+            "one duplicate submit must create one space"
+        );
+        assert_ne!(created[0], &source);
+        assert!(after.contains(&source), "the original must remain");
+        assert!(driver.current_url().await?.path().contains(created[0]));
+        driver.quit().await?;
+        Ok(())
+    }
+
     /// Serve `files` (path → body) over plain HTTP on a loopback port,
     /// as some other site would, and return the base URL. Every response
     /// allows any origin to read it: a seed is fetched by the service

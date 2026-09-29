@@ -42,6 +42,8 @@ use url::Url;
 use zeroize::Zeroizing;
 
 use super::AppState;
+
+mod duplication;
 use crate::{Notification, RepositoryError, TonkWorkerError, broadcast, worker::TonkState};
 
 /// Name of the device-local meta branch every *space* repository has
@@ -320,6 +322,8 @@ const DESCRIPTION_ATTR: &str = "xyz.tonk.command.create-space/description";
 /// entity rather than as text.
 const SEED_ATTR: &str = "xyz.tonk.command.create-space/seed";
 
+const COPY_FROM_ATTR: &str = "xyz.tonk.command.create-space/copy-from";
+
 /// Read the optional remote URL from a transient's facts, tolerating
 /// both `Value::String` and `Value::Entity`.
 ///
@@ -574,6 +578,8 @@ pub(crate) struct CreateSpaceRequest {
     description: Option<String>,
     /// The optional seed URL, read from the transient's raw facts.
     seed: Option<String>,
+    /// Source space whose main-branch content should be copied.
+    copy_from: Option<String>,
 }
 
 impl crate::reactor::Decode for CreateSpaceRequest {
@@ -600,6 +606,14 @@ impl crate::reactor::Decode for CreateSpaceRequest {
             remote: remote_from_facts(facts),
             description: description_from_facts(facts),
             seed: seed_from_facts(facts),
+            copy_from: facts
+                .iter()
+                .find(|fact| fact.the.as_str() == COPY_FROM_ATTR)
+                .map(|fact| match &fact.is {
+                    dialog_artifacts::Value::String(value) => value.clone(),
+                    dialog_artifacts::Value::Entity(value) => value.to_string(),
+                    _ => String::new(),
+                }),
         })
     }
 }
@@ -692,6 +706,35 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
         },
     };
 
+    // Read and validate the source before allocating a new identity. Never
+    // combine a copy with a seed that could overwrite its application.
+    let copy = match &request.copy_from {
+        Some(source) => {
+            let result = if request.seed.is_some() {
+                Err(RepositoryError::Internal(
+                    "A duplicate cannot also have a seed URL".into(),
+                ))
+            } else {
+                let tonk = env.state().read().await;
+                duplication::prepare(&tonk, source).await
+            };
+            match result {
+                Ok(copy) => Some(copy),
+                Err(error) => {
+                    report_space_creation(
+                        env.state(),
+                        &receipt,
+                        "failed",
+                        &format!("Couldn't copy this space: {error}"),
+                    )
+                    .await;
+                    return;
+                }
+            }
+        }
+        None => None,
+    };
+
     // The space's seed is custodied under the account before the
     // space exists. A linked device whose root record predates the
     // encryption key asks the originating page for a passkey
@@ -713,7 +756,11 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
     //    whether or not a remote was given (and never vanishes on
     //    a remote failure). The create mints a fresh identity and
     //    returns its routing key.
-    let key = match create_space_inner(env.state(), &name, description.as_deref()).await {
+    let created = match copy {
+        Some(copy) => duplication::create(env.state(), &name, copy).await,
+        None => create_space_inner(env.state(), &name, description.as_deref()).await,
+    };
+    let key = match created {
         Ok(key) => key,
         Err(error) => {
             log!("CreateSpace '{}' failed: {}", name, error);

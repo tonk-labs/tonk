@@ -155,6 +155,13 @@ command!: &space/create
       description: The optional short description to persist with the space.
       the: xyz.tonk.command.create-space/description
       as: text
+    copy-from:
+      description: >
+        Duplicate the current main-branch content of this space into a fresh
+        identity. Source metadata, membership, grants and history are omitted.
+        Cannot be combined with seed.
+      the: xyz.tonk.command.create-space/copy-from
+      as: entity
     seed:
       description: >
         The URL of a notation document to evaluate into the new space, on
@@ -668,6 +675,8 @@ view!:
       .space-menu tonk-share[data-share-state="failed"] [data-share-copy-label="failed"] { display:inline; }
       /* creation is the collection's final card and the header's primary action */
       space-create { display:block; }
+      [data-space-duplicate]:not([busy]) [data-duplicating-label],
+      [data-space-duplicate][busy] [data-duplicate-label] { display:none; }
       .stack > space-create { min-height:0; }
       .stack > space-create > .snew { min-height:100%; }
       .stack > space-create > .snew { flex-direction:column; gap:18px;
@@ -838,6 +847,7 @@ view!:
               <hub-menu id="space-menu-{subject}" class="space-menu" role="menu">
                 <tonk-share space={subject}><button type="button" role="menuitem"><span data-share-copy-label="idle">copy link</span><span data-share-copy-label="copying">copying…</span><span data-share-copy-label="copied">copied</span><span data-share-copy-label="failed">couldn't copy</span></button></tonk-share>
                 <button type="button" role="menuitem" data-space-rename-open>rename</button>
+                <button type="button" role="menuitem" data-space-duplicate-open>duplicate</button>
                 <space-remove data-space-subject={subject} data-space-name={name}
                   data-space-provider={provider} data-space-founded={founded-at}
                   data-space-owner={owner}>
@@ -854,6 +864,20 @@ view!:
                   </tonk-dialog>
                 </space-remove>
               </hub-menu>
+              <space-create data-space-duplicate>
+                <tonk-dialog appearance="hub" data-space-create-dialog heading="Duplicate space">
+                  <form id="duplicate-{subject}" class="space-create-form" data-space-create-form>
+                    <p class="space-create-help">Copy the data and app into a new space. Members and shared access won't carry over.</p>
+                    <label class="space-create-field"><span>space name</span><input name="name" type="text" html:value="Copy of {name}" required maxlength="100" autocomplete="off"></label>
+                    <input name="description" type="hidden" value="">
+                    <input name="open" type="hidden" value="true">
+                    <input name="copyFrom" type="hidden" value={subject}>
+                    <p class="space-create-error" data-space-create-error role="alert"></p>
+                  </form>
+                  <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
+                  <button class="m-go" slot="actions" type="submit" html:form="duplicate-{subject}" data-space-create-submit><span data-duplicate-label>duplicate space</span><span data-duplicating-label>duplicating…</span></button>
+                </tonk-dialog>
+              </space-create>
               <tonk-dialog appearance="hub" data-space-rename-dialog heading="Rename space">
                 <form id="rename-{subject}" class="space-create-form" data-space-rename-form
                   data-space={subject} on:repository-rename-submit=tonk/rename-repository>
@@ -2144,6 +2168,11 @@ element!: &space-create
         if (seed) {
           parameters.seed = seed;
           fields.seed = { the: 'xyz.tonk.command.create-space/seed', as: 'Text' };
+        }
+        const copyFrom = form.elements.copyFrom?.value;
+        if (copyFrom) {
+          parameters.copyFrom = copyFrom;
+          fields.copyFrom = { the: 'xyz.tonk.command.create-space/copy-from', as: 'Entity' };
         }
         try {
           await window.tonk.ready;
@@ -3991,7 +4020,7 @@ element!: &space-login
       }
 
 element!: &space-actions
-  description: Controls a space card menu and its rename dialog.
+  description: Controls a space card menu and its rename and duplicate dialogs.
   method:
     close: |
       (self, restoreFocus) => self.querySelector('hub-menu')?.close?.(restoreFocus)
@@ -4030,6 +4059,11 @@ element!: &space-actions
             const menu = self.querySelector('hub-menu');
             if (menu?.getAttribute('open') === 'true') menu.close(true);
             else menu?.open?.();
+            return;
+          }
+          if (event.target?.closest?.('[data-space-duplicate-open]')) {
+            self.close(false);
+            self.querySelector('[data-space-duplicate]')?.open?.();
             return;
           }
           if (event.target?.closest?.('[data-space-rename-open]')) {
