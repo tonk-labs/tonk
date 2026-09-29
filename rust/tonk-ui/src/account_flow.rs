@@ -3396,7 +3396,7 @@ pub(crate) mod tests {
         click(&driver, &format!("{card} [data-template-details-open]")).await?;
         assert!(
             !driver
-                .find(By::Css(&format!("{card} input[name=name]")))
+                .find(By::Css(format!("{card} input[name=name]")))
                 .await?
                 .is_displayed()
                 .await?
