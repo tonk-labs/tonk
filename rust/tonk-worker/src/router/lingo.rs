@@ -1,4 +1,4 @@
-//! `palette/suggest` end to end: a space seeded with the core library,
+//! `lingo/suggest` end to end: a space seeded with the core library,
 //! asked over the `/query` route exactly as the `<command-palette>` element
 //! asks (through the portal, which relays `window.tonk.query` there), and
 //! the reading it returns transacted.
@@ -19,20 +19,20 @@ const CORE: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
 /// The core library leaves the space's rename unsaid (the profile's says
 /// it); say it here, so a rule-handled command runs end to end.
 const RENAME: &str = r#"
-palette/verb!:
+lingo/verb!:
   this: tonk/rename-repository
   name: "rename"
 
-palette/argument!:
+lingo/argument!:
   command: tonk/rename-repository
   field: rename-repository/subject
-  role: palette/object
+  role: lingo/object
   noun: tonk/repository
 
-palette/argument!:
+lingo/argument!:
   command: tonk/rename-repository
   field: rename-repository/name
-  role: palette/goal
+  role: lingo/goal
 "#;
 
 async fn send(app: &Router, method: &str, uri: &str, kind: &str, body: String) -> Value {
@@ -60,7 +60,7 @@ async fn send(app: &Router, method: &str, uri: &str, kind: &str, body: String) -
     serde_json::from_slice(&bytes).unwrap_or(Value::Null)
 }
 
-/// Ask `palette/suggest` what `input` could mean, as the element does.
+/// Ask `lingo/suggest` what `input` could mean, as the element does.
 async fn suggest(app: &Router, key: &str, input: &str, this: &str) -> Vec<Value> {
     let rows = send(
         app,
@@ -68,7 +68,7 @@ async fn suggest(app: &Router, key: &str, input: &str, this: &str) -> Vec<Value>
         &format!("/api/repository/{key}/branch/main/query"),
         "application/json",
         json!({
-            "predicate": "palette/suggest",
+            "predicate": "lingo/suggest",
             "terms": { "input": input, "this": this, "now": 1.0 }
         })
         .to_string(),

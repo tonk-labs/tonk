@@ -1,19 +1,19 @@
-//! The command palette's glue between tonk's data and `dialog-palette`.
+//! The command palette's glue between tonk's data and `dialog-lingo`.
 //!
-//! The rows of `palette/verb`, `palette/argument`, `palette/role`,
-//! `palette/noun`, the attributes those arguments name, and the rows and
+//! The rows of `lingo/verb`, `lingo/argument`, `lingo/role`,
+//! `lingo/noun`, the attributes those arguments name, and the rows and
 //! `label` facet of every noun concept come in as [`Source`]s; this crate
-//! joins them into a [`dialog_palette::Registry`], parses the input, and
+//! joins them into a [`dialog_lingo::Registry`], parses the input, and
 //! answers with ranked proposals, each carrying the transient claim that
 //! runs it.
 //!
-//! Nothing here reads a store. `palette/suggest` (in `dialog-reactor`)
+//! Nothing here reads a store. `lingo/suggest` (in `dialog-reactor`)
 //! reads the rows with ordinary concept queries and calls in here, so the
 //! page asks one query and gets readings back.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use dialog_palette::{
+use dialog_lingo::{
     Argument, Candidate, Context, Grammar, Memory, Noun, Parse, Registry, SegmentKind, Value, Verb,
     parse,
 };
@@ -56,16 +56,16 @@ pub struct Source {
     /// The routing context the rows came from (`main@did:key:…`), echoed
     /// on each proposal so its claim is transacted on the same branch.
     pub branch: String,
-    /// `palette/verb` rows: `this` is the command, `name` a word for it.
+    /// `lingo/verb` rows: `this` is the command, `name` a word for it.
     #[serde(default)]
     pub verbs: Vec<Row>,
-    /// `palette/argument` rows: `command`, `field`, `role`, `noun`.
+    /// `lingo/argument` rows: `command`, `field`, `role`, `noun`.
     #[serde(default)]
     pub arguments: Vec<Row>,
-    /// `palette/role` rows: `name`.
+    /// `lingo/role` rows: `name`.
     #[serde(default)]
     pub roles: Vec<Row>,
-    /// `palette/noun` rows: `this` is the concept, `name` a word for it.
+    /// `lingo/noun` rows: `this` is the concept, `name` a word for it.
     #[serde(default)]
     pub nouns: Vec<Row>,
     /// Attribute rows for argument fields: `id` (the selector) and
@@ -91,7 +91,7 @@ pub struct Request {
     /// The branches read.
     #[serde(default)]
     pub sources: Vec<Source>,
-    /// Suggestion memory: `palette/choice` rows, one per command run
+    /// Suggestion memory: `lingo/choice` rows, one per command run
     /// from the palette, with `command` (the command entity) and `input`
     /// (the words typed for its verb, "" when none were).
     #[serde(default)]
@@ -304,7 +304,7 @@ fn push_word(text: &mut String, word: &str) {
 /// a page knows which entity it shows, not how that entity is labelled,
 /// and an anaphor substituted by an unlabelled entity would read as "".
 fn labelled(context: &Context, registry: &Registry) -> Context {
-    let label = |selection: &Option<dialog_palette::Selection>| {
+    let label = |selection: &Option<dialog_lingo::Selection>| {
         selection.clone().map(|mut selection| {
             if selection.text.is_empty()
                 && let Some(entity) = &selection.entity

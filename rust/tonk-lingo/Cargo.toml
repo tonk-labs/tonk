@@ -1,13 +1,13 @@
 [package]
-name = "tonk-palette"
+name = "tonk-lingo"
 version.workspace = true
 authors.workspace = true
 license.workspace = true
 edition.workspace = true
-description = "The command palette's glue: palette rows in, dialog-palette parses and command claims out."
+description = "The command palette's glue: palette rows in, dialog-lingo parses and command claims out."
 
 [dependencies]
-dialog-palette = { workspace = true }
+dialog-lingo = { workspace = true }
 ipld-core = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

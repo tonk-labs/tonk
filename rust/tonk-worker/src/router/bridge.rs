@@ -244,7 +244,7 @@ async fn handle_query(
     };
     let query: dialog_query::ConceptQuery = match wire.into_concept_query() {
         Ok(q) => q,
-        // A named query (`tree/*`, `palette/suggest`) is answered by the
+        // A named query (`tree/*`, `lingo/suggest`) is answered by the
         // reactor, as the HTTP `/query` route answers it.
         Err(wire) => {
             let result = {

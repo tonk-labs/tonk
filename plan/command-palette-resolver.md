@@ -49,25 +49,25 @@ no new plumbing.
 
 ### A. A dialog premise (the destination)
 
-`palette/suggest(input, this, now) → {command, display, claim, score, …}`
-as a premise in dialog-query, with `dialog-palette` as its body.
+`lingo/suggest(input, this, now) → {command, display, claim, score, …}`
+as a premise in dialog-query, with `dialog-lingo` as its body.
 
 It needs:
 
 - **The palette schema in the dialog namespace.** The premise can't name
-  `xyz.tonk.palette.*` attributes.
+  `tonk.dialog.lingo.*` attributes.
 - **Labels without tonk views.** Candidate labels come from the tonk view
   system (`xyz.tonk.view` `label` facet, rendered with tonk templates).
   dialog can't depend on that. Labels would come from rule-derived rows
-  instead (e.g. `palette/candidate {noun, label}` per noun concept).
+  instead (e.g. `lingo/candidate {noun, label}` per noun concept).
 - **An open or extended premise registry** in dialog-query.
-- **tonk re-pinned on every dialog crate**, not just `dialog-palette`.
+- **tonk re-pinned on every dialog crate**, not just `dialog-lingo`.
 
 It is right long term, and a large lift now.
 
 ### B. A tonk virtual concept (the shortcut)
 
-Declare `palette/suggestion` in the library as an ordinary concept. Its
+Declare `lingo/suggestion` in the library as an ordinary concept. Its
 fields are `input`, `this`, `now` (bound by the caller) and `command`,
 `display`, `completion`, `claim`, `nouns`, `score` (produced).
 `QueryPlan::from` routes it to a `SuggestionQuery` evaluator in tonk-schema
@@ -75,17 +75,17 @@ that:
 
 1. evaluates the reads the element does today as `ConceptQuery`s against
    `env` (demand recorded, so subscriptions stay live);
-2. builds the registry and parses with `dialog-palette`;
+2. builds the registry and parses with `dialog-lingo`;
 3. yields one row per proposal (structured values as JSON text for now).
 
-The element sends `{predicate: palette/suggestion, terms: {input: "ren",
+The element sends `{predicate: lingo/suggestion, terms: {input: "ren",
 this: <space>, now: <ms>, command: ?, …}}` through `window.tonk.query` or
 `subscribe`, renders the rows, and transacts `claim`. With `input: ""` it is
 the menu.
 
 Costs and catches:
 
-- **Crate cycle.** `tonk-schema` would need `tonk-palette`, which uses
+- **Crate cycle.** `tonk-schema` would need `tonk-lingo`, which uses
   `tonk-template` for labels, and `tonk-template` depends on `tonk-schema`.
   The label renderer (`Segment`, `parse_segments`, `render_segments` in
   `tonk-template/src/lib.rs`) uses only `ipld`. It can move to a small crate
@@ -97,7 +97,7 @@ Costs and catches:
 - **Two branches.** A query is scoped to one branch. The element queries the
   space and the profile and merges the rows by score. Merging is small, but
   it is UI logic.
-- **Memory across branches.** `palette/choice` is on the profile, so the
+- **Memory across branches.** `lingo/choice` is on the profile, so the
   space's query can't read it. Either memory reinforces only profile verbs,
   or the element passes the counts in as an input.
 

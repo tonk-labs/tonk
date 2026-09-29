@@ -1,9 +1,9 @@
-//! `palette/suggest` — what a typed command could mean, as query rows.
+//! `lingo/suggest` — what a typed command could mean, as query rows.
 //!
-//! A named query (`{ "predicate": "palette/suggest", "terms": {…} }`),
+//! A named query (`{ "predicate": "lingo/suggest", "terms": {…} }`),
 //! answered here by reading the branch's palette vocabulary with ordinary
-//! concept queries and parsing with `dialog-palette` (through
-//! [`tonk_palette`]). The inputs are terms:
+//! concept queries and parsing with `dialog-lingo` (through
+//! [`tonk_lingo`]). The inputs are terms:
 //!
 //! - `input` — what was typed; `""` asks for what can be done without
 //!   saying more (the palette's empty state).
@@ -33,15 +33,15 @@ use dialog_repository::Branch;
 use futures_util::TryStreamExt as _;
 use ipld_core::ipld::Ipld;
 use serde_json::{Value as Json, json};
-use tonk_palette::{ConceptRows, Proposal, Request, Row, Source};
+use tonk_lingo::{ConceptRows, Proposal, Request, Row, Source};
 
 use crate::env::SelectProvider;
 use crate::{Conclusion, FormulaError, Query, project};
 
 /// The query's name, and every row's `this`.
-pub const NAME: &str = "palette/suggest";
+pub const NAME: &str = "lingo/suggest";
 
-/// Rows for one `palette/suggest` query on `branch`.
+/// Rows for one `lingo/suggest` query on `branch`.
 pub async fn suggest<Env: SelectProvider>(
     branch: &Branch,
     env: &Env,
@@ -56,9 +56,9 @@ pub async fn suggest<Env: SelectProvider>(
         branch: String::new(),
         ..Source::default()
     };
-    source.verbs = rows(branch, env, named("xyz.tonk.palette.verb/name", "many")).await?;
-    source.nouns = rows(branch, env, named("xyz.tonk.palette.noun/name", "many")).await?;
-    source.roles = rows(branch, env, named("xyz.tonk.palette.role/name", "one")).await?;
+    source.verbs = rows(branch, env, named("tonk.dialog.lingo.verb/name", "many")).await?;
+    source.nouns = rows(branch, env, named("tonk.dialog.lingo.noun/name", "many")).await?;
+    source.roles = rows(branch, env, named("tonk.dialog.lingo.role/name", "one")).await?;
     source.attributes = rows(branch, env, attributes()).await?;
     source.arguments = rows(branch, env, arguments()).await?;
     let nouns: Vec<String> = source
@@ -78,9 +78,9 @@ pub async fn suggest<Env: SelectProvider>(
     let request = Request {
         input: input.clone(),
         max,
-        context: dialog_palette::Context {
+        context: dialog_lingo::Context {
             selection: None,
-            this: this.map(|entity| dialog_palette::Selection {
+            this: this.map(|entity| dialog_lingo::Selection {
                 text: String::new(),
                 entity: Some(entity),
             }),
@@ -90,9 +90,9 @@ pub async fn suggest<Env: SelectProvider>(
         now,
     };
     let proposals = if input.is_empty() {
-        tonk_palette::menu(&request)
+        tonk_lingo::menu(&request)
     } else {
-        tonk_palette::propose(&request)
+        tonk_lingo::propose(&request)
     };
     Ok(proposals
         .into_iter()
@@ -199,7 +199,7 @@ fn entity(the: &str, optional: bool) -> Json {
     field
 }
 
-/// `palette/verb`, `palette/noun`, `palette/role`: an entity and its words.
+/// `lingo/verb`, `lingo/noun`, `lingo/role`: an entity and its words.
 fn named(the: &str, cardinality: &str) -> Json {
     json!({
         "predicate": { "with": { "name": text(the, cardinality) } },
@@ -218,14 +218,14 @@ fn attributes() -> Json {
     })
 }
 
-/// `palette/argument`.
+/// `lingo/argument`.
 fn arguments() -> Json {
     json!({
         "predicate": { "with": {
-            "command": entity("xyz.tonk.palette.argument/command", false),
-            "field": entity("xyz.tonk.palette.argument/field", false),
-            "role": entity("xyz.tonk.palette.argument/role", false),
-            "noun": entity("xyz.tonk.palette.argument/noun", true)
+            "command": entity("tonk.dialog.lingo.argument/command", false),
+            "field": entity("tonk.dialog.lingo.argument/field", false),
+            "role": entity("tonk.dialog.lingo.argument/role", false),
+            "noun": entity("tonk.dialog.lingo.argument/noun", true)
         } },
         "terms": {
             "this": var("this"), "command": var("command"), "field": var("field"),
@@ -234,13 +234,13 @@ fn arguments() -> Json {
     })
 }
 
-/// `palette/choice`: what was run before, for the parser's memory.
+/// `lingo/choice`: what was run before, for the parser's memory.
 fn choices() -> Json {
     json!({
         "predicate": { "with": {
-            "command": entity("xyz.tonk.palette.choice/command", false),
-            "input": text("xyz.tonk.palette.choice/input", "one"),
-            "time": { "the": "xyz.tonk.palette.choice/time", "as": "Float", "cardinality": "one" }
+            "command": entity("tonk.dialog.lingo.choice/command", false),
+            "input": text("tonk.dialog.lingo.choice/input", "one"),
+            "time": { "the": "tonk.dialog.lingo.choice/time", "as": "Float", "cardinality": "one" }
         } },
         "terms": {
             "this": var("this"), "command": var("command"), "input": var("input"),

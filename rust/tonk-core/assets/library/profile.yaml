@@ -4960,55 +4960,55 @@ element!: &account-settings
 # The command palette's schema, as in the core library: this library lowers
 # on its own, so it declares the same four concepts (same attributes, so the
 # same concepts) for the profile's commands. See core.yaml for the prose.
-concept!: &palette/verb
+concept!: &lingo/verb
   description: Words that say a command. Asserted on the command itself.
   with:
     name:
       description: A word or phrase the command answers to.
-      the: xyz.tonk.palette.verb/name
+      the: tonk.dialog.lingo.verb/name
       cardinality: many
       as: text
 
-concept!: &palette/noun
+concept!: &lingo/noun
   description: Words for a kind of thing. Asserted on the concept itself.
   with:
     name:
       description: A word naming the concept, shown for an empty argument.
-      the: xyz.tonk.palette.noun/name
+      the: tonk.dialog.lingo.noun/name
       cardinality: many
       as: text
 
-concept!: &palette/role
+concept!: &lingo/role
   description: A grammatical role an argument can play.
   with:
     name:
       description: The role's name in the grammar (object, goal, source, ...).
-      the: xyz.tonk.palette.role/name
+      the: tonk.dialog.lingo.role/name
       cardinality: one
       as: text
 
-concept!: &palette/argument
+concept!: &lingo/argument
   description: How one field of a command is filled from what was typed.
   with:
     command:
       description: The command the field belongs to.
-      the: xyz.tonk.palette.argument/command
+      the: tonk.dialog.lingo.argument/command
       cardinality: one
       as: entity
     field:
       description: The field's attribute.
-      the: xyz.tonk.palette.argument/field
+      the: tonk.dialog.lingo.argument/field
       cardinality: one
       as: entity
     role:
       description: The role that fills it.
-      the: xyz.tonk.palette.argument/role
+      the: tonk.dialog.lingo.argument/role
       cardinality: one
       as: entity
   maybe:
     noun:
       description: The concept whose rows may fill it. Absent for text fields.
-      the: xyz.tonk.palette.argument/noun
+      the: tonk.dialog.lingo.argument/noun
       cardinality: one
       as: entity
 
@@ -5016,35 +5016,35 @@ concept!: &palette/argument
 # verb words. One fact per run rather than a counter, so runs on two devices
 # both count; the palette counts them. Kept on the profile, because it is
 # the person's habit, not the space's.
-concept!: &palette/choice
+concept!: &lingo/choice
   description: A command run from the palette, and the words typed for its verb.
   with:
     command:
       description: The command that was run.
-      the: xyz.tonk.palette.choice/command
+      the: tonk.dialog.lingo.choice/command
       cardinality: one
       as: entity
     input:
       description: The words typed for the verb; empty when it was suggested from a noun.
-      the: xyz.tonk.palette.choice/input
+      the: tonk.dialog.lingo.choice/input
       cardinality: one
       as: text
     time:
       description: When it was run, so two runs are two choices.
-      the: xyz.tonk.palette.choice/time
+      the: tonk.dialog.lingo.choice/time
       cardinality: one
       as: float
 
-palette/role!: &palette/object
+lingo/role!: &lingo/object
   name: "object"
 
-palette/role!: &palette/goal
+lingo/role!: &lingo/goal
   name: "goal"
 
 # Not a grammatical role: the moment the command is run. Nothing typed
 # fills it; the palette does, the way an event's `.timeStamp` fills a
 # button's command. For the nonce fields that keep two runs distinct.
-palette/role!: &palette/now
+lingo/role!: &lingo/now
   name: "now"
 
 # The directory row IS the repository's own entity (its subject DID), which
@@ -5055,63 +5055,63 @@ view!:
     label: |
       {name}
 
-palette/noun!:
+lingo/noun!:
   this: space
   name: "space"
 
 # The FABB's commands.
-palette/verb!:
+lingo/verb!:
   this: tonk/pause-sync
   name: "pause sync"
 
-palette/verb!:
+lingo/verb!:
   this: tonk/pause-sync
   name: "resume sync"
 
-palette/argument!:
+lingo/argument!:
   command: tonk/pause-sync
   field: pause-sync/space
-  role: palette/object
+  role: lingo/object
   noun: space
 
-palette/argument!:
+lingo/argument!:
   command: tonk/pause-sync
   field: pause-sync/time
-  role: palette/now
+  role: lingo/now
 
-palette/verb!:
+lingo/verb!:
   this: tonk/rename-repository
   name: "rename"
 
-palette/verb!:
+lingo/verb!:
   this: tonk/rename-repository
   name: "rename space"
 
-palette/argument!:
+lingo/argument!:
   command: tonk/rename-repository
   field: rename-space/space
-  role: palette/object
+  role: lingo/object
   noun: space
 
-palette/argument!:
+lingo/argument!:
   command: tonk/rename-repository
   field: rename-space/name
-  role: palette/goal
+  role: lingo/goal
 
-palette/verb!:
+lingo/verb!:
   this: tonk/home
   name: "home"
 
-palette/verb!:
+lingo/verb!:
   this: tonk/home
   name: "go home"
 
-palette/argument!:
+lingo/argument!:
   command: tonk/home
   field: home/time
-  role: palette/now
+  role: lingo/now
 
-palette/verb!:
+lingo/verb!:
   this: tonk/home
   name: "go to tonk home"
 
@@ -5126,12 +5126,12 @@ palette/verb!:
 # (Ctrl+N/P) move to another reading and the selection follows.
 #
 # It only queries and transacts. What the line could mean is the named query
-# `palette/suggest` — `{input, this, now}` in, one row per reading out —
+# `lingo/suggest` — `{input, this, now}` in, one row per reading out —
 # asked of the space branch and of the profile, whose readings are merged by
 # score. Running one transacts its `claim` on the branch it came from, as a
-# button bound to that command would, and records a `palette/choice` on the
-# profile. What can be said is data (`palette/verb`, `palette/argument`,
-# `palette/role`, `palette/noun`); the query reads it.
+# button bound to that command would, and records a `lingo/choice` on the
+# profile. What can be said is data (`lingo/verb`, `lingo/argument`,
+# `lingo/role`, `lingo/noun`); the query reads it.
 #
 # Keys pressed inside the space's own frame are relayed to this document by
 # the portal bridge, so the shortcut works wherever focus is.
@@ -5332,7 +5332,7 @@ element!: &command-palette
         if (!space || !window.tonk) return;
         const branches = [`main@${space}`, self.getAttribute('profile')].filter(Boolean);
         const body = {
-          predicate: 'palette/suggest',
+          predicate: 'lingo/suggest',
           terms: { input: typed, this: space, now: Date.now(), max: 5 },
         };
         const read = (branch, row) => {
@@ -5355,7 +5355,7 @@ element!: &command-palette
             .then((found) => (Array.isArray(found) ? found : (found && found.rows) || [])
               .map((row) => read(branch, row)))
             .catch((error) => {
-              console.warn('<command-palette> palette/suggest failed on', branch, error);
+              console.warn('<command-palette> lingo/suggest failed on', branch, error);
               return [];
             })));
         if (self.__asked !== asked) return;
@@ -5423,7 +5423,7 @@ element!: &command-palette
       (self, proposal) => {
         const profile = self.getAttribute('profile');
         if (!profile) return;
-        const field = (name, as) => ({ the: `xyz.tonk.palette.choice/${name}`, as });
+        const field = (name, as) => ({ the: `tonk.dialog.lingo.choice/${name}`, as });
         window.tonk.transact({ claims: [{ op: 'assert', application: {
           predicate: { kind: 'durable', concept: { with: {
             command: field('command', 'Entity'), input: field('input', 'Text'), time: field('time', 'Float'),

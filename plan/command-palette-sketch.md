@@ -12,40 +12,40 @@ views). There is no new syntax and no worker API.
 
 | Ubiquity | Here |
 | --- | --- |
-| `CreateCommand({names})` | `palette/verb` — words asserted on the command itself |
-| `arguments: [{role, nountype}]` | `palette/argument` — a command field (its attribute), a role (an entity), a noun (a concept) |
-| noun type `label` | `palette/noun` — words asserted on the concept itself |
+| `CreateCommand({names})` | `lingo/verb` — words asserted on the command itself |
+| `arguments: [{role, nountype}]` | `lingo/argument` — a command field (its attribute), a role (an entity), a noun (a concept) |
+| noun type `label` | `lingo/noun` — words asserted on the concept itself |
 | noun type `suggest(text)` | the concept's rows, matched by their `label` view facet |
-| `en.js` roles and delimiters | the grammar in `dialog-palette` (Rust), roles as `palette/role` entities |
+| `en.js` roles and delimiters | the grammar in `dialog-lingo` (Rust), roles as `lingo/role` entities |
 | `execute(args)` | transacting the command, with its fields' own selectors |
 | the selection | the entity the page shows (`{this}`): anaphor target and default |
 
 ## The schema (core library)
 
 ```yaml
-concept!: &palette/verb
+concept!: &lingo/verb
   description: Words that say a command. Asserted on the command itself.
   with:
-    name: { the: xyz.tonk.palette.verb/name, cardinality: many, as: text, … }
+    name: { the: tonk.dialog.lingo.verb/name, cardinality: many, as: text, … }
 
-concept!: &palette/noun
+concept!: &lingo/noun
   description: Words for a kind of thing. Asserted on the concept itself.
   with:
-    name: { the: xyz.tonk.palette.noun/name, cardinality: many, as: text, … }
+    name: { the: tonk.dialog.lingo.noun/name, cardinality: many, as: text, … }
 
-concept!: &palette/role
+concept!: &lingo/role
   with:
-    name: { the: xyz.tonk.palette.role/name, cardinality: one, as: text, … }
+    name: { the: tonk.dialog.lingo.role/name, cardinality: one, as: text, … }
 
-concept!: &palette/argument
+concept!: &lingo/argument
   with:
-    command: { the: xyz.tonk.palette.argument/command, as: entity, … }
-    field:   { the: xyz.tonk.palette.argument/field,   as: entity, … }   # an attribute
-    role:    { the: xyz.tonk.palette.argument/role,    as: entity, … }   # a palette/role
+    command: { the: tonk.dialog.lingo.argument/command, as: entity, … }
+    field:   { the: tonk.dialog.lingo.argument/field,   as: entity, … }   # an attribute
+    role:    { the: tonk.dialog.lingo.argument/role,    as: entity, … }   # a lingo/role
   maybe:
-    noun:    { the: xyz.tonk.palette.argument/noun,    as: entity, … }   # a concept
+    noun:    { the: tonk.dialog.lingo.argument/noun,    as: entity, … }   # a concept
 
-palette/role!: &palette/object
+lingo/role!: &lingo/object
   name: "object"
 # goal, source, location, time, instrument, format, modifier, alias
 ```
@@ -99,22 +99,22 @@ view!:
     label: |
       {name}
 
-palette/noun!:
+lingo/noun!:
   this: member/account
   name: "member"
 
-palette/verb!:
+lingo/verb!:
   this: member/expel
   name: "expel"
 
-palette/verb!:
+lingo/verb!:
   this: member/expel
   name: "remove member"
 
-palette/argument!:
+lingo/argument!:
   command: member/expel
   field: expel-member/member
-  role: palette/object
+  role: lingo/object
   noun: member/account
 ```
 
@@ -131,15 +131,15 @@ is needed.
 
 `tonk/pause-sync` also carries `time`, a nonce the FABB fills from the
 click's timestamp. Nothing typed should fill it, so its argument plays
-`palette/now`: a role the palette fills with the moment the command runs
+`lingo/now`: a role the palette fills with the moment the command runs
 (the caller passes its clock in, so parsing stays pure) and never shows as
 missing.
 
 ```yaml
-palette/argument!:
+lingo/argument!:
   command: tonk/pause-sync
   field: pause-sync/time
-  role: palette/now
+  role: lingo/now
 ```
 
 Home is a command now too: `tonk/home {time}` ("home", "go home"), whose
@@ -154,16 +154,16 @@ a worker command.
 
 | Piece | Where | What it does |
 | --- | --- | --- |
-| `dialog-palette` | dialog-db, `rust/dialog-palette` | The Parser 2 port: grammar, registry, 11-step pipeline, scoring, memory. Pure, no IO, native and wasm. |
-| `tonk-palette` | tonk, `rust/tonk-palette` | Joins subscription rows into a registry (labels rendered with `tonk-template`), parses, builds the command claim. `web::install` puts `window.tonk.palette.parse` on the guest. |
+| `dialog-lingo` | dialog-db, `rust/dialog-lingo` | The Parser 2 port: grammar, registry, 11-step pipeline, scoring, memory. Pure, no IO, native and wasm. |
+| `tonk-lingo` | tonk, `rust/tonk-lingo` | Joins subscription rows into a registry (labels rendered with `tonk-template`), parses, builds the command claim. `web::install` puts `window.tonk.palette.parse` on the guest. |
 | `<command-palette>` | `profile.yaml`, an `element!` (not `tonk-`: the element runtime never announces `tonk-` or `wa-` tags) | The FABB's command line: slotted into `<tonk-fab>`'s `command` slot, between the header and the actions, shown while the menu is open. With nothing typed the bar's actions show (the menu is the empty palette); typing sets `commanding` on the bar and the proposals take the actions' place. The top proposal completes inline as a selection (Tab/→ takes it, ↑/↓ or Ctrl+N/P move and the selection follows). Rows show the verb bold, things boxed with their kind (`space`, `member`), typed text quoted, and empty arguments dashed. On Cmd/Ctrl+K or Cmd/Ctrl+Shift+P it subscribes to the palette rows on `main@<space>` and the profile branch, resolves each noun concept the way `<tonk-display>` resolves a model (descriptor from `db.meta/source`, rows, `label` facet), calls `parse` per keystroke, and transacts the chosen claim. |
 
 ## Memory
 
 Ubiquity's suggestion memory, as facts: every run asserts a
-`palette/choice {command, input, time}` on the profile — one fact per run,
+`lingo/choice {command, input, time}` on the profile — one fact per run,
 not a counter, so choices made on two devices both count after they sync.
-The element subscribes to them and passes them to `parse`; `tonk-palette`
+The element subscribes to them and passes them to `parse`; `tonk-lingo`
 counts them per command (under the verb words typed, and overall), and the
 parser raises a verb's score to the power `1/(1 + count)`, as Ubiquity did.
 Nothing prunes them yet.
@@ -182,7 +182,7 @@ Nothing prunes them yet.
 - In the browser: Ctrl+K inside the space's own frame opens the palette
   (the portal bridge relays the chord).
 - In the browser: "go home" navigates the tab from `/space/…` to `/`; back
-  in the space, the profile holds `palette/choice {command: tonk:home,
+  in the space, the profile holds `lingo/choice {command: tonk:home,
   input: "go home"}`.
 - In the browser: "pause sync" writes `xyz.tonk.sync/enabled = false` on
   the space, "resume sync" writes `true`.
@@ -212,7 +212,7 @@ Nothing prunes them yet.
   and heading disagreeing; `block/*` are the element's own plumbing
   (positions, chain pointers). A sayable notebook command ("add a heading",
   "rename notebook" that edits the heading) has to be designed first. If
-  one is, the library lowers standalone and would redeclare `palette/*` the
+  one is, the library lowers standalone and would redeclare `lingo/*` the
   way the profile does — or the schema becomes built-in, as `event` did.
 - **The active view.** `this` is the space. The entity the page shows (the
   notebook open in it) is not passed yet, so "rename this" cannot mean the

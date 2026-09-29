@@ -923,7 +923,7 @@ concept!: &member
 # construction, so the name can just say what it means.
 #
 # The field is a named attribute rather than an inline one so the palette's
-# `palette/argument` below can point at it. The descriptor is the same, so
+# `lingo/argument` below can point at it. The descriptor is the same, so
 # the command's identity is unchanged.
 attribute!: &expel-member/member
   description: The DID of the member to remove.
@@ -2572,95 +2572,95 @@ element!: &drag-frame
 # `<command-palette>` reads four relations and parses typed text against
 # them, the way Ubiquity's Parser 2 did:
 #
-# - `palette/verb` — words that say a command, asserted on the command
+# - `lingo/verb` — words that say a command, asserted on the command
 #   itself, one assertion per word.
-# - `palette/argument` — which grammatical role fills one of a command's
+# - `lingo/argument` — which grammatical role fills one of a command's
 #   fields (the field is its attribute), and which concept's rows may
 #   fill it. An argument without a noun takes typed text.
-# - `palette/noun` — words for a concept, shown for an empty argument
+# - `lingo/noun` — words for a concept, shown for an empty argument
 #   ("expel [member]").
-# - `palette/role` — the grammar's slots. The words that introduce them
+# - `lingo/role` — the grammar's slots. The words that introduce them
 #   ("to" for goal) belong to the parser's grammar for a language.
 #
 # A noun's rows are matched by their `label` facet, so every concept an
 # argument names needs one. See plan/command-palette-sketch.md.
-concept!: &palette/verb
+concept!: &lingo/verb
   description: Words that say a command. Asserted on the command itself.
   with:
     name:
       description: A word or phrase the command answers to.
-      the: xyz.tonk.palette.verb/name
+      the: tonk.dialog.lingo.verb/name
       cardinality: many
       as: text
 
-concept!: &palette/noun
+concept!: &lingo/noun
   description: Words for a kind of thing. Asserted on the concept itself.
   with:
     name:
       description: A word naming the concept, shown for an empty argument.
-      the: xyz.tonk.palette.noun/name
+      the: tonk.dialog.lingo.noun/name
       cardinality: many
       as: text
 
-concept!: &palette/role
+concept!: &lingo/role
   description: A grammatical role an argument can play.
   with:
     name:
       description: The role's name in the grammar (object, goal, source, ...).
-      the: xyz.tonk.palette.role/name
+      the: tonk.dialog.lingo.role/name
       cardinality: one
       as: text
 
-concept!: &palette/argument
+concept!: &lingo/argument
   description: How one field of a command is filled from what was typed.
   with:
     command:
       description: The command the field belongs to.
-      the: xyz.tonk.palette.argument/command
+      the: tonk.dialog.lingo.argument/command
       cardinality: one
       as: entity
     field:
       description: The field's attribute.
-      the: xyz.tonk.palette.argument/field
+      the: tonk.dialog.lingo.argument/field
       cardinality: one
       as: entity
     role:
       description: The role that fills it.
-      the: xyz.tonk.palette.argument/role
+      the: tonk.dialog.lingo.argument/role
       cardinality: one
       as: entity
   maybe:
     noun:
       description: The concept whose rows may fill it. Absent for text fields.
-      the: xyz.tonk.palette.argument/noun
+      the: tonk.dialog.lingo.argument/noun
       cardinality: one
       as: entity
 
-palette/role!: &palette/object
+lingo/role!: &lingo/object
   name: "object"
 
-palette/role!: &palette/goal
+lingo/role!: &lingo/goal
   name: "goal"
 
-palette/role!: &palette/source
+lingo/role!: &lingo/source
   name: "source"
 
-palette/role!: &palette/location
+lingo/role!: &lingo/location
   name: "location"
 
-palette/role!: &palette/time
+lingo/role!: &lingo/time
   name: "time"
 
-palette/role!: &palette/instrument
+lingo/role!: &lingo/instrument
   name: "instrument"
 
-palette/role!: &palette/format
+lingo/role!: &lingo/format
   name: "format"
 
-palette/role!: &palette/modifier
+lingo/role!: &lingo/modifier
   name: "modifier"
 
-palette/role!: &palette/alias
+lingo/role!: &lingo/alias
   name: "alias"
 
 # A member as the account `member/expel` wants. A roster row is the
@@ -2690,26 +2690,26 @@ view!:
     label: |
       {name}
 
-palette/noun!:
+lingo/noun!:
   this: member/account
   name: "member"
 
-palette/noun!:
+lingo/noun!:
   this: tonk/repository
   name: "space"
 
-palette/verb!:
+lingo/verb!:
   this: member/expel
   name: "expel"
 
-palette/verb!:
+lingo/verb!:
   this: member/expel
   name: "remove member"
 
-palette/argument!:
+lingo/argument!:
   command: member/expel
   field: expel-member/member
-  role: palette/object
+  role: lingo/object
   noun: member/account
 
 # `tonk/rename-repository` has no verb here: the profile's own rename

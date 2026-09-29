@@ -1,7 +1,7 @@
 use serde_json::json;
 
 use super::*;
-use dialog_palette::Selection;
+use dialog_lingo::Selection;
 
 fn row(this: &str, fields: serde_json::Value) -> Row {
     Row {
