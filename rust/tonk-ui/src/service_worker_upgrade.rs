@@ -1090,6 +1090,8 @@ pub(crate) mod tests {
         let driver = env.driver().await?;
         wait_for_complete_generation(&driver, &generation_a, None, None).await?;
         create_state_sentinels(&driver).await?;
+        // A fresh profile has no spaces; give the upgrade a persisted roster to preserve.
+        crate::account_flow::tests::create_space(&driver, "Upgrade fixture").await?;
 
         driver.goto(env.tonk_web.as_str()).await?;
         let historical = wait_for_hub_snapshot(&driver).await?;

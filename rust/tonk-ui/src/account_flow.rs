@@ -4,7 +4,7 @@
     not(target_arch = "wasm32"),
     any(feature = "integration-tests", feature = "web-integration-tests")
 ))]
-mod tests {
+pub(crate) mod tests {
     use std::path::PathBuf;
     use std::process::{ExitStatus, Stdio};
     use std::time::Duration;
@@ -116,7 +116,7 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
             enter_space_view(&driver).await?;
-            wait_for_displayed(&driver, ".vault-root").await?;
+            wait_for_displayed(&driver, ".blank-canvas").await?;
             driver.enter_default_frame().await?;
             driver.execute("history.back()", Vec::new()).await?;
             enter_hub(&driver).await?;
@@ -155,9 +155,9 @@ mod tests {
             assert_eq!(driver.current_url().await?.path(), "/");
             let reply = get_json(&driver, "/api/profile").await?;
             let profile = successful_body("list spaces after a root visit", &reply);
-            assert_eq!(
-                profile["space"],
-                serde_json::json!([]),
+            let profile: tonk_worker::ProfileInfo = serde_json::from_value(profile.clone())?;
+            assert!(
+                profile.space.is_empty(),
                 "root visits must not create spaces"
             );
         }
@@ -5907,7 +5907,7 @@ mod tests {
     /// outcome lands as facts the page subscribes to, and the worker
     /// navigates the originating client itself — so a test discovers the
     /// key the way the Hub does, by watching the profile's space list.
-    async fn create_space(driver: &WebDriver, name: &str) -> Result<String> {
+    pub(crate) async fn create_space(driver: &WebDriver, name: &str) -> Result<String> {
         create_space_awaiting_remote(driver, name, false).await
     }
 
