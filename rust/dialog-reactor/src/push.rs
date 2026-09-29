@@ -126,7 +126,13 @@ impl<'a> Push<'a> {
                 .pushes()
                 .iter()
                 .find_map(|upstream| match upstream {
-                    Upstream::Remote { remote, tree, .. } => Some((remote.clone(), tree.clone())),
+                    // A branch never synced with its upstream has no
+                    // divergence to hydrate: the retry would fail the same.
+                    Upstream::Remote {
+                        remote,
+                        tree: Some(tree),
+                        ..
+                    } => Some((remote.clone(), tree.clone())),
                     _ => None,
                 })
         else {

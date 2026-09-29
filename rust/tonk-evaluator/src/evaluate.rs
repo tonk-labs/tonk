@@ -867,9 +867,9 @@ async fn collect_single_matches<Env: EvaluateEnv>(
         if let Term::Variable {
             name: Some(name), ..
         } = term
-            && !variable_names.contains(name)
+            && !variable_names.iter().any(|known| known.as_str() == &**name)
         {
-            variable_names.push(name.clone());
+            variable_names.push(name.to_string());
         }
     }
 
@@ -1026,9 +1026,9 @@ fn render_block(
             if let Term::Variable {
                 name: Some(name), ..
             } = term
-                && !my_vars.contains(name)
+                && !my_vars.iter().any(|known| known.as_str() == &**name)
             {
-                my_vars.push(name.clone());
+                my_vars.push(name.to_string());
             }
         }
     }
@@ -1225,9 +1225,9 @@ fn render_resolver_block(
         if let Term::Variable {
             name: Some(name), ..
         } = term
-            && !my_vars.contains(name)
+            && !my_vars.iter().any(|known| known.as_str() == &**name)
         {
-            my_vars.push(name.clone());
+            my_vars.push(name.to_string());
         }
     }
 

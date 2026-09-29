@@ -503,7 +503,7 @@ fn trivially_tautological(
             let term = query.terms.get(&key);
             let matches = matches!(
                 term,
-                Some(Term::Variable { name: Some(n), .. }) if n.as_str() == key.as_str()
+                Some(Term::Variable { name: Some(n), .. }) if &**n == key.as_str()
             );
             if !matches {
                 all_match = false;
