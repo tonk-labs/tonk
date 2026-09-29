@@ -123,6 +123,7 @@ mod profile_name;
 
 mod evaluate;
 mod library;
+mod seed;
 pub use evaluate::{CommitSummary, EvaluatePath, EvaluateResponse, QueryMatchBlock, QueryResult};
 
 mod query;

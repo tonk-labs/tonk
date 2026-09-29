@@ -313,6 +313,13 @@ const LEGACY_REMOTE_ATTR: &str = "dom.event.current-target.elements.remote/value
 /// required name continue to trigger the same provider.
 const DESCRIPTION_ATTR: &str = "xyz.tonk.command.create-space/description";
 
+/// The `space/create` transient's optional seed: the URL of a notation
+/// document evaluated into the new space on top of the standard library
+/// (see [`super::seed`]). Read from the raw facts for the same reasons as
+/// the remote: the command is matched name-only, and a URL decodes as an
+/// entity rather than as text.
+const SEED_ATTR: &str = "xyz.tonk.command.create-space/seed";
+
 /// Read the optional remote URL from a transient's facts, tolerating
 /// both `Value::String` and `Value::Entity`.
 ///
@@ -353,6 +360,20 @@ fn description_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String>
     facts
         .iter()
         .find(|artifact| artifact.the.to_string() == DESCRIPTION_ATTR)
+        .and_then(|artifact| match &artifact.is {
+            Value::String(value) => Some(value.trim().to_owned()),
+            Value::Entity(value) => Some(value.to_string().trim().to_owned()),
+            _ => None,
+        })
+        .filter(|value| !value.is_empty())
+}
+
+fn seed_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
+    use dialog_artifacts::Value;
+
+    facts
+        .iter()
+        .find(|artifact| artifact.the.to_string() == SEED_ATTR)
         .and_then(|artifact| match &artifact.is {
             Value::String(value) => Some(value.trim().to_owned()),
             Value::Entity(value) => Some(value.to_string().trim().to_owned()),
@@ -551,6 +572,8 @@ pub(crate) struct CreateSpaceRequest {
     remote: Option<String>,
     /// The optional description, read from the transient's raw facts.
     description: Option<String>,
+    /// The optional seed URL, read from the transient's raw facts.
+    seed: Option<String>,
 }
 
 impl crate::reactor::Decode for CreateSpaceRequest {
@@ -576,6 +599,7 @@ impl crate::reactor::Decode for CreateSpaceRequest {
             command,
             remote: remote_from_facts(facts),
             description: description_from_facts(facts),
+            seed: seed_from_facts(facts),
         })
     }
 }
@@ -635,7 +659,38 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
     } else {
         name
     };
-    log!("command CreateSpace name={} remote={:?}", name, remote);
+    log!(
+        "command CreateSpace name={} remote={:?} seed={:?}",
+        name,
+        remote,
+        request.seed
+    );
+
+    // A seed is fetched and checked before anything is created, so one that
+    // cannot be used fails the create instead of leaving a space without the
+    // definitions it was made for.
+    let seed = match &request.seed {
+        None => None,
+        Some(reference) => match prepare_seed(reference).await {
+            Ok(syntax) => Some(syntax),
+            Err(error) => {
+                log!(
+                    "CreateSpace '{}': seed {} refused: {}",
+                    name,
+                    reference,
+                    error
+                );
+                report_space_creation(
+                    env.state(),
+                    &receipt,
+                    "failed",
+                    &format!("Couldn't use those definitions: {error}"),
+                )
+                .await;
+                return;
+            }
+        },
+    };
 
     // The space's seed is custodied under the account before the
     // space exists. A linked device whose root record predates the
@@ -677,6 +732,31 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
         env.client(),
         tonk_worker_api::AnalyticsEvent::SpaceCreated { space: key.clone() },
     );
+
+    // The standard library is in; the seed goes on top of it, before the
+    // creator is taken into the space.
+    if let Some(seed) = seed {
+        let applied = {
+            let tonk = env.state().read().await;
+            super::evaluate::seed_syntax_on_branch(
+                &tonk,
+                tonk.reactor.repository(&key).branch("main"),
+                seed,
+            )
+            .await
+        };
+        if let Err(error) = applied {
+            log!("CreateSpace '{}': seed failed: {}", key, error);
+            report_space_creation(
+                env.state(),
+                &receipt,
+                "failed",
+                &format!("The space was created, but its definitions couldn't be added: {error}"),
+            )
+            .await;
+            return;
+        }
+    }
 
     // 2. The space is created and seeded — drop the creator into
     //    it. Same page-capability channel as the join redirect: a
@@ -732,6 +812,18 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
     {
         log!("CreateSpace '{}': remote attach failed: {}", key, error);
     }
+}
+
+/// Fetch and check the seed at `reference` against the standard library a
+/// new space is seeded with first. See [`super::seed::prepare`].
+async fn prepare_seed(reference: &str) -> Result<tonk_notation::Syntax, String> {
+    let library = fetch_standard_library(STANDARD_LIBRARY_URL)
+        .await
+        .map_err(|error| format!("the standard library is unavailable: {error}"))?;
+    let core = super::library::parse(&library)
+        .await
+        .map_err(|error| format!("the standard library does not parse: {error}"))?;
+    super::seed::prepare(reference, &core).await
 }
 
 /// Per-command feedback is local overlay state, never account data. A fresh

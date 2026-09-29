@@ -55,15 +55,8 @@ impl Library {
         Self { root }
     }
 
-    /// The library-relative path `uri` names, when it is inside the
-    /// library directory. `Url` has already normalized `..` segments
-    /// away, so a prefix test cannot be walked out of.
     fn contains(&self, uri: &Url) -> bool {
-        uri.scheme() == self.root.scheme()
-            && uri.host_str() == self.root.host_str()
-            && uri.port_or_known_default() == self.root.port_or_known_default()
-            && uri.path().starts_with(self.root.path())
-            && uri.query().is_none()
+        within(&self.root, uri)
     }
 }
 
@@ -89,6 +82,17 @@ async fn read(uri: &Url) -> Result<Vec<u8>, String> {
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 async fn read(uri: &Url) -> Result<Vec<u8>, String> {
     tonk_library::Bundled.load(uri).await
+}
+
+/// Whether `uri` is inside the directory `root`: same origin, a path
+/// under the root's, and no query. `Url` has already normalized `..`
+/// segments away, so a prefix test cannot be walked out of.
+pub(super) fn within(root: &Url, uri: &Url) -> bool {
+    uri.scheme() == root.scheme()
+        && uri.host_str() == root.host_str()
+        && uri.port_or_known_default() == root.port_or_known_default()
+        && uri.path().starts_with(root.path())
+        && uri.query().is_none()
 }
 
 /// Parse a library body at the library's location and inline what it
