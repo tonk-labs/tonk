@@ -683,6 +683,11 @@ view!:
       .srow:hover .n { text-decoration:underline; text-underline-offset:4px; }
       .space-preview { position:relative; height:150px; overflow:hidden;
         flex:none; border-bottom:1px solid var(--ink); background:var(--panel); }
+      .space-preview img { position:absolute; inset:-8px; width:calc(100% + 16px);
+        height:calc(100% + 16px); object-fit:cover; object-position:top; filter:blur(6px); pointer-events:none; }
+      .space-preview img[data-preview-pending] { opacity:0; }
+      .space-preview:has(img:not([data-preview-pending]))::before,
+      .space-preview:has(img:not([data-preview-pending]))::after { display:none; }
       .space-preview::before, .space-preview::after { content:""; position:absolute;
         background:color-mix(in srgb, var(--ink) 13%, var(--card)); filter:blur(7px); }
       .space-preview::before { width:72%; height:58%; inset:10% auto auto -8%; }
@@ -894,7 +899,7 @@ view!:
                helpers read an element's own attribute and never walk ancestors. -->
           <div class="srow-wrap space-card" data-presence={presence} data-space-subject={subject} data-id={this}>
             <a class="srow" href="/space/{subject}">
-              <span class="space-preview" aria-hidden="true"></span>
+              <span class="space-preview" aria-hidden="true"><img data-space-thumbnail="{subject}" alt="" data-preview-pending decoding="async" loading="lazy"></span>
               <span class="space-caption"><span class="n">{name}</span><span class="space-description">{description}</span></span>
             </a>
             <!-- Both verbs sit outside the anchor and are laid over it: a
@@ -2084,7 +2089,7 @@ view!:
 # mounts a space. Re-running it over the same ordered subjects gives the same
 # CSS variables, including after a fact-driven rerender.
 element!: &hub-collection
-  description: A space-card collection with stable decorative frames.
+  description: A space-card collection with cached blurred home previews and decorative fallbacks.
   method:
     hash: |
       (self, value) => {
@@ -2150,13 +2155,39 @@ element!: &hub-collection
           card.style.setProperty('--fr-fl', frame.leftReach.toFixed(3));
         });
       }
+    previews: |
+      async (self) => {
+        const images = [...self.querySelectorAll('img[data-space-thumbnail]')];
+        const pending = images.filter(image => image.dataset.previewRequested !== image.dataset.spaceThumbnail);
+        if (!pending.length || !window.tonk?.preview) return;
+        for (const image of pending) {
+          image.dataset.previewRequested = image.dataset.spaceThumbnail;
+          image.setAttribute('data-preview-pending', '');
+          image.removeAttribute('src');
+        }
+        try {
+          const repos = [...new Set(pending.map(image => image.dataset.spaceThumbnail))];
+          for (let offset = 0; offset < repos.length; offset += 200) {
+            const thumbnails = await window.tonk.preview({ action: 'get', repos: repos.slice(offset, offset + 200) });
+            if (!self.isConnected) return;
+            for (const image of pending) {
+              const src = thumbnails?.[image.dataset.spaceThumbnail];
+              if (!src || !image.isConnected) continue;
+              image.onload = () => { image.removeAttribute('data-preview-pending'); };
+              image.onerror = () => { image.setAttribute('data-preview-pending', ''); };
+              image.src = src;
+            }
+          }
+        } catch (_) { /* The decorative preview remains when storage is unavailable. */ }
+      }
     connected: |
       (self) => {
         self.deal();
+        self.previews();
         self._observer?.disconnect();
-        const observer = new MutationObserver(() => self.deal());
+        const observer = new MutationObserver(() => { self.deal(); self.previews(); });
         observer.observe(self, { childList: true, subtree: true, attributes: true,
-          attributeFilter: ['data-space-subject'] });
+          attributeFilter: ['data-space-subject', 'data-space-thumbnail'] });
         self._observer = observer;
       }
     disconnected: |
@@ -3045,7 +3076,7 @@ view!:
         tonk-view:has(> tonk-display[data-state="no-model"]) > tonk-site,
         tonk-view:has(> tonk-display[data-state="no-model"]) > tonk-fab { display: none; }
       </style>
-      <tonk-site with="main@{id}" allow="main@{id}" path={rest}></tonk-site>
+      <tonk-site data-space-preview with="main@{id}" allow="main@{id}" path={rest}></tonk-site>
       <tonk-fab with="{profile-branch}@profile:tonk" space={id}></tonk-fab>
       <tonk-display with={id} entity={id} model=tonk:repository view=title>
         <!-- `no-model` is now the absent-space panel below, which sets its

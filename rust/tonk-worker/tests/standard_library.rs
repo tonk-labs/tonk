@@ -774,7 +774,7 @@ fn it_deals_stable_weighted_frames_from_space_identity() {
         "data-space-subject",
         "const stepDown = { 15: 7, 7: 3, 3: 1, 1: 1 }",
         "--fr-r-mobile",
-        "attributeFilter: ['data-space-subject']",
+        "attributeFilter: ['data-space-subject', 'data-space-thumbnail']",
     ] {
         assert!(
             collection.contains(contract),
