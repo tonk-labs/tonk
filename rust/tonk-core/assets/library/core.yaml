@@ -2712,17 +2712,6 @@ palette/argument!:
   role: palette/object
   noun: member/account
 
-palette/verb!:
-  this: tonk/rename-repository
-  name: "rename"
-
-palette/argument!:
-  command: tonk/rename-repository
-  field: rename-repository/subject
-  role: palette/object
-  noun: tonk/repository
-
-palette/argument!:
-  command: tonk/rename-repository
-  field: rename-repository/name
-  role: palette/goal
+# `tonk/rename-repository` has no verb here: the profile's own rename
+# (`rename space`, the FABB's) says the same thing, and the palette reads
+# both branches, so a verb here would offer every rename twice.

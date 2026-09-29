@@ -241,3 +241,46 @@ fn it_scores_a_command_higher_for_the_words_it_was_chosen_for() {
     request.memory = choices("rem");
     assert_eq!(score(&request, "concept:expel"), before);
 }
+
+#[test]
+fn it_completes_the_input_up_to_the_first_empty_argument() {
+    let top = &propose(&request("ren"))[0];
+    assert_eq!(top.completion.as_deref(), Some("rename Budget to "));
+    // The typed part stays as typed.
+    let top = &propose(&request("REN"))[0];
+    assert_eq!(top.completion.as_deref(), Some("REName Budget to "));
+    // Nothing to add once the input says it all.
+    let top = &propose(&request("rename this to Q3"))[0];
+    assert_eq!(top.completion, None);
+}
+
+#[test]
+fn it_drops_readings_that_only_fit_by_taking_the_input_as_text() {
+    let shown: Vec<String> = propose(&request("ren"))
+        .iter()
+        .map(|proposal| proposal.parse.display_text())
+        .collect();
+    assert!(
+        !shown.iter().any(|text| text.ends_with("[ren]")),
+        "{shown:?}"
+    );
+}
+
+#[test]
+fn it_says_which_roles_take_which_kind_of_thing() {
+    let top = &propose(&request("expel bob"))[0];
+    assert_eq!(
+        top.nouns,
+        BTreeMap::from([("object".to_owned(), "member".to_owned())])
+    );
+}
+
+#[test]
+fn it_reads_an_accepted_completion_back_as_the_same_command() {
+    let completion = propose(&request("ren"))[0].completion.clone().unwrap();
+    let top = &propose(&request(&format!("{completion}Q3")))[0];
+    assert_eq!(
+        top.claim.as_ref().unwrap()["claims"][0]["application"]["parameters"],
+        json!({ "subject": "did:key:space", "name": "Q3" })
+    );
+}

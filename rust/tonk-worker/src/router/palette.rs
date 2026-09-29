@@ -19,6 +19,23 @@ use tonk_palette::{ConceptRows, Row, Source};
 
 const CORE: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
 
+const RENAME: &str = r#"
+palette/verb!:
+  this: tonk/rename-repository
+  name: "rename"
+
+palette/argument!:
+  command: tonk/rename-repository
+  field: rename-repository/subject
+  role: palette/object
+  noun: tonk/repository
+
+palette/argument!:
+  command: tonk/rename-repository
+  field: rename-repository/name
+  role: palette/goal
+"#;
+
 fn var(name: &str) -> Value {
     json!({ "?": { "name": name } })
 }
@@ -217,6 +234,9 @@ async fn it_reads_the_palette_from_a_seeded_space_and_runs_what_it_proposes() {
     let subject = created["subject"].as_str().unwrap().to_owned();
     let evaluate = format!("/api/repository/{key}/branch/main/evaluate");
     send(&app, "POST", &evaluate, "application/yaml", CORE.into()).await;
+    // The core library leaves the space's rename unsaid (the profile's
+    // says it); say it here, so a rule-handled command runs end to end.
+    send(&app, "POST", &evaluate, "application/yaml", RENAME.into()).await;
     send(
         &app,
         "POST",

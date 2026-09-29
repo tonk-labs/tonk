@@ -156,7 +156,7 @@ a worker command.
 | --- | --- | --- |
 | `dialog-palette` | dialog-db, `rust/dialog-palette` | The Parser 2 port: grammar, registry, 11-step pipeline, scoring, memory. Pure, no IO, native and wasm. |
 | `tonk-palette` | tonk, `rust/tonk-palette` | Joins subscription rows into a registry (labels rendered with `tonk-template`), parses, builds the command claim. `web::install` puts `window.tonk.palette.parse` on the guest. |
-| `<command-palette>` | `profile.yaml`, an `element!` (not `tonk-`: the element runtime never announces `tonk-` or `wa-` tags) | Mounted in the space chrome beside `<tonk-fab>`. On Cmd/Ctrl+K or Cmd/Ctrl+Shift+P it subscribes to the palette rows on `main@<space>` and the profile branch, resolves each noun concept the way `<tonk-display>` resolves a model (descriptor from `db.meta/source`, rows, `label` facet), calls `parse` per keystroke, and transacts the chosen claim. |
+| `<command-palette>` | `profile.yaml`, an `element!` (not `tonk-`: the element runtime never announces `tonk-` or `wa-` tags) | The FABB's command line: slotted into `<tonk-fab>`'s `command` slot, between the header and the actions, shown while the menu is open. With nothing typed the bar's actions show (the menu is the empty palette); typing sets `commanding` on the bar and the proposals take the actions' place. The top proposal completes inline as a selection (Tab/→ takes it, ↑/↓ or Ctrl+N/P move and the selection follows). Rows show the verb bold, things boxed with their kind (`space`, `member`), typed text quoted, and empty arguments dashed. On Cmd/Ctrl+K or Cmd/Ctrl+Shift+P it subscribes to the palette rows on `main@<space>` and the profile branch, resolves each noun concept the way `<tonk-display>` resolves a model (descriptor from `db.meta/source`, rows, `label` facet), calls `parse` per keystroke, and transacts the chosen claim. |
 
 ## Memory
 
@@ -196,6 +196,10 @@ Nothing prunes them yet.
   two verbs filling it differently — which the argument model cannot yet
   express, since a verb has no fixed field values), or the palette says
   only "toggle sync".
+- **A name containing a delimiter reads two ways.** "rename Welcome to
+  Tonk to Q3" is also "rename [Welcome…] to [Tonk to Q3]"; both score
+  alike, so both are offered. Ubiquity has the same ambiguity; quoting, or
+  preferring readings whose noun text is a whole label, would settle it.
 - **No palette on the hub.** The element is mounted in the space chrome, so
   after "go home" there is nothing to open until a space is.
 

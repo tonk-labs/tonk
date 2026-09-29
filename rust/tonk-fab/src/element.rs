@@ -117,9 +117,12 @@ impl CustomElement for TonkFab {
     }
 
     fn inject_children(&mut self, this: &HtmlElement) {
-        this.set_inner_html(&crate::markup::stacks_html(
-            &this.get_attribute("space").unwrap_or_default(),
-        ));
+        // Appended, not assigned: what the page authors inside the bar (the
+        // `command` slot's occupant) stays where it was put.
+        let _ = this.insert_adjacent_html(
+            "beforeend",
+            &crate::markup::stacks_html(&this.get_attribute("space").unwrap_or_default()),
+        );
     }
 
     fn connected_callback(&mut self, this: &HtmlElement) {

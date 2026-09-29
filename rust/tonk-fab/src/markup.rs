@@ -49,6 +49,12 @@ button,a{ min-height:48px; font:600 17px/1.1 'IBM Plex Sans Condensed','Arial Na
 .space .n{ min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .space .edit{ text-align:left; }
 .run{ display:grid; }
+/* The command line sits between the header and the actions, and only while
+   the menu is open. What it slots in says, with a `commanding` attribute on the host,
+   when it has taken the actions' place. */
+.command{ display:none; min-width:0; }
+.w.menu-open .command{ display:block; }
+:host([commanding]) .run{ display:none!important; }
 .run[hidden],.action[hidden],.panel[hidden],.more,.mw{ display:none!important; }
 .action{ display:flex; align-items:center; justify-content:flex-start; gap:18px;
   padding:0 28px 0 16px; text-align:left; text-decoration:none; color:var(--_ink); border-radius:0; }
@@ -155,6 +161,7 @@ pub const BAR_HTML: &str = r#"<div class="w">
       <button class="fab" data-cell="sync" part="fab" aria-label="collapse bar"><span class="disc st"></span></button>
       <button class="space" data-cell="space" aria-expanded="false" aria-controls="fabb-actions"><span class="n"></span></button>
     </div>
+    <div class="command"><slot name="command"></slot></div>
     <nav class="run" id="fabb-actions" aria-label="space actions" hidden>
       <button class="action login" data-action="account" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3h6v18h-6M3 12h12m-5-5 5 5-5 5"/></svg><span>add an account</span></button>
       <button class="action condition" data-action="condition" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v6m0 4h.01"/></svg><span></span></button>
@@ -523,6 +530,15 @@ mod tests {
         ] {
             assert!(!stacks_html("did:key:z6Mk").contains(removed));
         }
+    }
+
+    #[test]
+    fn it_seats_the_command_line_between_the_header_and_the_actions() {
+        let header = BAR_HTML.find(r#"class="header""#).unwrap();
+        let command = BAR_HTML.find(r#"<slot name="command">"#).unwrap();
+        let run = BAR_HTML.find(r#"class="run""#).unwrap();
+        assert!(header < command && command < run);
+        assert!(BAR_CSS.contains(":host([commanding]) .run{ display:none!important; }"));
     }
 
     #[test]

@@ -15,7 +15,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use dialog_palette::{
-    Argument, Candidate, Context, Grammar, Memory, Noun, Parse, Registry, Value, Verb, parse,
+    Argument, Candidate, Context, Grammar, Memory, Noun, Parse, Registry, SegmentKind, Value, Verb,
+    parse,
 };
 use ipld_core::ipld::Ipld;
 use serde::{Deserialize, Serialize};
@@ -139,7 +140,25 @@ pub struct Proposal {
     /// The transact request that runs it; `None` while an argument is
     /// empty.
     pub claim: Option<serde_json::Value>,
+    /// The kind of thing each role takes, by role, for arguments whose
+    /// noun is a concept: the concept's word ("space", "member"). Typed
+    /// text has none. What lets a view say which parts are nouns.
+    #[serde(default)]
+    pub nouns: BTreeMap<String, String>,
+    /// What the input reads as if this parse were taken as typed so far:
+    /// the input, followed by the rest of the verb, its filled arguments,
+    /// and the delimiter of the first empty one. `None` unless it extends
+    /// the input as typed, so it can be shown ahead of the cursor and
+    /// typed over.
+    #[serde(default)]
+    pub completion: Option<String>,
 }
+
+/// Proposals scoring below this fraction of the best one are not shown:
+/// a reading that only fits by taking the input as some argument's text
+/// ("rename Home to [ren]") ranks an order of magnitude below the reading
+/// it is a prefix of.
+const RELEVANCE: f64 = 0.5;
 
 /// Separates a branch from a command in a verb id, so one command
 /// declared on two branches stays two verbs.
@@ -182,14 +201,77 @@ pub fn propose(request: &Request) -> Vec<Proposal> {
             .map(|(branch, command)| (branch.to_owned(), command.to_owned()))
             .unwrap_or_default();
         let claim = claim(&parse, &fields, request.now);
+        let nouns = registry
+            .verbs
+            .iter()
+            .find(|verb| verb.id == parse.verb)
+            .map(|verb| {
+                verb.arguments
+                    .iter()
+                    .filter(|argument| matches!(argument.noun, Noun::Concept(_)))
+                    .map(|argument| (argument.role.clone(), argument.label.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let completion = completion(&request.input, &parse);
         Proposal {
             branch,
             command,
             parse,
             claim,
+            nouns,
+            completion,
         }
     })
+    .scan(None, |best: &mut Option<f64>, proposal| {
+        let best = *best.get_or_insert(proposal.parse.score);
+        Some((proposal.parse.score >= best * RELEVANCE).then_some(proposal))
+    })
+    .flatten()
     .collect()
+}
+
+/// The parse read back as text: its verb, the filled arguments with their
+/// delimiters, then the delimiter of the first empty argument, ready for
+/// its value. Offered only where it extends `input` as typed (ignoring
+/// case), with the typed part kept as the person typed it.
+fn completion(input: &str, parse: &Parse) -> Option<String> {
+    let mut text = String::new();
+    let mut pending: Option<&str> = None;
+    for segment in &parse.display {
+        match segment.kind {
+            SegmentKind::Missing => {
+                if let Some(delimiter) = pending.take() {
+                    push_word(&mut text, delimiter);
+                }
+                text.push(' ');
+                break;
+            }
+            SegmentKind::Delimiter => {
+                if let Some(delimiter) = pending.replace(&segment.text) {
+                    push_word(&mut text, delimiter);
+                }
+            }
+            SegmentKind::Verb | SegmentKind::Argument => {
+                if let Some(delimiter) = pending.take() {
+                    push_word(&mut text, delimiter);
+                }
+                push_word(&mut text, &segment.text);
+            }
+        }
+    }
+    let typed = input.chars().count();
+    let lower = |text: &str| text.to_lowercase();
+    let head: String = text.chars().take(typed).collect();
+    (typed > 0 && text.chars().count() > typed && lower(&head) == lower(input))
+        .then(|| format!("{input}{}", text.chars().skip(typed).collect::<String>()))
+}
+
+fn push_word(text: &mut String, word: &str) {
+    if !text.is_empty() && !text.ends_with(' ') {
+        text.push(' ');
+    }
+    text.push_str(word);
 }
 
 /// The context with each entity given the text a person reads for it:
