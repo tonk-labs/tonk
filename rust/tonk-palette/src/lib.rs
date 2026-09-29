@@ -231,6 +231,36 @@ pub fn propose(request: &Request) -> Vec<Proposal> {
     .collect()
 }
 
+/// What can be done without saying more: every verb whose parse, from
+/// its name alone, is complete — its other arguments filled by defaults
+/// and the clock. One proposal per verb, under its longest name (the most
+/// descriptive), most chosen first and then by name. The palette's empty
+/// state, where a menu would be.
+pub fn menu(request: &Request) -> Vec<Proposal> {
+    let (registry, _) = registry(&request.sources);
+    let memory = memory(&request.memory, &registry);
+    let mut items: Vec<(u32, String, Proposal)> = Vec::new();
+    for verb in &registry.verbs {
+        let Some(name) = verb.names.iter().max_by_key(|name| name.chars().count()) else {
+            continue;
+        };
+        let probe = Request {
+            input: name.clone(),
+            max: 20,
+            ..request.clone()
+        };
+        if let Some(mut proposal) = propose(&probe)
+            .into_iter()
+            .find(|proposal| proposal.parse.verb == verb.id && proposal.claim.is_some())
+        {
+            proposal.completion = None;
+            items.push((memory.score("", &verb.id), name.clone(), proposal));
+        }
+    }
+    items.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    items.into_iter().map(|(_, _, proposal)| proposal).collect()
+}
+
 /// The parse read back as text: its verb, the filled arguments with their
 /// delimiters, then the delimiter of the first empty argument, ready for
 /// its value. Offered only where it extends `input` as typed (ignoring

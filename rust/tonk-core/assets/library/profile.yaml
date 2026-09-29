@@ -5111,12 +5111,17 @@ palette/argument!:
   field: home/time
   role: palette/now
 
+palette/verb!:
+  this: tonk/home
+  name: "go to tonk home"
+
 # The command palette is the FABB's command line. It sits in the bar's
-# `command` slot, between the header and the actions, while the menu is open;
-# Cmd/Ctrl+K (or Cmd/Ctrl+Shift+P) opens the menu and focuses it. With
-# nothing typed the bar shows its actions — the palette's empty state is the
-# menu — and as you type, proposals take their place (`commanding` on the
-# bar). The top proposal completes inline, as a selection ahead of the
+# `command` slot, between the header and the actions, while the menu is open,
+# and takes the cursor whenever it is shown; Cmd/Ctrl+K (or Cmd/Ctrl+Shift+P)
+# opens the menu. It stands in for the bar's actions (`commanding` on the
+# bar): with nothing typed it lists what can be done without saying more,
+# and as you type, what the typing says. Until its rows arrive the bar's
+# own actions stand in. The top proposal completes inline, as a selection ahead of the
 # cursor: typing goes on over it, Tab or → takes it, ↑/↓ (Ctrl+N/P) move to
 # another proposal and the selection follows.
 #
@@ -5151,11 +5156,29 @@ element!: &command-palette
           }
         };
         document.addEventListener('keydown', self.__keys);
+        // Shown whenever the bar's menu opens: take the cursor then, and
+        // start over when it closes.
+        self.__shown = new ResizeObserver(() => {
+          const visible = self.getClientRects().length > 0;
+          if (visible && !self.__visible) {
+            if (!self.__sources) self.start();
+            self.update();
+            self.__input.focus({ preventScroll: true });
+          } else if (!visible && self.__visible) {
+            self.__typed = '';
+            self.__input.value = '';
+          }
+          self.__visible = visible;
+        });
+        self.__shown.observe(self);
       }
     disconnected: |
       (self) => {
         document.removeEventListener('keydown', self.__keys);
         self.__keys = null;
+        if (self.__shown) self.__shown.disconnect();
+        self.__shown = null;
+        self.__visible = false;
         self.stop();
       }
     summon: |
@@ -5204,9 +5227,6 @@ element!: &command-palette
             command-palette .kind { font-size: 12px; opacity: .7; }
             command-palette .text::before { content: '“'; opacity: .6; }
             command-palette .text::after { content: '”'; opacity: .6; }
-            tonk-fab[flip] > command-palette .line { flex-direction: row-reverse; }
-            tonk-fab[flip] > command-palette input { text-align: right; }
-            tonk-fab[flip] > command-palette li { justify-content: flex-end; padding: 8px 55px 8px 28px; }
           </style>
           <div class="line">
             <span class="prompt" aria-hidden="true">&rsaquo;</span>
@@ -5425,30 +5445,32 @@ element!: &command-palette
       (self, keep) => {
         const typed = self.__typed || '';
         const fab = self.closest('tonk-fab');
-        // Anything typed and the proposals take the actions' place.
-        if (fab) fab.toggleAttribute('commanding', typed.length > 0);
         const palette = window.tonk && window.tonk.palette;
         const previous = self.__index || 0;
         self.__proposals = [];
         self.__note = '';
-        if (typed && self.__sources) {
-          if (!palette) {
-            self.__note = 'the palette parser is not loaded in this page';
-          } else {
-            try {
-              self.__proposals = palette.parse({
-                input: typed,
-                max: 5,
-                context: { this: { text: '', entity: self.getAttribute('space') }, selection: null },
-                sources: self.__sources,
-                memory: self.__memory || [],
-                now: Date.now(),
-              });
-            } catch (error) {
-              console.error('<command-palette> parse failed', error);
-            }
+        if (self.__sources && palette) {
+          const request = {
+            input: typed,
+            max: 5,
+            context: { this: { text: '', entity: self.getAttribute('space') }, selection: null },
+            sources: self.__sources,
+            memory: self.__memory || [],
+            now: Date.now(),
+          };
+          try {
+            // Nothing typed: what can be done without saying more.
+            const proposals = typed ? palette.parse(request) : palette.menu(request);
+            self.__proposals = proposals;
+          } catch (error) {
+            console.error('<command-palette> parse failed', error);
           }
+        } else if (typed && self.__sources) {
+          self.__note = 'the palette parser is not loaded in this page';
         }
+        // The palette takes the actions' place once it has something to show;
+        // until its rows arrive the bar's own actions stand in.
+        if (fab) fab.toggleAttribute('commanding', typed.length > 0 || self.__proposals.length > 0);
         // A subscription tick keeps the proposal the person moved to.
         self.__index = keep && previous < self.__proposals.length ? previous : 0;
         // Data landing under a line with no completion shown yet may offer one.
@@ -5459,8 +5481,8 @@ element!: &command-palette
       (self) => {
         const list = self.__list;
         list.textContent = '';
-        if (!self.__typed) return;
         const proposals = self.__proposals || [];
+        if (!self.__typed && !proposals.length) return;
         if (!proposals.length) {
           const note = document.createElement('li');
           note.className = 'note';

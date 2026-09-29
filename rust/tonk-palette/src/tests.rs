@@ -284,3 +284,31 @@ fn it_reads_an_accepted_completion_back_as_the_same_command() {
         json!({ "subject": "did:key:space", "name": "Q3" })
     );
 }
+
+#[test]
+fn it_lists_what_can_be_done_without_saying_more() {
+    let mut request = request("");
+    request.sources[0]
+        .verbs
+        .push(row("concept:members", json!({ "name": "view members" })));
+    let shown: Vec<String> = menu(&request)
+        .iter()
+        .map(|proposal| proposal.parse.display_text())
+        .collect();
+    // Expel wants a member and rename a name; nothing typed says either.
+    assert_eq!(shown, vec!["view members"]);
+
+    // The most chosen come first.
+    request.sources[0]
+        .verbs
+        .push(row("concept:agent", json!({ "name": "connect agent" })));
+    request.memory = vec![row(
+        "choice:0",
+        json!({ "command": "concept:members", "input": "" }),
+    )];
+    let order: Vec<String> = menu(&request)
+        .iter()
+        .map(|proposal| proposal.command.clone())
+        .collect();
+    assert_eq!(order, vec!["concept:members", "concept:agent"]);
+}
