@@ -1795,3 +1795,62 @@ fn it_renders_all_grant_set_receipts_without_claiming_agent_presence() {
             .contains("entity=\"id:tonk:agent-connection\" model=tonk:agent-connection")
     );
 }
+
+/// `/seed/<url>` offers the New-space dialog with the URL carried as the
+/// `seed` of the `space/create` it submits, and says where the definitions
+/// come from before anything is created.
+#[dialog_common::test]
+fn it_offers_to_create_a_space_from_the_url_in_a_seed_link() {
+    assert!(
+        PROFILE_LIBRARY.contains(r#"path: "/seed/{*url}""#),
+        "the profile must route /seed/<url>"
+    );
+    let view = PROFILE_LIBRARY
+        .split("this: tonk:seed/route\n  show:")
+        .nth(1)
+        .expect("the seed route must have a view");
+    assert!(
+        view.contains(r#"<input type="hidden" name="seed" value="{url}">"#),
+        "the dialog's form must carry the captured URL as its seed"
+    );
+    assert!(
+        view.contains("<space-create autoopen>"),
+        "the seed page must open its dialog on arrival"
+    );
+    assert!(
+        view.contains("continue only if you trust where they come from"),
+        "the dialog must warn that the definitions come from elsewhere"
+    );
+    assert!(
+        PROFILE_LIBRARY.contains("parameters.seed = seed;")
+            && PROFILE_LIBRARY.contains("the: 'xyz.tonk.command.create-space/seed'"),
+        "<space-create> must forward a form's seed to space/create"
+    );
+}
+
+/// A real seed link reaches the seed route, not the profile's catch-all,
+/// with the source URL captured whole: its `//` and its own path intact.
+#[dialog_common::test]
+fn it_routes_a_seed_link_to_the_seed_page_with_the_url_intact() {
+    let mut router = tonk_router::Router::new();
+    for line in PROFILE_LIBRARY.lines() {
+        let Some(path) = line
+            .trim()
+            .strip_prefix("path: \"")
+            .and_then(|path| path.strip_suffix('"'))
+        else {
+            continue;
+        };
+        if let Ok(route) = tonk_router::Route::parse_pattern(path) {
+            router.insert(route, path.to_owned());
+        }
+    }
+    let matched = router
+        .recognize("/seed/https://tonk.network/library/notebook.yaml")
+        .expect("a seed link matches a route");
+    assert_eq!(matched.value, "/seed/{*url}");
+    assert_eq!(
+        matched.params.get("url"),
+        Some("https://tonk.network/library/notebook.yaml")
+    );
+}

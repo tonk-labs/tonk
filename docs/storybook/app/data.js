@@ -475,6 +475,14 @@ window.STORYBOOK_DATA = {
       "variants": "Blank/existing home; notation/dry-run/no-sync; file/stdin."
     },
     {
+      "evidence": "Native provider tests seed from a served document and refuse unusable seeds without creating a space; a whole-browser regression seeds a space from another origin through the real dialog and renders the included template, after a missing seed is refused in the dialog.",
+      "gaps": "Sources that deny cross-origin reads, a seed whose apply fails after the pre-check, source updates, and the CLI space new --seed counterpart.",
+      "group": "Spaces: local lifecycle and selection",
+      "id": "SPACE-13",
+      "title": "Create a space from the definitions at a URL by opening /seed/<url> and confirming the New-space dialog.",
+      "variants": "Same-origin or cross-origin source that allows reading; source with !includes beside it; missing, non-https, redirecting, non-UTF-8, or unanalyzable source."
+    },
+    {
       "evidence": "Eight space_link tests, including signer recovery and post-invite retry, plus authority/browser happy paths.",
       "gaps": "Crash/retry at every ownership/hosting/listing/upstream stage, partial remote commit, concurrent link.",
       "group": "Spaces: account directory, sync, and collaboration",
@@ -804,6 +812,7 @@ window.STORYBOOK_DATA = {
         "SPACE-06",
         "SPACE-07",
         "SPACE-08",
+        "SPACE-13",
         "UI-04"
       ],
       "name": "Space directory",

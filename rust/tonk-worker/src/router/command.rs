@@ -834,5 +834,119 @@ pub(crate) mod tests {
                 "dispatching space/remove from the profile must remove the space"
             );
         }
+
+        /// Serve `files` (path → body) over plain HTTP/1.1 on a loopback
+        /// port, answering anything else 404, and return the base URL.
+        fn serve(files: &'static [(&'static str, &'static str)]) -> String {
+            use std::io::{BufRead as _, BufReader, Write as _};
+
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            std::thread::spawn(move || {
+                for stream in listener.incoming().flatten() {
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let mut request = String::new();
+                    let _ = reader.read_line(&mut request);
+                    let path = request.split_whitespace().nth(1).unwrap_or("").to_owned();
+                    // Drain the headers so the client sees a clean response.
+                    let mut line = String::new();
+                    while reader.read_line(&mut line).is_ok_and(|n| n > 2) {
+                        line.clear();
+                    }
+                    let mut stream = stream;
+                    let response = match files.iter().find(|(file, _)| *file == path) {
+                        Some((_, body)) => format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        ),
+                        None => "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                            .to_owned(),
+                    };
+                    let _ = stream.write_all(response.as_bytes());
+                }
+            });
+            base
+        }
+
+        /// `create_space_transient` carrying a seed URL, as the /seed
+        /// page's dialog commits it.
+        fn seeded_create_transient(name: &str, seed: &str) -> Changes {
+            let mut changes = create_space_transient(name);
+            the!("xyz.tonk.command.create-space/seed")
+                .of("cmd:create".parse::<Entity>().unwrap())
+                .is(seed.to_string())
+                .assert(&mut changes);
+            changes
+        }
+
+        const SEED_FILES: &[(&str, &str)] = &[
+            (
+                "/lib/seed.yaml",
+                "xyz.test.seed!:\n  this: id:seeded\n  body: !include/text ./body.txt\n",
+            ),
+            ("/lib/body.txt", "hello from a seed\n"),
+        ];
+
+        /// A seeded `space/create` evaluates the document at the seed URL
+        /// into the new space, on top of the standard library, with what it
+        /// includes resolved beside it on the seed's server.
+        #[dialog_common::test]
+        async fn it_seeds_a_new_space_from_a_url() {
+            let base = serve(SEED_FILES);
+            let state = test_state().await;
+            dispatch(
+                &state,
+                CommandOrigin::default(),
+                seeded_create_transient("Seeded", &format!("{base}/lib/seed.yaml")),
+            )
+            .await;
+            let spaces = space_subjects(&state).await;
+            assert_eq!(spaces.len(), 1, "the seeded create must mint a space");
+
+            let key = spaces[0].repo_key().to_owned();
+            let tonk = state.read().await;
+            let response = crate::router::evaluate::evaluate_body(
+                &tonk,
+                &key,
+                "main",
+                "xyz.test.seed:\n  this: id:seeded\n  body: ?body\n".to_owned(),
+                false,
+            )
+            .await
+            .unwrap();
+            let body = response.matches_after[0].results[0]
+                .fields
+                .get("body")
+                .cloned();
+            assert_eq!(
+                body,
+                Some(serde_json::Value::String("hello from a seed\n".to_owned())),
+                "the seed's included text must be in the new space"
+            );
+        }
+
+        /// A seed that cannot be used fails the create before anything is
+        /// created: no half-seeded space is left behind.
+        #[dialog_common::test]
+        async fn it_creates_nothing_when_the_seed_cannot_be_used() {
+            let base = serve(SEED_FILES);
+            let state = test_state().await;
+            for seed in [
+                format!("{base}/lib/missing.yaml"),
+                "ftp://example.test/seed.yaml".to_owned(),
+                "not a url".to_owned(),
+            ] {
+                dispatch(
+                    &state,
+                    CommandOrigin::default(),
+                    seeded_create_transient("Refused", &seed),
+                )
+                .await;
+                assert!(
+                    space_subjects(&state).await.is_empty(),
+                    "an unusable seed ({seed}) must not create a space"
+                );
+            }
+        }
     }
 }

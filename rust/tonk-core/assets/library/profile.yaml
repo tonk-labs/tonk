@@ -155,6 +155,16 @@ command!: &space/create
       description: The optional short description to persist with the space.
       the: xyz.tonk.command.create-space/description
       as: text
+    seed:
+      description: >
+        The URL of a notation document to evaluate into the new space, on
+        top of the standard library. It is parsed at that URL, so what it
+        `!include`s resolves beside it. The worker fetches and checks it
+        before creating anything, and a seed it cannot use fails the create.
+        A page that submits one shows where the definitions come from and
+        asks first: a seed is somebody else's content, often code.
+      the: xyz.tonk.command.create-space/seed
+      as: text
 
 # Pull a space the account has but this device does not. The Hub's
 # remote rows are hollow — the directory names them but no replica is
@@ -2123,6 +2133,18 @@ element!: &space-create
         const error = self.querySelector('[data-space-create-error]');
         const parameters = { name: form.elements.name.value,
           description: form.elements.description.value, open: form.elements.open.value };
+        const fields = {
+          name: { the: 'xyz.tonk.command.create-space/name', as: 'Text' },
+          open: { the: 'xyz.tonk.command.create-space/open', as: 'Text' },
+          description: { the: 'xyz.tonk.command.create-space/description', as: 'Text' },
+        };
+        // A form that carries a seed (the /seed page's) creates the space
+        // from those definitions; every other form leaves it out.
+        const seed = form.elements.seed?.value?.trim();
+        if (seed) {
+          parameters.seed = seed;
+          fields.seed = { the: 'xyz.tonk.command.create-space/seed', as: 'Text' };
+        }
         try {
           await window.tonk.ready;
           if (!self.isConnected) return;
@@ -2136,11 +2158,7 @@ element!: &space-create
           }).getReader();
           self.__reader = reader;
           await window.tonk.transact({ claims: [{ op: 'assert', application: {
-            predicate: { kind: 'transient', concept: { with: {
-              name: { the: 'xyz.tonk.command.create-space/name', as: 'Text' },
-              open: { the: 'xyz.tonk.command.create-space/open', as: 'Text' },
-              description: { the: 'xyz.tonk.command.create-space/description', as: 'Text' },
-            } } },
+            predicate: { kind: 'transient', concept: { with: fields } },
             parameters: { this: id, ...parameters },
           } }] });
           while (self.isConnected) {
@@ -2179,6 +2197,9 @@ element!: &space-create
         self.addEventListener('click', event => {
           if (event.target?.closest?.('[data-space-create-open]')) self.open();
         });
+        // A page whose whole purpose is this dialog (/seed) opens it on
+        // arrival rather than waiting for a click.
+        if (self.hasAttribute('autoopen')) requestAnimationFrame(() => self.open());
       }
     released: |
       (self) => self.disconnected()
@@ -2603,6 +2624,73 @@ view!:
       <div class="display-view-slot">
         <tab-title text="Tonk"></tab-title>
         <tonk-tree with="{branch}@{repo}"></tonk-tree>
+      </div>
+
+# The /seed route: `/seed/<url>` offers to create a space from the
+# definitions at <url> — `/seed/https://tonk.network/library/notebook.yaml`.
+# The URL is the rest of the path, captured whole (so its own `//` and
+# slashes survive) and percent-decoded, so an encoded link works too.
+#
+# Nothing happens on arrival but the question. The page opens the same
+# New-space dialog the Hub uses, with the source shown and a warning that
+# the definitions can carry code, and a hidden `seed` field that makes the
+# dialog's `space/create` seed the new space from that URL. The worker
+# fetches and checks the document before creating anything. Cancelling
+# leaves the page explaining that nothing was created.
+route!: &route/seed
+  this: id:tonk:route/seed
+  path: "/seed/{*url}"
+  concept: tonk:seed/route
+
+concept!: &seed/route
+  this: tonk:seed/route
+  description: The /seed page — create a space from the definitions at a URL.
+  with:
+    url:
+      description: The URL of the definitions, captured from the path.
+      the: xyz.tonk.site/url
+      cardinality: one
+      as: text
+
+view!:
+  this: tonk:seed/route
+  show:
+    ui: |
+      <div class="hub-page seed-page">
+        <link rel="stylesheet" with:src="ui@space">
+        <tab-title text="New space — Tonk"></tab-title>
+        <style>
+          .seed-view { width:min(576px, 100%); margin:0 auto; padding:48px 16px 80px;
+            display:flex; flex-direction:column; gap:7px; }
+          .seed-mast { display:block; width:132px; margin:0 auto 56px; }
+          .seed-mast img { display:block; width:100%; height:auto; }
+          :root.wa-dark .seed-mast img { filter:invert(1); }
+          .seed-statement, .seed-narrator { margin:0; padding:10px 14px;
+            background:var(--card); box-shadow:0 0 0 1px var(--ring); }
+          .seed-statement { font:400 13.5px/1.55 var(--sans); color:var(--ink); }
+          .seed-narrator { font:400 13px/1.55 var(--sans); color:var(--soft); }
+          .seed-source { overflow-wrap:anywhere; font-family:'IBM Plex Mono',ui-monospace,monospace; }
+          .seed-narrator a { text-decoration:underline; }
+        </style>
+        <main class="seed-view">
+          <a class="seed-mast" href="/" aria-label="Tonk home"><img src="/images/tonk-wordmark.svg" alt=""></a>
+          <p class="seed-statement">Create a space from the definitions at <span class="seed-source">{url}</span>.</p>
+          <p class="seed-narrator">Nothing is created until you confirm. <a href="/">Back to your spaces</a></p>
+          <space-create autoopen>
+            <tonk-dialog appearance="hub" data-space-create-dialog heading="New space from definitions">
+              <form id="create-space-seed" class="space-create-form" data-space-create-form>
+                <p class="space-create-help">The definitions at <span class="seed-source">{url}</span> will be added to this space. They can include code that runs in it, so continue only if you trust where they come from.</p>
+                <label class="space-create-field"><span>space name</span><input name="name" type="text" required maxlength="100" autocomplete="off"></label>
+                <label class="space-create-field"><span>a short description <small>/ optional</small></span><textarea name="description" maxlength="240"></textarea></label>
+                <input type="hidden" name="open" value="true">
+                <input type="hidden" name="seed" value="{url}">
+                <p class="space-create-error" data-space-create-error role="alert"></p>
+              </form>
+              <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
+              <button class="m-go" slot="actions" type="submit" form="create-space-seed" data-space-create-submit>create space</button>
+            </tonk-dialog>
+          </space-create>
+        </main>
       </div>
 
 # The space route: the profile routes ANY `/space/{id}/...` to the same UI — a
