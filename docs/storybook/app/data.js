@@ -499,6 +499,14 @@ window.STORYBOOK_DATA = {
       "variants": "Catalog loading/failure/retry; empty or populated collection; details and photo; back from copy options; unavailable or changed source; retry; remote template home."
     },
     {
+      "evidence": "Focused cache/authorization/fallback tests and a pre-rebase Chrome smoke check of automatic capture, decoded blurred cards, and zero mounted space frames in the Hub.",
+      "gaps": "Browser coverage after the Discover rebase, other browsers, physical mobile performance, and complex media fidelity.",
+      "group": "Spaces: local lifecycle and selection",
+      "id": "SPACE-16",
+      "title": "Recognize a visited home from its blurred Hub thumbnail.",
+      "variants": "Unvisited/visited; unsupported view; cache miss/expiry; account switch; desktop/narrow."
+    },
+    {
       "evidence": "Eight space_link tests, including signer recovery and post-invite retry, plus authority/browser happy paths.",
       "gaps": "Crash/retry at every ownership/hosting/listing/upstream stage, partial remote commit, concurrent link.",
       "group": "Spaces: account directory, sync, and collaboration",
@@ -831,6 +839,7 @@ window.STORYBOOK_DATA = {
         "SPACE-13",
         "SPACE-14",
         "SPACE-15",
+        "SPACE-16",
         "UI-04"
       ],
       "name": "Space directory",
@@ -842,7 +851,7 @@ window.STORYBOOK_DATA = {
         "rust/tonk-worker/src/router/repository/duplication.rs"
       ],
       "status": "captured",
-      "summary": "The Hub lists local, owned, and joined spaces and offers create, duplicate, and Discover template-copy actions. The screenshot predates duplication and Discover.",
+      "summary": "The Hub lists local, owned, and joined spaces and offers create, duplicate, and Discover template-copy actions. Visited homes can show cached blurred thumbnails without opening spaces from the Hub. The screenshot predates duplication, Discover, and real previews.",
       "surface": "browser"
     },
     {
@@ -2089,6 +2098,14 @@ window.STORYBOOK_DATA = {
       "result": "Partial pass (2026-09-29, post-rebase artifact 12b87892fca818d5): browser menu/name/create/navigation and native data/identity/containment checks pass. Interrupted writes, remote hydration and retry after response loss are unrun."
     },
     {
+      "claim": "Visited homes have blurred cached Hub previews without background space mounts (Space directory).",
+      "device": "browser + cache failure",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "SPACE-16",
+      "priority": "P2",
+      "result": "Partial pass: focused Node contracts and pre-rebase Chrome desktop/narrow smoke check. Discover-integrated browser, other browsers and physical-device performance unrun."
+    },
+    {
       "claim": "Status reports R0–R6 without mutation (Settle).",
       "device": "two-actor",
       "file": "verification/cli-spaces-ui.md",
@@ -2356,7 +2373,7 @@ window.STORYBOOK_DATA = {
   "verificationResults": {
     "blocked": 0,
     "fail": 0,
-    "other": 12,
+    "other": 13,
     "pass": 2,
     "unrun": 107
   },
