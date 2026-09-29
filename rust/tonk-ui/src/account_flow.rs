@@ -3535,6 +3535,163 @@ mod tests {
         Ok(())
     }
 
+    /// Serve `files` (path → body) over plain HTTP on a loopback port,
+    /// as some other site would, and return the base URL. Every response
+    /// allows any origin to read it: a seed is fetched by the service
+    /// worker, cross-origin, and a server that does not say so cannot be
+    /// read at all.
+    fn serve_cross_origin(files: Vec<(&'static str, String)>) -> Result<String> {
+        use std::io::{BufRead as _, BufReader, Write as _};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let base = format!("http://{}", listener.local_addr()?);
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let Ok(clone) = stream.try_clone() else {
+                    continue;
+                };
+                let mut reader = BufReader::new(clone);
+                let mut request = String::new();
+                let _ = reader.read_line(&mut request);
+                let path = request.split_whitespace().nth(1).unwrap_or("").to_owned();
+                let mut line = String::new();
+                while reader.read_line(&mut line).is_ok_and(|n| n > 2) {
+                    line.clear();
+                }
+                let response = match files.iter().find(|(file, _)| *file == path) {
+                    Some((_, body)) => format!(
+                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\n\
+                         Content-Type: text/plain; charset=utf-8\r\n\
+                         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    ),
+                    None => "HTTP/1.1 404 Not Found\r\nAccess-Control-Allow-Origin: *\r\n\
+                             Content-Length: 0\r\nConnection: close\r\n\r\n"
+                        .to_owned(),
+                };
+                let mut stream = stream;
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        Ok(base)
+    }
+
+    /// A `/seed/<url>` link creates a space from the definitions at <url>,
+    /// served by another site, and only once the person confirms.
+    ///
+    /// The seed declares a `/seeded` route whose view template is a file it
+    /// `!include`s from beside it, so the page rendering in the new space is
+    /// the proof that every hop happened: the link reached the seed page,
+    /// its dialog submitted the URL as the seed, the worker fetched it
+    /// cross-origin and inlined its include, and the space it created
+    /// carries the result. First, a seed that does not exist must say so in
+    /// the dialog and create nothing.
+    #[dialog_common::test]
+    async fn it_creates_a_space_from_a_seed_link(env: TestEnvironment) -> Result<()> {
+        let seed = concat!(
+            "route!: &route/seeded\n",
+            "  this: id:tonk:e2e/route/seeded\n",
+            "  path: \"/seeded\"\n",
+            "  concept: tonk:e2e/seeded\n",
+            "\n",
+            "concept!: &e2e/seeded\n",
+            "  this: tonk:e2e/seeded\n",
+            "  description: A page defined by a seed.\n",
+            "  with:\n",
+            "    path:\n",
+            "      description: The active path, picked off the site.\n",
+            "      the: xyz.tonk.site/path\n",
+            "      cardinality: one\n",
+            "      as: text\n",
+            "\n",
+            "view!:\n",
+            "  this: tonk:e2e/seeded\n",
+            "  show:\n",
+            "    ui: !include/text ./seeded.html\n",
+        );
+        let base = serve_cross_origin(vec![
+            ("/lib/seed.yaml", seed.to_owned()),
+            (
+                "/lib/seeded.html",
+                "<p class=\"seeded-mark\">seeded from another site</p>\n".to_owned(),
+            ),
+        ])?;
+
+        let driver = driver_with_prf(&env).await?;
+        driver.goto(env.tonk_web.as_str()).await?;
+        let before = space_keys(&driver).await?;
+
+        // A seed that is not there: the dialog says so, nothing is created.
+        let missing = format!("{base}/lib/missing.yaml");
+        driver
+            .goto(env.tonk_web.join(&format!("seed/{missing}"))?.as_str())
+            .await?;
+        enter_guest(&driver).await?;
+        // The dialog opens itself on arrival; its field is usable once shown.
+        wait_for_displayed(&driver, "space-create[autoopen] input[name=name]")
+            .await?
+            .send_keys("Not seeded")
+            .await?;
+        click(&driver, "space-create[autoopen] [data-space-create-submit]").await?;
+        wait_for_text_containing(
+            &driver,
+            "space-create[autoopen] [data-space-create-error]",
+            "Couldn't use those definitions",
+        )
+        .await?;
+        let refusal = element(&driver, "space-create[autoopen] [data-space-create-error]")
+            .await?
+            .text()
+            .await?;
+        assert!(refusal.contains("404"), "the refusal says why: {refusal}");
+        driver.enter_default_frame().await?;
+        assert_eq!(
+            space_keys(&driver).await?,
+            before,
+            "a seed that cannot be used must not create a space"
+        );
+
+        // The real seed: the page names where it comes from, and asks.
+        let source = format!("{base}/lib/seed.yaml");
+        driver
+            .goto(env.tonk_web.join(&format!("seed/{source}"))?.as_str())
+            .await?;
+        enter_guest(&driver).await?;
+        let name = wait_for_displayed(&driver, "space-create[autoopen] input[name=name]").await?;
+        wait_for_text_containing(
+            &driver,
+            "space-create[autoopen] .space-create-help",
+            &source,
+        )
+        .await?;
+        let carried = element(&driver, "space-create[autoopen] input[name=seed]")
+            .await?
+            .prop("value")
+            .await?;
+        assert_eq!(
+            carried.as_deref(),
+            Some(source.as_str()),
+            "the dialog must submit the URL it shows"
+        );
+        name.send_keys("Seeded from a link").await?;
+        click(&driver, "space-create[autoopen] [data-space-create-submit]").await?;
+        driver.enter_default_frame().await?;
+        await_url_containing(&driver, "/space/").await?;
+        let key = await_new_space(&driver, &before).await?;
+
+        // The seed's own page, in the new space, rendered from the file it
+        // included.
+        driver
+            .goto(env.tonk_web.join(&format!("space/{key}/seeded"))?.as_str())
+            .await?;
+        enter_space_view(&driver).await?;
+        let mark = wait_for_displayed(&driver, ".seeded-mark").await?;
+        assert_eq!(mark.text().await?, "seeded from another site");
+
+        driver.quit().await?;
+        Ok(())
+    }
+
     #[dialog_common::test]
     async fn it_creates_a_local_only_space_from_the_hub_wizard(env: TestEnvironment) -> Result<()> {
         // The authenticator id comes along so the ceremony can be
