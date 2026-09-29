@@ -17,7 +17,7 @@
 //! envelope that is deliberately unopenable rather than absent.
 
 use anyhow::{Context, Result, bail};
-use dialog_credentials::{Credential, Ed25519Signer, Signer};
+use dialog_credentials::{Ed25519Signer, Signer};
 use dialog_effects::credential::CredentialError;
 use dialog_peer::{Peer, Session};
 use dialog_storage::provider::storage::NativeSpace;
@@ -105,32 +105,14 @@ pub async fn read_if_openable_in(
 /// can never be opened again on this device.
 pub async fn retire(
     profile: &Peer<NativeSpace>,
-    operator: &Peer<NativeSpace, Session>,
+    _operator: &Peer<NativeSpace, Session>,
 ) -> Result<()> {
-    use dialog_credentials::Ed25519Verifier;
-    use dialog_effects::credential::prelude::*;
-    use dialog_varsig::Principal as _;
-
-    let Some(custodian) = load_custodian(profile, operator).await? else {
-        return Ok(());
-    };
+    tonk_account::peer::adopt_kept_key::<NativeSpace>(&profile.did(), ONBOARDING_CUSTODIAN_KEY)
+        .await
+        .context("failed to adopt the onboarding custodian")?;
     tonk_account::peer::forget_kept_key::<NativeSpace>(&profile.did(), ONBOARDING_CUSTODIAN_KEY)
         .await
-        .context("failed to forget the onboarding custodian")?;
-    // A custodian kept in the profile's space before keys left it is
-    // demoted there to its public half, as retirement always did.
-    let verifier: Ed25519Verifier =
-        custodian.did().to_string().parse().map_err(|error| {
-            anyhow::anyhow!("the custodian DID is not an Ed25519 key: {error:?}")
-        })?;
-    profile
-        .did()
-        .credential()
-        .key(ONBOARDING_CUSTODIAN_KEY)
-        .save(Credential::from(verifier))
-        .perform(profile)
-        .await
-        .context("failed to demote the onboarding custodian")
+        .context("failed to forget the onboarding custodian")
 }
 
 /// Mint, wrap, and store a fresh onboarding account.
@@ -260,46 +242,28 @@ async fn load_site(
     }
 }
 
-/// The stored custodian, or `None` when this device has none — a
-/// demoted (verifier-only) record also reads as `None`, which is the
-/// retired state.
+/// The stored custodian, or `None` when this device has none, which is
+/// the retired state. A custodian a release before keys left the profile's
+/// space kept there is moved beside the profile first.
 async fn load_custodian(
     profile: &Peer<NativeSpace>,
     _operator: &Peer<NativeSpace, Session>,
 ) -> Result<Option<Ed25519Signer>> {
-    use dialog_effects::credential::prelude::*;
-
-    if let Some(custodian) = tonk_account::peer::open_kept_key::<NativeSpace>(
+    tonk_account::peer::adopt_kept_key::<NativeSpace>(&profile.did(), ONBOARDING_CUSTODIAN_KEY)
+        .await
+        .context("failed to adopt the onboarding custodian")?;
+    let Some(custodian) = tonk_account::peer::open_kept_key::<NativeSpace>(
         &profile.did(),
         ONBOARDING_CUSTODIAN_KEY,
         false,
     )
     .await
     .context("failed to load the onboarding custodian")?
-    {
-        let Signer::Ed25519(custodian) = custodian.signer().clone();
-        return Ok(Some(custodian));
-    }
-
-    // A custodian kept in the profile's space before keys left it is
-    // still there, and only the profile acting as itself is handed it.
-    let credential = match profile
-        .did()
-        .credential()
-        .key(ONBOARDING_CUSTODIAN_KEY)
-        .load()
-        .perform(profile)
-        .await
-    {
-        Ok(credential) => credential,
-        Err(error) if missing_credential(&error) => return Ok(None),
-        Err(error) => return Err(error).context("failed to load the onboarding custodian"),
-    };
-    let Some(signer) = credential.signer() else {
+    else {
         return Ok(None);
     };
-    let Signer::Ed25519(signer) = signer;
-    Ok(Some(signer.clone()))
+    let Signer::Ed25519(custodian) = custodian.signer().clone();
+    Ok(Some(custodian))
 }
 
 fn missing_credential(error: &CredentialError) -> bool {

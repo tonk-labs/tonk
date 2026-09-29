@@ -16,9 +16,11 @@ use dialog_repository::{
     PeersEnv, Repository, ResolveEnv, SiteAddress, Upstream, contact, peer_did,
 };
 use dialog_storage::provider::storage::{CredentialStore, Storage};
+use dialog_storage::resource::Resource;
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
 use dialog_varsig::Principal as _;
+use std::fmt::Display;
 
 /// The name the key of the system tonk runs as is kept under, in the
 /// credential store of the profile directory. The system owns the storage
@@ -29,9 +31,10 @@ pub const SYSTEM_CREDENTIAL: &str = "tonk-system";
 /// in.
 pub const ACCOUNT_VAULT: &str = "account";
 
-/// The name of the vault below [`ACCOUNT_VAULT`] whose members are the
-/// account's peers, and where site credentials are kept.
-pub const PEER_VAULT: &str = "peer";
+/// The name the key guarding a profile's account before sign-in is kept
+/// under, beside the profile: the account's custodian until the account
+/// is handed over to the one the device signs in to.
+pub const ACCOUNT_CUSTODIAN: &str = "tonk-account-custodian-v1";
 
 /// Open the key of the system tonk runs as, from the credential store in
 /// `directory`, and the store, owned by that system.
@@ -73,9 +76,8 @@ pub async fn open_credential<S>(
     create: bool,
 ) -> Result<SignerCredential, PeerError>
 where
-    S: PeerSpace,
+    S: PeerSpace + Resource<Location, Error: Display>,
     CredentialStore<S>: Provider<storage_fx::Load> + Provider<storage_fx::Create>,
-    Storage<S>: Provider<storage_fx::Load> + Provider<credential_fx::Save<Credential>>,
 {
     let failed = |error: String| PeerError::Open(error);
     match OpenCredential::load(location.name.clone())
@@ -88,22 +90,12 @@ where
         Err(error) => return Err(failed(error.to_string())),
     }
 
-    let at = Subject::from(did!("local:storage"))
-        .attenuate(storage_fx::Storage)
-        .attenuate(location.clone());
-    if let Ok(Credential::Signer(signer)) = at.clone().load().perform(storage).await {
-        at.create(Credential::Signer(signer.clone()))
-            .perform(credentials)
-            .await
-            .map_err(|error| failed(format!("failed to keep the profile's key: {error}")))?;
-        Subject::from(signer.did())
-            .credential()
-            .key(credential_fx::SELF)
-            .save(Credential::Signer(signer.clone()))
-            .perform(storage)
-            .await
-            .map_err(|error| failed(format!("failed to drop the profile's stored key: {error}")))?;
-        return Ok(signer);
+    match credentials.adopt_from(storage, location).await {
+        Ok(Credential::Signer(signer)) => return Ok(signer),
+        Ok(Credential::Verifier(_)) | Err(storage_fx::StorageError::NotFound(_)) => {}
+        Err(error) => {
+            return Err(failed(format!("failed to keep the profile's key: {error}")));
+        }
     }
 
     if !create {
@@ -130,12 +122,11 @@ pub async fn open_peer<S>(
     create: bool,
 ) -> Result<Peer<S>, PeerError>
 where
-    S: PeerSpace,
+    S: PeerSpace + Resource<Location, Error: Display>,
     CredentialStore<S>: Provider<storage_fx::Load> + Provider<storage_fx::Create>,
-    Storage<S>: Provider<storage_fx::Load> + Provider<credential_fx::Save<Credential>>,
 {
     let credential = open_credential(&location, credentials, &storage, create).await?;
-    record_directory(&credential.did(), &location.directory);
+    record_location(&credential.did(), &location);
     let peer = Peer::new(credential.clone())
         .at(location)
         .base(base)
@@ -150,36 +141,96 @@ where
     Ok(peer)
 }
 
-/// The directory each profile opened in this process lives in, by its
-/// DID: where the keys kept beside it are.
-fn directories() -> &'static std::sync::Mutex<std::collections::HashMap<String, Directory>> {
-    static DIRECTORIES: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashMap<String, Directory>>,
+/// Where each profile opened in this process lives, by its DID: its
+/// space, and the directory the keys kept beside it are in.
+fn locations() -> &'static std::sync::Mutex<std::collections::HashMap<String, Location>> {
+    static LOCATIONS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, Location>>,
     > = std::sync::OnceLock::new();
-    DIRECTORIES.get_or_init(Default::default)
+    LOCATIONS.get_or_init(Default::default)
 }
 
-fn record_directory(profile: &dialog_varsig::Did, directory: &Directory) {
-    directories()
+fn record_location(profile: &dialog_varsig::Did, location: &Location) {
+    locations()
         .lock()
         .unwrap_or_else(|poison| poison.into_inner())
-        .insert(profile.to_string(), directory.clone());
+        .insert(profile.to_string(), location.clone());
 }
 
-/// Where the key `name` kept beside the profile `profile` lives: in the
-/// credential store of the profile's directory, under a name of the
-/// profile's own.
-fn kept_key(profile: &dialog_varsig::Did, name: &str) -> Result<Location, CredentialError> {
-    let directory = directories()
+/// Where the profile `profile` opened in this process lives.
+fn location_of(profile: &dialog_varsig::Did) -> Result<Location, CredentialError> {
+    locations()
         .lock()
         .unwrap_or_else(|poison| poison.into_inner())
         .get(&profile.to_string())
         .cloned()
         .ok_or_else(|| {
             CredentialError::NotFound(format!("the profile {profile} was not opened here"))
-        })?;
+        })
+}
+
+/// Where the key `name` kept beside the profile `profile` lives: in the
+/// credential store of the profile's directory, under a name of the
+/// profile's own.
+fn kept_key(profile: &dialog_varsig::Did, name: &str) -> Result<Location, CredentialError> {
+    let directory = location_of(profile)?.directory;
     let owner = blake3::hash(profile.to_string().as_bytes()).to_hex();
     Ok(Location::new(directory, format!("{name}-{owner}")))
+}
+
+/// Move the key `name` a profile from before keys left its space kept
+/// there into the credential store beside it, where [`open_kept_key`]
+/// finds it, and remove it from the space. A record there holding only
+/// the key's public half is a key retired before, and is removed without
+/// being kept.
+///
+/// Safe to run on every open, and to stop anywhere: the key is kept
+/// before it leaves the space, and one the store already keeps is not
+/// replaced.
+pub async fn adopt_kept_key<S>(
+    profile: &dialog_varsig::Did,
+    name: &str,
+) -> Result<(), CredentialError>
+where
+    S: PeerSpace + Resource<Location, Error: Display>,
+    CredentialStore<S>: Provider<storage_fx::Create>,
+{
+    let space = match S::load(&location_of(profile)?).await {
+        Ok(space) => space,
+        Err(error) if S::is_not_found(&error) => return Ok(()),
+        Err(error) => return Err(CredentialError::Storage(error.to_string())),
+    };
+    let held = match profile
+        .clone()
+        .credential()
+        .key(name)
+        .load()
+        .perform(&space)
+        .await
+    {
+        Ok(held) => held,
+        Err(error) if is_missing(&error) => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if let Credential::Signer(_) = &held {
+        let kept = Subject::from(did!("local:storage"))
+            .attenuate(storage_fx::Storage)
+            .attenuate(kept_key(profile, name)?)
+            .create(held)
+            .perform(&CredentialStore::<S>::new())
+            .await;
+        match kept {
+            Ok(_) | Err(storage_fx::StorageError::AlreadyExists(_)) => {}
+            Err(error) => return Err(CredentialError::Storage(error.to_string())),
+        }
+    }
+    profile
+        .clone()
+        .credential()
+        .key(name)
+        .retract()
+        .perform(&space)
+        .await
 }
 
 /// Open the key `name` kept for the profile `profile` in the credential
@@ -234,24 +285,28 @@ where
 }
 
 /// Onboard `peer`, unless its space already records an account: the space
-/// creates the [`ACCOUNT_VAULT`] with the peer as its member, the account
-/// delegates to the peer, and the peer becomes a member of
-/// [`ACCOUNT_VAULT`] → [`PEER_VAULT`], where its site credentials are
-/// kept.
-pub async fn onboard<S: PeerSpace>(peer: &Peer<S>) -> Result<(), CredentialError> {
+/// creates the [`ACCOUNT_VAULT`], guarded by the [`ACCOUNT_CUSTODIAN`]
+/// kept beside the profile, and the account delegates to the peer. The
+/// peer holds no copy of the account's key.
+pub async fn onboard<S>(peer: &Peer<S>) -> Result<(), CredentialError>
+where
+    S: PeerSpace,
+    CredentialStore<S>: Provider<storage_fx::Load> + Provider<storage_fx::Create>,
+{
     if peer.authority().await.is_ok() {
         return Ok(());
     }
+    let custodian = open_kept_key::<S>(&peer.did(), ACCOUNT_CUSTODIAN, true)
+        .await?
+        .ok_or_else(|| CredentialError::NotFound("no account custodian".into()))?;
     let account = peer
         .state()
         .vault(ACCOUNT_VAULT)
         .create()
         .perform(peer)
         .await?;
-    account.add(peer.did()).perform(peer).await?;
-    account.delegate(peer.did()).perform(peer).await?;
-    let peers = account.vault(PEER_VAULT).open().perform(peer).await?;
-    peers.add(peer.did()).perform(peer).await
+    account.add(custodian.did()).perform(peer).await?;
+    account.delegate(peer.did()).perform(peer).await
 }
 
 /// Mount the space of a repository whose key tonk does not hold, under
@@ -339,14 +394,19 @@ pub fn upstream(branch: &Branch) -> Option<Upstream> {
 /// account → device powerline tonk holds once the device signs in.
 ///
 /// The grant is retained where the peer proves from, and the peer's
-/// [`ACCOUNT_VAULT`] is rotated to the account's DID, so the account the
-/// peer acts for is the one tonk signed in, not the one dialog made up
-/// at onboarding. A peer already acting for that account is left alone,
-/// and so is one acting for another account whose key it does not hold.
-pub async fn hand_over<S: PeerSpace>(
-    peer: &Peer<S>,
-    grant: &DelegationChain,
-) -> Result<(), CredentialError> {
+/// [`ACCOUNT_VAULT`], opened through its [`ACCOUNT_CUSTODIAN`], is handed
+/// over to the account's DID, so the account the peer acts for is the one
+/// tonk signed in, not the one made up at onboarding. The custodian is
+/// forgotten after: the account it guarded is gone. A peer already acting
+/// for that account is left alone, and so is one whose custodian is gone,
+/// which was handed over to another account before.
+pub async fn hand_over<S>(peer: &Peer<S>, grant: &DelegationChain) -> Result<(), CredentialError>
+where
+    S: PeerSpace,
+    CredentialStore<S>: Provider<storage_fx::Load>
+        + Provider<storage_fx::Create>
+        + Provider<credential_fx::Retract<Credential>>,
+{
     let account = grant.issuer().clone();
     if peer.authority().await? == account {
         return Ok(());
@@ -360,23 +420,30 @@ pub async fn hand_over<S: PeerSpace>(
         .refresh(peer)
         .await
         .map_err(|error| CredentialError::Storage(error.to_string()))?;
-    let current = match peer.state().vault(ACCOUNT_VAULT).load().perform(peer).await {
+    let Some(custodian) = open_kept_key::<S>(&peer.did(), ACCOUNT_CUSTODIAN, false).await? else {
+        return Ok(());
+    };
+    let current = match peer
+        .state()
+        .vault(ACCOUNT_VAULT)
+        .load()
+        .via(&custodian)
+        .perform(peer)
+        .await
+    {
         Ok(current) => current,
-        // The peer already acts for an account whose key it does not
-        // hold: one it was handed over to before. Handing it over again
-        // takes that account's key, so the peer keeps acting for it.
+        // The custodian guards an account the peer no longer acts for.
         Err(CredentialError::Withheld(_)) => return Ok(()),
         Err(error) => return Err(error),
     };
-    current.rotate().to(account).perform(peer).await?;
-    Ok(())
+    current.hand_over(account).perform(peer).await?;
+    forget_kept_key::<S>(&peer.did(), ACCOUNT_CUSTODIAN).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use dialog_credentials::{Ed25519Signer, Signer};
-    use dialog_peer::helpers::test_peer;
 
     /// A profile from before site secrets were sealed to vaults has them
     /// moved into its peer's site secrets, once: the old copies are gone,
@@ -452,11 +519,26 @@ mod tests {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_dedicated_worker);
 
-    /// Signing in hands the account dialog made up at onboarding over to
-    /// the account tonk signed in, and doing it again changes nothing.
+    /// Signing in hands the account made up at onboarding over to the
+    /// account tonk signed in, forgets the custodian that guarded it, and
+    /// doing it again changes nothing.
+    #[cfg(not(target_arch = "wasm32"))]
     #[dialog_common::test]
     async fn it_hands_the_peer_account_over_at_sign_in() -> anyhow::Result<()> {
-        let peer = test_peer().await;
+        use dialog_storage::provider::storage::NativeSpace;
+
+        let temp = tempfile::tempdir()?;
+        let directory = Directory::At(temp.path().to_string_lossy().into_owned());
+        let (credentials, system) = open_system::<NativeSpace>(directory.clone()).await?;
+        let peer = open_peer(
+            Location::new(directory.clone(), "signing-in"),
+            directory,
+            Storage::<NativeSpace>::default().owned_by(system.did()),
+            &credentials,
+            &system,
+            true,
+        )
+        .await?;
         let onboarded = peer.authority().await?;
         let account = Ed25519Signer::generate().await?;
         let grant =
@@ -466,6 +548,12 @@ mod tests {
 
         hand_over(&peer, &grant).await?;
         assert_eq!(peer.authority().await?, account.did());
+        assert!(
+            open_kept_key::<NativeSpace>(&peer.did(), ACCOUNT_CUSTODIAN, false)
+                .await?
+                .is_none(),
+            "the custodian of the onboarded account is forgotten"
+        );
 
         hand_over(&peer, &grant).await?;
         assert_eq!(peer.authority().await?, account.did());

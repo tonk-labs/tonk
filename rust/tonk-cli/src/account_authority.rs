@@ -313,8 +313,6 @@ forward!(dialog_effects::archive::Import);
 forward!(dialog_effects::blob::Read);
 forward!(dialog_effects::blob::Write);
 forward!(dialog_effects::blob::Import);
-forward!(dialog_effects::credential::Load<dialog_credentials::Credential>);
-forward!(dialog_effects::credential::Save<dialog_credentials::Credential>);
 forward!(dialog_effects::credential::Load<dialog_effects::credential::Secret>);
 forward!(dialog_effects::credential::Save<dialog_effects::credential::Secret>);
 forward!(dialog_effects::memory::Resolve);
@@ -391,7 +389,6 @@ macro_rules! forward_guarded {
 }
 
 forward_guarded!(dialog_effects::credential::Load<dialog_effects::credential::Secret>);
-forward_guarded!(dialog_effects::credential::Load<dialog_credentials::Credential>);
 forward_guarded!(Prove<Ucan>);
 
 #[async_trait::async_trait]

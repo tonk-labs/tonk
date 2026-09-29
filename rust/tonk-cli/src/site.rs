@@ -971,7 +971,12 @@ pub async fn space_signer(site: &TonkSite) -> Result<Option<Ed25519Signer>> {
     {
         return Ok(Some(signer.clone()));
     }
-    match site.profile.key_of(&site.repository.did()).await {
+    match site
+        .profile
+        .space_key(&site.repository.did())
+        .perform(&site.profile)
+        .await
+    {
         Ok(signer) => Ok(Some(signer)),
         Err(CredentialError::Withheld(_) | CredentialError::NotFound(_)) => Ok(None),
         Err(error) => Err(error).context("failed to open the space's key"),

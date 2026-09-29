@@ -21,9 +21,8 @@
 
 use dialog_artifacts::Entity;
 use dialog_credentials::secret::SealedSecret;
-use dialog_credentials::{Credential, Ed25519Signer, Signer};
+use dialog_credentials::{Ed25519Signer, Signer};
 use dialog_effects::credential::CredentialError;
-use dialog_effects::credential::prelude::*;
 use dialog_ucan::{Parameters, Scope, UcanDelegation};
 use dialog_ucan_core::DelegationChain;
 use dialog_ucan_core::command::Command;
@@ -719,22 +718,15 @@ async fn probe_signing(custodian: &Ed25519Signer) -> Result<Signing, TonkWorkerE
 }
 
 /// The stored custodian, or `None` when this device has none.
-/// Retire the onboarding account: demote its custodian to the public
-/// half, so the envelope can never be opened again on this device.
+/// Retire the onboarding account: forget its custodian, so the envelope
+/// can never be opened again on this device.
 ///
 /// The envelope stays. An envelope with no custodian is what `read`
 /// reports as "already accredited", which is exactly the state that must
 /// never be mistaken for "no onboarding account yet" — that would mint a
-/// second onboarding account on top of an accredited device. There is no
-/// retract for keys in the credential API, so demotion overwrites the
-/// record with a verifier.
+/// second onboarding account on top of an accredited device.
 pub(crate) async fn retire(state: &TonkState) -> Result<(), TonkWorkerError> {
-    use dialog_credentials::Ed25519Verifier;
-    use dialog_varsig::Principal as _;
-
-    let Some(custodian) = load_custodian(state).await? else {
-        return Ok(());
-    };
+    adopt_custodian(state).await?;
     tonk_account::peer::forget_kept_key::<DefaultSpace>(
         &state.profile.did(),
         custodian_site(state).as_str(),
@@ -744,27 +736,20 @@ pub(crate) async fn retire(state: &TonkState) -> Result<(), TonkWorkerError> {
         TonkWorkerError::Internal(format!(
             "failed to forget the onboarding custodian: {error}"
         ))
-    })?;
-    // A custodian kept in the profile's space before keys left it is
-    // demoted there to its public half, as retirement always did.
-    let verifier: Ed25519Verifier = custodian.did().to_string().parse().map_err(|error| {
-        TonkWorkerError::Internal(format!(
-            "the custodian DID is not an Ed25519 key: {error:?}"
-        ))
-    })?;
-    state
-        .profile
-        .did()
-        .credential()
-        .key(custodian_site(state).as_str())
-        .save(Credential::from(verifier))
-        .perform(&state.profile)
-        .await
-        .map_err(|error: CredentialError| {
-            TonkWorkerError::Internal(format!(
-                "failed to demote the onboarding custodian: {error}"
-            ))
-        })
+    })
+}
+
+/// Move a custodian a release before keys left the profile's space kept
+/// there beside the profile, where [`kept_custodian`] finds it.
+async fn adopt_custodian(state: &TonkState) -> Result<(), TonkWorkerError> {
+    tonk_account::peer::adopt_kept_key::<DefaultSpace>(
+        &state.profile.did(),
+        custodian_site(state).as_str(),
+    )
+    .await
+    .map_err(|error| {
+        TonkWorkerError::Internal(format!("failed to adopt the onboarding custodian: {error}"))
+    })
 }
 
 /// Where the custodian is kept for the branch the profile is on.
@@ -796,42 +781,8 @@ async fn kept_custodian(
 }
 
 async fn load_custodian(state: &TonkState) -> Result<Option<Ed25519Signer>, TonkWorkerError> {
-    if let Some(custodian) = kept_custodian(state, false).await? {
-        return Ok(Some(custodian));
-    }
-
-    // A custodian kept in the profile's space before keys left it is
-    // still there, and only the profile acting as itself is handed it.
-    let credential = match state
-        .profile
-        .did()
-        .credential()
-        .key(custodian_site(state).as_str())
-        .load()
-        .perform(&state.profile)
-        .await
-    {
-        Ok(credential) => credential,
-        Err(error) if crate::credential::is_missing(&error) => return Ok(None),
-        Err(error) => {
-            return Err(TonkWorkerError::Internal(format!(
-                "failed to load the onboarding custodian: {error}"
-            )));
-        }
-    };
-    // A demoted record holds no signer: `destroy` overwrites the
-    // custodian with its own public half, so the private key is gone
-    // and this device is accredited. `None` reads as "no custodian",
-    // which is exactly right; the public half is kept only so the state
-    // stays distinguishable from a device that never onboarded.
-    let Some(signer) = credential.signer() else {
-        return Ok(None);
-    };
-    // `Signer` gains arms only when `dialog-credentials` is built with
-    // another algorithm, which this crate never enables, so ed25519 is
-    // exhaustive here and a wrong-algorithm arm would be dead code.
-    let Signer::Ed25519(signer) = signer;
-    Ok(Some(signer.clone()))
+    adopt_custodian(state).await?;
+    kept_custodian(state, false).await
 }
 
 async fn load(state: &TonkState, site: &str) -> Result<Option<Vec<u8>>, TonkWorkerError> {
