@@ -1,6 +1,6 @@
 //! The command palette's glue between tonk's data and `dialog-palette`.
 //!
-//! The `<tonk-palette>` element (an `element!:` in the profile library)
+//! The `<command-palette>` element (an `element!:` in the profile library)
 //! holds ordinary subscriptions — to `palette/verb`, `palette/argument`,
 //! `palette/role`, `palette/noun`, the attributes those arguments name,
 //! and the rows and `label` facet of every noun concept — and hands the
@@ -97,7 +97,29 @@ pub struct Request {
     /// Suggestion memory: rows of `{input, verb, count}` in `fields`.
     #[serde(default)]
     pub memory: Vec<Row>,
+    /// The moment of the keystroke, in milliseconds, for arguments in the
+    /// `now` role. The caller's clock, so parsing stays a pure function.
+    #[serde(default)]
+    pub now: Option<f64>,
 }
+
+/// The role nothing typed fills: the moment the command is run, for the
+/// nonce fields that keep two runs of a command distinct (a click's
+/// `.timeStamp`, for a button).
+const NOW: &str = "now";
+
+/// Display order for a verb's arguments.
+const ROLES: [&str; 9] = [
+    "object",
+    "goal",
+    "source",
+    "location",
+    "time",
+    "instrument",
+    "format",
+    "modifier",
+    "alias",
+];
 
 fn default_max() -> usize {
     8
@@ -128,6 +150,14 @@ struct Field {
     kind: String,
 }
 
+/// What the parser does not see but the claim needs: the fields each verb
+/// fills without the text, and every argument field's selector and type.
+#[derive(Debug, Default)]
+struct Fields {
+    fields: BTreeMap<String, Field>,
+    now: BTreeMap<String, Vec<Field>>,
+}
+
 /// Parse `request.input` against the rows in `request` and return the
 /// best proposals, best first.
 pub fn propose(request: &Request) -> Vec<Proposal> {
@@ -149,7 +179,7 @@ pub fn propose(request: &Request) -> Vec<Proposal> {
             .split_once(JOIN)
             .map(|(branch, command)| (branch.to_owned(), command.to_owned()))
             .unwrap_or_default();
-        let claim = claim(&parse, &fields);
+        let claim = claim(&parse, &fields, request.now);
         Proposal {
             branch,
             command,
@@ -187,9 +217,9 @@ fn labelled(context: &Context, registry: &Registry) -> Context {
 
 /// Join every source's rows into one registry, and remember each
 /// argument field's selector and type for building claims.
-fn registry(sources: &[Source]) -> (Registry, BTreeMap<String, Field>) {
+fn registry(sources: &[Source]) -> (Registry, Fields) {
     let mut registry = Registry::default();
-    let mut fields = BTreeMap::new();
+    let mut fields = Fields::default();
     for source in sources {
         let roles: BTreeMap<&str, &str> = source
             .roles
@@ -231,6 +261,7 @@ fn registry(sources: &[Source]) -> (Registry, BTreeMap<String, Field>) {
 
         for (command, mut words) in names {
             words.sort();
+            let id = format!("{}{JOIN}{command}", source.branch);
             let mut arguments = Vec::new();
             let mut seen = BTreeSet::new();
             for row in source
@@ -244,6 +275,14 @@ fn registry(sources: &[Source]) -> (Registry, BTreeMap<String, Field>) {
                 ) else {
                     continue;
                 };
+                if *role == NOW {
+                    fields
+                        .now
+                        .entry(id.clone())
+                        .or_default()
+                        .push(field.clone());
+                    continue;
+                }
                 // One argument per role, as in Ubiquity.
                 if !seen.insert(*role) {
                     continue;
@@ -263,10 +302,18 @@ fn registry(sources: &[Source]) -> (Registry, BTreeMap<String, Field>) {
                     },
                     label,
                 });
-                fields.insert(field.selector.clone(), field.clone());
+                fields.fields.insert(field.selector.clone(), field.clone());
             }
+            // Rows arrive in no particular order; show arguments in the
+            // grammar's order, object first.
+            arguments.sort_by_key(|argument| {
+                ROLES
+                    .iter()
+                    .position(|role| *role == argument.role)
+                    .unwrap_or(ROLES.len())
+            });
             registry.verbs.push(Verb {
-                id: format!("{}{JOIN}{command}", source.branch),
+                id,
                 names: words,
                 arguments,
             });
@@ -387,11 +434,11 @@ fn memory(rows: &[Row]) -> Memory {
 /// The transact request that asserts the parse's command, with its
 /// fields' own selectors, as the FAB's inline claims do. Only for a
 /// complete parse: a command missing a field matches nothing.
-fn claim(parse: &Parse, fields: &BTreeMap<String, Field>) -> Option<serde_json::Value> {
+fn claim(parse: &Parse, fields: &Fields, now: Option<f64>) -> Option<serde_json::Value> {
     let mut with = serde_json::Map::new();
     let mut parameters = serde_json::Map::new();
     for filled in &parse.arguments {
-        let field = fields.get(&filled.field)?;
+        let field = fields.fields.get(&filled.field)?;
         let key = field_name(&field.selector).to_owned();
         let value = match filled.value.as_ref()? {
             Value::Entity(entity) => entity.clone(),
@@ -402,6 +449,14 @@ fn claim(parse: &Parse, fields: &BTreeMap<String, Field>) -> Option<serde_json::
             json!({ "the": field.selector, "as": field.kind }),
         );
         parameters.insert(key, json!(value));
+    }
+    for field in fields.now.get(&parse.verb).into_iter().flatten() {
+        let key = field_name(&field.selector).to_owned();
+        with.insert(
+            key.clone(),
+            json!({ "the": field.selector, "as": field.kind }),
+        );
+        parameters.insert(key, json!(now?));
     }
     Some(json!({
         "claims": [{

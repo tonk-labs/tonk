@@ -102,6 +102,7 @@ fn request(input: &str) -> Request {
         },
         sources: vec![space()],
         memory: Vec::new(),
+        now: Some(1_000.5),
     }
 }
 
@@ -166,4 +167,48 @@ fn it_keeps_one_command_on_two_branches_apart() {
         .map(|proposal| proposal.branch)
         .collect();
     assert_eq!(branches.len(), 2);
+}
+
+#[test]
+fn it_fills_the_now_role_from_the_callers_clock_without_asking_for_it() {
+    let mut profile = space();
+    profile.branch = "main@profile:tonk".into();
+    profile.verbs = vec![row("concept:pause", json!({ "name": "pause sync" }))];
+    profile.arguments = vec![
+        row(
+            "argument:pause-space",
+            json!({
+                "command": "concept:pause",
+                "field": "the:pause-space",
+                "role": "role:object",
+                "noun": "concept:repository",
+            }),
+        ),
+        row(
+            "argument:pause-time",
+            json!({ "command": "concept:pause", "field": "the:pause-time", "role": "role:now" }),
+        ),
+    ];
+    profile
+        .roles
+        .push(row("role:now", json!({ "name": "now" })));
+    profile.attributes = vec![
+        row(
+            "the:pause-space",
+            json!({ "id": "xyz.tonk.pause-sync/space", "type": "Entity" }),
+        ),
+        row(
+            "the:pause-time",
+            json!({ "id": "xyz.tonk.command.pause-sync/time", "type": "Float" }),
+        ),
+    ];
+    let mut request = request("pause");
+    request.sources = vec![profile];
+    let top = &propose(&request)[0];
+    // The space defaults to the one the page shows; time is not shown.
+    assert_eq!(top.parse.display_text(), "pause sync [Budget]");
+    assert_eq!(
+        top.claim.as_ref().unwrap()["claims"][0]["application"]["parameters"],
+        json!({ "space": "did:key:space", "time": 1_000.5 })
+    );
 }

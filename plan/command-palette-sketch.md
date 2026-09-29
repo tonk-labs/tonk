@@ -121,13 +121,50 @@ palette/argument!:
 `tonk/rename-repository` is wired the same way (`"rename"`, object →
 `tonk/repository`, goal → text).
 
+## The FABB's commands (profile library)
+
+What the FABB does through commands is sayable too: `tonk/pause-sync`
+("pause sync", "resume sync") and the profile's `tonk/rename-repository`
+("rename space"). Their noun is `space`, whose directory row is the
+repository's own entity — the subject DID those commands take — so no rule
+is needed.
+
+`tonk/pause-sync` also carries `time`, a nonce the FABB fills from the
+click's timestamp. Nothing typed should fill it, so its argument plays
+`palette/now`: a role the palette fills with the moment the command runs
+(the caller passes its clock in, so parsing stays pure) and never shows as
+missing.
+
+```yaml
+palette/argument!:
+  command: tonk/pause-sync
+  field: pause-sync/time
+  role: palette/now
+```
+
+The FABB's other actions are not commands: home navigates, members, agent
+and account open panels, and share mints an invite whose result the FABB
+itself copies. Those would need commands of their own first.
+
 ## The pieces
 
 | Piece | Where | What it does |
 | --- | --- | --- |
 | `dialog-palette` | dialog-db, `rust/dialog-palette` | The Parser 2 port: grammar, registry, 11-step pipeline, scoring, memory. Pure, no IO, native and wasm. |
 | `tonk-palette` | tonk, `rust/tonk-palette` | Joins subscription rows into a registry (labels rendered with `tonk-template`), parses, builds the command claim. `web::install` puts `window.tonk.palette.parse` on the guest. |
-| `<tonk-palette>` | `profile.yaml`, an `element!` | Mounted in the space chrome beside `<tonk-fab>`. On Cmd/Ctrl+K or Cmd/Ctrl+Shift+P it subscribes to the palette rows on `main@<space>`, resolves each noun concept the way `<tonk-display>` resolves a model (descriptor from `db.meta/source`, rows, `label` facet), calls `parse` per keystroke, and transacts the chosen claim. |
+| `<command-palette>` | `profile.yaml`, an `element!` (not `tonk-`: the element runtime never announces `tonk-` or `wa-` tags) | Mounted in the space chrome beside `<tonk-fab>`. On Cmd/Ctrl+K or Cmd/Ctrl+Shift+P it subscribes to the palette rows on `main@<space>` and the profile branch, resolves each noun concept the way `<tonk-display>` resolves a model (descriptor from `db.meta/source`, rows, `label` facet), calls `parse` per keystroke, and transacts the chosen claim. |
+
+## Verified
+
+- Natively (`tonk-worker` `router::palette`): a space seeded from
+  `core.yaml`, read with the element's exact queries, parses "rename this
+  to Q3", and the transacted claim renames the space through its rule.
+- In the browser (dev server, headless Chromium, fresh profile): Ctrl+K in
+  the space chrome opens the palette; "pause" offers "pause sync Welcome to
+  Tonk", "rename space to Palette test" offers "rename space Welcome to Tonk
+  to Palette test", and Enter renames the space — the FABB shows "Palette
+  test". That rename is the profile's Rust-handled command, the one the
+  FABB dispatches.
 
 ## What the proof of concept does not do yet
 

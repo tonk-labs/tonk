@@ -2569,7 +2569,7 @@ element!: &drag-frame
 
 # The command palette.
 #
-# `<tonk-palette>` reads four relations and parses typed text against
+# `<command-palette>` reads four relations and parses typed text against
 # them, the way Ubiquity's Parser 2 did:
 #
 # - `palette/verb` — words that say a command, asserted on the command

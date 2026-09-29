@@ -29,7 +29,7 @@ pub fn start() {
     tonk_guest::guest_host::install();
 
     // `window.tonk.palette.parse`: the command-palette parser, for the
-    // `<tonk-palette>` author element. Pure and synchronous; the element
+    // `<command-palette>` author element. Pure and synchronous; the element
     // brings the rows from its own subscriptions.
     tonk_palette::web::install();
 

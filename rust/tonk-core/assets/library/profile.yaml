@@ -224,17 +224,24 @@ event!: &on/repository-rename-submit
     space: ".currentTarget.dataset.space"
     name: ".currentTarget.elements.name.value"
 
+#
+# Named field attributes, so the palette's arguments can point at them. The
+# descriptors are unchanged, and so is the command's identity.
+attribute!: &rename-space/name
+  description: The new repository name.
+  the: xyz.tonk.command.rename-repository/name
+  as: text
+
+attribute!: &rename-space/space
+  description: The target space DID.
+  the: xyz.tonk.rename-repository/space
+  as: entity
+
 command!: &tonk/rename-repository
   description: Rename a space from the profile Hub.
   with:
-    name:
-      description: The new repository name.
-      the: xyz.tonk.command.rename-repository/name
-      as: text
-    space:
-      description: The target space DID.
-      the: xyz.tonk.rename-repository/space
-      as: entity
+    name: rename-space/name
+    space: rename-space/space
 
 # Load the requesting tab's site for its current path. Mirrors core.yaml's
 # `&tonk/load` — seeded here too because the top-level `<tonk-site>` stamps onto
@@ -1089,18 +1096,22 @@ concept!: &seed/available
       cardinality: one
       as: entity
 
+attribute!: &pause-sync/time
+  description: The click's timestamp; makes each dispatch a distinct transient.
+  the: xyz.tonk.command.pause-sync/time
+  as: float
+
+attribute!: &pause-sync/space
+  description: The target space DID — the replica whose auto-sync is flipped.
+  the: xyz.tonk.pause-sync/space
+  as: entity
+
 command!: &tonk/pause-sync
   this: tonk:pause-sync
   description: Toggle auto-sync (pause ⇄ resume) for a space.
   with:
-    time:
-      description: The click's timestamp; makes each dispatch a distinct transient.
-      the: xyz.tonk.command.pause-sync/time
-      as: float
-    space:
-      description: The target space DID — the replica whose auto-sync is flipped.
-      the: xyz.tonk.pause-sync/space
-      as: entity
+    time: pause-sync/time
+    space: pause-sync/space
 
 # The FAB fallback seat — the nearest corner restored on the next page load,
 # stored on `state:fab`. The live page keeps the exact point along the nearest
@@ -2740,7 +2751,7 @@ view!:
       </style>
       <tonk-site with="main@{id}" allow="main@{id}" path={rest}></tonk-site>
       <tonk-fab with="{profile-branch}@profile:tonk" space={id}></tonk-fab>
-      <tonk-palette space={id}></tonk-palette>
+      <command-palette space={id} profile="{profile-branch}@profile:tonk"></command-palette>
       <tonk-display with={id} entity={id} model=tonk:repository view=title>
         <!-- `no-model` is now the absent-space panel below, which sets its
              own title; a second `no-model` child would render alongside it
@@ -4934,6 +4945,120 @@ element!: &account-settings
     released: |
       (self) => self.disconnected()
 
+# The command palette's schema, as in the core library: this library lowers
+# on its own, so it declares the same four concepts (same attributes, so the
+# same concepts) for the profile's commands. See core.yaml for the prose.
+concept!: &palette/verb
+  description: Words that say a command. Asserted on the command itself.
+  with:
+    name:
+      description: A word or phrase the command answers to.
+      the: xyz.tonk.palette.verb/name
+      cardinality: many
+      as: text
+
+concept!: &palette/noun
+  description: Words for a kind of thing. Asserted on the concept itself.
+  with:
+    name:
+      description: A word naming the concept, shown for an empty argument.
+      the: xyz.tonk.palette.noun/name
+      cardinality: many
+      as: text
+
+concept!: &palette/role
+  description: A grammatical role an argument can play.
+  with:
+    name:
+      description: The role's name in the grammar (object, goal, source, ...).
+      the: xyz.tonk.palette.role/name
+      cardinality: one
+      as: text
+
+concept!: &palette/argument
+  description: How one field of a command is filled from what was typed.
+  with:
+    command:
+      description: The command the field belongs to.
+      the: xyz.tonk.palette.argument/command
+      cardinality: one
+      as: entity
+    field:
+      description: The field's attribute.
+      the: xyz.tonk.palette.argument/field
+      cardinality: one
+      as: entity
+    role:
+      description: The role that fills it.
+      the: xyz.tonk.palette.argument/role
+      cardinality: one
+      as: entity
+  maybe:
+    noun:
+      description: The concept whose rows may fill it. Absent for text fields.
+      the: xyz.tonk.palette.argument/noun
+      cardinality: one
+      as: entity
+
+palette/role!: &palette/object
+  name: "object"
+
+palette/role!: &palette/goal
+  name: "goal"
+
+# Not a grammatical role: the moment the command is run. Nothing typed
+# fills it; the palette does, the way an event's `.timeStamp` fills a
+# button's command. For the nonce fields that keep two runs distinct.
+palette/role!: &palette/now
+  name: "now"
+
+# The directory row IS the repository's own entity (its subject DID), which
+# is what the space commands below take — so `space` is their noun as is.
+view!:
+  this: space
+  show:
+    label: |
+      {name}
+
+palette/noun!:
+  this: space
+  name: "space"
+
+# The FABB's commands.
+palette/verb!:
+  this: tonk/pause-sync
+  name: "pause sync"
+
+palette/verb!:
+  this: tonk/pause-sync
+  name: "resume sync"
+
+palette/argument!:
+  command: tonk/pause-sync
+  field: pause-sync/space
+  role: palette/object
+  noun: space
+
+palette/argument!:
+  command: tonk/pause-sync
+  field: pause-sync/time
+  role: palette/now
+
+palette/verb!:
+  this: tonk/rename-repository
+  name: "rename space"
+
+palette/argument!:
+  command: tonk/rename-repository
+  field: rename-space/space
+  role: palette/object
+  noun: space
+
+palette/argument!:
+  command: tonk/rename-repository
+  field: rename-space/name
+  role: palette/goal
+
 # The command palette: Cmd/Ctrl+K (or Cmd/Ctrl+Shift+P) opens it over the
 # space. What it can say is data on the space branch — `palette/verb`,
 # `palette/argument`, `palette/role`, `palette/noun` (declared in the core
@@ -4945,7 +5070,11 @@ element!: &account-settings
 #
 # Keys pressed inside the space's own frame do not reach this document, so
 # the shortcut works while the chrome has focus.
-element!: &tonk-palette
+#
+# Not `tonk-palette`: the element runtime leaves `tonk-` and `wa-` tags to
+# their built-in definitions and never announces them, so an author element
+# with either prefix would stay inert.
+element!: &command-palette
   description: A command palette over the space's palette verbs and nouns.
   method:
     connected: |
@@ -4986,27 +5115,27 @@ element!: &tonk-palette
       (self) => {
         self.innerHTML = `
           <style>
-            tonk-palette { display: none; }
-            tonk-palette[open] { display: block; position: fixed; inset: 0; z-index: 2147483000;
+            command-palette { display: none; }
+            command-palette[open] { display: block; position: fixed; inset: 0; z-index: 2147483000;
               background: rgb(56 24 42 / 32%); }
-            tonk-palette .palette { position: absolute; top: 12vh; left: 50%; translate: -50% 0;
+            command-palette .palette { position: absolute; top: 12vh; left: 50%; translate: -50% 0;
               width: min(560px, calc(100vw - 32px)); background: #fcfbfb; color: #38182a;
               box-shadow: 0 0 0 1px rgb(56 24 42 / 85%); font: 15px/1.4 system-ui, sans-serif; }
-            tonk-palette input { box-sizing: border-box; width: 100%; padding: 12px 14px; border: 0;
+            command-palette input { box-sizing: border-box; width: 100%; padding: 12px 14px; border: 0;
               border-bottom: 1px solid rgb(56 24 42 / 28%); font: inherit; background: transparent;
               color: inherit; outline: none; }
-            tonk-palette ol { list-style: none; margin: 0; padding: 0; max-height: 50vh; overflow: auto; }
-            tonk-palette li { padding: 8px 14px; cursor: pointer; }
-            tonk-palette li[aria-selected="true"] { background: rgb(56 24 42 / 12%); }
-            tonk-palette .verb { font-weight: 600; }
-            tonk-palette .delimiter, tonk-palette .note { color: #5b4953; }
-            tonk-palette .missing { color: #5b4953; font-style: italic; }
-            tonk-palette .note { padding: 8px 14px; }
+            command-palette ol { list-style: none; margin: 0; padding: 0; max-height: 50vh; overflow: auto; }
+            command-palette li { padding: 8px 14px; cursor: pointer; }
+            command-palette li[aria-selected="true"] { background: rgb(56 24 42 / 12%); }
+            command-palette .verb { font-weight: 600; }
+            command-palette .delimiter, command-palette .note { color: #5b4953; }
+            command-palette .missing { color: #5b4953; font-style: italic; }
+            command-palette .note { padding: 8px 14px; }
             @media (prefers-color-scheme: dark) {
-              tonk-palette .palette { background: #261f20; color: #e2dfdd;
+              command-palette .palette { background: #261f20; color: #e2dfdd;
                 box-shadow: 0 0 0 1px rgb(226 223 221 / 55%); }
-              tonk-palette .delimiter, tonk-palette .missing, tonk-palette .note { color: #c8c3bf; }
-              tonk-palette li[aria-selected="true"] { background: rgb(226 223 221 / 15%); }
+              command-palette .delimiter, command-palette .missing, command-palette .note { color: #c8c3bf; }
+              command-palette li[aria-selected="true"] { background: rgb(226 223 221 / 15%); }
             }
           </style>
           <div class="palette" role="dialog" aria-label="Command palette">
@@ -5045,11 +5174,18 @@ element!: &tonk-palette
         self.stop();
         const space = self.getAttribute('space');
         if (!space || !window.tonk) return;
-        const context = { with: `main@${space}` };
-        const source = { branch: context.with, verbs: [], arguments: [], roles: [], nouns: [],
-          attributes: [], concepts: {} };
-        self.__source = source;
+        // The space's commands live on its branch; the FABB's on the profile.
+        const branches = [`main@${space}`, self.getAttribute('profile')].filter(Boolean);
+        const generation = {};
+        self.__generation = generation;
         self.__readers = [];
+        self.__sources = branches.map((branch) => self.source(branch, generation));
+      }
+    source: |
+      (self, branch, generation) => {
+        const context = { with: branch };
+        const source = { branch, verbs: [], arguments: [], roles: [], nouns: [],
+          attributes: [], concepts: {} };
         const v = (name) => ({ '?': { name } });
         const watch = (body, apply) => {
           const reader = window.tonk.subscribe(body, context).getReader();
@@ -5057,11 +5193,11 @@ element!: &tonk-palette
           (async () => {
             for (;;) {
               const { value, done } = await reader.read();
-              if (done || self.__source !== source) return;
+              if (done || self.__generation !== generation) return;
               apply(value || []);
               self.update();
             }
-          })().catch((error) => console.warn('<tonk-palette> subscription ended', error));
+          })().catch((error) => console.warn('<command-palette> subscription ended', branch, error));
         };
         const text = (the, cardinality = 'one') => ({ the, as: 'Text', cardinality });
         const entity = (the, optional) =>
@@ -5087,12 +5223,13 @@ element!: &tonk-palette
             source.arguments = rows;
             for (const row of rows) {
               const noun = row.fields && row.fields.noun;
-              if (noun && !source.concepts[noun]) self.noun(noun, source, context, watch);
+              if (noun && !source.concepts[noun]) self.noun(noun, source, context, watch, generation);
             }
           });
+        return source;
       }
     noun: |
-      async (self, concept, source, context, watch) => {
+      async (self, concept, source, context, watch, generation) => {
         // A noun is a concept: read its descriptor the way <tonk-display>
         // resolves a model, then hold its rows and its `label` facet.
         source.concepts[concept] = { label: null, rows: [] };
@@ -5108,7 +5245,7 @@ element!: &tonk-palette
         }, context);
         const rows = Array.isArray(found) ? found : (found && found.rows) || [];
         const described = rows.find((row) => row.fields && row.fields.source);
-        if (!described || self.__source !== source) return;
+        if (!described || self.__generation !== generation) return;
         const descriptor = JSON.parse(described.fields.source);
         const terms = { this: v('this') };
         for (const field of Object.keys(descriptor.with || {})) terms[field] = v(field);
@@ -5126,11 +5263,12 @@ element!: &tonk-palette
       (self) => {
         for (const reader of self.__readers || []) reader.cancel().catch(() => {});
         self.__readers = [];
-        self.__source = null;
+        self.__sources = null;
+        self.__generation = null;
       }
     update: |
       (self) => {
-        if (!self.hasAttribute('open') || !self.__source) return;
+        if (!self.hasAttribute('open') || !self.__sources) return;
         const palette = window.tonk && window.tonk.palette;
         self.__proposals = [];
         self.__note = palette ? '' : 'The palette parser is not loaded in this page.';
@@ -5140,11 +5278,12 @@ element!: &tonk-palette
               input: self.__input.value,
               max: 8,
               context: { this: { text: '', entity: self.getAttribute('space') }, selection: null },
-              sources: [self.__source],
+              sources: self.__sources,
               memory: [],
+              now: Date.now(),
             });
           } catch (error) {
-            console.error('<tonk-palette> parse failed', error);
+            console.error('<command-palette> parse failed', error);
           }
         }
         self.__index = 0;
@@ -5194,7 +5333,7 @@ element!: &tonk-palette
           await window.tonk.transact(proposal.claim, { with: proposal.branch });
           self.close();
         } catch (error) {
-          console.error('<tonk-palette> run failed', error);
+          console.error('<command-palette> run failed', error);
           self.__note = 'That command could not be run.';
           self.__proposals = [];
           self.render();

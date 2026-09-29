@@ -1,4 +1,4 @@
-//! The `<tonk-palette>` element's reads, against a space seeded with the
+//! The `<command-palette>` element's reads, against a space seeded with the
 //! core library, through to running what it proposes.
 //!
 //! The element (`profile.yaml`) subscribes with inline descriptors. The
@@ -198,6 +198,7 @@ fn request(input: &str, subject: &str, source: &Source) -> tonk_palette::Request
         },
         sources: vec![source.clone()],
         memory: Vec::new(),
+        now: Some(1.0),
     }
 }
 
