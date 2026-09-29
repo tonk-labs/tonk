@@ -921,13 +921,19 @@ concept!: &member
 # being read by no other command — the attribute doubling as the command's
 # shape. `xyz.tonk.command.expel-member/member` is that distinctness by
 # construction, so the name can just say what it means.
+#
+# The field is a named attribute rather than an inline one so the palette's
+# `palette/argument` below can point at it. The descriptor is the same, so
+# the command's identity is unchanged.
+attribute!: &expel-member/member
+  description: The DID of the member to remove.
+  the: xyz.tonk.command.expel-member/member
+  as: entity
+
 command!: &member/expel
   description: Remove a member from this space.
   with:
-    member:
-      description: The DID of the member to remove.
-      the: xyz.tonk.command.expel-member/member
-      as: entity
+    member: expel-member/member
 
 view!:
   this: tonk:member
@@ -1160,17 +1166,24 @@ event!: &on/repository-rename
     subject: ".currentTarget.dataset.subject"
     name: ".currentTarget.value"
 
+#
+# Named attributes for the same reason as `member/expel`'s: the palette's
+# arguments below point at them.
+attribute!: &rename-repository/subject
+  description: The repository being renamed.
+  the: xyz.tonk.rename-repository/subject
+  as: entity
+
+attribute!: &rename-repository/name
+  description: The new name.
+  the: xyz.tonk.rename-repository/name
+  as: text
+
 command!: &tonk/rename-repository
   description: Rename the repository.
   with:
-    subject:
-      description: The repository being renamed.
-      the: xyz.tonk.rename-repository/subject
-      as: entity
-    name:
-      description: The new name.
-      the: xyz.tonk.rename-repository/name
-      as: text
+    subject: rename-repository/subject
+    name: rename-repository/name
 
 # Apply the rename: assert the new `tonk/repository` name against the
 # repository entity named by the command's `subject`. Binding `subject`
@@ -2553,3 +2566,163 @@ element!: &drag-frame
       (self) => {
         window.removeEventListener('resize', self.__resize);
       }
+
+# The command palette.
+#
+# `<tonk-palette>` reads four relations and parses typed text against
+# them, the way Ubiquity's Parser 2 did:
+#
+# - `palette/verb` — words that say a command, asserted on the command
+#   itself, one assertion per word.
+# - `palette/argument` — which grammatical role fills one of a command's
+#   fields (the field is its attribute), and which concept's rows may
+#   fill it. An argument without a noun takes typed text.
+# - `palette/noun` — words for a concept, shown for an empty argument
+#   ("expel [member]").
+# - `palette/role` — the grammar's slots. The words that introduce them
+#   ("to" for goal) belong to the parser's grammar for a language.
+#
+# A noun's rows are matched by their `label` facet, so every concept an
+# argument names needs one. See plan/command-palette-sketch.md.
+concept!: &palette/verb
+  description: Words that say a command. Asserted on the command itself.
+  with:
+    name:
+      description: A word or phrase the command answers to.
+      the: xyz.tonk.palette.verb/name
+      cardinality: many
+      as: text
+
+concept!: &palette/noun
+  description: Words for a kind of thing. Asserted on the concept itself.
+  with:
+    name:
+      description: A word naming the concept, shown for an empty argument.
+      the: xyz.tonk.palette.noun/name
+      cardinality: many
+      as: text
+
+concept!: &palette/role
+  description: A grammatical role an argument can play.
+  with:
+    name:
+      description: The role's name in the grammar (object, goal, source, ...).
+      the: xyz.tonk.palette.role/name
+      cardinality: one
+      as: text
+
+concept!: &palette/argument
+  description: How one field of a command is filled from what was typed.
+  with:
+    command:
+      description: The command the field belongs to.
+      the: xyz.tonk.palette.argument/command
+      cardinality: one
+      as: entity
+    field:
+      description: The field's attribute.
+      the: xyz.tonk.palette.argument/field
+      cardinality: one
+      as: entity
+    role:
+      description: The role that fills it.
+      the: xyz.tonk.palette.argument/role
+      cardinality: one
+      as: entity
+  maybe:
+    noun:
+      description: The concept whose rows may fill it. Absent for text fields.
+      the: xyz.tonk.palette.argument/noun
+      cardinality: one
+      as: entity
+
+palette/role!: &palette/object
+  name: "object"
+
+palette/role!: &palette/goal
+  name: "goal"
+
+palette/role!: &palette/source
+  name: "source"
+
+palette/role!: &palette/location
+  name: "location"
+
+palette/role!: &palette/time
+  name: "time"
+
+palette/role!: &palette/instrument
+  name: "instrument"
+
+palette/role!: &palette/format
+  name: "format"
+
+palette/role!: &palette/modifier
+  name: "modifier"
+
+palette/role!: &palette/alias
+  name: "alias"
+
+# A member as the account `member/expel` wants. A roster row is the
+# membership, derived from (space, account); the command takes the
+# account's DID, which is the row's `member` field. This concept's rows
+# ARE the accounts, so a chosen row's entity is the field value as is.
+# Derived on query: nothing is stored, and it follows the roster.
+concept!: &member/account
+  description: A member account of this space, by its DID.
+  with:
+    name:
+      description: The display name the member uses in this space.
+      the: xyz.tonk.member.account/name
+      cardinality: one
+      as: text
+
+rule!:
+  description: Every roster member is an account, named by its membership.
+  assert: member/account
+  when:
+    - assert: member
+      where: { member: ?this, name: ?name }
+
+view!:
+  this: member/account
+  show:
+    label: |
+      {name}
+
+palette/noun!:
+  this: member/account
+  name: "member"
+
+palette/noun!:
+  this: tonk/repository
+  name: "space"
+
+palette/verb!:
+  this: member/expel
+  name: "expel"
+
+palette/verb!:
+  this: member/expel
+  name: "remove member"
+
+palette/argument!:
+  command: member/expel
+  field: expel-member/member
+  role: palette/object
+  noun: member/account
+
+palette/verb!:
+  this: tonk/rename-repository
+  name: "rename"
+
+palette/argument!:
+  command: tonk/rename-repository
+  field: rename-repository/subject
+  role: palette/object
+  noun: tonk/repository
+
+palette/argument!:
+  command: tonk/rename-repository
+  field: rename-repository/name
+  role: palette/goal

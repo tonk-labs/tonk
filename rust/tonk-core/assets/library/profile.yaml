@@ -2740,6 +2740,7 @@ view!:
       </style>
       <tonk-site with="main@{id}" allow="main@{id}" path={rest}></tonk-site>
       <tonk-fab with="{profile-branch}@profile:tonk" space={id}></tonk-fab>
+      <tonk-palette space={id}></tonk-palette>
       <tonk-display with={id} entity={id} model=tonk:repository view=title>
         <!-- `no-model` is now the absent-space panel below, which sets its
              own title; a second `no-model` child would render alongside it
@@ -4932,3 +4933,270 @@ element!: &account-settings
       }
     released: |
       (self) => self.disconnected()
+
+# The command palette: Cmd/Ctrl+K (or Cmd/Ctrl+Shift+P) opens it over the
+# space. What it can say is data on the space branch — `palette/verb`,
+# `palette/argument`, `palette/role`, `palette/noun` (declared in the core
+# library) — read through ordinary subscriptions, and the rows of every
+# concept an argument names, matched by that concept's `label` facet. The
+# parse is `window.tonk.palette.parse` (the `dialog-palette` parser, in the
+# guest's wasm); running a proposal transacts the command it names, as a
+# button bound to that command would.
+#
+# Keys pressed inside the space's own frame do not reach this document, so
+# the shortcut works while the chrome has focus.
+element!: &tonk-palette
+  description: A command palette over the space's palette verbs and nouns.
+  method:
+    connected: |
+      (self) => {
+        if (self.__keys) return;
+        self.__keys = (event) => {
+          const key = (event.key || '').toLowerCase();
+          const chord = (event.metaKey || event.ctrlKey)
+            && (key === 'k' || (event.shiftKey && key === 'p'));
+          if (chord) {
+            event.preventDefault();
+            self.hasAttribute('open') ? self.close() : self.open();
+          }
+        };
+        document.addEventListener('keydown', self.__keys);
+      }
+    disconnected: |
+      (self) => {
+        document.removeEventListener('keydown', self.__keys);
+        self.__keys = null;
+        self.stop();
+      }
+    open: |
+      (self) => {
+        if (!self.__input) self.build();
+        self.setAttribute('open', '');
+        self.__input.value = '';
+        self.start();
+        self.update();
+        requestAnimationFrame(() => self.__input.focus());
+      }
+    close: |
+      (self) => {
+        self.removeAttribute('open');
+        self.stop();
+      }
+    build: |
+      (self) => {
+        self.innerHTML = `
+          <style>
+            tonk-palette { display: none; }
+            tonk-palette[open] { display: block; position: fixed; inset: 0; z-index: 2147483000;
+              background: rgb(56 24 42 / 32%); }
+            tonk-palette .palette { position: absolute; top: 12vh; left: 50%; translate: -50% 0;
+              width: min(560px, calc(100vw - 32px)); background: #fcfbfb; color: #38182a;
+              box-shadow: 0 0 0 1px rgb(56 24 42 / 85%); font: 15px/1.4 system-ui, sans-serif; }
+            tonk-palette input { box-sizing: border-box; width: 100%; padding: 12px 14px; border: 0;
+              border-bottom: 1px solid rgb(56 24 42 / 28%); font: inherit; background: transparent;
+              color: inherit; outline: none; }
+            tonk-palette ol { list-style: none; margin: 0; padding: 0; max-height: 50vh; overflow: auto; }
+            tonk-palette li { padding: 8px 14px; cursor: pointer; }
+            tonk-palette li[aria-selected="true"] { background: rgb(56 24 42 / 12%); }
+            tonk-palette .verb { font-weight: 600; }
+            tonk-palette .delimiter, tonk-palette .note { color: #5b4953; }
+            tonk-palette .missing { color: #5b4953; font-style: italic; }
+            tonk-palette .note { padding: 8px 14px; }
+            @media (prefers-color-scheme: dark) {
+              tonk-palette .palette { background: #261f20; color: #e2dfdd;
+                box-shadow: 0 0 0 1px rgb(226 223 221 / 55%); }
+              tonk-palette .delimiter, tonk-palette .missing, tonk-palette .note { color: #c8c3bf; }
+              tonk-palette li[aria-selected="true"] { background: rgb(226 223 221 / 15%); }
+            }
+          </style>
+          <div class="palette" role="dialog" aria-label="Command palette">
+            <input type="text" role="combobox" aria-expanded="true" aria-controls="palette-list"
+              placeholder="Type a command" autocomplete="off" spellcheck="false">
+            <ol id="palette-list" role="listbox"></ol>
+          </div>`;
+        self.__input = self.querySelector('input');
+        self.__list = self.querySelector('ol');
+        self.__input.addEventListener('input', () => self.update());
+        self.__input.addEventListener('keydown', (event) => self.key(event));
+        self.addEventListener('mousedown', (event) => {
+          if (event.target === self) self.close();
+        });
+        self.__list.addEventListener('click', (event) => {
+          const row = event.target.closest('li');
+          if (!row) return;
+          self.__index = Number(row.dataset.index);
+          self.run();
+        });
+      }
+    key: |
+      (self, event) => {
+        const count = (self.__proposals || []).length;
+        if (event.key === 'Escape') { event.preventDefault(); self.close(); return; }
+        if (event.key === 'ArrowDown' && count) {
+          event.preventDefault(); self.__index = (self.__index + 1) % count; self.render(); return;
+        }
+        if (event.key === 'ArrowUp' && count) {
+          event.preventDefault(); self.__index = (self.__index - 1 + count) % count; self.render(); return;
+        }
+        if (event.key === 'Enter') { event.preventDefault(); self.run(); }
+      }
+    start: |
+      (self) => {
+        self.stop();
+        const space = self.getAttribute('space');
+        if (!space || !window.tonk) return;
+        const context = { with: `main@${space}` };
+        const source = { branch: context.with, verbs: [], arguments: [], roles: [], nouns: [],
+          attributes: [], concepts: {} };
+        self.__source = source;
+        self.__readers = [];
+        const v = (name) => ({ '?': { name } });
+        const watch = (body, apply) => {
+          const reader = window.tonk.subscribe(body, context).getReader();
+          self.__readers.push(reader);
+          (async () => {
+            for (;;) {
+              const { value, done } = await reader.read();
+              if (done || self.__source !== source) return;
+              apply(value || []);
+              self.update();
+            }
+          })().catch((error) => console.warn('<tonk-palette> subscription ended', error));
+        };
+        const text = (the, cardinality = 'one') => ({ the, as: 'Text', cardinality });
+        const entity = (the, optional) =>
+          ({ the, as: 'Entity', cardinality: 'one', ...(optional ? { optional: true } : {}) });
+        watch({ predicate: { with: { name: text('xyz.tonk.palette.verb/name', 'many') } },
+          terms: { this: v('this'), name: v('name') } }, (rows) => { source.verbs = rows; });
+        watch({ predicate: { with: { name: text('xyz.tonk.palette.noun/name', 'many') } },
+          terms: { this: v('this'), name: v('name') } }, (rows) => { source.nouns = rows; });
+        watch({ predicate: { with: { name: text('xyz.tonk.palette.role/name') } },
+          terms: { this: v('this'), name: v('name') } }, (rows) => { source.roles = rows; });
+        watch({ predicate: { with: { id: text('db.attribute/id'), type: text('db.attribute/type') } },
+          terms: { this: v('this'), id: v('id'), type: v('type') } },
+          (rows) => { source.attributes = rows; });
+        watch({ predicate: { with: {
+            command: entity('xyz.tonk.palette.argument/command'),
+            field: entity('xyz.tonk.palette.argument/field'),
+            role: entity('xyz.tonk.palette.argument/role'),
+            noun: entity('xyz.tonk.palette.argument/noun', true),
+          } },
+          terms: { this: v('this'), command: v('command'), field: v('field'), role: v('role'),
+            noun: v('noun') } },
+          (rows) => {
+            source.arguments = rows;
+            for (const row of rows) {
+              const noun = row.fields && row.fields.noun;
+              if (noun && !source.concepts[noun]) self.noun(noun, source, context, watch);
+            }
+          });
+      }
+    noun: |
+      async (self, concept, source, context, watch) => {
+        // A noun is a concept: read its descriptor the way <tonk-display>
+        // resolves a model, then hold its rows and its `label` facet.
+        source.concepts[concept] = { label: null, rows: [] };
+        const v = (name) => ({ '?': { name } });
+        const meta = (the, as) => ({ the, as, cardinality: 'one' });
+        const found = await window.tonk.query({
+          predicate: { with: {
+            concept: meta('db.meta/concept', 'Entity'), name: meta('db.meta/name', 'Text'),
+            description: meta('db.meta/description', 'Text'), source: meta('db.meta/source', 'Text'),
+            transient: meta('dialog.concept/transient', 'Boolean'),
+          } },
+          terms: { this: concept, name: v('name'), source: v('source') },
+        }, context);
+        const rows = Array.isArray(found) ? found : (found && found.rows) || [];
+        const described = rows.find((row) => row.fields && row.fields.source);
+        if (!described || self.__source !== source) return;
+        const descriptor = JSON.parse(described.fields.source);
+        const terms = { this: v('this') };
+        for (const field of Object.keys(descriptor.with || {})) terms[field] = v(field);
+        watch({ predicate: descriptor, terms }, (rows) => { source.concepts[concept].rows = rows; });
+        watch({ predicate: { with: { show: {
+            the: { domain: 'xyz.tonk.view', keyed: 'dictionary' }, as: 'Text', cardinality: 'one',
+          } } },
+          terms: { this: concept, show: v('show'), 'show/key': v('show/key') } },
+          (rows) => {
+            const label = rows.find((row) => row.fields && row.fields['show/key'] === 'label');
+            source.concepts[concept].label = label ? label.fields.show : null;
+          });
+      }
+    stop: |
+      (self) => {
+        for (const reader of self.__readers || []) reader.cancel().catch(() => {});
+        self.__readers = [];
+        self.__source = null;
+      }
+    update: |
+      (self) => {
+        if (!self.hasAttribute('open') || !self.__source) return;
+        const palette = window.tonk && window.tonk.palette;
+        self.__proposals = [];
+        self.__note = palette ? '' : 'The palette parser is not loaded in this page.';
+        if (palette) {
+          try {
+            self.__proposals = palette.parse({
+              input: self.__input.value,
+              max: 8,
+              context: { this: { text: '', entity: self.getAttribute('space') }, selection: null },
+              sources: [self.__source],
+              memory: [],
+            });
+          } catch (error) {
+            console.error('<tonk-palette> parse failed', error);
+          }
+        }
+        self.__index = 0;
+        self.render();
+      }
+    render: |
+      (self) => {
+        const list = self.__list;
+        list.textContent = '';
+        const proposals = self.__proposals || [];
+        if (!proposals.length) {
+          const note = document.createElement('li');
+          note.className = 'note';
+          note.textContent = self.__note || (self.__input.value ? 'Nothing matches.' : 'Type a command.');
+          list.append(note);
+          return;
+        }
+        proposals.forEach((proposal, index) => {
+          const row = document.createElement('li');
+          row.setAttribute('role', 'option');
+          row.dataset.index = String(index);
+          row.setAttribute('aria-selected', String(index === self.__index));
+          for (const segment of proposal.parse.display) {
+            const part = document.createElement('span');
+            part.className = segment.kind;
+            part.textContent = segment.kind === 'missing' ? `[${segment.text}]` : segment.text;
+            if (row.childNodes.length) row.append(' ');
+            row.append(part);
+          }
+          list.append(row);
+        });
+      }
+    run: |
+      async (self) => {
+        const proposal = (self.__proposals || [])[self.__index];
+        if (!proposal) return;
+        if (!proposal.claim) {
+          // Incomplete: keep typing from what the parse understood.
+          const shown = proposal.parse.display
+            .filter((segment) => segment.kind !== 'missing')
+            .map((segment) => segment.text).join(' ');
+          self.__input.value = `${shown} `;
+          self.update();
+          return;
+        }
+        try {
+          await window.tonk.transact(proposal.claim, { with: proposal.branch });
+          self.close();
+        } catch (error) {
+          console.error('<tonk-palette> run failed', error);
+          self.__note = 'That command could not be run.';
+          self.__proposals = [];
+          self.render();
+        }
+      }

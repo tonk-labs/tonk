@@ -133,6 +133,8 @@ axum = { workspace = true, features = ["tokio", "http1"] }
 
 [dev-dependencies]
 tonk-template = { workspace = true }
+dialog-palette = { workspace = true }
+tonk-palette = { workspace = true }
 anyhow = { workspace = true }
 dialog-common = { workspace = true, features = ["helpers"] }
 dialog-operator = { workspace = true, features = ["helpers"] }

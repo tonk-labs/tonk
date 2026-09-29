@@ -1,422 +1,147 @@
-# Command palette: Ubiquity, ported to dialog
+# Command palette: the design, and the proof of concept
 
-Status: sketch. `grammar!`, `noun!` and `verb!` are **hypothetical syntax**.
-`command!`, `concept!`, `view!` and `rule!` are the library's real shapes.
-Based on the source study in [command-palette-ubiquity.md](command-palette-ubiquity.md).
-Supersedes the earlier `phrase!`/`suggest!` draft of this file, which replaced
-Ubiquity's role grammar with per-command templates and so lost the property
-that made Ubiquity localize for free.
+Status: proof of concept on `worker/adoring-franklin-kd80e0` in tonk and
+dialog-db. Supersedes the earlier drafts of this file. The Ubiquity study it
+rests on is [command-palette-ubiquity.md](command-palette-ubiquity.md).
 
-## The port in one table
+## Shape
 
-Nothing new becomes the vocabulary. Tonk's **commands** are what runs, and its
-**concepts** are what arguments are. The three declarations are annotations on
-them, plus one per-language grammar, exactly as Ubiquity had:
+Commands and concepts stay the vocabulary. The palette adds four relations
+about them, all in existing notation (concepts, instance assertions, a rule,
+views). There is no new syntax and no worker API.
 
-| Ubiquity | Tonk | Attached to |
-| --- | --- | --- |
-| language parser (`en.js`: roles, delimiters, branching, anaphora) | `grammar!` | a locale |
-| noun type (`suggest`, `default`, `label`, cache flush) | `noun!` | a concept, or a built-in value type |
-| `CreateCommand` (`names`, `arguments`, `preview`, `execute`) | `verb!` | an existing `command!` |
-| `preview(pblock, args)` | a `preview` view facet | the command concept |
-| `execute(args)` | asserting the command transient | (nothing new) |
-| `CreateAlias({givenArgs})` | a `verb!` with `given:` | the same command |
-| `registerCacheObserver(flush)` | the dialog subscription behind the noun's query | (free) |
-| suggestion memory table | `palette/choice` facts on the profile branch | the profile |
-| the selection | the DOM selection, and `{this}` from `tonk:site` | the page |
+| Ubiquity | Here |
+| --- | --- |
+| `CreateCommand({names})` | `palette/verb` — words asserted on the command itself |
+| `arguments: [{role, nountype}]` | `palette/argument` — a command field (its attribute), a role (an entity), a noun (a concept) |
+| noun type `label` | `palette/noun` — words asserted on the concept itself |
+| noun type `suggest(text)` | the concept's rows, matched by their `label` view facet |
+| `en.js` roles and delimiters | the grammar in `dialog-palette` (Rust), roles as `palette/role` entities |
+| `execute(args)` | transacting the command, with its fields' own selectors |
+| the selection | the entity the page shows (`{this}`): anaphor target and default |
 
-`verb!` and `noun!` never define a concept, and never touch a command's or
-concept's identity. They are keyed by name like `event!`, which is what lets
-tonk ship them in the built-in layer for spaces seeded long ago.
-
-## `grammar!`: one per locale
-
-The whole of `en.js`, as data:
+## The schema (core library)
 
 ```yaml
-grammar!: &grammar/en
-  locale: en
-  branching: right               # "to bob": argument follows its delimiter
-  spaces: true
-  verb:
-    initial: 1.0                 # verbInitialMultiplier
-    final: 0.3                   # verbFinalMultiplier
-  anaphora: [this, that, it, selection, him, her, them]
-  roles:
-    goal:       [to]
-    source:     [from]
-    location:   [near, on, at, in]
-    time:       [at, on]
-    instrument: [with, using]
-    format:     [in]
-    modifier:   [of, for]
-    alias:      [as, named]
-```
-
-And Japanese, which the same commands then parse in without being touched:
-
-```yaml
-grammar!: &grammar/ja
-  locale: ja
-  branching: left                # "ボブに": argument precedes its particle
-  spaces: false                  # word breaking inserts U+200B around particles
-  verb:
-    initial: 0.3
-    final: 1.0                   # verbs are sentence-final
-  anaphora: [これ, それ, あれ]
-  roles:
-    object:     [を, と]
-    goal:       [に, へ]
-    source:     [から]
-    time:       [に]
-    location:   [で, に]
-    instrument: [で]
-    alias:      [として]
-    modifier:   [の]
-    format:     [で]
-```
-
-The parser is generic Rust code. It reads the active locale's grammar from
-the registry, and a `grammar!` asserted on a profile branch overrides the
-built-in one for that person.
-
-## `noun!`: a concept as a noun type
-
-Ubiquity's `suggest(text) → [{text, html, data, summary, score}]` becomes a
-declaration the parser executes against dialog:
-
-```yaml
-noun!: &noun/member
-  concept: tonk:member
-  label: member                  # shown for an unfilled argument: "expel [member]"
-  match: [name]                  # stored text fields that typed text is scored against
-  # text: the `label` view facet as plain text; html: the `label` facet
-  # data: the entity (what reaches the verb)
-
-noun!: &noun/space
-  concept: space
-  label: space
-  match: [name]
-  where: { kind: tonk:repository }   # never offer the profile's self-replica
-
-noun!: &noun/notebook
-  concept: notebook/named
-  label: notebook
-  match: [title]
-```
-
-For a typed argument `text`, the parser:
-
-1. Queries the concept with `where:` plus a `StartsWith` pushdown on the first
-   `match` field (an index range), and a bounded scan for substring hits.
-2. Scores each hit with Ubiquity's `matchScore`:
-   `0.3 + 0.25·√(matched / typed) + 0.45·(1 − index / typed)`.
-3. Returns suggestions whose `data` is the entity and whose `text`/`html` come
-   from the concept's `label` view.
-
-Its results are cached per (text, noun). The cache is dropped when the
-subscription on the concept reports a change. That is Ubiquity's
-`registerCacheObserver`, which `noun_type_tab` had to hand-wire to
-`TabOpen`/`TabClose`, and it comes free here.
-
-**Closed sets** (`NounType({Afrikaans: "af", …})`) are concept instances, for
-example a `tonk:role` concept with `founder` and `member` rows. They are facts,
-so a space can add to them.
-
-**Recognizers** (`noun_arb_text`, email, URL, number, date) are built-in value
-nouns implemented in Rust, with Ubiquity's scores: arbitrary text is 0.3,
-anything else 1.
-
-**Unions** (`mixNouns`) are rules concluding a concept:
-
-```yaml
-concept!: &nameable
-  description: Anything with a name the palette can rename.
+concept!: &palette/verb
+  description: Words that say a command. Asserted on the command itself.
   with:
-    name: { the: xyz.tonk.palette.nameable/name, as: text }
+    name: { the: xyz.tonk.palette.verb/name, cardinality: many, as: text, … }
+
+concept!: &palette/noun
+  description: Words for a kind of thing. Asserted on the concept itself.
+  with:
+    name: { the: xyz.tonk.palette.noun/name, cardinality: many, as: text, … }
+
+concept!: &palette/role
+  with:
+    name: { the: xyz.tonk.palette.role/name, cardinality: one, as: text, … }
+
+concept!: &palette/argument
+  with:
+    command: { the: xyz.tonk.palette.argument/command, as: entity, … }
+    field:   { the: xyz.tonk.palette.argument/field,   as: entity, … }   # an attribute
+    role:    { the: xyz.tonk.palette.argument/role,    as: entity, … }   # a palette/role
+  maybe:
+    noun:    { the: xyz.tonk.palette.argument/noun,    as: entity, … }   # a concept
+
+palette/role!: &palette/object
+  name: "object"
+# goal, source, location, time, instrument, format, modifier, alias
+```
+
+(The library spells each field out in full; the braces here are
+abbreviation.)
+
+- **Verbs and nouns are assertions on the thing they name**, one per word, so
+  words can be added or retracted independently.
+- **An argument is a relation**, derived from its body: attributes are
+  shared between commands (`space/create` and `space/enable-sync` both use
+  `create-space/name`), so the pair (command, field) is what an argument is
+  about.
+- **A field is its attribute entity.** A command declares the field as a
+  named `attribute!` and references it from `with:`; the descriptor, and so
+  the command's identity, is unchanged.
+- **A noun is a concept.** Its rows are the candidates; the chosen row's
+  entity is the field value. Where a command wants something other than a
+  concept's row, a rule derives a concept whose rows are exactly that —
+  `member/account` below.
+
+## One command, end to end
+
+```yaml
+attribute!: &expel-member/member
+  description: The DID of the member to remove.
+  the: xyz.tonk.command.expel-member/member
+  as: entity
+
+command!: &member/expel
+  description: Remove a member from this space.
+  with:
+    member: expel-member/member
+
+# The roster row is the membership; the command takes the account DID.
+concept!: &member/account
+  description: A member account of this space, by its DID.
+  with:
+    name: { the: xyz.tonk.member.account/name, as: text, … }
 
 rule!:
-  assert: nameable
+  description: Every roster member is an account, named by its membership.
+  assert: member/account
   when:
-    - assert: notebook/named
-      where: { this: ?this, title: ?name }
-
-noun!: &noun/nameable
-  concept: nameable
-  label: thing
-  match: [name]
-```
-
-**Defaults** (Ubiquity `default`, used for an unfilled role at half score)
-are a query or a context binding:
-
-```yaml
-noun!: &noun/space-here
-  concept: space
-  label: space
-  match: [name]
-  default: "{space}"             # the active space
-```
-
-## `verb!`: a command made sayable
-
-This is Ubiquity's `CreateCommand` minus `execute`. Executing is asserting the
-command the verb annotates.
-
-```yaml
-verb!: &verb/expel
-  command: member/expel
-  names: [expel, remove member, kick]
-  description: Remove a member from this space.
-  help: Try "expel alice". They keep their copy and stop receiving changes.
-  arguments:
-    object:
-      noun: noun/member
-      field: member              # the command field this role fills
-      value: member              # project the entity to its `member` field (the DID)
-  when:                          # the verb is offered only if this matches
-    - assert: tonk/member-role
-      where: { member: "{profile}", role: tonk:founder }
+    - assert: member
+      where: { member: ?this, name: ?name }
 
 view!:
-  this: member/expel
+  this: member/account
   show:
-    preview: |
-      remove <tonk-display entity={object.data} model=tonk:member view=label></tonk-display>
-      from this space
+    label: |
+      {name}
+
+palette/noun!:
+  this: member/account
+  name: "member"
+
+palette/verb!:
+  this: member/expel
+  name: "expel"
+
+palette/verb!:
+  this: member/expel
+  name: "remove member"
+
+palette/argument!:
+  command: member/expel
+  field: expel-member/member
+  role: palette/object
+  noun: member/account
 ```
 
-- **`arguments` is keyed by role**, and there is at most one argument per role,
-  as in Ubiquity. The connecting words come from `grammar!`: in English, "expel
-  alice" is `object`.
-- **`field`/`value` is the one addition Ubiquity did not need.** Ubiquity's
-  `execute` received `{text, html, data}` and wrote its own code. A tonk
-  command has handler-shaped fields, so the verb says how an argument's `data`
-  lands in them. Fields no role fills come from `fill:` with context
-  (`{now}`, `{space}`), the same mini-language `event!` uses.
-- **`preview` is a view facet on the command concept.** It is rendered with the
-  highlighted parse's arguments available as `{role.text}`, `{role.html}` and
-  `{role.data}`, 150 ms after typing stops (Ubiquity's `previewDelay`). With no
-  facet, the preview is the description, which is Ubiquity's
-  `previewDefault`.
-- **`when:`** has no Ubiquity counterpart. Ubiquity offered every verb
-  everywhere and let `execute` fail. Here applicability is a query premise.
+`tonk/rename-repository` is wired the same way (`"rename"`, object →
+`tonk/repository`, goal → text).
 
-### Two commands, one word
+## The pieces
 
-```yaml
-verb!: &verb/rename-notebook
-  command: notebook/retitle
-  names: [rename, retitle]
-  arguments:
-    object: { noun: noun/notebook, field: subject }
-    goal:   { noun: text,          field: title }
-
-verb!: &verb/rename-space
-  command: tonk/rename-repository
-  names: [rename]
-  arguments:
-    object: { noun: noun/space-here, field: space, value: subject }
-    goal:   { noun: text,            field: name }
-```
-
-Ubiquity did not special-case this, and neither does the port. Both verbs match
-"rename", and `argFinder` produces the same parses for both. Noun detection
-then decides: a role whose noun returns nothing for its text kills that parse.
-"rename roadmap to Q3" survives only as a notebook rename if "roadmap" is a
-notebook title.
-
-### An alias
-
-Ubiquity's `anglicize` is `translate` with `givenArgs: {goal: "English"}`. The
-same shape in tonk is a verb whose role is fixed and hidden:
-
-```yaml
-verb!: &verb/leave
-  command: space/remove
-  names: [leave, leave space]
-  description: Leave the space you are in.
-  arguments:
-    object: { noun: noun/space, field: subject, value: subject }
-  given:
-    object: "{space}"            # run through the noun as if typed; hidden in display
-```
-
-## The walk, with Ubiquity's numbers
-
-Context: English grammar, the palette opened on notebook `N` ("Roadmap"), no
-text selected. The registry holds the verbs above. `m` is the parse's score
-multiplier, and `score = m + Σ roleScore·m`.
-
-**`rename this to Q3 plan`**
-
-1. **Verb finding.** "rename" is an exact match for both rename verbs:
-   `0.4 + 0.6·√(6/6) = 1.0`, verb-initial ×1.0. Memory can only raise a score
-   that is already 1.
-2. **Argument finding.** The argument string is "this to Q3 plan". The only
-   delimiter is "to" (goal), so the power set gives:
-   - `{object: "this to Q3 plan"}`;
-   - `{object: "this", goal: "Q3"}` with "plan" as a second object, which
-     `suggestArgs` kills;
-   - `{object: "this", goal: "Q3 plan"}`.
-3. **Anaphora.** "this" is an anaphor. The port substitutes `{this}` = `N`,
-   which is what Ubiquity did with the selection, and applies ×1.2, so
-   `m = 1.2`.
-4. **Noun detection.**
-   - `noun/notebook` on `N` is a direct entity hit, score 1.
-   - `noun/space-here` on `N` returns nothing, so the space parse dies.
-   - `text` on "Q3 plan" scores 0.3.
-   - `noun/notebook` on "this to Q3 plan" returns nothing, so that parse dies.
-5. **Score.** `notebook/retitle {object: N, goal: "Q3 plan"}` scores
-   `1.2 + 1·1.2 + 0.3·1.2 = 2.76`.
-
-**`rename Q3 plan`**
-
-1. Two parses survive, both with `m = 1.0`:
-   - notebook rename: `object` "Q3 plan" must be a notebook title, and none
-     matches, so it dies unless one does;
-   - space rename: `object` "Q3 plan" as a space name dies unless a space is
-     called that.
-2. With nothing matching, **applyObjectsToOtherRoles** does *not* move "Q3
-   plan" to `goal`. The verb is known and takes an object, which is the rule
-   that kept "twitter hello" from becoming "twitter as hello".
-3. The palette shows nothing better than "rename [thing] to [text]". That is
-   faithful, and it is the case where the `{this}` default (below) matters.
-
-**`ren`**
-
-1. A prefix match on both rename verbs: `0.4 + 0.6·√(3/6) ≈ 0.82`.
-2. There is no argument string, so both parses fill their roles with defaults
-   at half score:
-   - the space verb's `object` defaults to `{space}` (0.5);
-   - the notebook verb has no default for `object`, so it gets the empty
-     suggestion (0.5, with no text) and shows as "rename [notebook] to [text]".
-3. The space rename ranks first: "rename *Budget* to [text]". **This is a real
-   finding.** Ubiquity would suggest renaming the space while you're looking at
-   a notebook, because only the space noun has a default. The port should give
-   `noun/notebook` a `default: "{this}"` whenever `{this}` conforms, which
-   Ubiquity approximated with selection interpolation.
-
-**`alice`** (noun-first)
-
-1. No verb prefix matches "alice".
-2. `argFinder` with no verb makes `{object: "alice"}`, and `suggestVerb` copies it
-   for every verb that takes an `object` with a local noun, at `m = 0.3` and a
-   verb score of `1 − 0.7/(1 + timesUsed)`.
-3. `noun/member` matches "Alice" at 1.0, and `noun/notebook` matches nothing.
-   Only "expel Alice" survives (for an admin), plus "open Alice" if an open
-   verb takes members.
-
-**`これを「Q3計画」に名前変更`** (Japanese)
-
-1. The only change is `.po`-style names for the same two verbs:
-   `names@ja: [名前変更, 名前を変更, 名前を変更する, …]`.
-2. `ja.wordBreaker` splits the input at を and に.
-3. The verb is found sentence-finally (×1.0 in Japanese). `これ` is an anaphor,
-   so it becomes `N`, and `を` marks it as `object`. 「Q3計画」 with `に` is the
-   `goal`.
-4. It is the same `notebook/retitle` claim. No verb or command declaration
-   changed.
-
-## Selection
-
-Ubiquity's strongest argument source was the selection. It was interpolated
-into every parse, substituted for anaphora, used for noun-first, and it drove
-the no-input context menu. Tonk has two candidates, and they should not be
-conflated:
-
-- **A real DOM selection** (selected text in a notebook block, selected table
-  cells) maps 1:1 to Ubiquity's selection. It is interpolated as an `object`
-  argument ×1.2, substituted for anaphora, and offered as noun-first input.
-  The selected *text* goes through the noun types like any typed text. A
-  selected *entity* (a block, a row) is a direct hit.
-- **`{this}`, the entity the page shows**, is ambient rather than chosen. If it
-  were treated as a selection, every parse would get it interpolated as an
-  object. It should resolve anaphora ("this", "it") and act as a noun
-  `default` (half score), so an explicit argument always outranks it.
-
-## Memory
-
-Ubiquity remembered (typed verb prefix → chosen verb) and ("" → verb), and
-nothing about nouns. The port stores the same rows as facts on the profile
-branch, so they sync across devices:
-
-```yaml
-concept!: &palette/choice
-  with:
-    input: { the: xyz.tonk.palette.choice/input, as: text }    # typed verb prefix, "" for global
-    verb:  { the: xyz.tonk.palette.choice/verb,  as: entity }
-    count: { the: xyz.tonk.palette.choice/count, as: unsigned-integer }
-```
-
-The verb score gets the same `score^(1/(1 + count))` boost. Noun memory (typed
-text → chosen entity) is the obvious extension. It would be a second row
-shape, and the parser would multiply a noun's suggestion score the same way.
-
-## The Rust side
-
-```rust
-pub struct Registry {
-    grammar: Grammar,                // active locale's `grammar!`
-    verbs: Vec<Verb>,                // `verb!` rows, all layers
-    nouns: HashMap<Entity, Noun>,    // `noun!` rows + built-ins
-}
-
-pub struct Grammar {
-    branching: Branching,
-    spaces: bool,
-    verb_initial: f64,
-    verb_final: f64,
-    anaphora: Vec<String>,
-    roles: Vec<(Role, String)>,      // (role, delimiter), many-to-many
-}
-
-pub struct Verb {
-    command: CommandDescriptor,      // asserted inline, as the FAB's claim builders do
-    names: Vec<String>,
-    arguments: BTreeMap<Role, Argument>,
-    given: BTreeMap<Role, String>,
-    applies: Option<Premises>,
-}
-
-pub struct Argument { noun: NounRef, field: String, value: Option<String>, label: Option<String> }
-
-#[async_trait(?Send)]
-pub trait NounType {
-    /// Ubiquity's `suggest`: zero or more scored interpretations of `text`.
-    async fn suggest(&self, text: &str, cx: &Context) -> Vec<Suggestion>;
-    async fn default(&self, cx: &Context) -> Vec<Suggestion>;
-}
-
-pub struct Suggestion { text: String, html: String, data: Value, score: f64 }
-```
-
-The pipeline steps (word break, verb finding, argument finding with power
-sets, anaphora, normalization, objects to other roles, verb suggestion, noun
-detection with a (text, noun) cache, the argument cartesian product, scoring,
-and `maxScore` pruning) are pure functions of `Registry`, `Context`, input and
-`NounType` results. They can be tested natively against fake noun types,
-including Ubiquity's own `test_parser2.js` cases ported as fixtures.
-
-## Where the port departs from Ubiquity, and why
-
-| Ubiquity | Port | Reason |
+| Piece | Where | What it does |
 | --- | --- | --- |
-| `execute(args)` code | assert the annotated command | commands and handlers already exist; the worker runs only transients the page asserts |
-| verbs offered everywhere | `when:` premise | applicability is a query we can afford |
-| selection only | DOM selection plus `{this}` as anaphor/default | the page has an entity even with nothing selected |
-| noun cache flushed by hand-wired observers | flushed by dialog subscription | free |
-| memory in local SQLite | facts on the profile branch | syncs |
-| `rankLast`, `noSelection` flags | dropped | dead in Parser 2 already |
-| `DONT_PARSE_MULTIPLE_ARGS_PER_ROLE` | kept on | Ubiquity turned it on for speed; nothing needs several arguments per role |
+| `dialog-palette` | dialog-db, `rust/dialog-palette` | The Parser 2 port: grammar, registry, 11-step pipeline, scoring, memory. Pure, no IO, native and wasm. |
+| `tonk-palette` | tonk, `rust/tonk-palette` | Joins subscription rows into a registry (labels rendered with `tonk-template`), parses, builds the command claim. `web::install` puts `window.tonk.palette.parse` on the guest. |
+| `<tonk-palette>` | `profile.yaml`, an `element!` | Mounted in the space chrome beside `<tonk-fab>`. On Cmd/Ctrl+K or Cmd/Ctrl+Shift+P it subscribes to the palette rows on `main@<space>`, resolves each noun concept the way `<tonk-display>` resolves a model (descriptor from `db.meta/source`, rows, `label` facet), calls `parse` per keystroke, and transacts the chosen claim. |
 
-## Open
+## What the proof of concept does not do yet
 
-- **Rendering a preview over uncommitted overlay facts** is a new mode for
-  `<tonk-display>`.
-- **The FABB frame can't see the page's `{this}` or its selection today.** Both
-  have to travel with the key relay.
-- **A concept noun's substring scan** needs a bound. `StartsWith` covers prefix
-  matches only.
-- **Locale names for verbs** (`names@ja`): as per-verb facts keyed by locale,
-  or as a separate `.po`-like translation concept.
+- **Keys inside the space frame.** The element listens on the chrome
+  document; the space content is a nested sealed frame whose keys never reach
+  it. A relay over the portal bridge is the fix.
+- **Existing spaces.** The palette rows ship in `core.yaml`, which seeds new
+  spaces. Existing ones get them through the seed-upgrade path.
+- **Notebook and table commands.** Their libraries lower standalone, so they
+  cannot reference `palette/*` from `core.yaml`. Either the schema becomes
+  built-in (as `event` did, for the same reason), or each library declares it.
+- **Memory.** Verb choices are not yet recorded as facts.
+- **Preview.** A `preview` facet on the command, rendered with
+  `tonk-render` against the parse's field values, is designed but not built.
+- **Commands with fields no argument covers.** The claim carries only the
+  arguments' fields; a command with another required field matches nothing.
+  The proof-of-concept verbs cover every field of their commands.

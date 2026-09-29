@@ -8205,7 +8205,7 @@ mod rename_outcome_tests {
 }
 
 #[cfg(test)]
-mod profile_library_tests {
+pub(crate) mod profile_library_tests {
     use super::*;
     use dialog_query::{Query, Term};
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -8428,7 +8428,7 @@ route!: &foreign-profile-route
 "#;
 
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-    pub(super) async fn test_state() -> TonkState {
+    pub(crate) async fn test_state() -> TonkState {
         use std::sync::atomic::{AtomicU64, Ordering};
 
         static NEXT: AtomicU64 = AtomicU64::new(0);

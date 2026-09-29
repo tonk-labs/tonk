@@ -24,6 +24,8 @@ tonk-fab = { workspace = true }
 tonk-tree = { workspace = true }
 tonk-inspector = { workspace = true }
 tonk-portal = { workspace = true }
+# `window.tonk.palette.parse`, for the `<tonk-palette>` author element.
+tonk-palette = { workspace = true }
 # The real host IO surface the guest installs (`install_io`); its fetch/SSE
 # transport rides the portal bootstrap's `window.fetch` relay.
 tonk-host = { workspace = true }

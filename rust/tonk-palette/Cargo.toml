@@ -1,0 +1,20 @@
+[package]
+name = "tonk-palette"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+description = "The command palette's glue: palette rows in, dialog-palette parses and command claims out."
+
+[dependencies]
+dialog-palette = { workspace = true }
+ipld-core = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tonk-template = { workspace = true }
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+js-sys = { workspace = true }
+serde-wasm-bindgen = { workspace = true }
+wasm-bindgen = { workspace = true }
+web-sys = { workspace = true, features = ["Window"] }

@@ -1656,6 +1656,22 @@ fn every_handled_command_matches_attributes_its_declaration_carries() {
 fn parse_command_attributes(
     document: &str,
 ) -> std::collections::BTreeMap<String, std::collections::BTreeSet<String>> {
+    // Named attributes (`attribute!: &name` … `  the: x`), so a field
+    // that references one by name (`    member: expel-member/member`)
+    // counts as carrying it, exactly as the analyzer resolves it.
+    let mut named = std::collections::BTreeMap::new();
+    let mut pending: Option<String> = None;
+    for line in document.lines() {
+        if let Some(name) = line.strip_prefix("attribute!: &") {
+            pending = name.split_whitespace().next().map(str::to_owned);
+        } else if let (Some(name), Some(the)) = (&pending, line.strip_prefix("  the: ")) {
+            named.insert(name.clone(), the.trim().to_string());
+            pending = None;
+        } else if !line.starts_with(' ') && !line.trim().is_empty() {
+            pending = None;
+        }
+    }
+
     let mut out = std::collections::BTreeMap::new();
     let mut lines = document.lines().peekable();
     while let Some(line) = lines.next() {
@@ -1687,6 +1703,14 @@ fn parse_command_attributes(
             // declaration however it happens to begin.
             if let Some(attribute) = body.strip_prefix("      the: ") {
                 attributes.insert(attribute.trim().to_string());
+            }
+            // A field four spaces in whose value is a named attribute.
+            if let Some(field) = body.strip_prefix("    ")
+                && !field.starts_with(' ')
+                && let Some((_, value)) = field.split_once(": ")
+                && let Some(the) = named.get(value.trim())
+            {
+                attributes.insert(the.clone());
             }
         }
         out.insert(name, attributes);

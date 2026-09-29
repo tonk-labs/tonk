@@ -155,6 +155,8 @@ mod navigate;
 mod command;
 pub use command::{CommandEnv, CommandOrigin, CommandProviders, command_providers, dispatch};
 
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod palette;
 #[cfg(test)]
 mod route_table;
 #[cfg(test)]
