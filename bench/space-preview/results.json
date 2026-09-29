@@ -1,0 +1,319 @@
+{
+  "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36",
+  "results": [
+    {
+      "isolation": "SecurityError"
+    },
+    {
+      "mode": "blob",
+      "error": "SecurityError: Failed to execute 'toBlob' on 'HTMLCanvasElement': Tainted canvases may not be exported."
+    },
+    {
+      "mode": "blob",
+      "error": "SecurityError: Failed to execute 'toBlob' on 'HTMLCanvasElement': Tainted canvases may not be exported."
+    },
+    {
+      "mode": "blob",
+      "error": "SecurityError: Failed to execute 'toBlob' on 'HTMLCanvasElement': Tainted canvases may not be exported."
+    },
+    {
+      "mode": "blob",
+      "error": "SecurityError: Failed to execute 'toBlob' on 'HTMLCanvasElement': Tainted canvases may not be exported."
+    },
+    {
+      "mode": "blob",
+      "error": "SecurityError: Failed to execute 'toBlob' on 'HTMLCanvasElement': Tainted canvases may not be exported."
+    },
+    {
+      "mode": "blob",
+      "error": "SecurityError: Failed to execute 'toBlob' on 'HTMLCanvasElement': Tainted canvases may not be exported."
+    },
+    {
+      "mode": "data",
+      "count": 0,
+      "visited": 0,
+      "serializeMs": 0.10000002384185791,
+      "decodeMs": 1.600000023841858,
+      "drawMs": 0.3999999761581421,
+      "totalMs": 11.700000047683716,
+      "bytes": 8174,
+      "svgBytes": 2413
+    },
+    {
+      "mode": "data",
+      "count": 1,
+      "visited": 0,
+      "serializeMs": 0.19999992847442627,
+      "decodeMs": 0.10000002384185791,
+      "drawMs": 0.3999999761581421,
+      "totalMs": 10.399999976158142,
+      "bytes": 8174,
+      "svgBytes": 2413
+    },
+    {
+      "mode": "data",
+      "count": 2,
+      "visited": 0,
+      "serializeMs": 0.10000002384185791,
+      "decodeMs": 0.09999990463256836,
+      "drawMs": 0.30000007152557373,
+      "totalMs": 9.600000023841858,
+      "bytes": 8174,
+      "svgBytes": 2413
+    },
+    {
+      "mode": "data",
+      "count": 3,
+      "visited": 0,
+      "serializeMs": 0.10000002384185791,
+      "decodeMs": 0.10000002384185791,
+      "drawMs": 0.19999992847442627,
+      "totalMs": 8,
+      "bytes": 8174,
+      "svgBytes": 2413
+    },
+    {
+      "mode": "data",
+      "count": 4,
+      "visited": 0,
+      "serializeMs": 0.10000002384185791,
+      "decodeMs": 0.20000004768371582,
+      "drawMs": 0.10000002384185791,
+      "totalMs": 8.400000095367432,
+      "bytes": 8174,
+      "svgBytes": 2413
+    },
+    {
+      "mode": "data",
+      "count": 5,
+      "visited": 0,
+      "serializeMs": 0.20000004768371582,
+      "decodeMs": 0.09999990463256836,
+      "drawMs": 0.30000007152557373,
+      "totalMs": 10.200000047683716,
+      "bytes": 8174,
+      "svgBytes": 2413
+    },
+    {
+      "mode": "inline",
+      "count": 0,
+      "visited": 58,
+      "serializeMs": 30.600000023841858,
+      "decodeMs": 10.100000023841858,
+      "drawMs": 1.7999999523162842,
+      "totalMs": 51.90000009536743,
+      "bytes": 11074,
+      "svgBytes": 411967
+    },
+    {
+      "mode": "inline",
+      "count": 1,
+      "visited": 58,
+      "serializeMs": 28.200000047683716,
+      "decodeMs": 1.7999999523162842,
+      "drawMs": 1.5,
+      "totalMs": 39.89999997615814,
+      "bytes": 11074,
+      "svgBytes": 411967
+    },
+    {
+      "mode": "inline",
+      "count": 2,
+      "visited": 58,
+      "serializeMs": 27.600000023841858,
+      "decodeMs": 1.600000023841858,
+      "drawMs": 1.399999976158142,
+      "totalMs": 38.300000071525574,
+      "bytes": 11074,
+      "svgBytes": 411967
+    },
+    {
+      "mode": "inline",
+      "count": 3,
+      "visited": 58,
+      "serializeMs": 27.899999976158142,
+      "decodeMs": 1.600000023841858,
+      "drawMs": 1.399999976158142,
+      "totalMs": 39.200000047683716,
+      "bytes": 11074,
+      "svgBytes": 411967
+    },
+    {
+      "mode": "inline",
+      "count": 4,
+      "visited": 58,
+      "serializeMs": 28.200000047683716,
+      "decodeMs": 1.5999999046325684,
+      "drawMs": 1.5,
+      "totalMs": 39.200000047683716,
+      "bytes": 11074,
+      "svgBytes": 411967
+    },
+    {
+      "mode": "inline",
+      "count": 5,
+      "visited": 58,
+      "serializeMs": 27.700000047683716,
+      "decodeMs": 1.5,
+      "drawMs": 1.5,
+      "totalMs": 38.800000071525574,
+      "bytes": 11074,
+      "svgBytes": 411967
+    },
+    {
+      "mode": "hybrid",
+      "count": 0,
+      "visited": 58,
+      "serializeMs": 1,
+      "decodeMs": 1,
+      "drawMs": 0.20000004768371582,
+      "totalMs": 9.100000023841858,
+      "bytes": 8584,
+      "svgBytes": 2831
+    },
+    {
+      "mode": "hybrid",
+      "count": 1,
+      "visited": 58,
+      "serializeMs": 1,
+      "decodeMs": 0,
+      "drawMs": 0.10000002384185791,
+      "totalMs": 7.600000023841858,
+      "bytes": 8584,
+      "svgBytes": 2831
+    },
+    {
+      "mode": "hybrid",
+      "count": 2,
+      "visited": 58,
+      "serializeMs": 1.1999999284744263,
+      "decodeMs": 0,
+      "drawMs": 0.10000002384185791,
+      "totalMs": 8.100000023841858,
+      "bytes": 8584,
+      "svgBytes": 2831
+    },
+    {
+      "mode": "hybrid",
+      "count": 3,
+      "visited": 58,
+      "serializeMs": 1,
+      "decodeMs": 0.10000002384185791,
+      "drawMs": 0,
+      "totalMs": 7.700000047683716,
+      "bytes": 8584,
+      "svgBytes": 2831
+    },
+    {
+      "mode": "hybrid",
+      "count": 4,
+      "visited": 58,
+      "serializeMs": 1.5999999046325684,
+      "decodeMs": 0.20000004768371582,
+      "drawMs": 0,
+      "totalMs": 9.199999928474426,
+      "bytes": 8584,
+      "svgBytes": 2831
+    },
+    {
+      "mode": "hybrid",
+      "count": 5,
+      "visited": 58,
+      "serializeMs": 1.100000023841858,
+      "decodeMs": 0,
+      "drawMs": 0.10000002384185791,
+      "totalMs": 7.600000023841858,
+      "bytes": 8584,
+      "svgBytes": 2831
+    },
+    {
+      "mode": "inline",
+      "count": 0,
+      "visited": 410,
+      "serializeMs": 188.29999995231628,
+      "decodeMs": 56.5,
+      "drawMs": 11.300000071525574,
+      "totalMs": 265.1999999284744,
+      "bytes": 13344,
+      "svgBytes": 2909415,
+      "dense": true
+    },
+    {
+      "mode": "inline",
+      "count": 1,
+      "visited": 410,
+      "serializeMs": 196.29999995231628,
+      "decodeMs": 51.799999952316284,
+      "drawMs": 11.200000047683716,
+      "totalMs": 268.5,
+      "bytes": 13344,
+      "svgBytes": 2909415,
+      "dense": true
+    },
+    {
+      "mode": "inline",
+      "count": 2,
+      "visited": 410,
+      "serializeMs": 189.89999997615814,
+      "decodeMs": 11,
+      "drawMs": 10.399999976158142,
+      "totalMs": 220.20000004768372,
+      "bytes": 13344,
+      "svgBytes": 2909415,
+      "dense": true
+    },
+    {
+      "mode": "hybrid",
+      "count": 0,
+      "visited": 410,
+      "serializeMs": 1.5,
+      "decodeMs": 2,
+      "drawMs": 0.3999999761581421,
+      "totalMs": 11,
+      "bytes": 10738,
+      "svgBytes": 14183,
+      "dense": true
+    },
+    {
+      "mode": "hybrid",
+      "count": 1,
+      "visited": 410,
+      "serializeMs": 1.5,
+      "decodeMs": 0.09999990463256836,
+      "drawMs": 0.10000002384185791,
+      "totalMs": 8.099999904632568,
+      "bytes": 10738,
+      "svgBytes": 14183,
+      "dense": true
+    },
+    {
+      "mode": "hybrid",
+      "count": 2,
+      "visited": 410,
+      "serializeMs": 1.5,
+      "decodeMs": 0.10000002384185791,
+      "drawMs": 0.10000002384185791,
+      "totalMs": 8.600000023841858,
+      "bytes": 10738,
+      "svgBytes": 14183,
+      "dense": true
+    },
+    {
+      "done": true,
+      "longTasks": [
+        {
+          "start": 938.5,
+          "duration": 234
+        },
+        {
+          "start": 1222.8000000715256,
+          "duration": 238
+        },
+        {
+          "start": 1506.1000000238419,
+          "duration": 212
+        }
+      ]
+    }
+  ]
+}
