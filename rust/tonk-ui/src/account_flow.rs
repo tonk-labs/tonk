@@ -3314,6 +3314,7 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// SPACE-14: the Hub creates one independently identified copy.
     #[dialog_common::test]
     async fn it_duplicates_a_space_from_the_hub_menu(env: TestEnvironment) -> Result<()> {
         let driver = driver_with_prf(&env).await?;

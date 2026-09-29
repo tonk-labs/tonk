@@ -38,6 +38,26 @@ This import is separate from `tonk space link NAME`: join creates a local
 replica from invitation authority, while space link attaches an existing local
 space to an account and hosted service.
 
+### Duplicate a space (`SPACE-14`)
+
+From the Hub row's **more** menu, **duplicate** opens a named creation dialog
+with “Copy of …” prefilled. Cancel closes the dialog before creation. Submit
+shows **duplicating…**, prevents repeat submission while pending, and opens the
+new space once its copy completes.
+
+The new space carries the source's current main-branch data, definitions, and
+indexed blobs. It has a fresh DID and creator ownership. Source membership,
+invitations, grants, repository metadata, remotes, other branches, history, and
+seed-installation records do not carry over. Content entity references remain
+intact; edits to the copy do not edit the original. Normal new-space account
+hosting policy applies independently of the source's provider.
+
+The source must be available on this device. An unreadable source fails before
+allocation. A storage failure after allocation can leave an unfinished copy;
+the dialog reports failure and asks the person to check their spaces before
+retrying. Restart, lost-response, remote-hydration, and concurrent-change
+recovery remain unverified. Existing Hub screenshots predate this menu action.
+
 ### Share-menu presentation decision
 
 The browser calls the transferable artifact a **share link**. The v0.17 FABB
@@ -389,3 +409,6 @@ URLs, DIDs, data, or argument values.
 
 Source audit pinned to Tonk commit `a3f8670b1`.
 Onboarding-account addendum pinned to Tonk commit `b564e83b1`.
+
+Duplication source addendum pinned to `bd852af81`; post-rebase browser evidence
+uses artifact `12b87892fca818d5` (2026-09-29).

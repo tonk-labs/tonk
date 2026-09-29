@@ -34,3 +34,16 @@ sets the input property, but `form.reset()` restores its raw attribute. Using
 Not run: full workspace suite, hosted/remote hydration and sync, cross-device or
 mobile UI validation. Storage failures after allocation retain the existing
 creation behavior: an unfinished space can remain and the receipt reports failure.
+
+Publication checkpoint (2026-09-29):
+
+- Rebased unchanged onto `fix/fabb-animation` at `2fb2f5123`; range-diff
+  confirms the feature patch is unchanged.
+- Reran both native duplication tests and the profile-only dispatch regression:
+  all three pass. The integration-test binary builds successfully.
+- Post-rebase Trunk artifact `12b87892fca818d5` passes both Hub duplication
+  and ordinary collection-card creation tests with Chrome 154.
+- The first packaging hook missed guest JavaScript; an unchanged build retry
+  succeeded. No packaging source changes were made.
+- Storybook documents `SPACE-14` and updates `WEB-02`; generated data and local
+  links pass validation. Existing screenshots predate the new menu action.
