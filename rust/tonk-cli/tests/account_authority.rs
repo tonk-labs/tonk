@@ -788,16 +788,14 @@ async fn it_migrates_delegations_idempotently() -> Result<()> {
     Ok(())
 }
 
-/// A space created before the account existed reaches no account root.
-/// Ordinary sync must not silently turn account linking into ownership
-/// adoption; `tonk space move` is the explicit boundary that does so.
+/// A space created before sign-in is held for the profile's onboarding
+/// account, which signing in hands over to the account: the space follows
+/// it, as it does in the browser, and ordinary sync pushes it.
 #[dialog_common::test]
-async fn it_denies_ordinary_sync_for_a_space_created_before_the_account_existed(
+async fn it_moves_a_space_created_before_sign_in_to_the_account(
     env: AccessServiceAddress,
 ) -> Result<()> {
     let fixture = common::AccountFixture::new().await?;
-    // The access service serves nothing for an account that has not
-    // confirmed its email.
     fixture.activate_with(&env).await?;
     let path = fixture.pre_account_site.root.clone();
     let site = TonkSite::open_with(&path, account_config(&fixture)).await?;
@@ -805,9 +803,39 @@ async fn it_denies_ordinary_sync_for_a_space_created_before_the_account_existed(
     env.provision_subject(site.repository.did().as_str())
         .await?;
 
+    let pushed = tonk_cli::sync::push(&site).await?;
+    assert!(pushed.advanced, "{pushed:?}");
+    Ok(())
+}
+
+/// Signing in moves what the profile's onboarding account held to the
+/// account, and nothing else: a space another profile on this machine
+/// created was never this account's, so ordinary sync cannot adopt it.
+/// `tonk space link` is the explicit boundary that does.
+#[dialog_common::test]
+async fn it_denies_ordinary_sync_for_a_space_the_account_never_held(
+    env: AccessServiceAddress,
+) -> Result<()> {
+    let fixture = common::AccountFixture::new().await?;
+    // The access service serves nothing for an account that has not
+    // confirmed its email.
+    fixture.activate_with(&env).await?;
+    let path = fixture.tmp.path().join("created-elsewhere");
+    let elsewhere = SiteConfig {
+        profile_name: format!("elsewhere-{:x}", rand::random::<u64>()),
+        require_account: false,
+        ..fixture.config.clone()
+    };
+    drop(TonkSite::init_at_with(&path, elsewhere).await?);
+
+    let site = TonkSite::open_with(&path, account_config(&fixture)).await?;
+    configure_upstream(&site, &env.access_service_url).await?;
+    env.provision_subject(site.repository.did().as_str())
+        .await?;
+
     let error = tonk_cli::sync::push(&site)
         .await
-        .expect_err("ordinary sync cannot adopt a local-only space");
+        .expect_err("ordinary sync cannot adopt a space the account never held");
     assert!(
         error.to_string().contains("No delegation chain proves"),
         "{error}"
