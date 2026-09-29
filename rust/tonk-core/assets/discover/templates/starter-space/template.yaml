@@ -1,0 +1,48 @@
+schemaVersion: 1
+slug: starter-space
+name: Starter space
+summary: Tonk's example vault. A notes tree with a welcome tour, a walkthrough, and six small demo apps that show what one space can hold.
+description: |
+  The Starter space is Tonk's example vault. A folder tree on the left holds Markdown notes and small apps, and the editor on the right shows the open page. Everything is stored as facts in one space, so the notes, the demo apps, and their data sync to everyone you invite.
+  The vault ships with the Welcome page, an interactive How to Tonk walkthrough, a technical guide, a license note, and a Demos folder: To-Dos, Tonk News, an Infra budget spreadsheet, Dots, Zork I, and an Agent playground. Each demo is a few concepts, views, and rules in the same space. Read the source, change it, and share the result.
+category: Workspace
+version: 1.0.0
+license: CC0-1.0
+author:
+  name: Tonk
+  url: https://tonk.xyz
+  contact: mailto:hello@tonk.xyz
+features:
+  - Notes vault with folders, a Markdown editor, rename, move, delete, and restore
+  - Welcome page and an interactive How to Tonk walkthrough
+  - To-Dos with lists, tags, assignees, and scheduled days
+  - Tonk News with stories, threaded comments, and upvotes
+  - Infra budget spreadsheet with formulas
+  - Dots, a shared puzzle match, and Zork I in a terminal
+  - Agent playground with a task curriculum for CLI agents
+  - Fonts and images embedded, so pages render without external services
+images:
+  - file: preview.png
+    alt: The Starter space vault with the notes tree on the left and the Welcome page open on the right
+    caption: Screenshot of the Welcome page in a Tonk space.
+files:
+  - file: 1-vault.yaml
+    description: Vault shell. Note tree, editor, settings, commands, rules, views, the open-link route, and the root notes.
+  - file: 2-pages.yaml
+    description: Welcome page, How to Tonk walkthrough, and Heading presets page, with fonts and images inline.
+  - file: 3-news.yaml
+    description: Tonk News demo with its starter stories and comments.
+  - file: 4-todos.yaml
+    description: To-Dos demo with tags, day slots, and starter to-dos.
+  - file: 5-budget.yaml
+    description: Infra budget spreadsheet demo and its sheet.
+  - file: 6-dots.yaml
+    description: Dots demo and its shared match.
+  - file: 7-zork.yaml
+    description: Zork I terminal demo and its page.
+  - file: 8-playground.yaml
+    description: Agent playground and its task curriculum.
+entrypoint: vault/page
+compatibility: Tonk CLI 0.6.12 notation and standard library. Round-tripped into a fresh space with the CLI on 2026-09-08.
+notes: |
+  Install into a fresh space, in file order. The files mount the vault at the space root: they re-point id:tonk/space at the vault workspace, set the space home to vault/page, and pin several concepts to tonk: URIs, so an existing space with its own home or its own vault would be changed. 2-pages.yaml is about 3.2 MB because fonts and images are inline. Starter content (stories, to-dos, tasks, day slots, the budget sheet, the Dots match) is part of each demo file. Per-device state, session transcripts, agent heartbeats, and the roster of the source space are not included. The authors' own work is CC0 1.0. The embedded fonts (Gestalte, Charter, IBM Plex Mono) and the frog stickers in the walkthrough keep their own licenses; see LICENSE.txt inside the vault.

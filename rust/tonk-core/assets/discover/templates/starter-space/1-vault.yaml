@@ -1,0 +1,4103 @@
+# SPDX-License-Identifier: CC0-1.0
+# Tonk asserted notation. Repeated top-level keys are intentional.
+#
+# Starter space — Vault
+#
+# The Vault shell: notes tree, editor, settings, routes, and the starter notes
+#
+# One of 8 notation documents that recreate the Tonk starter space in a
+# fresh space. Evaluate them in file order:
+#
+#   tonk eval 1-vault.yaml
+#   tonk eval 2-pages.yaml
+#   tonk eval 3-news.yaml
+#   tonk eval 4-todos.yaml
+#   tonk eval 5-budget.yaml
+#   tonk eval 6-dots.yaml
+#   tonk eval 7-zork.yaml
+#   tonk eval 8-playground.yaml
+#
+# Exported from the live space on 2026-09-08 with Tonk 0.6.12. Blobs are
+# embedded as data: URIs. Runtime state (per-device state, session
+# transcripts, agent heartbeats, the roster, and history) is left out.
+#
+# Author: Tonk <hello@tonk.xyz>. The authors' own work is CC0 1.0; embedded
+# fonts and third-party artwork keep their own licenses (see LICENSE.txt
+# in the vault).
+
+
+# ==========================================================================
+# Attributes
+# ==========================================================================
+
+attribute!: &wc-note
+  description: "The note a block comment belongs to"
+  the: blue.bumble.wiki.comment/note
+  as: Entity
+  cardinality: one
+
+attribute!: &wc-snippet
+  description: "The commented block's text at comment time — the anchor. Markdown blocks carry no stable ids, so the badge re-attaches by matching this against live block text."
+  the: blue.bumble.wiki.comment/snippet
+  as: Text
+  cardinality: one
+
+attribute!: &wc-text
+  description: "Comment body"
+  the: blue.bumble.wiki.comment/text
+  as: Text
+  cardinality: one
+
+attribute!: &wc-time
+  description: "Comment time, epoch milliseconds"
+  the: blue.bumble.wiki.comment/time
+  as: Float
+  cardinality: one
+
+
+# ==========================================================================
+# Concepts
+# ==========================================================================
+
+concept!: &prose
+  this: tonk:prose
+  description: "A Markdown document edited with the built-in Tonk prose editor."
+  with:
+    content:
+      description: "The document content, including any version envelope emitted by the editor."
+      the: io.gozala.prose/content
+      as: Text
+      cardinality: one
+
+concept!: &space-home
+  this: space:home
+  description: "The space home page, keyed by the repository's own subject DID."
+  with:
+    subject:
+      description: "The repository's subject DID."
+      the: dialog.replica/subject
+      as: Entity
+      cardinality: one
+
+concept!: &vault
+  this: tonk:vault
+  description: "A vault - a tree of folders and notes with one active note."
+  with:
+    active:
+      description: "The note currently open in the editor"
+      the: xyz.tonk.vault/active
+      as: Entity
+      cardinality: one
+    title:
+      description: "The vault's display name"
+      the: xyz.tonk.vault/title
+      as: Text
+      cardinality: one
+
+concept!: &vault/config
+  this: tonk:vault/config
+  description: "Shared appearance and landing preferences for this Vault."
+  with:
+    auto-open:
+      description: "Whether to open the configured file on arrival."
+      the: xyz.tonk.vault.config/auto-open
+      as: Text
+      cardinality: one
+    startup:
+      description: "A file entity, or id:vault/first-file for sidebar order."
+      the: xyz.tonk.vault.config/startup
+      as: Entity
+      cardinality: one
+  maybe:
+    theme:
+      description: "System, light, or dark appearance behavior."
+      the: xyz.tonk.vault.config/theme
+      as: Text
+      cardinality: one
+
+concept!: &vault/frame
+  this: tonk:vault/frame
+  description: "The vault minus the open note — what the shell subscribes to."
+  with:
+    title:
+      description: "The vault's display name"
+      the: xyz.tonk.vault/title
+      as: Text
+      cardinality: one
+
+concept!: &vault/here
+  this: tonk:vault/here
+  description: "This device's open note."
+  with:
+    active:
+      description: "The note this replica has open in the editor."
+      the: xyz.tonk.vault/here-active
+      as: Entity
+      cardinality: one
+    profile:
+      description: "The local profile that keeps these preferences per-device."
+      the: dialog.origin/profile
+      as: Entity
+      cardinality: one
+    subject:
+      description: "The repository subject carried by tonk/replica."
+      the: dialog.origin/subject
+      as: Entity
+      cardinality: one
+
+concept!: &vault/here-active
+  this: tonk:vault/here-active
+  description: "The note currently open on one replica."
+  with:
+    active:
+      description: "The note this replica has open in the editor."
+      the: xyz.tonk.vault/here-active
+      as: Entity
+      cardinality: one
+
+concept!: &vault/node
+  this: tonk:vault/node
+  description: "A node in the vault tree - either a folder or a file."
+  with:
+    kind:
+      description: "\"folder\" or \"file\""
+      the: xyz.tonk.vault.node/kind
+      as: Text
+      cardinality: one
+    name:
+      description: "Display name"
+      the: xyz.tonk.vault.node/name
+      as: Text
+      cardinality: one
+    order:
+      description: "Lexicographic sibling order key"
+      the: xyz.tonk.vault.node/order
+      as: Text
+      cardinality: one
+  maybe:
+    parent:
+      description: "The containing folder"
+      the: xyz.tonk.vault.node/parent
+      as: Entity
+      cardinality: one
+
+concept!: &vault/node-name
+  this: tonk:vault/node-name
+  description: "A node's name, as a standalone fact."
+  with:
+    name:
+      description: "Display name"
+      the: xyz.tonk.vault.node/name
+      as: Text
+      cardinality: one
+
+concept!: &vault/node-order
+  this: tonk:vault/node-order
+  description: "A node's sibling order key, as a standalone fact."
+  with:
+    order:
+      description: "Lexicographic sibling order key"
+      the: xyz.tonk.vault.node/order
+      as: Text
+      cardinality: one
+
+concept!: &vault/node-parent
+  this: tonk:vault/node-parent
+  description: "A node's containing folder, as a standalone fact."
+  with:
+    parent:
+      description: "The containing folder"
+      the: xyz.tonk.vault.node/parent
+      as: Entity
+      cardinality: one
+
+concept!: &vault/open-link
+  this: tonk:vault/open-link
+  description: "A shared link that opens the Vault at one note."
+  with:
+    entity:
+      description: "The target entity from the path, picked off the site entity."
+      the: xyz.tonk.site/entity
+      as: Entity
+      cardinality: one
+
+concept!: &vault/page
+  this: tonk:vault/page
+  description: "A vault note that renders as an HTML page instead of the Markdown editor."
+  with:
+    model:
+      description: "The concept whose detail view renders this page (e.g. tonk:vault/welcome-page)."
+      the: xyz.tonk.vault.page/model
+      as: Entity
+      cardinality: one
+    title:
+      description: "The page's heading."
+      the: xyz.tonk.vault.page/title
+      as: Text
+      cardinality: one
+
+concept!: &vault/settings
+  this: tonk:vault/settings
+  description: "This device's Vault appearance and landing preferences."
+  with:
+    auto-open:
+      description: "Whether to open a file on arrival, stored as on or off."
+      the: xyz.tonk.vault.settings/auto-open
+      as: Text
+      cardinality: one
+    profile:
+      description: "The local profile that keeps these preferences per-device."
+      the: dialog.origin/profile
+      as: Entity
+      cardinality: one
+    startup:
+      description: "A file entity, or id:vault/first-file for sidebar order."
+      the: xyz.tonk.vault.settings/startup
+      as: Entity
+      cardinality: one
+    subject:
+      description: "The repository subject carried by tonk/replica."
+      the: dialog.origin/subject
+      as: Entity
+      cardinality: one
+    theme:
+      description: "The explicit light or dark appearance."
+      the: xyz.tonk.vault.settings/theme
+      as: Text
+      cardinality: one
+
+concept!: &vault/tree
+  this: tonk:vault/tree
+  description: "This device's vault tree state."
+  with:
+    profile:
+      description: "The local profile that keeps these preferences per-device."
+      the: dialog.origin/profile
+      as: Entity
+      cardinality: one
+    subject:
+      description: "The repository subject carried by tonk/replica."
+      the: dialog.origin/subject
+      as: Entity
+      cardinality: one
+  maybe:
+    open:
+      description: "A pipe-prefixed, space-separated list of expanded folder ids."
+      the: xyz.tonk.vault/open
+      as: Text
+      cardinality: one
+
+concept!: &vault/tree-open
+  this: tonk:vault/tree-open
+  description: "The expanded-folder set on one replica."
+  with:
+    open:
+      description: "A pipe-prefixed, space-separated list of expanded folder ids."
+      the: xyz.tonk.vault/open
+      as: Text
+      cardinality: one
+
+concept!: &vault/workspace
+  this: tonk:vault/workspace
+  description: "The Vault space root, keyed by the active replica."
+  with:
+    subject:
+      description: "The repository's subject DID."
+      the: dialog.replica/subject
+      as: Entity
+      cardinality: one
+
+name!:
+  this: id:tonk/space
+  entity: vault/workspace
+
+concept!: &wiki/comment
+  description: "A comment on one block of a note"
+  with:
+    note: wc-note
+    snippet: wc-snippet
+    text: wc-text
+    time: wc-time
+
+
+# ==========================================================================
+# Commands (transient concepts fired by the UI)
+# ==========================================================================
+
+command!: &prose/edit
+  description: "Edit a prose document."
+  with:
+    content:
+      description: "The new content envelope emitted by the change event."
+      the: dom.event.detail/content
+      as: Text
+      cardinality: one
+    subject:
+      description: "The repository's subject DID, stamped on the banner element."
+      the: dom.event.current-target.dataset/subject
+      as: Entity
+      cardinality: one
+
+command!: &vault/delete
+  description: "Remove `node` from the tree."
+  with:
+    node:
+      description: "The node to delete"
+      the: dom.event.detail/delete
+      as: Entity
+      cardinality: one
+
+command!: &vault/move
+  description: "Move `node` into `parent` at `order`."
+  with:
+    node:
+      description: "The node being moved"
+      the: dom.event.detail/move
+      as: Entity
+      cardinality: one
+    order:
+      description: "Its sibling order key in the destination"
+      the: dom.event.detail/move-order
+      as: Text
+      cardinality: one
+    parent:
+      description: "The folder to move it into"
+      the: dom.event.detail/move-parent
+      as: Entity
+      cardinality: one
+
+command!: &vault/move-root
+  description: "Move `node` to the top level at `order`."
+  with:
+    node:
+      description: "The node being moved"
+      the: dom.event.detail/move-root
+      as: Entity
+      cardinality: one
+    order:
+      description: "Its sibling order key at the top level"
+      the: dom.event.detail/move-root-order
+      as: Text
+      cardinality: one
+
+command!: &vault/new-folder
+  description: "Create a folder inside `parent`."
+  with:
+    name:
+      description: "Name of the new folder"
+      the: dom.event.detail/folder-name
+      as: Text
+      cardinality: one
+    order:
+      description: "Sibling order key, computed by the tree component"
+      the: dom.event.detail/folder-order
+      as: Text
+      cardinality: one
+    parent:
+      description: "The containing folder"
+      the: dom.event.detail/folder-parent
+      as: Entity
+      cardinality: one
+    time:
+      description: "A monotonic integer nonce, so repeat creates differ"
+      the: dom.event.detail/time
+      as: UnsignedInteger
+      cardinality: one
+
+command!: &vault/new-linked-note
+  description: "Create a note inside `parent`, to be linked from the editor."
+  with:
+    name:
+      description: "Name of the new note"
+      the: dom.event.detail/linked-note-name
+      as: Text
+      cardinality: one
+    order:
+      description: "Sibling order key, computed by the component"
+      the: dom.event.detail/linked-note-order
+      as: Text
+      cardinality: one
+    parent:
+      description: "The containing folder (the open note's folder)"
+      the: dom.event.detail/linked-note-parent
+      as: Entity
+      cardinality: one
+    time:
+      description: "A monotonic integer nonce, so repeat creates differ"
+      the: dom.event.detail/time
+      as: UnsignedInteger
+      cardinality: one
+
+command!: &vault/new-linked-root-note
+  description: "Create a note at the top level, to be linked from the editor."
+  with:
+    name:
+      description: "Name of the new note"
+      the: dom.event.detail/linked-root-note-name
+      as: Text
+      cardinality: one
+    order:
+      description: "Sibling order key, computed by the component"
+      the: dom.event.detail/linked-root-note-order
+      as: Text
+      cardinality: one
+    time:
+      description: "A monotonic integer nonce, so repeat creates differ"
+      the: dom.event.detail/time
+      as: UnsignedInteger
+      cardinality: one
+
+command!: &vault/new-note
+  description: "Create a note inside `parent`."
+  with:
+    name:
+      description: "Name of the new note"
+      the: dom.event.detail/note-name
+      as: Text
+      cardinality: one
+    order:
+      description: "Sibling order key, computed by the tree component"
+      the: dom.event.detail/note-order
+      as: Text
+      cardinality: one
+    parent:
+      description: "The containing folder"
+      the: dom.event.detail/note-parent
+      as: Entity
+      cardinality: one
+    time:
+      description: "A monotonic integer nonce, so repeat creates differ"
+      the: dom.event.detail/time
+      as: UnsignedInteger
+      cardinality: one
+
+command!: &vault/new-root-folder
+  description: "Create a folder at the top level."
+  with:
+    name:
+      description: "Name of the new folder"
+      the: dom.event.detail/root-folder-name
+      as: Text
+      cardinality: one
+    order:
+      description: "Sibling order key, computed by the tree component"
+      the: dom.event.detail/root-folder-order
+      as: Text
+      cardinality: one
+    time:
+      description: "A monotonic integer nonce, so repeat creates differ"
+      the: dom.event.detail/time
+      as: UnsignedInteger
+      cardinality: one
+
+command!: &vault/new-root-note
+  description: "Create a note at the top level."
+  with:
+    name:
+      description: "Name of the new note"
+      the: dom.event.detail/root-note-name
+      as: Text
+      cardinality: one
+    order:
+      description: "Sibling order key, computed by the tree component"
+      the: dom.event.detail/root-note-order
+      as: Text
+      cardinality: one
+    time:
+      description: "A monotonic integer nonce, so repeat creates differ"
+      the: dom.event.detail/time
+      as: UnsignedInteger
+      cardinality: one
+
+command!: &vault/open
+  description: "A request to open `node` in the editor."
+  with:
+    node:
+      description: "The note to open, from the event detail"
+      the: dom.event.detail/open
+      as: Entity
+      cardinality: one
+
+command!: &vault/open-device
+  description: "Open a file on this device without rewriting replica identity."
+  with:
+    active:
+      description: "The file this device should open."
+      the: dom.event.detail/device-open
+      as: Entity
+      cardinality: one
+
+command!: &vault/rename
+  description: "Rename `node` to `name`."
+  with:
+    name:
+      description: "The new name"
+      the: dom.event.detail/rename-name
+      as: Text
+      cardinality: one
+    node:
+      description: "The node to rename"
+      the: dom.event.detail/rename
+      as: Entity
+      cardinality: one
+
+command!: &vault/restore
+  description: "Put a deleted node back into the tree."
+  with:
+    node:
+      description: "The node to restore"
+      the: dom.event.detail/restore
+      as: Entity
+      cardinality: one
+    order:
+      description: "The sibling order key it had when it was deleted"
+      the: dom.event.detail/restore-order
+      as: Text
+      cardinality: one
+
+command!: &vault/save-config
+  description: "Save the Vault's complete shared settings snapshot."
+  with:
+    auto-open:
+      description: "The requested landing behavior, stored as on or off."
+      the: dom.event.detail/vault-config-auto-open
+      as: Text
+      cardinality: one
+    startup:
+      description: "The requested startup file or first-file sentinel."
+      the: dom.event.detail/vault-config-startup
+      as: Entity
+      cardinality: one
+    theme:
+      description: "The requested system, light, or dark appearance behavior."
+      the: dom.event.detail/vault-config-theme
+      as: Text
+      cardinality: one
+
+command!: &vault/save-settings
+  description: "Save this viewer's complete Vault settings snapshot."
+  with:
+    auto-open:
+      description: "The requested landing behavior, stored as on or off."
+      the: dom.event.detail/settings-auto-open
+      as: Text
+      cardinality: one
+    startup:
+      description: "The requested startup file or first-file sentinel."
+      the: dom.event.detail/settings-startup
+      as: Entity
+      cardinality: one
+    theme:
+      description: "The requested light or dark appearance."
+      the: dom.event.detail/settings-theme
+      as: Text
+      cardinality: one
+
+command!: &vault/set-open
+  description: "Record which folders this device has expanded."
+  with:
+    open:
+      description: "The \"|\"-prefixed, space-separated id list"
+      the: dom.event.detail/set-open
+      as: Text
+      cardinality: one
+
+command!: &vault/set-tree-open-device
+  description: "Save expanded folders without rewriting replica identity."
+  with:
+    open:
+      description: "Pipe-prefixed, space-separated expanded folder ids."
+      the: dom.event.detail/device-tree-open
+      as: Text
+      cardinality: one
+
+command!: &wiki/comment-add
+  with:
+    note:
+      description: "The note being commented on"
+      the: dom.event.detail/cnote
+      as: Entity
+      cardinality: one
+    snippet:
+      description: "The commented block's text"
+      the: dom.event.detail/csnippet
+      as: Text
+      cardinality: one
+    text:
+      description: "Comment body text"
+      the: dom.event.detail/ctext
+      as: Text
+      cardinality: one
+    time:
+      description: "Client epoch-ms timestamp"
+      the: dom.event.detail/time
+      as: Float
+      cardinality: one
+
+
+# ==========================================================================
+# Rules
+# ==========================================================================
+
+rule!:
+  assert!: prose
+  when:
+    - assert: prose/edit
+      where: { this: ?event, content: ?content, subject: ?this }
+
+rule!:
+  assert!: prose
+  when:
+    - assert: vault/new-linked-note
+      where: { this: ?this, name: ?name, time: _, order: ?order, parent: ?parent }
+    - assert: ==
+      where: { this: ?content, is: "" }
+
+rule!:
+  assert!: prose
+  when:
+    - assert: vault/new-linked-root-note
+      where: { this: ?this, name: ?name, time: _, order: ?order }
+    - assert: ==
+      where: { this: ?content, is: "" }
+
+rule!:
+  assert!: prose
+  when:
+    - assert: vault/new-note
+      where: { this: ?this, name: ?name, time: _, order: ?order, parent: ?parent }
+    - assert: ==
+      where: { this: ?content, is: "" }
+
+rule!:
+  assert!: prose
+  when:
+    - assert: vault/new-root-note
+      where: { this: ?this, name: ?name, time: _, order: ?order }
+    - assert: ==
+      where: { this: ?content, is: "" }
+
+rule!:
+  assert!: vault
+  when:
+    - assert: vault/new-note
+      where: { this: ?active, name: ?name, time: _, order: ?order, parent: ?parent }
+    - assert: vault
+      where: { this: ?this, title: ?title, active: _ }
+
+rule!:
+  assert!: vault
+  when:
+    - assert: vault/new-root-note
+      where: { this: ?active, name: ?name, time: _, order: ?order }
+    - assert: vault
+      where: { this: ?this, title: ?title, active: _ }
+
+rule!:
+  assert!: vault
+  when:
+    - assert: vault/open
+      where: { node: ?active }
+    - assert: vault
+      where: { this: ?this, title: ?title, active: _ }
+
+rule!:
+  assert!: vault/config
+  when:
+    - assert: vault/save-config
+      where: { theme: ?theme, startup: ?startup, auto-open: ?auto-open }
+    - assert: vault/frame
+      where: { this: ?this, title: _ }
+
+rule!:
+  assert!: vault/config
+  when:
+    - assert: vault/save-config
+      where: { theme: ?theme, startup: ?startup, auto-open: ?auto-open }
+    - assert: vault/frame
+      where: { this: ?this, title: _ }
+
+rule!:
+  assert!: vault/here
+  when:
+    - assert: vault/open
+      where: { node: ?active }
+    - assert: tonk/replica
+      where: { this: ?this, profile: ?profile, subject: ?subject }
+
+rule!:
+  assert!: vault/here-active
+  when:
+    - assert: vault/open-device
+      where: { active: ?active }
+    - assert: tonk/replica
+      where: { this: ?this, profile: _, subject: _ }
+
+rule!:
+  assert!: vault/node
+  when:
+    - assert: vault/new-folder
+      where: { this: ?this, name: ?name, time: _, order: ?order, parent: ?parent }
+    - assert: ==
+      where: { this: ?kind, is: "folder" }
+
+rule!:
+  assert!: vault/node
+  when:
+    - assert: vault/new-linked-note
+      where: { this: ?this, name: ?name, time: _, order: ?order, parent: ?parent }
+    - assert: ==
+      where: { this: ?kind, is: "file" }
+
+rule!:
+  assert!: vault/node
+  when:
+    - assert: vault/new-linked-root-note
+      where: { this: ?this, name: ?name, time: _, order: ?order }
+    - assert: ==
+      where: { this: ?kind, is: "file" }
+
+rule!:
+  assert!: vault/node
+  when:
+    - assert: vault/new-note
+      where: { this: ?this, name: ?name, time: _, order: ?order, parent: ?parent }
+    - assert: ==
+      where: { this: ?kind, is: "file" }
+
+rule!:
+  assert!: vault/node
+  when:
+    - assert: vault/new-root-folder
+      where: { this: ?this, name: ?name, time: _, order: ?order }
+    - assert: ==
+      where: { this: ?kind, is: "folder" }
+
+rule!:
+  assert!: vault/node
+  when:
+    - assert: vault/new-root-note
+      where: { this: ?this, name: ?name, time: _, order: ?order }
+    - assert: ==
+      where: { this: ?kind, is: "file" }
+
+rule!:
+  assert!: vault/node-name
+  when:
+    - assert: vault/rename
+      where: { name: ?name, node: ?this }
+
+rule!:
+  assert!: vault/node-order
+  when:
+    - assert: vault/move
+      where: { node: ?this, order: ?order, parent: ?parent }
+
+rule!:
+  assert!: vault/node-order
+  when:
+    - assert: vault/move-root
+      where: { node: ?this, order: ?order }
+
+rule!:
+  assert!: vault/node-order
+  when:
+    - assert: vault/restore
+      where: { node: ?this, order: ?order }
+
+rule!:
+  retract!: vault/node-order
+  when:
+    - assert: vault/delete
+      where: { node: ?this }
+    - assert: vault/node-order
+      where: { this: ?this, order: ?order }
+
+rule!:
+  assert!: vault/node-parent
+  when:
+    - assert: vault/move
+      where: { node: ?this, order: ?order, parent: ?parent }
+
+rule!:
+  retract!: vault/node-parent
+  when:
+    - assert: vault/move-root
+      where: { node: ?this, order: ?order }
+    - assert: vault/node-parent
+      where: { this: ?this, parent: ?parent }
+
+rule!:
+  assert!: vault/settings
+  when:
+    - assert: vault/save-settings
+      where: { theme: ?theme, startup: ?startup, auto-open: ?auto-open }
+    - assert: tonk/replica
+      where: { this: ?this, profile: ?profile, subject: ?subject }
+
+rule!:
+  assert!: vault/tree
+  when:
+    - assert: vault/set-open
+      where: { open: ?open }
+    - assert: tonk/replica
+      where: { this: ?this, profile: ?profile, subject: ?subject }
+
+rule!:
+  assert!: vault/tree-open
+  when:
+    - assert: vault/set-tree-open-device
+      where: { open: ?open }
+    - assert: tonk/replica
+      where: { this: ?this, profile: _, subject: _ }
+
+rule!:
+  assert!: wiki/comment
+  when:
+    - assert: wiki/comment-add
+      where: { this: ?this, note: ?note, text: ?text, time: ?time, snippet: ?snippet }
+
+
+# ==========================================================================
+# Views
+# ==========================================================================
+
+view!:
+  this: tonk:member
+  show:
+    label: |2
+      {name}
+
+view!:
+  this: tonk:prose
+  show:
+    ui: |2
+      <div class="vault-editor">
+        <tonk-prose
+          onchange=prose/edit
+          data-subject={this}
+          placeholder="Write something…"
+          auto-focus
+          style="display: block; min-height: 12rem;"
+        >{content}</tonk-prose>
+      </div>
+    directory: |2
+      <div class="wiki-prose-row" data-note={this}>{content}</div>
+
+view!:
+  this: space:home
+  show:
+    ui: |2
+      <tonk-display model=vault/page />
+
+view!:
+  this: tonk:vault/config
+  show:
+    directory: |2
+      <div class="vault-config-rows" hidden>
+        <div class="vault-config-row" data-theme={theme} data-auto-open={auto-open} data-startup={startup} data-vault={this}></div>
+      </div>
+
+view!:
+  this: tonk:vault/frame
+  show:
+    ui: |2
+      <div class="vault-root">
+        <style>
+          /* -- full bleed ------------------------------------------
+             The binder wraps every sheet in a bordered card with a
+             title strip. A file tree beside an editor is a whole
+             application surface, not a card, so both come off. The
+             height then has to be carried down by FLEX, not
+             percentages: a percentage can't resolve against a
+             flex-grown ancestor (the same reason the portal sub-chain
+             in sheets.yaml fills by flex). */
+          tonk-sheet:has(.vault-root) { border: none; }
+          tonk-sheet:has(.vault-root) .tonk-sheet__head { display: none; }
+          tonk-sheet:has(.vault-root) > tonk-display {
+            display: flex; flex-direction: column; overflow: hidden;
+          }
+          tonk-sheet:has(.vault-root) > tonk-display > tonk-view {
+            display: flex; flex-direction: column; flex: 1; min-height: 0;
+          }
+
+          .vault-root {
+            display: grid;
+            /* 269px, not a round number: the FAB docks at a 16px inset and its
+               cells are 36px (sync tile) + 216px (space cell), so the divider
+               after the space name paints at x = 268–269 (tonk-fab
+               logic.rs/markup.rs). A 269px column puts the sidebar's 1px
+               border exactly under that divider. Holds while the FAB rests at
+               its default left dock in the full (non-compact) layout. */
+            grid-template-columns: 269px minmax(0, 1fr);
+            /* Fills whether the parent is the flex chain above or a plain
+               block (a standalone route), so the sidebar always reaches
+               the bottom edge. */
+            flex: 1;
+            height: 100%;
+            min-height: 0;
+            overflow: hidden;
+          }
+          /* The theme + type layer is shared with the wiki's body-mounted
+             surfaces: the settings dialog's .vt-scrim and the .vt-errlog
+             popover leave .vault-root to cover the whole viewport, and out
+             there they would inherit the host theme's wine-tinted tokens. */
+          .vault-root, .vt-scrim, .vt-errlog {
+            /* The wiki's three faces — Gestalte (chrome + headings), Charter
+               (note reading), IBM Plex Mono (code) — all loaded from the
+               base64-inline <wp-fonts>. Inter is gone: it was never embedded,
+               so it only ever fell back to the system sans anyway. Redefining
+               the wa-* font vars at this scope is what removes the host faces
+               from every descendant — custom properties reach shadow DOM
+               where selectors cannot. */
+            --grove-font-display: "Gestalte", "Gestalte Book", system-ui, -apple-system, sans-serif;
+            --grove-font-sans: "Gestalte", "Gestalte Book", system-ui, -apple-system, sans-serif;
+            --grove-font-serif: "Charter", "Bitstream Charter", "XCharter", "Sitka Text", Cambria, Georgia, serif;
+            --grove-font-mono: "IBM Plex Mono", ui-monospace, Menlo, Monaco, monospace;
+            --wa-font-family-body: var(--grove-font-sans);
+            --wa-font-family-heading: var(--grove-font-display);
+            --wa-font-family-code: var(--grove-font-mono);
+            /* Monochrome, pinned. The wiki is black/white/gray and must not
+               inherit the host theme's temperature — the portal's stone/lowfi
+               tokens are warm- and wine-tinted, and every gray here arrives
+               through a --wa-* token, so the full token layer the wiki
+               consumes is restated in pure grays (r = g = b), light here and
+               dark in the theme blocks below. Stone·ink belongs to the FABB;
+               demo pages carry their own palettes and never read these. */
+            --wa-color-surface-default: #ffffff;
+            --wa-color-surface-raised: #f6f6f6;
+            --wa-color-surface-border: #e4e4e4;
+            --wa-color-text-normal: #1a1a1a;
+            --wa-color-text-quiet: #8a8a8a;
+            --wa-color-neutral-fill-quiet: #f0f0f0;
+            --wa-color-neutral-fill-normal: #e4e4e4;
+            --wa-color-neutral-fill-loud: #2e2e2e;
+            --wa-color-neutral-on-quiet: #1a1a1a;
+            --wa-color-neutral-on-normal: #1a1a1a;
+            --wa-color-neutral-on-loud: #ffffff;
+            --wa-color-neutral-border-quiet: #ececec;
+            --wa-color-neutral-border-normal: #cfcfcf;
+            --wa-color-neutral-border-loud: #767676;
+            --wa-color-focus: #1a1a1a;
+            --wa-color-danger-fill-loud: #cc3333;
+            /* Links: Tonk Blue (71BBE7), which only WORKS as ink on a dark
+               ground (~8:1 there, 2.1:1 on white — far under AA). Light mode
+               gets the same hue stepped down to #256993 (~6:1 on white).
+               tonk-prose reads --wa-color-text-link into --tonk-prose-link in
+               both of its theme blocks, so this crosses the shadow boundary
+               with no component involved. The stone·ink study was considered
+               and declined: its law is "ink only, no accent" and its one hue
+               sits at 16% lightness — a link colour needs to be an accent. */
+            --wa-color-text-link: #256993;
+            /* Grove is low-fi: sharp corners everywhere the radius tokens reach. */
+            --wa-border-radius-s: 0px;
+            --wa-border-radius-m: 0px;
+            /* One source for the page bar and the sidebar control row so their
+               controls stay aligned across the two columns. */
+            --vault-bar-h: 48px;
+            /* --wa-color-neutral-fill-quiet resolves to the SAME value as
+               --wa-color-surface-raised in this theme, and the sidebar and top bar
+               are both painted raised — so every hover that used it was invisible.
+               Hover steps to fill-normal; the color-mix line then softens it so a
+               hovered row still reads as weaker than a selected one. The plain
+               declaration first is the fallback where color-mix is unsupported. */
+            --vault-fill-hover: var(--wa-color-neutral-fill-normal);
+            --vault-fill-hover: color-mix(in oklab, var(--wa-color-neutral-fill-normal) 55%, transparent);
+            /* The host paints the Web Awesome brand tokens neon lime (#deff1a)
+               in both themes. <tonk-prose> derives its selection and caret
+               colours from those tokens inside its shadow root, and Web
+               Awesome controls read the same tokens. Remapping them here
+               folds all of that into the neutral scale — warm greys in light,
+               the dark surfaces in dark — because custom properties cross the
+               shadow boundary where selectors cannot. Selection takes the
+               `normal` fill, not `quiet`: quiet is the raised-surface colour
+               and would vanish. */
+            --wa-color-brand-fill-quiet: var(--wa-color-neutral-fill-normal);
+            --wa-color-brand-fill-normal: var(--wa-color-neutral-fill-normal);
+            --wa-color-brand-fill-loud: var(--wa-color-neutral-fill-loud);
+            --wa-color-brand-border-quiet: var(--wa-color-neutral-border-quiet);
+            --wa-color-brand-border-normal: var(--wa-color-neutral-border-normal);
+            --wa-color-brand-border-loud: var(--wa-color-neutral-border-loud);
+            --wa-color-brand-on-quiet: var(--wa-color-neutral-on-quiet);
+            --wa-color-brand-on-normal: var(--wa-color-neutral-on-normal);
+            --wa-color-brand-on-loud: var(--wa-color-neutral-on-loud);
+            /* The host declares its COMPONENT tokens on the root element as
+               `var(--wa-color-…)`. A custom property resolves where it is
+               DECLARED, so those became literals of the host's ink (#38182a in
+               light) before our remap above ever applied, and then inherited
+               into the wiki as that literal — which is how a purple tooltip
+               survived a monochrome token layer. Re-declaring them here makes
+               them resolve again, against the grays on this element. Same list
+               as wa.css: `:where(:root), .wa-theme-default, .wa-light, .wa-dark`. */
+            /* Outlined, not filled: a page can already carry a filled label
+               and a filled button, and a solid tooltip on top of them reads as
+               a third control rather than as help. WA paints the arrow from
+               the background alone (`--arrow-color: var(--wa-tooltip-
+               background-color)`), so an outlined box would sprout an
+               unoutlined nub — the arrow is collapsed instead. Verified
+               against the real component: body computes white, 1px #767676,
+               12px, arrow ~1px. */
+            --wa-tooltip-background-color: var(--wa-color-surface-default);
+            --wa-tooltip-border-color: var(--wa-color-neutral-border-loud);
+            --wa-tooltip-content-color: var(--wa-color-text-normal);
+            --wa-tooltip-font-size: 12px;
+            --wa-tooltip-arrow-size: 0px;
+            --wa-form-control-activated-color: var(--wa-color-neutral-fill-loud);
+            --wa-form-control-background-color: var(--wa-color-surface-default);
+            --wa-form-control-border-color: var(--wa-color-neutral-border-loud);
+            --wa-form-control-label-color: var(--wa-color-text-normal);
+            --wa-form-control-value-color: var(--wa-color-text-normal);
+            --wa-form-control-hint-color: var(--wa-color-text-quiet);
+            --wa-form-control-placeholder-color: var(--wa-color-text-quiet);
+            font-family: var(--wa-font-family-body);
+            font-size: 13px;
+            /* No tracking: the -0.006em here was Inter's, not Gestalte's. */
+            letter-spacing: normal;
+            color: var(--wa-color-text-normal);
+            background: transparent;
+          }
+          .vault-data { display: none; }
+          /* Tonk Blue proper earns its keep only on a dark ground — see the
+             token comment above. The host stamps .wa-light / .wa-dark on the
+             root element; the media query covers a root carrying neither. */
+          /* Theme twins. The footer toggle stamps .wa-light / .wa-dark on the
+             root element; the media query covers a root carrying neither. The
+             dark ramp is the same pure grays, roles flipped — no cast. */
+          @media (prefers-color-scheme: dark) {
+            .vault-root, .vt-scrim, .vt-errlog {
+              --wa-color-text-link: #71BBE7;
+              --wa-color-surface-default: #161616;
+              --wa-color-surface-raised: #1e1e1e;
+              --wa-color-surface-border: #2f2f2f;
+              --wa-color-text-normal: #ececec;
+              --wa-color-text-quiet: #8f8f8f;
+              --wa-color-neutral-fill-quiet: #232323;
+              --wa-color-neutral-fill-normal: #2f2f2f;
+              --wa-color-neutral-fill-loud: #d9d9d9;
+              --wa-color-neutral-on-quiet: #ececec;
+              --wa-color-neutral-on-normal: #ececec;
+              --wa-color-neutral-on-loud: #161616;
+              --wa-color-neutral-border-quiet: #262626;
+              --wa-color-neutral-border-normal: #3d3d3d;
+              --wa-color-neutral-border-loud: #9a9a9a;
+              --wa-color-focus: #ececec;
+              --wa-color-danger-fill-loud: #e05656;
+            }
+          }
+          .wa-light .vault-root, .wa-light .vt-scrim, .wa-light .vt-errlog {
+            --wa-color-text-link: #256993;
+            --wa-color-surface-default: #ffffff;
+            --wa-color-surface-raised: #f6f6f6;
+            --wa-color-surface-border: #e4e4e4;
+            --wa-color-text-normal: #1a1a1a;
+            --wa-color-text-quiet: #8a8a8a;
+            --wa-color-neutral-fill-quiet: #f0f0f0;
+            --wa-color-neutral-fill-normal: #e4e4e4;
+            --wa-color-neutral-fill-loud: #2e2e2e;
+            --wa-color-neutral-on-quiet: #1a1a1a;
+            --wa-color-neutral-on-normal: #1a1a1a;
+            --wa-color-neutral-on-loud: #ffffff;
+            --wa-color-neutral-border-quiet: #ececec;
+            --wa-color-neutral-border-normal: #cfcfcf;
+            --wa-color-neutral-border-loud: #767676;
+            --wa-color-focus: #1a1a1a;
+            --wa-color-danger-fill-loud: #cc3333;
+          }
+          .wa-dark .vault-root, .wa-dark .vt-scrim, .wa-dark .vt-errlog {
+            --wa-color-text-link: #71BBE7;
+            --wa-color-surface-default: #161616;
+            --wa-color-surface-raised: #1e1e1e;
+            --wa-color-surface-border: #2f2f2f;
+            --wa-color-text-normal: #ececec;
+            --wa-color-text-quiet: #8f8f8f;
+            --wa-color-neutral-fill-quiet: #232323;
+            --wa-color-neutral-fill-normal: #2f2f2f;
+            --wa-color-neutral-fill-loud: #d9d9d9;
+            --wa-color-neutral-on-quiet: #ececec;
+            --wa-color-neutral-on-normal: #ececec;
+            --wa-color-neutral-on-loud: #161616;
+            --wa-color-neutral-border-quiet: #262626;
+            --wa-color-neutral-border-normal: #3d3d3d;
+            --wa-color-neutral-border-loud: #9a9a9a;
+            --wa-color-focus: #ececec;
+            --wa-color-danger-fill-loud: #e05656;
+          }
+          /* -- tree ------------------------------------------------ */
+          vault-tree {
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+            overflow: auto;
+            position: relative;
+            border-right: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+            background: var(--wa-color-surface-raised);
+          }
+          .vt-head {
+            display: flex; flex-direction: column; gap: var(--wa-space-xs);
+            padding: 0 12px 10px;
+            position: sticky; top: 0; z-index: 1;
+            background: var(--wa-color-surface-raised);
+          }
+          /* Keep the sidebar controls aligned with the page bar. The workspace
+             name and dividing rule are intentionally absent: this is an action
+             row, not a second title bar. */
+          .vt-headrow {
+            display: flex; align-items: center; gap: var(--wa-space-xs);
+            height: var(--vault-bar-h); box-sizing: border-box; flex: none;
+            margin: 0 -12px; padding: 0 12px;
+          }
+          .vt-headfill { flex: 1 1 auto; }
+          .vt-tools { display: flex; gap: 2px; }
+          .vt-tool {
+            width: 26px; height: 26px; padding: 5px;
+            display: inline-flex; align-items: center; justify-content: center;
+            cursor: pointer; color: var(--wa-color-text-quiet);
+            background: none; border: none;
+            border-radius: var(--wa-border-radius-s);
+          }
+          .vt-tool:hover {
+            color: var(--wa-color-text-normal);
+            background: var(--vault-fill-hover);
+          }
+          .vt-tool svg { width: 100%; height: 100%; display: block; }
+          .vt-searchwrap { position: relative; display: flex; }
+          .vt-searchwrap > svg {
+            position: absolute; left: 9px; top: 50%; translate: 0 -50%;
+            width: 14px; height: 14px; pointer-events: none;
+            color: var(--wa-color-text-quiet);
+          }
+          .vt-search {
+            flex: 1 1 auto; min-width: 0;
+            font: inherit; color: inherit;
+            padding: var(--wa-space-2xs) var(--wa-space-s);
+            padding-left: 30px;
+            background: var(--wa-color-surface-default);
+            border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+            border-radius: var(--wa-border-radius-s);
+            outline: none;
+          }
+          .vt-search:focus { border-color: var(--wa-color-neutral-border-loud); }
+          .vt-list {
+            --vt-indent: 18px; /* one tree level */
+            --vt-caret: 14px;  /* chevron box; a note's name starts after it */
+            /* No gap: the guide lines run row to row without a break. */
+            display: flex; flex-direction: column; gap: 0;
+            padding: 0 var(--wa-space-xs) var(--wa-space-l);
+          }
+          .vt-row {
+            display: flex; align-items: center; gap: 0;
+            min-height: 26px; padding: 0 var(--wa-space-2xs) 0 6px;
+            cursor: pointer; border-radius: var(--wa-border-radius-s);
+            user-select: none;
+          }
+          .vt-row:hover { background: var(--vault-fill-hover); }
+          /* Selection reads identically for a folder and a note — it was
+             previously the same fill as :hover, so a selected folder went
+             invisible the moment the cursor left it. The OPEN note is
+             distinguished by weight, not by a different fill. */
+          .vt-row.is-selected,
+          .vt-row.is-active {
+            background: var(--wa-color-neutral-fill-normal);
+          }
+          .vt-row.is-active .vt-name { font-weight: var(--wa-font-weight-semibold); }
+          .vt-row.is-selected .vt-name { color: var(--wa-color-text-normal); }
+          /* One spacer per ancestor. Its line sits under that ancestor's
+             chevron and spans the full row height, so across the gapless
+             list it reads as one continuous guide down the open folder. */
+          .vt-guide {
+            flex: none; width: var(--vt-indent); align-self: stretch;
+            position: relative;
+          }
+          .vt-guide::before {
+            content: ""; position: absolute; top: 0; bottom: 0;
+            left: calc(var(--vt-caret) / 2 - 0.5px); width: 1px;
+            background: var(--wa-color-surface-border);
+          }
+          /* Lucide `chevron-right`, turned to point down while the folder is
+             open. The glyph is drawn a little larger than its box so it reads
+             at the weight of the folder icon beside it. A note keeps the
+             empty box (`is-leaf`) so its name starts on the same column as
+             the folder icons beside it. */
+          .vt-caret {
+            flex: none; width: var(--vt-caret); height: var(--vt-caret);
+            margin-right: 4px;
+            display: inline-flex; align-items: center; justify-content: center;
+            color: var(--wa-color-text-quiet);
+          }
+          .vt-caret svg {
+            width: 18px; height: 18px; flex: none; display: block;
+            transition: rotate 120ms ease;
+          }
+          .vt-caret.is-open svg { rotate: 90deg; }
+          /* Lucide `folder` / `folder-open`, in currentColor like every other
+             icon in the app. */
+          .vt-icon {
+            flex: none; width: 16px; height: 16px; margin-right: 8px;
+            color: var(--wa-color-text-quiet);
+          }
+          .vt-icon svg { width: 100%; height: 100%; display: block; }
+          .vt-name {
+            flex: 1 1 auto; overflow: hidden;
+            text-overflow: ellipsis; white-space: nowrap;
+          }
+          .vt-row.is-folder .vt-name {
+            font-weight: var(--wa-font-weight-semibold);
+            color: var(--wa-color-text-quiet);
+          }
+          /* Rename edits the label in place. The field takes exactly the
+             label's box — same slot, font, weight, line box, zero padding and
+             border, no intrinsic input width — so the text does not move by a
+             pixel when editing starts or ends. The row, not the field, shows
+             the state: an inset ring on the default surface, the way Finder
+             and VS Code frame an inline rename. */
+          .vt-rename {
+            flex: 1 1 auto; width: 0; min-width: 0;
+            box-sizing: border-box; margin: 0; padding: 0;
+            border: 0; border-radius: 0; outline: none; box-shadow: none;
+            appearance: none; -webkit-appearance: none;
+            min-height: 0; height: auto;
+            font: inherit; line-height: inherit; letter-spacing: inherit;
+            color: var(--wa-color-text-normal);
+            background: transparent;
+          }
+          .vt-row.is-folder .vt-rename,
+          .vt-row.is-active .vt-rename { font-weight: var(--wa-font-weight-semibold); }
+          .vt-row.is-renaming,
+          .vt-row.is-renaming:hover {
+            background: var(--wa-color-surface-default);
+            box-shadow: inset 0 0 0 1px var(--wa-color-neutral-border-loud);
+          }
+          .vt-empty {
+            display: flex; flex-direction: column;
+            align-items: center; gap: var(--wa-space-s);
+            padding: var(--wa-space-l) var(--wa-space-s);
+            color: var(--wa-color-text-quiet); text-align: center;
+          }
+          .vt-firstnote {
+            font: inherit; cursor: pointer;
+            padding: var(--wa-space-2xs) var(--wa-space-m);
+            color: var(--wa-color-neutral-on-loud);
+            background: var(--wa-color-neutral-fill-loud);
+            border: none; border-radius: var(--wa-border-radius-s);
+          }
+          .vt-firstnote:hover { filter: brightness(1.08); }
+          /* -- sidebar footer (Grove's bottom bar) ------------------ */
+          /* Sticky, so it stays put while the tree scrolls behind it. The
+             warnings triangle only appears once something has gone wrong;
+             the log itself lives in the popover, not in the sidebar. */
+          .vt-foot {
+            position: sticky; bottom: 0;
+            margin-top: auto;
+            display: flex; align-items: center; gap: 2px;
+            padding: 8px 10px;
+            background: var(--wa-color-surface-raised);
+          }
+          .vt-errs { position: relative; }
+          .vt-errs-count {
+            position: absolute; top: -1px; right: -1px;
+            min-width: 13px; height: 13px; padding: 0 3px;
+            display: grid; place-items: center;
+            font-size: 9px; line-height: 1;
+            color: #fff;
+            background: var(--wa-color-danger-fill-loud, #d33);
+            border-radius: 7px;
+          }
+          .vt-errlog {
+            position: fixed; z-index: 60;
+            width: min(360px, calc(100vw - 24px));
+            max-height: 40vh; overflow: auto;
+            display: flex; flex-direction: column; gap: 6px;
+            padding: 10px 12px;
+            background: var(--wa-color-surface-raised);
+            border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+            box-shadow: var(--wa-shadow-l, 0 8px 24px rgb(0 0 0 / .28));
+            /* Body-mounted, outside .vault-root — restate the chrome stack. */
+            font-family: "Gestalte", "Gestalte Book", system-ui, -apple-system, sans-serif;
+            font-size: 11px; line-height: 1.5;
+            color: var(--wa-color-text-normal);
+          }
+          .vt-errlog-head {
+            display: flex; justify-content: space-between; align-items: center;
+          }
+          .vt-errlog-title {
+            font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
+            color: var(--wa-color-text-quiet);
+          }
+          .vt-errlog-clear {
+            font: inherit; font-size: 11px; cursor: pointer;
+            border: none; background: none; padding: 2px 4px;
+            color: var(--wa-color-text-quiet);
+          }
+          .vt-errlog-clear:hover { color: var(--wa-color-text-normal); }
+          .vt-warn {
+            color: var(--wa-color-danger-fill-loud, #eb5757);
+            word-break: break-all;
+            font-family: var(--grove-font-mono, ui-monospace, monospace);
+            font-size: 10px;
+          }
+
+          /* -- right-click menu ------------------------------------ */
+          .vt-menu {
+            position: fixed; z-index: 40; min-width: 148px;
+            display: flex; flex-direction: column; padding: 4px;
+            background: var(--wa-color-surface-raised);
+            border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+            border-radius: var(--wa-border-radius-m);
+            box-shadow: var(--wa-shadow-l, 0 8px 24px rgb(0 0 0 / .28));
+          }
+          .vt-menuitem {
+            /* Hardened against the host's button base styles, which lay the
+               label out with flex centering and generous metrics — text-align
+               alone cannot win that fight, so display and the metrics are
+               restated here. */
+            display: block; width: 100%;
+            font: inherit; font-size: 13px; line-height: 1.4;
+            min-height: 0;
+            text-align: left; cursor: pointer;
+            padding: 4px 10px;
+            color: var(--wa-color-text-normal);
+            background: none; border: none;
+            border-radius: var(--wa-border-radius-s);
+          }
+          /* The same fill as a selected tree row: visible on the raised
+             surface (the quiet fill is not), and neutral like the rest of the
+             chrome rather than the host's brand lime. */
+          .vt-menuitem:hover,
+          .vt-menuitem:focus-visible {
+            background: var(--wa-color-neutral-fill-normal);
+            color: var(--wa-color-text-normal);
+            outline: none;
+          }
+          .vt-menusep {
+            height: 1px; margin: 4px 2px;
+            background: var(--wa-color-surface-border);
+          }
+
+          /* -- drag and drop --------------------------------------- */
+          .vt-row[draggable="true"] { -webkit-user-drag: element; }
+          .vt-row.is-drop-into {
+            background: var(--wa-color-neutral-fill-normal);
+            box-shadow: inset 0 0 0 1px var(--wa-color-neutral-border-loud);
+          }
+          /* A line, not a fill: "between these two" has to read differently
+             from "inside this one". */
+          .vt-row.is-drop-before { box-shadow: inset 0 2px 0 0 var(--wa-color-neutral-border-loud); }
+          .vt-row.is-drop-after { box-shadow: inset 0 -2px 0 0 var(--wa-color-neutral-border-loud); }
+          vault-tree.is-drop-root .vt-list {
+            box-shadow: inset 0 0 0 1px var(--wa-color-neutral-border-loud);
+            border-radius: var(--wa-border-radius-s);
+          }
+
+          /* -- move-to palette -------------------------------------- */
+          .vt-palette {
+            width: min(560px, calc(100vw - 32px));
+            max-height: min(60vh, 460px);
+            display: flex; flex-direction: column;
+            background: var(--wa-color-surface-raised);
+            border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+            border-radius: var(--wa-border-radius-m);
+            box-shadow: var(--wa-shadow-l, 0 16px 48px rgb(0 0 0 / .45));
+            overflow: hidden;
+          }
+          .vt-palette__input {
+            font: inherit; font-size: var(--wa-font-size-m);
+            color: var(--wa-color-text-normal);
+            padding: var(--wa-space-m);
+            background: transparent; border: none;
+            border-bottom: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+            outline: none;
+          }
+          .vt-palette__list { flex: 1 1 auto; overflow: auto; padding: var(--wa-space-2xs); }
+          .vt-palette__row {
+            padding: var(--wa-space-xs) var(--wa-space-s);
+            border-radius: var(--wa-border-radius-s);
+            cursor: pointer; white-space: nowrap;
+            overflow: hidden; text-overflow: ellipsis;
+          }
+          .vt-palette__row:hover { background: var(--wa-color-neutral-fill-quiet); }
+          .vt-palette__row.is-on {
+            background: var(--wa-color-neutral-fill-normal);
+            color: var(--wa-color-text-normal);
+          }
+          .vt-palette__none {
+            padding: var(--wa-space-m);
+            color: var(--wa-color-text-quiet); text-align: center;
+          }
+          .vt-palette__hint {
+            display: flex; justify-content: center; gap: var(--wa-space-s);
+            padding: var(--wa-space-xs);
+            font-size: var(--wa-font-size-xs);
+            color: var(--wa-color-text-quiet);
+            border-top: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+          }
+          .vt-palette__hint b { font-weight: var(--wa-font-weight-semibold); }
+
+          /* -- confirm dialog -------------------------------------- */
+          .vt-scrim {
+            position: fixed; inset: 0; z-index: 60;
+            display: flex; align-items: center; justify-content: center;
+            background: rgb(0 0 0 / .45);
+          }
+          .vt-dialog {
+            width: min(420px, calc(100vw - 32px));
+            display: flex; flex-direction: column; gap: var(--wa-space-s);
+            padding: var(--wa-space-l);
+            background: var(--wa-color-surface-raised);
+            border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+            border-radius: var(--wa-border-radius-m);
+            box-shadow: var(--wa-shadow-l, 0 16px 48px rgb(0 0 0 / .4));
+            font-size: var(--wa-font-size-s);
+          }
+          .vt-dialog__title {
+            font-size: var(--wa-font-size-m);
+            font-weight: var(--wa-font-weight-semibold);
+          }
+          .vt-dialog__path {
+            font-family: var(--wa-font-family-code, ui-monospace, monospace);
+            font-size: var(--wa-font-size-xs);
+            padding: var(--wa-space-xs) var(--wa-space-s);
+            color: var(--wa-color-text-normal);
+            background: var(--wa-color-surface-default);
+            border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+            border-radius: var(--wa-border-radius-s);
+            word-break: break-word;
+          }
+          .vt-dialog__body { color: var(--wa-color-text-quiet); line-height: 1.5; }
+          .vt-dialog__note {
+            font-size: var(--wa-font-size-xs);
+            color: var(--wa-color-text-quiet);
+          }
+          .vt-dialog__acts {
+            display: flex; justify-content: flex-end; gap: var(--wa-space-s);
+            margin-top: var(--wa-space-xs);
+          }
+          .vt-btn {
+            font: inherit; cursor: pointer;
+            padding: var(--wa-space-2xs) var(--wa-space-m);
+            color: var(--wa-color-text-normal);
+            background: var(--wa-color-surface-default);
+            border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+            border-radius: var(--wa-border-radius-s);
+          }
+          .vt-btn:hover { background: var(--wa-color-neutral-fill-quiet); }
+          .vt-btn--danger {
+            color: #fff;
+            background: var(--wa-color-danger-fill-loud, #d33);
+            border-color: transparent;
+          }
+          /* Restate the fill: plain `.vt-btn:hover` is more specific than the
+             variant class, so without this the hover swapped red for the
+             near-white quiet fill under white text — an invisible button. */
+          .vt-btn--danger:hover {
+            background: var(--wa-color-danger-fill-loud, #d33);
+            filter: brightness(1.1);
+          }
+          .vt-btn--primary {
+            color: var(--wa-color-neutral-on-loud);
+            background: var(--wa-color-neutral-fill-loud);
+            border-color: transparent;
+          }
+          .vt-btn--primary:hover {
+            background: var(--wa-color-neutral-fill-loud);
+            filter: brightness(1.08);
+          }
+
+          /* -- settings dialog ------------------------------------- */
+          .vt-settings { width: min(480px, calc(100vw - 32px)); gap: var(--wa-space-m); }
+          .vt-settings__section {
+            display: flex; flex-direction: column;
+            border-top: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+          }
+          .vt-settings__heading {
+            padding: var(--wa-space-m) 0 var(--wa-space-xs);
+            font-size: var(--wa-font-size-xs);
+            font-weight: var(--wa-font-weight-semibold);
+            letter-spacing: .04em; text-transform: uppercase;
+            color: var(--wa-color-text-quiet);
+          }
+          .vt-settings__picker {
+            display: flex; flex-direction: column; gap: var(--wa-space-xs);
+            padding: var(--wa-space-s) 0 0;
+            color: var(--wa-color-text-quiet);
+          }
+          .vt-settings__picker select {
+            width: 100%; font: inherit;
+            padding: var(--wa-space-xs) var(--wa-space-s);
+            color: var(--wa-color-text-normal);
+            background: var(--wa-color-surface-default);
+            border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+            border-radius: var(--wa-border-radius-s);
+          }
+
+          /* -- undo toast ------------------------------------------ */
+          .vt-toast {
+            /* Lifted clear of the workspace tab strip along the bottom
+               edge, which would otherwise sit under the toast. */
+            position: fixed; left: var(--wa-space-m); bottom: 64px;
+            z-index: 55; max-width: 320px;
+            display: flex; align-items: center; gap: var(--wa-space-m);
+            padding: var(--wa-space-xs) var(--wa-space-s);
+            font-size: var(--wa-font-size-s);
+            color: var(--wa-color-text-normal);
+            background: var(--wa-color-surface-raised);
+            border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+            border-radius: var(--wa-border-radius-m);
+            box-shadow: var(--wa-shadow-m, 0 6px 20px rgb(0 0 0 / .3));
+          }
+          .vt-toast span {
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+          }
+          .vt-toast__act {
+            flex: none; font: inherit; cursor: pointer;
+            font-weight: var(--wa-font-weight-semibold);
+            color: var(--wa-color-text-normal);
+            background: none; border: none; padding: 2px 4px;
+          }
+          .vt-toast__act:hover { text-decoration: underline; }
+
+          /* -- editor ---------------------------------------------- */
+          .vault-main {
+            display: flex; flex-direction: column;
+            min-width: 0; min-height: 0; overflow: auto;
+            overscroll-behavior: contain;
+          }
+          /* A quiet filename bar, not a headline: notes carry their own `#`
+             H1, and a second big title just competes with it. */
+          /* Grove's 48px header bar: crumbs + filename left, actions right,
+             on the same card surface as the sidebar. */
+          .vault-title {
+            position: sticky; top: 0; z-index: 1;
+            /* flex: none, or the 48px is merely a basis: .vault-main is a column
+               flex container, and on a note taller than the pane the bar would
+               surrender its share of the deficit and render at 29px. */
+            height: var(--vault-bar-h); flex: 0 0 auto; box-sizing: border-box;
+            display: flex; align-items: center;
+            /* 6 here + 6 inside each icon button = the 12px inset the crumb text
+               starts at on the left. Equal optical margins, not equal boxes. */
+            padding: 0 6px 0 12px;
+            border-bottom: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+            background: var(--wa-color-surface-raised);
+            font-size: 13px;
+            color: var(--wa-color-text-quiet);
+          }
+          .vault-title > vault-title {
+            /* Baseline, not center: the crumbs span and the filename input
+               have different box heights, so centering the boxes leaves their
+               TEXT baselines a pixel or two apart. Flex baseline alignment
+               lines the text up directly; the icon buttons opt back into
+               centering below, since a glyph box has no useful baseline. */
+            display: flex; align-items: baseline; gap: 6px;
+            flex: 1 1 auto; min-width: 0;
+          }
+          .vault-title > vault-title > :is(.vtitle__menu, .vtitle__share) {
+            align-self: center;
+          }
+          .vtitle__crumbs {
+            display: inline-flex; align-items: center; gap: 6px;
+            flex: 0 1 auto; min-width: 0; max-width: 45%;
+            overflow: hidden;
+            /* Same size and metrics as the filename input beside it — one
+               breadcrumb line, visually. Hierarchy comes from weight and
+               color alone (crumbs 400/quiet, name 600/normal); the matching
+               block padding is what keeps the baselines level with an input,
+               which centers its text in its own content box. */
+            font-size: 14px; line-height: normal;
+            padding: var(--wa-space-2xs) 0;
+            color: var(--wa-color-text-quiet);
+            white-space: nowrap;
+          }
+          .vtitle__crumbs:empty { display: none; }
+          .vtitle__crumb { overflow: hidden; text-overflow: ellipsis; }
+          .vtitle__crumbsep { flex: none; }
+          /* Off-canvas trigger — desktop keeps the tree permanently docked,
+             so it only earns its space on narrow layouts. */
+          .vtitle__menu {
+            display: none; flex: none;
+            width: 28px; height: 28px; padding: 6px;
+            align-items: center; justify-content: center;
+            cursor: pointer; color: var(--wa-color-text-quiet);
+            background: none; border: none;
+            border-radius: var(--wa-border-radius-s);
+          }
+          .vtitle__menu:hover {
+            color: var(--wa-color-text-normal);
+            background: var(--vault-fill-hover);
+          }
+          /* 16px is the glyph size everywhere in the app. The button box grows with
+             the band it sits in (30px here, 26px in the sidebar); the glyph does
+             not, because that is what the eye actually measures. */
+          .vtitle__menu svg { width: 16px; height: 16px; display: block; }
+          /* Copy-link: icon-only, with the copy-label as its hover tooltip.
+             Centre both the custom-element host and its internal button: Web
+             Awesome's inline host otherwise keeps a text baseline and makes
+             the link glyph sit high beside the other controls. */
+          .vtitle__share {
+            flex: none; align-self: center;
+            width: 28px; height: 28px;
+            display: inline-flex; align-items: center; justify-content: center;
+            line-height: 0;
+            color: var(--wa-color-text-quiet);
+          }
+          .vtitle__share::part(button) {
+            width: 28px; height: 28px; padding: 6px;
+            display: inline-flex; align-items: center; justify-content: center;
+            background: none; border: none;
+            border-radius: var(--wa-border-radius-s);
+            color: inherit; cursor: pointer;
+          }
+          .vtitle__share::part(button):hover {
+            color: var(--wa-color-text-normal);
+            background: var(--vault-fill-hover);
+          }
+          /* The one focus treatment for icon buttons in the bar and the tree
+             head. Inset so the tightened bar padding cannot clip it, and drawn in
+             a palette token rather than the browser's or Web Awesome's accent. */
+          .vtitle__menu:focus-visible,
+          .vt-tool:focus-visible,
+          .vtitle__share::part(button):focus-visible {
+            outline: 2px solid var(--wa-color-text-normal);
+            outline-offset: -2px;
+            color: var(--wa-color-text-normal);
+          }
+          .vtitle__share-label { display: inline-flex; color: var(--wa-color-text-quiet); }
+          .vtitle__share:hover .vtitle__share-label { color: var(--wa-color-text-normal); }
+          .vtitle__share-label svg { width: 16px; height: 16px; display: block; }
+          /* Collapsed tree — desktop only. Keep a slim rail containing the
+             sidebar-owned toggle, and hide the rest of the navigation chrome. */
+          @media (min-width: 641px) {
+            .vault-root.is-tree-collapsed { grid-template-columns: 48px minmax(0, 1fr); }
+            .vault-root.is-tree-collapsed vault-tree { overflow: hidden; }
+            .vault-root.is-tree-collapsed .vt-head { padding: 0; }
+            .vault-root.is-tree-collapsed .vt-headrow {
+              justify-content: center; margin: 0; padding: 0;
+            }
+            .vault-root.is-tree-collapsed .vt-headfill,
+            .vault-root.is-tree-collapsed .vt-tools,
+            .vault-root.is-tree-collapsed .vt-searchwrap,
+            .vault-root.is-tree-collapsed .vt-list,
+            .vault-root.is-tree-collapsed .vt-foot { display: none; }
+          }
+          /* `.vault-doc` carries an explicit display rule below, which would
+             otherwise beat the `hidden` attribute the pane starts with. */
+          .vault-doc[hidden] { display: none; }
+          .vault-scrim { display: none; }
+          /* Reads as a label until you reach for it, then behaves like the
+             input it actually is. */
+          /* Chrome-free in every state: no hover box, no focus ring. It
+             should read as the filename and behave as a field, with the
+             caret and the selection doing all the signalling. */
+          .vault-title .vtitle {
+            display: block; box-sizing: border-box; width: auto;
+            flex: 1 1 0; min-width: 8ch;
+            /* The page name is the most specific thing on screen, so it outranks
+               both the folder crumbs beside it (12px/400/quiet) and the workspace
+               name across the divider (13px/500). It stays well under the note's
+               own 34px H1, so the two never compete. `font: inherit` would reset
+               the tracking to the UA default — inputs do not inherit it — hence
+               the explicit letter-spacing. */
+            font: inherit; font-size: 14px; font-weight: 600;
+            letter-spacing: inherit;
+            color: var(--wa-color-text-normal); cursor: text;
+            padding: var(--wa-space-2xs) 0;
+            background: transparent;
+            border: none;
+            outline: none;
+            appearance: none;
+          }
+          /* No focus chrome either — the caret and the text selection are
+             the only feedback the field needs. */
+          .vault-title .vtitle:focus { outline: none; box-shadow: none; }
+          .vault-title .vtitle:disabled { opacity: .5; }
+          .vault-doc {
+            flex: 1 1 auto; min-height: 0;
+            /* Grove's page: air above the title and a 740px reading measure. */
+            padding: 44px 0 30vh;
+          }
+          /* Keep the stock editor in a quiet centred reading column. */
+          .vault-doc .vault-editor {
+            box-sizing: border-box;
+            width: min(100%, 740px);
+            margin: 0 auto;
+          }
+          /* <tonk-prose> frames itself — border, radius, surface fill and an
+             inner padding — which reads as a card floating in the pane. This
+             IS the pane, so strip only that frame. Editing behavior and
+             document rendering remain entirely Tonk-Prose's defaults. */
+          .vault-doc tonk-prose {
+            /* Notes read in Charter — the space's long-form face. */
+            --tonk-prose-font: var(--grove-font-serif);
+            --tonk-prose-heading-font: var(--grove-font-display);
+            --tonk-prose-mono: var(--grove-font-mono);
+            --tonk-prose-padding: 0;
+            --tonk-prose-max-width: none;
+            --tonk-prose-font-size: 15px;
+            display: block;
+            min-width: 0;
+            border: none;
+            border-radius: 0;
+            background: transparent;
+          }
+
+          /* -- page headings ---------------------------------------- */
+          /* The host styles bare h1-h6 as shrink-to-fit boxes with a surface
+             background — a panel painted behind the text (the welcome page
+             resets the same rules locally). Vault pages render their h-tags
+             in light DOM inside .vault-doc, so undo the box once here, for
+             every current and future page, and set the display face. Only
+             box properties, the colour, and the family: margins, sizes, and
+             weights stay with each page's own styles. */
+          .vault-root .vault-doc :is(h1, h2, h3, h4, h5, h6) {
+            display: block;
+            width: auto; max-width: none;
+            float: none;
+            background: none; border: 0; box-shadow: none;
+            /* The host's box is an inverse "cover": text-normal behind,
+               neutral-fill-quiet as the text colour. With the background gone
+               that left #eeedec headings on a white card in light mode (and
+               the card's own colour in dark), so take the page's colour. */
+            color: inherit;
+            padding: 0;
+            text-wrap: wrap;
+            font-family: var(--grove-font-display);
+          }
+
+          /* <tonk-prose> rings itself on :focus-within. Sensible for an
+             editor sitting in a form; noise when the editor IS the page. */
+          .vault-doc tonk-prose:focus-within {
+            border: none;
+            box-shadow: none;
+          }
+
+          /* -- blank state ----------------------------------------- */
+          /* An empty vault leaves `active` pointing at nothing renderable,
+             so swap the whole editor out rather than let it resolve. The
+             tree's own empty row is the signal — keyed on the vault-empty
+             variant only, so a fruitless SEARCH doesn't blank the editor. */
+          .vault-blank { display: none; }
+          .vault-root:has(vault-tree .is-vault-empty) .vault-title,
+          .vault-root:has(vault-tree .is-vault-empty) .vault-doc { display: none; }
+          .vault-root:has(vault-tree .is-vault-empty) .vault-blank {
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            gap: var(--wa-space-2xs);
+            flex: 1; min-height: 0;
+            color: var(--wa-color-text-quiet);
+          }
+          .vault-blank__lead {
+            margin: 0;
+            font-size: var(--wa-font-size-l);
+            color: var(--wa-color-text-normal);
+          }
+          .vault-blank__hint { margin: 0; font-size: var(--wa-font-size-s); }
+
+          /* -- narrow layouts -------------------------------------- */
+          /* The iframe's width is the sheet's, so this fires on phones and
+             on a skinny desktop pane alike. The tree stops being a column
+             and becomes an off-canvas drawer over the editor. */
+          @media (max-width: 640px) {
+            .vault-root { grid-template-columns: minmax(0, 1fr); }
+            vault-tree {
+              position: fixed; z-index: 45;
+              top: 0; bottom: 0; left: 0;
+              width: min(84vw, 320px);
+              transform: translateX(-100%);
+              transition: transform 160ms ease;
+              border-right: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+            }
+            vault-tree.is-open {
+              transform: none;
+              box-shadow: 0 0 48px rgb(0 0 0 / .5);
+            }
+            .vault-root:has(vault-tree.is-open) .vault-scrim {
+              display: block; position: fixed; inset: 0; z-index: 44;
+              background: rgb(0 0 0 / .45);
+            }
+            .vtitle__menu { display: inline-flex; }
+            /* Pointer targets, not glyphs: the boxes grow, the 16px icons do not. */
+            .vtitle__menu { width: 40px; height: 40px; }
+            .vtitle__share { width: 40px; height: 40px; }
+            .vtitle__share::part(button) { width: 40px; height: 40px; }
+            .vt-tool { width: 36px; height: 36px; }
+            .vault-doc { padding: var(--wa-space-m) var(--wa-space-m) 30vh; }
+            .vault-title { padding: 0 6px; }
+            /* Crumbs cede the narrow bar to the filename. */
+            .vtitle__crumbs { display: none; }
+            /* 16px keeps iOS Safari from zooming the page on focus. */
+            .vault-title .vtitle, .vt-search, .vt-palette__input { font-size: 16px; }
+            .vt-palette { width: calc(100vw - 24px); }
+          }
+        </style>
+
+        <div class="vault-data" hidden>
+          <tonk-display model=component></tonk-display>
+          <tonk-display model=tonk:vault/node></tonk-display>
+          <tonk-display model=tonk:vault/tree></tonk-display>
+          <tonk-display model=tonk:vault/here></tonk-display>
+          <tonk-display model=tonk:vault/config></tonk-display>
+          <!-- Pages (vault-pages.yaml): hidden rows so <vault-active> can
+               switch the editor display's model for notes that are pages. -->
+          <tonk-display model=tonk:vault/page></tonk-display>
+          <!-- Grove faces are base64-inline in the shared wp-fonts component;
+               its cache makes mounting here and in pages inexpensive. -->
+          <wp-fonts></wp-fonts>
+        </div>
+
+        <!-- `active` is NOT bound here any more: it is this device's, not the
+             vault's, so `<vault-active>` applies it from the hidden
+             `vault/here` row (part 9). A renderer binding as well would mean
+             two writers fighting over the same attribute every frame. -->
+        <vault-tree
+          onsetopen=vault/set-tree-open-device
+          onconfigsave=vault/save-config
+          onnavigate=vault/open-device
+          onnewrootnote=vault/new-root-note
+          onnewrootfolder=vault/new-root-folder
+          onnewnote=vault/new-note
+          onnewfolder=vault/new-folder
+          onrenamenode=vault/rename
+          ondeletenode=vault/delete
+          onrestorenode=vault/restore
+          onmovenode=vault/move
+          onmoverootnode=vault/move-root></vault-tree>
+
+        <div class="vault-main">
+          <div class="vault-scrim"></div>
+          <div class="vault-title">
+            <vault-title onrenamenode=vault/rename></vault-title>
+          </div>
+          <!-- The placeholder entity is load-bearing, not a nicety. An absent
+               `entity` puts `<tonk-display>` in DIRECTORY mode, which mounts
+               every prose document in the space — measured at 148 live
+               `<tonk-prose>` editors on this vault before the placeholder was
+               added. `id:vault/pending` resolves to no instance, so the
+               display sits in its absence state until `<vault-active>`
+               swaps in the real note. The pane starts hidden so that state
+               is never seen. -->
+          <div class="vault-doc" hidden>
+            <vault-active>
+              <tonk-display entity=id:vault/pending model=prose view=ui></tonk-display>
+            </vault-active>
+          </div>
+          <div class="vault-blank">
+            <p class="vault-blank__lead">No notes yet</p>
+            <p class="vault-blank__hint">Create one with the buttons above the file tree.</p>
+          </div>
+        </div>
+      </div>
+
+view!:
+  this: tonk:vault/here
+  show:
+    directory: |2
+      <div class="vault-here-rows" hidden>
+        <div class="vault-here-row" data-active={active} data-replica={this}></div>
+      </div>
+
+view!:
+  this: tonk:vault/node
+  show:
+    directory: |2
+      <div class="vault-node-rows">
+        <div class="vault-node-row" subject={this} data-node={this} data-name={name} data-kind={kind} data-order={order} data-parent={parent}></div>
+      </div>
+    label: |2
+      {name}
+
+view!:
+  this: tonk:vault/node-name
+  show:
+    label: |2
+      {name}
+
+view!:
+  this: tonk:vault/open-link
+  show:
+    ui: |2
+      <div class="workspace-directory" data-note={entity}>
+        <style>
+          /* A deep-linked Vault uses the same viewport ownership as the normal
+             route: the shell stays fixed and only .vault-main scrolls. */
+          html:has(.workspace-directory),
+          body:has(.workspace-directory) {
+            width: 100%;
+            height: 100%;
+            min-height: 0;
+            margin: 0;
+            overflow: hidden !important;
+          }
+          .workspace-directory {
+            position: fixed;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            width: 100%;
+            height: auto;
+            max-height: 100dvh;
+            min-height: 0;
+            overflow: hidden;
+          }
+          .workspace-directory > tonk-display,
+          .workspace-directory > tonk-display > tonk-view {
+            display: flex;
+            flex-direction: column;
+            flex: 1 1 auto;
+            min-height: 0;
+          }
+          .workspace-directory > tonk-display > tonk-view > * {
+            flex: 1 1 auto;
+            min-height: 0;
+          }
+          tonk-display > [slot][hidden] {
+            display: none !important;
+          }
+        </style>
+        <tonk-display entity=id:vault/root model=tonk:vault/frame view=ui with={dom.host/with}></tonk-display>
+      </div>
+
+view!:
+  this: tonk:vault/page
+  show:
+    ui: |2
+      <div class="vault-page">
+        <style>
+          .vault-page {
+            max-width: 42rem; margin: 0 auto;
+            padding: var(--wa-space-l, 1.5rem) 0;
+            color: var(--wa-color-text-normal, inherit);
+          }
+          .vault-page h1 { font-size: 2rem; margin: 0 0 var(--wa-space-m, 1rem); }
+          .vault-page p { line-height: 1.5; color: var(--wa-color-text-quiet, inherit); }
+          .vault-page code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em; }
+        </style>
+        <h1>Hello, world!</h1>
+        <p>This note is an HTML page. The Vault renders it through the
+          <code>vault/page</code> view instead of the Markdown editor.</p>
+        <p>Page title: <strong>{title}</strong></p>
+      </div>
+    directory: |2
+      <div class="vault-page-rows">
+        <div class="vault-page-row" subject={this} data-node={this} data-title={title} data-model={model}></div>
+      </div>
+
+view!:
+  this: tonk:vault/settings
+  show:
+    directory: |2
+      <div class="vault-settings-rows" hidden>
+        <div class="vault-settings-row" data-theme={theme} data-auto-open={auto-open} data-startup={startup} data-replica={this}></div>
+      </div>
+
+view!:
+  this: tonk:vault/tree
+  show:
+    directory: |2
+      <div class="vault-tree-rows">
+        <div class="vault-tree-row" subject={this} data-replica={this} data-open={open}></div>
+      </div>
+
+view!:
+  this: tonk:vault/workspace
+  show:
+    ui: |2
+      <div class="vault-workspace-root" data-fallback-note="did:key:z6MkAMKLz5uDbduG95r9rQriwRit6DE4MAbBSmWqpUz8PxWB">
+        <style>
+          /* The Vault is the viewport, not a 100dvh block inside a separately
+             scrollable route document. Pinning the app root and trapping overflow
+             here leaves .vault-main as the one document scroll container. */
+          html:has(.vault-workspace-root),
+          body:has(.vault-workspace-root) {
+            width: 100%;
+            height: 100%;
+            min-height: 0;
+            margin: 0;
+            overflow: hidden !important;
+          }
+          .vault-workspace-root {
+            position: fixed;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            width: 100%;
+            height: auto;
+            max-height: 100dvh;
+            min-height: 0;
+            overflow: hidden;
+          }
+          .vault-workspace-root > tonk-display,
+          .vault-workspace-root > tonk-display > tonk-view {
+            display: flex;
+            flex-direction: column;
+            flex: 1 1 auto;
+            width: 100%;
+            min-width: 0;
+            min-height: 0;
+          }
+          .vault-workspace-root > tonk-display > tonk-view > .vault-root {
+            flex: 1 1 auto;
+            width: 100%;
+            min-width: 0;
+            min-height: 0;
+          }
+          .vault-workspace-root tonk-display > [slot][hidden] {
+            display: none !important;
+          }
+        </style>
+        <tonk-display entity=id:vault/root model=tonk:vault/frame with={dom.host/with} />
+      </div>
+
+view!:
+  this: wiki/comment
+  show:
+    directory: |2
+      <div class="wiki-comment-row" data-note={note} data-snippet={snippet} data-time="t-{time}">{text}</div>
+
+
+# ==========================================================================
+# Components (web components loaded by the shell)
+# ==========================================================================
+
+component!:
+  this: id:vault/component/00-lib
+  module: |2-
+    (() => {
+      if (globalThis.__vaultLib) return;
+      const rows = (sel) => Array.from(document.querySelectorAll(sel));
+      const byOrder = (a, b) =>
+        (a.order < b.order ? -1 : a.order > b.order ? 1 : a.id < b.id ? -1 : 1);
+      globalThis.__vaultLib = {
+        // Diagnostics for the sidebar's debug strip. A command whose
+        // `dom.event.detail/*` field fails to project is abandoned with
+        // only a console.warn, which is invisible to anyone not holding
+        // devtools open — so mirror those warnings into the UI.
+        last: null,
+        warns: [],
+        nodes() {
+          return rows('.vault-node-row').map((r) => ({
+            id: r.dataset.node,
+            name: r.dataset.name || 'Untitled',
+            kind: r.dataset.kind === 'folder' ? 'folder' : 'file',
+            parent: r.dataset.parent || null,
+            order: r.dataset.order || '',
+          })).sort(byOrder);
+        },
+        // One order space for folders and notes alike, so a folder can sit
+        // anywhere among its siblings — drag it like a note. (Grouping
+        // folders first would snap a moved folder straight back to the top.)
+        sortSiblings(list) {
+          return list.slice().sort(byOrder);
+        },
+        // A key strictly between `a` and `b` ('' = open bound), over a-z.
+        // Sorting always tiebreaks on id, so a degenerate key stays harmless.
+        between(a, b) {
+          a = a || ''; b = b || '';
+          let out = '';
+          for (let i = 0; ; i++) {
+            const ca = i < a.length ? a.charCodeAt(i) : 96;
+            const cb = b && i < b.length ? b.charCodeAt(i) : 123;
+            if (ca === cb) { out += a[i]; continue; }
+            const m = Math.floor((ca + cb) / 2);
+            if (m > ca) return out + String.fromCharCode(m);
+            out += String.fromCharCode(ca === 96 ? 97 : ca);
+            b = '';
+          }
+        },
+        after(list) {
+          const last = list.length ? list[list.length - 1].order : '';
+          return globalThis.__vaultLib.between(last, '');
+        },
+        // Watch the data rows, call `fn` on a debounced tick. Observes the
+        // whole body (the renderer can replace the data pane wholesale) but
+        // ignores mutation batches originating inside the widget itself,
+        // which would otherwise re-trigger the observer forever.
+        watch(host, fn) {
+          globalThis.__vaultLib.unwatch(host);
+          let t = null;
+          const kick = () => { clearTimeout(t); t = setTimeout(fn, 30); };
+          const inWidget = (m) => {
+            const el = m.target.nodeType === 1 ? m.target : m.target.parentElement;
+            return el && el.closest && el.closest('vault-tree, vault-title');
+          };
+          const mo = new MutationObserver((ms) => { if (!ms.every(inWidget)) kick(); });
+          // `data-active` is watched because the open note now arrives as a
+          // hidden data row (part 9), not as a renderer-set attribute.
+          mo.observe(document.body, { subtree: true, childList: true,
+            attributes: true,
+            attributeFilter: ['data-node', 'data-name', 'data-kind', 'data-order',
+              'data-parent', 'data-active', 'data-theme', 'data-auto-open',
+              'data-startup'] });
+          host.__vaultMo = mo;
+          kick();
+        },
+        unwatch(host) {
+          if (host.__vaultMo) { host.__vaultMo.disconnect(); host.__vaultMo = null; }
+        },
+        emit(host, type, detail) {
+          globalThis.__vaultLib.last = { type, detail };
+          host.dispatchEvent(new CustomEvent(type, { bubbles: true, detail }));
+          if (host.renderDebug) host.renderDebug();
+        },
+        esc(s) {
+          return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        },
+        icon(d) {
+          return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+            'stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + d + '</svg>';
+        },
+      };
+      // Mirror the renderer's event-handler warnings into the sidebar.
+      // `build body for <cmd>: field <f> ... did not resolve against the
+      // event` and `blank fields omitted` are the only signals the
+      // extraction layer emits, and both go to console.warn.
+      (() => {
+        const orig = console.warn.bind(console);
+        console.warn = (...a) => {
+          const text = a.map((x) => (typeof x === 'string' ? x : String(x))).join(' ');
+          if (/event handler|did not resolve|blank fields/i.test(text)) {
+            globalThis.__vaultLib.warns.push(text);
+            const t = document.querySelector('vault-tree');
+            if (t && t.renderDebug) t.renderDebug();
+          }
+          orig(...a);
+        };
+      })();
+      // Lucide `square-pen` and `folder-plus`.
+      globalThis.__vaultLib.ICON_NOTE =
+        '<path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>' +
+        '<path d="M18.4 2.6a1 1 0 0 1 3 3l-9 9a2 2 0 0 1-.9.5l-2.9.8a.5.5 0 0 1-.6-.6l.8-2.9a2 2 0 0 1 .5-.9z"/>';
+      globalThis.__vaultLib.ICON_FOLDER =
+        '<path d="M12 10v6"/><path d="M9 13h6"/>' +
+        '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>';
+    })();
+
+component!:
+  this: id:vault/component/active
+  module: |2-
+    (() => {
+      if (customElements.get('vault-active')) return;
+
+      const linkedNote = () => {
+        const host = document.querySelector('.workspace-directory[data-note]');
+        return (host && host.getAttribute('data-note')) || '';
+      };
+
+      // The unselected state: the editor display stays mounted (on its
+      // placeholder entity — it must never be cleared, see part 9) but is
+      // hidden, and <vault-active> centres a prompt in the pane. The shell's
+      // 30vh bottom padding is trimmed so the prompt sits visually centred.
+      const STYLE_ID = 'vault-active-empty-style';
+      const ensureStyle = () => {
+        if (document.getElementById(STYLE_ID)) return;
+        const style = document.createElement('style');
+        style.id = STYLE_ID;
+        style.textContent = [
+          '.vault-doc.is-unselected {',
+          '  display: flex; flex-direction: column;',
+          '  padding-bottom: var(--wa-space-l, 1.5rem);',
+          '}',
+          '.vault-doc.is-unselected vault-active {',
+          '  flex: 1 1 auto; display: flex;',
+          '  align-items: center; justify-content: center;',
+          '}',
+          '.vault-doc.is-unselected vault-active > tonk-display { display: none; }',
+          '.vault-doc:not(.is-unselected) .vault-empty-note { display: none; }',
+          '.vault-empty-note {',
+          '  color: var(--wa-color-text-quiet, #8a8a8a);',
+          '  font-size: 0.95rem; text-align: center; user-select: none;',
+          '}',
+          '.vault-doc.is-page { padding: 0; }',
+          '.vault-doc.is-page > vault-active,',
+          '.vault-doc.is-page > vault-active > tonk-display,',
+          '.vault-doc.is-page > vault-active > tonk-display > tonk-view { display: block; min-height: 100%; }',
+        ].join('\n');
+        document.head.appendChild(style);
+      };
+
+      customElements.define('vault-active', class extends HTMLElement {
+        connectedCallback() {
+          ensureStyle();
+          this.__seed = linkedNote();
+          const arm = () => {
+            const lib = globalThis.__vaultLib;
+            if (!lib) { setTimeout(arm, 40); return; }
+            if (this.isConnected) lib.watch(this, () => this.apply());
+          };
+          arm();
+
+          // Switch immediately from the CustomEvent payload. Persistence still
+          // flows through vault/open, but the UI no longer waits for the
+          // vault/here subscription to echo the new value back from the store.
+          this.__navigate = (event) => {
+            const root = this.closest('.vault-root');
+            if (root && event.target && !root.contains(event.target)) return;
+            const next = event.detail && event.detail.open;
+            this.__seed = '';
+            if (next) {
+              this.__optimistic = next;
+              this.__chosen = next;
+              this.__navigated = true;
+            }
+            this.apply();
+          };
+          document.addEventListener('navigate', this.__navigate, true);
+        }
+
+        disconnectedCallback() {
+          const lib = globalThis.__vaultLib;
+          if (lib) lib.unwatch(this);
+          document.removeEventListener('navigate', this.__navigate, true);
+        }
+
+        apply() {
+          const root = this.closest('.vault-root');
+          if (!root) return;
+
+          // Do not choose a landing target until all three asynchronous data
+          // directories have resolved. Otherwise a late settings row could
+          // first paint the legacy fallback and then visibly switch files.
+          if (!this.__landed &&
+              (!root.querySelector('.vault-node-rows') ||
+               !root.querySelector('.vault-here-rows') ||
+               !root.querySelector('.vault-config-rows'))) return;
+
+          const row = root.querySelector('.vault-here-row')
+            || document.querySelector('.vault-here-row');
+          const rowId = (row && row.dataset.active) || '';
+          // Release the optimistic value only when persistence has caught up.
+          // An older row echo must not snap the editor back during rapid clicks.
+          if (this.__optimistic && rowId === this.__optimistic) {
+            this.__optimistic = '';
+          }
+          const workspace = root.closest('.vault-workspace-root');
+          const fallback = (workspace && workspace.dataset.fallbackNote)
+            || 'id:vault/n/welcome';
+
+          // Only a note the tree knows may reach the editor. The rows are the
+          // same hidden `vault/node` directory the tree itself reads.
+          const known = new Set(
+            Array.from(root.querySelectorAll('.vault-node-row'))
+              .map((r) => r.dataset.node)
+              .filter(Boolean),
+          );
+          // Settings govern only the initial landing. A direct share link wins,
+          // and once the viewer clicks a file their navigation wins for the
+          // rest of this visit. With no settings row, preserve Vault's former
+          // starter-note behavior.
+          const settingsRow = root.querySelector('.vault-config-row')
+            || document.querySelector('.vault-config-row');
+          let startup = (settingsRow && settingsRow.dataset.startup) || fallback;
+          if (startup === 'id:vault/first-file') {
+            const lib = globalThis.__vaultLib;
+            const kids = new Map();
+            for (const node of lib.nodes()) {
+              const parent = node.parent || '';
+              if (!kids.has(parent)) kids.set(parent, []);
+              kids.get(parent).push(node);
+            }
+            for (const [parent, nodes] of kids) kids.set(parent, lib.sortSiblings(nodes));
+            const first = (parent) => {
+              for (const node of kids.get(parent) || []) {
+                if (node.kind === 'file') return node.id;
+                const nested = first(node.id);
+                if (nested) return nested;
+              }
+              return '';
+            };
+            startup = first('');
+          }
+          // Something is always open on arrival: the stored auto-open flag is
+          // legacy and no longer consulted, so an old `off` can't blank the
+          // editor.
+          const landing = settingsRow ? startup : (rowId || fallback);
+          const visited = this.__navigated
+            ? (this.__optimistic || this.__chosen || rowId) : '';
+          const candidates = this.__navigated
+            ? [visited]
+            : (this.__landed ? [this.__current] : [this.__seed, landing]);
+          const id = candidates
+            .find((candidate) => candidate && known.has(candidate)) || '';
+          // Startup settings are arrival settings. Once the first target is
+          // resolved, store echoes (including saving this modal) must not move
+          // the file already being read. Explicit navigation updates it.
+          if (!this.__landed || this.__navigated) this.__current = id;
+          const firstLanding = !this.__landed;
+          this.__landed = true;
+          // Loading a configured startup file follows the same command path as
+          // clicking it in the tree. Defer until this apply finishes so the
+          // document-level navigate listener cannot re-enter half-initialized
+          // landing state.
+          if (firstLanding && settingsRow && autoOpen && id) {
+            queueMicrotask(() => {
+              const tree = root.querySelector('vault-tree');
+              const lib = globalThis.__vaultLib;
+              if (tree && lib && tree.isConnected) {
+                lib.emit(tree, 'navigate', { open: id, deviceOpen: id });
+              }
+            });
+          }
+
+          // Notes that render as HTML pages (vault-pages.yaml) have their own
+          // hidden data rows; the display's `model` follows the open note.
+          // `model` is a live attribute on <tonk-display>: changing it
+          // restarts resolution, so one display serves both kinds.
+          const pages = new Map();
+          for (const r of root.querySelectorAll('.vault-page-row')) {
+            if (r.dataset.node) {
+              pages.set(r.dataset.node, r.dataset.model || 'tonk:vault/page');
+            }
+          }
+          const isPage = !!id && pages.has(id);
+          const model = isPage ? pages.get(id) : 'prose';
+
+          const display = this.querySelector('tonk-display');
+          // Thread the space scope down before the entity renders: the
+          // editor builds blob routes (uploads, `blob:` media) from `with`,
+          // and only the host chain carries it — the prose view reads it
+          // back as `{dom.host/with}`.
+          const scoped = root.closest('[with]');
+          const scope = scoped ? (scoped.getAttribute('with') || '') : '';
+          if (display && scope && !scope.includes('{')
+              && display.getAttribute('with') !== scope) {
+            display.setAttribute('with', scope);
+          }
+          if (display && id) {
+            if (display.getAttribute('model') !== model) {
+              display.setAttribute('model', model);
+            }
+            if (display.getAttribute('entity') !== id) {
+              display.setAttribute('entity', id);
+            }
+          }
+
+          const doc = this.closest('.vault-doc');
+          if (doc) {
+            doc.hidden = false;
+            doc.classList.toggle('is-unselected', !id);
+            // A page draws its own margins; drop the editor's padding.
+            doc.classList.toggle('is-page', isPage);
+          }
+          if (!id && !this.querySelector('.vault-empty-note')) {
+            const note = document.createElement('div');
+            note.className = 'vault-empty-note';
+            note.textContent = 'Select a note, or create one with ＋ Note.';
+            this.appendChild(note);
+          }
+
+          for (const selector of ['vault-tree', 'vault-title']) {
+            const element = root.querySelector(selector);
+            if (element && (element.getAttribute('active') || '') !== id) {
+              if (id) element.setAttribute('active', id);
+              else element.removeAttribute('active');
+            }
+          }
+        }
+      });
+    })();
+
+component!:
+  this: id:vault/component/title
+  module: |2
+    (() => {
+      if (customElements.get('vault-title')) return;
+      customElements.define('vault-title', class extends HTMLElement {
+        static get observedAttributes() { return ['active']; }
+        connectedCallback() {
+          const arm = () => {
+            const lib = globalThis.__vaultLib;
+            if (!lib) { setTimeout(arm, 40); return; }
+            if (this.isConnected) lib.watch(this, () => this.render());
+          };
+          if (this.__init) { arm(); return; }
+          this.__init = true;
+          const lib0 = globalThis.__vaultLib;
+          this.innerHTML =
+            '<button type="button" class="vtitle__menu" aria-label="Show file tree">' +
+            (lib0 ? lib0.icon('<path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/>') : '') +
+            '</button>' +
+            // Ancestor folder chain, Grove-style. Folders only — pages do
+            // not nest in this vault, so the chain is always folders with
+            // the editable filename input as the last crumb.
+            '<span class="vtitle__crumbs"></span>' +
+            '<input class="vtitle" spellcheck="false" placeholder="Untitled">' +
+            // Web Awesome's copy button rather than `navigator.clipboard`:
+            // the sealed guest runs at an opaque origin, where the clipboard
+            // API is gated by permissions policy. This is the same control
+            // the invite link uses (core.yaml `id:invitation/link`), so it is
+            // already known to work inside a guest. Icon-only: the
+            // copy-label doubles as the hover tooltip naming what it copies.
+            '<wa-copy-button class="vtitle__share" hidden ' +
+            'copy-label="Copy link to this page" success-label="Link copied">' +
+            '<span class="vtitle__share-label" slot="copy-icon">' +
+            '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' +
+            '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>' +
+            '<path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>' +
+            '</svg></span>' +
+            '<span class="vtitle__share-label" slot="success-icon">' +
+            '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' +
+            '<path d="M20 6 9 17l-5-5"/>' +
+            '</svg></span>' +
+            '</wa-copy-button>';
+          // Narrow layouts hide the tree off-canvas; this is the only way
+          // back to it, so it lives beside the filename rather than in the
+          // tree it would be opening.
+          this.querySelector('.vtitle__menu').addEventListener('click', () => {
+            const tree = document.querySelector('vault-tree');
+            if (!tree) return;
+            tree.classList.toggle('is-open');
+            if (tree.syncSidebarToggle) tree.syncSidebarToggle();
+          });
+          const inp = this.querySelector('input');
+          inp.addEventListener('change', () => this.commit());
+          inp.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); inp.blur(); }
+            else if (e.key === 'Escape') { this.render(true); inp.blur(); }
+          });
+          arm();
+        }
+        disconnectedCallback() {
+          const lib = globalThis.__vaultLib;
+          lib && lib.unwatch(this);
+        }
+        attributeChangedCallback() { if (this.__init) this.render(true); }
+        node() {
+          const lib = globalThis.__vaultLib;
+          if (!lib) return null;
+          const id = this.getAttribute('active');
+          return lib.nodes().find((n) => n.id === id) || null;
+        }
+        // The shareable URL for the open note: the `/open/<node>` route
+        // (part 10), which adopts the note into the follower's own view
+        // state and bounces them into the workspace.
+        //
+        // Built from the bridge context, not from `window.location`: the
+        // guest's own location is `about:srcdoc` at an opaque origin, so
+        // `origin`/`repo` are delivered over the port instead
+        // (tonk-portal/src/bridge.rs `build_context`). The note id is left
+        // RAW — its slashes are what the route's slash-tolerant span
+        // expects, and the worker percent-decodes either spelling.
+        shareUrl() {
+          const id = this.getAttribute('active');
+          const ctx = (globalThis.tonk && globalThis.tonk.context) || {};
+          if (!id || !ctx.origin || !ctx.repo) return '';
+          return ctx.origin + '/space/' + ctx.repo + '/open/' + id;
+        }
+        render(force) {
+          const inp = this.querySelector('input');
+          if (!inp) return;
+          // Updated ahead of the half-typed-name guard below: renaming a
+          // note must not leave the copy button pointing at a stale URL.
+          const share = this.querySelector('.vtitle__share');
+          if (share) {
+            const url = this.shareUrl();
+            share.value = url;
+            share.hidden = !url;
+          }
+          // The folder chain, refreshed on every store echo — like the share
+          // URL, ahead of the focused-input guard: a rename or move mid-edit
+          // must not leave stale crumbs. The seen-set breaks parent cycles a
+          // concurrent move could briefly produce.
+          const crumbs = this.querySelector('.vtitle__crumbs');
+          if (crumbs) {
+            const lib = globalThis.__vaultLib;
+            const me = this.node();
+            let html = '';
+            if (lib && me) {
+              const all = lib.nodes();
+              const seen = new Set();
+              const chain = [];
+              let p = me.parent;
+              while (p && !seen.has(p)) {
+                seen.add(p);
+                const f = all.find((x) => x.id === p);
+                if (!f) break;
+                chain.unshift(f.name);
+                p = f.parent;
+              }
+              html = chain.map((nm) =>
+                '<span class="vtitle__crumb">' + lib.esc(nm) + '</span>' +
+                '<span class="vtitle__crumbsep">/</span>').join('');
+            }
+            crumbs.innerHTML = html;
+          }
+          // A store echo must never overwrite a half-typed name.
+          if (!force && document.activeElement === inp) return;
+          const n = this.node();
+          inp.value = n ? n.name : '';
+          inp.disabled = !n;
+        }
+        commit() {
+          const lib = globalThis.__vaultLib;
+          const inp = this.querySelector('input');
+          const n = this.node();
+          if (!n) return;
+          const name = inp.value.trim();
+          // Empty or unchanged: snap back rather than store a blank name.
+          if (!name || name === n.name) { this.render(true); return; }
+          const from = n.name;
+          lib.emit(this, 'renamenode', { rename: n.id, renameName: name });
+          const tree = document.querySelector('vault-tree');
+          if (tree && tree.pushUndo)
+            tree.pushUndo('rename to "' + name + '"', () =>
+              lib.emit(this, 'renamenode', { rename: n.id, renameName: from }));
+        }
+      });
+    })();
+
+component!:
+  this: id:vault/component/tree
+  module: |2-
+    (() => {
+      if (customElements.get('vault-tree')) return;
+      customElements.define('vault-tree', class extends HTMLElement {
+        static get observedAttributes() { return ['active']; }
+        connectedCallback() {
+          // Re-arm on EVERY connect: a re-connect (the renderer moving the
+          // element) ran disconnectedCallback, tearing the observer down.
+          // The poll also absorbs the no-ordering contract between the
+          // component modules and this element's upgrade.
+          const arm = () => {
+            const lib = globalThis.__vaultLib;
+            if (!lib) { setTimeout(arm, 40); return; }
+            if (this.isConnected) lib.watch(this, () => this.render());
+          };
+          // A saved `system` preference follows OS changes while the Vault is
+          // open, instead of sampling prefers-color-scheme only on load.
+          if (this.__scheme && this.__onScheme) {
+            this.__scheme.removeEventListener('change', this.__onScheme);
+          }
+          this.__scheme = window.matchMedia('(prefers-color-scheme: dark)');
+          this.__onScheme = () => {
+            if (this.readSettings().theme === 'system') this.applyTheme('system');
+          };
+          this.__scheme.addEventListener('change', this.__onScheme);
+          if (this.__init) { arm(); return; }
+          this.__init = true;
+          // Expanded folders, not collapsed ones — so the default (an
+          // empty set) is everything closed, and the persisted value stays
+          // small instead of growing with the vault.
+          this.open = new Set();
+          this.renaming = null;
+          this.selected = null;
+          this.query = '';
+          // Client-side and bounded. Every entry is an inverse expressed
+          // as an ordinary command emit, so undo travels the same
+          // command -> rule path as the action it reverses.
+          this.undoStack = [];
+          const lib0 = globalThis.__vaultLib;
+          const ic = (d) => (lib0 ? lib0.icon(d) : '');
+          this.innerHTML =
+            '<div class="vt-head">' +
+            '<div class="vt-headrow">' +
+            '<button type="button" class="vt-tool vt-side" data-act="toggle-sidebar" ' +
+            'title="Collapse sidebar" aria-label="Collapse sidebar" aria-expanded="true" ' +
+            'aria-controls="vault-tree-list">' +
+            ic('<rect width="18" height="18" x="3" y="3"/><path d="M9 3v18"/>') +
+            '</button>' +
+            '<span class="vt-headfill" aria-hidden="true"></span>' +
+            '<span class="vt-tools">' +
+            '<button type="button" class="vt-tool" data-act="new-note" title="New note">' +
+            ic(lib0 ? lib0.ICON_NOTE : '') + '</button>' +
+            '<button type="button" class="vt-tool" data-act="new-folder" title="New folder">' +
+            ic(lib0 ? lib0.ICON_FOLDER : '') + '</button>' +
+            '</span></div>' +
+            '<span class="vt-searchwrap">' +
+            ic('<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>') +
+            '<input class="vt-search" placeholder="Search…">' +
+            '</span>' +
+            '</div><div class="vt-list" id="vault-tree-list"></div>' +
+            // Grove's bottom bar: a bordered footer of quiet icon controls.
+            // Warnings live behind the triangle (badge + popover) instead of
+            // spilling into the sidebar as text.
+            '<div class="vt-foot">' +
+            '<button type="button" class="vt-tool" data-act="settings" title="Settings" aria-label="Settings">' +
+            ic('<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.51a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>') +
+            '</button>' +
+            '<button type="button" class="vt-tool vt-errs" data-act="errors" title="Warnings" hidden>' +
+            ic('<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/>') +
+            '<span class="vt-errs-count"></span>' +
+            '</button>' +
+            '</div>';
+          this.querySelector('.vt-search').addEventListener('input', (e) => {
+            this.query = e.target.value.trim().toLowerCase(); this.render();
+          });
+          this.addEventListener('click', (e) => this.onClick(e));
+          this.addEventListener('dblclick', (e) => this.onDblClick(e));
+          this.addEventListener('contextmenu', (e) => this.onContext(e));
+          this.addEventListener('dragstart', (e) => this.onDragStart(e));
+          this.addEventListener('dragover', (e) => this.onDragOver(e));
+          this.addEventListener('dragleave', (e) => this.onDragLeave(e));
+          this.addEventListener('drop', (e) => this.onDrop(e));
+          // A drag swallows the pointerup, so the render guard would stay
+          // latched shut forever without this.
+          this.addEventListener('dragend', () => {
+            this.__drag = null; this.clearDropMarks();
+            this.__down = false; this.render();
+          });
+          this.syncSidebarToggle();
+          // A `click` only fires when mousedown and mouseup land on the
+          // SAME element. Re-rendering the list between them (a store
+          // echo arriving mid-gesture) destroys that element and the
+          // click is never delivered — which reads as "clicking doesn't
+          // work" and made a double-click seem more reliable. Hold all
+          // renders while a pointer is down.
+          this.addEventListener('pointerdown', () => { this.__down = true; });
+          this.__onUp = () => {
+            this.__down = false;
+            // Deferred to a fresh task, NOT run here: the browser fires
+            // mouseup and click back-to-back in this same task, so
+            // rendering now would still delete the row before its click
+            // was delivered — the very race this guard exists to stop.
+            if (this.__pending) {
+              this.__pending = false;
+              setTimeout(() => this.render(), 0);
+            }
+          };
+          document.addEventListener('pointerup', this.__onUp, true);
+          document.addEventListener('pointercancel', this.__onUp, true);
+          // Mod-Z undoes tree actions — but ONLY outside a text surface.
+          // <tonk-prose> runs ProseMirror's own history plugin on the
+          // same chord, so stealing it there would break editor undo.
+          // Redo (Shift-Mod-Z) is left entirely to the editor.
+          this.__onUndoKey = (e) => {
+            if (e.key !== 'z' && e.key !== 'Z') return;
+            if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return;
+            const a = document.activeElement;
+            if (a && a.closest && (a.closest('tonk-prose') ||
+                a.closest('input, textarea, [contenteditable]'))) return;
+            if (!this.undoStack.length) return;
+            e.preventDefault();
+            this.popUndo();
+          };
+          document.addEventListener('keydown', this.__onUndoKey, true);
+          // Tap-away closes the drawer. A document listener rather than a
+          // scrim click handler, because the scrim lives in the rendered
+          // template and would lose its listener on any re-render.
+          this.__onOutside = (e) => {
+            if (!this.classList.contains('is-open')) return;
+            if (e.target.closest('vault-tree, .vtitle__menu')) return;
+            this.classList.remove('is-open');
+            this.syncSidebarToggle();
+          };
+          document.addEventListener('pointerdown', this.__onOutside, true);
+          arm();
+        }
+        disconnectedCallback() {
+          const lib = globalThis.__vaultLib;
+          lib && lib.unwatch(this);
+          this.closeMenu();
+          this.closeDialog();
+          this.closeErrLog();
+          if (this.__onUp) {
+            document.removeEventListener('pointerup', this.__onUp, true);
+            document.removeEventListener('pointercancel', this.__onUp, true);
+          }
+          if (this.__onUndoKey) {
+            document.removeEventListener('keydown', this.__onUndoKey, true);
+          }
+          if (this.__onOutside) {
+            document.removeEventListener('pointerdown', this.__onOutside, true);
+          }
+          if (this.__scheme && this.__onScheme) {
+            this.__scheme.removeEventListener('change', this.__onScheme);
+          }
+        }
+
+        // --- expanded-folder persistence --------------------------------
+        // The directory behind `.vault-tree-row` resolves to exactly one
+        // row — this device's — because the concept requires the profile
+        // claim, which is never replicated.
+        saveOpen() {
+          const lib = globalThis.__vaultLib;
+          // The leading "|" keeps the value non-empty. A blank field is
+          // omitted by the event layer, and a rule premise naming an
+          // omitted field matches nothing — so without the sentinel,
+          // closing your last folder could never be saved.
+          lib.emit(this, 'setopen', {
+            deviceTreeOpen: '|' + Array.from(this.open).join(' '),
+          });
+        }
+        hydrateOpen() {
+          // Once per mount. Re-adopting on every echo would fight a
+          // toggle that hasn't round-tripped yet.
+          if (this.__hydrated) return;
+          const row = document.querySelector('.vault-tree-row');
+          if (!row) return;
+          this.__hydrated = true;
+          const raw = row.dataset.open || '';
+          for (const id of raw.replace(/^\|/, '').split(/\s+/))
+            if (id) this.open.add(id);
+        }
+
+        // --- undo -----------------------------------------------------
+        pushUndo(label, fn) {
+          this.undoStack.push({ label: label, run: fn });
+          if (this.undoStack.length > 10) this.undoStack.shift();
+        }
+        popUndo() {
+          const e = this.undoStack.pop();
+          if (!e) return;
+          e.run();
+          this.toast('Undid ' + e.label);
+        }
+
+        // --- path / naming --------------------------------------------
+        // "research / VIEW / Insights" — so a confirmation names the one
+        // thing being deleted, not just a bare title that may repeat
+        // across folders.
+        pathOf(id) {
+          const lib = globalThis.__vaultLib;
+          const byId = new Map(lib.nodes().map((n) => [n.id, n]));
+          const parts = [];
+          let cur = byId.get(id), guard = 0;
+          while (cur && guard++ < 64) {
+            parts.unshift(cur.name);
+            cur = cur.parent ? byId.get(cur.parent) : null;
+          }
+          return parts.join(' / ');
+        }
+        // Everything that affects the rendered list. Re-rendering only
+        // when this changes stops store echoes from rebuilding identical
+        // DOM under the user's cursor.
+        sig() {
+          const lib = globalThis.__vaultLib;
+          return JSON.stringify([
+            lib.nodes().map((n) => [n.id, n.name, n.kind, n.parent, n.order]),
+            this.getAttribute('active'), this.selected,
+            Array.from(this.open).sort(), this.query, this.renaming,
+          ]);
+        }
+        attributeChangedCallback() { if (this.__init) this.render(); }
+
+        // Every node keyed by parent, with unreachable subtrees (a deleted
+        // folder's descendants) left unvisited so they stay hidden.
+        tree() {
+          const lib = globalThis.__vaultLib;
+          const nodes = lib.nodes();
+          const kids = new Map();
+          for (const n of nodes) {
+            const key = n.parent || '';
+            if (!kids.has(key)) kids.set(key, []);
+            kids.get(key).push(n);
+          }
+          for (const [k, v] of kids) kids.set(k, lib.sortSiblings(v));
+          return { nodes, kids };
+        }
+        descendants(id) {
+          const { kids } = this.tree();
+          const out = [];
+          const walk = (p) => { for (const c of kids.get(p) || []) { out.push(c); walk(c.id); } };
+          walk(id);
+          return out;
+        }
+        // Where a "new" action lands: inside the selected folder, or inside
+        // the selected note's folder, else at the top level.
+        target() {
+          const lib = globalThis.__vaultLib;
+          const sel = lib.nodes().find((n) => n.id === this.selected);
+          if (!sel) return null;
+          return sel.kind === 'folder' ? sel.id : sel.parent;
+        }
+
+        // A created node's entity is content-derived by the engine, so
+        // the id doesn't exist until the store echoes back. Snapshot the
+        // ids we know now; render() spots the newcomer and completes the
+        // undo entry then.
+        trackCreate(label) {
+          const lib = globalThis.__vaultLib;
+          this.__pendingCreate = {
+            label: label,
+            before: new Set(lib.nodes().map((n) => n.id)),
+          };
+        }
+        settleCreate() {
+          const lib = globalThis.__vaultLib;
+          const p = this.__pendingCreate;
+          if (!p) return;
+          const fresh = lib.nodes().find((n) => !p.before.has(n.id));
+          if (!fresh) return;
+          this.__pendingCreate = null;
+          this.pushUndo(p.label, () => {
+            const snap = lib.nodes().find((n) => n.id === fresh.id);
+            lib.emit(this, 'deletenode', { delete: fresh.id });
+            if (snap) this.__lastCreateOrder = snap.order;
+          });
+        }
+
+        // The control belongs to the sidebar. On desktop, collapsing keeps a
+        // slim rail so the same control can reopen it; on narrow layouts the
+        // tree is a drawer and the page bar's hamburger remains its opener.
+        syncSidebarToggle() {
+          const btn = this.querySelector('.vt-side');
+          if (!btn) return;
+          const narrow = window.matchMedia('(max-width: 640px)').matches;
+          const root = this.closest('.vault-root');
+          const open = narrow
+            ? this.classList.contains('is-open')
+            : !(root && root.classList.contains('is-tree-collapsed'));
+          const label = open ? 'Collapse sidebar' : 'Expand sidebar';
+          btn.setAttribute('aria-expanded', String(open));
+          btn.setAttribute('aria-label', label);
+          btn.title = label;
+        }
+        toggleSidebar() {
+          const narrow = window.matchMedia('(max-width: 640px)').matches;
+          if (narrow) {
+            this.classList.remove('is-open');
+          } else {
+            const root = this.closest('.vault-root');
+            if (!root) return;
+            root.classList.toggle('is-tree-collapsed');
+          }
+          this.syncSidebarToggle();
+        }
+
+        newNote(parent) {
+          const lib = globalThis.__vaultLib;
+          const { kids } = this.tree();
+          this.trackCreate('new note');
+          if (parent) {
+            this.open.add(parent); this.saveOpen();
+            lib.emit(this, 'newnote', { noteName: 'Untitled', noteParent: parent,
+              noteOrder: lib.after(kids.get(parent) || []), time: Date.now() });
+          } else {
+            lib.emit(this, 'newrootnote', { rootNoteName: 'Untitled',
+              rootNoteOrder: lib.after(kids.get('') || []), time: Date.now() });
+          }
+        }
+        newFolder(parent) {
+          const lib = globalThis.__vaultLib;
+          const { kids } = this.tree();
+          this.trackCreate('new folder');
+          if (parent) {
+            this.open.add(parent); this.saveOpen();
+            lib.emit(this, 'newfolder', { folderName: 'New folder', folderParent: parent,
+              folderOrder: lib.after(kids.get(parent) || []), time: Date.now() });
+          } else {
+            lib.emit(this, 'newrootfolder', { rootFolderName: 'New folder',
+              rootFolderOrder: lib.after(kids.get('') || []), time: Date.now() });
+          }
+        }
+
+        onClick(e) {
+          const lib = globalThis.__vaultLib;
+          if (!e.target.closest('.vt-menu')) this.closeMenu();
+          const btn = e.target.closest('[data-act]');
+          if (btn) {
+            e.stopPropagation();
+            const act = btn.dataset.act, node = btn.dataset.node || null;
+            // A menu click starts inside `.vt-menu`, so the close at the
+            // top of this handler deliberately skipped it — every menu
+            // action has to dismiss the menu itself.
+            if (act.startsWith('menu-')) this.closeMenu();
+            if (act === 'toggle-sidebar') this.toggleSidebar();
+            else if (act === 'new-note') this.newNote(this.target());
+            else if (act === 'new-folder') this.newFolder(this.target());
+            else if (act === 'menu-note') this.newNote(node);
+            else if (act === 'menu-folder') this.newFolder(node);
+            else if (act === 'menu-rename') { this.renaming = node; this.render(); }
+            else if (act === 'menu-move') this.openMove(node);
+            else if (act === 'menu-delete') this.confirmDelete(node);
+            else if (act === 'cancel') this.closeDialog();
+            else if (act === 'confirm-delete') { this.closeDialog(); this.remove_(node); }
+            else if (act === 'settings') this.openSettings();
+            else if (act === 'save-settings') this.saveSettings();
+            else if (act === 'errors') this.toggleErrLog();
+            return;
+          }
+          if (e.target.closest('.vt-rename')) return;
+          const row = e.target.closest('.vt-row');
+          if (!row) return;
+          const id = row.dataset.node;
+          this.selected = id;
+          if (row.dataset.kind === 'folder') {
+            this.open.has(id) ? this.open.delete(id) : this.open.add(id);
+            this.saveOpen();
+            this.render();
+          } else {
+            lib.emit(this, 'navigate', { open: id, deviceOpen: id });
+            // On a narrow layout the tree is covering the note you just
+            // asked for, so get out of the way.
+            this.classList.remove('is-open');
+            this.syncSidebarToggle();
+            this.render();
+          }
+        }
+
+        onContext(e) {
+          const row = e.target.closest('.vt-row');
+          if (!row) return;
+          e.preventDefault();
+          this.selected = row.dataset.node;
+          this.render();
+          this.openMenu(row.dataset.node, row.dataset.kind, e.clientX, e.clientY);
+        }
+        openMenu(node, kind, x, y) {
+          const lib = globalThis.__vaultLib;
+          this.closeMenu();
+          const m = document.createElement('div');
+          m.className = 'vt-menu';
+          m.style.left = x + 'px';
+          m.style.top = y + 'px';
+          const item = (act, label) =>
+            '<button type="button" class="vt-menuitem" data-act="' + act +
+            '" data-node="' + node + '">' + label + '</button>';
+          m.innerHTML =
+            (kind === 'folder'
+              ? item('menu-note', 'New note') + item('menu-folder', 'New folder') +
+                '<div class="vt-menusep"></div>'
+              : '') +
+            item('menu-rename', 'Rename') +
+            item('menu-move', 'Move to…') +
+            item('menu-delete', 'Delete');
+          this.appendChild(m);
+          this.__menu = m;
+          // Keep it on screen when opened near an edge.
+          const r = m.getBoundingClientRect();
+          if (r.right > innerWidth) m.style.left = Math.max(4, x - r.width) + 'px';
+          if (r.bottom > innerHeight) m.style.top = Math.max(4, y - r.height) + 'px';
+          this.__onDocDown = (ev) => { if (!ev.target.closest('.vt-menu')) this.closeMenu(); };
+          this.__onKey = (ev) => { if (ev.key === 'Escape') this.closeMenu(); };
+          setTimeout(() => {
+            document.addEventListener('pointerdown', this.__onDocDown, true);
+            document.addEventListener('keydown', this.__onKey, true);
+          }, 0);
+        }
+        closeMenu() {
+          if (this.__menu) { this.__menu.remove(); this.__menu = null; }
+          if (this.__onDocDown) {
+            document.removeEventListener('pointerdown', this.__onDocDown, true);
+            this.__onDocDown = null;
+          }
+          if (this.__onKey) {
+            document.removeEventListener('keydown', this.__onKey, true);
+            this.__onKey = null;
+          }
+        }
+
+        // --- moving ----------------------------------------------------
+        // Would `ancestorId` end up inside its own subtree? Dropping a
+        // folder into its own child would orphan the whole branch: the
+        // tree only walks down from the roots, so the cycle would simply
+        // vanish from view.
+        isInside(candidateId, ancestorId) {
+          const lib = globalThis.__vaultLib;
+          const byId = new Map(lib.nodes().map((n) => [n.id, n]));
+          let cur = byId.get(candidateId), guard = 0;
+          while (cur && guard++ < 64) {
+            if (cur.id === ancestorId) return true;
+            cur = cur.parent ? byId.get(cur.parent) : null;
+          }
+          return false;
+        }
+        emitMove(id, parentId, order) {
+          const lib = globalThis.__vaultLib;
+          if (parentId)
+            lib.emit(this, 'movenode',
+              { move: id, moveParent: parentId, moveOrder: order });
+          else
+            lib.emit(this, 'moverootnode',
+              { moveRoot: id, moveRootOrder: order });
+        }
+        // `parentId` null = top level. `order` omitted = append.
+        moveNode(id, parentId, order) {
+          const lib = globalThis.__vaultLib;
+          const node = lib.nodes().find((n) => n.id === id);
+          if (!node) return;
+          if (parentId && this.isInside(parentId, id)) {
+            this.toast('Can’t move a folder inside itself');
+            return;
+          }
+          const { kids } = this.tree();
+          const dest = order || lib.after(kids.get(parentId || '') || []);
+          const fromParent = node.parent || null;
+          const fromOrder = node.order;
+          if (fromParent === parentId && fromOrder === dest) return;
+          this.emitMove(id, parentId, dest);
+          if (parentId) { this.open.add(parentId); this.saveOpen(); }
+          this.pushUndo('move of "' + node.name + '"',
+            () => this.emitMove(id, fromParent, fromOrder));
+        }
+
+        // --- move-to palette -------------------------------------------
+        // Every folder as a full path, plus the root. Mirrors the "type a
+        // folder" palette: filter, arrow keys, enter to move.
+        destinations() {
+          const lib = globalThis.__vaultLib;
+          const out = [{ id: null, label: '/' }];
+          for (const n of lib.nodes()) {
+            if (n.kind !== 'folder') continue;
+            out.push({ id: n.id, label: this.pathOf(n.id) });
+          }
+          return out.sort((a, b) => a.label.localeCompare(b.label));
+        }
+        openMove(nodeId) {
+          const lib = globalThis.__vaultLib;
+          const node = lib.nodes().find((n) => n.id === nodeId);
+          if (!node) return;
+          this.closeDialog();
+          this.__moveFor = nodeId;
+          this.__moveIndex = 0;
+          const scrim = document.createElement('div');
+          scrim.className = 'vt-scrim';
+          scrim.innerHTML =
+            '<div class="vt-palette" role="dialog" aria-modal="true">' +
+            '<input class="vt-palette__input" placeholder="Type a folder" spellcheck="false">' +
+            '<div class="vt-palette__list"></div>' +
+            '<div class="vt-palette__hint">' +
+            '<b>↑↓</b> navigate &nbsp; <b>↵</b> move &nbsp; ' +
+            '<b>esc</b> dismiss</div></div>';
+          this.appendChild(scrim);
+          this.__dialog = scrim;
+          const input = scrim.querySelector('input');
+          const paint = () => this.paintMove();
+          input.addEventListener('input', () => { this.__moveIndex = 0; paint(); });
+          input.addEventListener('keydown', (e) => {
+            const rows = this.__moveRows || [];
+            if (e.key === 'ArrowDown') {
+              e.preventDefault();
+              this.__moveIndex = Math.min(this.__moveIndex + 1, rows.length - 1); paint();
+            } else if (e.key === 'ArrowUp') {
+              e.preventDefault();
+              this.__moveIndex = Math.max(this.__moveIndex - 1, 0); paint();
+            } else if (e.key === 'Enter') {
+              e.preventDefault();
+              const pick = rows[this.__moveIndex];
+              if (pick) { this.closeDialog(); this.moveNode(nodeId, pick.id); }
+            } else if (e.key === 'Escape') {
+              e.preventDefault(); this.closeDialog();
+            }
+          });
+          scrim.addEventListener('pointerdown', (ev) => {
+            if (ev.target === scrim) this.closeDialog();
+          });
+          scrim.querySelector('.vt-palette__list').addEventListener('click', (ev) => {
+            const row = ev.target.closest('[data-dest]');
+            if (!row) return;
+            const rows = this.__moveRows || [];
+            const pick = rows[Number(row.dataset.dest)];
+            if (pick) { this.closeDialog(); this.moveNode(nodeId, pick.id); }
+          });
+          this.paintMove();
+          input.focus();
+        }
+        paintMove() {
+          const lib = globalThis.__vaultLib;
+          if (!this.__dialog) return;
+          const input = this.__dialog.querySelector('input');
+          const list = this.__dialog.querySelector('.vt-palette__list');
+          if (!input || !list) return;
+          const q = input.value.trim().toLowerCase();
+          // Never offer a destination inside the thing being moved.
+          const rows = this.destinations().filter((d) =>
+            (!d.id || !this.isInside(d.id, this.__moveFor)) &&
+            (!q || d.label.toLowerCase().includes(q)));
+          this.__moveRows = rows;
+          if (this.__moveIndex >= rows.length) this.__moveIndex = Math.max(0, rows.length - 1);
+          list.innerHTML = rows.length
+            ? rows.map((d, i) =>
+                '<div class="vt-palette__row' +
+                (i === this.__moveIndex ? ' is-on' : '') +
+                '" data-dest="' + i + '">' + lib.esc(d.label) + '</div>').join('')
+            : '<div class="vt-palette__none">No matching folder.</div>';
+          const on = list.querySelector('.is-on');
+          if (on && on.scrollIntoView) on.scrollIntoView({ block: 'nearest' });
+        }
+
+        // --- drag and drop ---------------------------------------------
+        onDragStart(e) {
+          const row = e.target.closest('.vt-row');
+          if (!row) return;
+          this.__drag = row.dataset.node;
+          this.closeMenu();
+          if (e.dataTransfer) {
+            e.dataTransfer.effectAllowed = 'move';
+            // Firefox refuses to start a drag without payload.
+            e.dataTransfer.setData('text/plain', row.dataset.node);
+          }
+        }
+        // Top/bottom quarter of a row reorders around it; the middle of a
+        // FOLDER drops inside it.
+        dropIntent(row, e) {
+          const r = row.getBoundingClientRect();
+          const y = (e.clientY - r.top) / (r.height || 1);
+          const isFolder = row.dataset.kind === 'folder';
+          if (isFolder && y > 0.25 && y < 0.75) return 'into';
+          return y < 0.5 ? 'before' : 'after';
+        }
+        onDragOver(e) {
+          if (!this.__drag) return;
+          const row = e.target.closest('.vt-row');
+          e.preventDefault();
+          if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+          this.clearDropMarks();
+          if (!row) { this.classList.add('is-drop-root'); return; }
+          row.classList.add('is-drop-' + this.dropIntent(row, e));
+        }
+        onDragLeave(e) {
+          if (e.target === this) this.clearDropMarks();
+        }
+        clearDropMarks() {
+          this.classList.remove('is-drop-root');
+          for (const el of this.querySelectorAll('.is-drop-into, .is-drop-before, .is-drop-after'))
+            el.classList.remove('is-drop-into', 'is-drop-before', 'is-drop-after');
+        }
+        onDrop(e) {
+          const lib = globalThis.__vaultLib;
+          const dragged = this.__drag;
+          this.__drag = null;
+          this.clearDropMarks();
+          if (!dragged) return;
+          e.preventDefault();
+          const row = e.target.closest('.vt-row');
+          if (!row) { this.moveNode(dragged, null); return; }
+          const targetId = row.dataset.node;
+          if (targetId === dragged) return;
+          const intent = this.dropIntent(row, e);
+          if (intent === 'into') { this.moveNode(dragged, targetId); return; }
+          // Reorder: land beside the target, among ITS siblings.
+          const target = lib.nodes().find((n) => n.id === targetId);
+          if (!target) return;
+          const parentId = target.parent || null;
+          const siblings = (this.tree().kids.get(parentId || '') || [])
+            .filter((n) => n.id !== dragged);
+          const at = siblings.findIndex((n) => n.id === targetId);
+          const before = intent === 'before'
+            ? (at > 0 ? siblings[at - 1].order : '')
+            : siblings[at].order;
+          const after = intent === 'before'
+            ? siblings[at].order
+            : (at < siblings.length - 1 ? siblings[at + 1].order : '');
+          this.moveNode(dragged, parentId, lib.between(before, after));
+        }
+
+        // --- confirmation dialog --------------------------------------
+        confirmDelete(id) {
+          const lib = globalThis.__vaultLib;
+          const node = lib.nodes().find((n) => n.id === id);
+          if (!node) return;
+          const kids = this.descendants(id);
+          const names = kids.slice(0, 8).map((k) => lib.esc(k.name));
+          const more = kids.length - names.length;
+          this.closeDialog();
+          const scrim = document.createElement('div');
+          scrim.className = 'vt-scrim';
+          scrim.innerHTML =
+            '<div class="vt-dialog" role="dialog" aria-modal="true">' +
+            '<div class="vt-dialog__title">Delete ' +
+            (node.kind === 'folder' ? 'folder' : 'note') + '?</div>' +
+            '<div class="vt-dialog__path">' + lib.esc(this.pathOf(id)) + '</div>' +
+            (kids.length
+              ? '<div class="vt-dialog__body">Also deletes <b>' + kids.length +
+                '</b> item' + (kids.length === 1 ? '' : 's') + ' inside it:<br>' +
+                names.join(', ') + (more > 0 ? ', and ' + more + ' more' : '') + '</div>'
+              : '') +
+            '<div class="vt-dialog__note">You can undo this.</div>' +
+            '<div class="vt-dialog__acts">' +
+            '<button type="button" class="vt-btn" data-act="cancel">Cancel</button>' +
+            '<button type="button" class="vt-btn vt-btn--danger" data-act="confirm-delete" ' +
+            'data-node="' + id + '">Delete</button>' +
+            '</div></div>';
+          this.appendChild(scrim);
+          this.__dialog = scrim;
+          scrim.addEventListener('pointerdown', (ev) => {
+            if (ev.target === scrim) this.closeDialog();
+          });
+          this.__onDialogKey = (ev) => { if (ev.key === 'Escape') this.closeDialog(); };
+          document.addEventListener('keydown', this.__onDialogKey, true);
+          const del = scrim.querySelector('[data-act="confirm-delete"]');
+          if (del) del.focus();
+        }
+        closeDialog() {
+          if (this.__dialog) { this.__dialog.remove(); this.__dialog = null; }
+          if (this.__onDialogKey) {
+            document.removeEventListener('keydown', this.__onDialogKey, true);
+            this.__onDialogKey = null;
+          }
+        }
+
+        // --- settings --------------------------------------------------
+        effectiveTheme() {
+          const root = document.documentElement;
+          return root.classList.contains('wa-dark') ||
+            (!root.classList.contains('wa-light') &&
+             window.matchMedia('(prefers-color-scheme: dark)').matches)
+            ? 'dark' : 'light';
+        }
+        readSettings() {
+          const root = this.closest('.vault-root');
+          const row = (root && root.querySelector('.vault-config-row'))
+            || document.querySelector('.vault-config-row');
+          const workspace = root && root.closest('.vault-workspace-root');
+          const fallback = (workspace && workspace.dataset.fallbackNote)
+            || 'id:vault/n/welcome';
+          const stored = row ? {
+            theme: row.dataset.theme === 'dark' ? 'dark' :
+              (row.dataset.theme === 'light' ? 'light' : 'system'),
+            startup: row.dataset.startup || fallback,
+          } : null;
+          if (this.__settingsOptimistic) {
+            const o = this.__settingsOptimistic;
+            if (stored && stored.theme === o.theme && stored.startup === o.startup) {
+              this.__settingsOptimistic = null;
+              return stored;
+            }
+            return o;
+          }
+          // No saved row preserves the old Vault landing behavior.
+          return stored || { theme: 'system', startup: fallback };
+        }
+        applyTheme(theme) {
+          const root = document.documentElement;
+          const dark = theme === 'system'
+            ? window.matchMedia('(prefers-color-scheme: dark)').matches
+            : theme === 'dark';
+          root.classList.toggle('wa-dark', dark);
+          root.classList.toggle('wa-light', !dark);
+        }
+        settingsFiles() {
+          const { kids } = this.tree();
+          const files = [];
+          const walk = (parent) => {
+            for (const node of kids.get(parent) || []) {
+              if (node.kind === 'file') files.push(node);
+              else walk(node.id);
+            }
+          };
+          walk('');
+          return files;
+        }
+        openSettings() {
+          const lib = globalThis.__vaultLib;
+          const settings = this.readSettings();
+          const files = this.settingsFiles();
+          this.closeDialog();
+          const values = new Set(files.map((n) => n.id));
+          const startup = settings.startup === 'id:vault/first-file' ||
+            values.has(settings.startup) ? settings.startup : 'id:vault/first-file';
+          const options =
+            '<option value="id:vault/first-file">First file in sidebar</option>' +
+            files.map((n) => '<option value="' + lib.esc(n.id) + '">' +
+              lib.esc(this.pathOf(n.id)) + '</option>').join('');
+          const scrim = document.createElement('div');
+          scrim.className = 'vt-scrim';
+          scrim.innerHTML =
+            '<div class="vt-dialog vt-settings" role="dialog" aria-modal="true" ' +
+            'aria-labelledby="vault-settings-title">' +
+            '<div class="vt-dialog__title" id="vault-settings-title">Settings</div>' +
+            '<div class="vt-settings__section">' +
+            '<div class="vt-settings__heading">Appearance</div>' +
+            '<label class="vt-settings__picker">' +
+            '<select class="vt-settings__theme" aria-label="Appearance">' +
+            '<option value="system">Default</option>' +
+            '<option value="light">Light</option>' +
+            '<option value="dark">Dark</option></select>' +
+            '<span>Default follows this device’s light or dark mode.</span></label></div>' +
+            '<div class="vt-settings__section">' +
+            '<div class="vt-settings__heading">On arrival</div>' +
+            '<label class="vt-settings__picker"><span>File to open</span>' +
+            '<select class="vt-settings__startup">' + options + '</select></label></div>' +
+            '<div class="vt-dialog__acts">' +
+            '<button type="button" class="vt-btn" data-act="cancel">Cancel</button>' +
+            '<button type="button" class="vt-btn vt-btn--primary" data-act="save-settings">Save</button>' +
+            '</div></div>';
+          // Body-mounted so the modal covers the whole viewport even when the
+          // mobile sidebar is transformed into an off-canvas drawer. The shell
+          // extends its token layer to .vt-scrim for the same reason.
+          document.body.appendChild(scrim);
+          this.__dialog = scrim;
+          const select = scrim.querySelector('.vt-settings__startup');
+          const theme = scrim.querySelector('.vt-settings__theme');
+          select.value = startup;
+          theme.value = settings.theme;
+          scrim.querySelector('[data-act="cancel"]')
+            .addEventListener('click', () => this.closeDialog());
+          scrim.querySelector('[data-act="save-settings"]')
+            .addEventListener('click', () => this.saveSettings());
+          scrim.addEventListener('pointerdown', (ev) => {
+            if (ev.target === scrim) this.closeDialog();
+          });
+          this.__onDialogKey = (ev) => {
+            if (ev.key === 'Escape') this.closeDialog();
+          };
+          document.addEventListener('keydown', this.__onDialogKey, true);
+          theme.focus();
+        }
+        saveSettings() {
+          if (!this.__dialog) return;
+          const lib = globalThis.__vaultLib;
+          const theme = this.__dialog.querySelector('.vt-settings__theme').value;
+          const startup = this.__dialog.querySelector('.vt-settings__startup').value
+            || 'id:vault/first-file';
+          const settings = { theme, startup };
+          this.__settingsOptimistic = settings;
+          this.applyTheme(theme);
+          // A file is always opened on arrival — the editor never shows an
+          // empty space — so the stored flag stays `on` for the schema only.
+          lib.emit(this, 'configsave', {
+            vaultConfigTheme: theme,
+            vaultConfigAutoOpen: 'on',
+            vaultConfigStartup: startup,
+          });
+          this.closeDialog();
+        }
+
+        // --- toast ------------------------------------------------------
+        toast(message, actionLabel, fn) {
+          const lib = globalThis.__vaultLib;
+          if (this.__toast) this.__toast.remove();
+          clearTimeout(this.__toastTimer);
+          const t = document.createElement('div');
+          t.className = 'vt-toast';
+          t.innerHTML = '<span>' + lib.esc(message) + '</span>' +
+            (actionLabel ? '<button type="button" class="vt-toast__act">' +
+              lib.esc(actionLabel) + '</button>' : '');
+          this.appendChild(t);
+          this.__toast = t;
+          const btn = t.querySelector('.vt-toast__act');
+          if (btn) btn.addEventListener('click', () => { this.hideToast(); fn && fn(); });
+          this.__toastTimer = setTimeout(() => this.hideToast(), 8000);
+        }
+        hideToast() {
+          clearTimeout(this.__toastTimer);
+          if (this.__toast) { this.__toast.remove(); this.__toast = null; }
+        }
+
+        // Delete the whole subtree, so a removed folder never leaves its
+        // notes stranded behind an unreachable parent. If the open note is
+        // in there, move the editor to the nearest survivor first.
+        remove_(id) {
+          const lib = globalThis.__vaultLib;
+          const nodes = lib.nodes();
+          const node = nodes.find((n) => n.id === id);
+          const doomed = [id].concat(this.descendants(id).map((n) => n.id));
+          // Capture the order keys BEFORE retracting them — they are
+          // exactly what restore needs, and once retracted the rows are
+          // gone from the directory and unreadable.
+          const snapshot = nodes.filter((n) => doomed.includes(n.id))
+            .map((n) => ({ id: n.id, order: n.order }));
+          const active = this.getAttribute('active');
+          if (active && doomed.includes(active)) {
+            const survivor = nodes
+              .find((n) => n.kind === 'file' && !doomed.includes(n.id));
+            if (survivor) lib.emit(this, 'navigate', {
+              open: survivor.id, deviceOpen: survivor.id,
+            });
+          }
+          for (const d of doomed) lib.emit(this, 'deletenode', { delete: d });
+          const label = 'delete of "' + (node ? node.name : 'item') + '"';
+          const restore = () => {
+            for (const s of snapshot)
+              lib.emit(this, 'restorenode', { restore: s.id, restoreOrder: s.order });
+          };
+          this.pushUndo(label, restore);
+          this.toast('Deleted "' + (node ? node.name : 'item') + '"', 'Undo', () => {
+            const i = this.undoStack.findIndex((e) => e.label === label);
+            if (i >= 0) this.undoStack.splice(i, 1);
+            restore();
+          });
+        }
+
+        onDblClick(e) {
+          const row = e.target.closest('.vt-row');
+          if (!row || e.target.closest('[data-act]')) return;
+          this.renaming = row.dataset.node;
+          this.render();
+        }
+        // Re-entrant: the re-render below removes the focused input,
+        // which fires its own blur straight back into here. Commit once.
+        commitRename(id, value) {
+          if (this.__committing) return;
+          this.__committing = true;
+          const lib = globalThis.__vaultLib;
+          const node = lib.nodes().find((n) => n.id === id);
+          const name = value.trim();
+          this.renaming = null;
+          if (node && name && name !== node.name) {
+            const from = node.name;
+            lib.emit(this, 'renamenode', { rename: id, renameName: name });
+            this.pushUndo('rename to "' + name + '"', () =>
+              lib.emit(this, 'renamenode', { rename: id, renameName: from }));
+          }
+          this.render();
+          this.__committing = false;
+        }
+
+        // The warnings read-out (dropped command fields, failing handlers)
+        // now lives behind the footer's triangle: a count badge, with the
+        // log itself in a popover. It still earns no space when nothing has
+        // gone wrong.
+        renderDebug() {
+          const lib = globalThis.__vaultLib;
+          const btn = this.querySelector('.vt-errs');
+          if (!btn || !lib) return;
+          const n = lib.warns.length;
+          btn.hidden = !n;
+          const chip = btn.querySelector('.vt-errs-count');
+          if (chip) chip.textContent = n > 99 ? '99+' : String(n);
+          if (this.errlog) this.fillErrLog();
+        }
+        fillErrLog() {
+          const lib = globalThis.__vaultLib;
+          if (!this.errlog || !lib) return;
+          this.errlog.innerHTML =
+            '<div class="vt-errlog-head"><span class="vt-errlog-title">Warnings</span>' +
+            '<button type="button" class="vt-errlog-clear">Clear</button></div>' +
+            lib.warns.slice(-30).map((w) =>
+              '<div class="vt-warn">' + lib.esc(w) + '</div>').join('');
+          this.errlog.querySelector('.vt-errlog-clear').addEventListener('click', () => {
+            lib.warns.length = 0;
+            this.closeErrLog();
+            this.renderDebug();
+          });
+        }
+        toggleErrLog() {
+          if (this.errlog) { this.closeErrLog(); return; }
+          const btn = this.querySelector('.vt-errs');
+          if (!btn) return;
+          const log = document.createElement('div');
+          log.className = 'vt-errlog';
+          this.errlog = log;
+          this.fillErrLog();
+          document.body.appendChild(log);
+          const r = btn.getBoundingClientRect();
+          log.style.left = Math.max(8, r.left - 4) + 'px';
+          log.style.bottom = (window.innerHeight - r.top + 6) + 'px';
+          this.__onErrAway = (e) => {
+            if (e.target.closest && e.target.closest('.vt-errlog, .vt-errs')) return;
+            this.closeErrLog();
+          };
+          document.addEventListener('mousedown', this.__onErrAway, true);
+        }
+        closeErrLog() {
+          if (this.__onErrAway) {
+            document.removeEventListener('mousedown', this.__onErrAway, true);
+            this.__onErrAway = null;
+          }
+          if (this.errlog) { this.errlog.remove(); this.errlog = null; }
+        }
+
+        render() {
+          const lib = globalThis.__vaultLib;
+          if (!lib) return;
+          const list = this.querySelector('.vt-list');
+          if (!list) return;
+          // Never rebuild mid-gesture (see the pointerdown guard) or
+          // out from under a live rename input — reassigning innerHTML
+          // removes the focused field, whose blur handler then commits
+          // and exits edit mode, which looked like rename "snapping
+          // back" the instant it opened.
+          if (this.__down) { this.__pending = true; return; }
+          // Before the signature is taken: hydrating changes the open set,
+          // and a signature captured ahead of it would be stale.
+          this.hydrateOpen();
+          this.applyTheme(this.readSettings().theme);
+          const s = this.sig();
+          if (s === this.__sig) return;
+          if (this.renaming && list.querySelector('.vt-rename')) return;
+          this.__sig = s;
+          this.settleCreate();
+          const { nodes, kids } = this.tree();
+          const active = this.getAttribute('active');
+          const out = [];
+
+          // A folder row is chevron + folder icon (Lucide `folder`, or
+          // `folder-open` while expanded) + name. A note row is just the
+          // name, inset by the chevron box so it lines up with the folder
+          // icons beside it. Depth is one `.vt-guide` spacer per ancestor;
+          // each spacer draws the vertical guide that runs down an expanded
+          // folder's children, directly under that folder's chevron.
+          const CHEVRON = '<path d="m9 18 6-6-6-6"/>';
+          const FOLDER =
+            '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>';
+          const FOLDER_OPEN =
+            '<path d="m6 14 1.45-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.93a2 2 0 0 1 1.66.9l.82 1.2a2 2 0 0 0 1.66.9H18a2 2 0 0 1 2 2v2"/>';
+          const rowHtml = (n, depth) => {
+            const isFolder = n.kind === 'folder';
+            const open = this.open.has(n.id);
+            const guides = '<span class="vt-guide"></span>'.repeat(depth);
+            const caret = isFolder
+              ? '<span class="vt-caret' + (open ? ' is-open' : '') + '">' +
+                lib.icon(CHEVRON) + '</span>'
+              : '<span class="vt-caret is-leaf"></span>';
+            const icon = isFolder
+              ? '<span class="vt-icon">' + lib.icon(open ? FOLDER_OPEN : FOLDER) + '</span>'
+              : '';
+            const label = this.renaming === n.id
+              ? '<input class="vt-rename" value="' + lib.esc(n.name) + '">'
+              : '<span class="vt-name" title="' + lib.esc(n.name) + '">' +
+                lib.esc(n.name) + '</span>';
+            return '<div class="vt-row' +
+              (n.id === active && !isFolder ? ' is-active' : '') +
+              (n.id === this.selected ? ' is-selected' : '') +
+              (isFolder ? ' is-folder' : '') +
+              (this.renaming === n.id ? ' is-renaming' : '') +
+              '" draggable="true" data-node="' + n.id + '" data-kind="' + n.kind +
+              '" data-depth="' + depth + '">' +
+              guides + caret + icon + label + '</div>';
+          };
+
+          // Searching flattens the tree to matches at any depth — the
+          // hierarchy is noise when you already know the name.
+          if (this.query) {
+            const hits = nodes.filter((n) => n.name.toLowerCase().includes(this.query));
+            for (const n of lib.sortSiblings(hits)) out.push(rowHtml(n, 0));
+            if (!hits.length) out.push('<div class="vt-empty">No matches.</div>');
+          } else {
+            const walk = (n, depth) => {
+              out.push(rowHtml(n, depth));
+              if (!this.open.has(n.id)) return;
+              for (const c of kids.get(n.id) || []) walk(c, depth + 1);
+            };
+            for (const r of kids.get('') || []) walk(r, 0);
+            // `is-vault-empty` is the signal the shell's CSS keys off to
+            // swap the editor for a blank state — distinct from the
+            // "no search matches" empty above, which must NOT do that.
+            if (!out.length)
+              out.push('<div class="vt-empty is-vault-empty">Nothing here yet.' +
+                '<button type="button" class="vt-firstnote" data-act="new-note">' +
+                'Create your first note</button></div>');
+          }
+          list.innerHTML = out.join('');
+          this.renderDebug();
+
+          const input = list.querySelector('.vt-rename');
+          if (input) {
+            const id = this.renaming;
+            input.focus(); input.select();
+            input.addEventListener('blur', () => this.commitRename(id, input.value));
+            input.addEventListener('keydown', (ev) => {
+              if (ev.key === 'Enter') { ev.preventDefault(); input.blur(); }
+              else if (ev.key === 'Escape') { this.renaming = null; this.render(); }
+            });
+          }
+        }
+      });
+    })();
+
+component!:
+  this: did:key:z6MkE5sgXUNDhkgvGfMzxDeKd69K7c3QD5WrrapaGTneeHNB
+  module: |2-
+    (() => {
+      if (customElements.get('vault-panel')) return;
+      const lib = () => globalThis.__vaultLib;
+
+      // Grove's right panel: Comments and Backlinks over the open note.
+      // Both tabs read the hidden data rows the shell mounts (.wiki-comment-row,
+      // .wiki-prose-row) — no store queries of its own, so lib.watch's tick is
+      // the only re-render signal it needs.
+      const MARKERS = /^(?:(?:[>*+-]|\d+[.)]|#{1,6}|\[[ xX]\])\s+)+/;
+      const strip = (s) =>
+        (s || '').replace(/\u200b/g, '').replace(MARKERS, '').trim();
+      const activeNote = () => {
+        const row = document.querySelector('.vault-here-row');
+        return (row && row.dataset.active) || '';
+      };
+
+      customElements.define('vault-panel', class extends HTMLElement {
+        connectedCallback() {
+          const arm = () => {
+            const l = lib();
+            if (!l) { setTimeout(arm, 40); return; }
+            if (this.isConnected) l.watch(this, () => this.render());
+          };
+          if (this.__init) { arm(); return; }
+          this.__init = true;
+          this.tab = 'comments';
+          this.innerHTML =
+            '<div class="vp-head">' +
+            '<div class="vp-tabs" role="tablist">' +
+            '<button type="button" class="vp-tab is-on" role="tab" data-tab="comments">Comments<span class="vp-tab-n" hidden></span></button>' +
+            '<button type="button" class="vp-tab" role="tab" data-tab="backlinks">Backlinks<span class="vp-tab-n" hidden></span></button>' +
+            '</div>' +
+            '<button type="button" class="vp-close" title="Close" aria-label="Close panel">' +
+            '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' +
+            '<path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>' +
+            '</button>' +
+            '</div>' +
+            '<div class="vp-body"></div>';
+          this.addEventListener('click', (e) => {
+            const tab = e.target.closest('.vp-tab');
+            if (tab) { this.tab = tab.dataset.tab; this.render(); return; }
+            if (e.target.closest('.vp-close')) {
+              const root = this.closest('.vault-root');
+              if (root) root.classList.remove('is-panel-open');
+              const btn = document.querySelector('.vtitle__panel');
+              if (btn) btn.setAttribute('aria-expanded', 'false');
+              return;
+            }
+            const quote = e.target.closest('.vp-cmt-quote');
+            if (quote) { this.jump(quote.dataset.snippet); return; }
+            const bl = e.target.closest('.vp-bl');
+            if (bl && lib()) lib().emit(this, 'navigate', { open: bl.dataset.note });
+          });
+          arm();
+        }
+        disconnectedCallback() { const l = lib(); l && l.unwatch(this); }
+
+        comments(note) {
+          if (!note) return [];
+          return Array.from(document.querySelectorAll('.wiki-comment-row'))
+            .filter((r) => r.dataset.note === note)
+            .map((r) => {
+              const t = parseFloat((r.dataset.time || '').slice(2)) || 0;
+              return {
+                text: r.textContent, time: t,
+                when: t > 0 ? new Date(t).toLocaleString() : '',
+                snippet: (r.dataset.snippet || '').trim(),
+              };
+            })
+            .sort((a, b) => b.time - a.time);
+        }
+
+        // A backlink is a note whose markdown contains `](<this note's id>)` —
+        // the exact form the editor's [[ note-link flow writes.
+        backlinks(note) {
+          const l = lib();
+          if (!note || !l) return [];
+          const names = new Map(l.nodes().map((n) => [n.id, n.name || 'Untitled']));
+          const out = [];
+          document.querySelectorAll('.wiki-prose-row').forEach((r) => {
+            const src = r.dataset.note;
+            if (!src || src === note) return;
+            const text = r.textContent || '';
+            const i = text.indexOf('](' + note + ')');
+            if (i < 0) return;
+            const start = text.lastIndexOf('\n', i) + 1;
+            const end = text.indexOf('\n', i);
+            const line = text.slice(start, end < 0 ? undefined : end)
+              .replace(/\]\([a-zA-Z][a-zA-Z0-9+.-]*:[^)]*\)/g, ']')
+              .replace(/[[\]]/g, '');
+            out.push({ note: src, name: names.get(src) || src, snippet: strip(line).slice(0, 120) });
+          });
+          return out;
+        }
+
+        // Scroll the commented block into view and flash it. Anchoring is the
+        // same snippet-text match the gutter uses — markdown has no block ids.
+        jump(snippet) {
+          const ed = document.querySelector('.vault-doc tonk-prose');
+          const doc = ed && ed.shadowRoot && ed.shadowRoot.querySelector('.md-doc');
+          if (!doc) return;
+          const want = strip(snippet).slice(0, 200);
+          if (!want) return;
+          for (const el of doc.querySelectorAll('p, h1, h2, h3, h4, h5, h6, pre, li')) {
+            if (strip(el.textContent).slice(0, 200) !== want) continue;
+            el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+            el.style.transition = 'background-color 1.1s ease';
+            el.style.backgroundColor = 'rgba(128, 128, 128, .28)';
+            setTimeout(() => { el.style.backgroundColor = ''; }, 900);
+            return;
+          }
+        }
+
+        render() {
+          const l = lib();
+          const body = this.querySelector('.vp-body');
+          if (!l || !body) return;
+          const note = activeNote();
+          const cms = this.comments(note);
+          const bls = this.backlinks(note);
+          this.querySelectorAll('.vp-tab').forEach((t) => {
+            t.classList.toggle('is-on', t.dataset.tab === this.tab);
+            t.setAttribute('aria-selected', String(t.dataset.tab === this.tab));
+            const n = t.dataset.tab === 'comments' ? cms.length : bls.length;
+            const chip = t.querySelector('.vp-tab-n');
+            chip.hidden = !n;
+            chip.textContent = String(n);
+          });
+          if (this.tab === 'comments') {
+            body.innerHTML = cms.length ? cms.map((c) =>
+              '<div class="vp-cmt">' +
+              '<div class="vp-cmt-when">' + l.esc(c.when) + '</div>' +
+              '<div class="vp-cmt-text">' + l.esc(c.text) + '</div>' +
+              '<div class="vp-cmt-quote" data-snippet="' + l.esc(c.snippet) + '" title="Jump to block">' +
+              l.esc(c.snippet.slice(0, 90)) + '</div>' +
+              '</div>').join('') :
+              '<div class="vp-none">0 comments on this note<br><span>hover a block, click the speech bubble</span></div>';
+          } else {
+            body.innerHTML = bls.length ? bls.map((b) =>
+              '<div class="vp-bl" data-note="' + l.esc(b.note) + '">' +
+              '<div class="vp-bl-name">' + l.esc(b.name) + '</div>' +
+              '<div class="vp-bl-snip">' + l.esc(b.snippet) + '</div>' +
+              '</div>').join('') :
+              '<div class="vp-none">nothing links here yet<br><span>type [[ in any note to link this one</span></div>';
+          }
+        }
+      });
+    })();
+
+
+# ==========================================================================
+# Routes
+# ==========================================================================
+
+route!:
+  this: id:tonk:vault/route/open
+  path: "/open/{*entity}"
+  concept: tonk:vault/open-link
+
+
+# ==========================================================================
+# Content
+# ==========================================================================
+
+vault/node!:
+  this: did:key:z6MkCgHwvGZEeVTP1udYS2qvoLyfezZbyuc5ar9drPziQDEu
+  kind: "folder"
+  name: "Demos"
+  order: "r"
+
+vault/node!:
+  this: did:key:z6MkDn65hAE1GQvYBCM4VfzJqWJtAtLGa91it3K7MoLzCMuY
+  kind: "file"
+  name: "Technical documentation"
+  order: "t"
+
+prose!:
+  this: did:key:z6MkDn65hAE1GQvYBCM4VfzJqWJtAtLGa91it3K7MoLzCMuY
+  content: |2-
+    Tonk-Prose-Version: 1
+    ETag: "117178371944087552"
+    Content-Type: text/markdown
+
+    # Build a Tonk bookshelf
+
+    This guide uses one small bookshelf to explain the basic parts of Tonk. Each section teaches one idea. Read **More info** only when you want the extra detail.
+
+    The commands were written for **Tonk 0.6.8** on 28 August 2026. If a command has changed, check the help included with your installed version:
+
+    ```sh
+    tonk --version
+    tonk help -g
+    tonk help tutorial
+    ```
+
+    ## What you will build
+
+    The finished space will contain people, books, an HTML view, and a button that marks a book as finished. You will also learn how to share the space and store a cover image.
+
+    ## 1. A space is one database
+
+    > **Main idea:** A space keeps the data and the app definitions for one project.
+
+    Create a directory and bind it to a new space:
+
+    ```sh
+    mkdir bookshelf
+    cd bookshelf
+    tonk space new bookshelf
+    tonk status
+    ```
+
+    The directory is now linked to the `bookshelf` space. Commands run in this directory will use that space unless you select another one.
+
+    ### More info
+
+    - The directory is only a binding. Tonk keeps the actual space in its own local data directory.
+    - A new space works without an account or an internet connection.
+    - `tonk status` shows the active space, its branch, its sync state, and its current content hash.
+    - You can select a space directly with `tonk --space bookshelf ...`.
+
+    ## 2. A concept defines a data shape
+
+    > **Main idea:** A concept lists the fields that a kind of entity must have.
+
+    Define a person and a book:
+
+    ```sh
+    tonk concept add person \
+      --field name:Text:one \
+      --description "Someone who writes books"
+
+    tonk concept add book \
+      --field title:Text:one \
+      --field author:Entity:one \
+      --field status:Text:one \
+      --field pages:UnsignedInteger:one \
+      --description "A book on the shelf"
+
+    tonk show book
+    ```
+
+    The `book` concept says that every matching book has a title, an author, a status, and a page count. It is similar to a schema, but it is stored in the space with the rest of the data.
+
+    ### More info
+
+    - A field has the form `name:Type:cardinality`.
+    - The available types are `Text`, `Entity`, `UnsignedInteger`, `SignedInteger`, `Float`, `Boolean`, and `Symbol`.
+    - Cardinality is `one` for one value or `many` for several values.
+    - `tonk assert book --help` is generated from the concept, so the command always reflects the fields in the current space.
+
+    ## 3. Facts describe entities
+
+    > **Main idea:** Tonk stores each field value as a fact about an entity.
+
+    Add one author, copy the entity ID from the result, and use it to add a book:
+
+    ```sh
+    tonk assert person --name "Ursula K. Le Guin"
+
+    tonk assert book \
+      --title "A Wizard of Earthsea" \
+      --author <author-did> \
+      --status "reading" \
+      --pages 183
+
+    tonk query book
+    ```
+
+    Replace `<author-did>` with the `did:key:...` printed by the first command. The book has one entity ID and four facts. Its `author` fact points to the person entity.
+
+    ### More info
+
+    - An entity ID is a URI. New entities usually receive a `did:key:...` ID.
+    - `tonk show <entity-did>` displays the raw facts for one entity.
+    - `tonk query book` finds entities that have every field required by the `book` concept.
+    - To change an existing entity, address its ID. Describing a new full body may create a different entity.
+
+    ## 4. Notation reads and writes facts
+
+    > **Main idea:** Tonk notation is a small YAML language for queries and changes that need more control than a single command provides.
+
+    This query finds every book and joins each one to its author's name:
+
+    ```yaml
+    book:
+      this: ?book
+      title: ?title
+      author: ?author
+
+    person:
+      this: ?author
+      name: ?name
+    ```
+
+    Save it as `authors.yaml`, then evaluate it:
+
+    ```sh
+    tonk eval authors.yaml
+    ```
+
+    The repeated variable `?author` is the link between the two query parts. A heading without `!` reads facts. A heading with `!` writes facts.
+
+    ### More info
+
+    - Variables begin with `?`. The same variable must have the same value everywhere it appears.
+    - Quote text values such as `"reading"`. An unquoted word is treated as a name, not as text.
+    - `tonk eval file.yaml --dry-run` checks a document without committing it.
+    - To update a known book, use `tonk assert book <book-did> --status "finished"`.
+
+    ## 5. A view turns data into HTML
+
+    > **Main idea:** A view connects a concept to an HTML template.
+
+    Add a simple view for a book, then render one book in the terminal:
+
+    ```sh
+    tonk view add book \
+      --template '<article><h2>{title}</h2><p>{status} · {pages} pages</p></article>'
+
+    tonk render <book-did>@book
+    ```
+
+    Tonk replaces `{title}`, `{status}`, and `{pages}` with facts from the selected entity. The same view can be used by the browser app.
+
+    ### More info
+
+    - A view stores two main values: its model concept and its HTML template.
+    - `tonk render book` renders the directory for all books.
+    - Use `<tonk-display>` inside a template to render a related entity, such as the person referenced by `author`.
+    - Use `tonk view add book --kind directory --template-file shelf.html --home` to make a custom bookshelf page the space home.
+
+    ## 6. Commands and rules handle interaction
+
+    > **Main idea:** A browser event creates a temporary command, and a rule turns that command into a stored change.
+
+    This file adds a **finished** button to the book view:
+
+    ```yaml
+    concept!: &book-status
+      this: tonk:bookshelf/book-status
+      description: "A book's reading status"
+      with:
+        status: book-status
+
+    command!: &finish
+      description: "A request to finish a book"
+      with:
+        book:
+          description: "The selected book"
+          the: dom.event.current-target.dataset/finish
+          as: entity
+
+    rule!:
+      description: "Mark the selected book as finished"
+      assert!: book-status
+      when:
+        - assert: finish
+          where: { book: ?this }
+        - assert: ==
+          where: { this: ?status, is: "finished" }
+
+    view!: &book-view
+      this: id:book-view
+      model: book
+      display: |
+        <article>
+          <h2>{title}</h2>
+          <p>{status} · {pages} pages</p>
+          <button onclick=finish data-finish={this}>finished</button>
+        </article>
+    ```
+
+    Save it as `finish.yaml` and run `tonk eval finish.yaml`. When someone clicks the button, the event supplies the book ID. The rule then asserts the new status for that book.
+
+    ### More info
+
+    - A command is transient. It exists while rules run and is then removed.
+    - A rule contains a result and the conditions that must match before the result can happen.
+    - `book-status` is a projection concept. It lets the rule update only the status fact instead of supplying every field of `book`.
+    - You can test the rule without a browser with `tonk eval -c 'finish!: { book: <book-did> }'`.
+
+    ## 7. Sync connects local replicas
+
+    > **Main idea:** Each device has a local copy of a space, and sync moves revisions between copies.
+
+    Sign in, give the local space a remote home, and create an invite:
+
+    ```sh
+    tonk account login
+    tonk space link bookshelf
+    tonk invite
+    ```
+
+    Another person can use the printed URL to make their own local replica:
+
+    ```sh
+    tonk join '<invite-url>' --name shared-bookshelf
+    ```
+
+    Quote the invite URL because its fragment contains part of the secret.
+
+    ### More info
+
+    - Editing local data does not require an account. Hosting and sharing do.
+
+    - Writes pull before committing and push afterward when an upstream is configured.
+
+    - `tonk status` reports whether the local branch is synced, ahead, behind, diverged, or has no upstream.
+
+    - If a push fails, the local commit remains. Run `tonk push` to try again.
+
+    ## 8. Blobs store files
+
+    > **Main idea:** A blob stores file bytes by content hash, while facts describe and reference the file.
+
+    Add a cover image and inspect it:
+
+    ```sh
+    tonk blob add cover.png
+    tonk blob
+    tonk blob cat <blob-uri> > restored-cover.png
+    ```
+
+    The first command prints a URI such as `blob:CHey...`. Store that URI in an entity field when a book needs to reference the cover.
+
+    ### More info
+
+    - Tonk stores the content type and original name as facts.
+    - Adding the same bytes again produces the same content address.
+    - Blobs move with normal push and pull operations.
+    - The browser's built-in blob view can display image blobs.
+
+    ## 9. Revisions make changes inspectable
+
+    > **Main idea:** Every effective write creates a new revision with a new content hash.
+
+    Compare the hash before and after a change:
+
+    ```sh
+    tonk status
+    tonk assert person --name "Octavia E. Butler"
+    tonk status
+    ```
+
+    The second hash identifies the complete new state of the space. If an identical write changes nothing, Tonk can keep the same revision.
+
+    ### More info
+
+    - Tonk records assertions and retractions instead of editing a database row in place.
+    - Concepts, views, rules, and app data all live as facts on the branch.
+    - `tonk export` prints the active facts in a plain format that is useful for inspection and debugging.
+    - Two replicas with the same root hash have the same content state.
+
+    ## Where to go next
+
+    Use the help built into Tonk when you need details:
+
+    ```sh
+    tonk help notation
+    tonk help views
+    tonk help events
+    tonk help sync
+    tonk help -a
+    ```
+
+    A good working loop is: define one concept, add a small amount of data, query it, add one view, and only then add commands or sharing.
+
+vault/node!: &license-note
+  this: did:key:z6Mk8EMVZfte8nbF82MwUiikW4S2C3rMybekEiFi7pyF8PY5
+  kind: "file"
+  name: "LICENSE.txt"
+  order: "x"
+
+prose!:
+  this: did:key:z6Mk8EMVZfte8nbF82MwUiikW4S2C3rMybekEiFi7pyF8PY5
+  content: |2-
+    Tonk-Prose-Version: 1
+    ETag: "117930756952555558"
+    Content-Type: text/markdown
+
+    # LICENSE
+
+    ## The Starter space — CC0 1.0
+
+    To the extent possible under law, the authors of this space have waived all copyright and related or neighboring rights to everything they created in it: the notes, the page views, the component code, the schema, and the demo apps.
+
+    [CC0 1.0 Universal Public Domain Dedication](https://creativecommons.org/publicdomain/zero/1.0/)
+
+    You may copy, modify, distribute and build on this work, including for commercial purposes, without asking permission and without attribution.
+
+    This dedication covers only what the space's own authors wrote. Material that came from other people keeps its own license.
+
+    ## Third-party material
+
+    ### Embedded styles and images
+
+    The **How to Tonk** page adapts the visual language of *Notes, Lists & Arrow flows*, a [Figma Community file](https://www.figma.com/community/file/953798252884802903/notes-lists-arrow-flows) licensed CC BY 4.0. It also shows seven frogs cropped from the preview image of the *Dressed Frog* [sticker pack](https://stickerdl.com/dressed-frog/) with an unknown license.
+
+    ### Embedded fonts
+
+    The space stores font files (Gestalte, Charter, IBM Plex Mono) as blobs so that pages render without reaching a font CDN. Those files keep the licenses of their respective foundries and are **not** covered by the dedication above. Bonus: you may use Gestalte without a license within Tonk.
+
+    ## Inspirations
+
+    The demos below are independent implementations written for this space. They are homages: no code, text, artwork, or data from the originals is included, and none of the rights holders are affiliated with this space or have endorsed it.
+
+    - **Tonk News** — inspired by [Hacker News](https://news.ycombinator.com/).
+
+    - **Dots** — inspired by the color-connecting puzzle game *[Dots](https://en.wikipedia.org/wiki/Dots_\(video_game\))*.
+
+    *Zork I: The Great Underground Empire* (Infocom) is MIT License. The space stores only what players type and the state of their session; nothing from the original game ships with it.
+
+    Names and trademarks appear only to identify the works that inspired these demos, and remain the property of their respective owners.
+
+vault/config!:
+  this: id:vault/root
+  auto-open: "on"
+  startup: did:key:z6MkAMKLz5uDbduG95r9rQriwRit6DE4MAbBSmWqpUz8PxWB
+  theme: "light"
+
+vault/frame!:
+  this: id:vault/root
+  title: "Starter space"

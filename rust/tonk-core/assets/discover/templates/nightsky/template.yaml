@@ -1,0 +1,42 @@
+schemaVersion: 1
+slug: nightsky
+name: Nightsky
+summary: A music-reactive night sky with local playback, shared text and GIF moments, and optional WebRTC listening rooms. Reuse its audio features, controls, dialogue and presence in your own Tonk.
+description: |
+  Listen beneath a field of orbiting stars. The sky responds to rhythmic attacks, sustained frequency energy, quiet detail and recurring spectral patterns, with stable paths when you seek.
+  The core includes reusable audio analysis, a replaceable timeline and controls, text/GIF comments, timed moments and star-cursor presence. Local listening works without a relay. Multiplayer uses an explicitly configured signalling service and WebRTC data channels.
+category: Music
+version: 1.0.0
+license: MIT
+author:
+  name: xi
+  url: https://github.com/victinyGitHub
+  contact: null
+features:
+  - A layered night-sky shader with audio-responsive trails and supported fallbacks
+  - Reusable rhythm, energy, quiet-texture, harmonic/percussive and motif descriptors
+  - Instant-onset sampling and deterministic integral-based seeking
+  - Click to seek; drag to select a comment range
+  - Text and GIFs together in one comment, with timed playback cards
+  - Optional WebRTC playback synchronization and named star cursors
+images:
+  - file: preview.jpg
+    alt: Nightsky listening room with orbiting stars, transparent playback controls and a Satie demonstration
+    caption: Screenshot of the Satie demonstration in a disposable Tonk space.
+files:
+  - file: core.yaml
+    description: Complete namespaced schema, eleven reusable components, controls, dialogue and installation notes
+  - file: demo.yaml
+    description: Optional Satie recording, artwork, attribution and explicit-click native-media installer
+    optional: true
+  - file: demo-analysis.yaml
+    description: Prepared features for that exact recording; install after demo.yaml
+    optional: true
+entrypoint: nightsky
+compatibility: Tonk CLI 0.6.14 and its standard library. Native installation, public Satie preparation, durable comments, song commands and data-preserving reimport tested. Actual two-browser WebRTC and the Cloudflare Worker port tested locally; hosted Cloudflare deployment is not preconfigured.
+notes: |
+  An invite joins a shared space, not a personal copy. For a personal remix, give an agent the invite and ask it to make your own remix. It can read nightsky-remix-guide and the native code/schema, create a new owned space, and recreate the selected app using supported notation. No ZIP or custom copier is required. Keep the shared original unchanged. Installation does not replace the space home. The required core contains no user comments, music, relay capability or production identifiers. Identical installation is idempotent; reimport restores bundled setup/demo seed defaults if edited, while independent comments, saved GIFs, user-created tracks and the active song selection are preserved. Upgrades with changed component sources need explicit retirement of old owned component definitions.
+  To use the optional Gymnopédie No. 1 demonstration, install both demo.yaml and demo-analysis.yaml in order, then click Prepare demo. This uploads verified included bytes into the current space's native blob store and activates its track and prepared analysis once. Encoded bytes remain in the imported YAML and Tonk history, in addition to the native blobs; pending byte strings stop rendering after activation. Both optional files can be skipped.
+  The unified agent prompt explains native audio/artwork ingestion, a fresh track for changed recordings, active selection, and narrow metadata edits. Earlier recordings and comments remain intact; one room is selected at a time. The upload/settings form is not mounted in the workspace. Prepared features bind the exact audio blob, SHA-256, timestamp convention and analysis-source version. Missing or mismatched features fall back to local analysis. See the comments in core.yaml for installation and remix prompts; APIs live at globalThis.Nightsky.Modules.
+  Without a relay, playback and visuals work locally. Make your own copy offers one all-in-one agent prompt and manual instructions for the optional Cloudflare Worker plus Durable Object in the carried cloudflare-relay files. The native nightsky-agent-file concept contains a versioned manifest and exact public text sources, retrievable through the local replica; no archive or external repository is required. An owner-configured namespace supports added songs without per-song server allowlist edits. A Cloudflare account and deployment are required; designed for Workers Free within account quotas, with no deployment preconfigured or implied tested. The optional VPS setup travels as relay files in the native nightsky-agent-file bundle and is also available under templates/nightsky/relay in the source repository. It uses explicit public room IDs from the scoped player's room() API. The gallery download contains install notation, metadata and the preview. Both sets of setup files travel inside core.yaml as app-scoped text; standalone verification reports are in the source repository. Private deployment artifacts and test results are excluded from the native bundle. Generate credentials privately; the capability in nightsky-relay is shared with readers of that fact, not individual authentication. Google STUN is used, no TURN is included, and direct WebRTC may fail on restrictive networks. Synchronization is not a guarantee of physical speaker alignment.
+  Wikimedia Commons GIF search and chosen GIF media make optional external requests and retain attribution. No external font or HTML-in-Canvas library is required. Native HTML-in-Canvas, WebGL and WebRTC are feature-dependent; DOM controls, Canvas2D/static rendering and reduced-motion behavior remain available. The template code is MIT; the optional recording's documented public-domain status and source attribution are included in demo.yaml.

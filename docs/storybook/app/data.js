@@ -491,6 +491,14 @@ window.STORYBOOK_DATA = {
       "variants": "Available main content and blobs; missing or unreadable source; local-only or active account."
     },
     {
+      "evidence": "All five vendored seeds pass static analysis and native creation with successful receipts; form tests cover host-origin resolution, receipt failure and duplicate submission; a browser regression covers cancellation, refusal, retry, single creation and the copied home.",
+      "gaps": "Interrupted writes, response loss after creation, account changes, hosted sync, and full interactions within every template.",
+      "group": "Spaces: local lifecycle and selection",
+      "id": "SPACE-15",
+      "title": "Browse Discover in the Hub, read template details, expand its photo, then name an independent copy in a separate modal without leaving the page.",
+      "variants": "Empty or populated collection; details and expanded photo; back from copy options; cancel preview; unavailable seed; retry; bundled template entrypoint."
+    },
+    {
       "evidence": "Eight space_link tests, including signer recovery and post-invite retry, plus authority/browser happy paths.",
       "gaps": "Crash/retry at every ownership/hosting/listing/upstream stage, partial remote commit, concurrent link.",
       "group": "Spaces: account directory, sync, and collaboration",
@@ -822,6 +830,7 @@ window.STORYBOOK_DATA = {
         "SPACE-08",
         "SPACE-13",
         "SPACE-14",
+        "SPACE-15",
         "UI-04"
       ],
       "name": "Space directory",
@@ -833,7 +842,7 @@ window.STORYBOOK_DATA = {
         "rust/tonk-worker/src/router/repository/duplication.rs"
       ],
       "status": "captured",
-      "summary": "The Hub lists local, owned, and joined spaces and offers create and duplicate actions. The screenshot predates duplication.",
+      "summary": "The Hub lists local, owned, and joined spaces and offers create, duplicate, and Discover template-copy actions. The screenshot predates duplication and Discover.",
       "surface": "browser"
     },
     {

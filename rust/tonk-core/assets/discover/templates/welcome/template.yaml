@@ -1,0 +1,42 @@
+schemaVersion: 1
+slug: welcome
+name: Welcome to Tonk
+summary: A single scrolling page that introduces Tonk. The How to Tonk story plays as you scroll, then the page offers Get started and Read the docs.
+description: |
+  Welcome to Tonk is a home page for a space. As you scroll, the How to Tonk story plays in pinned scenes, with captions that travel with the scroll: an empty space, a canvas, your notes and tools, a space that grows, a document that lives on your device and works online and offline, share links, building with your agent, and changes arriving from other people.
+  The page ends with two choices. Get started lists three first steps in the FABB, the space's floating bar. Read the docs opens the technical guide, a hands-on tour of Tonk built around a small bookshelf, read-only in a sheet with a back button.
+category: Workspace
+version: 1.0.0
+license: CC0-1.0
+author:
+  name: Tonk
+  url: https://tonk.xyz
+  contact: mailto:hello@tonk.xyz
+features:
+  - Scroll-driven How to Tonk story with pinned scenes and captions that move with the scroll
+  - Three framed boxes for app examples, placeholders until real examples are added
+  - Read the docs opens the technical guide read-only in a sheet, closed with back, the close button or Escape
+  - Get started sheet with three first steps in the floating bar
+  - Phone layout that crops each scene around its point of interest
+  - Respects reduced motion
+  - Fonts, artwork and the guide are embedded, so the page needs no external services
+images:
+  - file: preview.png
+    alt: A scene from the How to Tonk story, colored shapes filling a grey panel above the caption Store everything in one place and watch each space grow
+    caption: One scene of the story, from the installed template in headless Chrome.
+  - file: ending.png
+    alt: The end of the page, with a Get started button beside a large letter G and a Read the docs button across a large letter R
+    caption: The page ends with Get started and Read the docs.
+  - file: docs.png
+    alt: The technical guide open read-only in a sheet over the page, with a back button and a close button
+    caption: Read the docs opens the technical guide read-only.
+files:
+  - file: app.yaml
+    description: The page with its concept and views, its two web components (the page and its fonts), and the technical guide
+entrypoint: welcome
+compatibility: Tonk CLI 0.6.16-rc.1 and its standard library. Installed into a fresh space and rendered with the CLI on 2026-09-25, and the installed page checked in headless Chrome. Uses the standard component loader and the built-in tonk-prose element.
+notes: |
+  Install app.yaml with tonk eval app.yaml --home welcome. The --home flag replaces the space's current home with this page; without it, the page is installed but the home is left alone. If a Tonk update resets the home to the blank page, run tonk space home welcome to restore it.
+  The template defines the welcome concept (attributes xyz.tonk.welcome/title and xyz.tonk.welcome/docs) with one instance, id:welcome, which holds the tab title and the guide. The page's code is the component id:howto/component/scroll. Its fonts are the component id:vault/component/page-fonts, the same one, byte for byte, that the Starter space template installs, so the two templates can share a space. The standard component concept and its loader views are restated exactly as the standard library ships them. Evaluating the file again changes nothing.
+  The three example boxes are placeholders that read Example coming soon. The Get started steps name items in the FABB's menu: go to tonk home, connect agent, and copy share link. The page runs inside the space's frame and cannot navigate the host, so neither button leaves the page.
+  The authors' own work is CC0 1.0. The embedded fonts keep their own licenses: Gestalte (Alexander Slobzheninov), Charter (Bitstream), and IBM Plex Mono and IBM Plex Sans Condensed (IBM, SIL Open Font License 1.1). See LICENSE.txt.

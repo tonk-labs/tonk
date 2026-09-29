@@ -932,6 +932,75 @@ pub(crate) mod tests {
             ("/lib/body.txt", "hello from a seed\n"),
         ];
 
+        /// SPACE-15: real exported domain facts must pass the actual creation
+        /// pipeline, not just the concept-only lowering helper used by macros.
+        #[dialog_common::test]
+        async fn it_creates_spaces_from_all_vendored_discover_seeds() {
+            const FILES: &[(&str, &str)] = &[
+                (
+                    "/kanoodel",
+                    include_str!("../../../tonk-core/assets/discover/seeds/kanoodel.yaml"),
+                ),
+                (
+                    "/little-writer",
+                    include_str!("../../../tonk-core/assets/discover/seeds/little-writer.yaml"),
+                ),
+                (
+                    "/nightsky",
+                    include_str!("../../../tonk-core/assets/discover/seeds/nightsky.yaml"),
+                ),
+                (
+                    "/starter-space",
+                    include_str!("../../../tonk-core/assets/discover/seeds/starter-space.yaml"),
+                ),
+                (
+                    "/welcome",
+                    include_str!("../../../tonk-core/assets/discover/seeds/welcome.yaml"),
+                ),
+            ];
+            let base = serve(FILES);
+            for (path, _) in FILES {
+                let state = test_state().await;
+                dispatch(
+                    &state,
+                    CommandOrigin::default(),
+                    seeded_create_transient(path, &format!("{base}{path}")),
+                )
+                .await;
+                use tower::ServiceExt as _;
+                let branch = state.read().await.active_branch.clone();
+                let (app, _lsp) = crate::router::api_router_from_state(state.clone());
+                let query = serde_json::json!({
+                    "predicate": { "with": {
+                        "status": { "the": "xyz.tonk.space-creation/status", "as": "Text", "cardinality": "one" },
+                        "detail": { "the": "xyz.tonk.space-creation/detail", "as": "Text", "cardinality": "one" }
+                    } },
+                    "terms": { "this": "cmd:create", "status": { "?": { "name": "status" } }, "detail": { "?": { "name": "detail" } } }
+                });
+                let response = app
+                    .oneshot(
+                        axum::http::Request::builder()
+                            .method("POST")
+                            .uri(format!("/api/profile/branch/{branch}/query"))
+                            .header("content-type", "application/json")
+                            .body(axum::body::Body::from(query.to_string()))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert!(response.status().is_success());
+                let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                let receipt: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(
+                    receipt[0]["fields"]["status"], "created",
+                    "{path}: {receipt}"
+                );
+                assert_eq!(space_subjects(&state).await.len(), 1, "{path}");
+            }
+        }
+
         /// A seeded `space/create` evaluates the document at the seed URL
         /// into the new space, on top of the standard library, with what it
         /// includes resolved beside it on the seed's server.

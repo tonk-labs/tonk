@@ -1,0 +1,496 @@
+# SPDX-License-Identifier: CC0-1.0
+# Tonk asserted notation. Repeated top-level keys are intentional.
+#
+# Starter space — Dots
+#
+# Dots demo: a shared match
+#
+# One of 8 notation documents that recreate the Tonk starter space in a
+# fresh space. Evaluate them in file order:
+#
+#   tonk eval 1-vault.yaml
+#   tonk eval 2-pages.yaml
+#   tonk eval 3-news.yaml
+#   tonk eval 4-todos.yaml
+#   tonk eval 5-budget.yaml
+#   tonk eval 6-dots.yaml
+#   tonk eval 7-zork.yaml
+#   tonk eval 8-playground.yaml
+#
+# Exported from the live space on 2026-09-08 with Tonk 0.6.12. Blobs are
+# embedded as data: URIs. Runtime state (per-device state, session
+# transcripts, agent heartbeats, the roster, and history) is left out.
+#
+# Author: Tonk <hello@tonk.xyz>. The authors' own work is CC0 1.0; embedded
+# fonts and third-party artwork keep their own licenses (see LICENSE.txt
+# in the vault).
+
+
+# ==========================================================================
+# Attributes
+# ==========================================================================
+
+attribute!: &dots-board
+  description: "The 6x6 board, row-major, 36 chars of a-d (one per palette colour)"
+  the: xyz.tonk.dots/board
+  as: Text
+  cardinality: one
+
+attribute!: &dots-heading
+  description: "Marks the vault note hosting the Dots demo; the page H1"
+  the: xyz.tonk.demo.dots/heading
+  as: Text
+  cardinality: one
+
+attribute!: &dots-moves
+  description: "Moves remaining in the shared match, as decimal text"
+  the: xyz.tonk.dots/moves
+  as: Text
+  cardinality: one
+
+attribute!: &dots-score
+  description: "Total score of the shared match, as decimal text"
+  the: xyz.tonk.dots/score
+  as: Text
+  cardinality: one
+
+
+# ==========================================================================
+# Concepts
+# ==========================================================================
+
+concept!: &dots-demo-page
+  description: "The Dots demo - connect-the-dots game with a space-synced multiplayer board"
+  with:
+    heading: dots-heading
+
+concept!: &dots/match
+  description: "A shared Dots board: whole state supersedes on every move"
+  with:
+    board: dots-board
+    moves: dots-moves
+    score: dots-score
+
+
+# ==========================================================================
+# Commands (transient concepts fired by the UI)
+# ==========================================================================
+
+command!: &dots-sync
+  with:
+    board:
+      description: "The 36-char board after the move"
+      the: dom.event.detail/board
+      as: Text
+      cardinality: one
+    match:
+      description: "The shared match being updated"
+      the: dom.event.detail/match
+      as: Entity
+      cardinality: one
+    moves:
+      description: "Moves remaining after the move, decimal text"
+      the: dom.event.detail/moves
+      as: Text
+      cardinality: one
+    score:
+      description: "Total score after the move, decimal text"
+      the: dom.event.detail/score
+      as: Text
+      cardinality: one
+
+
+# ==========================================================================
+# Rules
+# ==========================================================================
+
+rule!:
+  assert!: dots/match
+  when:
+    - assert: dots-sync
+      where: { board: ?board, match: ?this, moves: ?moves, score: ?score }
+
+
+# ==========================================================================
+# Views
+# ==========================================================================
+
+view!:
+  this: dots-demo-page
+  show:
+    ui: |2
+      <div class="dots-page">
+      <style>
+        .dots-page {
+          max-width: 560px; width: min(560px, calc(100% - 28px));
+          margin: 26px auto 48px; padding: 24px 24px 30px;
+          background: var(--wa-color-surface-raised, #fff);
+          border: 1px solid var(--wa-color-surface-border, #e6e6e9);
+          border-radius: 14px;
+          box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 10px 32px rgba(0,0,0,.06);
+          color: var(--wa-color-text-normal, #1d1d1f);
+          font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+        }
+        .dots-page h1 { margin: 0 0 4px; font-size: 24px; letter-spacing: -0.02em; }
+        .dots-sub { margin: 0 0 16px; font-size: 13px; color: var(--wa-color-text-quiet, #8a8a8e); }
+        .dg-top { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+        .dg-modes { display: flex; gap: 6px; }
+        .dg-mode {
+          padding: 5px 14px; border-radius: 999px; font: inherit; font-size: 13px; font-weight: 600;
+          color: var(--wa-color-text-quiet, #8a8a8e); background: transparent;
+          border: 1px solid var(--wa-color-surface-border, #e6e6e9); cursor: pointer;
+        }
+        /* Chrome stays monochrome — the four dot colours are the only colour
+           on the page. text-normal/surface flip in dark mode, so the active
+           pill is black-on-white in light and white-on-black in dark. */
+        .dg-mode.is-on {
+          background: var(--wa-color-text-normal, #111);
+          border-color: var(--wa-color-text-normal, #111);
+          color: var(--wa-color-surface-raised, #fff);
+        }
+        .dg-hud { display: flex; gap: 14px; font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
+        .dg-note { min-height: 1.3em; margin: 8px 0 14px; font-size: 12.5px; color: var(--wa-color-text-quiet, #8a8a8e); }
+        .dg-wrap { position: relative; touch-action: none; }
+        .dg-board {
+          display: grid; grid-template-columns: repeat(6, minmax(0, 56px));
+          justify-content: center; gap: 10px; touch-action: none;
+        }
+        /* The whole cell stays the touch target; the visible dot is a small
+           centred disc — the original game's proportion, roughly a third of
+           the pitch. Percentage padding keeps the cell square (immune to
+           aspect-ratio being stripped), and the disc inherits --c. */
+        .dg-dot {
+          position: relative; width: 100%; height: 0; padding: 0 0 100%;
+          border: none; background: transparent; cursor: pointer;
+        }
+        .dg-dot::after {
+          content: ""; position: absolute; left: 50%; top: 50%;
+          width: 36%; height: 36%; border-radius: 50%;
+          background: var(--c);
+          transform: translate(-50%, -50%);
+          transition: transform 130ms ease;
+        }
+        .dg-dot:hover::after { transform: translate(-50%, -50%) scale(1.12); }
+        .dg-dot.is-path::after { transform: translate(-50%, -50%) scale(1.3); }
+        .dg-dot.is-new::after { animation: dg-drop 220ms ease; }
+        @keyframes dg-drop {
+          from { transform: translate(-50%, calc(-50% - 14px)); opacity: 0; }
+          to { transform: translate(-50%, -50%); opacity: 1; }
+        }
+        .dg-lines { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+        /* Solid like the original: CSS outranks SVG presentation attributes,
+           so this also corrects any stale module still drawing at 0.8. */
+        .dg-lines polyline { opacity: 1; }
+        .dg-over { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+          background: rgba(0,0,0,.35); border-radius: 8px; }
+        .dg-over[hidden] { display: none; }
+        .dg-over-card {
+          display: flex; flex-direction: column; align-items: center; gap: 6px;
+          padding: 18px 28px; background: var(--wa-color-surface-raised, #fff);
+          border: 1px solid var(--wa-color-surface-border, #e6e6e9); border-radius: 12px;
+          box-shadow: 0 12px 36px rgba(0,0,0,.22);
+        }
+        .dg-over-card b { font-size: 17px; }
+        .dg-over-card span { font-size: 13px; color: var(--wa-color-text-quiet, #8a8a8e); }
+        .dg-again {
+          margin-top: 6px; padding: 7px 16px; border: none; border-radius: 8px;
+          background: var(--wa-color-text-normal, #111);
+          color: var(--wa-color-surface-raised, #fff);
+          font: inherit; font-size: 13.5px; font-weight: 600; cursor: pointer;
+        }
+        .dg-again:hover { opacity: .85; }
+        .dots-how { margin: 16px 0 0; padding: 0; font-size: 12px; color: var(--wa-color-text-quiet, #8a8a8e); }
+      </style>
+      <div hidden>
+        <tonk-display model=component></tonk-display>
+        <tonk-display model=dots/match></tonk-display>
+      </div>
+      <h1>{heading}</h1>
+      <p class="dots-sub">Connect two or more dots of one colour. Close a loop to clear every dot of that colour. 30 moves.</p>
+      <dots-game onsync=dots-sync></dots-game>
+      <p class="dots-how">Together mode plays one shared board: moves, score and the board itself sync live to everyone in this space. Simultaneous moves are last-writer-wins.</p>
+      </div>
+
+view!:
+  this: dots/match
+  show:
+    directory: |2
+      <div class="dots-match-row" data-match={this} data-board="{board}" data-moves="{moves}" data-score="{score}"></div>
+
+
+# ==========================================================================
+# Components (web components loaded by the shell)
+# ==========================================================================
+
+component!: &dots-game
+  this: did:key:z6MkCEtfqPAaPK43Z2vkiufwFbHjXb3Ny3P6yANuBnndkU8p
+  module: |2-
+    customElements.get('dots-game') || customElements.define('dots-game', class extends HTMLElement {
+      connectedCallback() {
+        if (this._built) { this._arm(); return; }
+        this._built = true;
+        this.N = 6;
+        this.KINDS = 'abcd';
+        // The tonk palette.
+        this.COLORS = { a: '#71BBE7', b: '#85BC6C', c: '#F27121', d: '#D9E020' };
+        this.mode = 'solo';
+        this.solo = this._fresh();
+        this.together = null;
+        this.path = [];
+        this.loop = false;
+        this.innerHTML = [
+          '<div class="dg-top">',
+          '<div class="dg-modes"><button type="button" class="dg-mode is-on" data-mode="solo">Solo</button>',
+          '<button type="button" class="dg-mode" data-mode="together">Together</button></div>',
+          '<div class="dg-hud"><span class="dg-score"></span><span class="dg-moves"></span></div>',
+          '</div>',
+          '<div class="dg-note"></div>',
+          '<div class="dg-wrap"><div class="dg-board"></div>',
+          '<svg class="dg-lines"></svg>',
+          '<div class="dg-over" hidden><div class="dg-over-card"><b></b><span></span>',
+          '<button type="button" class="dg-again">New game</button></div></div></div>'
+        ].join('');
+        this._boardEl = this.querySelector('.dg-board');
+        this._svg = this.querySelector('.dg-lines');
+        this.addEventListener('click', (e) => {
+          const m = e.target.closest('.dg-mode');
+          if (m) { this._setMode(m.getAttribute('data-mode')); return; }
+          if (e.target.closest('.dg-again')) this._newGame();
+        });
+        // Pointer events on the document so a drag survives leaving the board;
+        // elementFromPoint makes the same code work for touch.
+        this._boardEl.addEventListener('pointerdown', (e) => {
+          const d = e.target.closest('.dg-dot');
+          if (!d || this._over()) return;
+          e.preventDefault();
+          this.path = [parseInt(d.dataset.i, 10)];
+          this.loop = false;
+          this._drawPath();
+        });
+        this._onMove = (e) => {
+          if (!this.path.length) return;
+          const el = document.elementFromPoint(e.clientX, e.clientY);
+          const d = el && el.closest && el.closest('.dg-dot');
+          if (!d || !this._boardEl.contains(d)) return;
+          this._extend(parseInt(d.dataset.i, 10));
+        };
+        this._onUp = () => { if (this.path.length) this._release(); };
+        document.addEventListener('pointermove', this._onMove);
+        document.addEventListener('pointerup', this._onUp);
+        document.addEventListener('pointercancel', this._onUp);
+        this._arm();
+        this._render();
+      }
+      disconnectedCallback() {
+        document.removeEventListener('pointermove', this._onMove);
+        document.removeEventListener('pointerup', this._onUp);
+        document.removeEventListener('pointercancel', this._onUp);
+        if (this._mo) { this._mo.disconnect(); this._mo = null; }
+      }
+      // Watch the hidden dots-match-row for remote moves. Mutations that
+      // originate inside this widget are ignored, or every self-render would
+      // re-trigger the observer forever (the vault tree guards the same way).
+      _arm() {
+        if (this._mo) return;
+        this._mo = new MutationObserver((ms) => {
+          const inSelf = (m) => {
+            const el = m.target.nodeType === 1 ? m.target : m.target.parentElement;
+            return el && el.closest && el.closest('dots-game');
+          };
+          if (ms.every(inSelf)) return;
+          clearTimeout(this._t);
+          this._t = setTimeout(() => this._onRow(), 30);
+        });
+        this._mo.observe(document.body, { subtree: true, childList: true, attributes: true,
+          attributeFilter: ['data-board', 'data-moves', 'data-score', 'data-match'] });
+      }
+      _onRow() {
+        if (this.mode !== 'together') return;
+        const s = this._shared();
+        if (!s) { if (this.together) { this.together = null; this._render(); } return; }
+        const t = this.together;
+        if (t && t.board === s.board && t.moves === s.moves && t.score === s.score) return;
+        this.together = s;
+        if (!this.path.length) this._render(true);
+      }
+      _fresh() {
+        let b = '';
+        for (let i = 0; i < this.N * this.N; i++) b += this.KINDS[Math.floor(Math.random() * 4)];
+        return { board: b, moves: 30, score: 0 };
+      }
+      _row() { return document.querySelector('.dots-match-row'); }
+      _shared() {
+        const r = this._row();
+        if (!r) return null;
+        const b = r.getAttribute('data-board') || '';
+        if (b.length !== this.N * this.N || b.indexOf('{') !== -1) return null;
+        return { match: r.getAttribute('data-match'), board: b,
+          moves: parseInt(r.getAttribute('data-moves'), 10) || 0,
+          score: parseInt(r.getAttribute('data-score'), 10) || 0 };
+      }
+      _state() { return this.mode === 'solo' ? this.solo : (this.together || this._shared()); }
+      _over() { const s = this._state(); return !s || s.moves <= 0; }
+      _setMode(mode) {
+        if (mode === this.mode) return;
+        this.mode = mode;
+        this.path = []; this.loop = false;
+        if (mode === 'together') this.together = this._shared();
+        this.querySelectorAll('.dg-mode').forEach((b) =>
+          b.classList.toggle('is-on', b.getAttribute('data-mode') === mode));
+        this._drawPath();
+        this._render();
+      }
+      _newGame() {
+        const n = this._fresh();
+        if (this.mode === 'solo') { this.solo = n; this._render(); return; }
+        this._commit(n);
+      }
+      // Together: render optimistically, then send the whole next state as a
+      // command. The rule supersedes the match; concurrent moves are
+      // last-writer-wins, which is honest enough for a demo.
+      _commit(n) {
+        const s = this._shared();
+        if (!s || !s.match) return;
+        this.together = { match: s.match, board: n.board, moves: n.moves, score: n.score };
+        this._render(true);
+        this.dispatchEvent(new CustomEvent('sync', { bubbles: true, detail: {
+          match: s.match, board: n.board, moves: String(n.moves), score: String(n.score) } }));
+      }
+      _extend(i) {
+        const s = this._state();
+        if (!s) return;
+        const p = this.path;
+        const last = p[p.length - 1];
+        if (i === last || this.loop) return;
+        if (p.length > 1 && i === p[p.length - 2]) { p.pop(); this._drawPath(); return; }
+        const r1 = Math.floor(last / this.N), c1 = last % this.N;
+        const r2 = Math.floor(i / this.N), c2 = i % this.N;
+        if (Math.abs(r1 - r2) + Math.abs(c1 - c2) !== 1) return;
+        if (s.board[i] !== s.board[p[0]]) return;
+        if (p.indexOf(i) !== -1) { this.loop = true; p.push(i); this._drawPath(); return; }
+        p.push(i);
+        this._drawPath();
+      }
+      _release() {
+        const p = this.path, s = this._state();
+        const wasLoop = this.loop;
+        this.path = []; this.loop = false;
+        this._drawPath();
+        if (!s || p.length < 2) return;
+        const kind = s.board[p[0]];
+        const clear = new Set();
+        if (wasLoop) {
+          for (let i = 0; i < s.board.length; i++) if (s.board[i] === kind) clear.add(i);
+        } else p.forEach((i) => clear.add(i));
+        const next = this._fall(s.board, clear);
+        const n = { board: next, moves: s.moves - 1, score: s.score + clear.size };
+        if (this.mode === 'solo') { this.solo = n; this._render(true); }
+        else this._commit(n);
+      }
+      _fall(board, clear) {
+        const N = this.N;
+        const out = board.split('');
+        this._marks = new Set();
+        for (let c = 0; c < N; c++) {
+          const keep = [];
+          for (let r = N - 1; r >= 0; r--) if (!clear.has(r * N + c)) keep.push(board[r * N + c]);
+          for (let r = N - 1, k = 0; r >= 0; r--, k++) {
+            const i = r * N + c;
+            if (k < keep.length) out[i] = keep[k];
+            else { out[i] = this.KINDS[Math.floor(Math.random() * 4)]; this._marks.add(i); }
+          }
+        }
+        return out.join('');
+      }
+      _render(animate) {
+        const s = this._state();
+        const score = this.querySelector('.dg-score');
+        const moves = this.querySelector('.dg-moves');
+        const note = this.querySelector('.dg-note');
+        const over = this.querySelector('.dg-over');
+        if (!s) {
+          this._boardEl.innerHTML = '';
+          score.textContent = ''; moves.textContent = '';
+          note.textContent = 'Waiting for the shared board to sync…';
+          over.hidden = true;
+          return;
+        }
+        note.textContent = this.mode === 'together'
+          ? 'One board for the whole space — every move syncs live to everyone here.'
+          : 'Your own board — switch to Together to play the shared one.';
+        score.textContent = 'Score ' + s.score;
+        moves.textContent = 'Moves ' + Math.max(0, s.moves);
+        const marks = (animate && this._marks) ? this._marks : new Set();
+        let html = '';
+        for (let i = 0; i < s.board.length; i++) {
+          html += '<button type="button" class="dg-dot' + (marks.has(i) ? ' is-new' : '') +
+            '" data-i="' + i + '" style="--c:' + this.COLORS[s.board[i]] + '" aria-label="dot"></button>';
+        }
+        this._boardEl.innerHTML = html;
+        this._marks = null;
+        const done = s.moves <= 0;
+        over.hidden = !done;
+        if (done) {
+          over.querySelector('b').textContent = 'Game over';
+          over.querySelector('span').textContent = 'Final score: ' + s.score;
+          over.querySelector('.dg-again').textContent = this.mode === 'together' ? 'New shared game' : 'New game';
+        }
+      }
+      _drawPath() {
+        const svg = this._svg, p = this.path, s = this._state();
+        this.querySelectorAll('.dg-dot.is-path').forEach((d) => d.classList.remove('is-path'));
+        if (!s || !p.length) { svg.innerHTML = ''; return; }
+        const colour = this.COLORS[s.board[p[0]]];
+        const wrap = this.querySelector('.dg-wrap').getBoundingClientRect();
+        const pts = [];
+        for (const i of p) {
+          const d = this._boardEl.querySelector('.dg-dot[data-i="' + i + '"]');
+          if (!d) continue;
+          d.classList.add('is-path');
+          const b = d.getBoundingClientRect();
+          pts.push((b.left + b.width / 2 - wrap.left) + ',' + (b.top + b.height / 2 - wrap.top));
+        }
+        svg.setAttribute('viewBox', '0 0 ' + wrap.width + ' ' + wrap.height);
+        // Original-game look: one continuous capsule. Path dots swell to
+        // 1.3x (the view's .is-path rule), so the stroke matches the
+        // ENLARGED size exactly — 36% of the cell times 1.3 — and the round
+        // caps coincide with the dot circles instead of bulging past them.
+        const first = this._boardEl.querySelector('.dg-dot');
+        const linePx = first ? first.getBoundingClientRect().width * 0.36 * 1.3 : 20;
+        svg.innerHTML = pts.length > 1
+          ? '<polyline points="' + pts.join(' ') + '" fill="none" stroke="' + colour +
+            '" stroke-width="' + Math.max(8, Math.round(linePx)) + '" stroke-linecap="round" stroke-linejoin="round"/>'
+          : '';
+        // A closed loop selects the whole colour - show it.
+        if (this.loop) this.querySelectorAll('.dg-dot').forEach((d) => {
+          if (s.board[parseInt(d.dataset.i, 10)] === s.board[p[0]]) d.classList.add('is-path');
+        });
+      }
+    });
+
+
+# ==========================================================================
+# Content
+# ==========================================================================
+
+vault/node!: &dots-note
+  this: did:key:z6MkAehqMrWgDccYro35tuee6skh2kQdobeVCYJ34cwMXZ7X
+  kind: "file"
+  name: "Dots"
+  order: "p"
+  parent: did:key:z6MkCgHwvGZEeVTP1udYS2qvoLyfezZbyuc5ar9drPziQDEu
+
+vault/page!:
+  this: did:key:z6MkAehqMrWgDccYro35tuee6skh2kQdobeVCYJ34cwMXZ7X
+  model: dots-demo-page
+  title: "Dots"
+
+dots-demo-page!:
+  this: did:key:z6MkAehqMrWgDccYro35tuee6skh2kQdobeVCYJ34cwMXZ7X
+  heading: "Dots"
+
+dots/match!: &dots-arena
+  this: did:key:z6MkG5JY5QJEaTJCxQypknDy736H8qLWpbNEcuLXKgfUJbBq
+  board: "acdcdadabddcccadbbababddcbcbcadaaccb"
+  moves: "30"
+  score: "0"

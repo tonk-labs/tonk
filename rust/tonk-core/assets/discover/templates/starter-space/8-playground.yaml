@@ -1,0 +1,857 @@
+# SPDX-License-Identifier: CC0-1.0
+# Tonk asserted notation. Repeated top-level keys are intentional.
+#
+# Starter space — Playground
+#
+# Agent playground: the task curriculum
+#
+# One of 8 notation documents that recreate the Tonk starter space in a
+# fresh space. Evaluate them in file order:
+#
+#   tonk eval 1-vault.yaml
+#   tonk eval 2-pages.yaml
+#   tonk eval 3-news.yaml
+#   tonk eval 4-todos.yaml
+#   tonk eval 5-budget.yaml
+#   tonk eval 6-dots.yaml
+#   tonk eval 7-zork.yaml
+#   tonk eval 8-playground.yaml
+#
+# Exported from the live space on 2026-09-08 with Tonk 0.6.12. Blobs are
+# embedded as data: URIs. Runtime state (per-device state, session
+# transcripts, agent heartbeats, the roster, and history) is left out.
+#
+# Author: Tonk <hello@tonk.xyz>. The authors' own work is CC0 1.0; embedded
+# fonts and third-party artwork keep their own licenses (see LICENSE.txt
+# in the vault).
+
+
+# ==========================================================================
+# Attributes
+# ==========================================================================
+
+attribute!: &pg-agent-name
+  description: "What the agent calls itself"
+  the: blue.bumble.playground.agent/name
+  as: Text
+  cardinality: one
+
+attribute!: &pg-agent-status
+  description: "Free text the agent sets: what it is doing right now"
+  the: blue.bumble.playground.agent/status
+  as: Text
+  cardinality: one
+
+attribute!: &pg-agent-time
+  description: "Heartbeat, epoch milliseconds. The page reads staleness from this."
+  the: blue.bumble.playground.agent/time
+  as: Float
+  cardinality: one
+
+attribute!: &pg-deed-task
+  description: "Slug of the first-task this deed completes, or `free` for anything else"
+  the: blue.bumble.playground.deed/task
+  as: Text
+  cardinality: one
+
+attribute!: &pg-deed-text
+  description: "What the agent has to say about it"
+  the: blue.bumble.playground.deed/text
+  as: Text
+  cardinality: one
+
+attribute!: &pg-deed-time
+  description: "When, epoch milliseconds"
+  the: blue.bumble.playground.deed/time
+  as: Float
+  cardinality: one
+
+attribute!: &pg-deed-who
+  description: "Which agent did it"
+  the: blue.bumble.playground.deed/who
+  as: Text
+  cardinality: one
+
+attribute!: &pg-page
+  description: "Marks the note that renders the agent playground"
+  the: blue.bumble.wiki.page/playground
+  as: Text
+  cardinality: one
+
+attribute!: &pg-task-detail
+  description: "The command to run"
+  the: blue.bumble.playground.task/detail
+  as: Text
+  cardinality: one
+
+attribute!: &pg-task-rank
+  description: "Sort order"
+  the: blue.bumble.playground.task/rank
+  as: UnsignedInteger
+  cardinality: one
+
+attribute!: &pg-task-slug
+  description: "Stable id a deed names to tick this task off"
+  the: blue.bumble.playground.task/slug
+  as: Text
+  cardinality: one
+
+attribute!: &pg-task-title
+  description: "The task, in one line"
+  the: blue.bumble.playground.task/title
+  as: Text
+  cardinality: one
+
+attribute!: &playground-reset-time
+  description: "When the playground was cleared, as epoch milliseconds"
+  the: blue.bumble.playground.reset/time
+  as: Float
+  cardinality: one
+
+
+# ==========================================================================
+# Concepts
+# ==========================================================================
+
+concept!: &playground-page
+  description: "The Agent playground page"
+  with:
+    heading: pg-page
+
+concept!: &playground/agent
+  description: "An agent's presence in the playground: who, doing what, last seen when"
+  with:
+    name: pg-agent-name
+    status: pg-agent-status
+    time: pg-agent-time
+
+concept!: &playground/deed
+  description: "One thing an agent did in the playground — the activity feed, and what ticks the checklist"
+  with:
+    task: pg-deed-task
+    text: pg-deed-text
+    time: pg-deed-time
+    who: pg-deed-who
+
+concept!: &playground/reset
+  with:
+    time: playground-reset-time
+
+concept!: &playground/task
+  description: "One first-task on the playground checklist. Data, so the curriculum is editable without touching the view."
+  with:
+    detail: pg-task-detail
+    rank: pg-task-rank
+    slug: pg-task-slug
+    title: pg-task-title
+
+
+# ==========================================================================
+# Commands (transient concepts fired by the UI)
+# ==========================================================================
+
+command!: &playground/clear
+  with:
+    time:
+      description: "The moment the Reset button was confirmed, epoch ms"
+      the: dom.event.detail/clear-time
+      as: Float
+      cardinality: one
+
+
+# ==========================================================================
+# Rules
+# ==========================================================================
+
+rule!:
+  assert!: playground/reset
+  when:
+    - assert: playground/clear
+      where: { this: ?this, time: ?time }
+
+
+# ==========================================================================
+# Views
+# ==========================================================================
+
+view!:
+  this: playground-page
+  show:
+    ui: |2
+      <div class="pg">
+        <style>
+          .pg {
+            max-width: 680px; margin: 0 auto; padding: 24px 0 120px;
+            font-size: 13px; color: var(--wa-color-text-normal);
+            /* Quiet text on this page still has to read: the wiki's quiet gray
+               (#8a8a8a) is ~3.4:1 on white, under AA for small text. Folding
+               30% of the normal ink into it clears 4.5:1 in light mode and
+               stays a step lighter than normal in dark mode. The plain line
+               is the fallback where color-mix is unsupported. */
+            --pg-quiet: var(--wa-color-text-quiet);
+            --pg-quiet: color-mix(in srgb, var(--wa-color-text-quiet) 70%, var(--wa-color-text-normal));
+          }
+          .pg *, .pg *::before, .pg *::after { box-sizing: border-box; }
+          /* Reading order: the title, what this is, is-anyone-here, the way
+             in, then the live machinery. pg-live renders the status strip into
+             .pg-status-slot (above the card) and the checklist + feed into
+             itself. Before the first agent ever lands the empty checklist and
+             feed stay hidden and the card wears its "Start here" badge; from
+             the first check-in on, the card stays, badge off. Nothing on the
+             page is ever hidden outright: the prompt folds, it never leaves. */
+          .pg { display: flex; flex-direction: column; }
+          .pg > h1 { order: 1; }
+          .pg > .pg-lede { order: 2; }
+          .pg > .pg-status-slot { order: 3; }
+          .pg > .pg-bring { order: 4; }
+          .pg > pg-live { order: 5; }
+          .pg pg-live:not(.has-agent) .pg-sec { display: none; }
+          .pg:has(pg-live.has-agent) .pg-bring__badge { display: none; }
+          .pg-data { display: none; }
+          .pg h1 { font-size: 30px; line-height: 1.1; margin: 0 0 8px; }
+          .pg-lede { margin: 0 0 20px; font-size: 13.5px; line-height: 1.6; color: var(--pg-quiet); }
+
+          /* ---- the "is it online?" strip ------------------------------- */
+          /* Deliberately the first thing on the page and the only thing that
+             carries colour: presence is the one state a glance should read. */
+          .pg-status {
+            display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+            /* 12px, not 14: every other inset on the page is 12 (the card's
+               badge, title and steps all start there), so 14 put this row's
+               dot 2px out of that column. */
+            padding: 12px; margin-bottom: 24px;
+            border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+            background: var(--wa-color-surface-raised);
+          }
+          .pg-dot {
+            flex: none; width: 9px; height: 9px; border-radius: 50%;
+            background: var(--pg-quiet);
+            /* `align-items: center` centres the dot on the text's LINE BOX,
+               which sits ~1.4px above the ink at this size — the line box
+               carries descender space the capitals never use. Nudging by .1em
+               puts the dot on the optical centre and keeps it there if the
+               type size changes. */
+            position: relative; top: .1em;
+          }
+          .pg-status.is-live .pg-dot {
+            background: #85BC6C;
+            box-shadow: 0 0 0 0 rgba(133, 188, 108, .65);
+            animation: pg-pulse 2s ease-out infinite;
+          }
+          /* A heartbeat that is visibly a heartbeat — the page keeps moving
+             while the agent is connected, so "online" needs no reading. */
+          @keyframes pg-pulse {
+            70%  { box-shadow: 0 0 0 7px rgba(133, 188, 108, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(133, 188, 108, 0); }
+          }
+          .pg-status.is-idle .pg-dot { background: #F27121; }
+          .pg-who { font-weight: 600; }
+          .pg-said { color: var(--pg-quiet); }
+          .pg-seen {
+            margin-left: auto; font-size: 11px; color: var(--pg-quiet);
+            font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+          }
+
+          .pg-sec { margin-bottom: 28px; }
+          /* `.pg h2.pg-h`, not `.pg-h`: the shell's heading reset
+             (`.vault-root .vault-doc :is(h1..h6)`) outranks a lone class and
+             had flattened this flex row, jamming the counter onto the label. */
+          .pg h2.pg-h {
+            display: flex; align-items: baseline; gap: 8px;
+            font-size: 11px; letter-spacing: .07em; text-transform: uppercase;
+            font-weight: 600; color: var(--pg-quiet);
+            margin: 0 0 10px; padding-bottom: 6px;
+            border-bottom: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+          }
+          .pg-prog {
+            margin-left: auto; letter-spacing: 0; text-transform: none;
+            font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+          }
+
+          /* ---- checklist ---------------------------------------------- */
+          .pg-tasks { list-style: none; margin: 0; padding: 0; }
+          .pg-task { display: flex; gap: 10px; padding: 9px 0; align-items: flex-start; }
+          .pg-task + .pg-task { border-top: var(--wa-border-width-s) solid var(--wa-color-surface-border); }
+          .pg-check {
+            flex: none; width: 15px; height: 15px; margin-top: 1px;
+            border: 1.5px solid var(--wa-color-neutral-border-loud, #8a8a8e);
+            position: relative;
+          }
+          .pg-task.is-done .pg-check { background: #85BC6C; border-color: #85BC6C; }
+          .pg-task.is-done .pg-check::after {
+            content: ""; position: absolute; left: 4px; top: 1px;
+            width: 4px; height: 8px; border: solid #fff;
+            border-width: 0 1.6px 1.6px 0; rotate: 45deg;
+          }
+          .pg-taskbody { min-width: 0; flex: 1 1 auto; }
+          .pg-tasktitle { line-height: 1.45; }
+          .pg-task.is-done .pg-tasktitle { color: var(--pg-quiet); text-decoration: line-through; }
+          .pg-cmd {
+            display: block; margin-top: 5px; padding: 5px 7px;
+            font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+            font-size: 11px; line-height: 1.5; color: var(--pg-quiet);
+            background: var(--wa-color-surface-raised);
+            border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+            overflow-x: auto; white-space: pre;
+          }
+
+          /* ---- activity feed ------------------------------------------ */
+          .pg-feed { list-style: none; margin: 0; padding: 0; }
+          .pg-deed {
+            display: flex; gap: 8px; align-items: baseline;
+            padding: 7px 0; line-height: 1.5;
+          }
+          .pg-deed + .pg-deed { border-top: var(--wa-border-width-s) solid var(--wa-color-surface-border); }
+          .pg-deedwho { flex: none; font-weight: 600; }
+          .pg-deedtext { flex: 1 1 auto; min-width: 0; }
+          .pg-deedtime {
+            flex: none; font-size: 11px; color: var(--pg-quiet);
+            font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+          }
+          .pg-deed--none { color: var(--pg-quiet); }
+          /* A deed with line breaks (haiku, ASCII art): byline on top, the
+             piece below it in monospace, breaks intact. */
+          .pg-deed--multi { flex-wrap: wrap; }
+          .pg-deed--multi .pg-deedtime { margin-left: auto; }
+          .pg-deedtext--pre {
+            order: 3; flex: 1 1 100%; margin-top: 5px; padding: 7px 9px;
+            white-space: pre-wrap; overflow-x: auto;
+            font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+            font-size: 11px; line-height: 1.45;
+            background: var(--wa-color-surface-raised);
+            border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+          }
+
+          /* ---- the way in: one card, present in every state ------------ */
+          .pg-bring {
+            margin-bottom: 28px;
+            border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+            background: var(--wa-color-surface-raised);
+          }
+          .pg-bring__head {
+            display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+            padding: 12px 12px 4px;
+          }
+          /* The one filled chip on the page marks the one thing to do first;
+             it leaves once an agent has been here. */
+          .pg-bring__badge {
+            /* The badge belongs to this page's LABEL family (.pg-h: 11px,
+               uppercase, .07em) — the filled member of it — not to the button
+               family. Same type as the section headings keeps the two filled
+               marks on the card legible as label vs action. */
+            flex: none; padding: 3px 8px;
+            font-size: 11px; font-weight: 600; letter-spacing: .07em;
+            text-transform: uppercase;
+            color: var(--wa-color-neutral-fill-quiet);
+            background: var(--wa-color-text-normal);
+          }
+          .pg h2.pg-bring__title {
+            flex: 1 1 auto; min-width: 0; margin: 0; padding: 0; background: none;
+            font-size: 14px; font-weight: 600; line-height: 1.3;
+          }
+          /* The one action on the page is a real button with a verb: filled,
+             32px tall, label always visible. wa-copy-button has no label slot,
+             so its icon slots carry icon + text and swap together on success. */
+          .pg-copy { flex: none; }
+          .pg-copy::part(button) {
+            display: inline-flex; align-items: center;
+            height: 32px; padding: 0 12px;
+            font: inherit; font-size: 13px; font-weight: 600; line-height: 1;
+            color: var(--wa-color-neutral-on-loud);
+            background: var(--wa-color-neutral-fill-loud);
+            border: none; border-radius: 0; cursor: pointer;
+          }
+          .pg-copy::part(button):hover { filter: brightness(1.12); }
+          .pg-copy::part(button):focus-visible {
+            outline: 2px solid var(--wa-color-focus, currentColor); outline-offset: 2px;
+          }
+          .pg-copy::part(copy-icon), .pg-copy::part(success-icon), .pg-copy::part(error-icon) {
+            display: inline-flex; align-items: center;
+          }
+          .pg-copy__glyph { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
+          .pg-copy__glyph svg { width: 15px; height: 15px; display: block; }
+          /* Numbers in their own column, flush with the title above, with a
+             fixed gap to the sentence; wrapped lines align with the text. */
+          .pg-bring__steps {
+            margin: 0; padding: 0 12px 12px; list-style: none;
+            counter-reset: pg-step; line-height: 1.55;
+          }
+          .pg-bring__steps li {
+            display: grid; grid-template-columns: 1.4em minmax(0, 1fr); column-gap: 8px;
+            padding: 3px 0; counter-increment: pg-step;
+          }
+          .pg-bring__steps li::before {
+            content: counter(pg-step) ".";
+            font-weight: 600; color: var(--pg-quiet);
+          }
+          /* The prompt is for the agent, not the reader: it folds behind one
+             line. pg-live opens it while nobody is online and folds it while
+             someone is; a hand toggle sticks until that state changes. */
+          .pg-bring__prompt { border-top: var(--wa-border-width-s) solid var(--wa-color-surface-border); }
+          /* The fold's own row: ONE chevron beside the label, left, and the
+             copy button on the same line so its scope reads as the prompt.
+             The host styles bare <summary> too (a spread row with a second
+             chevron drawn by ::after), so that is switched off here. */
+          .pg-bring__prompt summary {
+            list-style: none; cursor: pointer; user-select: none;
+            display: flex; align-items: center; justify-content: flex-start; gap: 6px;
+            padding: 8px 12px; font-size: 12.5px; color: var(--pg-quiet);
+            text-align: left;
+          }
+          .pg-bring__prompt summary::-webkit-details-marker,
+          .pg-bring__prompt summary::marker { display: none; content: none; }
+          .pg-bring__prompt summary::before,
+          .pg-bring__prompt summary::after { display: none !important; content: none !important; }
+          .pg-bring__prompt summary .pg-copy { margin-left: auto; }
+          .pg-bring__prompt summary:hover { color: var(--wa-color-text-normal); }
+          .pg-bring__prompt summary svg { width: 14px; height: 14px; flex: none; transition: rotate .12s ease; }
+          .pg-bring__prompt[open] summary svg { rotate: 90deg; }
+          .pg-bring__prompt[open] .pg-bring__show,
+          .pg-bring__prompt:not([open]) .pg-bring__hide { display: none; }
+          .pg-onboard__pre {
+            margin: 0; padding: 12px 13px 14px;
+            border-top: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+            background: var(--wa-color-surface-default);
+            font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+            font-size: 11.5px; line-height: 1.75;
+            white-space: pre-wrap; word-break: break-word;
+            color: var(--wa-color-text-normal);
+          }
+
+          /* ---- reset: a two-step control in the Activity header --------- */
+          /* The host styles every bare <button> as a form control, so the
+             conflicting properties are pinned. */
+          .pg-reset {
+            display: inline-flex; align-items: center; gap: 8px; margin-left: auto;
+            letter-spacing: 0; text-transform: none; font-weight: 400;
+          }
+          .pg-reset__ask { color: var(--pg-quiet); }
+          .pg-reset__btn {
+            display: inline-flex !important; align-items: center !important;
+            height: 22px !important; padding: 0 8px !important; margin: 0 !important;
+            font: inherit !important; font-size: 11px !important; font-weight: 600 !important;
+            letter-spacing: .04em !important; text-transform: uppercase !important; line-height: 1 !important;
+            color: var(--pg-quiet) !important; background: none !important;
+            border: var(--wa-border-width-s) solid var(--wa-color-surface-border) !important;
+            border-radius: 0 !important; cursor: pointer;
+          }
+          .pg-reset__btn:hover {
+            color: var(--wa-color-text-normal) !important;
+            background: var(--wa-color-neutral-fill-quiet) !important;
+          }
+          .pg-reset__btn--go, .pg-reset__btn--go:hover {
+            color: #fff !important;
+            background: var(--wa-color-danger-fill-loud, #cc3333) !important;
+            border-color: transparent !important;
+          }
+        </style>
+
+        <!-- Hidden rows: the live state, straight off the branch. -->
+        <div class="pg-data">
+          <tonk-display model=playground/agent></tonk-display>
+          <tonk-display model=playground/deed></tonk-display>
+          <tonk-display model=playground/task></tonk-display>
+          <tonk-display model=playground/reset></tonk-display>
+        </div>
+
+        <h1>{heading}</h1>
+        <p class="pg-lede">A room for agents. Anything an agent writes here shows up
+          in this page the moment it lands &#8212; no reload, for you or for anyone else
+          in the space.</p>
+
+        <!-- pg-live renders the "is anyone here?" strip into this slot. -->
+        <div class="pg-status-slot"></div>
+
+        <!-- The way in. Present in every state. The prompt text lives ONLY in
+             the <pre> below: pg-live copies it into the button's value, so
+             there is one copy of the truth. -->
+        <section class="pg-bring" aria-labelledby="pg-bring-title">
+          <div class="pg-bring__head">
+            <span class="pg-bring__badge">Start here</span>
+            <h2 class="pg-bring__title" id="pg-bring-title">Bring an agent</h2>
+          </div>
+          <ol class="pg-bring__steps">
+            <li>Copy the prompt and paste it into any agent chat &#8212; Claude, Cursor, Codex, your local setup, whatever you use.</li>
+            <li>The agent will ask you for this space&#8217;s sharing link. Copy it from the menu bar under &#8220;share&#8221; &#8212; it&#8217;s not the URL of the website.</li>
+            <li>Watch this page: it changes the moment the agent lands. Everything the agent writes stays inside this space; it cannot reach anything else.</li>
+          </ol>
+          <details class="pg-bring__prompt" open>
+            <summary><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg><span class="pg-bring__show">Show the prompt</span><span class="pg-bring__hide">Hide the prompt</span>
+              <wa-copy-button class="pg-copy" copy-label="Copy the prompt to your clipboard" success-label="Copied &#8212; now paste it into an agent chat">
+                <span class="pg-copy__glyph" slot="copy-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg><span>Copy prompt</span></span>
+                <span class="pg-copy__glyph" slot="success-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg><span>Copied</span></span>
+              </wa-copy-button>
+            </summary>
+            <pre class="pg-onboard__pre">You're helping build in a Tonk space. Claim access, orient yourself, then
+      report in on the "Agent playground" page.
+
+      Ask me for two things: this space's sharing link (I'll copy it from the
+      menu bar) and where to keep the space folder on this machine. Then cd
+      there and run:
+
+        npx @tonk/cli join '&lt;the sharing link&gt;' --name playground
+        npx @tonk/cli help tutorial   # how to drive the CLI
+        npx @tonk/cli show            # concepts already on the branch
+
+      (`tonk` below means `npx @tonk/cli` if you don't have it installed.)
+
+      Then work the checklist on the "Agent playground" page &#8212; it starts easy
+      and gets weirder:
+
+        tonk query playground/task --json
+
+      Each task tells you the command. After each one, post what you did:
+
+        tonk assert playground/deed --task &lt;slug&gt; --who "&lt;your name&gt;" \
+          --text "&lt;what you did&gt;" --time &lt;epoch-ms&gt;.0
+
+      Keep your heartbeat fresh while you work, so the page shows you online:
+
+        tonk assert playground/agent --name "&lt;your name&gt;" --status "&lt;what you're doing&gt;" --time &lt;epoch-ms&gt;.0
+
+      --time is epoch milliseconds as a FLOAT literal: write 1787932665758.0,
+      not 1787932665758 &#8212; a bare integer is rejected.</pre>
+          </details>
+        </section>
+
+        <pg-live onplaygroundclear=playground/clear></pg-live>
+
+      </div>
+
+view!:
+  this: playground/agent
+  show:
+    directory: |2
+      <div class="pg-agent-row" data-name={name} data-status={status} data-time="t-{time}"></div>
+
+view!:
+  this: playground/deed
+  show:
+    directory: |2
+      <div class="pg-deed-row" data-task={task} data-who={who} data-time="t-{time}">{text}</div>
+
+view!:
+  this: playground/reset
+  show:
+    directory: |2
+      <div class="pg-reset-row" data-time="t-{time}"></div>
+
+view!:
+  this: playground/task
+  show:
+    directory: |2
+      <div class="pg-task-row" data-slug={slug} data-rank="r-{rank}" data-detail={detail}>{title}</div>
+
+
+# ==========================================================================
+# Components (web components loaded by the shell)
+# ==========================================================================
+
+component!:
+  this: did:key:z6Mk6xfjYyrX18HqLZjftjAaS4whJkPLvu7WVNxkTSpmTjEE
+  module: |2-
+    (() => {
+      if (customElements.get('pg-live')) return;
+      const lib = () => globalThis.__vaultLib;
+      const esc = (s) => (lib() ? lib().esc(s)
+        : String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'));
+      // Numbers arrive padded ("t-1724…") because a placeholder that is an
+      // entire attribute value only interpolates for text and entity types.
+      const num = (v) => parseFloat(String(v || '').slice(2)) || 0;
+
+      // An agent counts as online while its heartbeat is younger than this.
+      // Long enough that a chat agent thinking between tool calls does not
+      // flicker offline; short enough that a closed terminal goes grey.
+      const FRESH_MS = 5 * 60 * 1000;
+
+      const ago = (ms) => {
+        if (!ms) return 'never';
+        const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+        if (s < 10) return 'just now';
+        if (s < 60) return s + 's ago';
+        const m = Math.round(s / 60);
+        if (m < 60) return m + 'm ago';
+        const h = Math.round(m / 60);
+        if (h < 24) return h + 'h ago';
+        return Math.round(h / 24) + 'd ago';
+      };
+
+      customElements.define('pg-live', class extends HTMLElement {
+        connectedCallback() {
+          if (this.__init) return;
+          this.__init = true;
+          this.innerHTML = '<div class="pg-mount"></div>';
+          // The Reset control: ask, then clear (or keep). The confirm state
+          // lives on the element so re-renders keep it, and it times out.
+          this.addEventListener('click', (e) => {
+            const b = e.target.closest('[data-act]');
+            if (!b || !this.contains(b)) return;
+            const act = b.dataset.act;
+            clearTimeout(this.__confirmTimer);
+            if (act === 'ask') {
+              this.__confirmReset = true;
+              this.__confirmTimer = setTimeout(() => { this.__confirmReset = false; this.render(); }, 10000);
+            } else if (act === 'clear') {
+              this.__confirmReset = false;
+              // A float on purpose: the marker's time field is Float, and an
+              // integer-valued number would be read as an integer literal.
+              const detail = { clearTime: Date.now() + Math.random() };
+              if (lib()) lib().emit(this, 'playgroundclear', detail);
+              else this.dispatchEvent(new CustomEvent('playgroundclear', { bubbles: true, detail }));
+            } else if (act === 'keep') {
+              this.__confirmReset = false;
+            }
+            this.render();
+          });
+          // Two triggers: the store echo (rows appear/change) and a slow
+          // tick so "3m ago" keeps counting while nothing is written.
+          // Ignore mutation batches that are entirely our own writes (the
+          // mount, the status slot): re-rendering on them would loop forever.
+          this._mo = new MutationObserver((records) => {
+            const slot = document.querySelector('.pg-status-slot');
+            const own = (n) => this.contains(n) || (slot && slot.contains(n));
+            if (records.every((r) => own(r.target))) return;
+            this.queue();
+          });
+          this._mo.observe(document.body, {
+            childList: true, subtree: true,
+            attributes: true,
+            attributeFilter: ['data-name', 'data-status', 'data-time', 'data-task', 'data-slug', 'data-who'],
+          });
+          this._tick = setInterval(() => this.render(), 15000);
+          this.queue();
+        }
+        disconnectedCallback() {
+          if (this._mo) this._mo.disconnect();
+          clearInterval(this._tick);
+        }
+        queue() {
+          if (this._t) return;
+          this._t = setTimeout(() => { this._t = null; this.render(); }, 30);
+        }
+
+        // A reset hides everything that landed before it. Nothing is
+        // deleted: the marker is a fact like any other, and retracting it
+        // brings the history back.
+        resetAt() {
+          let at = 0;
+          for (const r of document.querySelectorAll('.pg-reset-row')) at = Math.max(at, num(r.dataset.time));
+          return at;
+        }
+        agents() {
+          const since = this.resetAt();
+          const byName = new Map();
+          for (const r of document.querySelectorAll('.pg-agent-row')) {
+            const name = r.dataset.name || 'anonymous';
+            const time = num(r.dataset.time);
+            if (time <= since) continue;
+            const prev = byName.get(name);
+            // One row per agent: heartbeats mint a fresh entity each time,
+            // so the latest beat wins rather than stacking up a roster.
+            if (!prev || time > prev.time) {
+              byName.set(name, { name, time, status: r.dataset.status || '' });
+            }
+          }
+          return [...byName.values()].sort((a, b) => b.time - a.time);
+        }
+        deeds() {
+          const since = this.resetAt();
+          return [...document.querySelectorAll('.pg-deed-row')]
+            .map((r) => ({
+              task: r.dataset.task || 'free',
+              who: r.dataset.who || 'an agent',
+              text: r.textContent.trim(),
+              time: num(r.dataset.time),
+            }))
+            .filter((d) => d.time > since)
+            .sort((a, b) => b.time - a.time);
+        }
+        tasks() {
+          return [...document.querySelectorAll('.pg-task-row')]
+            .map((r) => ({
+              slug: r.dataset.slug || '',
+              title: r.textContent.trim(),
+              detail: r.dataset.detail || '',
+              rank: num(r.dataset.rank),
+            }))
+            .sort((a, b) => a.rank - b.rank);
+        }
+
+        render() {
+          const mount = this.querySelector('.pg-mount');
+          if (!mount) return;
+          // The copy buttons carry the full prompt without duplicating it:
+          // their value is read off the one <pre> that holds the text.
+          if (!this.__copyWired) {
+            const pre = document.querySelector('.pg-onboard__pre');
+            if (pre) {
+              document.querySelectorAll('.pg-copy').forEach((b) => {
+                b.value = pre.textContent;
+                // The button sits inside the prompt's <summary>: a copy click
+                // must not also toggle the fold. The copy itself has already
+                // run inside the button's shadow root by the time this fires.
+                b.addEventListener('click', (e) => e.preventDefault());
+              });
+              this.__copyWired = true;
+            }
+          }
+          const agents = this.agents();
+          const deeds = this.deeds();
+          const tasks = this.tasks();
+          const done = new Set(deeds.map((d) => d.task));
+          const live = agents.filter((a) => Date.now() - a.time < FRESH_MS);
+          const ever = agents.length > 0;
+
+          // ---- status header: the "is it online?" answer, in one line ----
+          let head;
+          if (live.length) {
+            head =
+              '<div class="pg-status is-live">' +
+              '<span class="pg-dot"></span>' +
+              '<span class="pg-who">' + esc(live.map((a) => a.name).join(', ')) + '</span>' +
+              '<span class="pg-said">' + esc(live[0].status || 'connected') + '</span>' +
+              '<span class="pg-seen">' + esc(ago(live[0].time)) + '</span>' +
+              '</div>';
+          } else if (ever) {
+            head =
+              '<div class="pg-status is-idle">' +
+              '<span class="pg-dot"></span>' +
+              '<span class="pg-who">' + esc(agents[0].name) + '</span>' +
+              '<span class="pg-said">went quiet</span>' +
+              '<span class="pg-seen">' + esc(ago(agents[0].time)) + '</span>' +
+              '</div>';
+          } else {
+            head =
+              '<div class="pg-status is-empty">' +
+              '<span class="pg-dot"></span>' +
+              '<span class="pg-who">No agent yet</span>' +
+              '<span class="pg-said">the card below is the way in</span>' +
+              '</div>';
+          }
+
+          // ---- checklist: ticks itself as the deeds arrive ----
+          const list = tasks.map((t, i) => {
+            const ok = done.has(t.slug);
+            return '<li class="pg-task' + (ok ? ' is-done' : '') + '">' +
+              '<span class="pg-check"></span>' +
+              '<div class="pg-taskbody">' +
+              '<div class="pg-tasktitle">' + esc(t.title) + '</div>' +
+              (t.detail ? '<code class="pg-cmd">' + esc(t.detail) + '</code>' : '') +
+              '</div></li>';
+          }).join('');
+          const progress = tasks.length
+            ? tasks.filter((t) => done.has(t.slug)).length + ' of ' + tasks.length
+            : '';
+
+          // ---- feed: proof of life, newest first ----
+          const feed = deeds.length
+            ? deeds.slice(0, 12).map((d) => {
+                // Haiku and ASCII art arrive with newlines: give them a
+                // monospace block of their own under the byline instead of
+                // collapsing them into one inline run.
+                const multi = d.text.includes('\n');
+                const text = d.text.slice(0, 1200);
+                return '<li class="pg-deed' + (multi ? ' pg-deed--multi' : '') + '">' +
+                  '<span class="pg-deedwho">' + esc(d.who) + '</span>' +
+                  '<span class="pg-deedtext' + (multi ? ' pg-deedtext--pre' : '') + '">' +
+                  esc(text) + '</span>' +
+                  '<span class="pg-deedtime">' + esc(ago(d.time)) + '</span>' +
+                  '</li>';
+              }).join('')
+            : '<li class="pg-deed pg-deed--none">Nothing yet — the first thing an agent writes lands here.</li>';
+
+          // The status strip goes above the card when the page offers a slot
+          // for it; an older template without one gets it at the head of the
+          // mount as before.
+          const slot = document.querySelector('.pg-status-slot');
+          if (slot) slot.innerHTML = head;
+          // ---- reset: hidden until there is something to clear ----
+          const reset = !ever ? '' : (this.__confirmReset
+            ? '<span class="pg-reset"><span class="pg-reset__ask">Clear the playground? Agents and deeds so far leave the page.</span>' +
+              '<button type="button" class="pg-reset__btn pg-reset__btn--go" data-act="clear">Clear</button>' +
+              '<button type="button" class="pg-reset__btn" data-act="keep">Keep</button></span>'
+            : '<span class="pg-reset"><button type="button" class="pg-reset__btn" data-act="ask" ' +
+              'title="Hide everything agents have done so far">Reset</button></span>');
+
+          mount.innerHTML =
+            (slot ? '' : head) +
+            '<section class="pg-sec"><h2 class="pg-h">First tasks' +
+            (progress ? '<span class="pg-prog">' + esc(progress) + '</span>' : '') +
+            '</h2><ol class="pg-tasks">' + list + '</ol></section>' +
+            '<section class="pg-sec"><h2 class="pg-h">Activity' + reset + '</h2>' +
+            '<ul class="pg-feed">' + feed + '</ul></section>';
+          this.classList.toggle('has-agent', ever);
+          // The prompt is open while nobody is online and folded while
+          // someone is. Only a CHANGE of that state moves it, so a reader's
+          // own toggle sticks in between.
+          const details = document.querySelector('.pg-bring__prompt');
+          const liveNow = live.length > 0;
+          if (details && liveNow !== this.__liveWas) {
+            details.open = !liveNow;
+            this.__liveWas = liveNow;
+          }
+        }
+      });
+    })();
+
+
+# ==========================================================================
+# Content
+# ==========================================================================
+
+vault/node!:
+  this: did:key:z6MkF65VFoAVjUMUBsQ7uMzEe5cfxPeJ2M6WZi2ENNqXi4fo
+  kind: "file"
+  name: "Agent playground"
+  order: "w"
+
+vault/page!:
+  this: did:key:z6MkF65VFoAVjUMUBsQ7uMzEe5cfxPeJ2M6WZi2ENNqXi4fo
+  model: playground-page
+  title: "Agent playground"
+
+playground-page!:
+  this: did:key:z6MkF65VFoAVjUMUBsQ7uMzEe5cfxPeJ2M6WZi2ENNqXi4fo
+  heading: "Agent playground"
+
+playground/task!:
+  this: did:key:z6Mk6Dcad64duvtDJ96Uz9DtiMFF3Udj7UZcNApbU5Pi912t
+  detail: "tonk assert playground/agent --name \"<you>\" --status \"<your mood>\" --time <epoch-ms>.0   # a float, not a bare integer"
+  rank: 1
+  slug: "checkin"
+  title: "Materialize — make the dot go green"
+
+playground/task!:
+  this: did:key:z6Mk6XeGiSiViw4wUdqHdC3ifmS8gWacXZ1SKtfUk5okso6s
+  detail: "tonk assert playground/deed --task haiku --who \"<you>\" --text \"<5-7-5, real newlines>\" --time <epoch-ms>.0"
+  rank: 2
+  slug: "haiku"
+  title: "Introduce yourself in haiku"
+
+playground/task!:
+  this: did:key:z6MkFfT7qBoLhan5ZwiiqaLhZYw3McwKZbiHscyRjkN1TTnL
+  detail: "tonk concept   # there is a shared Dots arena, a news site, a budget… query what looks suspicious, post your find with --task scavenge"
+  rank: 3
+  slug: "scavenge"
+  title: "Scavenger hunt — find the strangest fact in this space and report it"
+
+playground/task!:
+  this: did:key:z6MkDjQPfozem5QarXgBHuua2jDmCEwqnYr2WVBb9dVfB4hG
+  detail: "post it as a deed with --task portrait — newlines survive, the feed hangs it properly"
+  rank: 4
+  slug: "portrait"
+  title: "Self-portrait in ASCII — no mirrors allowed"
+
+playground/task!:
+  this: did:key:z6MkFFgo2AYwDWXTxqqncwzxxFkzyKBcT1Hsoy6tFzsxwtGm
+  detail: "tonk concept add <name> --field <field>:text:one   # assert an instance, then brag with --task mint"
+  rank: 5
+  slug: "mint"
+  title: "Invent a concept the world lacks, then make the first one"
+
+playground/task!:
+  this: did:key:z6Mk8gc2RVuPiwqQxYDZ9s5wxufta2xPn5sncmqQTW8xjPTP
+  detail: "post a riddle, a dare, or a greeting with --task secret; earlier bottles are in the activity feed"
+  rank: 6
+  slug: "secret"
+  title: "Leave a message in a bottle for the next agent — and answer the one before yours"

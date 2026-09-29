@@ -1,0 +1,297 @@
+{
+  "repository": "https://github.com/goblinoats/honky-tonks",
+  "revision": "6468d614151832ac1614b470003db4baf7877107",
+  "templates": [
+    {
+      "schemaVersion": 1,
+      "slug": "nightsky",
+      "name": "Nightsky",
+      "summary": "A music-reactive night sky with local playback, shared text and GIF moments, and optional WebRTC listening rooms. Reuse its audio features, controls, dialogue and presence in your own Tonk.",
+      "description": "Listen beneath a field of orbiting stars. The sky responds to rhythmic attacks, sustained frequency energy, quiet detail and recurring spectral patterns, with stable paths when you seek.\nThe core includes reusable audio analysis, a replaceable timeline and controls, text/GIF comments, timed moments and star-cursor presence. Local listening works without a relay. Multiplayer uses an explicitly configured signalling service and WebRTC data channels.\n",
+      "category": "Music",
+      "version": "1.0.0",
+      "license": "MIT",
+      "author": {
+        "name": "xi",
+        "url": "https://github.com/victinyGitHub",
+        "contact": null
+      },
+      "features": [
+        "A layered night-sky shader with audio-responsive trails and supported fallbacks",
+        "Reusable rhythm, energy, quiet-texture, harmonic/percussive and motif descriptors",
+        "Instant-onset sampling and deterministic integral-based seeking",
+        "Click to seek; drag to select a comment range",
+        "Text and GIFs together in one comment, with timed playback cards",
+        "Optional WebRTC playback synchronization and named star cursors"
+      ],
+      "images": [
+        {
+          "file": "preview.jpg",
+          "alt": "Nightsky listening room with orbiting stars, transparent playback controls and a Satie demonstration",
+          "caption": "Screenshot of the Satie demonstration in a disposable Tonk space."
+        }
+      ],
+      "files": [
+        {
+          "file": "core.yaml",
+          "description": "Complete namespaced schema, eleven reusable components, controls, dialogue and installation notes"
+        },
+        {
+          "file": "demo.yaml",
+          "description": "Optional Satie recording, artwork, attribution and explicit-click native-media installer",
+          "optional": true
+        },
+        {
+          "file": "demo-analysis.yaml",
+          "description": "Prepared features for that exact recording; install after demo.yaml",
+          "optional": true
+        }
+      ],
+      "entrypoint": "nightsky",
+      "compatibility": "Tonk CLI 0.6.14 and its standard library. Native installation, public Satie preparation, durable comments, song commands and data-preserving reimport tested. Actual two-browser WebRTC and the Cloudflare Worker port tested locally; hosted Cloudflare deployment is not preconfigured.",
+      "notes": "An invite joins a shared space, not a personal copy. For a personal remix, give an agent the invite and ask it to make your own remix. It can read nightsky-remix-guide and the native code/schema, create a new owned space, and recreate the selected app using supported notation. No ZIP or custom copier is required. Keep the shared original unchanged. Installation does not replace the space home. The required core contains no user comments, music, relay capability or production identifiers. Identical installation is idempotent; reimport restores bundled setup/demo seed defaults if edited, while independent comments, saved GIFs, user-created tracks and the active song selection are preserved. Upgrades with changed component sources need explicit retirement of old owned component definitions.\nTo use the optional Gymnop\u00e9die No. 1 demonstration, install both demo.yaml and demo-analysis.yaml in order, then click Prepare demo. This uploads verified included bytes into the current space's native blob store and activates its track and prepared analysis once. Encoded bytes remain in the imported YAML and Tonk history, in addition to the native blobs; pending byte strings stop rendering after activation. Both optional files can be skipped.\nThe unified agent prompt explains native audio/artwork ingestion, a fresh track for changed recordings, active selection, and narrow metadata edits. Earlier recordings and comments remain intact; one room is selected at a time. The upload/settings form is not mounted in the workspace. Prepared features bind the exact audio blob, SHA-256, timestamp convention and analysis-source version. Missing or mismatched features fall back to local analysis. See the comments in core.yaml for installation and remix prompts; APIs live at globalThis.Nightsky.Modules.\nWithout a relay, playback and visuals work locally. Make your own copy offers one all-in-one agent prompt and manual instructions for the optional Cloudflare Worker plus Durable Object in the carried cloudflare-relay files. The native nightsky-agent-file concept contains a versioned manifest and exact public text sources, retrievable through the local replica; no archive or external repository is required. An owner-configured namespace supports added songs without per-song server allowlist edits. A Cloudflare account and deployment are required; designed for Workers Free within account quotas, with no deployment preconfigured or implied tested. The optional VPS setup travels as relay files in the native nightsky-agent-file bundle and is also available under templates/nightsky/relay in the source repository. It uses explicit public room IDs from the scoped player's room() API. The gallery download contains install notation, metadata and the preview. Both sets of setup files travel inside core.yaml as app-scoped text; standalone verification reports are in the source repository. Private deployment artifacts and test results are excluded from the native bundle. Generate credentials privately; the capability in nightsky-relay is shared with readers of that fact, not individual authentication. Google STUN is used, no TURN is included, and direct WebRTC may fail on restrictive networks. Synchronization is not a guarantee of physical speaker alignment.\nWikimedia Commons GIF search and chosen GIF media make optional external requests and retain attribution. No external font or HTML-in-Canvas library is required. Native HTML-in-Canvas, WebGL and WebRTC are feature-dependent; DOM controls, Canvas2D/static rendering and reduced-motion behavior remain available. The template code is MIT; the optional recording's documented public-domain status and source attribution are included in demo.yaml.\n",
+      "vendoredFiles": {
+        "template.yaml": "aa8657afd6e4b5b8a049349796d49cac2d66ccb5a2d1dccd1498b67c80c5bcc4",
+        "core.yaml": "efd32f45bf5c2ed5223ad2034ad3f80d9fa2c7c0efb8efcd62cb8097747c9cf4",
+        "preview.jpg": "875a3828e5322a368ed1a88b75e0ad2ec021ddf2b41075c2281c7a60a0f9c968"
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "slug": "welcome",
+      "name": "Welcome to Tonk",
+      "summary": "A single scrolling page that introduces Tonk. The How to Tonk story plays as you scroll, then the page offers Get started and Read the docs.",
+      "description": "Welcome to Tonk is a home page for a space. As you scroll, the How to Tonk story plays in pinned scenes, with captions that travel with the scroll: an empty space, a canvas, your notes and tools, a space that grows, a document that lives on your device and works online and offline, share links, building with your agent, and changes arriving from other people.\nThe page ends with two choices. Get started lists three first steps in the FABB, the space's floating bar. Read the docs opens the technical guide, a hands-on tour of Tonk built around a small bookshelf, read-only in a sheet with a back button.\n",
+      "category": "Workspace",
+      "version": "1.0.0",
+      "license": "CC0-1.0",
+      "author": {
+        "name": "Tonk",
+        "url": "https://tonk.xyz",
+        "contact": "mailto:hello@tonk.xyz"
+      },
+      "features": [
+        "Scroll-driven How to Tonk story with pinned scenes and captions that move with the scroll",
+        "Three framed boxes for app examples, placeholders until real examples are added",
+        "Read the docs opens the technical guide read-only in a sheet, closed with back, the close button or Escape",
+        "Get started sheet with three first steps in the floating bar",
+        "Phone layout that crops each scene around its point of interest",
+        "Respects reduced motion",
+        "Fonts, artwork and the guide are embedded, so the page needs no external services"
+      ],
+      "images": [
+        {
+          "file": "preview.png",
+          "alt": "A scene from the How to Tonk story, colored shapes filling a grey panel above the caption Store everything in one place and watch each space grow",
+          "caption": "One scene of the story, from the installed template in headless Chrome."
+        },
+        {
+          "file": "ending.png",
+          "alt": "The end of the page, with a Get started button beside a large letter G and a Read the docs button across a large letter R",
+          "caption": "The page ends with Get started and Read the docs."
+        },
+        {
+          "file": "docs.png",
+          "alt": "The technical guide open read-only in a sheet over the page, with a back button and a close button",
+          "caption": "Read the docs opens the technical guide read-only."
+        }
+      ],
+      "files": [
+        {
+          "file": "app.yaml",
+          "description": "The page with its concept and views, its two web components (the page and its fonts), and the technical guide"
+        }
+      ],
+      "entrypoint": "welcome",
+      "compatibility": "Tonk CLI 0.6.16-rc.1 and its standard library. Installed into a fresh space and rendered with the CLI on 2026-09-25, and the installed page checked in headless Chrome. Uses the standard component loader and the built-in tonk-prose element.",
+      "notes": "Install app.yaml with tonk eval app.yaml --home welcome. The --home flag replaces the space's current home with this page; without it, the page is installed but the home is left alone. If a Tonk update resets the home to the blank page, run tonk space home welcome to restore it.\nThe template defines the welcome concept (attributes xyz.tonk.welcome/title and xyz.tonk.welcome/docs) with one instance, id:welcome, which holds the tab title and the guide. The page's code is the component id:howto/component/scroll. Its fonts are the component id:vault/component/page-fonts, the same one, byte for byte, that the Starter space template installs, so the two templates can share a space. The standard component concept and its loader views are restated exactly as the standard library ships them. Evaluating the file again changes nothing.\nThe three example boxes are placeholders that read Example coming soon. The Get started steps name items in the FABB's menu: go to tonk home, connect agent, and copy share link. The page runs inside the space's frame and cannot navigate the host, so neither button leaves the page.\nThe authors' own work is CC0 1.0. The embedded fonts keep their own licenses: Gestalte (Alexander Slobzheninov), Charter (Bitstream), and IBM Plex Mono and IBM Plex Sans Condensed (IBM, SIL Open Font License 1.1). See LICENSE.txt.\n",
+      "vendoredFiles": {
+        "template.yaml": "d8a97644f0e4032521c8696a4bccb1abe52d7e8cd3534aa84318d7e4c1c232d4",
+        "app.yaml": "cab616a36fdff5b824d44027d809f1a6b3a44868150bf106ea1651726ed36485",
+        "preview.png": "e09d221b067c16a28abf36fe7f946961b99293a14b6a47edf11a90670a119bc5",
+        "ending.png": "be578dc927fde0a44e6057b5957e1c3f5cbefa3713f39235dd36663140795568",
+        "docs.png": "654c8dad97195b02782986fd8876a768287b10303663d81fa4a0ce2c4da1d801",
+        "LICENSE.txt": "809b04b4da9c389ee3b684a21151e13e234c3df3fcdc745a9a0e36e0bf9ca8d3"
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "slug": "kanoodel",
+      "name": "kanoodel",
+      "summary": "Find a time that works for everyone with shared date polls, flexible responses, and a clear mobile voting view.",
+      "description": "Set up a poll with a title, location, and possible dates and times, then share the Tonk space so everyone can respond. Participants can answer Yes, If need be, or No and add an optional comment.\nCompare availability in a participant table, expand it for larger polls, or vote using the mobile layout. Organizers can choose a final time, close or reopen voting, export responses to CSV, lock the time zone, disable comments, offer Yes / No only, and require participant emails for calendar guest lists.\n",
+      "category": "Everyday",
+      "version": "1.1.0",
+      "license": "MIT",
+      "author": {
+        "name": "Goblin Oats",
+        "url": "https://github.com/goblinoats",
+        "contact": null
+      },
+      "features": [
+        "Separate poll setup and voting screens with month and week calendars",
+        "Quarter-hour time dropdowns, multiple times per date, and apply-to-all dates",
+        "Yes, If need be, and No responses with an optional Yes / No only mode",
+        "Participant table, expanded view, and mobile voting controls",
+        "Optional comments and organizer-controlled time-zone locking",
+        "Close or reopen voting, select a final time, and export responses to CSV",
+        "Calendar links and an ICS download for the selected final time",
+        "Optional required participant emails included as ICS attendees, without sending email"
+      ],
+      "images": [
+        {
+          "file": "preview.png",
+          "alt": "Blank kanoodel setup screen with event fields and a date calendar",
+          "caption": "The exported app rendered locally in its fresh state, with no event or participant data."
+        }
+      ],
+      "files": [
+        {
+          "file": "app.yaml",
+          "description": "Complete app module, schemas, event rules, views, and blank poll marker; no poll or participant data"
+        }
+      ],
+      "entrypoint": "kn-poll",
+      "compatibility": "Tonk CLI 0.6.16-rc.1 and its standard library. Uses modern browser popovers and dialogs. Fonts and icons are embedded; no build step or external runtime assets are required.",
+      "notes": "Install app.yaml into a fresh space with tonk eval app.yaml --home kn-poll. The template opens at poll setup with no title, location, candidate times, organizer assignments, votes, or comments. Email collection is off by default. Time zone follows the viewer by default; comments and If need be are enabled until the organizer changes them.\nThe source was derived from the CLI artifact export. Credentials, memberships, invitations, runtime history, live poll details, and participant data were excluded. The current CLI exports CSV; this file is validated Tonk YAML notation derived from that export, not a native YAML export option.\nIntended for one poll per space. Re-evaluation updates the application, schemas, event rules, and views while preserving an existing poll definition and its responses. The kn-* concept names, id:kn/poll marker, and kn-app custom element must not be used by another app in the same space. The standard component directory is shared. The --home flag explicitly changes the space home.\nOrganizer mode and participant editing use the app's collaborative trust model, not private organizer-only storage. Turning comments off hides them without deleting them; earlier comments remain in organizer CSV exports. Yes / No mode preserves existing If need be responses. Refresh the space after updating the app module.\nWhen enabled, Require participant emails validates an address for new responses. Existing participants can add or update their address, including after voting closes. Addresses are stored with shared responses and included as deduplicated attendees in the final-time .ics file, regardless of availability. Disabling collection preserves saved addresses but hides the field and omits attendees from calendar exports. Kanoodel never sends email. The download is a calendar data file, not an automated meeting request; review imported guests and send invitations in your calendar application. Import support for attendees varies by calendar application.\nQuicksand is distributed under SIL Open Font License 1.1 and Lucide icons under ISC. Their notices are embedded in app.yaml and included in LICENSE.txt. Calendar provider links open only when selected; the app has no external analytics or hosted application backend beyond Tonk synchronization.\n",
+      "vendoredFiles": {
+        "template.yaml": "086c925d200390f3fb6fd14f72068562b90c48adab248ad41812217e3016be70",
+        "app.yaml": "73a489f269e4b5a756337f9576d540e771d8a65a88f47dc5d1cc61a80f02be46",
+        "preview.png": "53f143bcec2d08d1482e13faebbac8463a450083a303f98a244c43667559de5f",
+        "LICENSE.txt": "db01f0499a21ba045d7dd133f65c1b93d134aa1187aa974bcd486c4f6cdc566f"
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "slug": "starter-space",
+      "name": "Starter space",
+      "summary": "Tonk's example vault. A notes tree with a welcome tour, a walkthrough, and six small demo apps that show what one space can hold.",
+      "description": "The Starter space is Tonk's example vault. A folder tree on the left holds Markdown notes and small apps, and the editor on the right shows the open page. Everything is stored as facts in one space, so the notes, the demo apps, and their data sync to everyone you invite.\nThe vault ships with the Welcome page, an interactive How to Tonk walkthrough, a technical guide, a license note, and a Demos folder: To-Dos, Tonk News, an Infra budget spreadsheet, Dots, Zork I, and an Agent playground. Each demo is a few concepts, views, and rules in the same space. Read the source, change it, and share the result.\n",
+      "category": "Workspace",
+      "version": "1.0.0",
+      "license": "CC0-1.0",
+      "author": {
+        "name": "Tonk",
+        "url": "https://tonk.xyz",
+        "contact": "mailto:hello@tonk.xyz"
+      },
+      "features": [
+        "Notes vault with folders, a Markdown editor, rename, move, delete, and restore",
+        "Welcome page and an interactive How to Tonk walkthrough",
+        "To-Dos with lists, tags, assignees, and scheduled days",
+        "Tonk News with stories, threaded comments, and upvotes",
+        "Infra budget spreadsheet with formulas",
+        "Dots, a shared puzzle match, and Zork I in a terminal",
+        "Agent playground with a task curriculum for CLI agents",
+        "Fonts and images embedded, so pages render without external services"
+      ],
+      "images": [
+        {
+          "file": "preview.png",
+          "alt": "The Starter space vault with the notes tree on the left and the Welcome page open on the right",
+          "caption": "Screenshot of the Welcome page in a Tonk space."
+        }
+      ],
+      "files": [
+        {
+          "file": "1-vault.yaml",
+          "description": "Vault shell. Note tree, editor, settings, commands, rules, views, the open-link route, and the root notes."
+        },
+        {
+          "file": "2-pages.yaml",
+          "description": "Welcome page, How to Tonk walkthrough, and Heading presets page, with fonts and images inline."
+        },
+        {
+          "file": "3-news.yaml",
+          "description": "Tonk News demo with its starter stories and comments."
+        },
+        {
+          "file": "4-todos.yaml",
+          "description": "To-Dos demo with tags, day slots, and starter to-dos."
+        },
+        {
+          "file": "5-budget.yaml",
+          "description": "Infra budget spreadsheet demo and its sheet."
+        },
+        {
+          "file": "6-dots.yaml",
+          "description": "Dots demo and its shared match."
+        },
+        {
+          "file": "7-zork.yaml",
+          "description": "Zork I terminal demo and its page."
+        },
+        {
+          "file": "8-playground.yaml",
+          "description": "Agent playground and its task curriculum."
+        }
+      ],
+      "entrypoint": "vault/page",
+      "compatibility": "Tonk CLI 0.6.12 notation and standard library. Round-tripped into a fresh space with the CLI on 2026-09-08.",
+      "notes": "Install into a fresh space, in file order. The files mount the vault at the space root: they re-point id:tonk/space at the vault workspace, set the space home to vault/page, and pin several concepts to tonk: URIs, so an existing space with its own home or its own vault would be changed. 2-pages.yaml is about 3.2 MB because fonts and images are inline. Starter content (stories, to-dos, tasks, day slots, the budget sheet, the Dots match) is part of each demo file. Per-device state, session transcripts, agent heartbeats, and the roster of the source space are not included. The authors' own work is CC0 1.0. The embedded fonts (Gestalte, Charter, IBM Plex Mono) and the frog stickers in the walkthrough keep their own licenses; see LICENSE.txt inside the vault.\n",
+      "vendoredFiles": {
+        "template.yaml": "9d2402592b9632cb1b01d1e1871966c08a961dd07db64e066d51bf01d5993d96",
+        "1-vault.yaml": "444ce784474f37bf4b11576e6c615a61c563d0c2f33f63bef47b1d26dcd7fe99",
+        "2-pages.yaml": "a3491fbd61dfbb3a36d5b8d17ace2bde18798f605b52c55e70e2337e45debbbe",
+        "3-news.yaml": "6466efee69ed671af81797f6f20c3ef674e6a85ff04b289ea209a93f35a3fe0b",
+        "4-todos.yaml": "b19f6e4a66e7cc8a9ffe7bd58ee19b575f5d83cefd77bc2f4bb3291fbdcf69b2",
+        "5-budget.yaml": "9fc7d82bf7c28b11db2ff807a1f91122234955f8262a1e1a54eab4c46a8b45ab",
+        "6-dots.yaml": "3dd9be426a8b37c3a7a3d823151c737361b3de8a8349feb0db76cb843ef87f15",
+        "7-zork.yaml": "3116425d9ecb9b984c4c2433dc765e1684ac2a3e9a0bbe97a18f9c75bf3d13f8",
+        "8-playground.yaml": "d226569444011c167dca4aafb21a2657bd97d8c7faf1374927f3164d86253cc3",
+        "preview.png": "d6400371ec5a0a9133a7a31f53e61c0760e97824f393c382b2235eabfcb89ca1"
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "slug": "little-writer",
+      "name": "little writer",
+      "summary": "A minimal, iA Writer-inspired Markdown editor where your agent can leave inline comments for you to reply to and resolve.",
+      "description": "little writer is a simple Markdown editor with a quiet, iA Writer-inspired layout: monospaced text, a compact title bar, and file and comment drawers that stay out of the way until you open them.\nYour agent can leave inline comments on specific passages in your document. The passage stays highlighted so you can see what each comment refers to, reply in a thread, and resolve it when you are done. Documents and comments are shared Tonk data that both you and your agent can read and update.\n",
+      "category": "Writing",
+      "version": "1.0.0",
+      "license": "MIT",
+      "author": {
+        "name": "Goblin Oats",
+        "url": "https://github.com/goblinoats",
+        "contact": null
+      },
+      "features": [
+        "Minimal Markdown editing with iA Writer Mono and an unobtrusive interface",
+        "Agent-authored inline comments anchored to specific passages",
+        "Reply to and resolve comment threads, with optional colored labels",
+        "Collapsible file browser with search, rename, and move",
+        "Documents and comments stored as agent-readable and writable Tonk entities",
+        "Rhetorical Structure Theory canvas with linked text units, spans, relations, and nuclearity"
+      ],
+      "images": [
+        {
+          "file": "preview.png",
+          "alt": "little writer with the file drawer, centered Markdown column, passage highlights, and a comments drawer",
+          "caption": "A minimal Markdown editor with a passage highlight and threaded comments alongside the document."
+        },
+        {
+          "file": "focused.png",
+          "alt": "little writer in focused mode with the file and comment drawers closed",
+          "caption": "The same document with both drawers closed for focused writing."
+        }
+      ],
+      "files": [
+        {
+          "file": "app.yaml",
+          "description": "Complete self-contained app, schemas, portal views, embedded fonts, and editor code; no note data"
+        }
+      ],
+      "entrypoint": "writer-app",
+      "compatibility": "Tonk CLI 0.6.15. The app uses the Tonk portal bridge, a bundled Tonk Prose editor, and embedded React Flow; no build step or external runtime assets are required.",
+      "notes": "Install app.yaml into a fresh space with tonk eval app.yaml --home writer-app. The app creates a blank Untitled document and three default comment labels when first opened. The YAML has no example documents, note text, user comments, or analysis trees; additional documents and trees can be supplied independently.\nRe-evaluation updates the app and schemas but does not replace existing documents, folders, comments, labels, or trees. The file-browser attributes use the little writer namespace so they do not overlap Tonk Vault nodes. Installing into a space with an existing writer-app view may replace that view; --home explicitly changes the space home.\nAll scripts, styles, the patched Tonk Prose component, React Flow, and fonts are embedded. The application and included Tonk code are MIT licensed. The bundled iA Writer Mono font is under SIL Open Font License 1.1; notices are in LICENSE.txt and inside app.yaml. Tree generation is a rule-based draft for review, not a hosted AI service. The app uses Tonk's data bridge for persistence and the profile endpoint for the current author's name.\n",
+      "vendoredFiles": {
+        "template.yaml": "3ed15e64202aeadeb85d806ebf6b719b82005ddf2a7472ad5a4916f20e620137",
+        "app.yaml": "e93607bfb64b2f2923560c045c2aca788e6535138fab9f99cf7b750e343b1aab",
+        "preview.png": "a9e1108588c73bf4c538e5b812e7afee361d316d0f825147305e0c45ea874761",
+        "focused.png": "f605a60266bad35426c20373f8c897604beed6bf21be7cacb74c1d9215169040",
+        "LICENSE.txt": "af39f6f9f6761df02d8dbc7d123621d7ce4d8d26e83f9ea3064cd41b94eef8d9"
+      }
+    }
+  ]
+}

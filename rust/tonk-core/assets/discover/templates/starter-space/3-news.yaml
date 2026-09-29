@@ -1,0 +1,1353 @@
+# SPDX-License-Identifier: CC0-1.0
+# Tonk asserted notation. Repeated top-level keys are intentional.
+#
+# Starter space — News
+#
+# Tonk News demo: stories, comments, and upvotes
+#
+# One of 8 notation documents that recreate the Tonk starter space in a
+# fresh space. Evaluate them in file order:
+#
+#   tonk eval 1-vault.yaml
+#   tonk eval 2-pages.yaml
+#   tonk eval 3-news.yaml
+#   tonk eval 4-todos.yaml
+#   tonk eval 5-budget.yaml
+#   tonk eval 6-dots.yaml
+#   tonk eval 7-zork.yaml
+#   tonk eval 8-playground.yaml
+#
+# Exported from the live space on 2026-09-08 with Tonk 0.6.12. Blobs are
+# embedded as data: URIs. Runtime state (per-device state, session
+# transcripts, agent heartbeats, the roster, and history) is left out.
+#
+# Author: Tonk <hello@tonk.xyz>. The authors' own work is CC0 1.0; embedded
+# fonts and third-party artwork keep their own licenses (see LICENSE.txt
+# in the vault).
+
+
+# ==========================================================================
+# Attributes
+# ==========================================================================
+
+attribute!: &a-comments
+  description: "Comment count"
+  the: blue.bumble.news/comments
+  as: UnsignedInteger
+  cardinality: one
+
+attribute!: &a-ctext
+  description: "The comment body"
+  the: blue.bumble.news.comment/text
+  as: Text
+  cardinality: one
+
+attribute!: &a-ctime
+  description: "Original posting time, ms since the epoch"
+  the: blue.bumble.news.comment/time
+  as: Float
+  cardinality: one
+
+attribute!: &a-points
+  description: "Upvote count"
+  the: blue.bumble.news/points
+  as: UnsignedInteger
+  cardinality: one
+
+attribute!: &a-story
+  description: "The story originally commented on"
+  the: blue.bumble.news.comment/story
+  as: Entity
+  cardinality: one
+
+attribute!: &a-text
+  description: "Story body text; \"-\" when absent"
+  the: blue.bumble.news/text
+  as: Text
+  cardinality: one
+
+attribute!: &a-time
+  description: "Submission time, epoch milliseconds"
+  the: blue.bumble.news/time
+  as: Float
+  cardinality: one
+
+attribute!: &a-title
+  description: "Story title"
+  the: blue.bumble.news/title
+  as: Text
+  cardinality: one
+
+attribute!: &a-url
+  description: "Story URL; the sentinel \"-\" marks a text (Ask) post"
+  the: blue.bumble.news/url
+  as: Text
+  cardinality: one
+
+attribute!: &news-heading
+  description: "Marks the vault note hosting the Tonk News demo"
+  the: xyz.tonk.demo.news/heading
+  as: Text
+  cardinality: one
+
+
+# ==========================================================================
+# Concepts
+# ==========================================================================
+
+concept!: &comment
+  description: "A comment on a story"
+  with:
+    story: a-story
+    text: a-ctext
+    time: a-ctime
+
+concept!: &news-demo-page
+  description: "The Tonk News demo - a reduced Hacker News rendered as a vault page"
+  with:
+    heading: news-heading
+
+concept!: &news/comment
+  this: tonk:news/comment
+  description: "A comment on a story — optionally a reply to another comment — with its author."
+  with:
+    story: a-story
+    text: a-ctext
+    time: a-ctime
+  maybe:
+    author:
+      description: "The poster's profile DID"
+      the: blue.bumble.news.comment/author
+      as: Entity
+      cardinality: one
+    handle:
+      description: "The poster's display-name snapshot"
+      the: blue.bumble.news.comment/handle
+      as: Text
+      cardinality: one
+    parent:
+      description: "The original parent comment, when this was a reply"
+      the: blue.bumble.news.comment/parent
+      as: Entity
+      cardinality: one
+
+concept!: &news/comment-content
+  this: tonk:news/comment-content
+  description: "The author-owned payload removed when a Tonk News comment is deleted."
+  with:
+    author:
+      description: "The poster's profile DID"
+      the: blue.bumble.news.comment/author
+      as: Entity
+      cardinality: one
+    text: a-ctext
+
+concept!: &news/comment-handle
+  this: tonk:news/comment-handle
+  description: "The optional display-name snapshot removed with an author-deleted comment."
+  with:
+    handle:
+      description: "The poster's display-name snapshot"
+      the: blue.bumble.news.comment/handle
+      as: Text
+      cardinality: one
+
+concept!: &news/deleted-comment
+  this: tonk:news/deleted-comment
+  description: "A deleted Tonk News comment retained only to anchor its replies."
+  with:
+    deleted:
+      description: "True after the author deletes the comment"
+      the: blue.bumble.news.comment/deleted
+      as: Boolean
+      cardinality: one
+    story: a-story
+    time: a-ctime
+  maybe:
+    parent:
+      description: "The original parent comment, when this was a reply"
+      the: blue.bumble.news.comment/parent
+      as: Entity
+      cardinality: one
+
+concept!: &story
+  description: "A submitted story (link or Ask post)"
+  with:
+    comments: a-comments
+    points: a-points
+    text: a-text
+    time: a-time
+    title: a-title
+    url: a-url
+
+
+# ==========================================================================
+# Commands (transient concepts fired by the UI)
+# ==========================================================================
+
+command!: &news/delete-comment
+  description: "Delete a signed comment after matching its stored author."
+  with:
+    author:
+      description: "The current profile DID presented by the author-only UI"
+      the: dom.event.detail/delete-author
+      as: Entity
+      cardinality: one
+    comment:
+      description: "The comment being deleted"
+      the: dom.event.detail/delete-comment
+      as: Entity
+      cardinality: one
+    deleted:
+      description: "The tombstone marker"
+      the: dom.event.detail/delete-mark
+      as: Boolean
+      cardinality: one
+
+command!: &news/post-comment
+  description: "Post a top-level comment, signed by the poster's profile."
+  with:
+    author:
+      description: "The poster's profile DID"
+      the: dom.event.detail/comment-author
+      as: Entity
+      cardinality: one
+    handle:
+      description: "The poster's display name"
+      the: dom.event.detail/comment-handle
+      as: Text
+      cardinality: one
+    story:
+      description: "The story commented on"
+      the: dom.event.detail/comment-story
+      as: Entity
+      cardinality: one
+    text:
+      description: "The comment body"
+      the: dom.event.detail/comment-text
+      as: Text
+      cardinality: one
+    time:
+      description: "Posting time, ms since the epoch (Date.now())"
+      the: dom.event.detail/comment-time
+      as: Float
+      cardinality: one
+
+command!: &news/reply
+  description: "Reply to a comment, signed by the poster's profile."
+  with:
+    author:
+      description: "The poster's profile DID"
+      the: dom.event.detail/reply-author
+      as: Entity
+      cardinality: one
+    handle:
+      description: "The poster's display name"
+      the: dom.event.detail/reply-handle
+      as: Text
+      cardinality: one
+    parent:
+      description: "The comment being replied to"
+      the: dom.event.detail/reply-parent
+      as: Entity
+      cardinality: one
+    story:
+      description: "The story commented on"
+      the: dom.event.detail/reply-story
+      as: Entity
+      cardinality: one
+    text:
+      description: "The comment body"
+      the: dom.event.detail/reply-text
+      as: Text
+      cardinality: one
+    time:
+      description: "Posting time, ms since the epoch (Date.now())"
+      the: dom.event.detail/reply-time
+      as: Float
+      cardinality: one
+
+command!: &post-comment
+  with:
+    story:
+      description: "The story being commented on"
+      the: dom.event.detail/story
+      as: Entity
+      cardinality: one
+    text:
+      description: "Comment body text"
+      the: dom.event.detail/ctext
+      as: Text
+      cardinality: one
+    time:
+      description: "Client epoch-ms timestamp"
+      the: dom.event.detail/time
+      as: Float
+      cardinality: one
+
+command!: &post-story
+  with:
+    text:
+      description: "Submitted story body, dash sentinel when absent"
+      the: dom.event.detail/text
+      as: Text
+      cardinality: one
+    time:
+      description: "Client epoch-ms timestamp"
+      the: dom.event.detail/time
+      as: Float
+      cardinality: one
+    title:
+      description: "Submitted story title"
+      the: dom.event.detail/title
+      as: Text
+      cardinality: one
+    url:
+      description: "Submitted story URL, dash sentinel for Ask posts"
+      the: dom.event.detail/url
+      as: Text
+      cardinality: one
+
+command!: &upvote
+  with:
+    item:
+      description: "The story being upvoted, from data-vote"
+      the: dom.event.current-target.dataset/vote
+      as: Entity
+      cardinality: one
+
+
+# ==========================================================================
+# Rules
+# ==========================================================================
+
+rule!:
+  assert!: comment
+  when:
+    - assert: post-comment
+      where: { this: ?this, text: ?text, time: ?time, story: ?story }
+
+rule!:
+  assert!: news/comment
+  when:
+    - assert: news/post-comment
+      where: { this: ?this, text: ?text, time: ?time, story: ?story, author: ?author, handle: ?handle }
+
+rule!:
+  assert!: news/comment
+  when:
+    - assert: news/reply
+      where: { this: ?this, text: ?text, time: ?time, story: ?story, author: ?author, handle: ?handle, parent: ?parent }
+
+rule!:
+  retract!: news/comment-content
+  when:
+    - assert: news/delete-comment
+      where: { author: ?author, comment: ?this, deleted: ?deleted }
+    - assert: news/comment
+      where: { this: ?this, text: ?text, time: _, story: _, author: ?author, handle: _, parent: _ }
+
+rule!:
+  retract!: news/comment-handle
+  when:
+    - assert: news/delete-comment
+      where: { author: ?author, comment: ?this, deleted: ?deleted }
+    - assert: news/comment
+      where: { this: ?this, text: _, time: _, story: _, author: ?author, handle: _, parent: _ }
+    - assert: news/comment-handle
+      where: { this: ?this, handle: ?handle }
+
+rule!:
+  assert!: news/deleted-comment
+  when:
+    - assert: news/delete-comment
+      where: { author: ?author, comment: ?this, deleted: ?deleted }
+    - assert: news/comment
+      where: { this: ?this, text: _, time: ?time, story: ?story, author: ?author, handle: _, parent: _ }
+
+rule!:
+  assert!: news/deleted-comment
+  when:
+    - assert: news/delete-comment
+      where: { author: ?author, comment: ?this, deleted: ?deleted }
+    - assert: news/comment
+      where: { this: ?this, text: _, time: ?time, story: ?story, author: ?author, handle: _, parent: ?parent }
+
+rule!:
+  assert!: story
+  when:
+    - assert: post-comment
+      where: { text: _, time: _, story: ?this }
+    - assert: story
+      where: { this: ?this, url: ?url, text: ?text, time: ?time, title: ?title, points: ?points, comments: ?old }
+    - assert: math/sum
+      where: { is: ?comments, of: ?old, with: 1 }
+
+rule!:
+  assert!: story
+  when:
+    - assert: post-story
+      where: { this: ?this, url: ?url, text: ?text, time: ?time, title: ?title }
+    - assert: ==
+      where: { this: 1, is: ?points }
+    - assert: ==
+      where: { this: 0, is: ?comments }
+
+rule!:
+  assert!: story
+  when:
+    - assert: upvote
+      where: { item: ?this }
+    - assert: story
+      where: { this: ?this, url: ?url, text: ?text, time: ?time, title: ?title, points: ?old, comments: ?comments }
+    - assert: math/sum
+      where: { is: ?points, of: ?old, with: 1 }
+
+
+# ==========================================================================
+# Views
+# ==========================================================================
+
+view!:
+  this: news-demo-page
+  show:
+    ui: |2
+      <tn-news class="tn">
+      <style>
+        /* Full-bleed: the app IS the pane. The editor's is-page chain sets
+           min-height:100% down to tonk-view but block boxes can't relay a
+           percentage through an auto height, so each level becomes a flex
+           column and the app stretches with flex:1. min-height stays auto on
+           every level so tall content still grows and scrolls in vault-main. */
+        .vault-doc.is-page:has(.tn) { display:flex; flex-direction:column; }
+        .vault-doc.is-page:has(.tn) > vault-active,
+        .vault-doc.is-page vault-active:has(.tn) > tonk-display,
+        .vault-doc.is-page vault-active:has(.tn) > tonk-display > tonk-view {
+          display:flex; flex-direction:column; flex:1 1 auto;
+        }
+        /* Light-only page, whatever the vault's theme: color-scheme keeps the
+           browser's own form-control colours light, so input text stays dark
+           on the white fields below even when the host runs .wa-dark. */
+        .tn { background:#f6f6ef; font-family:Verdana,Geneva,sans-serif; font-size:10pt;
+              color:#333; color-scheme:light; display:flex; flex-direction:column; flex:1 1 auto;
+              max-width:none; margin:0; padding-bottom:0; }
+        .tn a { text-decoration:none; }
+        .tn .st { position:absolute; width:1px; height:1px; opacity:0; pointer-events:none; }
+        .tn-head { background:#F27121; padding:3px 5px; line-height:16pt; }
+        .tn-head a { color:#000; }
+        .tn-head .logo { cursor:pointer; }
+        .tn-head .logo b { margin-right:8px; color:#000; }
+        .tn-head .logobox { border:1px solid #fff; color:#fff; font-weight:bold;
+              padding:0 3px; margin-right:5px; font-size:10pt; }
+        .tn-head .nav label { color:#000; cursor:pointer; }
+        #tnp-top:checked ~ .tn-head .nav [data-p="top"] { color: #fff; }
+        #tnp-top:checked ~ .tn-body [data-pane="top"] { display: block; }
+        #tnp-new:checked ~ .tn-head .nav [data-p="new"] { color: #fff; }
+        #tnp-new:checked ~ .tn-body [data-pane="new"] { display: block; }
+        #tnp-past:checked ~ .tn-head .nav [data-p="past"] { color: #fff; }
+        #tnp-past:checked ~ .tn-body [data-pane="past"] { display: block; }
+        #tnp-comments:checked ~ .tn-head .nav [data-p="comments"] { color: #fff; }
+        #tnp-comments:checked ~ .tn-body [data-pane="comments"] { display: block; }
+        #tnp-ask:checked ~ .tn-head .nav [data-p="ask"] { color: #fff; }
+        #tnp-ask:checked ~ .tn-body [data-pane="ask"] { display: block; }
+        #tnp-submit:checked ~ .tn-head .nav [data-p="submit"] { color: #fff; }
+        #tnp-submit:checked ~ .tn-body [data-pane="submit"] { display: block; }
+        .tn-body [data-pane] { display:none; }
+        /* flex:1 pins the footer to the pane's bottom edge on short lists. */
+        .tn-body { padding:10px 8px; flex:1 1 auto; }
+        .tn-itempane { display:none; padding:10px 8px; }
+        .tn.is-item .tn-body { display:none; }
+        .tn.is-item .tn-itempane { display:block; flex:1 1 auto; }
+        .tn-itempane .on-story { display:none; }
+        .tn-back { display:inline-block; color:#828282; font-size:8pt; cursor:pointer; margin-bottom:8px; }
+        .tn-back:hover { text-decoration:underline; }
+        [data-open-item] { cursor:pointer; }
+        .tn-foot { border-top:2px solid #F27121; margin-top:12px; padding:8px;
+              text-align:center; font-size:8pt; color:#828282; }
+        .tn-foot label { color:#828282; cursor:pointer; }
+        .tn-foot label:hover { text-decoration:underline; }
+        /* The host app stylesheet is injected into every guest and ships BARE
+           class names for the portal's own spaces menu — `.srow`, `.snew`,
+           `.sempty`, `.hcell`. `.srow` is also this page's story row, and at
+           equal specificity the host's copy won: it turned each row into a
+           flex box with `justify-content:flex-end` (the whole list rendered
+           right-aligned), padded it 16px and gave it a 44px floor. Ours are
+           restated at two classes so the tie can't be re-decided by source
+           order, and the properties the host sets are put back explicitly.
+           Any generic class this page adds needs the same treatment. */
+        .tn .srow { display:block; padding:2px 0; min-height:0;
+              color:inherit; background:none; cursor:auto; text-decoration:none; }
+        .tn .srow:hover, .tn .srow:active { background:none; }
+        .srow-main { display:flex; align-items:baseline; }
+        .rank { color:#828282; min-width:1.8em; text-align:right; margin-right:2px; flex:none; }
+        .votearrow { color:#999; cursor:pointer; font-size:7.5pt; margin-right:4px;
+              flex:none; user-select:none; }
+        .votearrow:hover { color:#F27121; }
+        .titleline a { color:#000; }
+        .titleline a:visited { color:#828282; }
+        .sitebit { color:#828282; font-size:8pt; }
+        .subtext { color:#828282; font-size:7pt; display:block; margin-left:0; }
+        .subtext a { color:#828282; }
+        .subtext a:hover { text-decoration:underline; }
+        /* The comment-count link is the element itself (see tn-itemlink). */
+        .subtext tn-itemlink:hover, .chead tn-itemlink:hover { text-decoration:underline; }
+        .entry { display:inline-block; }
+        .crow { padding:5px 0; }
+        .chead { color:#828282; font-size:8pt; }
+        .cuser { color:#828282; }
+        .cuser:empty { display:none; }
+        .cdelete { display:none; color:#828282; cursor:pointer; user-select:none; }
+        .crow.is-mine > .chead .cdelete { display:inline; }
+        .cdelete:hover { text-decoration:underline; }
+        /* A directory projection can place every live comment beneath one
+           tonk-view. Hide only the row being removed, never that shared host. */
+        .crow.is-deleting { display:none !important; }
+        .crow[data-deleted="true"] > .ctext { color:#828282; font-style:italic; }
+        /* "reply" under a comment, item pane only; the comments tab is a
+           flat list like HN's. */
+        .creply { display:inline-block; margin-top:4px; font-size:8pt; color:#000;
+              text-decoration:underline; cursor:pointer; }
+        .tn-body [data-pane="comments"] .creply { display:none; }
+        /* Header navigation (item pane): root | parent | prev | next [–]. */
+        .cnav { color:#828282; }
+        .cnav-link, .cnav-toggle { cursor:pointer; user-select:none; }
+        .cnav-link:hover { text-decoration:underline; }
+        .crow.is-collapsed > .ctext, .crow.is-collapsed > .creply,
+        .crow.is-collapsed > tn-reply-form { display:none; }
+        /* A moment of tint on the comment a nav link just jumped to. */
+        .crow.is-target { background:#ecebdf; }
+        .chead a { color:#828282; }
+        .chead a:hover { text-decoration:underline; }
+        .ctext { font-size:9pt; margin:2px 0 0 0; }
+        .pagetitle { font-size:10pt; color:#828282; margin:0 0 8px 0; }
+        .subform td { font-size:10pt; padding:2px 4px; }
+        .subform .lbl { color:#828282; }
+        .subform .orlbl { color:#828282; font-size:8pt; }
+        /* Forms as HN draws them: the browser's rounded fields and buttons. */
+        .subform input, .subform textarea, .cform textarea, .rform textarea {
+              font-family:monospace; font-size:10pt; color:#000; background:#fff;
+              border:1px solid #8f8f8f; border-radius:4px; padding:3px 5px;
+              box-sizing:content-box; max-width:calc(100% - 12px); }
+        .subform button, .cform button, .rform button {
+              font-family:Verdana,Geneva,sans-serif; font-size:10pt; color:#000;
+              background:#efefef; border:1px solid #8f8f8f; border-radius:4px;
+              padding:2px 8px; margin-top:6px; cursor:pointer; }
+        .subform button:hover, .cform button:hover, .rform button:hover { background:#e4e4e4; }
+        .posting-as { color:#828282; font-size:8pt; margin-left:6px; }
+        .rform { display:block; margin:6px 0 4px; }
+        .subhelp { color:#828282; font-size:8pt; }
+        .note { color:#F27121; font-size:8pt; }
+        .itemtop .titleline { font-size:10pt; }
+        .itemtext { display:block; font-size:9pt; margin:8px 0; max-width:60em; }
+        .cform { display:block; margin:10px 0 14px 0; }
+        tn-comments-v4 { display:block; }
+        .comments-list { margin-top:6px; }
+      </style>
+      <input type="radio" name="tnpage" id="tnp-top" class="st" checked><input type="radio" name="tnpage" id="tnp-new" class="st"><input type="radio" name="tnpage" id="tnp-past" class="st"><input type="radio" name="tnpage" id="tnp-comments" class="st"><input type="radio" name="tnpage" id="tnp-ask" class="st"><input type="radio" name="tnpage" id="tnp-submit" class="st">
+      <div class="tn-head">
+        <a class="logo" data-close-item><span class="logobox">T</span><b>Tonk News</b></a>
+        <span class="nav"><label for="tnp-new" data-p="new">new</label> | <label for="tnp-past" data-p="past">past</label> | <label for="tnp-comments" data-p="comments">comments</label> | <label for="tnp-ask" data-p="ask">ask</label> | <label for="tnp-submit" data-p="submit">submit</label></span>
+      </div>
+      <div hidden><tonk-display model=component></tonk-display></div>
+      <div class="tn-body">
+        <div data-pane="top"><tn-stories mode="top"><tonk-display model=story></tonk-display></tn-stories></div>
+        <div data-pane="new"><tn-stories mode="new"><tonk-display model=story></tonk-display></tn-stories></div>
+        <div data-pane="past"><p class="pagetitle">Stories from a day ago and earlier.</p><tn-stories mode="past"><tonk-display model=story></tonk-display></tn-stories></div>
+        <div data-pane="comments"><tn-comments-v4 class="comments-list" ondeletecomment=news/delete-comment><tonk-display model=tonk:news/comment></tonk-display><tonk-display model=tonk:news/deleted-comment></tonk-display></tn-comments-v4></div>
+        <div data-pane="ask"><tn-stories mode="ask"><tonk-display model=story></tonk-display></tn-stories></div>
+        <div data-pane="submit"><tn-submit onpost=post-story></tn-submit></div>
+      </div>
+      <div class="tn-itempane">
+        <a class="tn-back" data-close-item>&#8592; back</a>
+        <tonk-display class="tn-itemhost" entity=id:vault/pending model=story></tonk-display>
+      </div>
+      <div class="tn-foot">
+        <label for="tnp-new">new</label> &#183; <label for="tnp-ask">ask</label> &#183; <label for="tnp-submit">submit</label><br>
+        Tonk News: a local-first news space. Anyone in this space can submit, vote, and comment.
+      </div>
+      </tn-news>
+
+view!:
+  this: tonk:news/comment
+  show:
+    directory: |2
+      <div class="crow" data-id="{this}" data-story="{story}" data-parent="{parent}" data-author="{author}">
+        <span hidden class="d-time">{time}</span>
+        <div class="chead"><span class="cuser">{handle}</span> <tn-age from=".d-time"></tn-age><span class="cnav"></span><span class="on-story"> | on:
+          <tn-itemlink item="{story}"><tonk-display entity={story} model=story view=label></tonk-display></tn-itemlink></span><span class="cdelete" data-delete="{this}"> | delete</span>
+        </div>
+        <div class="ctext">{text}</div>
+        <span class="creply" data-reply="{this}">reply</span>
+      </div>
+
+view!:
+  this: tonk:news/deleted-comment
+  show:
+    directory: |2
+      <div class="crow" data-id="{this}" data-story="{story}" data-parent="{parent}" data-deleted="true">
+        <span hidden class="d-time">{time}</span>
+        <div class="chead"><tn-age from=".d-time"></tn-age><span class="cnav"></span><span class="on-story"> | on:
+          <tn-itemlink item="{story}"><tonk-display entity={story} model=story view=label></tonk-display></tn-itemlink></span>
+        </div>
+        <div class="ctext">[deleted]</div>
+      </div>
+
+view!:
+  this: story
+  show:
+    ui: |2
+      <div class="tn-item">
+        <span hidden class="d-time">{time}</span><span hidden class="d-points">{points}</span><span hidden class="d-comments">{comments}</span>
+        <div class="itemtop">
+          <div class="srow-main">
+            <span class="votearrow" title="upvote" onclick=upvote data-vote="{this}">&#9650;</span>
+            <span class="entry">
+              <span class="titleline"><tn-title url="{url}" item="{this}" label="{title}"></tn-title></span>
+              <span class="subtext"><tn-plural from=".d-points" one="point"></tn-plural> | <tn-age from=".d-time"></tn-age> | <tn-plural story="{this}" from=".d-comments" one="comment"></tn-plural></span>
+            </span>
+          </div>
+        </div>
+        <tn-dash class="itemtext" text="{text}"></tn-dash>
+        <tn-comment-form class="cform" story="{this}" oncomment=news/post-comment oncommentanon=post-comment></tn-comment-form>
+        <tn-comments-v4 class="comments-list" story="{this}" onreply=news/reply ondeletecomment=news/delete-comment><tonk-display model=tonk:news/comment></tonk-display><tonk-display model=tonk:news/deleted-comment></tonk-display></tn-comments-v4>
+      </div>
+    directory: |2
+      <div class="srow" data-url="{url}">
+        <span hidden class="d-time">{time}</span><span hidden class="d-points">{points}</span><span hidden class="d-comments">{comments}</span>
+        <div class="srow-main">
+          <span class="rank"></span><span class="votearrow" title="upvote" onclick=upvote data-vote="{this}">&#9650;</span>
+          <span class="entry">
+            <span class="titleline"><tn-title url="{url}" item="{this}" label="{title}"></tn-title></span>
+            <span class="subtext"><tn-plural from=".d-points" one="point"></tn-plural> | <tn-age from=".d-time"></tn-age> | <tn-itemlink item="{this}" story="{this}" from=".d-comments"></tn-itemlink></span>
+          </span>
+        </div>
+      </div>
+    label: |2
+      {title}
+
+
+# ==========================================================================
+# Components (web components loaded by the shell)
+# ==========================================================================
+
+component!:
+  this: id:tn-lib
+  module: |2
+    // Shared helpers for the tn-* elements, on globalThis.__tn. Modules load
+    // in no fixed order, so each element polls for this (see `ready` in each).
+    (() => {
+      if (globalThis.__tn) return;
+      const unresolved = (v) => v == null || /\{[^{}]*\}/.test(v);
+      const rowOf = (el) => el.closest('.srow, .crow, .tn-item');
+      // A number cannot arrive as an attribute binding (the renderer only fills
+      // text and entity values there), so the row carries it in a hidden plain
+      // span and `from=".d-…"` names that span.
+      const source = (el) => {
+        const sel = el.getAttribute('from');
+        const row = sel && rowOf(el);
+        const src = row && row.querySelector(sel);
+        return src ? src.textContent.trim() : null;
+      };
+      const observe = (el, target, opts) => {
+        if (!target) return;
+        if (!el._mos) el._mos = [];
+        const mo = new MutationObserver(() => el._render && el._render());
+        mo.observe(target, opts);
+        el._mos.push(mo);
+      };
+      const watchRow = (el) => observe(el, rowOf(el), { subtree: true, childList: true, characterData: true });
+      // The comments tab holds every comment row on the page; it is the one
+      // place to count a story's comments (replies included).
+      const pane = (el) => { const root = el.closest('.tn'); return root && root.querySelector('[data-pane="comments"]'); };
+      const watchPane = (el) => observe(el, pane(el), { subtree: true, childList: true, attributes: true, attributeFilter: ['data-story'] });
+      const unwatch = (el) => { for (const mo of el._mos || []) mo.disconnect(); el._mos = []; };
+      const countComments = (el, story) => {
+        const p = pane(el);
+        if (!p || !story || unresolved(story)) return null;
+        let n = 0;
+        for (const r of p.querySelectorAll('.crow')) if (r.getAttribute('data-story') === story) n += 1;
+        return n;
+      };
+      // The signed-in profile, as the forum app reads it: GET /api/profile over
+      // the guest's relayed fetch; `display_name` and `profile.profile` (the
+      // long-lived profile DID). Cached for the page's lifetime; a failure is
+      // not cached, so the next form tries again.
+      let profile = null;
+      const loadProfile = () => {
+        if (profile) return profile;
+        profile = fetch('/api/profile', { headers: { accept: 'application/json' } })
+          .then((r) => { if (!r.ok) throw new Error('profile ' + r.status); return r.json(); })
+          .then((info) => {
+            const nested = info && typeof info.profile === 'object' ? info.profile : null;
+            const name = String((info && info.display_name) || '').trim();
+            const did = String((nested && nested.profile) || '').trim();
+            if (!name || !did) throw new Error('profile incomplete');
+            return { name, did };
+          })
+          .catch((e) => { profile = null; throw e; });
+        return profile;
+      };
+      const ready = (fn) => { const lib = globalThis.__tn; if (lib) fn(lib); else setTimeout(() => ready(fn), 40); };
+      const ago = (t) => {
+        const s = Math.max(0, (Date.now() - t) / 1000);
+        const unit = (n, w) => Math.floor(n) + ' ' + w + (Math.floor(n) === 1 ? '' : 's') + ' ago';
+        return s < 60 ? 'just now' : s < 3600 ? unit(s / 60, 'minute') : s < 86400 ? unit(s / 3600, 'hour') : unit(s / 86400, 'day');
+      };
+      globalThis.__tn = { unresolved, rowOf, source, watchRow, watchPane, unwatch, countComments, loadProfile, ready, ago };
+    })();
+
+component!:
+  this: id:tn-plural
+  module: |2
+    const ready = (fn) => { const lib = globalThis.__tn; if (lib) fn(lib); else setTimeout(() => ready(fn), 40); };
+    customElements.get('tn-plural') || customElements.define('tn-plural', class extends HTMLElement {
+      // "<n> <noun>" with the singular for exactly one. The number comes from
+      // the row's hidden span (`from=".d-points"`), or, with `story`, from a
+      // count of that story's comment rows on the page. `many` overrides "+s".
+      static get observedAttributes() { return ['from', 'story', 'one', 'many']; }
+      attributeChangedCallback() { this._render(); }
+      connectedCallback() {
+        ready((lib) => {
+          if (!this.isConnected) return;
+          this._lib = lib;
+          if (this.hasAttribute('from')) lib.watchRow(this);
+          if (this.hasAttribute('story')) lib.watchPane(this);
+          this._render();
+        });
+      }
+      disconnectedCallback() { if (this._lib) this._lib.unwatch(this); }
+      _render() {
+        const lib = this._lib; if (!lib) return;
+        let n = lib.countComments(this, this.getAttribute('story'));
+        if (n === null) {
+          const raw = lib.source(this);
+          if (lib.unresolved(raw)) return;
+          n = parseInt(raw, 10);
+        }
+        if (!isFinite(n)) return;
+        const one = this.getAttribute('one') || '';
+        const many = this.getAttribute('many') || (one + 's');
+        const label = n + ' ' + (n === 1 ? one : many);
+        if (this.textContent !== label) this.textContent = label;
+      }
+    });
+
+component!:
+  this: id:tn-reply-form
+  module: |2
+    const ready = (fn) => { const lib = globalThis.__tn; if (lib) fn(lib); else setTimeout(() => ready(fn), 40); };
+    customElements.get('tn-reply-form') || customElements.define('tn-reply-form', class extends HTMLElement {
+      // Inline reply box, created by tn-comments under a comment. Dispatches
+      // `reply` (bubbling) with the story, the parent comment, the text and the
+      // poster's profile; the item pane's <tn-comments onreply=news/reply>
+      // turns it into the command. A reply needs the profile — the command
+      // requires an author — so without one the box says so and stays shut.
+      connectedCallback() {
+        if (this._built) return;
+        this._built = true;
+        this.innerHTML = [
+          '<textarea rows="3" cols="60"></textarea><br>',
+          '<button type="button" class="rsend">reply</button> ',
+          '<button type="button" class="rcancel">cancel</button>',
+          '<span class="posting-as"></span> <span class="note"></span>'
+        ].join('');
+        const who = this.querySelector('.posting-as');
+        const send = this.querySelector('.rsend');
+        send.disabled = true;
+        ready((lib) => {
+          lib.loadProfile().then((p) => { this._profile = p; send.disabled = false; who.textContent = 'replying as ' + p.name; },
+            () => { this._profile = null; who.textContent = 'profile unavailable — cannot reply'; });
+        });
+        this.querySelector('.rcancel').addEventListener('click', () => this.remove());
+        send.addEventListener('click', () => {
+          const p = this._profile;
+          const ta = this.querySelector('textarea');
+          const text = ta.value.trim();
+          const story = this.getAttribute('story') || '';
+          const parent = this.getAttribute('parent') || '';
+          if (!p || !text || !story || !parent) return;
+          this.dispatchEvent(new CustomEvent('reply', {
+            bubbles: true,
+            detail: { replyStory: story, replyParent: parent, replyText: text, replyTime: Date.now(), replyAuthor: p.did, replyHandle: p.name }
+          }));
+          this.remove();
+        });
+      }
+    });
+
+component!: &tn-comments
+  this: did:key:z6Mk1ByYRAHzVk6PDNvHUsRpCcgc5JrEppQsJ7UHNEQXC6A
+  module: |2
+    const ready = (fn) => { const lib = globalThis.__tn; if (lib) fn(lib); else setTimeout(() => ready(fn), 40); };
+    customElements.get('tn-comments-v4') || customElements.define('tn-comments-v4', class extends HTMLElement {
+      // Lays out the flat comment directory. Without `story` (the comments
+      // tab): every comment, newest first. With `story` (the item pane): that
+      // story's comments as a thread — replies under their parent, 40px in
+      // per level, oldest first at each level — using flex `order` and a
+      // margin, since the rows stay siblings. Also fills each header's
+      // `root | parent | prev | next [–]` navigation from the same tree,
+      // handles collapse, opens the inline reply box, and exposes deletion
+      // only on rows owned by the current profile.
+      static get observedAttributes() { return ['story']; }
+      attributeChangedCallback() { this._q && this._q(); }
+      connectedCallback() {
+        if (!this._collapsed) this._collapsed = new Set();
+        this._mo = new MutationObserver(() => this._q());
+        this._mo.observe(this, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-story', 'data-parent', 'data-id', 'data-author', 'data-deleted'] });
+        ready((lib) => {
+          lib.loadProfile().then((profile) => {
+            if (!this.isConnected) return;
+            this._profile = profile;
+            this._q();
+          }, () => {
+            this._profile = null;
+            this._q();
+          });
+        });
+        if (!this._armed) {
+          this._armed = true;
+          // Fire destructive actions on pointer-down. Reactive row updates can
+          // replace a target between pointer-down and click, swallowing click.
+          this.addEventListener('pointerdown', (e) => {
+            if (e.button !== 0) return;
+            const control = e.target.closest('.cdelete');
+            if (!control || !this.contains(control)) return;
+            e.preventDefault();
+            this._delete(control.closest('.crow'), control);
+          });
+          this.addEventListener('click', (e) => {
+            const t = e.target.closest('.creply, .cdelete, [data-go], [data-toggle]');
+            if (!t || !this.contains(t)) return;
+            e.preventDefault();
+            if (t.classList.contains('creply')) { this._openReply(t.closest('.crow')); return; }
+            if (t.classList.contains('cdelete')) { this._delete(t.closest('.crow'), t); return; }
+            if (t.hasAttribute('data-toggle')) {
+              const id = t.getAttribute('data-toggle');
+              if (this._collapsed.has(id)) this._collapsed.delete(id); else this._collapsed.add(id);
+              this._apply();
+              return;
+            }
+            const row = this._rowById(t.getAttribute('data-go'));
+            if (!row) return;
+            row.scrollIntoView({ block: 'start' });
+            row.classList.add('is-target');
+            setTimeout(() => row.classList.remove('is-target'), 1200);
+          });
+        }
+        this._q();
+      }
+      disconnectedCallback() { if (this._mo) this._mo.disconnect(); }
+      _rowById(id) {
+        if (!id) return null;
+        for (const r of this.querySelectorAll('.crow')) if (r.getAttribute('data-id') === id) return r;
+        return null;
+      }
+      _openReply(row) {
+        if (!row) return;
+        const parent = row.getAttribute('data-id') || '';
+        const story = this.getAttribute('story') || row.getAttribute('data-story') || '';
+        if (!parent || parent.indexOf('{') !== -1 || !story || story.indexOf('{') !== -1) return;
+        let form = row.querySelector(':scope > tn-reply-form');
+        if (!form) {
+          form = document.createElement('tn-reply-form');
+          form.className = 'rform';
+          form.setAttribute('story', story);
+          form.setAttribute('parent', parent);
+          row.appendChild(form);
+        }
+        const ta = form.querySelector('textarea');
+        if (ta) ta.focus();
+      }
+      _delete(row, control) {
+        if (!row || row.classList.contains('is-deleting') || !this._profile || row.getAttribute('data-deleted') === 'true') return;
+        const id = row.getAttribute('data-id') || '';
+        const author = row.getAttribute('data-author') || '';
+        if (!id || id.indexOf('{') !== -1 || author !== this._profile.did) return;
+        row.classList.add('is-deleting');
+        control.textContent = ' | deleting…';
+        control.style.pointerEvents = 'none';
+        this.dispatchEvent(new CustomEvent('deletecomment', {
+          bubbles: true,
+          detail: { deleteComment: id, deleteAuthor: this._profile.did, deleteMark: true }
+        }));
+        // If projection or persistence fails, make the action retryable rather
+        // than leaving a locally hidden row forever.
+        setTimeout(() => {
+          if (!row.isConnected) return;
+          row.classList.remove('is-deleting');
+          control.textContent = ' | delete';
+          control.style.pointerEvents = '';
+        }, 8000);
+      }
+      _q() {
+        if (this._t) return;
+        this._t = setTimeout(() => { this._t = null; this._apply(); }, 0);
+      }
+      _apply() {
+        const rows = [...this.querySelectorAll('.crow')];
+        if (!rows.length) return;
+        const un = (v) => !v || v.indexOf('{') !== -1;
+        const esc = (v) => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+        const story = this.getAttribute('story');
+        const items = rows.map((r) => ({
+          r,
+          id: r.getAttribute('data-id') || '',
+          t: parseFloat((r.querySelector('.d-time') || {}).textContent) || 0,
+          p: r.getAttribute('data-parent') || '',
+          hide: story ? r.getAttribute('data-story') !== story : false,
+          order: 0, depth: 0, pid: '', root: '', siblings: null, sub: 0, under: false, nav: '',
+        }));
+        let n = 0;
+        if (story) {
+          const shown = items.filter((x) => !x.hide);
+          const ids = new Set(shown.filter((x) => !un(x.id)).map((x) => x.id));
+          const kids = new Map(); const roots = [];
+          for (const x of shown) {
+            x.pid = !un(x.p) && ids.has(x.p) && x.p !== x.id ? x.p : '';
+            if (x.pid) { if (!kids.has(x.pid)) kids.set(x.pid, []); kids.get(x.pid).push(x); } else roots.push(x);
+          }
+          const seen = new Set();
+          // Depth-first: siblings oldest first; `under` marks rows inside a
+          // collapsed subtree; every row learns its root and sibling list.
+          const walk = (list, depth, root, under) => {
+            list.sort((a, b) => a.t - b.t);
+            for (const x of list) {
+              if (seen.has(x)) continue;
+              seen.add(x); n += 1;
+              x.order = n; x.depth = depth; x.root = depth ? root : x.id; x.siblings = list; x.under = under;
+              walk(kids.get(x.id) || [], depth + 1, x.root, under || this._collapsed.has(x.id));
+            }
+          };
+          walk(roots, 0, '', false);
+          // Subtree sizes for "[N more]". The walk reached every kid from
+          // exactly one parent, so recursion over seen kids cannot loop.
+          const size = (x) => {
+            if (x.sub) return x.sub;
+            let c = 0;
+            for (const k of kids.get(x.id) || []) if (seen.has(k) && k !== x) c += 1 + size(k);
+            return (x.sub = c);
+          };
+          for (const x of shown) if (seen.has(x)) size(x);
+          for (const x of shown) if (!seen.has(x)) { n += 1; x.order = n; }
+          // Header navigation, HN's set: root (depth ≥ 2), parent (depth ≥ 1),
+          // prev / next sibling, then the collapse toggle.
+          for (const x of shown) {
+            if (!seen.has(x) || un(x.id)) continue;
+            const link = (label, id) => '<span class="cnav-link" data-go="' + esc(id) + '">' + label + '</span>';
+            const parts = [];
+            if (x.depth >= 2) parts.push(link('root', x.root));
+            if (x.depth >= 1) parts.push(link('parent', x.pid));
+            const i = x.siblings.indexOf(x);
+            if (i > 0) parts.push(link('prev', x.siblings[i - 1].id));
+            if (i >= 0 && i < x.siblings.length - 1) parts.push(link('next', x.siblings[i + 1].id));
+            const collapsed = this._collapsed.has(x.id);
+            const toggle = '<span class="cnav-toggle" data-toggle="' + esc(x.id) + '">' +
+              (collapsed ? '[' + (x.sub + 1) + ' more]' : '[\u2013]') + '</span>';
+            x.nav = (parts.length ? ' | ' + parts.join(' | ') : '') + ' ' + toggle;
+          }
+        } else {
+          items.sort((a, b) => b.t - a.t);
+          for (const x of items) { n += 1; x.order = n; }
+        }
+        const parent = rows[0].parentElement;
+        if (parent && parent.style.display !== 'flex') {
+          parent.style.display = 'flex';
+          parent.style.flexDirection = 'column';
+        }
+        for (const x of items) {
+          const disp = (x.hide || x.under) ? 'none' : '';
+          if (x.r.style.display !== disp) x.r.style.display = disp;
+          const nav = x.r.querySelector(':scope > .chead > .cnav');
+          if (nav && nav.innerHTML !== x.nav) nav.innerHTML = x.nav;
+          const collapsed = !!story && this._collapsed.has(x.id);
+          if (x.r.classList.contains('is-collapsed') !== collapsed) x.r.classList.toggle('is-collapsed', collapsed);
+          const author = x.r.getAttribute('data-author') || '';
+          const mine = !!this._profile && x.r.getAttribute('data-deleted') !== 'true' &&
+            !un(author) && author === this._profile.did;
+          if (x.r.classList.contains('is-mine') !== mine) x.r.classList.toggle('is-mine', mine);
+          if (x.hide) continue;
+          const order = String(x.order);
+          if (x.r.style.order !== order) x.r.style.order = order;
+          const ml = x.depth ? (Math.min(x.depth, 8) * 40) + 'px' : '';
+          if (x.r.style.marginLeft !== ml) x.r.style.marginLeft = ml;
+        }
+      }
+    });
+
+component!: &tn-age
+  this: did:key:z6Mk25xwF2EXqFsPJz8oq411DCDvzShd9spHvQ7Sd9Ap5haH
+  module: |2
+    const ready = (fn) => { const lib = globalThis.__tn; if (lib) fn(lib); else setTimeout(() => ready(fn), 40); };
+    customElements.get('tn-age') || customElements.define('tn-age', class extends HTMLElement {
+      // `from=".d-time"` names the row's hidden timestamp span (numbers cannot
+      // ride attributes — see tn-lib); `time="…"` is accepted for text sources.
+      static get observedAttributes() { return ['from', 'time']; }
+      attributeChangedCallback() { this._render(); }
+      connectedCallback() { ready((lib) => { if (!this.isConnected) return; this._lib = lib; lib.watchRow(this); this._render(); }); }
+      disconnectedCallback() { if (this._lib) this._lib.unwatch(this); }
+      _render() {
+        const lib = this._lib; if (!lib) return;
+        const raw = this.hasAttribute('from') ? lib.source(this) : this.getAttribute('time');
+        if (lib.unresolved(raw)) return;
+        const t = parseFloat(raw);
+        if (!isFinite(t) || t < 1e12) { if (this.textContent) this.textContent = ''; return; }
+        const f = lib.ago(t);
+        if (this.textContent !== f) this.textContent = f;
+      }
+    });
+
+component!: &tn-dash
+  this: did:key:z6Mk593JbEoicXLLiLZBNKztNzUWXykffk5ZumohoxPgkycD
+  module: |2
+    customElements.get('tn-dash') || customElements.define('tn-dash', class extends HTMLElement {
+      // Body text arrives as `text="{text}"`; a lone "-" is the store's
+      // placeholder for "no text" and hides the element.
+      static get observedAttributes() { return ['text']; }
+      attributeChangedCallback() { this._chk(); }
+      connectedCallback() { this._chk(); }
+      _chk() {
+        const raw = this.getAttribute('text');
+        if (raw === null || /^\{[^{}]*\}$/.test(raw)) return;
+        const t = raw.trim();
+        const disp = (t === '-' || t === '') ? 'none' : '';
+        if (this.style.display !== disp) this.style.display = disp;
+        if (this.textContent !== raw) this.textContent = raw;
+      }
+    });
+
+component!: &tn-news
+  this: did:key:z6Mk7Wh4duiPt3Newn1ptagFLV6jZw9pDjTguPccuoMGft6f
+  module: |2
+    customElements.get('tn-news') || customElements.define('tn-news', class extends HTMLElement {
+      connectedCallback() {
+        if (this._armed) return;
+        this._armed = true;
+        // Item pane open/close: title links (Ask posts) and comment-count
+        // links carry data-open-item; the logo and the back link carry
+        // data-close-item. The pane's tonk-display re-resolves when its
+        // `entity` attribute changes - the same live-attribute trick the
+        // vault's own editor uses.
+        this.addEventListener('click', (e) => {
+          const open = e.target.closest('[data-open-item]');
+          if (open) {
+            e.preventDefault();
+            const id = open.getAttribute('data-open-item');
+            if (!id || id.indexOf('{') !== -1) return;
+            const host = this.querySelector('.tn-itemhost');
+            if (host && host.getAttribute('entity') !== id) host.setAttribute('entity', id);
+            this.classList.add('is-item');
+            return;
+          }
+          if (e.target.closest('[data-close-item]')) {
+            e.preventDefault();
+            this.classList.remove('is-item');
+            // The logo is the front-page link, as on HN: it also returns to
+            // the "top" tab rather than only closing the item pane.
+            if (e.target.closest('.logo')) {
+              const top = this.querySelector('#tnp-top');
+              if (top && !top.checked) top.checked = true;
+            }
+          }
+        });
+        // Switching tabs always leaves the item pane.
+        this.addEventListener('change', (e) => {
+          if (e.target.matches && e.target.matches('input[name="tnpage"]')) {
+            this.classList.remove('is-item');
+          }
+        });
+      }
+    });
+
+component!: &tn-itemlink
+  this: did:key:z6Mk8jbzHawJhXdCjgBEQH8DvDx6Lv7qruZ5UM8zLXP9gmF7
+  module: |2
+    const ready = (fn) => { const lib = globalThis.__tn; if (lib) fn(lib); else setTimeout(() => ready(fn), 40); };
+    customElements.get('tn-itemlink') || customElements.define('tn-itemlink', class extends HTMLElement {
+      // The element itself is the click target: tn-news opens whatever
+      // [data-open-item] the click lands in, so no inner <a> is needed and any
+      // children (the story label in the comments tab) are left untouched.
+      // With `story` it renders the comment count from the rows on the page
+      // (`from` is the fallback when no comments pane is mounted); without
+      // either, it only wires the click.
+      static get observedAttributes() { return ['item', 'from', 'story']; }
+      attributeChangedCallback() { this._render(); }
+      connectedCallback() {
+        ready((lib) => {
+          if (!this.isConnected) return;
+          this._lib = lib;
+          if (this.hasAttribute('from')) lib.watchRow(this);
+          if (this.hasAttribute('story')) lib.watchPane(this);
+          this._render();
+        });
+      }
+      disconnectedCallback() { if (this._lib) this._lib.unwatch(this); }
+      _render() {
+        const lib = this._lib; if (!lib) return;
+        const item = this.getAttribute('item') || '';
+        if (item && !lib.unresolved(item)) {
+          if (this.getAttribute('data-open-item') !== item) this.setAttribute('data-open-item', item);
+        } else if (this.hasAttribute('data-open-item')) {
+          this.removeAttribute('data-open-item');
+        }
+        if (!this.hasAttribute('from') && !this.hasAttribute('story')) return;
+        let n = lib.countComments(this, this.getAttribute('story'));
+        if (n === null) {
+          const raw = lib.source(this);
+          if (lib.unresolved(raw)) return;
+          n = parseInt(raw, 10);
+        }
+        const label = !isFinite(n) ? '' : n === 0 ? 'discuss' : n + (n === 1 ? ' comment' : ' comments');
+        if (this.textContent !== label) this.textContent = label;
+      }
+    });
+
+component!: &tn-comment-form
+  this: did:key:z6MkAqEoiPPL4sYCFRjkXVoHXCRueBjo4mCZboCeXpSLJDtx
+  module: |2
+    const ready = (fn) => { const lib = globalThis.__tn; if (lib) fn(lib); else setTimeout(() => ready(fn), 40); };
+    customElements.get('tn-comment-form') || customElements.define('tn-comment-form', class extends HTMLElement {
+      // Top-level comment box. Signed with the profile from GET /api/profile
+      // (`comment` → news/post-comment). If the profile cannot be read the
+      // comment still posts, unsigned, through the legacy event
+      // (`commentanon` → post-comment).
+      connectedCallback() {
+        if (this._built) return;
+        this._built = true;
+        this.innerHTML = [
+          '<textarea rows="4" cols="60"></textarea><br>',
+          '<button type="button">add comment</button>',
+          '<span class="posting-as"></span> <span class="note"></span>'
+        ].join('');
+        const who = this.querySelector('.posting-as');
+        ready((lib) => {
+          lib.loadProfile().then((p) => { this._profile = p; who.textContent = 'posting as ' + p.name; },
+            () => { this._profile = null; who.textContent = 'profile unavailable — posting anonymously'; });
+        });
+        this.querySelector('button').addEventListener('click', () => {
+          const ta = this.querySelector('textarea');
+          const text = ta.value.trim();
+          if (!text) return;
+          const story = this.getAttribute('story');
+          if (!story || story.indexOf('{') !== -1) return;
+          const p = this._profile;
+          // Signed: verb-specific keys for news/post-comment (camelCase here
+          // becomes dom.event.detail/comment-story …). Unsigned: the legacy
+          // post-comment keys.
+          const detail = p
+            ? { commentStory: story, commentText: text, commentTime: Date.now(), commentAuthor: p.did, commentHandle: p.name }
+            : { story: story, ctext: text, time: Date.now() };
+          this.dispatchEvent(new CustomEvent(p ? 'comment' : 'commentanon', { bubbles: true, detail: detail }));
+          ta.value = '';
+          this.querySelector('.note').textContent = 'added';
+          setTimeout(() => { this.querySelector('.note').textContent = ''; }, 1500);
+        });
+      }
+    });
+
+component!: &tn-title
+  this: did:key:z6MkH1RP7AMpYF5Q7p9iAk6EaYpWeeuwK8kctQZgjjgHuQSx
+  module: |2
+    customElements.get('tn-title') || customElements.define('tn-title', class extends HTMLElement {
+      // Title text comes in as `label="{title}"` (see tn-age for why), the
+      // link target as `url`, and the item id for Ask posts (no url) as `item`.
+      static get observedAttributes() { return ['url', 'item', 'label']; }
+      attributeChangedCallback() { this._render(); }
+      connectedCallback() { this._render(); }
+      _render() {
+        const unresolved = (v) => /^\{[^{}]*\}$/.test(v);
+        const title = this.getAttribute('label') || '';
+        const url = this.getAttribute('url') || '-';
+        const item = this.getAttribute('item') || '';
+        if (!title || unresolved(title) || unresolved(url) || unresolved(item)) return;
+        const key = title + '\u0000' + url + '\u0000' + item;
+        if (this._key === key) return;
+        this._key = key;
+        const a = document.createElement('a');
+        a.textContent = title;
+        let site = '';
+        if (url && url !== '-') {
+          a.href = url; a.target = '_blank'; a.rel = 'noopener';
+          try { site = new URL(url).hostname.replace(/^www\./, ''); } catch (e) {}
+        } else {
+          a.setAttribute('data-open-item', item);
+        }
+        this.textContent = '';
+        this.appendChild(a);
+        if (site) {
+          const s = document.createElement('span');
+          s.className = 'sitebit';
+          s.textContent = ' (' + site + ')';
+          this.appendChild(s);
+        }
+      }
+    });
+
+component!: &tn-stories
+  this: did:key:z6MkHqVNoZfYiQ8DsCBQXziri9ub6iKnhYYY9erj4Z2JVtyu
+  module: |2
+    customElements.get('tn-stories') || customElements.define('tn-stories', class extends HTMLElement {
+      connectedCallback() {
+        this._mo = new MutationObserver(() => this._q());
+        this._mo.observe(this, { childList: true, subtree: true });
+        this._q();
+      }
+      _q() {
+        if (this._t) return;
+        this._t = setTimeout(() => { this._t = null; this._apply(); }, 0);
+      }
+      _apply() {
+        const rows = [...this.querySelectorAll('.srow')];
+        if (!rows.length) return;
+        const mode = this.getAttribute('mode') || 'top';
+        const now = Date.now();
+        const items = rows.map(r => {
+          const t = parseFloat((r.querySelector('.d-time') || {}).textContent) || 0;
+          const p = parseInt((r.querySelector('.d-points') || {}).textContent) || 0;
+          const u = r.getAttribute('data-url') || '';
+          return { r, t, p, u, hide: false };
+        });
+        if (mode === 'ask') items.forEach(x => x.hide = x.u !== '-');
+        if (mode === 'past') items.forEach(x => x.hide = (now - x.t) < 86400000);
+        const score = x => x.p / Math.pow((now - x.t) / 3600000 + 2, 1.8);
+        const byTime = (a, b) => b.t - a.t;
+        const byScore = (a, b) => score(b) - score(a);
+        items.sort(mode === 'new' || mode === 'past' ? byTime : byScore);
+        const parent = rows[0].parentElement;
+        if (parent && parent.style.display !== 'flex') {
+          parent.style.display = 'flex';
+          parent.style.flexDirection = 'column';
+        }
+        let n = 0;
+        for (const x of items) {
+          const disp = x.hide ? 'none' : '';
+          if (x.r.style.display !== disp) x.r.style.display = disp;
+          if (!x.hide) {
+            n += 1;
+            if (x.r.style.order !== String(n)) x.r.style.order = String(n);
+            const rank = x.r.querySelector('.rank');
+            const label = n + '.';
+            if (rank && rank.textContent !== label) rank.textContent = label;
+          }
+        }
+      }
+    });
+
+component!: &tn-submit
+  this: did:key:z6MkHwK9rnciCQeKzV6fyuke6TRGeWjiaqCCJzeLyvvKHhut
+  module: |2
+    customElements.get('tn-submit') || customElements.define('tn-submit', class extends HTMLElement {
+      connectedCallback() {
+        if (this._built) return;
+        this._built = true;
+        this.innerHTML = [
+          '<table class="subform"><tbody>',
+          '<tr><td class="lbl">title</td><td><input name="title" size="50" maxlength="120"></td></tr>',
+          '<tr><td class="lbl">url</td><td><input name="url" size="50"></td></tr>',
+              '<tr><td class="lbl">text</td><td><textarea name="text" rows="4" cols="49"></textarea></td></tr>',
+          '<tr><td></td><td><button type="button">submit</button> <span class="note"></span></td></tr>',
+          '</tbody></table>',
+          '<p class="subhelp">Leave url blank to submit a question for discussion. If there is no url, text will appear at the top of the thread.</p>'
+        ].join('');
+        this.querySelector('button').addEventListener('click', () => {
+          const g = n => this.querySelector('[name=' + n + ']').value.trim();
+          const title = g('title');
+          if (!title) { this._note('title is required'); return; }
+          let url = g('url');
+          if (url) {
+            if (!/^https?:\/\//.test(url)) url = 'https://' + url;
+            try { new URL(url); } catch (e) { this._note('that url does not look valid'); return; }
+          }
+          this.dispatchEvent(new CustomEvent('post', {
+            bubbles: true,
+            detail: { title: title, url: url || '-', text: g('text') || '-', time: Date.now() }
+          }));
+          this.querySelectorAll('input,textarea').forEach(i => i.value = '');
+          this._note('submitted - it is on the new tab');
+        });
+      }
+      _note(m) { this.querySelector('.note').textContent = m; }
+    });
+
+
+# ==========================================================================
+# Content
+# ==========================================================================
+
+vault/node!: &demo-page-tonk-news
+  this: did:key:z6MkFjA5ztMvMDSiBQ3kYnPLdyRr4L5L5GiMPaudE98bozKq
+  kind: "file"
+  name: "Tonk News"
+  order: "i"
+  parent: did:key:z6MkCgHwvGZEeVTP1udYS2qvoLyfezZbyuc5ar9drPziQDEu
+
+vault/page!:
+  this: did:key:z6MkFjA5ztMvMDSiBQ3kYnPLdyRr4L5L5GiMPaudE98bozKq
+  model: news-demo-page
+  title: "Tonk News"
+
+news-demo-page!:
+  this: did:key:z6MkFjA5ztMvMDSiBQ3kYnPLdyRr4L5L5GiMPaudE98bozKq
+  heading: "Tonk News"
+
+comment!:
+  this: did:key:z6Mk4FJkssYU9HPoy6nxHyMSLGJYuQg5mfhCzi4Z7eemiAe4
+  story: did:key:z6MkEA87fXNAEPtVeoYhoiEya5ntJhAFGokTrAM1oe9t8qFm
+  text: "A classic. The seven ideals section holds up really well."
+  time: 1787833940379.0
+
+comment!:
+  this: did:key:z6Mk7GzCuqzL9ky1vpn2XG1UVeYcwxJWoWJcCPXVhdGiD5oM
+  story: did:key:z6MkDaz21jVBpdK6uKWVJi9YjN4dwb2V2TK27KszdoWXBnJu
+  text: "Been using this for a week - the invite flow is delightfully simple."
+  time: 1787837540379.0
+
+comment!:
+  this: did:key:z6MkBtLn9WzLazAJ1dyAvCYbLLLtvyM5jdVVBQUySRqYQr4X
+  story: did:key:z6MkDaz21jVBpdK6uKWVJi9YjN4dwb2V2TK27KszdoWXBnJu
+  text: "How does it handle conflicts on cardinality-one attributes?"
+  time: 1787839340379.0
+
+story!: &seed-5
+  this: did:key:z6MkHH2NaJLgmbHnzqjzhNVyufAMEqYgb6BKdNnio9zXkcpA
+  comments: 0
+  points: 6
+  text: "-"
+  time: 1787589140379.0
+  title: "CRDTs illustrated: how sync engines converge"
+  url: "https://crdt.tech"
+
+story!: &seed-4
+  this: did:key:z6Mk4wmQCtLAMjb91JzqP5AZTjoK86yxuPSnrB43xPG3aPQU
+  comments: 0
+  points: 4
+  text: "-"
+  time: 1787733140379.0
+  title: "Datalog as a substrate for collaborative apps"
+  url: "https://en.wikipedia.org/wiki/Datalog"
+
+story!: &seed-3
+  this: did:key:z6MkEm4sRYxB9qEhsxcP6MThUoMqBRR5p7uSBASKUSqRz9qd
+  comments: 0
+  points: 3
+  text: "Small experiments welcome. What are you hacking on with local-first tools?"
+  time: 1787823140379.0
+  title: "Ask TN: What are you building this week?"
+  url: "-"
+
+story!: &seed-2
+  this: did:key:z6MkEA87fXNAEPtVeoYhoiEya5ntJhAFGokTrAM1oe9t8qFm
+  comments: 1
+  points: 9
+  text: "-"
+  time: 1787830340379.0
+  title: "Local-first software: you own your data, in spite of the cloud"
+  url: "https://www.inkandswitch.com/local-first/"
+
+story!: &seed-1
+  this: did:key:z6MkDaz21jVBpdK6uKWVJi9YjN4dwb2V2TK27KszdoWXBnJu
+  comments: 2
+  points: 9
+  text: "-"
+  time: 1787835740379.0
+  title: "Tonk: a synced fact store you can hand to anyone"
+  url: "https://tonk.xyz"

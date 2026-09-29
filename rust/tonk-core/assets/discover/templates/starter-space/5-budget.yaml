@@ -1,0 +1,1317 @@
+# SPDX-License-Identifier: CC0-1.0
+# Tonk asserted notation. Repeated top-level keys are intentional.
+#
+# Starter space — Budget
+#
+# Infra budget demo: a spreadsheet note
+#
+# One of 8 notation documents that recreate the Tonk starter space in a
+# fresh space. Evaluate them in file order:
+#
+#   tonk eval 1-vault.yaml
+#   tonk eval 2-pages.yaml
+#   tonk eval 3-news.yaml
+#   tonk eval 4-todos.yaml
+#   tonk eval 5-budget.yaml
+#   tonk eval 6-dots.yaml
+#   tonk eval 7-zork.yaml
+#   tonk eval 8-playground.yaml
+#
+# Exported from the live space on 2026-09-08 with Tonk 0.6.12. Blobs are
+# embedded as data: URIs. Runtime state (per-device state, session
+# transcripts, agent heartbeats, the roster, and history) is left out.
+#
+# Author: Tonk <hello@tonk.xyz>. The authors' own work is CC0 1.0; embedded
+# fonts and third-party artwork keep their own licenses (see LICENSE.txt
+# in the vault).
+
+
+# ==========================================================================
+# Attributes
+# ==========================================================================
+
+attribute!: &budget-csv
+  description: "The sheet as CSV; cells starting with = are formulas evaluated client-side"
+  the: xyz.tonk.budget/csv
+  as: Text
+  cardinality: one
+
+attribute!: &budget-heading
+  description: "Marks the vault note hosting the Budget demo; the page H1"
+  the: xyz.tonk.demo.budget/heading
+  as: Text
+  cardinality: one
+
+
+# ==========================================================================
+# Concepts
+# ==========================================================================
+
+concept!: &budget-demo-page
+  description: "The Budget demo - a synced spreadsheet with a lightweight formula engine"
+  with:
+    heading: budget-heading
+
+concept!: &budget/sheet
+  description: "A shared budget spreadsheet: whole CSV supersedes on every edit"
+  with:
+    csv: budget-csv
+
+concept!: &budget/sheet-styles
+  description: "Per-sheet presentation for the budget page: bold/italic/underline, alignment, fill and number format for rows, columns and cells, as one JSON map."
+  with:
+    styles:
+      description: "The whole style map as JSON: {s:{sheet}, r:{row:{…}}, c:{col:{…}}, x:{\"r,c\":{…}}}"
+      the: xyz.tonk.budget/styles
+      as: Text
+      cardinality: one
+
+concept!: &budget/sheet-widths
+  this: tonk:budget/sheet-widths
+  description: "Column widths of a shared budget sheet — px per data column, comma-separated; last-writer-wins like the CSV."
+  with:
+    widths:
+      description: "Column widths in px, one per data column, comma-separated (the row-number gutter is not included)"
+      the: xyz.tonk.budget/widths
+      as: Text
+      cardinality: one
+
+
+# ==========================================================================
+# Commands (transient concepts fired by the UI)
+# ==========================================================================
+
+command!: &budget-sync
+  with:
+    csv:
+      description: "The full CSV after the edit"
+      the: dom.event.detail/csv
+      as: Text
+      cardinality: one
+    sheet:
+      description: "The shared sheet being updated"
+      the: dom.event.detail/sheet
+      as: Entity
+      cardinality: one
+
+command!: &budget/set-styles
+  with:
+    sheet:
+      description: "The sheet whose style map is being replaced"
+      the: dom.event.detail/styles-sheet
+      as: Entity
+      cardinality: one
+    styles:
+      description: "The whole style map as JSON"
+      the: dom.event.detail/styles
+      as: Text
+      cardinality: one
+
+command!: &budget/set-widths
+  description: "Store the column widths after a drag or an auto-fit."
+  with:
+    sheet:
+      description: "The shared sheet whose columns were resized"
+      the: dom.event.detail/widths-sheet
+      as: Entity
+      cardinality: one
+    widths:
+      description: "The full width list, px per data column, comma-separated"
+      the: dom.event.detail/widths
+      as: Text
+      cardinality: one
+
+
+# ==========================================================================
+# Rules
+# ==========================================================================
+
+rule!:
+  assert!: budget/sheet
+  when:
+    - assert: budget-sync
+      where: { csv: ?csv, sheet: ?this }
+
+rule!:
+  assert!: budget/sheet-styles
+  when:
+    - assert: budget/set-styles
+      where: { sheet: ?this, styles: ?styles }
+
+rule!:
+  assert!: budget/sheet-widths
+  when:
+    - assert: budget/set-widths
+      where: { sheet: ?this, widths: ?widths }
+
+
+# ==========================================================================
+# Views
+# ==========================================================================
+
+view!:
+  this: budget-demo-page
+  show:
+    ui: |2
+      <div class="budget-page">
+      <style>
+        .budget-page {
+          max-width: 940px; width: min(940px, calc(100% - 28px));
+          margin: 26px auto 48px; padding: 24px 24px 28px;
+          background: var(--wa-color-surface-raised, #fff);
+          border: 1px solid var(--wa-color-surface-border, #e6e6e9);
+          border-radius: 14px;
+          box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 10px 32px rgba(0,0,0,.06);
+          color: var(--wa-color-text-normal, #1d1d1f);
+          font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+          --bs-line: var(--wa-color-surface-border, #e6e6e9);
+          --bs-quiet: var(--wa-color-text-quiet, #8a8a8e);
+          --bs-ink: var(--wa-color-text-normal, #1d1d1f);
+          --bs-gut: color-mix(in srgb, var(--wa-color-surface-border, #ececef) 30%, transparent);
+          --bs-hover: color-mix(in srgb, var(--wa-color-text-normal, #1d1d1f) 6%, transparent);
+          --bs-sel: rgba(113, 187, 231, .16);
+          --bs-selhead: rgba(113, 187, 231, .30);
+          --bs-accent: #71BBE7;
+        }
+        .budget-page h1 { margin: 0 0 4px; font-size: 24px; letter-spacing: -0.02em; }
+        /* The sheet takes keyboard focus after every commit; the active cell
+           already draws its ring, so the element's own focus outline is noise. */
+        budget-sheet { display: block; }
+        budget-sheet:focus, budget-sheet:focus-visible { outline: none; }
+        .budget-sub { margin: 0 0 14px; font-size: 13px; color: var(--bs-quiet); }
+        .bs-hint { font-size: 12px; color: var(--bs-quiet); }
+        .bs-hint b { font-weight: 600; }
+        /* -- toolbar ----------------------------------------------------- */
+        .bs-bar { display: flex; justify-content: space-between; align-items: center; gap: 12px;
+          flex-wrap: wrap; margin-bottom: 8px; }
+        .bs-tools { display: inline-flex; align-items: center; gap: 2px; padding: 3px;
+          border: 1px solid var(--bs-line); border-radius: 9px; }
+        .bs-sep { width: 1px; height: 16px; margin: 0 4px; background: var(--bs-line); }
+        /* The host styles every bare <button> as a 40px form control; every metric
+           that rule sets is pinned here or the toolbar grows into a row of pills. */
+        .bs-tb, .bs-mi, .bs-chev {
+          display: inline-flex !important; align-items: center !important; justify-content: center !important;
+          box-sizing: border-box !important; margin: 0 !important; border: 0 !important; border-radius: 6px !important;
+          background: transparent !important; box-shadow: none !important; color: var(--bs-ink) !important;
+          font: inherit !important; line-height: 1 !important; cursor: pointer !important; text-decoration: none !important;
+        }
+        .bs-tb { width: 26px !important; height: 26px !important; min-height: 0 !important; padding: 0 !important;
+          font-size: 13px !important; font-weight: 600 !important; color: var(--bs-quiet) !important; }
+        .bs-tb svg { width: 15px; height: 15px; }
+        .bs-tb:hover { background: var(--bs-hover) !important; color: var(--bs-ink) !important; }
+        .bs-tb.is-on { background: color-mix(in srgb, var(--bs-accent) 22%, transparent) !important; color: var(--bs-ink) !important; }
+        .bs-tb:disabled { opacity: .35 !important; cursor: default !important; background: transparent !important; }
+        .bs-tb--b { font-weight: 800 !important; }
+        .bs-tb--i { font-style: italic !important; font-family: Georgia, "Times New Roman", serif !important; font-size: 15px !important; }
+        .bs-tb--u { text-decoration: underline !important; text-underline-offset: 2px; }
+        .bs-tb--fmt { font-size: 10.5px !important; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+        /* -- grid -------------------------------------------------------- */
+        .bs-scroll { overflow-x: auto; border: 1px solid var(--bs-line); border-radius: 8px; }
+        .bs-t { border-collapse: collapse; width: 100%; font-size: 13.5px; font-variant-numeric: tabular-nums; }
+        .bs-t th, .bs-t td { border: 1px solid var(--bs-line); padding: 5px 9px; }
+        .bs-gut { background: var(--bs-gut); color: var(--bs-quiet); font-size: 10.5px; font-weight: 500;
+          text-align: center; min-width: 1.6em; user-select: none; -webkit-user-select: none; }
+        .bs-t th.bs-gut { position: relative; padding: 3px 6px; }
+        .bs-t th.bs-rowhead, .bs-t th.bs-colhead { cursor: pointer; }
+        .bs-t th.bs-rowhead:hover, .bs-t th.bs-colhead:hover, .bs-t th.bs-corner:hover { background: var(--bs-hover); }
+        .bs-t th.is-selhead { background: var(--bs-selhead); color: var(--bs-ink); }
+        .bs-lbl { display: inline-block; min-width: 1.4em; }
+        /* Row/column menus live behind a ⌄ that appears on hover or selection. */
+        .bs-chev { position: absolute !important; right: 1px; top: 50%; transform: translateY(-50%);
+          width: 16px !important; height: 16px !important; min-height: 0 !important; padding: 0 !important;
+          font-size: 11px !important; color: var(--bs-quiet) !important; opacity: 0; transition: opacity 120ms ease; }
+        .bs-t th:hover .bs-chev, .bs-t th.is-selhead .bs-chev { opacity: 1; }
+        .bs-chev:hover { background: var(--bs-hover) !important; color: var(--bs-ink) !important; }
+        .bs-t th.bs-colhead { padding-right: 18px; }
+        .bs-cell { cursor: cell; min-width: 4em; white-space: nowrap; user-select: none; -webkit-user-select: none; }
+        /* Selection: a tint painted OVER the cell (inset shadow, so a fill colour
+           still shows through) and a Tonk-blue ring on the active cell. */
+        .bs-t td.is-sel { box-shadow: inset 0 0 0 100vmax var(--bs-sel); }
+        .bs-t td.is-active { outline: 2px solid var(--bs-accent); outline-offset: -2px; }
+        /* Column widths (see the component): auto layout until someone drags or
+           fits a column, then a <colgroup> + fixed layout where the sum of the
+           <col> widths wins. Gutter 38px and "+" column 34px in both modes. */
+        .bs-t.is-fixed { table-layout: fixed; width: 1px; }
+        .bs-t col.bs-cg { width: 38px; }
+        .bs-t col.bs-cp { width: 34px; }
+        .bs-t th.bs-corner { width: 38px; box-sizing: border-box; }
+        .bs-t td.bs-cell { overflow: hidden; text-overflow: ellipsis; }
+        .bs-rz { position: absolute; top: 0; bottom: 0; right: -4px; width: 9px; z-index: 1;
+          cursor: col-resize; touch-action: none; }
+        .bs-rz::after { content: ""; position: absolute; top: 3px; bottom: 3px; left: 3px; width: 2px;
+          border-radius: 1px; background: var(--bs-quiet); opacity: 0; transition: opacity 120ms ease; }
+        .bs-t tr:first-child:hover .bs-rz::after { opacity: .55; }
+        budget-sheet.is-resizing, budget-sheet.is-resizing * { cursor: col-resize; user-select: none; }
+        .bs-t td:nth-child(2), .bs-t th:nth-child(2) { white-space: normal; min-width: 13em; }
+        .bs-head { font-weight: 700; }
+        .bs-num { text-align: right; }
+        .bs-formula { color: color-mix(in srgb, var(--bs-ink) 88%, #F27121); }
+        .bs-neg { color: #F27121; }
+        .bs-err { color: #F27121; font-weight: 600; }
+        /* The "+" affordances: a header cell after the last column, a row after the
+           last row. Quiet until hovered. The void cells under the + column keep the
+           grid rectangular without drawing a column. */
+        .bs-t th.bs-plus, .bs-t td.bs-plus { color: var(--bs-quiet); cursor: pointer; font-weight: 500; }
+        .bs-t th.bs-plus { width: 34px; box-sizing: border-box; font-size: 14px; }
+        .bs-t td.bs-plus { text-align: left; font-size: 12.5px; background: var(--bs-gut); }
+        .bs-t th.bs-plus:hover, .bs-t td.bs-plus:hover { color: var(--bs-ink); background: var(--bs-hover); }
+        .bs-t td.bs-void { border-top: 0; border-bottom: 0; border-right: 0; background: transparent; padding: 0; }
+        .bs-t tr.bs-plusrow th { border-right: 0; }
+        /* Editing: the input fills the cell as it is and shows only the caret;
+           everything the host's form-control rules set on a bare <input> is reset. */
+        .bs-in {
+          display: block; width: 100%; min-width: 0; height: auto;
+          box-sizing: border-box; margin: 0; padding: 0;
+          border: 0; border-radius: 0; outline: none; box-shadow: none;
+          background: transparent; color: inherit;
+          font: inherit; line-height: inherit; text-align: inherit;
+          caret-color: currentColor;
+        }
+        .bs-wait { color: var(--bs-quiet); font-size: 13px; padding: 14px; }
+        .bs-foot { display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+          flex-wrap: wrap; margin-top: 8px; font-size: 12px; color: var(--bs-quiet); }
+        .bs-count { font-variant-numeric: tabular-nums; }
+        /* -- context menus (fixed, viewport-clamped by the component) ---------- */
+        .bs-menu { position: fixed; z-index: 70; min-width: 210px; padding: 4px;
+          background: var(--wa-color-surface-raised, #fff); border: 1px solid var(--bs-line);
+          border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.14), 0 1px 2px rgba(0,0,0,.06);
+          font-size: 13px; line-height: 1.3; }
+        .bs-mi { width: 100% !important; height: auto !important; min-height: 0 !important;
+          justify-content: flex-start !important; gap: 8px !important; padding: 6px 10px !important;
+          text-align: left !important; font-size: 13px !important; font-weight: 400 !important; }
+        .bs-mi:hover { background: var(--bs-hover) !important; }
+        .bs-mi.is-on { color: var(--bs-ink) !important; }
+        .bs-mi--danger { color: #cc3333 !important; }
+        .bs-mi:disabled { opacity: .4 !important; cursor: default !important; background: transparent !important; }
+        .bs-mlabel { flex: 1; }
+        .bs-mcheck { color: var(--bs-quiet); font-size: 12px; }
+        .bs-msep { height: 1px; margin: 4px 6px; background: var(--bs-line); }
+        .bs-mhead { padding: 6px 10px 2px; font-size: 10.5px; font-weight: 600; letter-spacing: .06em;
+          text-transform: uppercase; color: var(--bs-quiet); }
+        .bs-swatch { width: 14px; height: 14px; border-radius: 4px; border: 1px solid rgba(0,0,0,.1); flex: 0 0 auto; }
+        .budget-how { margin: 14px 0 0; font-size: 12px; color: var(--bs-quiet); }
+      </style>
+      <div hidden>
+        <tonk-display model=component></tonk-display>
+        <tonk-display model=budget/sheet></tonk-display>
+        <tonk-display model=tonk:budget/sheet-widths></tonk-display>
+        <tonk-display model=budget/sheet-styles></tonk-display>
+      </div>
+      <h1>{heading}</h1>
+      <p class="budget-sub">What your stack costs per month — entry prices read off the vendors' own pricing pages (Aug 2026), totalled with live formulas. (The wiki's plain table block stores CSV without evaluating anything; this page adds a lightweight engine on top.)</p>
+      <budget-sheet onsheetsync=budget-sync onwidthsync=budget/set-widths onstylesync=budget/set-styles></budget-sheet>
+      <p class="budget-how">Method: the cheapest tier that properly covers the job, monthly billing, rounded USD/mo. A 0 means a free tier genuinely does it (GitHub Pages, Discourse&#8217;s free community plan&#8230;); blank means it isn&#8217;t that tool&#8217;s job. Notable: Notion charges per seat, so 40 wiki contributors is 40&#215;$12; Perplexity&#8217;s persistent agentic memory (&#8220;Brain&#8221;) is Max-only at $200. The sheet syncs live to everyone in this space: cells, formatting and column widths are each whole-sheet last-writer-wins, and undo is per viewer. Deleting a row or column rewrites the formulas that pointed past it; a formula that pointed <em>at</em> it shows #REF!.</p>
+      </div>
+
+view!:
+  this: budget/sheet
+  show:
+    directory: |2
+      <div class="budget-sheet-row" data-sheet={this}><span class="bs-csv" hidden>{csv}</span></div>
+
+view!:
+  this: budget/sheet-styles
+  show:
+    directory: |2
+      <div class="budget-styles-row" data-sheet={this} data-styles={styles}></div>
+
+view!:
+  this: tonk:budget/sheet-widths
+  show:
+    directory: |2
+      <div class="budget-widths-row" data-sheet={this} data-widths={widths}></div>
+
+
+# ==========================================================================
+# Components (web components loaded by the shell)
+# ==========================================================================
+
+component!: &budget-sheet-component
+  this: did:key:z6Mk9MwKVynPFZn6oGmPthR5CqVT7SK9uSyZECM8qnszeTiT
+  module: |2-
+    customElements.get('budget-sheet') || customElements.define('budget-sheet', class extends HTMLElement {
+      connectedCallback() {
+        if (this._built) { this._arm(); return; }
+        this._built = true;
+        this.grid = null;
+        this.styles = { s: {}, r: {}, c: {}, x: {} };
+        this.lastCsv = null;
+        this.lastStyles = null;
+        this.editing = null;     // { r, c, seed }: seed = text that replaces the cell on open
+        this.sel = null;         // { a: {r,c}, f: {r,c} } anchor + focus, an inclusive rectangle
+        this.widths = null;      // px per data column, or null = auto layout
+        this.lastWidths = null;  // the widths string last seen on the shared row
+        this._drag = null;
+        this._undo = []; this._redo = [];
+        this.tabIndex = 0;       // keyboard target while no cell is being edited
+        const ic = (d) => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +
+          'stroke-linecap="round" stroke-linejoin="round">' + d + '</svg>';
+        this.innerHTML = [
+          '<div class="bs-bar"><span class="bs-tools" role="toolbar" aria-label="Formatting">',
+          '<button type="button" class="bs-tb" data-tb="undo" title="Undo (⌘Z)">', ic('<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>'), '</button>',
+          '<button type="button" class="bs-tb" data-tb="redo" title="Redo (⇧⌘Z)">', ic('<path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/>'), '</button>',
+          '<span class="bs-sep"></span>',
+          '<button type="button" class="bs-tb bs-tb--b" data-tb="b" title="Bold (⌘B)">B</button>',
+          '<button type="button" class="bs-tb bs-tb--i" data-tb="i" title="Italic (⌘I)">I</button>',
+          '<button type="button" class="bs-tb bs-tb--u" data-tb="u" title="Underline (⌘U)">U</button>',
+          '<span class="bs-sep"></span>',
+          '<button type="button" class="bs-tb" data-tb="a:l" title="Align left">', ic('<path d="M21 6H3M15 12H3M17 18H3"/>'), '</button>',
+          '<button type="button" class="bs-tb" data-tb="a:c" title="Align centre">', ic('<path d="M21 6H3M17 12H7M19 18H5"/>'), '</button>',
+          '<button type="button" class="bs-tb" data-tb="a:r" title="Align right">', ic('<path d="M21 6H3M21 12H9M21 18H7"/>'), '</button>',
+          '<span class="bs-sep"></span>',
+          '<button type="button" class="bs-tb" data-tb="fill" title="Fill colour">', ic('<path d="m19 11-8-8-8.6 8.6a2 2 0 0 0 0 2.8l5.2 5.2c.8.8 2 .8 2.8 0L19 11Z"/><path d="m5 2 5 5"/><path d="M2 13h15"/><path d="M22 20a2 2 0 1 1-4 0c0-1.6 1.7-2.4 2-4 .3 1.6 2 2.4 2 4Z"/>'), '</button>',
+          '<button type="button" class="bs-tb bs-tb--fmt" data-tb="fmt" title="Number format">123</button>',
+          '<span class="bs-sep"></span>',
+          '<button type="button" class="bs-tb" data-tb="clearfmt" title="Clear formatting">', ic('<path d="M4 7V4h16v3"/><path d="M5 20h6"/><path d="M13 4 8 20"/><path d="m15 15 5 5"/><path d="m20 15-5 5"/>'), '</button>',
+          '</span><span class="bs-hint">Click to select, type or double-click to edit. Formulas start with <b>=</b> (SUM, AVG, MIN, MAX, COUNT, A1 refs, + - * /).</span></div>',
+          '<div class="bs-scroll"><table class="bs-t"><colgroup></colgroup><tbody></tbody></table></div>',
+          '<div class="bs-foot"><span class="bs-count"></span><span class="bs-hint">Right-click a row number or column letter — or use its ⌄ — for insert, delete, sort, fit and more.</span></div>'
+        ].join('');
+
+        // Clicks: toolbar, menus, the + affordances, headers select, cells select.
+        this.addEventListener('click', (e) => {
+          const tb = e.target.closest('.bs-tb');
+          if (tb) { this._toolbar(tb.getAttribute('data-tb'), tb); return; }
+          const mi = e.target.closest('.bs-mi');
+          if (mi) { const act = mi.getAttribute('data-act'); this._closeMenu(); this._act(act); return; }
+          if (e.target.closest('.bs-menu')) return;
+          this._closeMenu();
+          const add = e.target.closest('[data-add]');
+          if (add) { this._addLine(add.getAttribute('data-add')); return; }
+          const chev = e.target.closest('.bs-chev');
+          if (chev) {
+            const r = chev.getBoundingClientRect();
+            if (chev.dataset.r !== undefined) { this._selectRow(+chev.dataset.r); this._openMenu(this._rowMenu(+chev.dataset.r), r.left, r.bottom); }
+            else { this._selectCol(+chev.dataset.c); this._openMenu(this._colMenu(+chev.dataset.c), r.left, r.bottom); }
+            return;
+          }
+          if (e.target.closest('.bs-rz')) return;
+          const rh = e.target.closest('th.bs-rowhead');
+          if (rh) { this._selectRow(+rh.dataset.r, e.shiftKey); return; }
+          const ch = e.target.closest('th.bs-colhead');
+          if (ch) { this._selectCol(+ch.dataset.c, e.shiftKey); return; }
+          if (e.target.closest('th.bs-corner')) { this._selectAll(); return; }
+        });
+        this.addEventListener('dblclick', (e) => {
+          const rz = e.target.closest('.bs-rz');
+          if (rz) { e.preventDefault(); this._autoFit(parseInt(rz.dataset.c, 10)); return; }
+          const td = e.target.closest('td.bs-cell');
+          if (td && !td.querySelector('.bs-in')) this._edit(+td.dataset.r, +td.dataset.c);
+        });
+        this.addEventListener('contextmenu', (e) => {
+          const rh = e.target.closest('th.bs-rowhead'), ch = e.target.closest('th.bs-colhead'), td = e.target.closest('td.bs-cell');
+          if (!rh && !ch && !td) return;
+          e.preventDefault();
+          if (rh) { this._selectRow(+rh.dataset.r); this._openMenu(this._rowMenu(+rh.dataset.r), e.clientX, e.clientY); }
+          else if (ch) { this._selectCol(+ch.dataset.c); this._openMenu(this._colMenu(+ch.dataset.c), e.clientX, e.clientY); }
+          else {
+            const r = +td.dataset.r, c = +td.dataset.c;
+            if (!this._inSel(r, c)) this._select(r, c);
+            this._openMenu(this._cellMenu(r, c), e.clientX, e.clientY);
+          }
+        });
+        // Pointer: column resize handles, and press-and-drag range selection.
+        this.addEventListener('pointerdown', (e) => {
+          const rz = e.target.closest('.bs-rz');
+          if (rz && e.button === 0) { e.preventDefault(); this._dragStart(parseInt(rz.dataset.c, 10), e); return; }
+          const td = e.target.closest('td.bs-cell');
+          if (!td || e.button !== 0 || td.querySelector('.bs-in')) return;
+          if (this.editing) this._commit();
+          const r = +td.dataset.r, c = +td.dataset.c;
+          if (e.shiftKey && this.sel) this._extend(r, c); else this._select(r, c);
+          this._selDrag = true;
+          const up = () => { this._selDrag = false; window.removeEventListener('pointerup', up); };
+          window.addEventListener('pointerup', up);
+        });
+        this.addEventListener('pointerover', (e) => {
+          if (!this._selDrag) return;
+          const td = e.target.closest('td.bs-cell');
+          if (td) this._extend(+td.dataset.r, +td.dataset.c);
+        });
+        this.addEventListener('keydown', (e) => this._key(e));
+        this._onDocDown = (e) => { if (!this.contains(e.target)) this._closeMenu(); };
+        document.addEventListener('pointerdown', this._onDocDown, true);
+        this._arm();
+        this._pull(true);
+      }
+      disconnectedCallback() {
+        if (this._mo) { this._mo.disconnect(); this._mo = null; }
+        document.removeEventListener('pointerdown', this._onDocDown, true);
+      }
+      // Watch the hidden data rows; ignore our own mutations (see dots-game).
+      _arm() {
+        if (this._mo) return;
+        this._mo = new MutationObserver((ms) => {
+          const inSelf = (m) => {
+            const el = m.target.nodeType === 1 ? m.target : m.target.parentElement;
+            return el && el.closest && el.closest('budget-sheet');
+          };
+          if (ms.every(inSelf)) return;
+          clearTimeout(this._t);
+          this._t = setTimeout(() => this._pull(), 30);
+        });
+        this._mo.observe(document.body, { subtree: true, childList: true, characterData: true,
+          attributes: true, attributeFilter: ['data-sheet', 'data-widths', 'data-styles'] });
+      }
+      _shared() {
+        const r = document.querySelector('.budget-sheet-row');
+        if (!r) return null;
+        const el = r.querySelector('.bs-csv');
+        const csv = el ? el.textContent : '';
+        if (!csv || csv.indexOf('{csv}') !== -1) return null;
+        const sheet = r.getAttribute('data-sheet');
+        // Column widths and styles ride two more hidden rows (budget/sheet-widths,
+        // budget/sheet-styles), absent until someone first sets them.
+        const side = (cls, attr, hole) => {
+          const el = document.querySelector('.' + cls + '[data-sheet="' + sheet + '"]');
+          let v = el ? (el.getAttribute(attr) || '') : '';
+          if (v.indexOf(hole) !== -1) v = '';
+          return v;
+        };
+        return { sheet, csv, widths: side('budget-widths-row', 'data-widths', '{widths}'),
+          styles: side('budget-styles-row', 'data-styles', '{styles}') };
+      }
+      _pull(force) {
+        const s = this._shared();
+        if (!s) { if (force) this._render(); return; }
+        // Widths apply in place: no re-render, so an edit in progress survives
+        // a collaborator's drag. Our own drag keeps its live value until it ends.
+        if (s.widths !== this.lastWidths) {
+          this.lastWidths = s.widths;
+          if (!this._drag) { this.widths = this._parseWidths(s.widths); this._applyWidths(); }
+        }
+        let dirty = force;
+        if (s.styles !== this.lastStyles) { this.lastStyles = s.styles; this.styles = this._parseStyles(s.styles); dirty = true; }
+        if (s.csv !== this.lastCsv) { this.lastCsv = s.csv; this.grid = this._parse(s.csv); dirty = true; }
+        if (!dirty) return;
+        if (this.editing && !force) { this._rerenderAfterEdit = true; return; }
+        this._clampSel();
+        this._render();
+      }
+      _push() {
+        const csv = this._serialize(this.grid);
+        this.lastCsv = csv;
+        const s = this._shared();
+        if (s && s.sheet) this.dispatchEvent(new CustomEvent('sheetsync', {
+          bubbles: true, detail: { sheet: s.sheet, csv } }));
+      }
+      // `stylesSheet` reaches the command as dom.event.detail/styles-sheet.
+      _pushStyles() {
+        const styles = this._serializeStyles();
+        // Nothing to say when the map is unchanged — a structural edit on an
+        // unstyled sheet would otherwise mint an empty {} styles fact.
+        if (styles === (this.lastStyles || '{}')) return;
+        this.lastStyles = styles;
+        const s = this._shared();
+        if (s && s.sheet) this.dispatchEvent(new CustomEvent('stylesync', {
+          bubbles: true, detail: { stylesSheet: s.sheet, styles } }));
+      }
+      // --- CSV ---------------------------------------------------------
+      _parse(text) {
+        const rows = []; let row = [], cell = '', q = false;
+        for (let i = 0; i < text.length; i++) {
+          const ch = text[i];
+          if (q) {
+            if (ch === '"') { if (text[i + 1] === '"') { cell += '"'; i++; } else q = false; }
+            else cell += ch;
+          } else if (ch === '"') q = true;
+          else if (ch === ',') { row.push(cell); cell = ''; }
+          else if (ch === '\n') { row.push(cell); rows.push(row); row = []; cell = ''; }
+          else if (ch !== '\r') cell += ch;
+        }
+        row.push(cell); rows.push(row);
+        while (rows.length > 1 && rows[rows.length - 1].every((c) => c === '')) rows.pop();
+        const w = Math.max(1, ...rows.map((r) => r.length));
+        rows.forEach((r) => { while (r.length < w) r.push(''); });
+        return rows;
+      }
+      _serialize(g) {
+        const esc = (c) => (/[",\n]/.test(c) ? '"' + c.replace(/"/g, '""') + '"' : c);
+        return g.map((r) => r.map(esc).join(',')).join('\n');
+      }
+      // --- styles ------------------------------------------------------
+      // {s: sheet, r: {row: flags}, c: {col: flags}, x: {"r,c": flags}}; flags are
+      // b/i/u (1 or an explicit 0 override), a (l|c|r), f (t|n|$|%), h (fill key).
+      // The most specific level wins: cell > row > column > sheet.
+      _parseStyles(str) {
+        const out = { s: {}, r: {}, c: {}, x: {} };
+        if (!str) return out;
+        try {
+          const o = JSON.parse(str);
+          for (const k of ['s', 'r', 'c', 'x']) if (o && o[k] && typeof o[k] === 'object') out[k] = o[k];
+        } catch (e) { /* a malformed map is treated as empty */ }
+        return out;
+      }
+      _serializeStyles() {
+        const S = this.styles, out = {};
+        if (Object.keys(S.s).length) out.s = S.s;
+        for (const k of ['r', 'c', 'x']) {
+          const lvl = {};
+          for (const key in S[k]) if (S[k][key] && Object.keys(S[k][key]).length) lvl[key] = S[k][key];
+          if (Object.keys(lvl).length) out[k] = lvl;
+        }
+        return JSON.stringify(out);
+      }
+      _eff(r, c) {
+        const S = this.styles;
+        return Object.assign({}, S.s, S.c[c] || {}, S.r[r] || {}, S.x[r + ',' + c] || {});
+      }
+      // The selection as a rectangle plus the level it addresses: whole rows,
+      // whole columns, the sheet, or a block of cells.
+      _rect() {
+        if (!this.sel || !this.grid) return null;
+        const a = this.sel.a, f = this.sel.f;
+        const rect = { r0: Math.min(a.r, f.r), r1: Math.max(a.r, f.r), c0: Math.min(a.c, f.c), c1: Math.max(a.c, f.c) };
+        const rows = rect.c0 === 0 && rect.c1 === this._cols() - 1;
+        const cols = rect.r0 === 0 && rect.r1 === this.grid.length - 1;
+        rect.level = rows && cols ? 'sheet' : rows ? 'row' : cols ? 'col' : 'cell';
+        return rect;
+      }
+      _setStyle(key, val) {
+        const rect = this._rect();
+        if (!rect) return;
+        const S = this.styles;
+        const put = (lvl, k) => { if (!S[lvl][k]) S[lvl][k] = {}; if (val === null) delete S[lvl][k][key]; else S[lvl][k][key] = val; };
+        const drop = (lvl, pred) => { for (const k in S[lvl]) if (pred(k)) delete S[lvl][k][key]; };
+        if (rect.level === 'sheet') {
+          if (val === null) delete S.s[key]; else S.s[key] = val;
+          drop('r', () => true); drop('c', () => true); drop('x', () => true);
+        } else if (rect.level === 'row') {
+          for (let r = rect.r0; r <= rect.r1; r++) put('r', r);
+          drop('x', (k) => { const r = +k.split(',')[0]; return r >= rect.r0 && r <= rect.r1; });
+        } else if (rect.level === 'col') {
+          for (let c = rect.c0; c <= rect.c1; c++) put('c', c);
+          drop('x', (k) => { const c = +k.split(',')[1]; return c >= rect.c0 && c <= rect.c1; });
+        } else {
+          for (let r = rect.r0; r <= rect.r1; r++) for (let c = rect.c0; c <= rect.c1; c++) put('x', r + ',' + c);
+        }
+        this._pushStyles();
+        this._render();
+      }
+      _toggle(key) {
+        if (!this.sel) return;
+        this._snapshot();
+        const on = !!this._eff(this.sel.a.r, this.sel.a.c)[key];
+        this._setStyle(key, on ? 0 : 1);
+      }
+      _clearFormat() {
+        const rect = this._rect();
+        if (!rect) return;
+        this._snapshot();
+        const S = this.styles;
+        if (rect.level === 'sheet') { this.styles = { s: {}, r: {}, c: {}, x: {} }; }
+        else {
+          if (rect.level === 'row') for (let r = rect.r0; r <= rect.r1; r++) delete S.r[r];
+          if (rect.level === 'col') for (let c = rect.c0; c <= rect.c1; c++) delete S.c[c];
+          for (const k in S.x) {
+            const [r, c] = k.split(',').map(Number);
+            if (r >= rect.r0 && r <= rect.r1 && c >= rect.c0 && c <= rect.c1) delete S.x[k];
+          }
+        }
+        this._pushStyles();
+        this._render();
+      }
+      // Shift row/column style keys with the grid: delta +1 after an insert at
+      // `at`, -1 after a delete of `at` (whose own keys are dropped).
+      _shiftStyles(axis, at, delta) {
+        const S = this.styles, next = {};
+        for (const k in S[axis]) { const i = +k; if (delta < 0 && i === at) continue; next[i >= at ? i + delta : i] = S[axis][k]; }
+        S[axis] = next;
+        const nx = {};
+        for (const k in S.x) {
+          let [r, c] = k.split(',').map(Number);
+          let i = axis === 'r' ? r : c;
+          if (delta < 0 && i === at) continue;
+          if (i >= at) i += delta;
+          if (axis === 'r') r = i; else c = i;
+          nx[r + ',' + c] = S.x[k];
+        }
+        S.x = nx;
+      }
+      // --- formulas ----------------------------------------------------
+      _values(g) {
+        const memo = new Map(), busy = new Set();
+        const key = (r, c) => r + ',' + c;
+        const cellVal = (r, c) => {
+          if (r < 0 || c < 0 || r >= g.length || c >= g[0].length) return 0;
+          const k = key(r, c);
+          if (memo.has(k)) return memo.get(k);
+          if (busy.has(k)) return '#CYCLE';
+          busy.add(k);
+          const raw = (g[r][c] || '').trim();
+          let v;
+          if (raw.charAt(0) === '=') v = this._eval(raw.slice(1), cellVal);
+          else if (raw !== '' && isFinite(+raw)) v = +raw;
+          else v = raw;
+          busy.delete(k);
+          memo.set(k, v);
+          return v;
+        };
+        return g.map((row, r) => row.map((_, c) => cellVal(r, c)));
+      }
+      _eval(s, cellVal) {
+        if (s.indexOf('#REF!') !== -1) return '#REF!';
+        let i = 0;
+        const skip = () => { while (s[i] === ' ') i++; };
+        const parseRef = () => {
+          const m = /^([A-Za-z]+)([0-9]+)/.exec(s.slice(i));
+          if (!m) return null;
+          i += m[0].length;
+          return { r: parseInt(m[2], 10) - 1, c: this._colIndex(m[1]) };
+        };
+        const toNum = (v) => (typeof v === 'number' ? v : (v === '' ? 0 : (isFinite(+v) ? +v : NaN)));
+        const collect = (a, b, out) => {
+          for (let r = Math.min(a.r, b.r); r <= Math.max(a.r, b.r); r++)
+            for (let c = Math.min(a.c, b.c); c <= Math.max(a.c, b.c); c++) out.push(cellVal(r, c));
+        };
+        const factor = () => {
+          skip();
+          if (s[i] === '(') { i++; const v = expr(); skip(); if (s[i] === ')') i++; return v; }
+          if (s[i] === '-') { i++; const v = factor(); return typeof v === 'number' ? -v : NaN; }
+          const fn = /^(SUM|AVERAGE|AVG|MIN|MAX|COUNT)\s*\(/i.exec(s.slice(i));
+          if (fn) {
+            i += fn[0].length;
+            const vals = [];
+            for (;;) {
+              skip();
+              if (s[i] === ')') break;
+              const save = i;
+              const a = parseRef();
+              skip();
+              if (a && s[i] === ':') { i++; skip(); const b = parseRef(); if (!b) return NaN; collect(a, b, vals); }
+              else { i = save; vals.push(expr()); }
+              skip();
+              if (s[i] === ',') { i++; continue; }
+              break;
+            }
+            if (s[i] === ')') i++; else return NaN;
+            const nums = vals.filter((v) => typeof v === 'number');
+            const name = fn[1].toUpperCase();
+            if (name === 'COUNT') return nums.length;
+            if (!nums.length) return 0;
+            if (name === 'SUM') return nums.reduce((x, y) => x + y, 0);
+            if (name === 'AVG' || name === 'AVERAGE') return nums.reduce((x, y) => x + y, 0) / nums.length;
+            if (name === 'MIN') return Math.min.apply(null, nums);
+            return Math.max.apply(null, nums);
+          }
+          const num = /^[0-9]*\.?[0-9]+/.exec(s.slice(i));
+          if (num) { i += num[0].length; return parseFloat(num[0]); }
+          const ref = parseRef();
+          if (ref) return toNum(cellVal(ref.r, ref.c));
+          return NaN;
+        };
+        const term = () => {
+          let v = factor();
+          for (;;) {
+            skip();
+            const op = s[i];
+            if (op !== '*' && op !== '/') return v;
+            i++;
+            const w = factor();
+            if (typeof v !== 'number' || typeof w !== 'number') return NaN;
+            v = op === '*' ? v * w : v / w;
+          }
+        };
+        const expr = () => {
+          let v = term();
+          for (;;) {
+            skip();
+            const op = s[i];
+            if (op !== '+' && op !== '-') return v;
+            i++;
+            const w = term();
+            if (typeof v !== 'number' || typeof w !== 'number') return NaN;
+            v = op === '+' ? v + w : v - w;
+          }
+        };
+        const out = expr();
+        skip();
+        if (i < s.length) return '#ERR';
+        if (typeof out === 'number') return isFinite(out) ? out : '#ERR';
+        return out;
+      }
+      // Number formats: t plain (up to 2 decimals), n 1,234.56, $ currency, % percent.
+      _fmt(v, f) {
+        if (typeof v !== 'number') return v;
+        if (f === 'n') return v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        if (f === '$') return (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString('en-US', { maximumFractionDigits: 2 });
+        if (f === '%') return (Math.round(v * 1000) / 10).toLocaleString('en-US', { maximumFractionDigits: 1 }) + '%';
+        const r = Math.round(v * 100) / 100;
+        return r.toLocaleString('en-US', { maximumFractionDigits: 2 });
+      }
+      _col(c) {
+        let s = '';
+        for (c = c + 1; c > 0; c = Math.floor((c - 1) / 26)) s = String.fromCharCode(64 + ((c - 1) % 26) + 1) + s;
+        return s;
+      }
+      _colIndex(letters) {
+        let c = 0;
+        for (const ch of letters.toUpperCase()) c = c * 26 + (ch.charCodeAt(0) - 64);
+        return c - 1;
+      }
+      _ref(p) { return this._col(p.c) + (p.r + 1); }
+      // Rewrite every reference in every formula. `mapRef` maps a single cell
+      // (null = gone), `mapRange` maps a range's two corners (null = gone); a
+      // gone reference becomes #REF!, which the evaluator then reports.
+      _rewriteRefs(mapRef, mapRange) {
+        const re = /([A-Za-z]+)([0-9]+)(\s*:\s*([A-Za-z]+)([0-9]+))?/g;
+        for (const row of this.grid) for (let c = 0; c < row.length; c++) {
+          const raw = row[c];
+          if ((raw || '').trim().charAt(0) !== '=') continue;
+          row[c] = '=' + raw.trim().slice(1).replace(re, (m, l1, d1, rng, l2, d2) => {
+            const a = { r: parseInt(d1, 10) - 1, c: this._colIndex(l1) };
+            if (rng) {
+              const b = { r: parseInt(d2, 10) - 1, c: this._colIndex(l2) };
+              const out = mapRange(a, b);
+              return out ? this._ref(out[0]) + ':' + this._ref(out[1]) : '#REF!';
+            }
+            const out = mapRef(a);
+            return out ? this._ref(out) : '#REF!';
+          });
+        }
+      }
+      // --- structure: insert / delete / sort / clear ----------------------
+      _blankRow() { return this.grid[0].map(() => ''); }
+      _insertRow(at) {
+        if (this.editing) this._commit();
+        this._snapshot();
+        this.grid.splice(at, 0, this._blankRow());
+        const sh = (p) => ({ r: p.r >= at ? p.r + 1 : p.r, c: p.c });
+        this._rewriteRefs(sh, (a, b) => [sh(a), sh(b)]);
+        this._shiftStyles('r', at, 1);
+        this._afterStructure();
+      }
+      _insertCol(at) {
+        if (this.editing) this._commit();
+        this._snapshot();
+        this.grid.forEach((row) => row.splice(at, 0, ''));
+        const sh = (p) => ({ r: p.r, c: p.c >= at ? p.c + 1 : p.c });
+        this._rewriteRefs(sh, (a, b) => [sh(a), sh(b)]);
+        this._shiftStyles('c', at, 1);
+        if (this.widths) { this.widths.splice(at, 0, 90); this._pushWidths(); }
+        this._afterStructure();
+      }
+      _deleteRow(at) {
+        if (this.grid.length < 2) return;
+        if (this.editing) this._commit();
+        this._snapshot();
+        this.grid.splice(at, 1);
+        const one = (p) => (p.r === at ? null : { r: p.r > at ? p.r - 1 : p.r, c: p.c });
+        const range = (a, b) => {
+          const lo = Math.min(a.r, b.r), hi = Math.max(a.r, b.r);
+          if (lo === at && hi === at) return null;
+          const f = (r, isLo) => (r === at ? (isLo ? at : at - 1) : (r > at ? r - 1 : r));
+          const A = { r: f(Math.min(a.r, b.r), true), c: a.c }, B = { r: f(Math.max(a.r, b.r), false), c: b.c };
+          return A.r > B.r ? null : [A, B];
+        };
+        this._rewriteRefs(one, range);
+        this._shiftStyles('r', at, -1);
+        this._afterStructure();
+      }
+      _deleteCol(at) {
+        if (this._cols() < 2) return;
+        if (this.editing) this._commit();
+        this._snapshot();
+        this.grid.forEach((row) => row.splice(at, 1));
+        const one = (p) => (p.c === at ? null : { r: p.r, c: p.c > at ? p.c - 1 : p.c });
+        const range = (a, b) => {
+          const lo = Math.min(a.c, b.c), hi = Math.max(a.c, b.c);
+          if (lo === at && hi === at) return null;
+          const f = (c, isLo) => (c === at ? (isLo ? at : at - 1) : (c > at ? c - 1 : c));
+          const A = { r: a.r, c: f(Math.min(a.c, b.c), true) }, B = { r: b.r, c: f(Math.max(a.c, b.c), false) };
+          return A.c > B.c ? null : [A, B];
+        };
+        this._rewriteRefs(one, range);
+        this._shiftStyles('c', at, -1);
+        if (this.widths) { this.widths.splice(at, 1); this._pushWidths(); }
+        this._afterStructure();
+      }
+      // Sort the data rows by column `c`. Row 1 is the field-name row and stays;
+      // the sortable block ends at the first row whose cell in that column is a
+      // formula, so a totals row keeps its place and its ranges keep meaning.
+      // Single references follow their rows; ranges are left as they are.
+      _sort(c, desc) {
+        if (this.editing) this._commit();
+        const g = this.grid, vals = this._values(g);
+        let end = g.length;
+        for (let r = 1; r < g.length; r++) if ((g[r][c] || '').trim().charAt(0) === '=') { end = r; break; }
+        if (end - 1 < 2) return;
+        this._snapshot();
+        const idx = []; for (let r = 1; r < end; r++) idx.push(r);
+        const rank = (v) => (v === '' || v === undefined ? 2 : typeof v === 'number' ? 0 : 1);
+        idx.sort((x, y) => {
+          const a = vals[x][c], b = vals[y][c], ra = rank(a), rb = rank(b);
+          if (ra !== rb) return ra - rb;            // numbers, then text, blanks last
+          let d = ra === 0 ? a - b : String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' });
+          if (desc && ra !== 2) d = -d;
+          return d || x - y;                        // stable
+        });
+        const newOf = {}; idx.forEach((old, i) => { newOf[old] = i + 1; });
+        const rows = g.slice(); idx.forEach((old, i) => { rows[i + 1] = g[old]; });
+        this.grid = rows;
+        const mapRef = (p) => (p.r in newOf ? { r: newOf[p.r], c: p.c } : p);
+        this._rewriteRefs(mapRef, (a, b) => [a, b]);
+        const S = this.styles, nr = {}, nx = {};
+        for (const k in S.r) nr[(+k) in newOf ? newOf[+k] : +k] = S.r[k];
+        for (const k in S.x) { const [r, cc] = k.split(',').map(Number); nx[(r in newOf ? newOf[r] : r) + ',' + cc] = S.x[k]; }
+        S.r = nr; S.x = nx;
+        this._afterStructure();
+      }
+      _clearCells() {
+        const rect = this._rect();
+        if (!rect) return;
+        if (this.editing) this._commit();
+        this._snapshot();
+        let changed = false;
+        for (let r = rect.r0; r <= rect.r1; r++) for (let c = rect.c0; c <= rect.c1; c++)
+          if (this.grid[r][c] !== '') { this.grid[r][c] = ''; changed = true; }
+        if (changed) this._push();
+        this._render();
+      }
+      _afterStructure() {
+        this._clampSel();
+        this._push();
+        this._pushStyles();
+        this._render();
+      }
+      _addLine(kind) {
+        if (this.editing) this._commit();
+        if (!this.grid) return;
+        if (kind === 'row') { this._insertRow(this.grid.length); this._select(this.grid.length - 1, 0); }
+        else { this._insertCol(this._cols()); this._select(0, this._cols() - 1); }
+      }
+      // --- undo / redo (local; each step re-syncs the shared facts) -------
+      _state() {
+        return { csv: this._serialize(this.grid), styles: this._serializeStyles(),
+          widths: this.widths ? this.widths.join(',') : '' };
+      }
+      _snapshot() {
+        if (!this.grid) return;
+        this._undo.push(this._state());
+        if (this._undo.length > 60) this._undo.shift();
+        this._redo.length = 0;
+      }
+      _restore(st) {
+        const cur = this._state();
+        this.grid = this._parse(st.csv);
+        this.styles = this._parseStyles(st.styles);
+        this.widths = this._parseWidths(st.widths);
+        if (st.csv !== cur.csv) this._push();
+        if (st.styles !== cur.styles) this._pushStyles();
+        if (st.widths !== cur.widths) { this.lastWidths = st.widths; this._applyWidths(); this._pushWidths(); }
+        this._clampSel();
+        this._render();
+      }
+      _doUndo() {
+        if (this.editing) this._commit();
+        const st = this._undo.pop();
+        if (!st) return;
+        this._redo.push(this._state());
+        this._restore(st);
+      }
+      _doRedo() {
+        if (this.editing) this._commit();
+        const st = this._redo.pop();
+        if (!st) return;
+        this._undo.push(this._state());
+        this._restore(st);
+      }
+      // --- selection ---------------------------------------------------
+      _select(r, c) { this.sel = { a: { r, c }, f: { r, c } }; this._render(); }
+      _extend(r, c) { if (!this.sel) return this._select(r, c); this.sel.f = { r, c }; this._render(); }
+      _selectRow(r, extend) {
+        const last = this._cols() - 1;
+        if (extend && this.sel) this.sel.f = { r, c: this.sel.a.c === 0 ? last : 0 };
+        else this.sel = { a: { r, c: 0 }, f: { r, c: last } };
+        this._render();
+      }
+      _selectCol(c, extend) {
+        const last = this.grid.length - 1;
+        if (extend && this.sel) this.sel.f = { r: this.sel.a.r === 0 ? last : 0, c };
+        else this.sel = { a: { r: 0, c }, f: { r: last, c } };
+        this._render();
+      }
+      _selectAll() { this.sel = { a: { r: 0, c: 0 }, f: { r: this.grid.length - 1, c: this._cols() - 1 } }; this._render(); }
+      _inSel(r, c) { const q = this._rect(); return !!q && r >= q.r0 && r <= q.r1 && c >= q.c0 && c <= q.c1; }
+      _clampSel() {
+        if (!this.sel || !this.grid) return;
+        const R = this.grid.length - 1, C = this._cols() - 1;
+        for (const p of [this.sel.a, this.sel.f]) { p.r = Math.max(0, Math.min(R, p.r)); p.c = Math.max(0, Math.min(C, p.c)); }
+      }
+      _move(dr, dc, extend) {
+        if (!this.sel) return this._select(0, 0);
+        const p = extend ? this.sel.f : this.sel.a;
+        const r = Math.max(0, Math.min(this.grid.length - 1, p.r + dr));
+        const c = Math.max(0, Math.min(this._cols() - 1, p.c + dc));
+        if (extend) this._extend(r, c); else this._select(r, c);
+        const td = this.querySelector('td.bs-cell[data-r="' + r + '"][data-c="' + c + '"]');
+        if (td && td.scrollIntoView) td.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      }
+      _key(e) {
+        if (e.target.closest && e.target.closest('.bs-in')) return;   // the editor has its own keys
+        if (this.querySelector('.bs-menu')) { if (e.key === 'Escape') { e.preventDefault(); this._closeMenu(); } return; }
+        const mod = e.metaKey || e.ctrlKey;
+        if (mod && !e.altKey && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); if (e.shiftKey) this._doRedo(); else this._doUndo(); return; }
+        if (mod && (e.key === 'y' || e.key === 'Y')) { e.preventDefault(); this._doRedo(); return; }
+        if (!this.sel || !this.grid) return;
+        if (mod && !e.altKey && ['b', 'i', 'u'].indexOf(e.key.toLowerCase()) !== -1) { e.preventDefault(); this._toggle(e.key.toLowerCase()); return; }
+        if (mod && (e.key === 'a' || e.key === 'A')) { e.preventDefault(); this._selectAll(); return; }
+        if (mod) return;
+        switch (e.key) {
+          case 'ArrowUp': e.preventDefault(); return this._move(-1, 0, e.shiftKey);
+          case 'ArrowDown': e.preventDefault(); return this._move(1, 0, e.shiftKey);
+          case 'ArrowLeft': e.preventDefault(); return this._move(0, -1, e.shiftKey);
+          case 'ArrowRight': e.preventDefault(); return this._move(0, 1, e.shiftKey);
+          case 'Tab': e.preventDefault(); return this._move(0, e.shiftKey ? -1 : 1, false);
+          case 'Enter': case 'F2': e.preventDefault(); return this._edit(this.sel.a.r, this.sel.a.c);
+          case 'Escape': e.preventDefault(); this.sel = null; return this._render();
+          case 'Delete': case 'Backspace': e.preventDefault(); return this._clearCells();
+        }
+        // Any printable key starts editing with that character replacing the cell.
+        if (e.key.length === 1 && !e.altKey) { e.preventDefault(); this._edit(this.sel.a.r, this.sel.a.c, e.key); }
+      }
+      // --- toolbar / menus ---------------------------------------------
+      _toolbar(what, btn) {
+        if (what === 'undo') return this._doUndo();
+        if (what === 'redo') return this._doRedo();
+        if (!this.sel) return;
+        if (what === 'b' || what === 'i' || what === 'u') return this._toggle(what);
+        if (what.charAt(0) === 'a' && what.charAt(1) === ':') { this._snapshot(); return this._setStyle('a', what.slice(2)); }
+        if (what === 'clearfmt') return this._clearFormat();
+        const r = btn.getBoundingClientRect();
+        if (what === 'fill') return this._openMenu(this._fillMenu(), r.left, r.bottom + 4);
+        if (what === 'fmt') return this._openMenu(this._fmtMenu(), r.left, r.bottom + 4);
+      }
+      _rowMenu(r) {
+        const eff = this._eff(r, 0);
+        return [
+          { act: 'ins-row:' + r, label: 'Insert row above' },
+          { act: 'ins-row:' + (r + 1), label: 'Insert row below' }, { sep: true },
+          { act: 'tg:b', label: 'Bold row', on: !!eff.b }, { act: 'tg:i', label: 'Italic row', on: !!eff.i }, { sep: true },
+          { act: 'clear', label: 'Clear row' },
+          { act: 'del-row:' + r, label: 'Delete row', danger: true, off: this.grid.length < 2 },
+        ];
+      }
+      _colMenu(c) {
+        const eff = this._eff(1, c);
+        return [
+          { act: 'ins-col:' + c, label: 'Insert column left' },
+          { act: 'ins-col:' + (c + 1), label: 'Insert column right' }, { sep: true },
+          { act: 'sort:' + c + ':asc', label: 'Sort A → Z' }, { act: 'sort:' + c + ':desc', label: 'Sort Z → A' }, { sep: true },
+          { act: 'fit:' + c, label: 'Fit column width' },
+          { act: 'a:l', label: 'Align left', on: eff.a === 'l' }, { act: 'a:c', label: 'Align centre', on: eff.a === 'c' }, { act: 'a:r', label: 'Align right', on: eff.a === 'r' }, { sep: true },
+          { act: 'f:t', label: 'Plain', on: !eff.f || eff.f === 't', head: 'Number format' },
+          { act: 'f:n', label: '1,234.56', on: eff.f === 'n' }, { act: 'f:$', label: '$ Currency', on: eff.f === '$' }, { act: 'f:%', label: '% Percent', on: eff.f === '%' }, { sep: true },
+          { act: 'tg:b', label: 'Bold column', on: !!eff.b },
+          { act: 'clear', label: 'Clear column' },
+          { act: 'del-col:' + c, label: 'Delete column', danger: true, off: this._cols() < 2 },
+        ];
+      }
+      _cellMenu(r, c) {
+        return [
+          { act: 'ins-row:' + r, label: 'Insert row above' }, { act: 'ins-row:' + (r + 1), label: 'Insert row below' },
+          { act: 'ins-col:' + c, label: 'Insert column left' }, { act: 'ins-col:' + (c + 1), label: 'Insert column right' }, { sep: true },
+          { act: 'clear', label: 'Clear' }, { sep: true },
+          { act: 'del-row:' + r, label: 'Delete row', danger: true, off: this.grid.length < 2 },
+          { act: 'del-col:' + c, label: 'Delete column', danger: true, off: this._cols() < 2 },
+        ];
+      }
+      _fillMenu() {
+        const eff = this.sel ? this._eff(this.sel.a.r, this.sel.a.c) : {};
+        return [{ act: 'h:', label: 'No fill', on: !eff.h }].concat(
+          Object.keys(this.constructor.FILLS).map((k) => ({ act: 'h:' + k, label: k.charAt(0).toUpperCase() + k.slice(1), on: eff.h === k, swatch: this.constructor.FILLS[k] })));
+      }
+      _fmtMenu() {
+        const eff = this.sel ? this._eff(this.sel.a.r, this.sel.a.c) : {};
+        return [
+          { act: 'f:t', label: 'Plain', on: !eff.f || eff.f === 't' }, { act: 'f:n', label: '1,234.56', on: eff.f === 'n' },
+          { act: 'f:$', label: '$ Currency', on: eff.f === '$' }, { act: 'f:%', label: '% Percent', on: eff.f === '%' },
+        ];
+      }
+      _act(act) {
+        const [kind, a, b] = act.split(':');
+        if (kind === 'ins-row') return this._insertRow(+a);
+        if (kind === 'ins-col') return this._insertCol(+a);
+        if (kind === 'del-row') return this._deleteRow(+a);
+        if (kind === 'del-col') return this._deleteCol(+a);
+        if (kind === 'sort') return this._sort(+a, b === 'desc');
+        if (kind === 'fit') return this._autoFit(+a);
+        if (kind === 'clear') return this._clearCells();
+        if (kind === 'tg') return this._toggle(a);
+        if (kind === 'a' || kind === 'f' || kind === 'h') {
+          if (!this.sel) return;
+          this._snapshot();
+          const val = a === '' || (kind === 'f' && a === 't') ? null : a;
+          return this._setStyle(kind, val);
+        }
+      }
+      _openMenu(items, x, y) {
+        this._closeMenu();
+        const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+        const m = document.createElement('div');
+        m.className = 'bs-menu';
+        m.setAttribute('role', 'menu');
+        m.innerHTML = items.map((it) => {
+          if (it.sep) return '<div class="bs-msep"></div>';
+          return (it.head ? '<div class="bs-mhead">' + esc(it.head) + '</div>' : '') +
+            '<button type="button" class="bs-mi' + (it.danger ? ' bs-mi--danger' : '') + (it.on ? ' is-on' : '') + '" data-act="' + esc(it.act) + '"' +
+            (it.off ? ' disabled' : '') + '>' +
+            (it.swatch ? '<span class="bs-swatch" style="background:' + it.swatch + '"></span>' : '') +
+            '<span class="bs-mlabel">' + esc(it.label) + '</span>' + (it.on ? '<span class="bs-mcheck">✓</span>' : '') + '</button>';
+        }).join('');
+        this.appendChild(m);
+        const w = m.offsetWidth || 200, h = m.offsetHeight || 200;
+        const left = Math.max(8, Math.min(x, window.innerWidth - w - 8));
+        const top = Math.max(8, Math.min(y, window.innerHeight - h - 8));
+        m.style.left = left + 'px'; m.style.top = top + 'px';
+      }
+      _closeMenu() { const m = this.querySelector('.bs-menu'); if (m) m.remove(); }
+      // --- rendering / editing -----------------------------------------
+      _render() {
+        const tb = this.querySelector('tbody');
+        if (!tb) return;
+        if (!this.grid) {
+          tb.innerHTML = '<tr><td class="bs-wait">Waiting for the shared sheet to sync…</td></tr>';
+          return;
+        }
+        const g = this.grid, vals = this._values(g), n = g[0].length;
+        const e = this.editing, q = this._rect();
+        const FILLS = this.constructor.FILLS;
+        const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+        let html = '<tr><th class="bs-gut bs-corner" title="Select all"></th>';
+        for (let c = 0; c < n; c++) {
+          const on = q && c >= q.c0 && c <= q.c1;
+          html += '<th class="bs-gut bs-colhead' + (on ? ' is-selhead' : '') + '" data-c="' + c + '">' +
+            '<span class="bs-lbl">' + this._col(c) + '</span>' +
+            '<button type="button" class="bs-chev" data-c="' + c + '" title="Column menu" tabindex="-1">⌄</button>' +
+            '<span class="bs-rz" data-c="' + c + '" title="Drag to resize; double-click to fit"></span></th>';
+        }
+        html += '<th class="bs-gut bs-plus" data-add="col" title="Add column">+</th></tr>';
+        for (let r = 0; r < g.length; r++) {
+          const ron = q && r >= q.r0 && r <= q.r1;
+          html += '<tr><th class="bs-gut bs-rowhead' + (ron ? ' is-selhead' : '') + '" data-r="' + r + '">' +
+            '<span class="bs-lbl">' + (r + 1) + '</span>' +
+            '<button type="button" class="bs-chev" data-r="' + r + '" title="Row menu" tabindex="-1">⌄</button></th>';
+          for (let c = 0; c < n; c++) {
+            const raw = g[r][c], v = vals[r][c], st = this._eff(r, c);
+            const isF = (raw || '').trim().charAt(0) === '=';
+            const isN = typeof v === 'number';
+            const inSel = q && r >= q.r0 && r <= q.r1 && c >= q.c0 && c <= q.c1;
+            const active = this.sel && this.sel.a.r === r && this.sel.a.c === c;
+            const cls = ['bs-cell', r === 0 ? 'bs-head' : '', isN ? 'bs-num' : '',
+              isF ? 'bs-formula' : '', (isN && v < 0) ? 'bs-neg' : '',
+              (typeof v === 'string' && v.charAt(0) === '#') ? 'bs-err' : '',
+              inSel ? 'is-sel' : '', active ? 'is-active' : ''].filter(Boolean).join(' ');
+            let css = '';
+            if ('b' in st) css += 'font-weight:' + (st.b ? 700 : 400) + ';';
+            if (st.i) css += 'font-style:italic;';
+            if (st.u) css += 'text-decoration:underline;';
+            if (st.a) css += 'text-align:' + (st.a === 'l' ? 'left' : st.a === 'c' ? 'center' : 'right') + ';';
+            if (st.h && FILLS[st.h]) css += 'background-color:' + FILLS[st.h] + ';';
+            const attrs = ' data-r="' + r + '" data-c="' + c + '"' + (css ? ' style="' + css + '"' : '');
+            if (e && e.r === r && e.c === c) {
+              const seed = e.seed !== undefined ? e.seed : raw;
+              html += '<td class="' + cls + '"' + attrs + '><input class="bs-in" value="' +
+                String(seed).replace(/&/g, '&amp;').replace(/"/g, '&quot;') + '"></td>';
+            } else {
+              html += '<td class="' + cls + '"' + attrs + '>' + esc(this._fmt(v, r === 0 ? 't' : st.f)) + '</td>';
+            }
+          }
+          html += '<td class="bs-void"></td></tr>';
+        }
+        html += '<tr class="bs-plusrow"><th class="bs-gut"></th><td class="bs-plus" data-add="row" colspan="' + (n + 1) + '">+ Add row</td></tr>';
+        tb.innerHTML = html;
+        this._applyWidths();
+        const count = this.querySelector('.bs-count');
+        if (count) count.textContent = g.length + ' rows × ' + n + ' columns';
+        this._syncToolbar();
+        const inp = tb.querySelector('.bs-in');
+        if (inp) {
+          inp.focus();
+          if (e.seed !== undefined) inp.setSelectionRange(inp.value.length, inp.value.length); else inp.select();
+          inp.addEventListener('keydown', (ev) => {
+            if (ev.key === 'Enter') { ev.preventDefault(); this._commit('down'); }
+            else if (ev.key === 'Tab') { ev.preventDefault(); this._commit(ev.shiftKey ? 'left' : 'right'); }
+            else if (ev.key === 'Escape') { ev.preventDefault(); this.editing = null; this._render(); this.focus(); }
+          });
+          inp.addEventListener('blur', () => { if (this.editing) this._commit(); });
+        }
+      }
+      _syncToolbar() {
+        const st = this.sel ? this._eff(this.sel.a.r, this.sel.a.c) : null;
+        this.querySelectorAll('.bs-tb').forEach((b) => {
+          const k = b.getAttribute('data-tb');
+          if (k === 'undo') { b.disabled = !this._undo.length; return; }
+          if (k === 'redo') { b.disabled = !this._redo.length; return; }
+          b.disabled = !st;
+          let on = false;
+          if (st) {
+            if (k === 'b' || k === 'i' || k === 'u') on = !!st[k];
+            else if (k.charAt(0) === 'a' && k.charAt(1) === ':') on = st.a === k.slice(2);
+            else if (k === 'fill') on = !!st.h;
+            else if (k === 'fmt') on = !!st.f && st.f !== 't';
+          }
+          b.classList.toggle('is-on', on);
+        });
+      }
+      _edit(r, c, seed) {
+        if (this.editing) this._commit();
+        this.sel = { a: { r, c }, f: { r, c } };
+        this.editing = { r, c, seed };
+        this._render();
+      }
+      _commit(move) {
+        const e = this.editing;
+        if (!e) return;
+        const inp = this.querySelector('.bs-in');
+        this.editing = null;
+        if (inp) {
+          const val = inp.value;
+          if (val !== this.grid[e.r][e.c]) { this._snapshot(); this.grid[e.r][e.c] = val; this._push(); }
+        }
+        if (this._rerenderAfterEdit) { this._rerenderAfterEdit = false; this._clampSel(); }
+        this._render();
+        if (!move) { this.focus(); return; }
+        let r = e.r, c = e.c;
+        if (move === 'down') r++;
+        if (move === 'right') c++;
+        if (move === 'left') c--;
+        if (r < this.grid.length && c >= 0 && c < this.grid[0].length) { this._select(r, c); this.focus(); }
+        else this.focus();
+      }
+      // --- column widths (shared: budget/sheet-widths) -------------------
+      _parseWidths(str) {
+        if (!str) return null;
+        const a = str.split(',').map((x) => Math.max(40, parseInt(x, 10) || 90));
+        return a.length ? a : null;
+      }
+      _cols() { return this.grid ? this.grid[0].length : 0; }
+      // With widths: fixed layout, one <col> per column plus the gutter and the
+      // "+" column, the table as wide as their sum (`width: 1px` + table-layout:
+      // fixed makes the sum win). Without: auto layout. Runs after every render
+      // and on every width change; updates <col>s in place when it can.
+      _applyWidths() {
+        const t = this.querySelector('table.bs-t'), cg = this.querySelector('colgroup');
+        if (!t || !cg) return;
+        const n = this._cols();
+        if (!this.widths || !n) { t.classList.remove('is-fixed'); cg.innerHTML = ''; return; }
+        while (this.widths.length < n) this.widths.push(90);
+        if (this.widths.length > n) this.widths.length = n;
+        if (cg.children.length === n + 2) {
+          for (let c = 0; c < n; c++) cg.children[c + 1].style.width = this.widths[c] + 'px';
+        } else {
+          let html = '<col class="bs-cg">';
+          for (let c = 0; c < n; c++) html += '<col style="width:' + this.widths[c] + 'px">';
+          cg.innerHTML = html + '<col class="bs-cp">';
+        }
+        t.classList.add('is-fixed');
+      }
+      // The columns as the viewer sees them right now, so the first drag or fit
+      // freezes the auto layout instead of jumping to defaults.
+      _measure() {
+        const ths = this.querySelectorAll('tbody tr:first-child th.bs-colhead');
+        const out = [];
+        ths.forEach((th) => out.push(Math.max(40, Math.round(th.getBoundingClientRect().width))));
+        return out.length ? out : null;
+      }
+      _dragStart(c, e) {
+        if (!this.widths) { this.widths = this._measure(); if (!this.widths) return; this._applyWidths(); }
+        const d = { c, startX: e.clientX, startW: this.widths[c], id: e.pointerId };
+        // Listeners on window, not the handle: a sync mid-drag re-renders the
+        // table and would take the handle (and its listeners) with it.
+        d.move = (ev) => {
+          if (ev.pointerId !== d.id) return;
+          this.widths[c] = Math.max(40, Math.round(d.startW + ev.clientX - d.startX));
+          this._applyWidths();
+        };
+        d.up = (ev) => {
+          if (ev.pointerId !== d.id) return;
+          window.removeEventListener('pointermove', d.move);
+          window.removeEventListener('pointerup', d.up);
+          window.removeEventListener('pointercancel', d.up);
+          this._drag = null;
+          this.classList.remove('is-resizing');
+          this._pushWidths();
+        };
+        this._drag = d;
+        this.classList.add('is-resizing');
+        window.addEventListener('pointermove', d.move);
+        window.addEventListener('pointerup', d.up);
+        window.addEventListener('pointercancel', d.up);
+      }
+      // Fit a column to its widest cell text, measured with an offscreen span in
+      // the cell's own font (fixed layout gives no content width to read).
+      _autoFit(c) {
+        if (!this.grid) return;
+        if (!this.widths) { this.widths = this._measure(); if (!this.widths) return; }
+        const probe = document.createElement('span');
+        probe.style.cssText = 'position:absolute;visibility:hidden;white-space:nowrap;left:-9999px;top:0';
+        document.body.appendChild(probe);
+        let best = 40;
+        this.querySelectorAll('td.bs-cell[data-c="' + c + '"]').forEach((td) => {
+          const cs = getComputedStyle(td);
+          probe.style.fontFamily = cs.fontFamily; probe.style.fontSize = cs.fontSize;
+          probe.style.fontWeight = cs.fontWeight; probe.style.fontStyle = cs.fontStyle;
+          probe.style.letterSpacing = cs.letterSpacing; probe.style.fontVariantNumeric = cs.fontVariantNumeric;
+          probe.textContent = td.textContent;
+          const w = probe.getBoundingClientRect().width +
+            parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight) + 2;
+          if (w > best) best = w;
+        });
+        probe.remove();
+        this.widths[c] = Math.round(best);
+        this._applyWidths();
+        this._pushWidths();
+      }
+      // One event, one fact: the full list, so every column lands at once.
+      // `widthsSheet` reaches the command as dom.event.detail/widths-sheet.
+      _pushWidths() {
+        if (!this.widths) return;
+        const widths = this.widths.join(',');
+        this.lastWidths = widths;
+        const s = this._shared();
+        if (s && s.sheet) this.dispatchEvent(new CustomEvent('widthsync', {
+          bubbles: true, detail: { widthsSheet: s.sheet, widths } }));
+      }
+      static get FILLS() {
+        return { blue: 'rgba(113,187,231,.24)', green: 'rgba(133,188,108,.26)', orange: 'rgba(242,113,33,.22)', yellow: 'rgba(217,224,32,.30)' };
+      }
+    });
+
+
+# ==========================================================================
+# Content
+# ==========================================================================
+
+vault/node!:
+  this: did:key:z6Mk5R3Uc5yeba6HAdCh4gpTTft1TSB9TgkCPH2LSWpq4Msx
+  kind: "file"
+  name: "Infra budget"
+  order: "m"
+  parent: did:key:z6MkCgHwvGZEeVTP1udYS2qvoLyfezZbyuc5ar9drPziQDEu
+
+vault/page!:
+  this: did:key:z6Mk5R3Uc5yeba6HAdCh4gpTTft1TSB9TgkCPH2LSWpq4Msx
+  model: budget-demo-page
+  title: "Infra budget"
+
+budget-demo-page!:
+  this: did:key:z6Mk5R3Uc5yeba6HAdCh4gpTTft1TSB9TgkCPH2LSWpq4Msx
+  heading: "Infra budget"
+
+budget/sheet!: &budget-book
+  this: did:key:z6MkDNKGUDat8XcY1ZhJLaz6MUy1atYNZwaGuqDaHV77B6GL
+  csv: |2-
+    Use case,Notion,Obsidian,Confluence,Netlify,Vercel,GitHub,Lovable,Perplexity,Tonk
+    Sync personal notes across devices,0,5,,,,,,,0
+    Team knowledge base (5 people),60,25,34,,,20,,,0
+    Community wiki (40 people),480,,268,,,0,,,0
+    Deploy a simple app,,,,9,20,0,25,,0
+    Collaborative artefact (5 editors),60,,34,,,,25,,0
+    Multi-agent orchestration,24,,,,,10,25,,0
+    Local-first agentic context,,5,,,,,,200,0
+    Total ($/mo),=SUM(B2:B8),=SUM(C2:C8),=SUM(D2:D8),=SUM(E2:E8),=SUM(F2:F8),=SUM(G2:G8),=SUM(H2:H8),=SUM(I2:I8),=SUM(J2:J8)
+
+budget/sheet-styles!:
+  this: did:key:z6MkDNKGUDat8XcY1ZhJLaz6MUy1atYNZwaGuqDaHV77B6GL
+  styles: "{\"r\":{\"8\":{\"b\":1}}}"
