@@ -723,16 +723,12 @@ view!:
       .space-menu { position:fixed; z-index:8; width:184px;
         max-width:calc(100vw - 16px); padding:5px; border:1px solid var(--ink);
         background:var(--frost-solid); color:var(--ink);
-        box-shadow:0 0 0 1px var(--ring); }
+        box-shadow:0 0 0 1px var(--ring), 4px 4px 0 var(--ink); }
       .space-menu[open="false"] { display:none; }
       .space-menu tonk-share, .space-menu space-remove { display:contents; }
-      .space-menu button { display:flex; width:100%; min-height:44px; align-items:center;
+      .space-menu button { display:flex; width:100%; min-height:44px; align-items:center; justify-content:flex-start;
         padding:10px 12px; gap:16px; color:inherit; font:400 14px/1 var(--cond); text-align:left; }
       .space-menu .verb-remove { border-top:1px solid var(--sep); margin-top:4px; }
-      .space-menu::before { content:""; position:absolute; pointer-events:none;
-        top:-1px; right:-5px; bottom:-5px; left:-1px;
-        background:linear-gradient(var(--ink),var(--ink)) right top/4px 100% no-repeat,
-          linear-gradient(var(--ink),var(--ink)) left bottom/66.667% 4px no-repeat; z-index:-1; }
       .space-menu button:hover, .space-menu button:focus-visible { background:var(--wash); }
       .space-menu [data-share-copy-label] { display:none; }
       .space-menu tonk-share:not([data-share-state]) [data-share-copy-label="idle"],
