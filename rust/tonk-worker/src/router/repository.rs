@@ -9501,19 +9501,16 @@ mod tests {
     use crate::router::tests::{content_invitations, put_repo, put_repo_info};
     use crate::router::{AppState, CreateInviteResponse, api_router_with_state, tests::test_state};
 
-    /// The seed sealed to the account is the only copy of a created
-    /// space's secret: the repository stores the verifier, the space still
-    /// proves for the operator through `space -> account -> device`, and
-    /// opening the custodied seed with the account key re-derives exactly
-    /// the space's signer.
+    /// A created space's key is held for the account: the repository stores
+    /// the verifier, the space still proves for the operator through
+    /// `space -> account -> device`, and the key is held sealed to the
+    /// account, with a copy the device keeps.
     #[dialog_common::test]
     async fn it_creates_a_space_with_a_public_key_and_custodies_its_seed() {
         use dialog_capability::Subject;
         use dialog_effects::Use;
-        use dialog_query::{Output as _, Query, Term};
         use dialog_repository::RepositoryExt as _;
         use dialog_varsig::Principal as _;
-        use tonk_schema::prelude::DidExt as _;
 
         let (app, state, _lsp) = api_router_with_state(test_state().await);
         let key = put_repo(&app, "public-key-space").await;
@@ -9539,57 +9536,24 @@ mod tests {
             .await
             .expect("the space proves through the account without its own key");
 
-        let branch = tonk
-            .reactor
-            .profile_repository()
-            .branch(&tonk.active_branch)
-            .acquire(&tonk.operator)
-            .await
-            .unwrap();
-        let principals: Vec<tonk_schema::SecretPrincipal> = branch
-            .handle()
-            .query()
-            .select(Query::<tonk_schema::SecretPrincipal> {
-                this: Term::from(subject.this()),
-                kind: Term::var("kind"),
-                seed: Term::var("seed"),
-            })
-            .perform(&tonk.operator)
-            .try_vec()
-            .await
-            .unwrap();
-        assert_eq!(principals.len(), 1, "one sealed space principal");
+        let held = dialog_repository::secrets::held_principal(
+            tonk.profile.state(),
+            &subject,
+            &tonk.profile,
+        )
+        .await
+        .unwrap()
+        .expect("the space's key is held");
+        assert_eq!(held.kind, tonk_schema::SeedKind::Space.held());
         assert_eq!(
-            principals[0].kind.0.to_string(),
-            tonk_schema::SeedKind::SPACE
+            held.to,
+            tonk.profile.authority().await.unwrap(),
+            "held for the account"
         );
-
-        let rows: Vec<tonk_schema::SecretMessage> = branch
-            .handle()
-            .query()
-            .select(Query::<tonk_schema::SecretMessage> {
-                this: Term::from(principals[0].seed.0.clone()),
-                to: Term::var("to"),
-                message: Term::var("message"),
-                from: Term::var("from"),
-            })
-            .perform(&tonk.operator)
-            .try_vec()
-            .await
-            .unwrap();
-        assert_eq!(rows.len(), 1, "the principal names a real message");
-        let sealed = tonk_identity::sealed::Sealed::decode(&rows[0].message.0).unwrap();
-        let account = tonk_identity::envelope::AccountSecret::from_bytes(zeroize::Zeroizing::new(
-            crate::router::tests::test_root_seed(&tonk.profile_name),
-        ));
-        let opened = account
-            .secret()
-            .reveal(&sealed, &subject)
-            .expect("the account key opens the custodied seed");
-        let reissued = dialog_credentials::Ed25519Signer::import(&*opened)
-            .await
-            .unwrap();
-        assert_eq!(reissued.did(), subject, "the seed derives the space's key");
+        assert!(
+            tonk.profile.holds_key(&subject).await.unwrap(),
+            "the device keeps its copy"
+        );
     }
 
     /// The scaffold notation, embedded at compile time.

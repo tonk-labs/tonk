@@ -21,8 +21,6 @@ use dialog_ucan_core::DelegationChain;
 use dialog_varsig::Did;
 use tonk_account::prefix::SPACE_ROOT_SITE_PREFIX;
 use tonk_common::log;
-#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
-use tonk_schema::SecretMessage;
 use tonk_schema::{InvitedVia, MemberName, MemberRole, Membership, SeedKind, prelude::DidExt as _};
 
 use crate::TonkWorkerError;
@@ -153,33 +151,17 @@ pub(crate) async fn migrate_custody(
     .await
 }
 
-/// Every sealed message addressed to `recipient`.
+/// How many spaces and invites the peer holds for `account`.
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
-async fn sealed_to(
-    tonk: &TonkState,
-    recipient: &Did,
-) -> Result<Vec<SecretMessage>, TonkWorkerError> {
-    use dialog_query::{Output as _, Query, Term};
-    let branch = tonk
-        .reactor
-        .profile_repository()
-        .branch(&tonk.active_branch)
-        .acquire(&tonk.operator)
+async fn held_for(tonk: &TonkState, account: &Did) -> usize {
+    dialog_repository::secrets::held_by(tonk.profile.state(), account, &tonk.profile)
         .await
-        .map_err(|error| TonkWorkerError::Internal(format!("open profile main: {error}")))?;
-    branch
-        .handle()
-        .query()
-        .select(Query::<SecretMessage> {
-            this: Term::var("this"),
-            to: Term::from(tonk_schema::domain::custody::To(recipient.this())),
-            message: Term::var("message"),
-            from: Term::var("from"),
+        .expect("the held principals read")
+        .into_iter()
+        .filter(|(_, held)| {
+            held.kind == SeedKind::Space.held() || held.kind == SeedKind::Invite.held()
         })
-        .perform(&tonk.operator)
-        .try_vec()
-        .await
-        .map_err(|error| TonkWorkerError::Internal(format!("read sealed messages: {error:?}")))
+        .count()
 }
 
 /// The chain the handover left from `subject` to `root`, found where the
@@ -832,8 +814,8 @@ mod tests {
     }
 
     /// A space created and a space joined under the onboarding account
-    /// both end up rooted at the passkey account, their seeds re-sealed
-    /// to it, and the onboarding account retired; both still prove.
+    /// both end up rooted at the passkey account, their keys held for
+    /// it, and the onboarding account retired; both still prove.
     #[dialog_common::test]
     async fn it_rotates_created_and_joined_spaces_to_the_account() {
         let (app, state, _lsp) = api_router_with_state(test_state_without_root().await);
@@ -845,12 +827,7 @@ mod tests {
 
         let tonk = state.read().await;
         let onboarding = crate::onboarding::did(&tonk).await.unwrap().unwrap();
-        let old_recipient = crate::onboarding::account(&tonk)
-            .await
-            .unwrap()
-            .secret()
-            .did();
-        assert_eq!(sealed_to(&tonk, &old_recipient).await.unwrap().len(), 2);
+        assert_eq!(held_for(&tonk, &onboarding).await, 2);
 
         let root_did = persist_test_root(&tonk).await;
         rotate_from_onboarding(&tonk).await;
@@ -873,15 +850,12 @@ mod tests {
                 .expect("the re-issued chain proves");
         }
 
-        assert!(
-            sealed_to(&tonk, &old_recipient).await.unwrap().is_empty(),
-            "nothing stays sealed to the onboarding account",
+        assert_eq!(
+            held_for(&tonk, &onboarding).await,
+            0,
+            "nothing stays held for the onboarding account",
         );
-        let new_recipient = super::super::account_state::published_sealed_inbox(&tonk, &root_did)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(sealed_to(&tonk, &new_recipient).await.unwrap().len(), 2);
+        assert_eq!(held_for(&tonk, &root_did).await, 2);
         assert!(
             crate::onboarding::account(&tonk).await.is_err(),
             "the onboarding account can no longer be opened",
@@ -1260,11 +1234,7 @@ mod tests {
         let created: Did = created_key.parse().unwrap();
 
         let tonk = state.read().await;
-        let old_recipient = crate::onboarding::account(&tonk)
-            .await
-            .unwrap()
-            .secret()
-            .did();
+        let onboarding = crate::onboarding::did(&tonk).await.unwrap().unwrap();
 
         // Save the root record with its recipient, without asserting the
         // `AccountSealedInbox` fact `persist_test_root` would publish.
@@ -1298,10 +1268,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(prefix.audience(), &root_did, "the space is re-rooted");
-        assert!(
-            sealed_to(&tonk, &old_recipient).await.unwrap().is_empty(),
-            "nothing stays sealed to the onboarding account",
+        assert_eq!(
+            held_for(&tonk, &onboarding).await,
+            0,
+            "nothing stays held for the onboarding account",
         );
-        assert_eq!(sealed_to(&tonk, &recipient).await.unwrap().len(), 1);
+        assert_eq!(held_for(&tonk, &root_did).await, 1);
     }
 }

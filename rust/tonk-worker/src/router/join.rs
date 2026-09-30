@@ -3042,63 +3042,29 @@ pub(crate) mod tests {
             "the membership is keyed on the onboarding account",
         );
 
-        // The invite principal's seed is custodied on profile main, sealed
-        // to the onboarding account, which is what accreditation opens to
-        // re-root the membership.
-        use dialog_query::{Output as _, Query, Term};
+        // The invite principal's key is held for the onboarding account,
+        // which the sign-in handover re-issues to the account from, and
+        // the device keeps a copy of its own.
         let tonk = state.read().await;
-        let branch = tonk
-            .reactor
-            .profile_repository()
-            .branch(&tonk.active_branch)
-            .acquire(&tonk.operator)
-            .await
-            .unwrap();
-        // The principal's entity IS the subject, so the invite principal
-        // is read from `this` rather than from a repeated field.
-        let principals: Vec<tonk_schema::SecretPrincipal> = branch
-            .handle()
-            .query()
-            .select(Query::<tonk_schema::SecretPrincipal> {
-                this: Term::var("this"),
-                kind: Term::from(tonk_schema::SeedKind::Invite.kind()),
-                seed: Term::var("seed"),
-            })
-            .perform(&tonk.operator)
-            .try_vec()
-            .await
-            .unwrap();
-        assert_eq!(principals.len(), 1, "one sealed invite principal");
-        let principal: dialog_varsig::Did = principals[0].this.to_string().parse().unwrap();
-
-        let rows: Vec<tonk_schema::SecretMessage> = branch
-            .handle()
-            .query()
-            .select(Query::<tonk_schema::SecretMessage> {
-                this: Term::from(principals[0].seed.0.clone()),
-                to: Term::var("to"),
-                message: Term::var("message"),
-                from: Term::var("from"),
-            })
-            .perform(&tonk.operator)
-            .try_vec()
-            .await
-            .unwrap();
-        assert_eq!(rows.len(), 1, "the principal names a real message");
-        let sealed = tonk_identity::sealed::Sealed::decode(&rows[0].message.0).unwrap();
-        let opened = crate::onboarding::account(&tonk)
-            .await
-            .unwrap()
-            .secret()
-            .reveal(&sealed, &principal)
-            .expect("the onboarding account opens its custodied seed");
-        let reissued = dialog_credentials::Ed25519Signer::import(&*opened)
-            .await
-            .unwrap();
+        let invites: Vec<_> = dialog_repository::secrets::held_by(
+            tonk.profile.state(),
+            &tonk.profile.authority().await.unwrap(),
+            &tonk.profile,
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|(_, held)| held.kind == tonk_schema::SeedKind::Invite.held())
+        .collect();
+        assert_eq!(invites.len(), 1, "one held invite principal");
         assert_eq!(
-            reissued.did(),
-            principal,
-            "the seed derives the invite principal the membership hangs off",
+            invites[0].1.to.this(),
+            onboarding,
+            "held for the onboarding account"
+        );
+        assert!(
+            tonk.profile.holds_key(&invites[0].0).await.unwrap(),
+            "the device keeps its copy"
         );
     }
 
