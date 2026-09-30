@@ -91,7 +91,7 @@ fn activation_email_html(link: &str) -> String {
     <title>Activate your tonk account</title>
   </head>
   <body style="margin:0;background:#e8e6e4;color:#38182a;font-family:'Arial Narrow','Helvetica Neue',Arial,sans-serif;-webkit-font-smoothing:antialiased;">
-    <div style="display:none;max-height:0;overflow:hidden;opacity:0;">Verify your email address to activate syncing for your tonk account.</div>
+    <div style="display:none;max-height:0;overflow:hidden;opacity:0;">Confirm your email address to activate your account.</div>
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;background:#e8e6e4;">
       <tr>
         <td align="center" style="padding:48px 16px 64px;">
@@ -113,7 +113,7 @@ fn activation_email_html(link: &str) -> String {
               <td style="padding-top:7px;">
                 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;background:#f7f6f5;">
                   <tr>
-                    <td style="padding:14px 16px 15px;font-family:'Helvetica Neue',Arial,sans-serif;font-size:13px;line-height:1.5;color:#38182a;">Confirm your email address to activate syncing for your tonk account. The button opens Tonk so you can review and complete activation.</td>
+                    <td style="padding:14px 16px 15px;font-family:'Helvetica Neue',Arial,sans-serif;font-size:13px;line-height:1.5;color:#38182a;">Confirm your email address to activate your account. This allows Tonk to sync your data across browsers and devices, meaning other people and tools can connect to it.</td>
                   </tr>
                 </table>
               </td>
@@ -139,7 +139,7 @@ impl EmailSender for Resend {
                 email,
                 "Activate your tonk account",
                 &format!(
-                    "Confirm your email address and accept the terms of service to activate your tonk account:\n\n{link}\n\nIf you did not request this, ignore this message."
+                    "Confirm your email address to activate your account. This allows Tonk to sync your data across browsers and devices, meaning other people and tools can connect to it.\n\n{link}\n\nIf you did not request this, ignore this message."
                 ),
                 &activation_email_html(link),
             )
