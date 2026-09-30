@@ -248,6 +248,13 @@ const BOOTSTRAP_JS: &str = include_str!("bootstrap.js");
 /// The guest fetches NOTHING — the parent (trusted, networked) hands over
 /// every byte. `runtime-ready` tells the parent to send.
 const RUNTIME_BOOTSTRAP_JS: &str = include_str!("runtime_bootstrap.js");
+const PREVIEW_CAPTURE_JS: &str = include_str!("preview_capture.js");
+
+#[wasm_bindgen::prelude::wasm_bindgen(module = "/src/preview_cache.js")]
+extern "C" {
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name = previewRequest)]
+    fn preview_request(request: &JsValue, context: &JsValue, host: &Element) -> js_sys::Promise;
+}
 
 /// A `<base href>` element pinning the guest's document base to the
 /// per-space synthetic origin, so the BROWSER resolves every relative URL
@@ -270,7 +277,7 @@ fn base_tag(base: &str) -> String {
 /// origin the guest should resolve URLs against (empty = leave inherited).
 pub(crate) fn bootstrap_srcdoc(content: &str, base: &str, head: &str) -> String {
     format!(
-        "{}{head}<script>{BOOTSTRAP_JS}</script>{content}",
+        "{}{head}<script>{BOOTSTRAP_JS}</script><script>{PREVIEW_CAPTURE_JS}</script>{content}",
         base_tag(base)
     )
 }
@@ -280,7 +287,7 @@ pub(crate) fn bootstrap_srcdoc(content: &str, base: &str, head: &str) -> String 
 /// bring it up before `content`'s custom elements upgrade.
 pub(crate) fn bootstrap_srcdoc_with_runtime(content: &str, base: &str, head: &str) -> String {
     format!(
-        "{}{head}<script>{BOOTSTRAP_JS}</script><script>{RUNTIME_BOOTSTRAP_JS}</script>{content}",
+        "{}{head}<script>{BOOTSTRAP_JS}</script><script>{RUNTIME_BOOTSTRAP_JS}</script><script>{PREVIEW_CAPTURE_JS}</script>{content}",
         base_tag(base)
     )
 }
@@ -1119,6 +1126,21 @@ fn make_dispatcher(
             return;
         };
         match kind.as_str() {
+            "preview" => {
+                let Some(id) = get_str(&data, "id") else {
+                    return;
+                };
+                let context = build_context(&host, &state);
+                let request = Reflect::get(&data, &"request".into()).unwrap_or(JsValue::NULL);
+                let promise = preview_request(&request, &context, &host);
+                let port = port.clone();
+                spawn_local(async move {
+                    let value = wasm_bindgen_futures::JsFuture::from(promise)
+                        .await
+                        .unwrap_or(JsValue::NULL);
+                    post_result(&port, "preview-result", &id, "value", &value);
+                });
+            }
             "query" => handle_query(&host, &state, &port, &data),
             "transact" => handle_transact(&host, &state, &port, &data),
             "evaluate" => handle_evaluate(&host, &port, &data),
@@ -2469,6 +2491,21 @@ fn build_context(host: &Element, state: &Rc<RefCell<PortalState>>) -> Object {
     let _ = Reflect::set(&context, &"path".into(), &JsValue::from_str(&path));
     let _ = Reflect::set(&context, &"search".into(), &JsValue::from_str(&search));
     let _ = Reflect::set(&context, &"hash".into(), &JsValue::from_str(&hash));
+    // Only the product-owned home site opts in. Nested content portals inherit
+    // its space identity; a routed non-home site explicitly clears it.
+    let preview = if host.has_attribute("data-space-preview") {
+        let path = host.get_attribute("path").unwrap_or_default();
+        if path.is_empty() || path == "/" {
+            repo.clone()
+        } else {
+            String::new()
+        }
+    } else {
+        tonk_host::bridge::context_field("preview")
+            .filter(|space| repo.is_empty() || space == &repo)
+            .unwrap_or_default()
+    };
+    let _ = Reflect::set(&context, &"preview".into(), &JsValue::from_str(&preview));
     let _ = Reflect::set(&context, &"repo".into(), &JsValue::from_str(&repo));
     let _ = Reflect::set(&context, &"branch".into(), &JsValue::from_str(&branch));
     // The pinned context as one `branch@repo` location: the guest host's
