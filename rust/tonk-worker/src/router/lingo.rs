@@ -207,3 +207,42 @@ async fn it_scales_with_candidates() {
         }
     }
 }
+
+/// How one `/evaluate` of `count` rows scales. Run with `cargo test
+/// --release -p tonk-worker --lib -- --ignored --nocapture
+/// lingo::it_evaluates`.
+#[dialog_common::test]
+#[ignore = "timing, not a check"]
+async fn it_evaluates_many_rows() {
+    let counts: Vec<usize> = std::env::var("ROWS")
+        .ok()
+        .map(|rows| rows.split(',').filter_map(|n| n.parse().ok()).collect())
+        .unwrap_or_else(|| vec![250, 500, 1_000, 2_000]);
+    for count in counts {
+        let (app, _state, _lsp) = api_router_with_state(test_state().await);
+        let created = send(
+            &app,
+            "PUT",
+            "/api/repository/scale",
+            "application/json",
+            "{}".into(),
+        )
+        .await;
+        let key = created["name"].as_str().unwrap().to_owned();
+        let evaluate = format!("/api/repository/{key}/branch/main/evaluate");
+        send(&app, "POST", &evaluate, "application/yaml", CORE.into()).await;
+        let mut yaml = String::new();
+        for n in 0..count {
+            yaml.push_str(&format!(
+                "tonk/repository!:\n  this: did:key:z6Mkscale{n}\n  name: \"Budget {n}\"\n\n"
+            ));
+        }
+        let start = std::time::Instant::now();
+        send(&app, "POST", &evaluate, "application/yaml", yaml).await;
+        let elapsed = start.elapsed().as_secs_f64();
+        println!(
+            "{count:>6} rows  {elapsed:>7.2} s  {:>6.2} ms/row",
+            elapsed * 1000.0 / count as f64
+        );
+    }
+}
