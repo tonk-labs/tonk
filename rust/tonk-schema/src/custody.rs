@@ -315,7 +315,12 @@ mod tests {
         let peer = helpers::test_peer().await;
         let secret = tonk_identity::envelope::AccountSecret::from_bytes(Zeroizing::new([7; 32]));
         let space = <Ed25519Signer<Extractable>>::generate().await?;
-        let KeyExport::Extractable(seed) = space.export().await?;
+        // A generated key is extractable; only the browser also has keys
+        // it never gives back.
+        #[allow(irrefutable_let_patterns)]
+        let KeyExport::Extractable(seed) = space.export().await? else {
+            anyhow::bail!("a generated key exports its seed");
+        };
         let seed: Zeroizing<[u8; 32]> = Zeroizing::new(seed.as_slice().try_into()?);
         let recipient = secret.secret().did();
         let sealed = tonk_identity::sealed::RecipientKey::try_from(&recipient)?

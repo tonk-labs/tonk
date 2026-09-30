@@ -9752,13 +9752,12 @@ pub(crate) mod tests {
         }
     }
 
-    /// A device linked before the account's encryption key existed has
-    /// nothing to seal a new space's seed to. Creating one from a page makes
-    /// the worker ask that page for a passkey assertion; the page answers by
-    /// saving the key with the root, and the create resumes. The space ends
-    /// up custodied under the account, and the device now carries the key.
+    /// A device linked before the account published an encryption key
+    /// still takes a new space into the account's custody: the space's key
+    /// is sealed to the account's own DID, so nothing asks the page for a
+    /// passkey assertion to learn a key first.
     #[dialog_common::test]
-    async fn it_asks_the_page_for_a_passkey_assertion_when_custody_needs_the_key(
+    async fn it_takes_a_new_space_into_custody_on_a_device_linked_without_a_key(
         env: TestEnvironment,
     ) -> Result<()> {
         let (creator, authenticator) = driver_with_prf_authenticator(&env).await?;
@@ -9812,24 +9811,17 @@ pub(crate) mod tests {
         .await?;
         successful_body("create space command", &created);
 
-        // Two correct endings race from here. Either the worker needs
-        // this page's assertion — it raises the consent card and waits
-        // on its button — or the account pull has already delivered the
-        // encryption key the first profile published, and the worker
-        // seals straight to it without asking. Which side wins is
-        // timing, not behaviour, so drive whichever happens: click the
-        // card whenever it shows, and wait on the durable outcome — the
-        // space exists and its seed is custodied.
+        // Custody needs no key the device lacks, so the create completes
+        // without raising the passkey card.
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
-        let mut asserted_through_the_card = false;
         let key = loop {
-            if let Ok(button) = creator.find(By::Css("#tonk-custody-continue")).await {
-                // A card that re-renders between find and click is "not
-                // yet", the same staleness `click` absorbs elsewhere.
-                if button.click().await.is_ok() {
-                    asserted_through_the_card = true;
-                }
-            }
+            anyhow::ensure!(
+                creator
+                    .find(By::Css("#tonk-custody-continue"))
+                    .await
+                    .is_err(),
+                "the create asked the page for a passkey assertion"
+            );
             if let Ok(profile) = get_json(&creator, "/api/profile").await
                 && profile.get("error").is_none()
                 && let Some(key) = profile["body"]["space"]
@@ -9841,17 +9833,16 @@ pub(crate) mod tests {
             }
             anyhow::ensure!(
                 tokio::time::Instant::now() < deadline,
-                "the create finished neither way: no consent card appeared \
-                 and no space was recorded"
+                "the create never recorded a space"
             );
             tokio::time::sleep(Duration::from_millis(250)).await;
         };
 
-        // Whichever path ran, the new space's seed ends up sealed to the
-        // account's X25519 recipient — a `SecretPrincipal` row naming the
-        // space, whose `seed` points at the `SecretMessage` carrying the
-        // sealed bytes, whose `to` is the recipient. The facts follow the
-        // seal, so poll for them rather than assert on the first read.
+        // The new space's key is held for the account: a principal row
+        // naming the space, whose `seed` points at the sealed message
+        // carrying its key, whose `to` is the account's root DID. The
+        // facts follow the create, so poll for them rather than assert on
+        // the first read.
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
         let mut sealed: Vec<serde_json::Value> = Vec::new();
         let recipient = loop {
@@ -9865,7 +9856,7 @@ pub(crate) mod tests {
                     },
                     "predicate": {
                         "with": {
-                            "seed": { "the": "xyz.tonk.secret/seed", "cardinality": "one", "as": "Entity" }
+                            "seed": { "the": "dialog.secret/seed", "cardinality": "one", "as": "Entity" }
                         }
                     }
                 }),
@@ -9888,7 +9879,7 @@ pub(crate) mod tests {
                         },
                         "predicate": {
                             "with": {
-                                "to": { "the": "xyz.tonk.secret/to", "cardinality": "one", "as": "Entity" }
+                                "to": { "the": "dialog.secret/to", "cardinality": "one", "as": "Entity" }
                             }
                         }
                     }),
@@ -9910,27 +9901,13 @@ pub(crate) mod tests {
             );
             tokio::time::sleep(Duration::from_millis(250)).await;
         };
-        assert!(recipient.starts_with("did:key:z6LS"), "{recipient}");
-
-        // The card path exists to record the key on the device root —
-        // that is what the assertion was for — and it must be the same
-        // recipient the seed was sealed to. The direct-seal path leaves
-        // the legacy root record keyless by design.
-        if asserted_through_the_card {
-            let root = poll_json(
-                &creator,
-                "/api/identity/root",
-                "the assertion to record the key",
-                |body| body.get("encryptionKey").is_some(),
-            )
-            .await?;
-            assert_eq!(
-                root["encryptionKey"].as_str(),
-                Some(recipient.as_str()),
-                "the assertion's key and the seed's recipient must be the \
-                 same account key: {root}"
-            );
-        }
+        assert_eq!(
+            recipient,
+            root["rootDid"]
+                .as_str()
+                .context("root status omitted rootDid")?,
+            "the space's key is held for the account"
+        );
 
         creator.quit().await?;
         Ok(())
