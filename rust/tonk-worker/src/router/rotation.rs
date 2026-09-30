@@ -168,7 +168,7 @@ async fn held_for(tonk: &TonkState, account: &Did) -> usize {
 /// from the delegations it retains. Proven, never minted: one that is
 /// missing is a handover that did not happen, reported rather than papered
 /// over.
-async fn proven(
+pub(super) async fn proven(
     tonk: &TonkState,
     subject: &Did,
     root: &Did,
@@ -1309,12 +1309,15 @@ mod native_tests {
     use dialog_varsig::Principal as _;
     use tower::ServiceExt as _;
 
-    /// Signing in re-issues a created space to the root, and settling it
-    /// finds that delegation where the peer proves from: the direct
-    /// `space -> root` the handover wrote, with nothing cached in between.
-    #[dialog_common::test]
-    async fn it_settles_a_created_space_from_the_handover() {
-        let name = format!("rotation-settle-{}", rand::random::<u64>());
+    /// A booted worker with the space `label` created through the router,
+    /// signed in first when `signed_in`: its state, the space, the
+    /// onboarding account when one was minted, and the root it signed in
+    /// to.
+    async fn created(
+        label: &str,
+        signed_in: bool,
+    ) -> (crate::router::AppState, Did, Option<Did>, Did) {
+        let name = format!("rotation-{label}-{}", rand::random::<u64>());
         let (storage, profile) =
             crate::device::open_profile_at(&name, dialog_effects::storage::Directory::Profile)
                 .await
@@ -1327,11 +1330,36 @@ mod native_tests {
             .await
             .unwrap();
         let (app, state, _lsp) = crate::router::api_router_with_state(state);
+        let root = Ed25519Signer::import(&[11u8; 32]).await.unwrap();
+        let root_did = root.did();
+        let sign_in = || async {
+            let tonk = state.read().await;
+            let grant = tonk_identity::delegation::mint_device_delegation(
+                root.clone(),
+                &tonk.profile.did(),
+            )
+            .await
+            .unwrap();
+            super::super::identity::persist_root(
+                &tonk,
+                tonk_worker_api::SaveRootRequest {
+                    credential_id: "test-credential".to_string(),
+                    delegation_hex: hex::encode(grant.to_bytes().unwrap()),
+                    passkey: None,
+                    encryption_key: None,
+                },
+            )
+            .await
+            .unwrap();
+        };
+        if signed_in {
+            sign_in().await;
+        }
         let response = app
             .oneshot(
                 axum::http::Request::builder()
                     .method("PUT")
-                    .uri("/api/repository/settled-space")
+                    .uri(format!("/api/repository/{label}"))
                     .body(axum::body::Body::empty())
                     .unwrap(),
             )
@@ -1342,27 +1370,38 @@ mod native_tests {
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        let created: Did = json["name"].as_str().unwrap().parse().unwrap();
+        let space: Did = json["name"].as_str().unwrap().parse().unwrap();
+        let onboarding = crate::onboarding::did(&*state.read().await).await.unwrap();
+        if !signed_in {
+            sign_in().await;
+        }
+        (state, space, onboarding, root_did)
+    }
 
+    /// A space created on a signed-in device keeps one delegation to the
+    /// account: the one custody made, which is also its persisted prefix,
+    /// so proving finds exactly what was stored.
+    #[dialog_common::test]
+    async fn it_keeps_one_delegation_for_a_space_created_signed_in() {
+        let (state, space, _, root) = created("signed-in-space", true).await;
         let tonk = state.read().await;
-        let onboarding = crate::onboarding::did(&tonk).await.unwrap().unwrap();
-        let root = Ed25519Signer::import(&[11u8; 32]).await.unwrap();
-        let root_did = root.did();
-        let grant = tonk_identity::delegation::mint_device_delegation(root, &tonk.profile.did())
+        let proof = proven(&tonk, &space, &root).await.unwrap();
+        let stored = super::super::repository::space_root_prefix(&tonk, &space)
             .await
             .unwrap();
-        super::super::identity::persist_root(
-            &tonk,
-            tonk_worker_api::SaveRootRequest {
-                credential_id: "test-credential".to_string(),
-                delegation_hex: hex::encode(grant.to_bytes().unwrap()),
-                passkey: None,
-                encryption_key: None,
-            },
-        )
-        .await
-        .unwrap();
+        assert_eq!(stored.proof_cids(), proof.proof_cids());
+        assert_eq!(stored.issuer(), &space);
+        assert_eq!(stored.audience(), &root);
+    }
 
+    /// Signing in re-issues a created space to the root, and settling it
+    /// finds that delegation where the peer proves from: the direct
+    /// `space -> root` the handover wrote, with nothing cached in between.
+    #[dialog_common::test]
+    async fn it_settles_a_created_space_from_the_handover() {
+        let (state, created, onboarding, root_did) = created("settled-space", false).await;
+        let onboarding = onboarding.expect("creating before sign-in minted the onboarding account");
+        let tonk = state.read().await;
         settle_space(&tonk, &root_did, &onboarding, &created)
             .await
             .expect("the handover's delegation settles the space");

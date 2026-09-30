@@ -4913,20 +4913,38 @@ pub async fn create_repository(
     let repository = Repository::from(space_credential);
     log!("Repository created. DID: {}", repository.did());
 
-    // 2. Delegate subject-specific authority to the owner key, from the
-    //    signer this function still holds.
-    let minter = Repository::from(signer);
-    let delegation = minter
-        .access()
-        .claim(&minter)
-        .delegate(owner.clone())
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| {
-            RepositoryError::Internal(format!("Failed to delegate repo access to profile: {}", e))
-        })?;
-
-    let prefix = delegation.into_chain();
+    // 2. The space's authority, delegated to the owner. Taking it into
+    //    custody had it delegate to the account the peer acts for, so an
+    //    owner that is that account takes that delegation: a second one,
+    //    minted here, would leave two for proving to choose between. An
+    //    owner the peer does not act for (an onboarding account before
+    //    sign-in) is delegated to from the signer this function holds.
+    let custodied = match tonk.profile.authority().await {
+        Ok(account) if account == owner => super::rotation::proven(tonk, &did, &owner)
+            .await
+            .ok()
+            .filter(|chain| chain.issuer() == &did && chain.proofs().count() == 1),
+        _ => None,
+    };
+    let prefix = match custodied {
+        Some(chain) => chain,
+        None => {
+            let minter = Repository::from(signer);
+            minter
+                .access()
+                .claim(&minter)
+                .delegate(owner.clone())
+                .perform(&tonk.operator)
+                .await
+                .map_err(|e| {
+                    RepositoryError::Internal(format!(
+                        "Failed to delegate repo access to profile: {}",
+                        e
+                    ))
+                })?
+                .into_chain()
+        }
+    };
 
     tonk.profile
         .access()
