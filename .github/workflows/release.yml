@@ -1,7 +1,9 @@
 name: 'Release'
 
-# A pushed `v*` tag is a release. `v0.7.0-rc.1` is a staging pre-release,
-# `v0.7.0` is a stable release. Cut one with git:
+# A pushed `v*` tag is a release. `v0.7.0` is a stable release,
+# `v0.7.0-preview.1` is a preview pre-release, and any other suffix
+# (`v0.7.0-rc.1`, `-alpha`, `-beta.2`) is a staging pre-release. Cut one
+# with git:
 #
 #   git tag v0.7.0-rc.1 origin/main && git push origin v0.7.0-rc.1
 #
@@ -16,7 +18,9 @@ name: 'Release'
 # GitHub release. A stable release becomes GitHub's `latest`, which is what
 # `install.sh` and `tonk update` resolve for the stable channel. A staging
 # release also replaces the rolling `tonk-staging` release, which the
-# staging channel resolves.
+# staging channel resolves. A preview release is only the tag's own
+# pre-release: no install channel follows it, so it installs by pinning
+# `TONK_RELEASE`.
 on:
   push:
     tags:

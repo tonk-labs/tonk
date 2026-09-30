@@ -42,7 +42,8 @@ tag decides everything else:
 
 | Tag | Channel | Web | CLI release | npm |
 | --- | --- | --- | --- | --- |
-| `v0.7.0-rc.1` (has a `-`) | staging | staging | pre-release, and the rolling `tonk-staging` | `next` |
+| `v0.7.0-preview.1` (has `-preview`) | preview | tonk.host | pre-release | `next` |
+| `v0.7.0-rc.1` (any other `-`) | staging | staging | pre-release, and the rolling `tonk-staging` | `next` |
 | `v0.7.0` (no `-`) | stable | tonk.network | GitHub `latest` | `latest` |
 
 The tag is the version. CI stamps it into `[workspace.package] version`

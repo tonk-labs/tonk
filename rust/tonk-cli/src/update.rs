@@ -35,7 +35,8 @@ pub const DEFAULT_ENDPOINT: &str = "https://github.com/tonk-labs/tonk/releases";
 pub enum Channel {
     /// GitHub's `latest` release, the newest final `v*` tag.
     Stable,
-    /// The `tonk-staging` rolling pre-release, the newest prerelease `v*` tag.
+    /// The `tonk-staging` rolling pre-release, the newest prerelease `v*`
+    /// tag that is not a `-preview` one.
     Staging,
 }
 

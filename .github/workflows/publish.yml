@@ -7,9 +7,11 @@ on:
   # uses the trusted base-branch workflow rather than checking out PR code.
   pull_request_target:
     types: [closed]
-  # `main` deploys dev on tonk.foundation. A `v*` tag is a release: a
-  # prerelease tag (`v0.7.0-rc.1`) deploys staging and a final tag (`v0.7.0`)
-  # deploys production. `release.yml` explains how to cut one.
+  # `main` deploys dev on tonk.foundation. A `v*` tag is a release: a final
+  # tag (`v0.7.0`) deploys production on tonk.network, a `-preview` tag
+  # (`v0.7.0-preview.1`) deploys tonk.host, and any other prerelease tag
+  # (`v0.7.0-rc.1`, `-alpha`, `-beta.2`) deploys staging. `release.yml`
+  # explains how to cut one.
   push:
     branches: [main]
     tags: ['v*']
@@ -74,6 +76,9 @@ jobs:
           message: |
             Deploying a preview of `${{ steps.commit.outputs.short }}`...
 
+      # The preview artifact turns on features production does not ship. A
+      # `-preview` tag still builds production's, since tonk.host previews
+      # the release as tonk.network will run it.
       - name: Build assets
         env:
           DEPLOY_EVENT: ${{ github.event_name }}
@@ -284,6 +289,26 @@ jobs:
       - name: Deploy staging
         if: steps.release.outputs.channel == 'staging'
         run: nix --accept-flake-config develop --command wrangler deploy --env staging -c wrangler.toml
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Apply host access migrations
+        if: steps.release.outputs.channel == 'preview'
+        run: |
+          nix --accept-flake-config develop --command \
+            wrangler d1 migrations apply tonk-access-control-host --remote \
+              --env host -c wrangler.toml
+          nix --accept-flake-config develop --command \
+            wrangler d1 migrations apply tonk-access-ingest-host --remote \
+              --env host -c wrangler.toml
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Deploy host
+        if: steps.release.outputs.channel == 'preview'
+        run: nix --accept-flake-config develop --command wrangler deploy --env host -c wrangler.toml
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
