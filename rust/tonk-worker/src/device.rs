@@ -188,6 +188,38 @@ impl Registry {
         Ok(profile)
     }
 
+    /// Open the profile `name` as it acts on its account branch `branch`:
+    /// the same key, its records kept in that branch, so the account the
+    /// branch belongs to is the one it acts for.
+    pub(crate) async fn open_on(
+        &self,
+        storage: &Storage<DefaultSpace>,
+        name: &str,
+        branch: &str,
+    ) -> Result<DefaultProfile, TonkWorkerError> {
+        let (credentials, system) =
+            tonk_account::peer::open_system::<DefaultSpace>(self.directory.clone())
+                .await
+                .map_err(|error| {
+                    TonkWorkerError::Internal(format!("failed to open the system key: {error}"))
+                })?;
+        tonk_account::peer::open_peer_on(
+            Location::new(self.directory.clone(), name),
+            space_location("").directory,
+            storage.clone(),
+            &credentials,
+            &system,
+            false,
+            branch,
+        )
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!(
+                "failed to open the profile on the branch {branch}: {error}"
+            ))
+        })
+    }
+
     /// Move the site secrets the profile `name` kept in its space for the
     /// branch `branch`, before site secrets were sealed to its peer's
     /// vault, into the peer's.

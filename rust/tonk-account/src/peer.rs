@@ -36,6 +36,18 @@ pub const ACCOUNT_VAULT: &str = "account";
 /// is handed over to the one the device signs in to.
 pub const ACCOUNT_CUSTODIAN: &str = "tonk-account-custodian-v1";
 
+/// The name the custodian of the account a peer acts for on `branch` is
+/// kept under. Each account branch of a profile is its own account, so
+/// each keeps its own custodian; the profile's [`ACCESS_BRANCH`] keeps the
+/// name every profile had before accounts were branches.
+pub fn custodian_name(branch: &str) -> String {
+    if branch == ACCESS_BRANCH {
+        ACCOUNT_CUSTODIAN.to_string()
+    } else {
+        format!("{ACCOUNT_CUSTODIAN}:{branch}")
+    }
+}
+
 /// Open the key of the system tonk runs as, from the credential store in
 /// `directory`, and the store, owned by that system.
 pub async fn open_system<S>(
@@ -125,12 +137,42 @@ where
     S: PeerSpace + Resource<Location, Error: Display>,
     CredentialStore<S>: Provider<storage_fx::Load> + Provider<storage_fx::Create>,
 {
+    open_peer_on(
+        location,
+        base,
+        storage,
+        credentials,
+        system,
+        create,
+        ACCESS_BRANCH,
+    )
+    .await
+}
+
+/// Open the peer a profile is as it acts on the account branch `branch`:
+/// as [`open_peer`], its records kept in the home's `branch`. Each account
+/// branch of a profile is its own account, with its own account vault,
+/// custody and delegations, so a profile on another account's branch
+/// acts for that account and nothing it holds for another.
+pub async fn open_peer_on<S>(
+    location: Location,
+    base: Directory,
+    storage: Storage<S>,
+    credentials: &CredentialStore<S>,
+    system: &SignerCredential,
+    create: bool,
+    branch: &str,
+) -> Result<Peer<S>, PeerError>
+where
+    S: PeerSpace + Resource<Location, Error: Display>,
+    CredentialStore<S>: Provider<storage_fx::Load> + Provider<storage_fx::Create>,
+{
     let credential = open_credential(&location, credentials, &storage, create).await?;
     record_location(&credential.did(), &location);
     let peer = Peer::new(credential.clone())
         .at(location)
         .base(base)
-        .space(Repository::from(credential.did()).branch(ACCESS_BRANCH))
+        .space(Repository::from(credential.did()).branch(branch))
         .with(storage)
         .grant(Allowance::storage(system))
         .build()
@@ -296,7 +338,7 @@ where
     if peer.authority().await.is_ok() {
         return Ok(());
     }
-    let custodian = open_kept_key::<S>(&peer.did(), ACCOUNT_CUSTODIAN, true)
+    let custodian = open_kept_key::<S>(&peer.did(), &custodian_name(peer.state().name()), true)
         .await?
         .ok_or_else(|| CredentialError::NotFound("no account custodian".into()))?;
     let account = peer
@@ -307,6 +349,59 @@ where
         .await?;
     account.add(custodian.did()).perform(peer).await?;
     account.delegate(peer.did()).perform(peer).await
+}
+
+/// Copy the site secrets `from` keeps under a name `keep` accepts to `to`,
+/// skipping one `to` keeps already, and answer how many were copied. A site
+/// secret is sealed to the peer that keeps it, so each is opened by `from`
+/// and sealed again by `to`; `from` keeps its own.
+///
+/// What a profile's account branch kept while every branch shared one peer
+/// follows the branch to the peer that now acts on it.
+pub async fn copy_site_secrets<S>(
+    from: &Peer<S>,
+    to: &Peer<S>,
+    keep: impl Fn(&str) -> bool,
+) -> Result<usize, CredentialError>
+where
+    S: PeerSpace,
+{
+    let failed = |error: &dyn Display| CredentialError::Storage(error.to_string());
+    from.state().refresh(from).await.map_err(|e| failed(&e))?;
+    let names: Vec<String> =
+        dialog_repository::secrets::secrets_of(from.state(), &from.did(), from)
+            .await
+            .map_err(|e| failed(&e))?
+            .into_iter()
+            .map(|(name, _)| name)
+            .filter(|name| keep(name))
+            .collect();
+    let mut copied = 0;
+    for name in names {
+        if to
+            .secrets()
+            .site(name.as_str())
+            .load::<Vec<u8>>()
+            .perform(to)
+            .await
+            .is_ok()
+        {
+            continue;
+        }
+        let secret = from
+            .secrets()
+            .site(name.as_str())
+            .load::<Vec<u8>>()
+            .perform(from)
+            .await?;
+        to.secrets()
+            .site(name.as_str())
+            .save(secret)
+            .perform(to)
+            .await?;
+        copied += 1;
+    }
+    Ok(copied)
 }
 
 /// Mount the space of a repository whose key tonk does not hold, under
@@ -420,7 +515,8 @@ where
         .refresh(peer)
         .await
         .map_err(|error| CredentialError::Storage(error.to_string()))?;
-    let Some(custodian) = open_kept_key::<S>(&peer.did(), ACCOUNT_CUSTODIAN, false).await? else {
+    let custodian_name = custodian_name(peer.state().name());
+    let Some(custodian) = open_kept_key::<S>(&peer.did(), &custodian_name, false).await? else {
         return Ok(());
     };
     let current = match peer
@@ -437,7 +533,7 @@ where
         Err(error) => return Err(error),
     };
     current.hand_over(account).perform(peer).await?;
-    forget_kept_key::<S>(&peer.did(), ACCOUNT_CUSTODIAN).await
+    forget_kept_key::<S>(&peer.did(), &custodian_name).await
 }
 
 #[cfg(test)]

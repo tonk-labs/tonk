@@ -147,6 +147,28 @@ pub(crate) async fn local_root(state: &TonkState) -> Result<LocalRoot, TonkWorke
     })
 }
 
+/// Have the peer act for the account its branch signed in to. A branch
+/// signed in while branches shared one peer recorded its root, but its
+/// own peer starts on an onboarding account; handing it over is what
+/// signing in did. A branch never signed in, or one already acting for
+/// its root, is left as it is.
+pub(crate) async fn follow_signed_in_account(state: &TonkState) -> Result<(), TonkWorkerError> {
+    if load_record(state).await?.is_none() {
+        return Ok(());
+    }
+    let root = local_root(state).await?;
+    if state.profile.authority().await.ok().as_ref() == Some(&root.root_did) {
+        return Ok(());
+    }
+    tonk_account::peer::hand_over(&state.profile, &root.delegation)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!(
+                "failed to hand the branch's account over to its signed-in account: {error}"
+            ))
+        })
+}
+
 /// Return the verified local root DID.
 #[allow(dead_code)]
 pub(crate) async fn root_did(state: &TonkState) -> Result<dialog_varsig::Did, TonkWorkerError> {

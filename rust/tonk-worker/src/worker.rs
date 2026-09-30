@@ -1778,6 +1778,19 @@ pub(crate) async fn boot_state_with_profile_library(
     registry: crate::device::Registry,
     profile_library: crate::router::ProfileLibraryCache,
 ) -> Result<TonkState, crate::TonkWorkerError> {
+    // A switch hands over the peer of the branch it leaves; the profile's
+    // own branch is where every other branch's peer is derived from.
+    let profile = if profile.state().name() == crate::router::repository::PROFILE_BRANCH {
+        profile
+    } else {
+        registry
+            .open_on(
+                &storage,
+                &profile_name,
+                crate::router::repository::PROFILE_BRANCH,
+            )
+            .await?
+    };
     let reactor = crate::Reactor::new(profile.credential().clone());
     // Session construction reads branch reference cells, but no longer
     // walks or retains delegation content. Hydrating after a construction
@@ -1790,13 +1803,28 @@ pub(crate) async fn boot_state_with_profile_library(
     let active_branch = crate::router::profile::active_branch_name(&reactor, &session.operator)
         .await
         .unwrap_or_else(|| crate::router::repository::PROFILE_BRANCH.to_owned());
-    let session = if active_branch == crate::router::repository::PROFILE_BRANCH {
-        session
+    let (profile, session) = if active_branch == crate::router::repository::PROFILE_BRANCH {
+        (profile, session)
     } else {
-        registry
-            .migrate_branch_secrets(&profile, &profile_name, &active_branch)
+        // Each account branch is its own account: the peer acting on it
+        // keeps its records, custody and delegations in the branch, and
+        // what the branch kept while branches shared one peer follows it.
+        let branch = registry
+            .open_on(&storage, &profile_name, &active_branch)
             .await?;
-        crate::session::open_on(&profile, &active_branch).await?
+        let suffix = format!("-{active_branch}");
+        tonk_account::peer::copy_site_secrets(&profile, &branch, |name| name.ends_with(&suffix))
+            .await
+            .map_err(|error| {
+                crate::TonkWorkerError::Internal(format!(
+                    "failed to move the branch's site secrets: {error}"
+                ))
+            })?;
+        registry
+            .migrate_branch_secrets(&branch, &profile_name, &active_branch)
+            .await?;
+        let session = crate::session::open_on(&branch, &active_branch).await?;
+        (branch, session)
     };
 
     let state = TonkState {
@@ -1826,6 +1854,7 @@ pub(crate) async fn boot_state_with_profile_library(
     bootstrap_profile(&state).await.map_err(|e| {
         crate::TonkWorkerError::Internal(format!("failed to bootstrap profile meta: {e}"))
     })?;
+    crate::router::identity::follow_signed_in_account(&state).await?;
     Ok(state)
 }
 
