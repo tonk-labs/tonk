@@ -23,7 +23,7 @@ use thiserror::Error;
 use tonk_invite::shortcut::{ShortcutRequest, is_shortcut, resolve_location};
 use tonk_invite::{Invite, InviteAudience};
 use tonk_schema::prelude::DidExt;
-use tonk_schema::{Invitation, InvitationExecution, InvitedVia, MemberRole, Membership};
+use tonk_schema::{Invitation, InvitationExecution, InvitedVia, MemberRole, Membership, SeedKind};
 use url::Url;
 
 use crate::ExitCode;
@@ -545,6 +545,18 @@ async fn claim_prepared_inner(
             }
         };
     let space_name = invite.space_name.clone();
+    // The membership hangs off the invite principal, so the account holds
+    // that principal's key: at sign-in the handover re-issues
+    // `principal -> account` with the chain proving it, as a browser's join
+    // does. A targeted invite carries no key and is rooted at the account.
+    let principal = match &invite.audience {
+        InviteAudience::Open { seed } => Some(
+            <Ed25519Signer<dialog_credentials::Extractable> as dialog_credentials::key::ExtractableKey>::import(seed)
+                .await
+                .map_err(|e| InviteError::Io(format!("the invite key did not derive: {e:?}")))?,
+        ),
+        InviteAudience::Scoped => None,
+    };
     let claimed = invite
         .claim(&member)
         .await
@@ -566,6 +578,13 @@ async fn claim_prepared_inner(
     )
     .map_err(|e| InviteError::Io(format!("failed to record the local invitation claim: {e}")))?;
     retain_claim_authority(&joined, chain).await;
+    if let Some(principal) = principal {
+        joined
+            .profile
+            .adopt_principal(SeedKind::Invite.held(), principal)
+            .await
+            .map_err(|e| InviteError::Io(format!("failed to hold the invite's key: {e}")))?;
+    }
 
     // Wire the embedded remote (if any) onto the freshly
     // bootstrapped site. Match the worker's `DEFAULT_REMOTE` so

@@ -645,52 +645,13 @@ async fn bootstrap_repository(
         (None, None) => unreachable!("an onboarding account is minted when no root exists"),
     };
 
-    // The signer comes from an explicit seed so the seed can be sealed
-    // to the account BEFORE the space exists: the custody row is the
-    // copy the account's other devices recover the space from, and a
-    // create that cannot record it must not produce a space that only
-    // this machine can ever re-derive.
+    // Creating the space takes its key into the account's custody, sealed
+    // to the account before the space exists, with a copy for this profile:
+    // the copy the account's other devices recover the space from.
     let seed = zeroize::Zeroizing::new(rand::random::<[u8; 32]>());
     let signer = <Ed25519Signer<Extractable> as ExtractableKey>::import(&*seed)
         .await
         .context("failed to derive the space signer")?;
-    if require_account {
-        let account_operator = account_operator
-            .as_ref()
-            .expect("account operator exists when an account is required");
-        let account =
-            crate::account_state::open_account_branch_in(profile, account_operator, account_store)
-                .await?
-                .context("the account repository is not ready to custody this space")?;
-        let recipient = crate::custody::account_recipient(&account, &durable_did, account_operator)
-            .await?
-            .context(
-                "the account has not published its encryption key yet; \
-                     open /account in a signed-in browser once, then retry",
-            )?;
-        crate::custody::custody_space_seed(
-            &account,
-            &signer.did(),
-            &recipient,
-            &seed,
-            account_operator,
-        )
-        .await?;
-    } else if let Some(secret) = &onboarding {
-        // Unlinked: the seed seals to the onboarding key on the local
-        // account branch — the same branch the account mounts once the
-        // device signs in, so the rows ride straight into rotation.
-        let recipient = secret.secret().did();
-        let account = crate::custody::open_local_account_branch(profile, &store_operator).await?;
-        crate::custody::custody_space_seed(
-            &account,
-            &signer.did(),
-            &recipient,
-            &seed,
-            &store_operator,
-        )
-        .await?;
-    }
 
     let signer_repo = profile
         .space(REPO_NAME)

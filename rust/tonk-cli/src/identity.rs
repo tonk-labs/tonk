@@ -161,6 +161,20 @@ pub async fn save_local_root_with_operator(
         .perform(profile)
         .await
         .context("failed to persist the local root")?;
+    // What the onboarding account sealed in tonk's own custody rows moves
+    // into the profile's custody first, so handing the account over below
+    // carries it to the signed-in account, as signing in does in a browser.
+    if let Some(secret) = crate::onboarding::read_if_openable_in(profile, operator).await? {
+        let branch = crate::custody::open_local_account_branch(profile, operator).await?;
+        for (subject, reason) in
+            crate::custody::migrate_onboarding(profile, operator, &branch, &secret, |_| async {
+                Ok(())
+            })
+            .await?
+        {
+            eprintln!("warning: {subject} stayed in the onboarding custody: {reason}");
+        }
+    }
     // The peer now acts for the account it signed in to.
     tonk_account::peer::hand_over(profile, &chain)
         .await

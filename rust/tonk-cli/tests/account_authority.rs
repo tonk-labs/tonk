@@ -843,92 +843,63 @@ async fn it_denies_ordinary_sync_for_a_space_the_account_never_held(
     Ok(())
 }
 
-/// An account-backed create seals the space's seed to the account's
-/// published encryption key and records it on the account branch — the
-/// copy any of the account's devices recovers the space from after a
-/// ceremony opens it.
+/// An account-backed create takes the space's key into the account's
+/// custody: held sealed to the account the profile acts for, which the
+/// account's own key opens — the copy any of the account's devices
+/// recovers the space from after a ceremony.
 #[dialog_common::test]
 async fn it_custodies_the_created_space_seed() -> Result<()> {
-    use dialog_query::{Output as _, Query, Term};
-    use tonk_schema::{SecretMessage, SecretPrincipal, prelude::DidExt as _};
-
     let fixture = common::AccountFixture::new().await?;
     let site = TonkSite::init_at_with(
         &fixture.tmp.path().join("custodied"),
         account_config(&fixture),
     )
     .await?;
-    let subject = site.repository.did();
+    held_for_the_account(&fixture, &site.repository.did()).await
+}
 
-    let account_operator =
-        tonk_cli::account_state::credential_operator_for_store(&fixture.profile, &fixture.store)
-            .await?;
-    let account = tonk_cli::account_state::open_account_branch_in(
-        &fixture.profile,
-        &account_operator,
-        &fixture.store,
-    )
-    .await?
-    .context("the fixture account branch mounts")?;
-    // The principal names the message; the message carries the seed.
-    let principals: Vec<SecretPrincipal> = account
-        .query()
-        .select(Query::<SecretPrincipal> {
-            this: Term::from(subject.this()),
-            kind: Term::var("kind"),
-            seed: Term::var("seed"),
-        })
-        .perform(&account_operator)
-        .try_vec()
-        .await
-        .map_err(|error| anyhow::anyhow!("read sealed principals: {error:?}"))?;
-    assert_eq!(principals.len(), 1, "the created space's seed is sealed");
-    assert_eq!(
-        principals[0].kind.0.to_string(),
-        tonk_schema::SeedKind::SPACE
-    );
-    let rows: Vec<SecretMessage> = account
-        .query()
-        .select(Query::<SecretMessage> {
-            this: Term::from(principals[0].seed.0.clone()),
-            to: Term::var("to"),
-            message: Term::var("message"),
-            from: Term::var("from"),
-        })
-        .perform(&account_operator)
-        .try_vec()
-        .await
-        .map_err(|error| anyhow::anyhow!("read sealed messages: {error:?}"))?;
-    assert_eq!(rows.len(), 1, "the principal names a real message");
+/// `subject`'s key is held for the account the fixture's profile acts
+/// for, and opens with the account's own key.
+async fn held_for_the_account(
+    fixture: &common::AccountFixture,
+    subject: &dialog_varsig::Did,
+) -> Result<()> {
+    use dialog_varsig::Principal as _;
 
-    // The account secret opens the row and derives the space itself.
+    // A fresh open: the fixture's profile handle predates the writes.
+    let site = TonkSite::open_with(&fixture.pre_account_site.root, account_config(fixture)).await?;
+    let profile = &site.profile;
+    let held = dialog_repository::secrets::held_principal(profile.state(), subject, profile)
+        .await?
+        .context("the space's key is held")?;
+    assert_eq!(held.kind, tonk_schema::SeedKind::Space.held());
+    assert_eq!(held.to, profile.authority().await?, "held for the account");
+
+    // The account's key, as a ceremony derives it, opens the space's.
     let secret = tonk_identity::envelope::AccountSecret::from_bytes(zeroize::Zeroizing::new(
         fixture.root_prf,
     ));
-    let sealed = tonk_identity::sealed::Sealed::decode(&rows[0].message.0)
-        .map_err(|error| anyhow::anyhow!("{error}"))?;
-    let seed = secret
-        .secret()
-        .reveal(&sealed, &subject)
-        .map_err(|error| anyhow::anyhow!("{error}"))?;
-    let signer = dialog_credentials::Ed25519Signer::import(&*seed).await?;
-    use dialog_varsig::Principal as _;
-    assert_eq!(signer.did(), subject, "the sealed seed derives the space");
+    let owner = dialog_credentials::SignerCredential::from(secret.signer().await?);
+    let opened = profile
+        .space_key(subject)
+        .via(&owner)
+        .perform(profile)
+        .await?;
+    assert_eq!(opened.did(), *subject, "the held key is the space's");
     Ok(())
 }
 
-/// Sign-in moves custody with two passes. The shared rotation core
-/// rotates whatever the onboarding account sealed (here the fixture's
-/// pre-account site, created before any root existed) and retires the
-/// onboarding account; the legacy walk then exports spaces that predate
-/// custody rows entirely — "premade", created with a root recorded but
-/// no account gate. Hosting moves in neither pass; that stays
-/// `tonk space link`'s boundary.
+/// Sign-in moves custody with two passes. The first moves whatever the
+/// onboarding account sealed in tonk's own custody rows (here the
+/// fixture's pre-account site, created before any root existed) into the
+/// account's custody and retires the onboarding account; the walk then
+/// finds "premade", created with a root recorded but no account gate,
+/// already held: creating a space takes its key into the account's
+/// custody. Hosting moves in neither pass; that stays `tonk space link`'s
+/// boundary.
 #[dialog_common::test]
 async fn it_moves_local_space_custody_at_sign_in() -> Result<()> {
-    use dialog_query::{Output as _, Query, Term};
     use tonk_cli::custody::{SpaceRotation, rotate_from_onboarding, rotate_local_spaces};
-    use tonk_schema::{SecretMessage, SecretPrincipal, prelude::DidExt as _};
 
     let fixture = common::AccountFixture::new().await?;
     // What `tonk account login` records once the ceremony succeeds.
@@ -943,69 +914,20 @@ async fn it_moves_local_space_custody_at_sign_in() -> Result<()> {
     let subject: dialog_varsig::Did = created.did.parse()?;
 
     // The login sequence: the shared core rotates the onboarding-sealed
-    // seeds, then the legacy walk covers anything without a custody row.
-    // The fixture's attach recorded a root before this create, so
-    // "premade" is the LEGACY shape: root-delegated, no custody row.
-    // The rotation pass moves the genuinely onboarding-custodied seed
-    // (the fixture's pre-account site) and the walk exports this one.
+    // seeds, then the walk covers anything without a held key. The
+    // rotation pass moves the onboarding-custodied seed (the fixture's
+    // pre-account site); "premade" was held at create.
     let failures = rotate_from_onboarding(&fixture.store, &fixture.config).await?;
     assert!(failures.is_empty(), "rotation completes: {failures:?}");
     let outcomes = rotate_local_spaces(&fixture.store, &fixture.config).await?;
     assert!(
         outcomes
             .iter()
-            .any(|(name, outcome)| name == "premade" && matches!(outcome, SpaceRotation::Moved)),
-        "the walk moves the legacy space: {outcomes:?}"
+            .any(|(name, outcome)| name == "premade" && matches!(outcome, SpaceRotation::Already)),
+        "the walk finds the created space held: {outcomes:?}"
     );
 
-    let account_operator =
-        tonk_cli::account_state::credential_operator_for_store(&fixture.profile, &fixture.store)
-            .await?;
-    let account = tonk_cli::account_state::open_account_branch_in(
-        &fixture.profile,
-        &account_operator,
-        &fixture.store,
-    )
-    .await?
-    .context("the fixture account branch mounts")?;
-    let principals: Vec<SecretPrincipal> = account
-        .query()
-        .select(Query::<SecretPrincipal> {
-            this: Term::from(subject.this()),
-            kind: Term::var("kind"),
-            seed: Term::var("seed"),
-        })
-        .perform(&account_operator)
-        .try_vec()
-        .await
-        .map_err(|error| anyhow::anyhow!("read sealed principals: {error:?}"))?;
-    assert_eq!(principals.len(), 1, "the moved space's seed is sealed");
-    let rows: Vec<SecretMessage> = account
-        .query()
-        .select(Query::<SecretMessage> {
-            this: Term::from(principals[0].seed.0.clone()),
-            to: Term::var("to"),
-            message: Term::var("message"),
-            from: Term::var("from"),
-        })
-        .perform(&account_operator)
-        .try_vec()
-        .await
-        .map_err(|error| anyhow::anyhow!("read sealed messages: {error:?}"))?;
-    assert_eq!(rows.len(), 1, "the principal names a real message");
-
-    let secret = tonk_identity::envelope::AccountSecret::from_bytes(zeroize::Zeroizing::new(
-        fixture.root_prf,
-    ));
-    let sealed = tonk_identity::sealed::Sealed::decode(&rows[0].message.0)
-        .map_err(|error| anyhow::anyhow!("{error}"))?;
-    let seed = secret
-        .secret()
-        .reveal(&sealed, &subject)
-        .map_err(|error| anyhow::anyhow!("{error}"))?;
-    let signer = dialog_credentials::Ed25519Signer::import(&*seed).await?;
-    use dialog_varsig::Principal as _;
-    assert_eq!(signer.did(), subject, "the sealed seed derives the space");
+    held_for_the_account(&fixture, &subject).await?;
 
     // Running again converges: the onboarding account is retired, so
     // the rotation finds nothing, and the walk still reports the row.

@@ -1,99 +1,109 @@
-//! Sealing a space's seed to the account — the CLI half of the custody
-//! model the worker follows.
+//! A space's key in the account's custody — the CLI half of the custody
+//! the worker follows, which tonk and dialog share.
 //!
-//! A space's signing seed must survive this machine: any device on the
-//! account can then re-issue the space after a passkey ceremony opens
-//! the seed. The account publishes an X25519 recipient
-//! ([`AccountSealedInbox`]) exactly so that sealing needs no passkey —
-//! the CLI reads the public half from the account branch it already
-//! syncs, seals, and records a [`SecretMessage`] and the
-//! [`SecretPrincipal`] naming it beside the
-//! directory entries it writes today. Only a ceremony holding the
-//! account secret can ever open the row again.
+//! A space's key must survive this machine: the account holds it sealed,
+//! and the profile keeps a copy of its own. Creating a space puts it in
+//! that custody; a space from before, or one linked from elsewhere, is
+//! adopted into it. Seeds an earlier release sealed in tonk's own custody
+//! rows move into it when the onboarding account's secret is here to open
+//! them.
 
 use anyhow::{Context, Result};
+use dialog_credentials::key::ExtractableKey as _;
+use dialog_credentials::{Ed25519Signer, Extractable};
 use dialog_peer::{Peer, Session};
-use dialog_query::{Output as _, Query, Term};
 use dialog_repository::Branch;
 use dialog_storage::provider::storage::NativeSpace;
 use dialog_varsig::Did;
-use tonk_identity::sealed::RecipientKey;
-use tonk_schema::{
-    AccountSealedInbox, SecretMessage, SecretPrincipal, SeedKind, prelude::DidExt as _,
-};
+use tonk_schema::SeedKind;
 use zeroize::Zeroizing;
 
-/// The account's published X25519 recipient, read from the account
-/// branch. `None` when the account predates the encryption key — a
-/// signed-in browser publishes it on its next visit.
-pub async fn account_recipient(
-    account: &Branch,
-    root: &Did,
-    operator: &Peer<NativeSpace, Session>,
-) -> Result<Option<Did>> {
-    let rows: Vec<AccountSealedInbox> = account
-        .query()
-        .select(Query::<AccountSealedInbox> {
-            this: Term::from(root.this()),
-            address: Term::var("address"),
-        })
-        .perform(operator)
-        .try_vec()
+/// Whether the account `profile` acts for holds the key of `subject`.
+pub async fn held_for_account(profile: &Peer<NativeSpace>, subject: &Did) -> Result<bool> {
+    let account = profile
+        .authority()
         .await
-        .map_err(|error| {
-            anyhow::anyhow!("failed to read the account sealed-inbox address: {error:?}")
-        })?;
-    rows.into_iter()
-        .next()
-        .map(|row| {
-            row.address
-                .0
-                .to_string()
-                .parse()
-                .context("the published sealed-inbox address is not a DID")
-        })
-        .transpose()
+        .context("the profile acts for no account")?;
+    let held = dialog_repository::secrets::held_principal(profile.state(), subject, profile)
+        .await
+        .map_err(|error| anyhow::anyhow!("failed to read the held keys: {error}"))?;
+    Ok(held.is_some_and(|held| held.to == account))
 }
 
-/// Seal `seed` (deriving `subject`) to `recipient` and record the
-/// custody row. The row is what the account's other devices recover the
-/// space from, so it is pushed right away — but like the directory
-/// record, a failed push warns rather than fails: the row is committed
-/// locally and the next account push carries it.
-pub async fn custody_space_seed(
-    account: &Branch,
-    subject: &Did,
-    recipient: &Did,
+/// Take the space whose key `seed` is into the custody of the account
+/// `profile` acts for.
+pub async fn adopt_space_seed(
+    profile: &Peer<NativeSpace>,
     seed: &Zeroizing<[u8; 32]>,
-    operator: &Peer<NativeSpace, Session>,
 ) -> Result<()> {
-    let key = RecipientKey::try_from(recipient).map_err(|error| {
-        anyhow::anyhow!("the account sealed-inbox address is unusable: {error}")
-    })?;
-    let sealed = key
-        .secret()
-        .conceal(seed, subject)
-        .map_err(|error| anyhow::anyhow!("failed to seal the space seed: {error}"))?
-        .encode();
-    // Two rows: the envelope, and the principal whose seed it carries.
-    let message = SecretMessage::new(recipient, sealed);
-    account
-        .transaction()
-        .assert(message.clone())
-        .assert(SecretPrincipal::new(
-            subject,
-            SeedKind::Space,
-            message.this(),
-        ))
-        .commit()
-        .publish()
-        .perform(operator)
+    let key = <Ed25519Signer<Extractable>>::import(&**seed)
         .await
-        .context("failed to record the custodied seed")?;
-    if let Err(error) = account.push().perform(operator).await {
-        eprintln!("warning: custodied seed recorded locally; push failed: {error:#}");
-    }
-    Ok(())
+        .map_err(|error| anyhow::anyhow!("failed to import the space key: {error:?}"))?;
+    profile
+        .adopt_principal(SeedKind::Space.held(), key)
+        .await
+        .context("failed to take the space into the account's custody")
+}
+
+/// Move what the onboarding account sealed in tonk's own custody rows on
+/// `branch` into the custody of the account `profile` acts for, retracting
+/// the rows once each key is held there. `space` runs for each space moved,
+/// before its rows go; an invite's membership is re-issued to the account
+/// with the chain proving it. Answers the principals that stayed, with why.
+pub async fn migrate_onboarding<F, Fut>(
+    profile: &Peer<NativeSpace>,
+    operator: &Peer<NativeSpace, Session>,
+    branch: &Branch,
+    secret: &tonk_identity::envelope::AccountSecret,
+    space: F,
+) -> Result<Vec<(Did, String)>>
+where
+    F: Fn(Ed25519Signer) -> Fut + Copy + dialog_common::ConditionalSend,
+    Fut: std::future::Future<Output = Result<(), String>> + dialog_common::ConditionalSend,
+{
+    let outcome = tonk_schema::custody::migrate(
+        branch,
+        secret.secret(),
+        operator,
+        |kind, key, principal, message| async move {
+            let signer = Ed25519Signer::import(
+                &key.export()
+                    .await
+                    .map_err(|error| format!("{error:?}"))
+                    .map(|export| match export {
+                        dialog_credentials::KeyExport::Extractable(seed) => seed,
+                    })?
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| "the space key is not a key".to_string())?,
+            )
+            .await
+            .map_err(|error| format!("{error:?}"))?;
+            profile
+                .adopt_principal(kind.held(), key)
+                .await
+                .map_err(|error| format!("custody: {error}"))?;
+            if kind == SeedKind::Space {
+                space(signer).await?;
+            }
+            // One fresh handle: taking custody advanced the branch.
+            open_local_account_branch(profile, operator)
+                .await
+                .map_err(|error| format!("open: {error:#}"))?
+                .transaction()
+                .retract(principal)
+                .retract(message)
+                .commit()
+                .publish()
+                .perform(operator)
+                .await
+                .map(|_| ())
+                .map_err(|error| format!("retract the custody rows: {error}"))
+        },
+    )
+    .await
+    .map_err(|error| anyhow::anyhow!("the old custody could not be read: {error}"))?;
+    Ok(outcome.failures)
 }
 
 /// The profile repository's `main` branch, opened locally — the same
@@ -110,26 +120,6 @@ pub async fn open_local_account_branch(
         .perform(operator)
         .await
         .context("failed to open the local account branch")
-}
-
-/// Whether the account branch already holds a custody row for `subject`.
-pub async fn has_custody(
-    account: &Branch,
-    subject: &Did,
-    operator: &Peer<NativeSpace, Session>,
-) -> Result<bool> {
-    let rows: Vec<SecretPrincipal> = account
-        .query()
-        .select(Query::<SecretPrincipal> {
-            this: Term::from(subject.this()),
-            kind: Term::var("kind"),
-            seed: Term::var("seed"),
-        })
-        .perform(operator)
-        .try_vec()
-        .await
-        .map_err(|error| anyhow::anyhow!("failed to read sealed principals: {error:?}"))?;
-    Ok(!rows.is_empty())
 }
 
 /// The signing seed a locally created space's stored credential carries.
@@ -242,15 +232,6 @@ async fn rotate_site(
 
     let operator =
         crate::account_state::credential_operator_for_store(&site.profile, store).await?;
-    let account = crate::account_state::open_account_branch_in(&site.profile, &operator, store)
-        .await?
-        .context("the account repository is not ready to custody spaces")?;
-    let recipient = account_recipient(&account, account_root, &operator)
-        .await?
-        .context(
-            "the account has not published its sealed-inbox address yet; \
-             open /account in a signed-in browser once, then run `tonk account status`",
-        )?;
 
     let prefix = crate::site::adopt_account_root_prefix_for(
         &site.profile,
@@ -262,22 +243,21 @@ async fn rotate_site(
     crate::account_state::retain_space_delegation_in(&site.profile, &operator, store, &prefix)
         .await?;
 
-    if has_custody(&account, &subject, &operator).await? {
+    if held_for_account(&site.profile, &subject).await? {
         return Ok(SpaceRotation::Already);
     }
-    custody_space_seed(&account, &subject, &recipient, &seed, &operator).await?;
+    adopt_space_seed(&site.profile, &seed).await?;
     Ok(SpaceRotation::Moved)
 }
 
-/// Rotate everything the onboarding account custodies onto the
-/// signed-in account, with the shared core the worker also runs —
-/// `tonk_schema::custody::rotate` — then retire the onboarding account.
+/// Move everything the onboarding account custodies into the custody of
+/// the signed-in account, then retire the onboarding account.
 ///
-/// The re-issue half is this adapter's: a space seed mints its
-/// `space -> root` directly, the prefix is persisted, and the chain is
-/// retained into the account. An invite seed is left for a browser to
-/// rotate — the CLI holds no membership re-issue path yet — and the
-/// retirement waits for it.
+/// Each space's key is taken into the account's custody, and its
+/// `space -> root` is minted, the prefix persisted and the chain retained
+/// into the account. An invite's key is held for the account too, and its
+/// membership re-issued with the chain proving it. The retirement waits
+/// for every principal to move.
 pub async fn rotate_from_onboarding(
     store: &crate::space::SpaceStore,
     config: &crate::site::SiteConfig,
@@ -309,91 +289,54 @@ pub async fn rotate_from_onboarding(
             Some(branch) => branch,
             None => open_local_account_branch(&profile, &operator).await?,
         };
-    let new_recipient = account_recipient(&branch, &account_root, &operator)
-        .await?
-        .context(
-            "the account has not published its sealed-inbox address yet; \
-             open /account in a signed-in browser once, then run `tonk account status`",
-        )?;
-    let new_key =
-        tonk_identity::sealed::RecipientKey::try_from(&new_recipient).map_err(|error| {
-            anyhow::anyhow!("the account sealed-inbox address is unusable: {error}")
-        })?;
-
     // Bound as references OUTSIDE the closure: each `async move` block
-    // the `FnMut` produces captures a copy of the reference, so the
-    // closure can run once per seed without consuming the values.
+    // it produces captures a copy of the reference, so the closure can run
+    // once per seed without consuming the values.
     let operator_ref = &operator;
     let profile_ref = &profile;
     let account_root_ref = &account_root;
-    let outcome = tonk_schema::custody::rotate(
-        &branch,
-        secret.secret(),
-        new_key,
+    let failures = migrate_onboarding(
+        &profile,
         &operator,
-        |kind, signer, row, replacement| async move {
-            match kind {
-                SeedKind::Space => {
-                    let subject = signer.did();
-                    let minter = dialog_repository::Repository::from(signer);
-                    let chain = minter
-                        .access()
-                        .claim(&minter)
-                        .delegate(account_root_ref.clone())
-                        .perform(operator_ref)
-                        .await
-                        .map_err(|error| format!("{subject}: delegate: {error}"))?
-                        .into_chain();
-                    let bytes = chain
-                        .to_bytes()
-                        .map_err(|error| format!("{subject}: serialize: {error}"))?;
-                    profile_ref
-                        .secrets()
-                        .site(tonk_account::prefix::space_root_site(
-                            &subject,
-                            account_root_ref,
-                        ))
-                        .save(bytes)
-                        .perform(profile_ref)
-                        .await
-                        .map_err(|error| format!("{subject}: prefix: {error}"))?;
-                    // Every write for this row goes through one fresh
-                    // handle: the retention advances the branch, and the
-                    // replacement must commit on top of that, not on a
-                    // version held from before it.
-                    let commit_branch = open_local_account_branch(profile_ref, operator_ref)
-                        .await
-                        .map_err(|error| format!("{subject}: open: {error:#}"))?;
-                    tonk_account::delegations::retain_space_delegation(
-                        &commit_branch,
-                        &chain,
-                        operator_ref,
-                    )
-                    .await
-                    .map_err(|error| format!("{subject}: retain: {error}"))?;
-                    commit_branch
-                        .transaction()
-                        .retract(row)
-                        .assert(replacement.message)
-                        .assert(replacement.principal)
-                        .commit()
-                        .publish()
-                        .perform(operator_ref)
-                        .await
-                        .map(|_| ())
-                        .map_err(|error| format!("{subject}: reseal commit: {error}"))
-                }
-                SeedKind::Invite => {
-                    Err("an invite seed rotates from a browser, not the CLI".to_string())
-                }
-            }
+        &branch,
+        &secret,
+        |signer: Ed25519Signer| async move {
+            let subject = signer.did();
+            let minter = dialog_repository::Repository::from(signer);
+            let chain = minter
+                .access()
+                .claim(&minter)
+                .delegate(account_root_ref.clone())
+                .perform(operator_ref)
+                .await
+                .map_err(|error| format!("{subject}: delegate: {error}"))?
+                .into_chain();
+            let bytes = chain
+                .to_bytes()
+                .map_err(|error| format!("{subject}: serialize: {error}"))?;
+            profile_ref
+                .secrets()
+                .site(tonk_account::prefix::space_root_site(
+                    &subject,
+                    account_root_ref,
+                ))
+                .save(bytes)
+                .perform(profile_ref)
+                .await
+                .map_err(|error| format!("{subject}: prefix: {error}"))?;
+            let commit_branch = open_local_account_branch(profile_ref, operator_ref)
+                .await
+                .map_err(|error| format!("{subject}: open: {error:#}"))?;
+            tonk_account::delegations::retain_space_delegation(&commit_branch, &chain, operator_ref)
+                .await
+                .map(|_| ())
+                .map_err(|error| format!("{subject}: retain: {error}"))
         },
     )
-    .await
-    .map_err(|error| anyhow::anyhow!("rotation could not run: {error}"))?;
+    .await?;
 
-    if outcome.failures.is_empty() {
+    if failures.is_empty() {
         crate::onboarding::retire(&profile, &operator).await?;
     }
-    Ok(outcome.failures)
+    Ok(failures)
 }
