@@ -1,26 +1,24 @@
-//! Account rotation: moving everything the onboarding account custodies to
+//! Account rotation: settling everything the onboarding account held under
 //! the passkey account, then retiring the onboarding account.
 //!
 //! A device holds an onboarding account from first boot. Spaces it
-//! creates delegate to that account; invites it redeems terminate there;
-//! both seeds are sealed to its encryption key on profile `main`. When a
-//! passkey account is created (or unlocked) on the device, every one of
-//! those seeds is opened with the onboarding secret, which is local, and
-//! used to mint a fresh `subject -> root` directly. Nothing is appended
-//! below the onboarding account, so it can be retired without leaving a
-//! hop in any chain. Design: `plan/join-under-custody.md`, Stage 3.
+//! creates delegate to that account, and invites it redeems terminate
+//! there. Signing in hands the account over (`tonk_account::peer::
+//! hand_over`): dialog re-issues every principal held for it to the
+//! signed-in root, a space's as `space -> root`, an invite's with the chain
+//! proving it. Nothing here signs as a space or an invite. What is left is
+//! tonk's own bookkeeping, done from the chain the handover left: the
+//! persisted prefix, the roster, retention into the account and
+//! provisioning. Design: `plan/join-under-custody.md`, Stage 3.
 //!
-//! Resumable: each seed is independent, and a seed still sealed only to
-//! the onboarding recipient is simply picked up on the next attempt. The
-//! onboarding account is retired only once nothing is sealed to it.
+//! Resumable: each principal is independent, and one that fails is picked
+//! up on the next attempt. The onboarding account is retired only once
+//! every principal is settled.
 
-use dialog_credentials::{Ed25519Signer, Signer};
 use dialog_query::{Output as _, Query, Term};
-use dialog_repository::Repository;
 use dialog_ucan::UcanDelegation;
-use dialog_ucan_core::subject::Subject as UcanSubject;
-use dialog_ucan_core::{DelegationBuilder, DelegationChain};
-use dialog_varsig::{Did, Principal as _};
+use dialog_ucan_core::DelegationChain;
+use dialog_varsig::Did;
 use tonk_account::prefix::SPACE_ROOT_SITE_PREFIX;
 use tonk_common::log;
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
@@ -33,7 +31,7 @@ use crate::worker::TonkState;
 /// Bring everything custodied under the onboarding account under the
 /// passkey root, then retire the onboarding account: what tonk's own rows
 /// hold moves into the custody tonk and dialog share, and every principal
-/// held there is re-issued under the root. Best effort per principal: one
+/// held there is settled under the root. Best effort per principal: one
 /// that fails is logged and left where it was, and the retirement waits
 /// for it.
 pub(crate) async fn rotate_from_onboarding(tonk: &TonkState) {
@@ -61,13 +59,6 @@ pub(crate) async fn rotate_from_onboarding(tonk: &TonkState) {
             return;
         }
     };
-    // The rotation itself is the shared core (`tonk_schema::custody::
-    // rotate`), the same one the CLI runs at sign-in; only the re-issue
-    // half — chains, prefixes, retention, provisioning — is this
-    // adapter's.
-    // Bound as references OUTSIDE the closure: each `async move` block
-    // the `FnMut` produces captures a copy of the reference, so the
-    // closure can run once per seed without consuming the values.
     let root_did = &root.root_did;
     let onboarding_did = &onboarding;
 
@@ -83,9 +74,9 @@ pub(crate) async fn rotate_from_onboarding(tonk: &TonkState) {
     };
     let mut failures = moved.failures;
 
-    // Every principal the profile holds for the account is re-issued under
-    // the root: a space's `space -> root`, prefix and provisioning, an
-    // invite's membership. Its key comes from the copy the profile keeps.
+    // Every principal the peer holds for the account was re-issued to the
+    // root by the handover; settle tonk's bookkeeping for each from the
+    // chain it left.
     let account = match tonk.profile.authority().await {
         Ok(account) => account,
         Err(error) => {
@@ -104,32 +95,16 @@ pub(crate) async fn rotate_from_onboarding(tonk: &TonkState) {
             }
         };
     for (subject, principal) in held {
-        let kind = if principal.kind == SeedKind::Space.held() {
-            SeedKind::Space
+        let settled = if principal.kind == SeedKind::Space.held() {
+            settle_space(tonk, root_did, onboarding_did, &subject).await
         } else if principal.kind == SeedKind::Invite.held() {
-            SeedKind::Invite
+            settle_membership(tonk, root_did, onboarding_did, &subject).await
         } else {
             continue;
         };
-        let reissued = async {
-            let signer = tonk
-                .profile
-                .space_key(&subject)
-                .perform(&tonk.profile)
-                .await
-                .map_err(|error| error.to_string())?;
-            match kind {
-                SeedKind::Space => reissue_space(tonk, root_did, onboarding_did, signer)
-                    .await
-                    .map_err(|error| error.to_string()),
-                SeedKind::Invite => reissue_membership(tonk, root_did, onboarding_did, signer)
-                    .await
-                    .map_err(|error| error.to_string()),
-            }
-        };
-        match reissued.await {
-            Ok(()) => log!("rotation: {subject} re-issued to the account"),
-            Err(reason) => failures.push((subject, reason)),
+        match settled {
+            Ok(()) => log!("rotation: {subject} settled under the account"),
+            Err(error) => failures.push((subject, error.to_string())),
         }
     }
     for (subject, reason) in &failures {
@@ -207,44 +182,57 @@ async fn sealed_to(
         .map_err(|error| TonkWorkerError::Internal(format!("read sealed messages: {error:?}")))
 }
 
-/// Mint `space -> root` from the space's own signer and install it the
-/// way creation does: access branch, retained into the account, the
-/// persisted prefix, and consumer provisioning.
-async fn reissue_space(
+/// The chain the handover left from `subject` to `root`, found where the
+/// peer proves from. Proven, never minted: one that is missing is a
+/// handover that did not happen, reported rather than papered over.
+async fn proven(
+    tonk: &TonkState,
+    subject: &Did,
+    root: &Did,
+) -> Result<DelegationChain, TonkWorkerError> {
+    let branch = tonk
+        .reactor
+        .profile_repository()
+        .branch(&tonk.active_branch)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|error| TonkWorkerError::Internal(format!("open profile main: {error}")))?;
+    super::revoke_invite::prove_path(branch.handle(), tonk, subject, root).await
+}
+
+/// Settle a space the handover re-issued as `space -> root` the way
+/// creation does: the persisted prefix, the roster, retention into the
+/// account, and consumer provisioning.
+async fn settle_space(
     tonk: &TonkState,
     root: &Did,
     onboarding: &Did,
-    signer: Ed25519Signer,
+    subject: &Did,
 ) -> Result<(), TonkWorkerError> {
-    let subject = signer.did();
-    let minter = Repository::from(signer);
-    let chain = minter
-        .access()
-        .claim(&minter)
-        .delegate(root.clone())
-        .perform(&tonk.operator)
-        .await
-        .map_err(|error| TonkWorkerError::Internal(format!("{subject}: delegate: {error}")))?
-        .into_chain();
-    install_prefix(tonk, &subject, &chain).await?;
-    migrate_membership_rows(tonk, &subject, onboarding, root).await?;
+    let chain = proven(tonk, subject, root).await?;
+    if chain.issuer() != subject || chain.proofs().count() != 1 {
+        return Err(TonkWorkerError::NotFound(format!(
+            "{subject}: no direct delegation to {root}; the handover did not reach it"
+        )));
+    }
+    install_prefix(tonk, subject, &chain).await?;
+    migrate_membership_rows(tonk, subject, onboarding, root).await?;
     super::account_state::retain_space_delegation(tonk, &chain).await;
-    if let Err(error) = super::customer::provision_or_defer(tonk, &subject, &chain, None).await {
+    if let Err(error) = super::customer::provision_or_defer(tonk, subject, &chain, None).await {
         log!("{subject}: provisioning skipped: {error}");
     }
     Ok(())
 }
 
-/// Re-root a joined membership: the stored chain for the space ends
-/// `principal -> onboarding`; replace that last hop with `principal ->
-/// root`, minted from the principal's own signer, and install the result.
-async fn reissue_membership(
+/// Settle a joined membership: the stored chain for the space ends
+/// `principal -> onboarding`, and the handover re-issued `principal -> root`
+/// with the chain proving it. Install that chain in its place.
+async fn settle_membership(
     tonk: &TonkState,
     root: &Did,
     onboarding: &Did,
-    principal: Ed25519Signer,
+    principal: &Did,
 ) -> Result<(), TonkWorkerError> {
-    let principal_did = principal.did();
     let mut found = None;
     for key in super::profile_name::real_space_keys(tonk).await {
         let Ok(space) = key.parse::<Did>() else {
@@ -255,7 +243,7 @@ async fn reissue_membership(
         };
         let last_issuer = prefix.proofs().last().map(|hop| hop.issuer().clone());
         if (prefix.audience() == onboarding || prefix.audience() == root)
-            && last_issuer.as_ref() == Some(&principal_did)
+            && last_issuer.as_ref() == Some(principal)
         {
             found = Some((space, prefix));
             break;
@@ -263,40 +251,22 @@ async fn reissue_membership(
     }
     let Some((space, prefix)) = found else {
         return Err(TonkWorkerError::NotFound(format!(
-            "{principal_did}: no membership chain ends at this principal"
+            "{principal}: no membership chain ends at this principal"
         )));
     };
-
     let chain = if prefix.audience() == root {
         // A previous attempt installed the new prefix but stopped before
-        // moving the roster or custody row. Reuse it and finish the commit.
+        // moving the roster. Reuse it and finish.
         prefix.clone()
     } else {
-        let hop = DelegationBuilder::new()
-            .issuer(Signer::from(principal))
-            .audience(root)
-            .subject(UcanSubject::Specific(space.clone()))
-            .command(vec![])
-            .try_build()
-            .await
-            .map_err(|error| TonkWorkerError::Internal(format!("{space}: mint hop: {error}")))?;
-        let mut hops: Vec<_> = prefix.proofs().cloned().collect();
-        hops.pop();
-        let mut hops = hops.into_iter();
-        let first = hops
-            .next()
-            .ok_or_else(|| TonkWorkerError::Internal(format!("{space}: chain has one hop")))?;
-        let mut chain = DelegationChain::new(first);
-        for delegation in hops {
-            chain = chain
-                .push(delegation)
-                .map_err(|error| TonkWorkerError::Internal(format!("{space}: rebuild: {error}")))?;
+        let chain = proven(tonk, &space, root).await?;
+        if chain.proofs().last().map(|hop| hop.issuer()) != Some(principal) {
+            return Err(TonkWorkerError::NotFound(format!(
+                "{space}: no membership through {principal} reaches {root}; the handover did not reach it"
+            )));
         }
         chain
-            .push(hop)
-            .map_err(|error| TonkWorkerError::Internal(format!("{space}: rebuild: {error}")))?
     };
-
     replace_retained_membership(tonk, &space, &prefix, &chain).await?;
     install_prefix(tonk, &space, &chain).await?;
     migrate_membership_rows(tonk, &space, onboarding, root).await?;
@@ -820,7 +790,9 @@ mod tests {
     };
     use axum::http::StatusCode;
     use dialog_capability::Subject;
+    use dialog_credentials::Ed25519Signer;
     use dialog_effects::Use;
+    use dialog_varsig::Principal as _;
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     wasm_bindgen_test_configure!(run_in_service_worker);
 
@@ -957,6 +929,40 @@ mod tests {
                 .unwrap();
             assert!(links.is_empty(), "the onboarding link row is retracted");
         }
+    }
+
+    /// Signing in re-issues what the onboarding account held with no
+    /// rotation pass: the handover alone leaves the created space
+    /// delegating to the root directly, and the joined space's membership
+    /// reaching the root through its invite.
+    #[dialog_common::test]
+    async fn it_reaches_the_root_from_the_handover_alone() {
+        let (app, state, _lsp) = api_router_with_state(test_state_without_root().await);
+        let created: Did = put_repo(&app, "handed-over-space").await.parse().unwrap();
+        let (url, joined_key) = handcrafted_invite_url(130, 131).await;
+        assert_eq!(post_join(&app, &url).await, StatusCode::CREATED);
+        let joined: Did = joined_key.parse().unwrap();
+
+        let tonk = state.read().await;
+        let onboarding = crate::onboarding::did(&tonk).await.unwrap().unwrap();
+        let root = persist_test_root(&tonk).await;
+
+        let space = proven(&tonk, &created, &root).await.unwrap();
+        assert_eq!(space.issuer(), &created, "the space delegates itself");
+        assert_eq!(space.proofs().count(), 1, "directly to the root");
+
+        let membership = proven(&tonk, &joined, &root).await.unwrap();
+        assert_eq!(membership.audience(), &root);
+        let leaf = membership.proofs().last().unwrap();
+        assert_ne!(
+            leaf.issuer(),
+            &onboarding,
+            "not through the onboarding account"
+        );
+        assert!(
+            membership.proofs().count() > 1,
+            "through the invite, with the chain proving it"
+        );
     }
 
     /// COLLAB-05 / B-07: creating before linking must preserve a complete
