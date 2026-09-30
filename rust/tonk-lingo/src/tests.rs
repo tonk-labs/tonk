@@ -312,3 +312,41 @@ fn it_lists_what_can_be_done_without_saying_more() {
         .collect();
     assert_eq!(order, vec!["concept:members", "concept:agent"]);
 }
+
+/// How the parse scales with a noun's rows. Run with
+/// `cargo test --release -p tonk-lingo -- --ignored --nocapture scales`.
+#[test]
+#[ignore = "timing, not a check"]
+fn it_scales_with_candidates() {
+    for count in [10, 100, 1_000, 10_000] {
+        let mut request = request("");
+        let members = &mut request.sources[0]
+            .concepts
+            .get_mut("concept:account")
+            .expect("members")
+            .rows;
+        for n in 0..count {
+            members.push(row(
+                &format!("did:key:member{n}"),
+                json!({ "name": format!("Member {n} of the budget team") }),
+            ));
+        }
+        for input in [
+            "ex",
+            "expel budget",
+            "expel member 42 of",
+            "rename this to Q3",
+        ] {
+            request.input = input.into();
+            let runs = 5;
+            let start = std::time::Instant::now();
+            for _ in 0..runs {
+                std::hint::black_box(propose(&request));
+            }
+            println!(
+                "{count:>6} rows  {input:<20} {:>8.2} ms",
+                start.elapsed().as_secs_f64() * 1000.0 / f64::from(runs)
+            );
+        }
+    }
+}

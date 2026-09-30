@@ -330,6 +330,9 @@ fn labelled(context: &Context, registry: &Registry) -> Context {
 fn registry(sources: &[Source]) -> (Registry, Fields) {
     let mut registry = Registry::default();
     let mut fields = Fields::default();
+    // Candidates already taken, per concept: a row on two branches is
+    // offered once.
+    let mut seen: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for source in sources {
         let roles: BTreeMap<&str, &str> = source
             .roles
@@ -430,9 +433,10 @@ fn registry(sources: &[Source]) -> (Registry, Fields) {
         }
 
         for (concept, rows) in &source.concepts {
+            let seen = seen.entry(concept.clone()).or_default();
             let candidates = registry.candidates.entry(concept.clone()).or_default();
             for candidate in candidates_of(rows) {
-                if !candidates.iter().any(|row| row.entity == candidate.entity) {
+                if seen.insert(candidate.entity.clone()) {
                     candidates.push(candidate);
                 }
             }

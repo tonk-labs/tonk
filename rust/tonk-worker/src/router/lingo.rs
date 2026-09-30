@@ -162,3 +162,48 @@ async fn it_suggests_from_a_seeded_space_and_runs_what_it_suggests() {
         "the menu offers only what runs as it is: {menu:?}"
     );
 }
+
+/// How `lingo/suggest` scales with a noun's rows, store reads included.
+/// Run with `cargo test --release -p tonk-worker --lib -- --ignored
+/// --nocapture lingo::it_scales`.
+#[dialog_common::test]
+#[ignore = "timing, not a check"]
+async fn it_scales_with_candidates() {
+    for count in [10usize, 100, 1_000, 5_000] {
+        let (app, _state, _lsp) = api_router_with_state(test_state().await);
+        let created = send(
+            &app,
+            "PUT",
+            "/api/repository/scale",
+            "application/json",
+            "{}".into(),
+        )
+        .await;
+        let key = created["name"].as_str().unwrap().to_owned();
+        let subject = created["subject"].as_str().unwrap().to_owned();
+        let evaluate = format!("/api/repository/{key}/branch/main/evaluate");
+        send(&app, "POST", &evaluate, "application/yaml", CORE.into()).await;
+        send(&app, "POST", &evaluate, "application/yaml", RENAME.into()).await;
+        let seeded = std::time::Instant::now();
+        let mut yaml = String::new();
+        for n in 0..count {
+            yaml.push_str(&format!(
+                "tonk/repository!:\n  this: did:key:z6Mkscale{n}\n  name: \"Budget {n}\"\n\n"
+            ));
+        }
+        send(&app, "POST", &evaluate, "application/yaml", yaml).await;
+        let seeded = seeded.elapsed();
+        for input in ["ex", "rename budget 42 to Q3"] {
+            let runs = 3;
+            let start = std::time::Instant::now();
+            for _ in 0..runs {
+                std::hint::black_box(suggest(&app, &key, input, &subject).await);
+            }
+            println!(
+                "{count:>6} rows  {input:<24} {:>9.1} ms  (seeded in {:.1} s)",
+                start.elapsed().as_secs_f64() * 1000.0 / f64::from(runs),
+                seeded.as_secs_f64()
+            );
+        }
+    }
+}
