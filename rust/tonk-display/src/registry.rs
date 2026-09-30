@@ -1781,6 +1781,91 @@ mod tests {
         assert_eq!(text_of(&host, "[data-space-remove-submit]"), "leave space");
     }
 
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_reports_space_removal_and_allows_retry_after_failure() {
+        define_from_library(PROFILE_LIBRARY, "space-remove");
+        let host = space_remove_host(&[("data-space-name", "forum")]);
+        host.insert_adjacent_html("beforeend", "<p data-space-remove-error role=alert></p>")
+            .unwrap();
+        settle_until(|| host.get_attribute("data-space-action").is_some()).await;
+        let fixture = js_sys::Function::new_with_args(
+            "bridge",
+            r#"
+            const state = { claims: [], cancelled: 0 };
+            bridge.ready = Promise.resolve();
+            bridge.subscribe = query => {
+                state.id = query.terms.this;
+                return new ReadableStream({
+                    start(controller) { state.controller = controller; },
+                    cancel() { state.cancelled++; },
+                });
+            };
+            bridge.transact = claim => { state.claims.push(claim); return Promise.resolve({}); };
+            state.finish = (status, detail) => state.controller.enqueue([
+                { this: state.id, fields: { status, detail } }
+            ]);
+            return state;
+        "#,
+        )
+        .call1(&JsValue::NULL, &host_bridge())
+        .unwrap();
+        let form = host.query_selector("form[data-remove]").unwrap().unwrap();
+        form.set_attribute("data-remove", "did:key:zSpace").unwrap();
+        fire(form.unchecked_ref(), "submit");
+        assert!(host.has_attribute("busy"));
+        assert_eq!(form.get_attribute("aria-busy").as_deref(), Some("true"));
+        assert_eq!(text_of(&host, "[data-space-remove-submit]"), "leaving…");
+        assert!(
+            host.query_selector("[data-space-remove-submit][disabled]")
+                .unwrap()
+                .is_some()
+        );
+        fire(form.unchecked_ref(), "submit");
+        let claims: js_sys::Array = Reflect::get(&fixture, &"claims".into())
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        settle_until(|| claims.length() == 1).await;
+        assert!(
+            host.has_attribute("busy"),
+            "transaction acceptance is not removal completion"
+        );
+        assert_eq!(claims.length(), 1, "repeat submits cannot remove twice");
+        let finish: js_sys::Function = Reflect::get(&fixture, &"finish".into())
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        finish
+            .call2(
+                &fixture,
+                &"failed".into(),
+                &"Removal failed; try again.".into(),
+            )
+            .unwrap();
+        settle_until(|| !host.has_attribute("busy")).await;
+        assert_eq!(
+            text_of(&host, "[data-space-remove-error]"),
+            "Removal failed; try again."
+        );
+        assert_eq!(text_of(&host, "[data-space-remove-submit]"), "leave space");
+        assert!(!form.has_attribute("aria-busy"));
+        assert!(
+            host.query_selector("[data-space-remove-submit][disabled]")
+                .unwrap()
+                .is_none()
+        );
+        host.set_attribute("data-space-founded", "1").unwrap();
+        fire(form.unchecked_ref(), "submit");
+        assert_eq!(text_of(&host, "[data-space-remove-submit]"), "deleting…");
+        settle_until(|| claims.length() == 2).await;
+        finish
+            .call2(&fixture, &"removed".into(), &"".into())
+            .unwrap();
+        settle_until(|| !host.has_attribute("busy")).await;
+        assert_eq!(text_of(&host, "[data-space-remove-error]"), "");
+        assert_eq!(text_of(&host, "[data-space-remove-submit]"), "delete space");
+    }
+
     fn drag_frame() -> Element {
         install_fake_host();
         install();

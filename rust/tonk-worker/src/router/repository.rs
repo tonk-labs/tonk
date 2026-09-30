@@ -2838,6 +2838,7 @@ async fn run_rename_repository(
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl dialog_capability::Provider<tonk_schema::command::RemoveSpace> for crate::router::CommandEnv {
     async fn execute(&self, command: tonk_schema::command::RemoveSpace) {
+        let receipt = command.this;
         let subject = command.subject.0;
         // See the doc above: only the profile branch (empty origin
         // repo) may fire this. A non-empty origin means the fact came
@@ -2855,6 +2856,13 @@ impl dialog_capability::Provider<tonk_schema::command::RemoveSpace> for crate::r
             Ok(did) => did,
             Err(error) => {
                 log!("RemoveSpace: '{}' is not a DID: {}", subject, error);
+                report_space_removal(
+                    self.state(),
+                    &receipt,
+                    "failed",
+                    "Invalid space identifier.",
+                )
+                .await;
                 return;
             }
         };
@@ -2893,7 +2901,48 @@ impl dialog_capability::Provider<tonk_schema::command::RemoveSpace> for crate::r
         }
         if let Err(error) = remove_space_inner(self.state(), &subject).await {
             log!("RemoveSpace '{}' failed: {}", subject, error);
+            report_space_removal(
+                self.state(),
+                &receipt,
+                "failed",
+                "Couldn't remove this space. Try again.",
+            )
+            .await;
+        } else {
+            report_space_removal(self.state(), &receipt, "removed", "").await;
         }
+    }
+}
+
+async fn report_space_removal(
+    state: &AppState,
+    receipt: &dialog_artifacts::Entity,
+    status: &str,
+    detail: &str,
+) {
+    let tonk = state.read().await;
+    if let Err(error) = tonk
+        .reactor
+        .profile_repository()
+        .branch(&tonk.active_branch)
+        .overlay()
+        .assert(
+            dialog_query::the!("xyz.tonk.space-removal/status")
+                .of(receipt.clone())
+                .is(status.to_owned())
+                .cardinality(dialog_query::Cardinality::One),
+        )
+        .assert(
+            dialog_query::the!("xyz.tonk.space-removal/detail")
+                .of(receipt.clone())
+                .is(detail.to_owned())
+                .cardinality(dialog_query::Cardinality::One),
+        )
+        .write()
+        .perform(&tonk.operator)
+        .await
+    {
+        log!("RemoveSpace: failed to publish result: {error}");
     }
 }
 
@@ -7344,6 +7393,70 @@ mod space_creation_feedback_tests {
             })).await;
             assert_eq!(rows[0]["this"], receipt);
             assert_eq!(rows[0]["fields"]["status"], "renamed", "{rows}");
+        }
+    }
+
+    #[dialog_common::test]
+    async fn space_removal_reports_success_and_failure_for_the_submitted_request() {
+        let (app, state, _lsp) =
+            crate::router::api_router_with_state(super::profile_library_tests::test_state().await);
+        let branch = state.read().await.active_branch.clone();
+        let mut claim = tonk_worker_api::create_space_claim_json("Removal test");
+        claim["claims"][0]["application"]["parameters"]["this"] = "urn:uuid:removal-create".into();
+        post(
+            &app,
+            &format!("/api/profile/branch/{branch}/transact"),
+            claim,
+        )
+        .await;
+        let created = post(&app, &format!("/api/profile/branch/{branch}/query"), serde_json::json!({
+            "predicate": { "with": { "detail": { "the": "xyz.tonk.space-creation/detail", "as": "Text", "cardinality": "one" } } },
+            "terms": { "this": "urn:uuid:removal-create", "detail": { "?": { "name": "detail" } } }
+        })).await;
+        let subject = created[0]["fields"]["detail"]
+            .as_str()
+            .unwrap()
+            .strip_prefix("/space/")
+            .unwrap()
+            .to_owned();
+        {
+            let tonk = state.read().await;
+            let profile = tonk.profile.did();
+            let replica = super::Replica::new(profile.clone(), profile);
+            tonk.reactor
+                .profile_repository()
+                .branch(&tonk.active_branch)
+                .transaction()
+                .assert(replica.clone())
+                .assert(replica.branch(super::PROFILE_BRANCH))
+                .commit()
+                .perform(&tonk.operator)
+                .await
+                .unwrap();
+            tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+        }
+        let profile = state.read().await.profile.did().to_string();
+        for (receipt, subject, expected) in [
+            ("urn:uuid:removal-success", subject, "removed"),
+            ("urn:uuid:removal-failure", profile, "failed"),
+        ] {
+            post(&app, &format!("/api/profile/branch/{branch}/transact"), serde_json::json!({
+                "claims": [{ "op": "assert", "application": {
+                    "predicate": { "kind": "transient", "concept": { "with": {
+                        "subject": { "the": "xyz.tonk.command.remove-space/subject", "as": "Entity" }
+                    } } },
+                    "parameters": { "this": receipt, "subject": subject }
+                } }]
+            })).await;
+            let rows = post(&app, &format!("/api/profile/branch/{branch}/query"), serde_json::json!({
+                "predicate": { "with": {
+                    "status": { "the": "xyz.tonk.space-removal/status", "as": "Text", "cardinality": "one" },
+                    "detail": { "the": "xyz.tonk.space-removal/detail", "as": "Text", "cardinality": "one" }
+                } },
+                "terms": { "this": receipt, "status": { "?": { "name": "status" } }, "detail": { "?": { "name": "detail" } } }
+            })).await;
+            assert_eq!(rows[0]["this"], receipt);
+            assert_eq!(rows[0]["fields"]["status"], expected, "{rows}");
         }
     }
 
