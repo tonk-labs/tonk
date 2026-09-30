@@ -158,6 +158,7 @@ impl ConceptLookupError {
 /// builder signatures readable.
 pub trait QueryEnv:
     Provider<Get>
+    + Provider<dialog_effects::blob::Read>
     + Provider<Put>
     + Provider<Resolve>
     + Provider<Identify>
@@ -173,6 +174,7 @@ pub trait QueryEnv:
 
 impl<T> QueryEnv for T where
     T: Provider<Get>
+        + Provider<dialog_effects::blob::Read>
         + Provider<Put>
         + Provider<Resolve>
         + Provider<Identify>

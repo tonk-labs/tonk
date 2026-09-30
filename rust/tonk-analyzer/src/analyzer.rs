@@ -846,6 +846,8 @@ mod tests {
         + dialog_query::Provider<dialog_effects::memory::Publish>
         + dialog_query::Provider<dialog_effects::archive::Import>
         + dialog_query::Provider<dialog_effects::authority::Attest>
+        + dialog_query::Provider<dialog_effects::blob::Import>
+        + dialog_query::Provider<dialog_effects::blob::Size>
     {
     }
 
@@ -854,6 +856,8 @@ mod tests {
             + dialog_query::Provider<dialog_effects::memory::Publish>
             + dialog_query::Provider<dialog_effects::archive::Import>
             + dialog_query::Provider<dialog_effects::authority::Attest>
+            + dialog_query::Provider<dialog_effects::blob::Import>
+            + dialog_query::Provider<dialog_effects::blob::Size>
     {
     }
 

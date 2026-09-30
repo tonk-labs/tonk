@@ -15,7 +15,7 @@ async fn it_adds_a_blob_and_prints_its_reference() -> Result<()> {
     tokio::fs::write(&png, b"\x89PNG fake pixel data").await?;
 
     let outcome = blob::add(&test.site, &png, None).await?;
-    assert!(outcome.entity.as_str().starts_with("blob:"));
+    assert!(outcome.entity.as_str().starts_with("asset:"));
     assert_eq!(outcome.content_type, "image/png");
     assert_eq!(outcome.size, 20);
 

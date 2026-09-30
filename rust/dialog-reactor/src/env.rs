@@ -40,6 +40,7 @@ impl<T> GetPutProvider for T where T: Provider<Get> + Provider<Put> + Conditiona
 /// Bound needed to run a query (`branch.query().select(q).perform`).
 pub trait SelectProvider:
     Provider<Get>
+    + Provider<BlobRead>
     + Provider<Put>
     + Provider<Resolve>
     + Provider<Identify>
@@ -54,6 +55,7 @@ pub trait SelectProvider:
 }
 impl<T> SelectProvider for T where
     T: Provider<Get>
+        + Provider<dialog_effects::blob::Read>
         + Provider<Put>
         + Provider<Resolve>
         + Provider<Identify>
@@ -70,6 +72,9 @@ impl<T> SelectProvider for T where
 /// Bound needed to commit (`branch.commit(stream).perform`).
 pub trait CommitProvider:
     Provider<Get>
+    + Provider<BlobRead>
+    + Provider<BlobImport>
+    + Provider<dialog_effects::blob::Size>
     + Provider<Put>
     + Provider<Import>
     + Provider<Resolve>
@@ -87,6 +92,9 @@ pub trait CommitProvider:
 }
 impl<T> CommitProvider for T where
     T: Provider<Get>
+        + Provider<BlobRead>
+        + Provider<BlobImport>
+        + Provider<dialog_effects::blob::Size>
         + Provider<Put>
         + Provider<Import>
         + Provider<Resolve>

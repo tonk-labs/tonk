@@ -190,24 +190,24 @@ wasm-bindgen-test = "0.3"
 web-sys = { version = "0.3" }
 
 # Dialog DB
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/peer-for-tonk" }
-dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/peer-for-tonk" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/peer-for-tonk" }
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/peer-for-tonk" }
-dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/peer-for-tonk" }
-dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/peer-for-tonk" }
-dialog-peer = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/peer-for-tonk" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/peer-for-tonk" }
-dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/peer-for-tonk" }
-dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/peer-for-tonk" }
-dialog-remote-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/peer-for-tonk" }
-dialog-did-web = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/peer-for-tonk" }
-dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/peer-for-tonk" }
-dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/peer-for-tonk" }
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/peer-for-tonk" }
-dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/peer-for-tonk" }
-dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/peer-for-tonk" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/peer-for-tonk" }
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/tonk-stack" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/tonk-stack" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/tonk-stack" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/tonk-stack" }
+dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/tonk-stack" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/tonk-stack" }
+dialog-peer = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/tonk-stack" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/tonk-stack" }
+dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/tonk-stack" }
+dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/tonk-stack" }
+dialog-remote-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/tonk-stack" }
+dialog-did-web = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/tonk-stack" }
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/tonk-stack" }
+dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/tonk-stack" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/tonk-stack" }
+dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/tonk-stack" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/tonk-stack" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/tonk-stack" }
 
 [profile.dev]
 opt-level = 1

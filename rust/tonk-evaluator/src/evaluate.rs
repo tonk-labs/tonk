@@ -148,6 +148,7 @@ pub enum EvaluateError {
 /// signature stays a single trait alias.
 pub trait EvaluateEnv:
     Provider<Get>
+    + Provider<dialog_effects::blob::Read>
     + Provider<Put>
     + Provider<Resolve>
     + Provider<Publish>
@@ -164,6 +165,7 @@ pub trait EvaluateEnv:
 
 impl<T> EvaluateEnv for T where
     T: Provider<Get>
+        + Provider<dialog_effects::blob::Read>
         + Provider<Put>
         + Provider<Resolve>
         + Provider<Publish>

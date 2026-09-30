@@ -421,7 +421,9 @@ mod tests {
         Env: QueryEnv
             + dialog_capability::Provider<dialog_effects::memory::Publish>
             + dialog_capability::Provider<dialog_effects::archive::Import>
-            + dialog_capability::Provider<dialog_effects::authority::Attest>,
+            + dialog_capability::Provider<dialog_effects::authority::Attest>
+            + dialog_capability::Provider<dialog_effects::blob::Import>
+            + dialog_capability::Provider<dialog_effects::blob::Size>,
     {
         let txn = branch.transaction();
         let mut txn = txn;

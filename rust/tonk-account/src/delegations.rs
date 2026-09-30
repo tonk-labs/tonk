@@ -52,6 +52,7 @@ pub async fn retain_space_delegation<Env>(
 ) -> Result<bool, CommitError>
 where
     Env: Provider<Get>
+        + Provider<BlobRead>
         + Provider<Put>
         + Provider<Import>
         + Provider<Resolve>
@@ -59,6 +60,7 @@ where
         + Provider<Identify>
         + Provider<Attest>
         + Provider<BlobWrite>
+        + Provider<BlobImport>
         + Provider<Hydrate>
         + Provider<Fork<RemoteSite, Get>>
         + Provider<Fork<RemoteSite, Resolve>>

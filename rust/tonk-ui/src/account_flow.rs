@@ -8398,7 +8398,7 @@ pub(crate) mod tests {
         );
         let blob = added.stdout.trim().to_owned();
         anyhow::ensure!(
-            blob.starts_with("blob:"),
+            blob.starts_with("asset:"),
             "blob add omitted its content reference"
         );
         let second_registry =

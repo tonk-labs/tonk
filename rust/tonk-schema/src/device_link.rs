@@ -86,6 +86,7 @@ pub async fn device_links<Env>(
 ) -> Result<Vec<(DeviceLink, String)>, EvaluationError>
 where
     Env: Provider<Get>
+        + Provider<dialog_effects::blob::Read>
         + Provider<Put>
         + Provider<Resolve>
         + Provider<Identify>
@@ -127,6 +128,7 @@ where
 async fn delegation_audience<Env>(account: &Branch, entity: &Entity, env: &Env) -> Option<String>
 where
     Env: Provider<Get>
+        + Provider<dialog_effects::blob::Read>
         + Provider<Put>
         + Provider<Resolve>
         + Provider<Identify>

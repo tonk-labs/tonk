@@ -32,7 +32,8 @@ use dialog_artifacts::{
 };
 use dialog_query::Term;
 use dialog_repository::{Branch, ConnectedReplica, LocalIndex, NetworkedIndex, Upstream};
-use dialog_storage::{Blake3Hash, StorageBackend};
+use dialog_search_tree::LoadBlock;
+use dialog_storage::Blake3Hash;
 use ipld_core::ipld::Ipld;
 use thiserror::Error;
 
@@ -170,10 +171,11 @@ async fn read_node<Env: SelectProvider>(
     hash: Blake3Hash,
 ) -> Result<Vec<u8>, FormulaError> {
     let index = NetworkedIndex::new(env, branch.archive().index(), remote(branch));
-    index
-        .get(&hash)
+    LoadBlock::new(hash.into())
+        .perform(&index)
         .await
         .map_err(|e| FormulaError::Read(e.to_string()))?
+        .map(|block| block.as_ref().to_vec())
         .ok_or_else(|| FormulaError::Read(format!("node {} not found", to_base58(&hash))))
 }
 
@@ -200,10 +202,11 @@ async fn read_local<Env: SelectProvider>(
     hash: Blake3Hash,
 ) -> Result<Option<Vec<u8>>, FormulaError> {
     let index = LocalIndex::new(env, branch.archive().index());
-    index
-        .get(&hash)
+    Ok(LoadBlock::new(hash.into())
+        .perform(&index)
         .await
-        .map_err(|e| FormulaError::Read(e.to_string()))
+        .map_err(|e| FormulaError::Read(e.to_string()))?
+        .map(|block| block.as_ref().to_vec()))
 }
 
 /// The scalar fields describing a node: `kind` (`index` for a node of

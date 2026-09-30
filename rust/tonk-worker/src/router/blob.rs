@@ -423,8 +423,8 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let entity = json["entity"].as_str().unwrap().to_string();
         assert!(
-            entity.starts_with("blob:"),
-            "entity is a blob ref: {entity}"
+            entity.starts_with("asset:"),
+            "entity is an asset ref: {entity}"
         );
         assert_eq!(json["contentType"], "image/png");
         assert_eq!(json["name"], "shot.png");
