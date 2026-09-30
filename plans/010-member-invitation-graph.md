@@ -59,3 +59,19 @@ Focused verification: four native graph tests and five member-panel browser
 tests passed. The browser test measures actual rendered disc widths, confirms
 edge attachment, restores centre size after scrolling back, and covers immediate
 drag updates plus live redraws. Existing unrelated strict Clippy findings remain.
+
+## Mobile roster
+
+At viewport widths up to 640px, show the live member rows as a borderless list
+with wrapping names, role and viewer labels. Hide graph marks and zoom controls;
+use native vertical scrolling and bypass graph drag/fisheye interactions. Preserve
+list scroll when opening details. Wider viewports retain the invitation graph.
+
+Validation: all 11 synthetic fixtures (0–300 members) passed mobile checks for
+borderless, unscaled rows, hidden graph controls, no horizontal overflow, native
+touch scrolling configuration, ignored graph drags, and live membership updates.
+Inspected the 390x844 screenshot. Desktop at 1280x720 retained graph positioning,
+zoom controls and peripheral scaling from 1.0 to 0.4. Five member-panel browser
+tests passed on rerun; the first run had an intermittent fisheye assertion
+(scale remained 1.0 after scroll). Formatting and diff checks passed.
+Local evidence: test-results/member-mobile-list/ (ignored).

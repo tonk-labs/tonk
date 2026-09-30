@@ -107,6 +107,19 @@ button,a{ min-height:48px; font:600 17px/1.1 'IBM Plex Sans Condensed','Arial Na
 .member-count::before{ content:""; width:13px; height:13px; border-radius:50%; background:currentColor; }
 .member-detail{ margin:0; padding:10px 18px; border-top:1px solid var(--_sep); font:400 13px/1.45 'IBM Plex Sans',sans-serif; overflow-wrap:anywhere; }
 .member-detail[hidden]{ display:none; }
+/* Keep the compact, borderless roster on phones; the same live rows back both views. */
+@media (max-width:640px){
+  .members-tools,.member-edges,.member-space,.mem-row .member-dot{ display:none; }
+  .members-list{ padding:0 18px 16px; touch-action:pan-y; cursor:auto; user-select:text; }
+  .member-graph-viewport,.member-graph{ width:auto!important; height:auto!important; transform:none!important; overflow:visible; }
+  .members-list .mem-row{ position:static; transform:none; width:100%; min-height:42px; height:auto;
+    display:flex; justify-content:flex-end; border:0; border-radius:0; padding:8px 0; font-size:17px; }
+  .members-list .mem-row .member-caption{ position:static; transform:none; max-width:100%; min-width:0;
+    flex-direction:row; align-items:center; justify-content:flex-end; gap:8px; padding:0; text-align:end; }
+  .members-list .mem-name{ white-space:normal; overflow-wrap:anywhere; min-width:0; }
+  .members-list .mem-tags{ flex-shrink:0; }
+  .members-list .mem-tags:empty{ display:none; }
+}
 .members-empty{ margin:auto; padding:24px; font:400 18px/1.5 'IBM Plex Sans Condensed','Arial Narrow',sans-serif; }
 #members-panel{ height:240px; overflow:hidden; }
 .w.has-panel:not(.stacked) #members-panel{ height:240px; min-height:0; }
@@ -203,7 +216,7 @@ pub const BAR_HTML: &str = r#"<div class="w">
   </div>
   <section class="panel" id="share-panel" aria-label="share this space" hidden><div class="share-gate"><button class="share-continue"><span>add an account to share this space</span><b aria-hidden="true">&#9656;</b></button></div><p class="panel-message share-progress" aria-live="polite">creating share link…</p></section>
   <section class="panel" id="agent-panel" aria-label="connect agent" hidden><div class="agent-gate"><button class="agent-continue"><span>add an account to connect an agent</span><b aria-hidden="true">&#9656;</b></button></div><div class="panel-head"><button class="back">&#9666; menu</button><button class="agent-copy-link panel-copy" data-copy-label="copy link" hidden>copy link</button><button class="agent-copy-prompt panel-copy" hidden>copy prompt</button><button class="agent-retry" hidden>try again</button></div><p class="agent-status" aria-live="polite">create an agent invitation when you open this panel</p><pre class="panel-copytext" hidden></pre></section>
-  <section class="panel" id="members-panel" aria-label="space members" hidden><div class="panel-head"><button class="back">&#9666; menu</button><div class="members-tools" aria-label="graph zoom"><button class="members-zoom-out" aria-label="zoom out">−</button><button class="members-fit">fit</button><button class="members-zoom-in" aria-label="zoom in">+</button></div><span class="member-count" aria-label="member count">0</span></div><div class="members-list" role="region" aria-label="member invitation graph; drag or use arrow keys to explore" tabindex="0" aria-live="polite"><p class="members-empty">no members are available</p></div><p class="member-detail" aria-live="polite" hidden></p></section>
+  <section class="panel" id="members-panel" aria-label="space members" hidden><div class="panel-head"><button class="back">&#9666; menu</button><div class="members-tools" aria-label="graph zoom"><button class="members-zoom-out" aria-label="zoom out">−</button><button class="members-fit">fit</button><button class="members-zoom-in" aria-label="zoom in">+</button></div><span class="member-count" aria-label="member count">0</span></div><div class="members-list" role="region" aria-label="space members" tabindex="0" aria-live="polite"><p class="members-empty">no members are available</p></div><p class="member-detail" aria-live="polite" hidden></p></section>
   <div class="mw" aria-hidden="true"><slot name="menu"></slot></div>
   <section class="task" hidden>
     <header class="task-head">

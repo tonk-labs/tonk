@@ -111,12 +111,7 @@ impl CustomElement for UiMemberRosterElement {
                                 apply_fisheye(&viewport)
                             }));
                     }
-                    panel.set_scroll_left(
-                        f64::from(panel.scroll_width() - panel.client_width()) / 2.0,
-                    );
-                    panel.set_scroll_top(
-                        f64::from(panel.scroll_height() - panel.client_height()) / 2.0,
-                    );
+                    center_graph(&panel);
                     apply_fisheye(&panel);
                 }
             }) as Box<dyn FnMut()>);
@@ -168,12 +163,7 @@ impl CustomElement for UiMemberRosterElement {
                             viewer.borrow().as_deref(),
                             &invitations.borrow(),
                         );
-                        panel.set_scroll_left(
-                            f64::from(panel.scroll_width() - panel.client_width()) / 2.0,
-                        );
-                        panel.set_scroll_top(
-                            f64::from(panel.scroll_height() - panel.client_height()) / 2.0,
-                        );
+                        center_graph(&panel);
                         apply_fisheye(&panel);
                     }
                 }));
@@ -706,9 +696,34 @@ fn stamp_geometry(node: &web_sys::Element, id: &str, x: f64, y: f64, radius: f64
     }
 }
 
+fn mobile_roster() -> bool {
+    window()
+        .and_then(|win| win.inner_width().ok())
+        .and_then(|width| width.as_f64())
+        .is_some_and(|width| width <= 640.0)
+}
+
+fn center_graph(panel: &HtmlElement) {
+    if mobile_roster() {
+        panel.set_scroll_left(0.0);
+        // Enter the list at its start, but preserve native scrolling when details resize it.
+        if !panel.has_attribute("data-mobile-roster") {
+            panel.set_scroll_top(0.0);
+        }
+        let _ = panel.set_attribute("data-mobile-roster", "");
+    } else {
+        let _ = panel.remove_attribute("data-mobile-roster");
+        panel.set_scroll_left(f64::from(panel.scroll_width() - panel.client_width()) / 2.0);
+        panel.set_scroll_top(f64::from(panel.scroll_height() - panel.client_height()) / 2.0);
+    }
+}
+
 /// Scale about each fixed graph position, so panning never changes layout or
 /// scroll extents. Read viewport geometry once before writing node styles.
 fn apply_fisheye(panel: &HtmlElement) {
+    if mobile_roster() {
+        return;
+    }
     let width = f64::from(panel.client_width()) / 2.0;
     let height = f64::from(panel.client_height()) / 2.0;
     if width <= 0.0 || height <= 0.0 {
@@ -802,7 +817,8 @@ fn install_map_interactions(bar: &web_sys::Element, host: &HtmlElement) -> Vec<B
         let Some(pointer) = event.dyn_ref::<web_sys::PointerEvent>() else {
             return;
         };
-        if pointer.button() != 0
+        if mobile_roster()
+            || pointer.button() != 0
             || !event.composed_path().iter().any(|item| {
                 item.dyn_ref::<web_sys::Element>()
                     .is_some_and(|e| e.class_list().contains("members-list"))
