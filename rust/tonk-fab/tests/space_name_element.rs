@@ -320,7 +320,7 @@ fn member_row(this_id: &str, name: &str) -> JsValue {
     js_sys::Reflect::set(
         &fields,
         &"member".into(),
-        &JsValue::from_str("did:key:zMember"),
+        &JsValue::from_str(&format!("did:key:{this_id}")),
     )
     .expect("set member");
     js_sys::Reflect::set(&fields, &"role".into(), &JsValue::from_str("tonk:member"))
@@ -388,7 +388,7 @@ fn rendered_names(el: &web_sys::HtmlElement) -> Vec<String> {
         .and_then(|bar| bar.shadow_root())
         .expect("bar shadow");
     let names = root
-        .query_selector_all(".mem-row > span:first-child")
+        .query_selector_all(".mem-row .mem-name")
         .expect("query member names");
     (0..names.length())
         .filter_map(|i| names.item(i))
