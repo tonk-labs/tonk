@@ -371,6 +371,17 @@ async fn invitation_graph_updates_late_provenance_and_removes_stale_edges() {
     bar.remove();
 }
 
+// Scroll events run during a browser rendering update, which a 20 ms timer
+// does not guarantee on a busy runner. Wait for the real handler's effect;
+// keep a deadline so a missing handler or broken lens still fails the test.
+async fn wait_for_lens(condition: impl Fn() -> bool, description: &str) {
+    let deadline = js_sys::Date::now() + 2_000.0;
+    while !condition() {
+        assert!(js_sys::Date::now() < deadline, "{description}");
+        settle().await;
+    }
+}
+
 #[dialog_common::test]
 async fn panning_shrinks_peripheral_nodes_and_keeps_edges_attached() {
     let (bar, roster) = mount();
@@ -407,7 +418,7 @@ async fn panning_shrinks_peripheral_nodes_and_keeps_edges_attached() {
     assert!((centred - 1.0).abs() < 0.001);
     let home = panel.scroll_top();
     panel.set_scroll_top(0.0);
-    settle().await;
+    wait_for_lens(|| scale() < 0.6, "scrolling to the edge updates the lens").await;
     let peripheral = scale();
     assert!(peripheral < 0.6, "the edge shrinks the root: {peripheral}");
     assert!((dot.get_bounding_client_rect().width() / full_width - peripheral).abs() < 0.01);
@@ -421,7 +432,11 @@ async fn panning_shrinks_peripheral_nodes_and_keeps_edges_attached() {
         "edge follows the smaller disc"
     );
     panel.set_scroll_top(home);
-    settle().await;
+    wait_for_lens(
+        || (scale() - centred).abs() < 0.001,
+        "scrolling home restores the lens",
+    )
+    .await;
     assert!(
         (scale() - centred).abs() < 0.001,
         "panning back restores full size"
