@@ -164,22 +164,45 @@ async fn held_for(tonk: &TonkState, account: &Did) -> usize {
         .count()
 }
 
-/// The chain the handover left from `subject` to `root`, found where the
-/// peer proves from. Proven, never minted: one that is missing is a
-/// handover that did not happen, reported rather than papered over.
+/// The chain the handover left from `subject` to `root`, proven by the peer
+/// from the delegations it retains. Proven, never minted: one that is
+/// missing is a handover that did not happen, reported rather than papered
+/// over.
 async fn proven(
     tonk: &TonkState,
     subject: &Did,
     root: &Did,
 ) -> Result<DelegationChain, TonkWorkerError> {
-    let branch = tonk
-        .reactor
-        .profile_repository()
-        .branch(&tonk.active_branch)
-        .acquire(&tonk.operator)
+    use dialog_capability::Subject;
+    use dialog_capability::access::{Access, Prove};
+
+    let scope = dialog_ucan::Scope {
+        subject: dialog_ucan_core::subject::Subject::Specific(subject.clone()),
+        command: dialog_ucan_core::command::Command::parse("/use")
+            .expect("the use command always parses"),
+        parameters: dialog_ucan::Parameters::default(),
+    };
+    let proof = Subject::from(tonk.profile.did())
+        .attenuate(Access)
+        .invoke(Prove::<dialog_ucan::Ucan>::new(root.clone(), scope))
+        .perform(&tonk.profile)
         .await
-        .map_err(|error| TonkWorkerError::Internal(format!("open profile main: {error}")))?;
-    super::revoke_invite::prove_path(branch.handle(), tonk, subject, root).await
+        .map_err(|error| {
+            TonkWorkerError::NotFound(format!(
+                "no retained delegation path reaches {root}: {error}"
+            ))
+        })?;
+    let mut certificates = proof.proofs.into_iter();
+    let first = certificates
+        .next()
+        .ok_or_else(|| TonkWorkerError::NotFound(format!("the proof for {root} is empty")))?;
+    let mut chain = DelegationChain::new(first.0);
+    for certificate in certificates {
+        chain = chain.push(certificate.0).map_err(|error| {
+            TonkWorkerError::Internal(format!("proved certificates do not chain: {error}"))
+        })?;
+    }
+    Ok(chain)
 }
 
 /// Settle a space the handover re-issued as `space -> root` the way
@@ -1276,5 +1299,78 @@ mod tests {
             "nothing stays held for the account the peer acted for",
         );
         assert_eq!(held_for(&tonk, &root_did).await, 1);
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod native_tests {
+    use super::*;
+    use dialog_credentials::Ed25519Signer;
+    use dialog_varsig::Principal as _;
+    use tower::ServiceExt as _;
+
+    /// Signing in re-issues a created space to the root, and settling it
+    /// finds that delegation where the peer proves from: the direct
+    /// `space -> root` the handover wrote, with nothing cached in between.
+    #[dialog_common::test]
+    async fn it_settles_a_created_space_from_the_handover() {
+        let name = format!("rotation-settle-{}", rand::random::<u64>());
+        let (storage, profile) =
+            crate::device::open_profile_at(&name, dialog_effects::storage::Directory::Profile)
+                .await
+                .unwrap();
+        let registry = crate::device::Registry {
+            profile: name.clone(),
+            directory: dialog_effects::storage::Directory::Profile,
+        };
+        let state = crate::worker::boot_state(storage, name, profile, registry)
+            .await
+            .unwrap();
+        let (app, state, _lsp) = crate::router::api_router_with_state(state);
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("PUT")
+                    .uri("/api/repository/settled-space")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::CREATED);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let created: Did = json["name"].as_str().unwrap().parse().unwrap();
+
+        let tonk = state.read().await;
+        let onboarding = crate::onboarding::did(&tonk).await.unwrap().unwrap();
+        let root = Ed25519Signer::import(&[11u8; 32]).await.unwrap();
+        let root_did = root.did();
+        let grant = tonk_identity::delegation::mint_device_delegation(root, &tonk.profile.did())
+            .await
+            .unwrap();
+        super::super::identity::persist_root(
+            &tonk,
+            tonk_worker_api::SaveRootRequest {
+                credential_id: "test-credential".to_string(),
+                delegation_hex: hex::encode(grant.to_bytes().unwrap()),
+                passkey: None,
+                encryption_key: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        settle_space(&tonk, &root_did, &onboarding, &created)
+            .await
+            .expect("the handover's delegation settles the space");
+        let prefix = super::super::repository::space_root_prefix(&tonk, &created)
+            .await
+            .unwrap();
+        assert_eq!(prefix.audience(), &root_did, "the space is re-rooted");
+        assert_eq!(prefix.issuer(), &created, "the space delegates itself");
+        assert_eq!(prefix.proofs().count(), 1, "directly to the root");
     }
 }
