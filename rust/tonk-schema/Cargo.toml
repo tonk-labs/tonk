@@ -47,6 +47,7 @@ tonk-notation = { workspace = true }
 tonk-worker-api = { workspace = true }
 
 [dev-dependencies]
+zeroize = { workspace = true }
 anyhow = { workspace = true }
 dialog-common = { workspace = true, features = ["helpers"] }
 dialog-credentials = { workspace = true }
