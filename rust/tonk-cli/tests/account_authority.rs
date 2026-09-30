@@ -858,34 +858,29 @@ async fn it_custodies_the_created_space_seed() -> Result<()> {
     held_for_the_account(&fixture, &site.repository.did()).await
 }
 
-/// `subject`'s key is held for the account the fixture's profile acts
-/// for, and opens with the account's own key.
+/// `subject`'s key is held for the account the fixture's peer acts for,
+/// this device keeps a copy of it, and the account proves authority over
+/// the space.
 async fn held_for_the_account(
     fixture: &common::AccountFixture,
     subject: &dialog_varsig::Did,
 ) -> Result<()> {
-    use dialog_varsig::Principal as _;
-
-    // A fresh open: the fixture's profile handle predates the writes.
+    // A fresh open: the fixture's peer handle predates the writes.
     let site = TonkSite::open_with(&fixture.pre_account_site.root, account_config(fixture)).await?;
-    let profile = &site.profile;
-    let held = dialog_repository::secrets::held_principal(profile.state(), subject, profile)
+    let peer = &site.profile;
+    let account = peer.authority().await?;
+    let held = dialog_repository::secrets::held_principal(peer.state(), subject, peer)
         .await?
         .context("the space's key is held")?;
     assert_eq!(held.kind, tonk_schema::SeedKind::Space.held());
-    assert_eq!(held.to, profile.authority().await?, "held for the account");
-
-    // The account's key, as a ceremony derives it, opens the space's.
-    let secret = tonk_identity::envelope::AccountSecret::from_bytes(zeroize::Zeroizing::new(
-        fixture.root_prf,
-    ));
-    let owner = dialog_credentials::SignerCredential::from(secret.signer().await?);
-    let opened = profile
-        .space_key(subject)
-        .via(&owner)
-        .perform(profile)
-        .await?;
-    assert_eq!(opened.did(), *subject, "the held key is the space's");
+    assert_eq!(held.to, account, "held for the account");
+    assert!(peer.holds_key(subject).await?, "this device keeps a copy");
+    peer.access()
+        .prove(dialog_capability::Subject::from(subject.clone()))
+        .audience(&account)
+        .perform(site.operator.inner())
+        .await
+        .context("the account proves authority over the space")?;
     Ok(())
 }
 

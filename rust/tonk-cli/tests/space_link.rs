@@ -97,25 +97,21 @@ async fn it_links_a_signed_repository_after_its_creating_profile_is_gone(
     recovery_config.provision_account_spaces = false;
     local_space(&store, &recovery_config, "garden").await?;
     // What a release before keys left the storage leaves behind: the
-    // repository's signing key in its own space, and no profile here that
-    // keeps a copy of it.
+    // repository's signing key in its own space, and no peer anywhere that
+    // keeps a copy of it or holds it in custody. The site's repository is
+    // replaced by one whose key only its storage has.
     {
         use dialog_capability::did;
-        use dialog_credentials::{Credential, SignerCredential};
+        use dialog_credentials::{Credential, Ed25519Signer, SignerCredential};
         use dialog_effects::credential::prelude::*;
         use dialog_effects::storage::{Directory, Location};
         use dialog_storage::provider::storage::NativeSpace;
         use dialog_storage::resource::Resource as _;
 
         let entry = store.load()?.spaces["garden"].clone();
-        let created = TonkSite::open_with(&entry.site, recovery_config.clone()).await?;
-        let key = created
-            .profile
-            .space_key(&created.repository.did())
-            .perform(&created.profile)
-            .await?;
+        let key = Ed25519Signer::generate().await?;
         let location = Location::new(
-            Directory::At(created.root.to_string_lossy().into_owned()),
+            Directory::At(entry.site.to_string_lossy().into_owned()),
             tonk_cli::site::REPO_NAME,
         );
         did!("local:storage")

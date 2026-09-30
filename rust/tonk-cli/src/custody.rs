@@ -9,14 +9,12 @@
 //! them.
 
 use anyhow::{Context, Result};
-use dialog_credentials::key::ExtractableKey as _;
-use dialog_credentials::{Ed25519Signer, Extractable};
+use dialog_credentials::Ed25519Signer;
 use dialog_peer::{Peer, Session};
 use dialog_repository::Branch;
 use dialog_storage::provider::storage::NativeSpace;
 use dialog_varsig::Did;
 use tonk_schema::SeedKind;
-use zeroize::Zeroizing;
 
 /// Whether the account `profile` acts for holds the key of `subject`.
 pub async fn held_for_account(profile: &Peer<NativeSpace>, subject: &Did) -> Result<bool> {
@@ -30,19 +28,25 @@ pub async fn held_for_account(profile: &Peer<NativeSpace>, subject: &Did) -> Res
     Ok(held.is_some_and(|held| held.to == account))
 }
 
-/// Take the space whose key `seed` is into the custody of the account
-/// `profile` acts for.
-pub async fn adopt_space_seed(
-    profile: &Peer<NativeSpace>,
-    seed: &Zeroizing<[u8; 32]>,
-) -> Result<()> {
-    let key = <Ed25519Signer<Extractable>>::import(&**seed)
+/// Hand the space `subject` over to the account `profile` acts for, when
+/// this device keeps a copy of its key and it is held for another. Answers
+/// whether it moved. The key never leaves the peer: the handover opens it
+/// inside.
+pub async fn hand_over_to_account(profile: &Peer<NativeSpace>, subject: &Did) -> Result<bool> {
+    if held_for_account(profile, subject).await? || !profile.holds_key(subject).await? {
+        return Ok(false);
+    }
+    let account = profile
+        .authority()
         .await
-        .map_err(|error| anyhow::anyhow!("failed to import the space key: {error:?}"))?;
+        .context("the profile acts for no account")?;
     profile
-        .adopt_principal(SeedKind::Space.held(), key)
+        .held_principal(subject)
+        .hand_over(account)
+        .perform(profile)
         .await
-        .context("failed to take the space into the account's custody")
+        .context("failed to hand the space over to the account")?;
+    Ok(true)
 }
 
 /// Move what the onboarding account sealed in tonk's own custody rows on
@@ -122,28 +126,6 @@ pub async fn open_local_account_branch(
         .context("failed to open the local account branch")
 }
 
-/// The signing seed a locally created space's stored credential carries.
-/// `None` for a space this machine only ever held a verifier for — a
-/// joined or delegated space, whose seed is someone else's to custody.
-pub async fn site_seed(site: &crate::site::TonkSite) -> Result<Option<Zeroizing<[u8; 32]>>> {
-    if site.is_scoped() {
-        return Ok(None);
-    }
-    let Some(signer) = crate::site::space_signer(site).await? else {
-        return Ok(None);
-    };
-    let exported = signer
-        .export()
-        .await
-        .map_err(|error| anyhow::anyhow!("failed to export the space signer: {error:?}"))?;
-    let dialog_credentials::KeyExport::Extractable(bytes) = exported;
-    let seed: [u8; 32] = bytes
-        .as_slice()
-        .try_into()
-        .context("the exported space seed is not 32 bytes")?;
-    Ok(Some(Zeroizing::new(seed)))
-}
-
 /// One space's outcome under [`rotate_local_spaces`].
 #[derive(Debug)]
 pub enum SpaceRotation {
@@ -151,19 +133,19 @@ pub enum SpaceRotation {
     Moved,
     /// Nothing to do: the account already holds this space's custody.
     Already,
-    /// Skipped, with the reason: no signer (a joined space), or a
-    /// founder row naming a different account.
+    /// Skipped, with the reason: no copy of its key here (a joined
+    /// space), or a founder row naming a different account.
     Skipped(String),
 }
 
 /// Move custody of every registered local space to the signed-in
 /// account. Two passes share the work: [`rotate_from_onboarding`] runs
 /// the shared core over seeds the onboarding account sealed, and this
-/// walk covers spaces from before the onboarding account existed, whose
-/// only seed source is the signer credential this machine stored.
-/// Authority (`space → root`, retained into the account) and the sealed
-/// seed move; hosting does not: a space gains its remote and
-/// provisioning through `tonk space link`.
+/// walk hands over each space this device keeps a copy of the key of that
+/// is not yet held for the account. The key never leaves the peer: the
+/// handover opens it inside. Authority (`space → root`, retained into the
+/// account) and custody move; hosting does not: a space gains its remote
+/// and provisioning through `tonk space link`.
 ///
 /// Best-effort per space: a failure is reported and the rest continue,
 /// and running again converges.
@@ -224,11 +206,12 @@ async fn rotate_site(
     {
         return Ok(SpaceRotation::Skipped(format!("owned by {}", founder.did)));
     }
-    let Some(seed) = site_seed(site).await? else {
+    if !site.profile.holds_key(&subject).await? {
         return Ok(SpaceRotation::Skipped(
-            "no local signer (a joined space)".to_string(),
+            "no copy of its key on this device (a joined space)".to_string(),
         ));
-    };
+    }
+    let moved = hand_over_to_account(&site.profile, &subject).await?;
 
     let operator =
         crate::account_state::credential_operator_for_store(&site.profile, store).await?;
@@ -242,12 +225,11 @@ async fn rotate_site(
     .await?;
     crate::account_state::retain_space_delegation_in(&site.profile, &operator, store, &prefix)
         .await?;
-
-    if held_for_account(&site.profile, &subject).await? {
-        return Ok(SpaceRotation::Already);
-    }
-    adopt_space_seed(&site.profile, &seed).await?;
-    Ok(SpaceRotation::Moved)
+    Ok(if moved {
+        SpaceRotation::Moved
+    } else {
+        SpaceRotation::Already
+    })
 }
 
 /// Move everything the onboarding account custodies into the custody of

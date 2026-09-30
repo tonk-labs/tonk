@@ -24,7 +24,7 @@ use axum::Router;
 use axum::extract::{Form, State};
 use axum::response::{Html, IntoResponse as _, Redirect, Response};
 use axum::routing::get;
-use dialog_capability::Subject;
+use dialog_capability::{Attenuation, Subject};
 use dialog_query::{Output as _, Query, Term};
 use dialog_repository::{Branch, Upstream};
 use dialog_ucan::UcanDelegation;
@@ -70,6 +70,50 @@ pub struct BrowserLinkOptions {
     pub open_browser: bool,
     /// Explicit approval page for local/staging deployments.
     pub via: Option<String>,
+    /// Whether the space is shared with the account or handed over to it.
+    pub custody: Custody,
+}
+
+/// What linking does with the space's custody.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Custody {
+    /// The approving account holds the space too; this device's account
+    /// keeps it, and this device keeps its authority over it.
+    #[default]
+    Share,
+    /// The approving account holds the space instead of this device's
+    /// account. This device then proves authority over the space only
+    /// through the approving account, which the approval must grant back.
+    HandOver,
+}
+
+/// `/link`: the acts that link a space to an account.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Link;
+
+impl Attenuation for Link {
+    type Of = Subject;
+}
+
+/// `/link/local-space`: linking a space that is local to this device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalSpace;
+
+impl Attenuation for LocalSpace {
+    type Of = Link;
+
+    fn attenuation() -> &'static str {
+        "local-space"
+    }
+}
+
+/// `/link/local-space/request`: asking a browser to link the space, the
+/// command a link request grants its recipient.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Request;
+
+impl Attenuation for Request {
+    type Of = LocalSpace;
 }
 
 enum BrowserMessage {
@@ -349,7 +393,8 @@ impl LocalSpaceLinkCandidate {
         &self.subject
     }
 
-    /// Sign a browser request with the existing repository identity.
+    /// A browser request to link the space, issued by this device's peer
+    /// on the chain proving its authority over the space.
     pub async fn request(
         &self,
         recipient: &Did,
@@ -358,20 +403,64 @@ impl LocalSpaceLinkCandidate {
         service: &tonk_invite::local_space_link::TrustedService,
         now: dialog_ucan_core::time::Timestamp,
     ) -> Result<tonk_invite::local_space_link::LocalSpaceLinkRequest> {
-        let Some(owner) = crate::site::space_signer(&self.site).await? else {
-            bail!("this device cannot sign for the selected local space")
-        };
-        tonk_invite::local_space_link::LocalSpaceLinkRequest::issue(
-            &owner,
+        issue_request(
+            &self.site,
+            &self.subject,
+            &self.name,
             recipient,
             callback,
             correlation,
-            self.name.clone(),
             service,
             now,
         )
         .await
     }
+}
+
+/// A request to link `space`, named `name`, issued to `recipient` by the
+/// peer of `site` on the chain proving its authority over the space: the
+/// space's own delegation first, the peer's leaf carrying the binding last.
+/// A peer that proves no authority over the space issues nothing.
+#[allow(clippy::too_many_arguments)]
+async fn issue_request(
+    site: &crate::site::TonkSite,
+    space: &Did,
+    name: &str,
+    recipient: &Did,
+    callback: url::Url,
+    correlation: String,
+    service: &tonk_invite::local_space_link::TrustedService,
+    now: dialog_ucan_core::time::Timestamp,
+) -> Result<tonk_invite::local_space_link::LocalSpaceLinkRequest> {
+    let binding = tonk_invite::local_space_link::LocalSpaceLinkRequest::binding(
+        space,
+        &callback,
+        &correlation,
+        name,
+        service,
+        now,
+    )?;
+    let delegation: UcanDelegation = site
+        .profile
+        .access()
+        .claim(
+            Subject::from(space.clone())
+                .attenuate(Link)
+                .attenuate(LocalSpace)
+                .attenuate(Request),
+        )
+        .expires(binding.expiration)
+        .delegate(recipient.clone())
+        .meta(binding.meta)
+        .perform(&site.operator)
+        .await
+        .context("this device cannot prove authority over this space")?;
+    let chain = delegation.into_chain();
+    anyhow::ensure!(
+        chain.proofs().last().map(|leaf| leaf.command()) == Some(&binding.command),
+        "the link request grants the wrong command"
+    );
+    tonk_invite::local_space_link::LocalSpaceLinkRequest::from_chain(chain)
 }
 
 /// Resolve and prove one new local-space link independently of ambient
@@ -443,7 +532,7 @@ async fn prepare_local_space_link_with_state(
         .perform(site.operator.local())
         .await;
     if let Err(error) = profile_proof
-        && crate::site::space_signer(&site).await?.is_none()
+        && !site.profile.holds_key(&subject).await?
     {
         return Err(error).context("this device cannot prove authority over this space");
     }
@@ -479,6 +568,31 @@ async fn prepare_local_space_link_with_state(
     })
 }
 
+/// The space's consent to `account`: its direct delegation to the account,
+/// what the access service provisions from. Sharing the space with the
+/// account, or handing it over, is what yields it; the space's key never
+/// leaves the peer.
+async fn consent_of(
+    site: &crate::site::TonkSite,
+    space: &Did,
+    account: &Did,
+    custody: Custody,
+) -> Result<dialog_ucan_core::DelegationChain> {
+    let held = site.profile.held_principal(space);
+    let delegation = match custody {
+        Custody::Share => held.share(account.clone()).perform(&site.profile).await,
+        Custody::HandOver => held.hand_over(account.clone()).perform(&site.profile).await,
+    };
+    match delegation {
+        Ok(delegation) => Ok(delegation.into_chain()),
+        Err(dialog_effects::credential::CredentialError::Withheld(_)) => bail!(
+            "this device keeps no copy of {space}'s key: link it where the key of the account \
+             holding it is, the browser signed in to that account"
+        ),
+        Err(error) => Err(error).context("failed to give the account custody of the space"),
+    }
+}
+
 /// Link one local-only space through explicit browser account selection.
 pub async fn execute_browser(
     store: &SpaceStore,
@@ -486,6 +600,12 @@ pub async fn execute_browser(
     name: &str,
     options: &BrowserLinkOptions,
 ) -> Result<LinkOutcome> {
+    if options.custody == Custody::HandOver {
+        bail!(
+            "handing '{name}' over needs the approval to grant this device the space back \
+             from the account, which it does not carry yet; link without --hand-over to share it"
+        );
+    }
     let page = crate::handoff::approval_page(options.via.as_deref())?;
     let defaults = crate::deployment::discover(&page).await?;
     let service = tonk_invite::local_space_link::TrustedService::new(
@@ -636,9 +756,11 @@ pub async fn execute_browser(
                         let consent = match state.consent.clone() {
                             Some(consent) => consent,
                             None => {
-                                let prefix = crate::site::direct_account_root_prefix(
+                                let prefix = consent_of(
                                     &rechecked.site,
+                                    rechecked.subject(),
                                     &approval.account,
+                                    options.custody,
                                 )
                                 .await?;
                                 let consent = tonk_invite::local_space_link::encode_transport(
@@ -1147,15 +1269,9 @@ async fn publish(
         }
         crate::account_state::retain_space_delegation_in(&site.profile, &operator, store, &prefix)
             .await?;
-        // The seed rides the same boundary: a space the account hosts is a
-        // space the account can re-derive. Sealing needs only the published
-        // public key; an account that predates it links anyway — custody
-        // catches up at the next `tonk account login`.
-        if !crate::custody::held_for_account(&site.profile, &subject).await?
-            && let Some(seed) = crate::custody::site_seed(&site).await?
-        {
-            crate::custody::adopt_space_seed(&site.profile, &seed).await?;
-        }
+        // Custody rides the same boundary: a space the account hosts is a
+        // space held for the account.
+        crate::custody::hand_over_to_account(&site.profile, &subject).await?;
         crate::account_spaces::record_site_pushed(name, &site, store).await?;
 
         if crate::inventory::role_for_site(&site).await? != SpaceRole::Owner {
@@ -1318,7 +1434,7 @@ async fn preflight(
         .perform(site.operator.local())
         .await;
     if let Err(error) = profile_proof
-        && crate::site::space_signer(site).await?.is_none()
+        && !site.profile.holds_key(&site.repository.did()).await?
     {
         return Err(error).context("this device cannot prove authority over this space");
     }
@@ -1421,9 +1537,17 @@ mod local_space_link_tests {
 
         let recipient = Ed25519Signer::generate().await?;
         let account = Ed25519Signer::generate().await?;
-        let consent =
-            crate::site::direct_account_root_prefix(&candidate.site, &account.did()).await?;
+        // Sharing the space with the account is what yields its consent:
+        // the space's own delegation to the account, direct.
+        let consent = consent_of(
+            &candidate.site,
+            candidate.subject(),
+            &account.did(),
+            Custody::Share,
+        )
+        .await?;
         assert_eq!(consent.proofs().count(), 1);
+        assert_eq!(consent.issuer(), candidate.subject());
         assert_eq!(consent.subject(), Some(candidate.subject()));
         assert_eq!(consent.audience(), &account.did());
         let service_signer = Ed25519Signer::generate().await?;
@@ -1441,6 +1565,29 @@ mod local_space_link_tests {
             )
             .await?;
         let request = request.validate(&service, Timestamp::now()).await?;
+        assert_eq!(&request.space, candidate.subject());
+
+        // A peer that proves no authority over a space issues no request
+        // for it: here, a space this peer has never held.
+        let elsewhere = Ed25519Signer::generate().await?.did();
+        let refused = issue_request(
+            &candidate.site,
+            &elsewhere,
+            "garden",
+            &recipient.did(),
+            "http://127.0.0.1:45123/link".parse()?,
+            "0123456789abcdef0123456789abcdef".into(),
+            &service,
+            Timestamp::now(),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            refused
+                .to_string()
+                .contains("cannot prove authority over this space"),
+            "{refused:#}"
+        );
         let approval = tonk_invite::local_space_link::LocalSpaceLinkApproval::issue(
             &request,
             &account,

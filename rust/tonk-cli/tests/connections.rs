@@ -334,7 +334,7 @@ async fn connection_import_preserves_identity_private_credentials_and_offline_ed
     let site = connections::open_bound(&root, &binding, ambient.clone()).await?;
     assert!(site.is_scoped());
     assert_eq!(site.profile.did().to_string(), recipient);
-    assert!(tonk_cli::custody::site_seed(&site).await?.is_none());
+    assert!(!site.profile.holds_key(&site.repository.did()).await?);
     assert!(
         tonk_cli::site::Identity::of(&site)
             .await?

@@ -21,7 +21,6 @@ use anyhow::{Context, Result, bail};
 use dialog_capability::{Subject, did};
 use dialog_credentials::key::ExtractableKey;
 use dialog_credentials::{Ed25519Signer, Extractable};
-use dialog_effects::credential::CredentialError;
 use dialog_effects::storage::{self as storage_fx, Directory, Location, LocationExt as _};
 use dialog_peer::{Peer, Session};
 use dialog_reactor::{BranchSession, Reactor, ReactorError, RepositoryState};
@@ -911,12 +910,12 @@ pub async fn account_root_prefix(site: &TonkSite, account_root: &Did) -> Result<
                 .context("failed to retain account-root authority for this profile")?;
             Ok(chain)
         }
-        Err(profile_error) if space_signer(site).await?.is_some() => {
+        Err(profile_error) if site.profile.holds_key(&site.repository.did()).await? => {
             direct_account_root_prefix(site, account_root)
                 .await
                 .with_context(|| {
                     format!(
-                        "the profile cannot delegate this space and its repository signer failed: {profile_error}"
+                        "the peer cannot delegate this space and no direct delegation from it was found: {profile_error}"
                     )
                 })
         }
@@ -924,49 +923,25 @@ pub async fn account_root_prefix(site: &TonkSite, account_root: &Did) -> Result<
     }
 }
 
-/// The key of the site's repository, when this device holds one: the
-/// copy the peer kept of a space it created or adopted. A repository from
-/// before keys left the storage, whose key is still in its space, is
-/// adopted first: its key moves into the credential store and into the
-/// account's custody, with a copy for this peer, and is opened from that.
-pub async fn space_signer(site: &TonkSite) -> Result<Option<Ed25519Signer>> {
-    if let Some(signer) = kept_space_key(site).await? {
-        return Ok(Some(signer));
+/// Take the repository of the site at `root` into the account's custody
+/// when its space still holds the signing key a release before keys left
+/// the storage kept there: part of upgrading the site as it opens. The key
+/// leaves the space only into the credential store beside it, the one way
+/// a key leaves a space. A peer with no account yet leaves the key where it
+/// is, for an open once it has one.
+async fn adopt_legacy_space(profile: &Peer<NativeSpace>, root: &Path) -> Result<()> {
+    if profile.authority().await.is_err() {
+        return Ok(());
     }
-    if !adopt_legacy_space(site).await? {
-        return Ok(None);
-    }
-    kept_space_key(site).await
-}
-
-/// The key of the site's repository, from the copy the peer kept of it.
-async fn kept_space_key(site: &TonkSite) -> Result<Option<Ed25519Signer>> {
-    match site
-        .profile
-        .space_key(&site.repository.did())
-        .perform(&site.profile)
-        .await
-    {
-        Ok(signer) => Ok(Some(signer)),
-        Err(CredentialError::Withheld(_) | CredentialError::NotFound(_)) => Ok(None),
-        Err(error) => Err(error).context("failed to open the space's key"),
-    }
-}
-
-/// Take the site's repository into the account's custody when its space
-/// still holds the signing key a release before keys left the storage
-/// kept there. Answers whether it did. The key leaves the space only into
-/// the credential store beside it, the one way a key leaves a space.
-async fn adopt_legacy_space(site: &TonkSite) -> Result<bool> {
-    let location = site_location(&site.root, REPO_NAME)?;
+    let location = site_location(root, REPO_NAME)?;
     let adopted = dialog_storage::provider::storage::CredentialStore::<NativeSpace>::new()
-        .adopt_from(site.profile.storage(), &location)
+        .adopt_from(profile.storage(), &location)
         .await;
     let signer = match adopted {
         Ok(dialog_credentials::Credential::Signer(signer)) => signer,
         Ok(dialog_credentials::Credential::Verifier(_))
         | Err(storage_fx::StorageError::NotFound(_)) => {
-            return Ok(false);
+            return Ok(());
         }
         Err(error) => return Err(error).context("failed to adopt the space's stored key"),
     };
@@ -983,49 +958,47 @@ async fn adopt_legacy_space(site: &TonkSite) -> Result<bool> {
     let key = <Ed25519Signer<Extractable> as ExtractableKey>::import(&seed)
         .await
         .map_err(|error| anyhow::anyhow!("failed to import the space's key: {error:?}"))?;
-    site.profile
+    profile
         .adopt_space(key)
         .await
-        .context("failed to take the space into the account's custody")?;
-    Ok(true)
+        .context("failed to take the space into the account's custody")
 }
 
-/// Mint and persist a direct `space -> account-root` prefix with the local
-/// repository signer. Provisioning consumes the first proof as the space's
-/// consent, so an otherwise valid adopted chain through an onboarding account
-/// is intentionally not sufficient here.
+/// Persist the direct `space -> account-root` prefix the space's custody
+/// left: creating, adopting or handing a space over has it delegate to the
+/// account it is held for. Provisioning consumes the first proof as the
+/// space's consent, so an otherwise valid chain through an onboarding
+/// account is intentionally not sufficient here. Found, never minted: one
+/// that is missing is custody that never reached the account, reported as
+/// such.
 pub async fn direct_account_root_prefix(
     site: &TonkSite,
     account_root: &Did,
 ) -> Result<DelegationChain> {
-    let Some(signer) = space_signer(site).await? else {
-        bail!("this device cannot sign directly for the selected local space");
-    };
-    let minter = Repository::from(signer);
-    let delegation: UcanDelegation = minter
-        .access()
-        .claim(&minter)
-        .delegate(account_root.clone())
-        .perform(site.operator.local())
-        .await
-        .context("failed to mint repository-signed account-root authority")?;
-    let chain = delegation.into_chain();
+    let subject = site.repository.did();
+    let chain = recover_prefix(&site.profile, site.operator.local(), &subject, account_root)
+        .await?
+        .with_context(|| {
+            format!(
+                "no delegation from {subject} reaches {account_root}: the space's custody never reached that account"
+            )
+        })?;
+    anyhow::ensure!(
+        chain.issuer() == &subject && chain.proofs().count() == 1,
+        "no direct delegation from {subject} to {account_root}: the space's custody never reached that account"
+    );
     let bytes = chain
         .to_bytes()
-        .context("failed to serialize repository-signed account-root prefix")?;
+        .context("failed to serialize the account-root prefix")?;
     let validated = validate_prefix(bytes.clone(), account_root)
         .await
-        .context("repository-signed account-root prefix is invalid")?;
-    anyhow::ensure!(
-        validated.proofs().count() == 1,
-        "repository-signed account-root prefix is not direct"
-    );
+        .context("the account-root prefix is invalid")?;
     site.profile
         .access()
         .save(UcanDelegation(validated.clone()))
         .perform(site.operator.local())
         .await
-        .context("failed to retain repository-signed authority for this profile")?;
+        .context("failed to retain the space's authority for this peer")?;
     save_prefix(
         &site.profile,
         site.operator.local(),
@@ -1033,7 +1006,7 @@ pub async fn direct_account_root_prefix(
         bytes,
     )
     .await
-    .context("failed to persist repository-signed account-root prefix")?;
+    .context("failed to persist the account-root prefix")?;
     Ok(validated)
 }
 
@@ -1338,6 +1311,7 @@ pub(crate) async fn load_repository(
     operator: &Peer<NativeSpace, Session>,
     root: &Path,
 ) -> Result<Repository> {
+    adopt_legacy_space(profile, root).await?;
     let credential = Subject::from(did!("local:storage"))
         .attenuate(storage_fx::Storage)
         .attenuate(site_location(root, REPO_NAME)?)
