@@ -74,13 +74,55 @@ button,a{ min-height:48px; font:600 17px/1.1 'IBM Plex Sans Condensed','Arial Na
 #agent-panel .panel-copytext{ flex:1 1 0; overflow-y:auto; }
 .agent-status{ margin:0; padding:4px 24px 12px; font:400 16px/1.35 'IBM Plex Sans Condensed','Arial Narrow',sans-serif; }
 .panel-message{ margin:auto; padding:24px; font:400 18px/1.5 'IBM Plex Sans Condensed','Arial Narrow',sans-serif; text-align:center; }
-.members-list{ min-height:0; overflow:auto; padding:0 18px 16px; }
-.members-list .mem-row{ min-height:42px; display:flex; align-items:center; justify-content:flex-end; gap:8px;
-  border-bottom:1px solid var(--_sep); font:600 15px/1.2 'IBM Plex Sans Condensed','Arial Narrow',sans-serif; }
-.members-list .mem-row:last-child{ border-bottom:0; }
-.members-list .mem-tag{ color:var(--_soft); font-size:12px; font-weight:500; }
-.members-list .mem-self{ text-decoration:underline; text-underline-offset:3px; }
+.members-list{ min-height:0; overflow:auto; padding:8px; flex:1; touch-action:none; cursor:grab; user-select:none; scrollbar-width:none; }
+.members-list[data-panning]{ cursor:grabbing; }
+.member-graph-viewport{ position:relative; margin:auto; overflow:hidden; }
+.member-graph{ position:relative; }
+.members-tools{ display:flex; align-items:center; gap:0; margin-inline-start:0; }
+.members-tools button{ min-width:44px; min-height:40px; padding:0 8px; font-size:14px; }
+.members-tools button:hover{ background:var(--_hover); }
+.member-edges{ position:absolute; inset:0; width:100%; height:100%; overflow:visible; color:var(--_ink); }
+.member-edges line{ stroke:currentColor; stroke-width:1.3; }
+.member-node{ position:absolute; transform:translate(-50%,-50%) scale(var(--member-scale,1)); box-sizing:border-box; width:44px; height:44px;
+  min-height:44px; display:grid; place-items:center; padding:0; border:0; border-radius:50%;
+  background:transparent; color:var(--_ink); font:600 15px/1.1 'IBM Plex Sans Condensed','Arial Narrow',sans-serif; }
+.member-dot{ display:block; width:18px; height:18px; border-radius:50%; background:currentColor; }
+.member-node[data-self] .member-dot{ width:24px; height:24px; }
+.member-node[data-unlinked] .member-dot{ outline:1px dashed currentColor; outline-offset:4px; }
+.member-node:focus-visible{ outline:2px solid var(--_ink); outline-offset:2px; }
+.member-node[aria-pressed=true] .member-dot{ box-shadow:0 0 0 3px var(--_panel),0 0 0 4px var(--_ink); }
+.member-caption{ position:absolute; inset-inline-start:calc(50% + 15px); top:50%; transform:translateY(-50%);
+  display:flex; flex-direction:column; align-items:flex-start; gap:3px; padding:3px 5px; max-width:120px; text-align:start; }
+.member-node[data-label-left] .member-caption{ inset-inline-start:auto; inset-inline-end:calc(50% + 15px); align-items:flex-end; text-align:end; }
+.member-node:hover .member-caption{ background:var(--_hover); }
+.member-node[aria-pressed=true] .member-caption{ background:var(--_cur); color:var(--_on); }
+.member-node[aria-pressed=true] .mem-tag{ color:inherit; }
+.member-space .member-dot{ width:30px; height:30px; background:transparent; border:2px solid currentColor; }
+.member-space .member-caption{ top:100%; inset-inline-start:50%; transform:translateX(-50%); padding-top:4px; }
+.mem-name{ max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.mem-tags{ display:flex; gap:8px; }
+.mem-tag{ color:var(--_soft); font-size:12px; font-weight:500; }
+.mem-self{ text-decoration:underline; text-underline-offset:3px; }
+.member-count{ margin-inline-start:auto; display:flex; align-items:center; gap:8px; font:600 17px/1 'IBM Plex Sans Condensed',sans-serif; white-space:nowrap; }
+.member-count::before{ content:""; width:13px; height:13px; border-radius:50%; background:currentColor; }
+.member-detail{ margin:0; padding:10px 18px; border-top:1px solid var(--_sep); font:400 13px/1.45 'IBM Plex Sans',sans-serif; overflow-wrap:anywhere; }
+.member-detail[hidden]{ display:none; }
+/* Keep the compact, borderless roster on phones; the same live rows back both views. */
+@media (max-width:640px){
+  .members-tools,.member-edges,.member-space,.mem-row .member-dot{ display:none; }
+  .members-list{ padding:0 18px 16px; touch-action:pan-y; cursor:auto; user-select:text; }
+  .member-graph-viewport,.member-graph{ width:auto!important; height:auto!important; transform:none!important; overflow:visible; }
+  .members-list .mem-row{ position:static; transform:none; width:100%; min-height:42px; height:auto;
+    display:flex; justify-content:flex-end; border:0; border-radius:0; padding:8px 0; font-size:17px; }
+  .members-list .mem-row .member-caption{ position:static; transform:none; max-width:100%; min-width:0;
+    flex-direction:row; align-items:center; justify-content:flex-end; gap:8px; padding:0; text-align:end; }
+  .members-list .mem-name{ white-space:normal; overflow-wrap:anywhere; min-width:0; }
+  .members-list .mem-tags{ flex-shrink:0; }
+  .members-list .mem-tags:empty{ display:none; }
+}
 .members-empty{ margin:auto; padding:24px; font:400 18px/1.5 'IBM Plex Sans Condensed','Arial Narrow',sans-serif; }
+#members-panel{ height:240px; overflow:hidden; }
+.w.has-panel:not(.stacked) #members-panel{ height:240px; min-height:0; }
 .share-gate,.agent-gate{ background:var(--_hover); display:grid; place-items:center; flex:1; }
 .share-continue,.agent-continue{ display:flex; align-items:center; justify-content:center; gap:12px; padding:0 24px; text-align:center; }
 .share-continue span,.agent-continue span{ text-decoration:underline; text-underline-offset:4px; }
@@ -167,14 +209,14 @@ pub const BAR_HTML: &str = r#"<div class="w">
       <button class="action condition" data-action="condition" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v6m0 4h.01"/></svg><span></span></button>
       <button class="action share" data-cell="share" data-panel="share" aria-controls="share-panel" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="5" r="2.5"/><circle cx="18" cy="19" r="2.5"/><path d="m8 11 8-5M8 13l8 5"/></svg><span>copy share link</span></button>
       <button class="action members" data-panel="members" aria-controls="members-panel" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="10" r="2.5"/><circle cx="5" cy="5" r="2"/><circle cx="19" cy="5" r="2"/><path d="M7 21v-2a5 5 0 0 1 10 0v2M2 14v-2a3 3 0 0 1 3-3M22 14v-2a3 3 0 0 0-3-3"/></svg><span>view members</span></button>
-      <button class="action agent" data-panel="agent" aria-controls="agent-panel" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 9.5V6.5"/><circle cx="12" cy="4" r="2.5"/><rect x="1.5" y="9.5" width="21" height="13" rx="4"/><circle cx="8" cy="16" r="1.5"/><circle cx="16" cy="16" r="1.5"/></svg><span>connect agent</span></button>
+      <button class="action agent" data-panel="agent" aria-controls="agent-panel" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 9.5V6.5"/><circle cx="12" cy="4" r="2.5"/><rect x="1.5" y="9.5" width="21" height="13" rx="4"/><circle cx="8" cy="16" r="1.5"/><circle cx="16" cy="16" r="1.5"/></svg><span>copy agent link</span></button>
       <button class="action home" data-action="home"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 20V4m-5 5 5-5 5 5M8 16q0 5 5 5h7"/></svg><span>go to tonk home</span></button>
       <button class="more" data-cell="more" tabindex="-1" hidden></button>
     </nav>
   </div>
   <section class="panel" id="share-panel" aria-label="share this space" hidden><div class="share-gate"><button class="share-continue"><span>add an account to share this space</span><b aria-hidden="true">&#9656;</b></button></div><p class="panel-message share-progress" aria-live="polite">creating share link…</p></section>
   <section class="panel" id="agent-panel" aria-label="connect agent" hidden><div class="agent-gate"><button class="agent-continue"><span>add an account to connect an agent</span><b aria-hidden="true">&#9656;</b></button></div><div class="panel-head"><button class="back">&#9666; menu</button><button class="agent-copy-link panel-copy" data-copy-label="copy link" hidden>copy link</button><button class="agent-copy-prompt panel-copy" hidden>copy prompt</button><button class="agent-retry" hidden>try again</button></div><p class="agent-status" aria-live="polite">create an agent invitation when you open this panel</p><pre class="panel-copytext" hidden></pre></section>
-  <section class="panel" id="members-panel" aria-label="space members" hidden><div class="panel-head"><button class="back">&#9666; menu</button></div><div class="members-list" role="list" aria-live="polite"><p class="members-empty">no members are available</p></div></section>
+  <section class="panel" id="members-panel" aria-label="space members" hidden><div class="panel-head"><button class="back">&#9666; menu</button><div class="members-tools" aria-label="graph zoom"><button class="members-zoom-out" aria-label="zoom out">−</button><button class="members-fit">fit</button><button class="members-zoom-in" aria-label="zoom in">+</button></div><span class="member-count" aria-label="member count">0</span></div><div class="members-list" role="region" aria-label="space members" tabindex="0" aria-live="polite"><p class="members-empty">no members are available</p></div><p class="member-detail" aria-live="polite" hidden></p></section>
   <div class="mw" aria-hidden="true"><slot name="menu"></slot></div>
   <section class="task" hidden>
     <header class="task-head">
@@ -508,7 +550,7 @@ mod tests {
         let order: Vec<usize> = [
             "copy share link",
             "view members",
-            "connect agent",
+            "copy agent link",
             "go to tonk home",
         ]
         .iter()
@@ -619,7 +661,7 @@ mod tests {
         assert!(html.contains("<tonk-tool-connection headless space=\"did:key:z6Mk\""));
         assert!(!BAR_HTML.contains("data-action=\"tool\""));
         assert!(!BAR_HTML.contains("connect a tool"));
-        assert!(BAR_HTML.contains("connect agent"));
+        assert!(BAR_HTML.contains("<span>copy agent link</span>"));
         assert!(
             REFUSAL_DIALOGS_HTML.contains("give a tool access to this space under your account")
         );

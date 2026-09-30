@@ -3350,6 +3350,108 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// SPACE-15: Discover copies a bundled template in place, using the same receipt
+    /// lifecycle as duplication. Cancellation and a failed seed allocate nothing.
+    #[dialog_common::test]
+    async fn it_copies_a_remote_template_from_discover(env: TestEnvironment) -> Result<()> {
+        let catalog = include_str!("../../tonk-worker/tests/fixtures/discover/catalog.json");
+        let base = serve_cross_origin(vec![
+            ("/catalog.json", catalog.to_owned()),
+            ("/model.yaml", include_str!("../../tonk-worker/tests/fixtures/discover/model.yaml").to_owned()),
+            ("/view.yaml", include_str!("../../tonk-worker/tests/fixtures/discover/view.yaml").to_owned()),
+            ("/preview.svg", "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"200\" height=\"100\"><rect width=\"200\" height=\"100\" fill=\"gray\"/></svg>".to_owned()),
+        ])?;
+        let driver = driver_with_prf(&env).await?;
+        driver.goto(env.tonk_web.as_str()).await?;
+        let before = space_keys(&driver).await?;
+        enter_hub(&driver).await?;
+        driver
+            .execute(
+                "document.querySelector('hub-discover').setAttribute('catalog-url', arguments[0])",
+                vec![serde_json::json!(format!("{base}/missing.json"))],
+            )
+            .await?;
+        click(&driver, "[data-collection=discover]").await?;
+        wait_for_displayed(&driver, "[data-discover-retry]").await?;
+        driver
+            .execute(
+                "document.querySelector('hub-discover').setAttribute('catalog-url', arguments[0])",
+                vec![serde_json::json!(format!("{base}/catalog.json"))],
+            )
+            .await?;
+        click(&driver, "[data-discover-retry]").await?;
+        wait_for_displayed(&driver, "[data-template=remote-demo]").await?;
+        click(&driver, "[data-collection=spaces]").await?;
+        let collection = driver.find(By::Css(".discover-collection")).await?;
+        assert!(
+            !collection.is_displayed().await?,
+            "templates stay off Your spaces, even when empty"
+        );
+        click(&driver, "[data-collection=discover]").await?;
+        assert!(collection.is_displayed().await?);
+        click(&driver, "[data-collection=spaces]").await?;
+        assert!(!collection.is_displayed().await?);
+        click(&driver, "[data-collection=discover]").await?;
+        let card = "[data-template=remote-demo]";
+        click(&driver, &format!("{card} [data-template-details-open]")).await?;
+        assert!(
+            !driver
+                .find(By::Css(format!("{card} input[name=name]")))
+                .await?
+                .is_displayed()
+                .await?
+        );
+        click(&driver, &format!("{card} [data-template-image-open]")).await?;
+        wait_for_displayed(&driver, &format!("{card} [data-template-image] img")).await?;
+        click(&driver, &format!("{card} [data-template-image-close]")).await?;
+        click(&driver, &format!("{card} [data-space-create-open]")).await?;
+        let name = wait_for_displayed(&driver, &format!("{card} input[name=name]")).await?;
+        assert_eq!(name.value().await?.as_deref(), Some("Remote demo"));
+        click(&driver, &format!("{card} [data-template-back]")).await?;
+        wait_for_displayed(&driver, &format!("{card} [data-template-image-open]")).await?;
+        driver.enter_default_frame().await?;
+        assert_eq!(space_keys(&driver).await?, before);
+        enter_hub(&driver).await?;
+        click(&driver, &format!("{card} [data-space-create-open]")).await?;
+        // Refuse a missing asset without creating a partially seeded space.
+        driver.execute(
+            "document.querySelector('[data-template=remote-demo] input[name=template]').value = arguments[0]",
+            vec![serde_json::json!(format!("{base}/missing.json#remote-demo"))],
+        ).await?;
+        click(&driver, &format!("{card} [data-space-create-submit]")).await?;
+        wait_for_text_containing(
+            &driver,
+            &format!("{card} [data-space-create-error]"),
+            "Couldn't use those definitions",
+        )
+        .await?;
+        driver.enter_default_frame().await?;
+        assert_eq!(space_keys(&driver).await?, before);
+        enter_hub(&driver).await?;
+        // Repair the injected failure. A hidden input's value reflects its
+        // attribute, so form.reset() cannot undo the test's seed substitution.
+        driver.execute(
+            "document.querySelector('[data-template=remote-demo] input[name=template]').value = arguments[0]",
+            vec![serde_json::json!(format!("{base}/catalog.json#remote-demo"))],
+        ).await?;
+        click(&driver, &format!("{card} [data-template-back]")).await?;
+        wait_for_displayed(&driver, &format!("{card} [data-template-image-open]")).await?;
+        click(&driver, &format!("{card} [data-space-create-open]")).await?;
+        click(&driver, &format!("{card} [data-space-create-submit]")).await?;
+        driver.enter_default_frame().await?;
+        await_url_containing(&driver, "/space/").await?;
+        let after = space_keys(&driver).await?;
+        assert_eq!(
+            after.len(),
+            before.len() + 1,
+            "one template copy creates one space"
+        );
+        enter_space_view(&driver).await?;
+        wait_for_displayed(&driver, ".remote-copy").await?;
+        driver.quit().await?;
+        Ok(())
+    }
+
     /// Serve `files` (path → body) over plain HTTP on a loopback port,
     /// as some other site would, and return the base URL. Every response
     /// allows any origin to read it: a seed is fetched by the service

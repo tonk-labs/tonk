@@ -931,6 +931,31 @@ pub(crate) mod tests {
             ("/lib/body.txt", "hello from a seed\n"),
         ];
 
+        /// SPACE-15: fetch the catalog and ordered required files before
+        /// allocating a space. Optional files are deliberately unavailable.
+        #[dialog_common::test]
+        async fn it_creates_from_a_remote_catalog_and_refuses_changed_sources() {
+            const CATALOG: &str = include_str!("../../tests/fixtures/discover/catalog.json");
+            const MODEL: &str = include_str!("../../tests/fixtures/discover/model.yaml");
+            const VIEW: &str = include_str!("../../tests/fixtures/discover/view.yaml");
+            for (view, expected) in [(VIEW, 1), ("changed after catalog publication", 0)] {
+                let files = Box::leak(Box::new([
+                    ("/catalog.json", CATALOG),
+                    ("/model.yaml", MODEL),
+                    ("/view.yaml", view),
+                ]));
+                let base = serve(files);
+                let state = test_state().await;
+                let mut changes = create_space_transient("Remote template");
+                dialog_query::the!("xyz.tonk.command.create-space/template")
+                    .of("cmd:create".parse::<Entity>().unwrap())
+                    .is(format!("{base}/catalog.json#remote-demo"))
+                    .assert(&mut changes);
+                dispatch(&state, CommandOrigin::default(), changes).await;
+                assert_eq!(space_subjects(&state).await.len(), expected);
+            }
+        }
+
         /// A seeded `space/create` evaluates the document at the seed URL
         /// into the new space, on top of the standard library, with what it
         /// includes resolved beside it on the seed's server.

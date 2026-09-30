@@ -99,6 +99,7 @@
   var tonk={
     context:{this:"",model:""},
     ready:ready,
+    preview:function(request){return call("preview",{request:request});},
     query:function(body,ctx){return dedupQuery(withRoute({body:body},ctx));},
     transact:function(request,ctx){return call("transact",withRoute({request:request},ctx));},
     // Evaluate an asserted-notation document against the branch. `detail` carries
@@ -210,6 +211,9 @@
         // location re-derive from the new context.
         window.dispatchEvent(new CustomEvent("tonk:context",{detail:env.context}));
         return;
+      }
+      case "preview-result": {
+        var h=pending.get(env.id); if(!h) return; pending.delete(env.id); h.resolve(env.value); return;
       }
       case "query-result": case "transact-result": {
         var h=pending.get(env.id); if(!h) return; pending.delete(env.id);

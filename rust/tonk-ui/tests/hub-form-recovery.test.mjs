@@ -68,6 +68,29 @@ function bridge(outcome, { reject = false, ended = false } = {}) {
   return { calls: () => calls, cancelled: () => cancelled, sent: () => sent };
 }
 
+test('Discover submits a remote catalog reference and preserves retry after refusal', async () => {
+  const { self, form, error, submit, run, pending } = fixture('create');
+  form.elements.template = { value: 'https://example.com/catalog.json#demo' };
+  const failed = bridge({ status: 'failed', detail: 'Template could not be read' });
+  window.tonk.context = { origin: 'https://tonk.example' };
+  run();
+  await pending();
+  assert.equal(failed.sent().template, 'https://example.com/catalog.json#demo');
+  assert.equal(error.textContent, 'Template could not be read');
+  assert.equal(form.elements.name.value, 'Ada');
+  assert.equal(submit.disabled, false);
+  assert.equal(self.hasAttribute('busy'), false);
+  const success = bridge({ status: 'created', detail: '/space/new-copy' });
+  window.tonk.context = { origin: 'https://tonk.example' };
+  let destination;
+  window.tonk.navigate = path => { destination = path; };
+  run();
+  run();
+  await pending();
+  assert.equal(success.calls(), 1, 'a pending copy ignores a second submit');
+  assert.equal(destination, '/space/new-copy');
+});
+
 test('unchanged display name is a no-op and a subsequent edit can submit', async () => {
   const f = fixture('rename');
   const b = bridge({ status: 'renamed' });
