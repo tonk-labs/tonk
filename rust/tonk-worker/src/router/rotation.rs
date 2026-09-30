@@ -827,7 +827,9 @@ mod tests {
 
         let tonk = state.read().await;
         let onboarding = crate::onboarding::did(&tonk).await.unwrap().unwrap();
-        assert_eq!(held_for(&tonk, &onboarding).await, 2);
+        // What the peer acts for before sign-in: the keys are held for it.
+        let before = tonk.profile.authority().await.unwrap();
+        assert_eq!(held_for(&tonk, &before).await, 2);
 
         let root_did = persist_test_root(&tonk).await;
         rotate_from_onboarding(&tonk).await;
@@ -851,9 +853,9 @@ mod tests {
         }
 
         assert_eq!(
-            held_for(&tonk, &onboarding).await,
+            held_for(&tonk, &before).await,
             0,
-            "nothing stays held for the onboarding account",
+            "nothing stays held for the account the peer acted for",
         );
         assert_eq!(held_for(&tonk, &root_did).await, 2);
         assert!(
@@ -1234,7 +1236,7 @@ mod tests {
         let created: Did = created_key.parse().unwrap();
 
         let tonk = state.read().await;
-        let onboarding = crate::onboarding::did(&tonk).await.unwrap().unwrap();
+        let before = tonk.profile.authority().await.unwrap();
 
         // Save the root record with its recipient, without asserting the
         // `AccountSealedInbox` fact `persist_test_root` would publish.
@@ -1269,9 +1271,9 @@ mod tests {
             .unwrap();
         assert_eq!(prefix.audience(), &root_did, "the space is re-rooted");
         assert_eq!(
-            held_for(&tonk, &onboarding).await,
+            held_for(&tonk, &before).await,
             0,
-            "nothing stays held for the onboarding account",
+            "nothing stays held for the account the peer acted for",
         );
         assert_eq!(held_for(&tonk, &root_did).await, 1);
     }

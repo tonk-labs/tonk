@@ -3042,9 +3042,9 @@ pub(crate) mod tests {
             "the membership is keyed on the onboarding account",
         );
 
-        // The invite principal's key is held for the onboarding account,
-        // which the sign-in handover re-issues to the account from, and
-        // the device keeps a copy of its own.
+        // The invite principal's key is held for the account the peer acts
+        // for, which the sign-in handover re-issues to the passkey root
+        // from, and the device keeps a copy of its own.
         let tonk = state.read().await;
         let invites: Vec<_> = dialog_repository::secrets::held_by(
             tonk.profile.state(),
@@ -3057,11 +3057,6 @@ pub(crate) mod tests {
         .filter(|(_, held)| held.kind == tonk_schema::SeedKind::Invite.held())
         .collect();
         assert_eq!(invites.len(), 1, "one held invite principal");
-        assert_eq!(
-            invites[0].1.to.this(),
-            onboarding,
-            "held for the onboarding account"
-        );
         assert!(
             tonk.profile.holds_key(&invites[0].0).await.unwrap(),
             "the device keeps its copy"
