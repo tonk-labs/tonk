@@ -726,10 +726,12 @@ view!:
         box-shadow:0 0 0 1px var(--ring), 4px 4px 0 var(--ink); }
       .space-menu[open="false"] { display:none; }
       .space-menu tonk-share, .space-menu space-remove { display:contents; }
-      .space-menu button { display:flex; width:100%; min-height:44px; align-items:center; justify-content:flex-start;
+      .space-menu > button, .space-menu > tonk-share > button, .space-menu .verb-remove { display:flex; width:100%; min-height:44px; align-items:center; justify-content:flex-start;
         padding:10px 12px; gap:16px; color:inherit; font:400 14px/1 var(--cond); text-align:left; }
       .space-menu .verb-remove { border-top:1px solid var(--sep); margin-top:4px; }
-      .space-menu button:hover, .space-menu button:focus-visible { background:var(--wash); }
+      .space-menu > button:hover, .space-menu > button:focus-visible,
+      .space-menu > tonk-share > button:hover, .space-menu > tonk-share > button:focus-visible,
+      .space-menu .verb-remove:hover, .space-menu .verb-remove:focus-visible { background:var(--wash); }
       .space-menu [data-share-copy-label] { display:none; }
       .space-menu tonk-share:not([data-share-state]) [data-share-copy-label="idle"],
       .space-menu tonk-share[data-share-state="idle"] [data-share-copy-label="idle"],
@@ -918,13 +920,14 @@ view!:
                   <button class="verb-remove" type="button" role="menuitem"
                     data-space-remove-open disabled>checking&hellip;</button>
                   <tonk-dialog appearance="hub" data-space-remove-dialog heading="confirm leaving space">
-                    <form id="remove-{subject}" class="remove-form" on:space-remove=space/remove data-remove={subject}>
+                    <form id="remove-{subject}" class="remove-form" data-remove={subject}>
                       Leave {name}? This removes the space and its local data from this
                       device. You'll need another invite link to join again. Other
                       members keep access.
                     </form>
+                    <p class="space-create-error" data-space-remove-error role="alert"></p>
                     <button class="m-cancel" slot="actions" type="button" data-dialog="close">cancel</button>
-                    <button class="m-go" slot="actions" type="submit" html:form="remove-{subject}" data-space-remove-submit>leave space</button>
+                    <button class="m-go" slot="actions" type="submit" html:form="remove-{subject}" data-space-remove-submit aria-live="polite">leave space</button>
                   </tonk-dialog>
                 </space-remove>
               </hub-menu>
@@ -2236,7 +2239,7 @@ element!: &hub-discover
               <p class="space-create-error" data-space-create-error role="alert"></p>
             </form>
             <button class="m-cancel" slot="actions" type="button" data-template-back>back to details</button>
-            <button class="m-go" slot="actions" type="submit" form="copy-template-${slug}" data-space-create-submit><span data-copy-label>make a copy +</span><span data-copying-label>copying…</span></button>
+            <button class="m-go" slot="actions" type="submit" form="copy-template-${slug}" data-space-create-submit><span data-copy-label>create space</span><span data-copying-label>copying…</span></button>
           </tonk-dialog>
         </space-create>`;
       }
@@ -4361,13 +4364,83 @@ element!: &space-remove
         const form = self.querySelector('form[data-remove]');
         if (form) form.textContent = copy;
         const button = self.querySelector('[data-space-remove-submit]');
-        if (button) button.textContent = submit;
+        if (button) button.textContent = self.hasAttribute('busy')
+          ? (action === 'leave' ? 'leaving…' : 'deleting…') : submit;
+      }
+    submit: |
+      async (self, form) => {
+        let reader;
+        const error = self.querySelector('[data-space-remove-error]');
+        const button = self.querySelector('[data-space-remove-submit]');
+        const action = self.action();
+        self.setAttribute('busy', '');
+        form.setAttribute('aria-busy', 'true');
+        if (error) error.textContent = '';
+        if (button) {
+          button.disabled = true;
+          button.textContent = action === 'leave' ? 'leaving…' : 'deleting…';
+        }
+        try {
+          await window.tonk.ready;
+          if (!self.isConnected) return;
+          const id = 'urn:uuid:' + Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(16).padStart(8, '0')).join('');
+          reader = window.tonk.subscribe({
+            predicate: { with: {
+              status: { the: 'xyz.tonk.space-removal/status', as: 'Text', cardinality: 'one' },
+              detail: { the: 'xyz.tonk.space-removal/detail', as: 'Text', cardinality: 'one' },
+            } },
+            terms: { this: id, status: { '?': { name: 'status' } }, detail: { '?': { name: 'detail' } } },
+          }).getReader();
+          self.__reader = reader;
+          await window.tonk.transact({ claims: [{ op: 'assert', application: {
+            predicate: { kind: 'transient', concept: { with: {
+              subject: { the: 'xyz.tonk.command.remove-space/subject', as: 'Entity' },
+            } } },
+            parameters: { this: id, subject: form.dataset.remove },
+          } }] });
+          while (self.isConnected) {
+            const { value, done } = await reader.read();
+            if (done) throw new Error('Removal status stream ended');
+            const result = value.find(row => row.this === id)?.fields;
+            if (result?.status === 'failed') {
+              if (error) error.textContent = result.detail;
+              return;
+            }
+            if (result?.status === 'removed') {
+              self.querySelector('[data-space-remove-dialog]')?.close?.();
+              return;
+            }
+          }
+        } catch (failure) {
+          if (error) error.textContent = "Couldn't confirm removal. Check your spaces before trying again.";
+        } finally {
+          if (reader) await reader.cancel().catch(() => {});
+          if (self.__reader === reader) self.__reader = null;
+          self.removeAttribute('busy');
+          form.removeAttribute('aria-busy');
+          if (button) {
+            button.disabled = false;
+            button.textContent = action === 'leave' ? 'leave space' : 'delete space';
+          }
+        }
+      }
+    disconnected: |
+      (self) => {
+        self.__reader?.cancel().catch(() => {});
+        self.__reader = null;
       }
     connected: |
       (self) => {
         self.classify();
         if (self.__wired) return;
         self.__wired = true;
+        self.addEventListener('submit', (event) => {
+          const form = event.target;
+          if (!form?.matches?.('form[data-remove]')) return;
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          if (!self.hasAttribute('busy')) self.submit(form);
+        }, true);
         self.addEventListener('click', (event) => {
           if (!event.target?.closest?.('[data-space-remove-open]')) return;
           self.prepare(self.action());
