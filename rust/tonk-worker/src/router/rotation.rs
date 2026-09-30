@@ -23,7 +23,6 @@ use dialog_ucan_core::{DelegationBuilder, DelegationChain};
 use dialog_varsig::{Did, Principal as _};
 use tonk_account::prefix::SPACE_ROOT_SITE_PREFIX;
 use tonk_common::log;
-use tonk_identity::sealed::RecipientKey;
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 use tonk_schema::SecretMessage;
 use tonk_schema::{InvitedVia, MemberName, MemberRole, Membership, SeedKind, prelude::DidExt as _};
@@ -32,9 +31,11 @@ use crate::TonkWorkerError;
 use crate::worker::TonkState;
 
 /// Bring everything custodied under the onboarding account under the
-/// passkey root, then retire the onboarding account. Best effort per
-/// seed: a seed that fails to rotate is logged and left sealed to the
-/// onboarding recipient, and the retirement waits for it.
+/// passkey root, then retire the onboarding account: what tonk's own rows
+/// hold moves into the custody tonk and dialog share, and every principal
+/// held there is re-issued under the root. Best effort per principal: one
+/// that fails is logged and left where it was, and the retirement waits
+/// for it.
 pub(crate) async fn rotate_from_onboarding(tonk: &TonkState) {
     let Ok(root) = super::identity::local_root(tonk).await else {
         return;
@@ -47,34 +48,6 @@ pub(crate) async fn rotate_from_onboarding(tonk: &TonkState) {
     let Ok(secret) = crate::onboarding::account(tonk).await else {
         return;
     };
-    // The published fact is the account's word; the root record is the
-    // ceremony's. Either names the same recipient, and the record is
-    // available even while the account repository is still unhydrated
-    // (a pending email activation blocks the sweep that publishes the
-    // fact), so rotation must not wait on the publish.
-    let new_recipient =
-        match super::account_state::published_sealed_inbox(tonk, &root.root_did).await {
-            Ok(Some(recipient)) => recipient,
-            Ok(None) => match root.encryption_key.clone() {
-                Some(recipient) => recipient,
-                None => {
-                    log!("account rotation deferred: the account has no encryption key");
-                    return;
-                }
-            },
-            Err(error) => {
-                log!("account rotation deferred: {error}");
-                return;
-            }
-        };
-    let new_key = match RecipientKey::try_from(&new_recipient) {
-        Ok(key) => key,
-        Err(error) => {
-            log!("account rotation deferred: {error}");
-            return;
-        }
-    };
-
     let branch = match tonk
         .reactor
         .profile_repository()
@@ -97,59 +70,112 @@ pub(crate) async fn rotate_from_onboarding(tonk: &TonkState) {
     // closure can run once per seed without consuming the values.
     let root_did = &root.root_did;
     let onboarding_did = &onboarding;
-    let outcome = match tonk_schema::custody::rotate(
-        branch.handle(),
-        secret.secret(),
-        new_key,
-        &tonk.operator,
-        |kind, signer, row, replacement| async move {
-            match kind {
-                SeedKind::Space => reissue_space(tonk, root_did, onboarding_did, signer)
-                    .await
-                    .map_err(|error| error.to_string())?,
-                SeedKind::Invite => reissue_membership(tonk, root_did, onboarding_did, signer)
-                    .await
-                    .map_err(|error| error.to_string())?,
-            }
-            // The replacement commits through a fresh handle: the
-            // re-issue writes above advanced the branch underneath any
-            // handle held across them.
-            tonk.reactor
-                .profile_repository()
-                .branch(&tonk.active_branch)
-                .transaction()
-                .retract(row)
-                .assert(replacement.message)
-                .assert(replacement.principal)
-                .commit()
-                .perform(&tonk.operator)
-                .await
-                .map(|_| ())
-                .map_err(|error| format!("reseal commit: {error}"))
-        },
-    )
-    .await
-    {
-        Ok(outcome) => outcome,
+
+    // What the onboarding account sealed in tonk's own custody rows moves
+    // into the custody tonk and dialog share, sealed to the account the
+    // profile acts for; the rows go once the key is held.
+    let moved = match migrate_custody(tonk, branch.handle(), secret.secret()).await {
+        Ok(moved) => moved,
         Err(error) => {
             log!("account rotation deferred: {error}");
             return;
         }
     };
-    for subject in &outcome.rotated {
-        log!("rotation: {subject} re-issued to the account");
+    let mut failures = moved.failures;
+
+    // Every principal the profile holds for the account is re-issued under
+    // the root: a space's `space -> root`, prefix and provisioning, an
+    // invite's membership. Its key comes from the copy the profile keeps.
+    let account = match tonk.profile.authority().await {
+        Ok(account) => account,
+        Err(error) => {
+            log!("account rotation deferred: {error}");
+            return;
+        }
+    };
+    let held =
+        match dialog_repository::secrets::held_by(tonk.profile.state(), &account, &tonk.profile)
+            .await
+        {
+            Ok(held) => held,
+            Err(error) => {
+                log!("account rotation deferred: read the held principals: {error}");
+                return;
+            }
+        };
+    for (subject, principal) in held {
+        let kind = if principal.kind == SeedKind::Space.held() {
+            SeedKind::Space
+        } else if principal.kind == SeedKind::Invite.held() {
+            SeedKind::Invite
+        } else {
+            continue;
+        };
+        let reissued = async {
+            let signer = tonk
+                .profile
+                .space_key(&subject)
+                .perform(&tonk.profile)
+                .await
+                .map_err(|error| error.to_string())?;
+            match kind {
+                SeedKind::Space => reissue_space(tonk, root_did, onboarding_did, signer)
+                    .await
+                    .map_err(|error| error.to_string()),
+                SeedKind::Invite => reissue_membership(tonk, root_did, onboarding_did, signer)
+                    .await
+                    .map_err(|error| error.to_string()),
+            }
+        };
+        match reissued.await {
+            Ok(()) => log!("rotation: {subject} re-issued to the account"),
+            Err(reason) => failures.push((subject, reason)),
+        }
     }
-    for (subject, reason) in &outcome.failures {
+    for (subject, reason) in &failures {
         log!("rotation: {subject} was not rotated: {reason}");
     }
-    if !outcome.failures.is_empty() {
+    if !failures.is_empty() {
         log!(
-            "rotation: {} seed(s) still under the onboarding account",
-            outcome.failures.len()
+            "rotation: {} principal(s) still under the onboarding account",
+            failures.len()
         );
         return;
     }
     retire_onboarding(tonk, &onboarding).await;
+}
+
+/// Move every seed tonk's own custody rows on `branch` hold sealed to
+/// `key` into the custody tonk and dialog share, sealed to the account the
+/// profile acts for, and retract the rows once each key is held there.
+pub(crate) async fn migrate_custody(
+    tonk: &TonkState,
+    branch: &dialog_repository::Branch,
+    key: tonk_identity::sealed::AccountSecretKey<'_>,
+) -> Result<tonk_schema::custody::Rotation, tonk_schema::custody::RotateError> {
+    tonk_schema::custody::migrate(
+        branch,
+        key,
+        &tonk.operator,
+        |kind, key, principal, message| async move {
+            tonk.profile
+                .adopt_principal(kind.held(), key)
+                .await
+                .map_err(|error| format!("custody: {error}"))?;
+            tonk.reactor
+                .profile_repository()
+                .branch(&tonk.active_branch)
+                .transaction()
+                .retract(principal)
+                .retract(message)
+                .commit()
+                .perform(&tonk.operator)
+                .await
+                .map(|_| ())
+                .map_err(|error| format!("retract the custody rows: {error}"))
+        },
+    )
+    .await
 }
 
 /// Every sealed message addressed to `recipient`.

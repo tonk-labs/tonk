@@ -14,15 +14,11 @@ use dialog_query::{Output as _, Query, Term};
 use dialog_remote_ucan::UcanAddress;
 use dialog_repository::{ConnectedReplica, Repository, SiteAddress, Upstream};
 use dialog_ucan_core::DelegationChain;
-use dialog_varsig::Principal;
 use tonk_account::{
     AccountStateStatus, CreateGenesis, RemotePresence, probe_remote_main, publish_genesis_if_absent,
 };
 use tonk_common::log;
-use tonk_identity::sealed::RecipientKey;
-use tonk_schema::{
-    AccountSealedInbox, Replica, SecretMessage, SecretPrincipal, SeedKind, prelude::DidExt as _,
-};
+use tonk_schema::{AccountSealedInbox, Replica, SecretMessage, SeedKind, prelude::DidExt as _};
 use zeroize::Zeroizing;
 
 use crate::worker::TonkState;
@@ -1331,139 +1327,51 @@ pub(crate) async fn seed_sealed_inbox(tonk: &TonkState) -> bool {
     true
 }
 
-/// Seal `seed` (the signing seed `subject` derives from) to the account's
-/// published sealed-inbox address and record it as a [`SecretMessage`]
-/// plus the [`SecretPrincipal`] naming it, in the
-/// account space, so any device on the account can re-issue the subject
-/// after a passkey ceremony opens it. Returns whether it wrote.
+/// Take the principal `seed` is the key of (`subject`, a space or an open
+/// invite's principal) into the custody of the account the profile acts
+/// for: its key held sealed to the account, a copy kept for this profile,
+/// and its authority delegated on to the account (an invite's with the
+/// chain proving it). This is the custody tonk and dialog share; the
+/// account's other devices recover the principal from it. Returns whether
+/// it took custody.
 ///
 /// Best-effort, like [`retain_space_delegation`]: the subject is usable
-/// the moment its signer exists locally, and an account that has not
-/// published a key yet (one predating the key, or not ready) is logged
-/// and left for the next sweep rather than failing the caller.
+/// the moment its signer exists locally, so a failure is logged rather than
+/// failing the caller.
 pub(crate) async fn custody_seed(
     tonk: &TonkState,
     subject: &dialog_varsig::Did,
     kind: SeedKind,
     seed: Zeroizing<[u8; 32]>,
 ) -> bool {
-    let (recipient, ready) = match custody_recipient(tonk).await {
-        Ok(found) => found,
-        Err(error) => {
-            log!("seed for {subject} not custodied: {error}");
-            return false;
-        }
-    };
-    let sealed = match RecipientKey::try_from(&recipient) {
-        Ok(key) => match key.secret().conceal(&seed, subject) {
-            Ok(sealed) => sealed.encode(),
+    use dialog_credentials::key::ExtractableKey as _;
+    use dialog_varsig::Principal as _;
+
+    let key =
+        match <dialog_credentials::Ed25519Signer<dialog_credentials::Extractable>>::import(&*seed)
+            .await
+        {
+            Ok(key) => key,
             Err(error) => {
-                log!("seed for {subject} not custodied: {error}");
+                log!("seed for {subject} not custodied: {error:?}");
                 return false;
             }
-        },
-        Err(error) => {
-            log!("seed for {subject} not custodied: {error}");
-            return false;
-        }
-    };
-    let message = SecretMessage::new(&recipient, sealed);
-    if let Err(error) = tonk
-        .reactor
-        .profile_repository()
-        .branch(&tonk.active_branch)
-        .transaction()
-        // Two rows: the envelope, and the principal whose seed it carries.
-        // Asserted together — a principal naming a message that was never
-        // written would be a seed nothing can open.
-        .assert(message.clone())
-        .assert(SecretPrincipal::new(subject, kind, message.this()))
-        .commit()
-        .perform(&tonk.operator)
-        .await
-    {
-        log!("commit custodied seed for {subject}: {error}");
+        };
+    if key.did() != *subject {
+        log!("seed for {subject} not custodied: it derives {}", key.did());
         return false;
     }
+    if let Err(error) = tonk.profile.adopt_principal(kind.held(), key).await {
+        log!("seed for {subject} not custodied: {error}");
+        return false;
+    }
+    // Custody lands on profile main, which syncs with the account: nudge it
+    // out rather than waiting for the next sweep.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    if let Some(ready) = ready {
+    if let Ok(ready) = require_ready_account_state(tonk).await {
         tonk.sync_queue.mark_dirty(&ready.key, js_sys::Date::now());
     }
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-    let _ = ready;
     true
-}
-
-/// The recipient custodied seeds are sealed to on this device, and the
-/// ready account branch when the recipient is a linked passkey account's.
-///
-/// A linked account publishes its key from the ceremony that held the
-/// secret; an onboarding account's secret is local, so its key is derived
-/// here and published on profile `main` the first time it is needed. That
-/// is the branch the account becomes the upstream of at accreditation, so
-/// rows sealed before it land where rows sealed after it do.
-async fn custody_recipient(
-    tonk: &TonkState,
-) -> Result<(dialog_varsig::Did, Option<ReadyAccountBranch>), TonkWorkerError> {
-    match super::identity::local_root(tonk).await {
-        Ok(root) => {
-            let ready = require_ready_account_state(tonk).await.ok();
-            if let Some(recipient) = published_sealed_inbox(tonk, &root.root_did).await? {
-                return Ok((recipient, ready));
-            }
-            // A ceremony recorded the key with the root but the sweep has
-            // not published it yet (the account branch may not be ready).
-            // Publish it here: profile main is where it lives either way.
-            let Some(recipient) = root.encryption_key else {
-                return Err(TonkWorkerError::Conflict(
-                    "the account has not published its encryption key on this device; a \
-                     passkey assertion derives it"
-                        .to_string(),
-                ));
-            };
-            tonk.reactor
-                .profile_repository()
-                .branch(&tonk.active_branch)
-                .transaction()
-                .assert(AccountSealedInbox::new(
-                    root.root_did.this(),
-                    recipient.this(),
-                ))
-                .commit()
-                .perform(&tonk.operator)
-                .await
-                .map_err(|error| {
-                    TonkWorkerError::Internal(format!("publish account encryption key: {error}"))
-                })?;
-            Ok((recipient, ready))
-        }
-        Err(TonkWorkerError::RootRequired) => {
-            let secret = crate::onboarding::account(tonk).await?;
-            let recipient = secret.secret().did();
-            let account = secret
-                .signer()
-                .await
-                .map_err(|error| TonkWorkerError::Internal(format!("{error}")))?
-                .did();
-            if published_sealed_inbox(tonk, &account).await?.is_none() {
-                tonk.reactor
-                    .profile_repository()
-                    .branch(&tonk.active_branch)
-                    .transaction()
-                    .assert(AccountSealedInbox::new(account.this(), recipient.this()))
-                    .commit()
-                    .perform(&tonk.operator)
-                    .await
-                    .map_err(|error| {
-                        TonkWorkerError::Internal(format!(
-                            "publish onboarding encryption key: {error}"
-                        ))
-                    })?;
-            }
-            Ok((recipient, None))
-        }
-        Err(error) => Err(error),
-    }
 }
 
 /// Reconcile account-derived state into this device's local spaces.
@@ -1875,6 +1783,7 @@ pub(crate) mod tests {
     use dialog_common::helpers::Provisionable as _;
 
     use super::*;
+    use dialog_varsig::Principal;
 
     /// The marker answers "did I trust a base for THIS account", so a
     /// marker naming another account — or none at all — is not ready.
@@ -2982,13 +2891,14 @@ pub(crate) mod tests {
     }
 
     /// The recipient a ceremony recorded on the local root is published
-    /// as the account's encryption key, and a seed sealed to it lands as
-    /// a `SecretMessage` that the account's own key opens.
+    /// as the account's encryption key, and a seed taken into custody is
+    /// held sealed to the account the profile acts for.
     #[cfg(not(target_arch = "wasm32"))]
     #[dialog_common::test]
     async fn it_publishes_the_encryption_key_and_custodies_a_seed() {
+        use dialog_credentials::key::ExtractableKey as _;
+        use dialog_varsig::Principal as _;
         use tonk_identity::envelope::AccountSecret;
-        use tonk_identity::sealed::Sealed;
 
         let (state, service, root, _remote) = ready_account_state(None).await;
         assert_eq!(
@@ -3000,8 +2910,6 @@ pub(crate) mod tests {
         // A device that only linked recorded no recipient: nothing to seed.
         assert!(!seed_sealed_inbox(&state).await);
         assert_eq!(read_sealed_inbox(&state, &ready).await.unwrap(), None);
-        let subject: dialog_varsig::Did = "did:key:z6MkSpaceUnderTest".parse().unwrap();
-        assert!(!custody_seed(&state, &subject, SeedKind::Space, Zeroizing::new([7u8; 32])).await);
 
         // A ceremony that held the secret re-saves the root with the recipient.
         let account = AccountSecret::from_bytes(Zeroizing::new([5u8; 32]));
@@ -3028,48 +2936,27 @@ pub(crate) mod tests {
             Some(recipient.clone())
         );
 
-        assert!(custody_seed(&state, &subject, SeedKind::Space, Zeroizing::new([7u8; 32])).await);
-        let branch = state
-            .reactor
-            .profile_repository()
-            .branch(&state.active_branch)
-            .acquire(&state.operator)
-            .await
-            .unwrap();
-        // The principal names the message; the message carries the seed.
-        let principals: Vec<SecretPrincipal> = branch
-            .handle()
-            .query()
-            .select(Query::<SecretPrincipal> {
-                this: Term::from(subject.this()),
-                kind: Term::var("kind"),
-                seed: Term::var("seed"),
-            })
-            .perform(&state.operator)
-            .try_vec()
-            .await
-            .unwrap();
-        assert_eq!(principals.len(), 1);
-        assert_eq!(principals[0].kind.0.to_string(), SeedKind::SPACE);
+        // A seed that does not derive the subject is refused.
+        let seed = Zeroizing::new([7u8; 32]);
+        let subject =
+            <dialog_credentials::Ed25519Signer<dialog_credentials::Extractable>>::import(&*seed)
+                .await
+                .unwrap()
+                .did();
+        let other: dialog_varsig::Did = "did:key:z6MkSpaceUnderTest".parse().unwrap();
+        assert!(!custody_seed(&state, &other, SeedKind::Space, seed.clone()).await);
 
-        let rows: Vec<SecretMessage> = branch
-            .handle()
-            .query()
-            .select(Query::<SecretMessage> {
-                this: Term::from(principals[0].seed.0.clone()),
-                to: Term::var("to"),
-                message: Term::var("message"),
-                from: Term::var("from"),
-            })
-            .perform(&state.operator)
-            .try_vec()
-            .await
-            .unwrap();
-        assert_eq!(rows.len(), 1, "the principal names a real message");
-        assert_eq!(rows[0].to.0, recipient.this());
-        let sealed = Sealed::decode(&rows[0].message.0).unwrap();
-        let opened = account.secret().reveal(&sealed, &subject).unwrap();
-        assert_eq!(*opened, [7u8; 32]);
+        assert!(custody_seed(&state, &subject, SeedKind::Space, seed).await);
+        let held = dialog_repository::secrets::held_principal(
+            state.profile.state(),
+            &subject,
+            &state.profile,
+        )
+        .await
+        .unwrap()
+        .expect("the space's key is held");
+        assert_eq!(held.kind, SeedKind::Space.held());
+        assert_eq!(held.to, state.profile.authority().await.unwrap());
 
         service.stop().await.unwrap();
         discard(state, &ready.key);
