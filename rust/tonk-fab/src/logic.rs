@@ -1444,29 +1444,45 @@ mod space_name {
 
 /// The subscribe body for a space's member roster.
 ///
-/// ONE inline predicate carrying all three fields on the same entity, in
+/// One inline predicate carrying membership fields on the same entity, in
 /// directory mode (`this` unbound), so each member returns as a row. Three
 /// separate subscriptions would need client-side row-joining that no existing
 /// element does.
 ///
 /// All three are required fields: a member missing a synced name or role is
-/// invisible. That matches the seeded view's behaviour, but it is now this
-/// element's choice.
+/// invisible. The invitation reference is optional so founders and older
+/// memberships remain visible without provenance.
 pub fn member_roster_query_body() -> String {
     json!({
         "predicate": { "with": {
             "member": { "the": "xyz.tonk.membership/member", "as": "Entity", "cardinality": "one" },
             "role":   { "the": "xyz.tonk.membership/role",   "as": "Entity", "cardinality": "one" },
-            "name":   { "the": "xyz.tonk.membership/name",   "as": "Text", "cardinality": "one" }
+            "name":   { "the": "xyz.tonk.membership/name",   "as": "Text", "cardinality": "one" },
+            "invitation": { "the": "xyz.tonk.membership/invitation", "as": "Entity", "cardinality": "one", "optional": true }
         } },
         "terms": {
             "this":   { "?": { "name": "this" } },
             "member": { "?": { "name": "member" } },
             "role":   { "?": { "name": "role" } },
-            "name":   { "?": { "name": "name" } }
+            "name":   { "?": { "name": "name" } },
+            "invitation": { "?": { "name": "invitation" } }
         }
     })
     .to_string()
+}
+
+/// Invitation provenance has its own subscription: founders and old memberships
+/// have no invitation, and invitations can arrive after the member row.
+pub fn member_invitations_query_body() -> String {
+    json!({
+        "predicate": { "with": {
+            "inviter": { "the": "xyz.tonk.invitation/inviter", "as": "Entity", "cardinality": "one" }
+        } },
+        "terms": {
+            "this": { "?": { "name": "this" } },
+            "inviter": { "?": { "name": "inviter" } }
+        }
+    }).to_string()
 }
 
 /// Read the worker-owned agent handoff state without relying on a seeded view.
@@ -1635,6 +1651,8 @@ mod member_roster {
         assert!(body.contains("xyz.tonk.membership/name"));
         assert!(body.contains("xyz.tonk.membership/member"));
         assert!(body.contains("xyz.tonk.membership/role"));
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["predicate"]["with"]["invitation"]["optional"], true);
         // Directory mode: `this` is an unbound variable, so every member row
         // comes back. A bound `this` would return one. `serde_json::Value`'s
         // `Display` is the COMPACT formatter (no spaces around `:`/`,`), so
@@ -2625,6 +2643,7 @@ mod wire_types {
         let bodies: Vec<String> = vec![
             repo_name_query_body("did:key:zX").expect("repo name"),
             member_roster_query_body(),
+            member_invitations_query_body(),
             space_list_query_body(),
             profile_name_query_body(),
             invite_link_query_body("did:key:zX").expect("invite link"),
