@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "templates": [
+    {
+      "slug": "remote-demo",
+      "name": "Remote demo",
+      "summary": "A community template.",
+      "description": "Fetched when copied.",
+      "author": {
+        "name": "Test author"
+      },
+      "license": "MIT",
+      "entrypoint": "remote-demo",
+      "images": [
+        {
+          "url": "/preview.svg",
+          "alt": "Template preview"
+        }
+      ],
+      "files": [
+        {
+          "url": "/model.yaml",
+          "sha256": "4ad1c3bb5d487314fe251abdc5e83a447f0b10d3f7dce540b3b77b1b4dd3ece2"
+        },
+        {
+          "url": "/view.yaml",
+          "sha256": "5580bc94de626187b1d166f83620974764f3248c2aaeefd133946354e44f6450"
+        },
+        {
+          "url": "/optional-missing.yaml",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "optional": true
+        }
+      ]
+    }
+  ]
+}

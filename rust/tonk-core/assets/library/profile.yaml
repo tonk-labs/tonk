@@ -162,6 +162,10 @@ command!: &space/create
         Cannot be combined with seed.
       the: xyz.tonk.command.create-space/copy-from
       as: entity
+    template:
+      description: A published template catalog URL with the selected slug as its fragment. Required source files are fetched and verified before creation.
+      the: xyz.tonk.command.create-space/template
+      as: text
     seed:
       description: >
         The URL of a notation document to evaluate into the new space, on
@@ -493,6 +497,65 @@ view!:
       .settings { display:flex; flex-direction:column; align-items:stretch;
         margin-top:24px; }
       .settings[hidden] { display:none; }
+      hub-discover { display:block; padding:17px 24px 22px;
+        border:1px solid var(--sep); background:var(--collection); }
+      .collection-tabs { display:inline-flex; margin-bottom:22px; border:1px solid var(--ring); }
+      .collection-tabs button { display:flex; align-items:center; justify-content:center;
+        gap:9px; min-width:140px; min-height:40px; padding:10px 18px; font:500 14px/1 var(--cond); }
+      .collection-tabs button + button { border-left:1px solid var(--ring); }
+      .collection-tabs button[aria-pressed="true"] { background:var(--card); }
+      .collection-tabs button:hover { background:var(--wash); }
+      .collection-square { width:9px; height:9px; margin:0 3px; background:currentColor; }
+      .collection-compass { width:17px; height:17px; }
+      hub-discover .stack { padding:0; border:0; background:transparent; }
+      hub-discover[collection="spaces"] .discover-collection,
+      hub-discover[collection="discover"] > tonk-display { display:none; }
+      .template-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:34px 26px; }
+      .template-card.srow-wrap { display:block; min-width:0; }
+      .template-preview { display:flex; flex-direction:column; width:100%; height:100%;
+        position:relative; z-index:1; padding:0; background:var(--card); text-align:left;
+        align-items:stretch; white-space:normal; }
+      .template-preview:hover { box-shadow:0 0 0 1px var(--ink); }
+      .template-preview img { width:100%; height:150px; object-fit:cover; border-bottom:1px solid var(--ink); }
+      .template-caption { display:flex; flex:1; flex-direction:column; gap:12px; padding:16px 19px 9px;
+        min-width:0; overflow-wrap:anywhere; text-transform:none; }
+      .template-caption strong { font:300 27px/1.1 Gestalte,Georgia,serif; }
+      .template-summary { font:12px/1.5 var(--cond); color:var(--soft); margin-bottom:10px; }
+      .template-footer { display:flex; align-items:center; justify-content:space-between; gap:8px;
+        border-top:1px solid var(--sep); margin-top:auto; padding-top:5px; min-height:49px;
+        font:12px var(--cond); }
+      .template-footer small { font:inherit; color:var(--soft); }
+      .template-open { display:flex; align-items:center; gap:7px; font-weight:500; }
+      .template-expand { display:block; width:100%; padding:0; text-align:right; }
+      .template-expand > span { display:block; font:12px var(--cond); }
+      .template-photo-dialog { width:calc(100vw - 40px); max-width:1400px;
+        max-height:calc(100dvh - 40px); padding:16px; border:1px solid var(--ink);
+        background:var(--card); color:var(--ink); }
+      .template-photo-dialog::backdrop { background:var(--dim); backdrop-filter:blur(6px); }
+      .template-photo-dialog > button { display:block; margin-left:auto; min-height:44px; padding:8px 12px; }
+      .template-photo-dialog > img { display:block; width:100%; height:auto; }
+      .template-detail-image { display:block; width:100%; height:auto; margin-bottom:20px; }
+      .template-card [data-copying-label], .template-card[busy] [data-copy-label] { display:none; }
+      .template-card[busy] [data-copying-label] { display:inline; }
+      @media (max-width:900px) { .template-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+      @media (max-width:600px) {
+        .template-grid { grid-template-columns:1fr; gap:16px; }
+        hub-discover { padding:11px 10px 16px; }
+        .collection-tabs { display:flex; margin-bottom:13px; }
+        .collection-tabs button { flex:1; min-width:0; min-height:44px; padding:10px 8px; }
+        .template-preview { display:grid; grid-template-columns:64px minmax(0,1fr); }
+        .template-preview img { height:100%; min-height:64px; border-bottom:0; border-right:1px solid var(--ink); }
+        .template-caption { display:grid; grid-template-columns:minmax(0,1fr) 44px;
+          padding:8px 10px; gap:4px 8px; }
+        .template-caption strong, .template-summary { grid-column:1; }
+        .template-footer { display:contents; }
+        .template-footer small { grid-column:1; font:11px/1.4 var(--cond); }
+        .template-open { grid-column:2; grid-row:1 / 4; justify-content:flex-end; font:12px var(--cond); }
+        .template-open > span { display:none; }
+        .template-caption strong { font:500 16px/1.2 var(--sans); }
+        .template-summary { margin-bottom:0; font:11px/1.4 var(--sans); display:-webkit-box;
+          -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+      }
       .hub-page > .hub-logo { margin:32px auto 0; }
       .hub-page:has(hub-bar[path^="/settings"]) .hubcol { margin-top:24px; }
       .settings-title { margin:0 0 34px; font:300 clamp(38px,4.5vw,60px)/1.08 Gestalte,Georgia,serif;
@@ -2057,8 +2120,8 @@ element!: &hub-collection
       }
     deal: |
       (self) => {
-        const cards = [...self.querySelectorAll('.space-card[data-space-subject]')];
-        const frames = cards.map(card => self.frame(card.dataset.spaceSubject ?? ''));
+        const cards = [...self.querySelectorAll('.space-card[data-space-subject], .template-card[data-template]')];
+        const frames = cards.map(card => self.frame(card.dataset.spaceSubject ?? card.dataset.template ?? ''));
         const stepDown = { 15: 7, 7: 3, 3: 1, 1: 1 };
         frames.forEach((frame, index) => {
           if (!index) return;
@@ -2098,6 +2161,100 @@ element!: &hub-collection
       }
     disconnected: |
       (self) => self._observer?.disconnect()
+
+element!: &hub-discover
+  description: Switches between the user's spaces and the remote community template collection.
+  method:
+    card: |
+      (self, template, catalogUrl) => {
+        const escape = text => String(text ?? '').replace(/[&<>"']/g, char => ({
+          '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+        })[char]);
+        const { slug, name, summary, description, author, license } = template;
+        if (!/^[a-z0-9-]+$/.test(slug) || typeof summary !== 'string') throw new Error('Invalid template');
+        const preview = template.images?.[0];
+        const imageUrl = new URL(preview.url, catalogUrl);
+        if (imageUrl.protocol !== 'https:' && !(imageUrl.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(imageUrl.hostname))) throw new Error('Invalid preview URL');
+        const image = escape(imageUrl.href);
+        const reference = new URL(catalogUrl);
+        reference.hash = slug;
+        return `<space-create class="template-card srow-wrap" data-template="${slug}">
+          <button type="button" class="template-preview" data-template-details-open aria-label="Preview ${escape(name)}">
+            <img src="${image}" alt="${escape(preview.alt)}" loading="lazy">
+            <span class="template-caption"><strong>${escape(name)}</strong><span class="template-summary">${escape(summary)}</span><span class="template-footer"><small>by ${escape(author.name)}</small><span class="template-open">open <span aria-hidden="true">↗</span></span></span></span>
+          </button>
+          <tonk-dialog appearance="hub" data-template-details heading="${escape(name)}">
+            <div class="space-create-form">
+              <button type="button" class="template-expand" data-template-image-open aria-label="Expand ${escape(name)} preview">
+                <img class="template-detail-image" src="${image}" alt="${escape(preview.alt)}" loading="lazy">
+                <span>expand photo ↗</span>
+              </button>
+              <p class="space-create-help">${escape(description)}</p>
+              <p class="space-create-help">By ${escape(author.name)} · ${escape(license)} · from Honky Tonks. This template includes code that runs in your new space. Your copy won't change the original.</p>
+
+            </div>
+            <button class="m-cancel" slot="actions" type="button" data-dialog="close">back to discover</button>
+            <button class="m-go" slot="actions" type="button" data-space-create-open>make a copy +</button>
+          </tonk-dialog>
+          <dialog class="template-photo-dialog" data-template-image aria-label="${escape(name)} preview">
+            <button type="button" data-template-image-close aria-label="Close expanded photo">close ×</button>
+            <img src="${image}" alt="${escape(preview.alt)}">
+          </dialog>
+          <tonk-dialog appearance="hub" data-space-create-dialog heading="Copy ${escape(name)}">
+            <form id="copy-template-${slug}" class="space-create-form" data-space-create-form>
+              <label class="space-create-field"><span>space name</span><input name="name" type="text" value="${escape(name)}" required maxlength="100" autocomplete="off"></label>
+              <label class="space-create-field"><span>a short description <small>/ optional</small></span><textarea name="description" maxlength="240">${escape(summary.slice(0, 240))}</textarea></label>
+              <input type="hidden" name="open" value="true">
+              <input type="hidden" name="template" value="${escape(reference)}">
+              <p class="space-create-error" data-space-create-error role="alert"></p>
+            </form>
+            <button class="m-cancel" slot="actions" type="button" data-template-back>back to details</button>
+            <button class="m-go" slot="actions" type="submit" form="copy-template-${slug}" data-space-create-submit><span data-copy-label>make a copy +</span><span data-copying-label>copying…</span></button>
+          </tonk-dialog>
+        </space-create>`;
+      }
+    load: |
+      async (self) => {
+        if (self.__loading || self.__loaded) return;
+        self.__loading = true;
+        const status = self.querySelector('[data-discover-status]');
+        const retry = self.querySelector('[data-discover-retry]');
+        const grid = self.querySelector('.template-grid');
+        status.textContent = 'Loading community templates…';
+        retry.hidden = true;
+        try {
+          const url = self.getAttribute('catalog-url');
+          const response = await fetch(url, { credentials: 'omit', signal: AbortSignal.timeout(15000) });
+          if (!response.ok) throw new Error('Catalog unavailable');
+          const catalog = await response.json();
+          if (catalog.schemaVersion !== 1 || !Array.isArray(catalog.templates)) throw new Error('Invalid catalog');
+          const cards = catalog.templates.map(template => self.card(template, url)).join('');
+          if (!self.isConnected) return;
+          grid.innerHTML = cards;
+          grid.deal?.();
+          status.textContent = catalog.templates.length ? '' : 'No templates are available yet.';
+          self.__loaded = true;
+        } catch (error) {
+          status.textContent = 'Couldn’t load community templates. Check your connection and try again.';
+          retry.hidden = false;
+        } finally { self.__loading = false; }
+      }
+    connected: |
+      (self) => {
+        if (self.__wired) return;
+        self.__wired = true;
+        self.addEventListener('click', event => {
+          if (event.target?.closest?.('[data-discover-retry]')) { self.load(); return; }
+          const button = event.target?.closest?.('[data-collection]');
+          if (!button || !self.contains(button)) return;
+          const collection = button.getAttribute('data-collection');
+          self.setAttribute('collection', collection);
+          if (collection === 'discover') self.load();
+          for (const tab of self.querySelectorAll('[data-collection]')) {
+            tab.setAttribute('aria-pressed', String(tab === button));
+          }
+        });
+      }
 
 # Owns one New Space opener and its dialog. Capture owns dispatch so each
 # submission can subscribe to its exact command receipt before it is sent.
@@ -2169,6 +2326,11 @@ element!: &space-create
           parameters.seed = seed;
           fields.seed = { the: 'xyz.tonk.command.create-space/seed', as: 'Text' };
         }
+        const template = form.elements.template?.value?.trim();
+        if (template) {
+          parameters.template = template;
+          fields.template = { the: 'xyz.tonk.command.create-space/template', as: 'Text' };
+        }
         const copyFrom = form.elements.copyFrom?.value;
         if (copyFrom) {
           parameters.copyFrom = copyFrom;
@@ -2177,6 +2339,11 @@ element!: &space-create
         try {
           await window.tonk.ready;
           if (!self.isConnected) return;
+          // The Hub lives in an opaque-origin guest. Resolve bundled seeds
+          // against the host's origin, never the guest's about:srcdoc URL.
+          if (seed?.startsWith('/')) {
+            parameters.seed = new URL(seed, window.tonk.context.origin).href;
+          }
           const id = 'urn:uuid:' + Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(16).padStart(8, '0')).join('');
           reader = window.tonk.subscribe({
             predicate: { with: {
@@ -2224,7 +2391,19 @@ element!: &space-create
         self.__wired = true;
         self.addEventListener('submit', event => self.validate(event), true);
         self.addEventListener('click', event => {
-          if (event.target?.closest?.('[data-space-create-open]')) self.open();
+          if (event.target?.closest?.('[data-template-details-open]')) {
+            self.querySelector('[data-template-details]')?.show?.();
+          } else if (event.target?.closest?.('[data-template-image-open]')) {
+            self.querySelector('[data-template-image]')?.showModal();
+          } else if (event.target?.closest?.('[data-template-image-close]')) {
+            self.querySelector('[data-template-image]')?.close();
+          } else if (event.target?.closest?.('[data-template-back]')) {
+            self.querySelector('[data-space-create-dialog]')?.close?.();
+            self.querySelector('[data-template-details]')?.show?.();
+          } else if (event.target?.closest?.('[data-space-create-open]')) {
+            self.querySelector('[data-template-details]')?.close?.();
+            self.open();
+          }
         });
         // A page whose whole purpose is this dialog (/seed) opens it on
         // arrival rather than waiting for a click.
@@ -2353,6 +2532,11 @@ view!:
         </header>
         <main class="hubcol">
         <h1 class="visually-hidden">Spaces</h1>
+        <hub-discover data-spaces-view collection="spaces" catalog-url="https://goblinoats.github.io/honky-tonks/catalog.json">
+          <nav class="collection-tabs chrome" aria-label="space collections">
+            <button type="button" data-collection="spaces" aria-pressed="true"><span class="collection-square" aria-hidden="true"></span>your spaces</button>
+            <button type="button" data-collection="discover" aria-pressed="false"><svg class="collection-compass" viewBox="0 0 18 18" fill="none" aria-hidden="true"><circle cx="9" cy="9" r="6.5" stroke="currentColor" stroke-width="1.2"/><path d="m11.8 6.2-1.6 4-4 1.6 1.6-4z" fill="currentColor"/></svg>discover</button>
+          </nav>
           <!-- One page for `/` and `/settings`: the stack and the panel
                are both here, and the bar's `path` picks the one that
                shows. The view reads nothing off the site, so a navigation
@@ -2360,6 +2544,12 @@ view!:
                host's context on their own, and the stack keeps its rows,
                its hover and its focus across the move. -->
           <tonk-display model="space"></tonk-display>
+          <section class="discover-collection" aria-label="Discover templates">
+            <p class="space-create-help" data-discover-status role="status"></p>
+            <button type="button" class="cta" data-discover-retry hidden>try again</button>
+            <hub-collection class="template-grid"></hub-collection>
+          </section>
+        </hub-discover>
         <section class="settings chrome" data-settings-view>
             <a class="settings-back" href="/" data-return-spaces>‹ back to spaces</a>
             <h1 class="settings-title">account settings</h1>

@@ -19,6 +19,7 @@ web-integration-tests = []
 helpers = ["dep:tower"]
 
 [dependencies]
+sha2_0_10 = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true, features = ["json", "macros", "query"] }
 base58 = { workspace = true }
