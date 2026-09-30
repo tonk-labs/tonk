@@ -167,7 +167,7 @@ pub const BAR_HTML: &str = r#"<div class="w">
       <button class="action condition" data-action="condition" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v6m0 4h.01"/></svg><span></span></button>
       <button class="action share" data-cell="share" data-panel="share" aria-controls="share-panel" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="5" r="2.5"/><circle cx="18" cy="19" r="2.5"/><path d="m8 11 8-5M8 13l8 5"/></svg><span>copy share link</span></button>
       <button class="action members" data-panel="members" aria-controls="members-panel" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="10" r="2.5"/><circle cx="5" cy="5" r="2"/><circle cx="19" cy="5" r="2"/><path d="M7 21v-2a5 5 0 0 1 10 0v2M2 14v-2a3 3 0 0 1 3-3M22 14v-2a3 3 0 0 0-3-3"/></svg><span>view members</span></button>
-      <button class="action agent" data-panel="agent" aria-controls="agent-panel" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 9.5V6.5"/><circle cx="12" cy="4" r="2.5"/><rect x="1.5" y="9.5" width="21" height="13" rx="4"/><circle cx="8" cy="16" r="1.5"/><circle cx="16" cy="16" r="1.5"/></svg><span>connect agent</span></button>
+      <button class="action agent" data-panel="agent" aria-controls="agent-panel" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 9.5V6.5"/><circle cx="12" cy="4" r="2.5"/><rect x="1.5" y="9.5" width="21" height="13" rx="4"/><circle cx="8" cy="16" r="1.5"/><circle cx="16" cy="16" r="1.5"/></svg><span>copy agent link</span></button>
       <button class="action home" data-action="home"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 20V4m-5 5 5-5 5 5M8 16q0 5 5 5h7"/></svg><span>go to tonk home</span></button>
       <button class="more" data-cell="more" tabindex="-1" hidden></button>
     </nav>
@@ -508,7 +508,7 @@ mod tests {
         let order: Vec<usize> = [
             "copy share link",
             "view members",
-            "connect agent",
+            "copy agent link",
             "go to tonk home",
         ]
         .iter()
@@ -619,7 +619,7 @@ mod tests {
         assert!(html.contains("<tonk-tool-connection headless space=\"did:key:z6Mk\""));
         assert!(!BAR_HTML.contains("data-action=\"tool\""));
         assert!(!BAR_HTML.contains("connect a tool"));
-        assert!(BAR_HTML.contains("connect agent"));
+        assert!(BAR_HTML.contains("<span>copy agent link</span>"));
         assert!(
             REFUSAL_DIALOGS_HTML.contains("give a tool access to this space under your account")
         );
