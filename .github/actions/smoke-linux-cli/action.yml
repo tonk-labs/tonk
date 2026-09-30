@@ -1,0 +1,17 @@
+name: Smoke test Linux CLI portability
+description: Install packed CLI packages and run them on Linux without Nix.
+inputs:
+  binary-path:
+    description: Linux release binary to package and test.
+    required: true
+  expected-version:
+    description: Version that the release binary must report.
+    default: ''
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        EXPECTED_TONK_VERSION: ${{ inputs.expected-version }}
+        TONK_LINUX_BINARY: ${{ inputs.binary-path }}
+      run: bash "$GITHUB_ACTION_PATH/test.sh" --binary "$TONK_LINUX_BINARY" "$EXPECTED_TONK_VERSION"

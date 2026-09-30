@@ -38,6 +38,42 @@ let
   rustToolchain = pkgs.rust-bin.fromRustupToolchainFile (workspaceRoot + "/rust-toolchain.toml");
   craneLib = (crane.mkLib pkgs).overrideToolchain (_: rustToolchain);
 
+  # Release binaries are copied out of the store and distributed alone.
+  # Use a separate musl dependency build: the native workspace artifacts
+  # link against Nix's glibc and cannot be reused for this target.
+  staticPkgs = pkgs.pkgsStatic;
+  staticTarget = staticPkgs.stdenv.hostPlatform.rust.rustcTarget;
+  staticTargetEnv = builtins.replaceStrings [ "-" ] [ "_" ] staticTarget;
+  staticCc = "${staticPkgs.stdenv.cc}/bin/${staticPkgs.stdenv.cc.targetPrefix}";
+  # Keep build scripts and proc macros on the native stdenv. Using the
+  # static stdenv for them can suppress their ELF interpreter even though
+  # the host Rust standard library still links dynamically against glibc.
+  staticCraneLib = (crane.mkLib pkgs).overrideToolchain (
+    p:
+    (p.rust-bin.fromRustupToolchainFile (workspaceRoot + "/rust-toolchain.toml")).override {
+      targets = [ staticTarget ];
+    }
+  );
+  staticCliAttributes = {
+    pname = "tonk-cli-static";
+    src = rustSource;
+    strictDeps = true;
+    outputHashes = cargoGitDependencies;
+    doCheck = false;
+    cargoExtraArgs = "--package tonk-cli --bin tonk";
+    CARGO_BUILD_TARGET = staticTarget;
+    CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
+    "CARGO_TARGET_${staticPkgs.stdenv.hostPlatform.rust.cargoEnvVarTarget}_LINKER" = "${staticCc}cc";
+    "CC_${staticTargetEnv}" = "${staticCc}cc";
+    "CXX_${staticTargetEnv}" = "${staticCc}c++";
+    "AR_${staticTargetEnv}" = "${staticCc}ar";
+    nativeBuildInputs = [
+      pkgs.cmake
+      pkgs.perl
+      pkgs.pkg-config
+    ];
+  };
+
   wasm-bindgen-cli =
     with pkgs;
     buildWasmBindgenCli rec {
@@ -128,6 +164,16 @@ let
         version = "0.1.0";
 
         cargoArtifacts = nativeArtifacts;
+      }
+      // attributes
+    );
+
+  buildStaticCli =
+    attributes:
+    staticCraneLib.buildPackage (
+      staticCliAttributes
+      // {
+        cargoArtifacts = staticCraneLib.buildDepsOnly staticCliAttributes;
       }
       // attributes
     );
@@ -246,6 +292,7 @@ in
 {
   inherit
     buildCrate
+    buildStaticCli
     buildWasmCrate
     buildTrunkCrate
     buildTestArchive

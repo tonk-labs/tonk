@@ -22,6 +22,25 @@ Adding a platform later = one nix build matrix row in each of
 `.github/workflows/cli-npm.yml` and `release.yml`, a new `<platform>/package.json` here,
 and an entry in the wrapper's `optionalDependencies`.
 
+## Linux portability
+
+The Linux CLI is built with static musl linkage by `.#tonk-cli`. It ships
+without an ELF interpreter or shared-library dependencies, so users do not
+need Nix or a particular glibc version. Its dependency artifacts are built
+separately from the native workspace's glibc artifacts.
+
+PR and release builds pack the npm wrapper and Linux platform package and
+install them in Debian and Alpine containers without `/nix/store`. The npm
+publish workflow tests the exact tarballs it publishes. The check inspects
+the ELF headers and runs `tonk --version` and `tonk --help`; installation
+and execution have networking disabled.
+
+To test a Linux release binary locally (requires Node, npm, and Docker):
+
+```sh
+bash .github/actions/smoke-linux-cli/test.sh --binary result/bin/tonk
+```
+
 ## Publishing (maintainers)
 
 Publishing runs in CI so every platform binary is built reproducibly;
