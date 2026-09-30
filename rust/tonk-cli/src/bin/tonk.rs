@@ -586,10 +586,6 @@ enum SpaceCommand {
         /// Use an explicit Tonk approval page (for staging or local development).
         #[arg(long, value_name = "URL")]
         via: Option<String>,
-        /// Hand the space over to the account rather than share it: this
-        /// device's account stops holding it.
-        #[arg(long)]
-        hand_over: bool,
     },
 
     /// Pin one or more concepts' directories on the space home
@@ -1537,12 +1533,7 @@ async fn space_op(command: Option<SpaceCommand>, json: bool, flag: Option<&str>)
             print_orphaned_sites(&store.orphaned_sites(&registry));
             ExitCode::Success
         }
-        Some(SpaceCommand::Link {
-            name,
-            no_open,
-            via,
-            hand_over,
-        }) => {
+        Some(SpaceCommand::Link { name, no_open, via }) => {
             match tonk_cli::space_link::execute_browser(
                 &store,
                 &config,
@@ -1550,11 +1541,6 @@ async fn space_op(command: Option<SpaceCommand>, json: bool, flag: Option<&str>)
                 &tonk_cli::space_link::BrowserLinkOptions {
                     open_browser: !no_open,
                     via,
-                    custody: if hand_over {
-                        tonk_cli::space_link::Custody::HandOver
-                    } else {
-                        tonk_cli::space_link::Custody::Share
-                    },
                 },
             )
             .await

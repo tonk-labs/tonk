@@ -70,26 +70,11 @@ pub struct BrowserLinkOptions {
     pub open_browser: bool,
     /// Explicit approval page for local/staging deployments.
     pub via: Option<String>,
-    /// Whether the space is shared with the account or handed over to it.
-    pub custody: Custody,
-}
-
-/// What linking does with the space's custody.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum Custody {
-    /// The approving account holds the space too; this device's account
-    /// keeps it, and this device keeps its authority over it.
-    #[default]
-    Share,
-    /// The approving account holds the space instead of this device's
-    /// account. This device then proves authority over the space only
-    /// through the approving account, which the approval must grant back.
-    HandOver,
 }
 
 /// `/link`: the acts that link a space to an account.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Link;
+struct Link;
 
 impl Attenuation for Link {
     type Of = Subject;
@@ -97,7 +82,7 @@ impl Attenuation for Link {
 
 /// `/link/local-space`: linking a space that is local to this device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LocalSpace;
+struct LocalSpace;
 
 impl Attenuation for LocalSpace {
     type Of = Link;
@@ -110,7 +95,7 @@ impl Attenuation for LocalSpace {
 /// `/link/local-space/request`: asking a browser to link the space, the
 /// command a link request grants its recipient.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Request;
+struct Request;
 
 impl Attenuation for Request {
     type Of = LocalSpace;
@@ -569,20 +554,21 @@ async fn prepare_local_space_link_with_state(
 }
 
 /// The space's consent to `account`: its direct delegation to the account,
-/// what the access service provisions from. Sharing the space with the
-/// account, or handing it over, is what yields it; the space's key never
-/// leaves the peer.
+/// what the access service provisions from. Linking shares the space with
+/// the account, which yields it: the account this device acts for keeps the
+/// space, so this device keeps its authority over it, and the space's key
+/// never leaves the peer.
 async fn consent_of(
     site: &crate::site::TonkSite,
     space: &Did,
     account: &Did,
-    custody: Custody,
 ) -> Result<dialog_ucan_core::DelegationChain> {
-    let held = site.profile.held_principal(space);
-    let delegation = match custody {
-        Custody::Share => held.share(account.clone()).perform(&site.profile).await,
-        Custody::HandOver => held.hand_over(account.clone()).perform(&site.profile).await,
-    };
+    let delegation = site
+        .profile
+        .held_principal(space)
+        .share(account.clone())
+        .perform(&site.profile)
+        .await;
     match delegation {
         Ok(delegation) => Ok(delegation.into_chain()),
         Err(dialog_effects::credential::CredentialError::Withheld(_)) => bail!(
@@ -600,12 +586,6 @@ pub async fn execute_browser(
     name: &str,
     options: &BrowserLinkOptions,
 ) -> Result<LinkOutcome> {
-    if options.custody == Custody::HandOver {
-        bail!(
-            "handing '{name}' over needs the approval to grant this device the space back \
-             from the account, which it does not carry yet; link without --hand-over to share it"
-        );
-    }
     let page = crate::handoff::approval_page(options.via.as_deref())?;
     let defaults = crate::deployment::discover(&page).await?;
     let service = tonk_invite::local_space_link::TrustedService::new(
@@ -760,7 +740,6 @@ pub async fn execute_browser(
                                     &rechecked.site,
                                     rechecked.subject(),
                                     &approval.account,
-                                    options.custody,
                                 )
                                 .await?;
                                 let consent = tonk_invite::local_space_link::encode_transport(
@@ -1539,13 +1518,7 @@ mod local_space_link_tests {
         let account = Ed25519Signer::generate().await?;
         // Sharing the space with the account is what yields its consent:
         // the space's own delegation to the account, direct.
-        let consent = consent_of(
-            &candidate.site,
-            candidate.subject(),
-            &account.did(),
-            Custody::Share,
-        )
-        .await?;
+        let consent = consent_of(&candidate.site, candidate.subject(), &account.did()).await?;
         assert_eq!(consent.proofs().count(), 1);
         assert_eq!(consent.issuer(), candidate.subject());
         assert_eq!(consent.subject(), Some(candidate.subject()));

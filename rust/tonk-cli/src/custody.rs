@@ -32,7 +32,7 @@ pub async fn held_for_account(profile: &Peer<NativeSpace>, subject: &Did) -> Res
 /// this device keeps a copy of its key and it is held for another. Answers
 /// whether it moved. The key never leaves the peer: the handover opens it
 /// inside.
-pub async fn hand_over_to_account(profile: &Peer<NativeSpace>, subject: &Did) -> Result<bool> {
+pub(crate) async fn hand_over_to_account(profile: &Peer<NativeSpace>, subject: &Did) -> Result<bool> {
     if held_for_account(profile, subject).await? || !profile.holds_key(subject).await? {
         return Ok(false);
     }
