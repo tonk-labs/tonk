@@ -58,7 +58,12 @@ fn build(lit: &LitStr) -> Result<TokenStream, String> {
     let text = std::fs::read_to_string(&path)
         .map_err(|e| format!("claim!: cannot read {}: {e}", path.display()))?;
 
-    let parsed = tonk_notation::parse(&text);
+    // Parse at the document's own location so an `!include` in it is
+    // reported against the file it names. Nothing here loads included
+    // content, so analysis refuses one.
+    let location = tonk_notation::Url::from_file_path(&path)
+        .map_err(|()| format!("claim!: {} is not an absolute path", path.display()))?;
+    let parsed = tonk_notation::parse_at(location, &text);
     let syntax = parsed.syntax.ok_or_else(|| {
         let detail = parsed
             .diagnostics

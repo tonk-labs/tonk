@@ -4831,6 +4831,7 @@ dependencies = [
  "tonk-evaluator",
  "tonk-identity",
  "tonk-invite",
+ "tonk-library",
  "tonk-notation",
  "tonk-render",
  "tonk-schema",
@@ -5124,6 +5125,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonk-library"
+version = "0.6.16-rc.1"
+dependencies = [
+ "dialog-common",
+ "tokio",
+ "tonk-notation",
+ "wasm-bindgen-test",
+]
+
+[[package]]
 name = "tonk-lingo"
 version = "0.6.16-rc.1"
 dependencies = [
@@ -5160,6 +5171,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+ "url",
  "wasm-bindgen-test",
 ]
 
@@ -5433,6 +5445,7 @@ dependencies = [
  "tonk-inspector",
  "tonk-invite",
  "tonk-language-server",
+ "tonk-library",
  "tonk-notation",
  "tonk-router",
  "tonk-schema",

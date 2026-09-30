@@ -105,8 +105,10 @@ web-sys = { workspace = true, features = [
     "MessagePort",
     "Request",
     "RequestCache",
+    "RequestCredentials",
     "RequestInit",
     "RequestMode",
+    "RequestRedirect",
     "Response",
     "ResponseInit",
     "ResponseType",
@@ -123,6 +125,10 @@ web-time = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 reqwest = { workspace = true }
+# The files library documents include, compiled in: a native worker seeds
+# the library from compiled-in copies, with no served `/library/` to
+# fetch from.
+tonk-library = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { workspace = true, features = ["wasm_js"] }

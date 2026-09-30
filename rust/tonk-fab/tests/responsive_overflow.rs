@@ -21,7 +21,7 @@ async fn yield_for(ms: i32) {
         .expect("timeout resolves");
 }
 
-fn active_animations(element: &Element) -> u32 {
+fn animations(element: &Element) -> js_sys::Array {
     let get_animations = Reflect::get(element, &"getAnimations".into())
         .expect("getAnimations")
         .dyn_into::<js_sys::Function>()
@@ -31,7 +31,42 @@ fn active_animations(element: &Element) -> u32 {
         .expect("read animations")
         .dyn_into::<js_sys::Array>()
         .expect("animation list")
-        .length()
+}
+
+fn active_animations(element: &Element) -> u32 {
+    animations(element).length()
+}
+
+fn animation_method(animation: &JsValue, method: &str) -> JsValue {
+    Reflect::get(animation, &method.into())
+        .unwrap()
+        .dyn_into::<js_sys::Function>()
+        .unwrap()
+        .call0(animation)
+        .unwrap()
+}
+
+// Sample the real CSS transition on its own timeline. Concurrent browser tabs
+// can delay rendering independently of setTimeout, so sleeping for 400 ms is
+// neither proof of completion nor a reliable way to capture an intermediate frame.
+fn pause_width_transition(element: &Element) -> JsValue {
+    let _ = element.get_bounding_client_rect();
+    let animation = animations(element)
+        .iter()
+        .find(|animation| {
+            Reflect::get(animation, &"transitionProperty".into())
+                .ok()
+                .and_then(|value| value.as_string())
+                .as_deref()
+                == Some("width")
+        })
+        .expect("a real CSS width transition must be running");
+    animation_method(&animation, "pause");
+    animation
+}
+
+fn seek_transition(animation: &JsValue, time_ms: f64) {
+    Reflect::set(animation, &"currentTime".into(), &time_ms.into()).unwrap();
 }
 
 fn shadow(fab: &HtmlElement, selector: &str) -> Element {
@@ -351,18 +386,19 @@ async fn clicking_an_open_drawer_action_returns_to_the_menu() {
 #[dialog_common::test]
 async fn closing_a_drawer_contracts_its_column_without_stretching_the_menu() {
     let (parent, fab) = mount(1100);
-    yield_for(30).await;
+    resize(&parent, 1100).await;
     shadow(&fab, ".space")
         .unchecked_into::<HtmlElement>()
         .click();
     let button = shadow(&fab, ".agent").unchecked_into::<HtmlElement>();
     button.click();
-    yield_for(450).await;
     let wrapper = shadow(&fab, ".w");
+    animation_method(&pause_width_transition(&wrapper), "finish");
     let bar = shadow(&fab, ".bar");
     let panel = shadow(&fab, "#agent-panel");
     button.click();
-    yield_for(80).await;
+    let closing = pause_width_transition(&wrapper);
+    seek_transition(&closing, 80.0);
     let wrapper_width = wrapper.get_bounding_client_rect().width();
     let bar_width = bar.get_bounding_client_rect().width();
     let panel_width = panel.get_bounding_client_rect().width();
@@ -372,13 +408,14 @@ async fn closing_a_drawer_contracts_its_column_without_stretching_the_menu() {
     button.click();
     assert!(!wrapper.class_list().contains("closing-panel"));
     assert!(!panel.has_attribute("hidden"));
-    yield_for(450).await;
+    animation_method(&pause_width_transition(&wrapper), "finish");
     assert!(wrapper.get_bounding_client_rect().width() > 500.0);
     button.click();
-    // Width can settle before transitionend is delivered on a busy browser.
-    // Wait for the close handler, while still failing if it never hides the panel.
+    // The close handler and final rendered width can settle on different
+    // frames. Require both, rather than treating either as proof of the other.
     for _ in 0..60 {
-        if panel.has_attribute("hidden") {
+        let _ = wrapper.get_bounding_client_rect();
+        if panel.has_attribute("hidden") && active_animations(&wrapper) == 0 {
             break;
         }
         yield_for(50).await;
@@ -679,21 +716,80 @@ async fn the_circle_collapses_and_expands_at_every_width() {
     let (parent, fab) = mount(320);
     for width in [320, 390, 768, 1440] {
         resize(&parent, width).await;
-        let circle = shadow(&fab, ".fab").unchecked_into::<HtmlElement>();
-        circle.click();
-        yield_for(0).await;
-        let wrapper = shadow(&fab, ".w");
-        assert!(
-            wrapper.class_list().contains("collapsed"),
-            "collapse at {width}px"
-        );
-        assert!(wrapper.get_bounding_client_rect().width() >= 48.0);
-        circle.click();
-        yield_for(0).await;
-        assert!(
-            !wrapper.class_list().contains("collapsed"),
-            "expand at {width}px"
-        );
+        for flipped in [false, true] {
+            if flipped {
+                fab.set_attribute("flip", "").unwrap();
+            } else {
+                fab.remove_attribute("flip").unwrap();
+            }
+            let circle = shadow(&fab, ".fab").unchecked_into::<HtmlElement>();
+            let wrapper = shadow(&fab, ".w");
+            // Production docking updates both the host attribute and wrapper.
+            // Set that same orientation explicitly in this motion fixture.
+            wrapper
+                .class_list()
+                .toggle_with_force("flip", flipped)
+                .unwrap();
+            let rail = shadow(&fab, ".bar");
+            let full_width = wrapper.get_bounding_client_rect().width();
+            let rail_height = wrapper.get_bounding_client_rect().height();
+            let rail_width = rail.get_bounding_client_rect().width();
+            for collapsed in [true, false] {
+                let mut previous = wrapper.get_bounding_client_rect().width();
+                circle.click();
+                let transition = pause_width_transition(&wrapper);
+                let effect = Reflect::get(&transition, &"effect".into()).unwrap();
+                let timing = animation_method(&effect, "getTiming");
+                assert_eq!(
+                    Reflect::get(&timing, &"duration".into()).unwrap().as_f64(),
+                    Some(400.0)
+                );
+                let mut intermediate = false;
+                for frame in 0..=10 {
+                    seek_transition(&transition, f64::from(frame * 40));
+                    let rect = wrapper.get_bounding_client_rect();
+                    let handle = circle.get_bounding_client_rect();
+                    assert!(
+                        (rect.height() - rail_height).abs() < 1.0,
+                        "rail stretched to {}",
+                        rect.height()
+                    );
+                    assert!(
+                        (rail.get_bounding_client_rect().width() - rail_width).abs() < 1.0,
+                        "rail must not reflow during telescope"
+                    );
+                    assert!((handle.width() - 48.0).abs() < 1.0);
+                    assert!((handle.height() - 48.0).abs() < 1.0);
+                    let seat = if flipped {
+                        rect.right() - handle.right()
+                    } else {
+                        handle.left() - rect.left()
+                    };
+                    assert!(
+                        (seat - 1.5).abs() < 1.0,
+                        "circle lost its anchored end: {seat}, width={width}, flipped={flipped}, collapsed={collapsed}, host_flip={}, classes={}",
+                        fab.has_attribute("flip"),
+                        wrapper.class_name()
+                    );
+                    if collapsed {
+                        assert!(rect.width() <= previous + 1.0);
+                    } else {
+                        assert!(rect.width() >= previous - 1.0);
+                    }
+                    intermediate |= rect.width() > 52.0 && rect.width() < full_width - 1.0;
+                    previous = rect.width();
+                }
+                assert!(intermediate, "expected visible telescope frames");
+                assert_eq!(wrapper.class_list().contains("collapsed"), collapsed);
+                let target = if collapsed { 51.0 } else { full_width };
+                let actual = wrapper.get_bounding_client_rect().width();
+                assert!(
+                    (actual - target).abs() < 1.0,
+                    "width={width}, flipped={flipped}, collapsed={collapsed}: expected {target}, got {actual}"
+                );
+                animation_method(&transition, "finish");
+            }
+        }
     }
     parent.remove();
 }

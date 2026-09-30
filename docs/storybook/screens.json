@@ -26,12 +26,12 @@
       "surface": "browser",
       "area": "Hub",
       "name": "Space directory",
-      "summary": "The Hub lists local, owned, and joined spaces and exposes the account and create-space routes.",
+      "summary": "The Hub lists local, owned, and joined spaces and offers create and duplicate actions. The screenshot predates duplication.",
       "artifact": "app/screens/web-02-space-directory.png",
       "capture": "running product",
       "status": "captured",
-      "journey_ids": ["SPACE-01", "SPACE-03", "SPACE-04", "SPACE-05", "SPACE-06", "SPACE-07", "SPACE-08", "UI-04"],
-      "source_paths": ["rust/tonk-ui/src/bin/ui.rs", "rust/tonk-ui/styles.css", "rust/tonk-fab/src/markup.rs"]
+      "journey_ids": ["SPACE-01", "SPACE-03", "SPACE-04", "SPACE-05", "SPACE-06", "SPACE-07", "SPACE-08", "SPACE-13", "SPACE-14", "UI-04"],
+      "source_paths": ["rust/tonk-ui/src/bin/ui.rs", "rust/tonk-ui/styles.css", "rust/tonk-fab/src/markup.rs", "rust/tonk-core/assets/library/profile.yaml", "rust/tonk-worker/src/router/repository/duplication.rs"]
     },
     {
       "id": "WEB-03",

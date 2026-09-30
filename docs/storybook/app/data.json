@@ -475,6 +475,22 @@
       "variants": "Blank/existing home; notation/dry-run/no-sync; file/stdin."
     },
     {
+      "evidence": "Native provider tests seed from a served document and refuse unusable seeds without creating a space; a whole-browser regression seeds a space from another origin through the real dialog and renders the included template, after a missing seed is refused in the dialog.",
+      "gaps": "Sources that deny cross-origin reads, a seed whose apply fails after the pre-check, source updates, and the CLI space new --seed counterpart.",
+      "group": "Spaces: local lifecycle and selection",
+      "id": "SPACE-13",
+      "title": "Create a space from the definitions at a URL by opening /seed/<url> and confirming the New-space dialog.",
+      "variants": "Same-origin or cross-origin source that allows reading; source with !includes beside it; missing, non-https, redirecting, non-UTF-8, or unanalyzable source."
+    },
+    {
+      "evidence": "Native snapshot, identity, metadata and command-containment tests; whole-browser menu/dialog/create/navigation regression.",
+      "gaps": "Remote hydration, interrupted writes, response loss, concurrent deletion and account changes.",
+      "group": "Spaces: local lifecycle and selection",
+      "id": "SPACE-14",
+      "title": "Duplicate a space from the Hub into a new identity.",
+      "variants": "Available main content and blobs; missing or unreadable source; local-only or active account."
+    },
+    {
       "evidence": "Eight space_link tests, including signer recovery and post-invite retry, plus authority/browser happy paths.",
       "gaps": "Crash/retry at every ownership/hosting/listing/upstream stage, partial remote commit, concurrent link.",
       "group": "Spaces: account directory, sync, and collaboration",
@@ -624,7 +640,7 @@
       "group": "Authoring, data, rendering, and transfer",
       "id": "DATA-07",
       "title": "Evaluate notation from inline text, file, explicit -, or piped stdin.",
-      "variants": "Query/write/mixed; JSON/quiet/home/dry-run/no-sync."
+      "variants": "Query/write/mixed; JSON/quiet/home/dry-run/no-sync; file-relative !include (inline/stdin refuse it)."
     },
     {
       "evidence": "Listing/schema tests.",
@@ -804,16 +820,20 @@
         "SPACE-06",
         "SPACE-07",
         "SPACE-08",
+        "SPACE-13",
+        "SPACE-14",
         "UI-04"
       ],
       "name": "Space directory",
       "source_paths": [
         "rust/tonk-ui/src/bin/ui.rs",
         "rust/tonk-ui/styles.css",
-        "rust/tonk-fab/src/markup.rs"
+        "rust/tonk-fab/src/markup.rs",
+        "rust/tonk-core/assets/library/profile.yaml",
+        "rust/tonk-worker/src/router/repository/duplication.rs"
       ],
       "status": "captured",
-      "summary": "The Hub lists local, owned, and joined spaces and exposes the account and create-space routes.",
+      "summary": "The Hub lists local, owned, and joined spaces and offers create and duplicate actions. The screenshot predates duplication.",
       "surface": "browser"
     },
     {
@@ -2052,6 +2072,14 @@
       "result": "Pass (native, 2026-08-30): focused real-binary create/create and bind/remove overlap regressions."
     },
     {
+      "claim": "Hub duplication creates an independent identity (Duplicate a space).",
+      "device": "fresh-browser + native",
+      "file": "verification/cli-spaces-ui.md",
+      "id": "SPACE-14",
+      "priority": "P1",
+      "result": "Partial pass (2026-09-29, post-rebase artifact 12b87892fca818d5): browser menu/name/create/navigation and native data/identity/containment checks pass. Interrupted writes, remote hydration and retry after response loss are unrun."
+    },
+    {
       "claim": "Status reports R0–R6 without mutation (Settle).",
       "device": "two-actor",
       "file": "verification/cli-spaces-ui.md",
@@ -2319,7 +2347,7 @@
   "verificationResults": {
     "blocked": 0,
     "fail": 0,
-    "other": 11,
+    "other": 12,
     "pass": 2,
     "unrun": 107
   },

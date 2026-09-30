@@ -41,12 +41,19 @@ const ISSUE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/issue.y
 const META_LIBRARY: &str = include_str!("../../tonk-core/assets/library/meta.yaml");
 
 /// Lower a library document the same way the seed does, asserting it
-/// parses, analyzes with no running system, and lowers to claims.
-fn assert_library_lowers(label: &str, document: &str) {
-    let parsed = tonk_notation::parse(document);
-    let syntax = parsed
+/// parses, analyzes with no running system, and lowers to claims. Like
+/// the seed, it is parsed where the library lives and what it
+/// `!include`s is inlined from the bundled copies first.
+async fn assert_library_lowers(label: &str, file: &str, document: &str) {
+    let parsed = tonk_notation::parse_at(tonk_library::location(file), document);
+    let mut syntax = parsed
         .syntax
         .unwrap_or_else(|| panic!("{label} must parse with no diagnostics"));
+    let unexpanded = tonk_notation::expand(&mut syntax, &tonk_library::Bundled).await;
+    assert!(
+        unexpanded.is_empty(),
+        "{label} must include only files beside it: {unexpanded:#?}"
+    );
     let tree = tonk_analyzer::analyzer::analyze_local(&syntax)
         .unwrap_or_else(|e| panic!("{label} must analyze with no running system: {e:#?}"));
 
@@ -74,8 +81,13 @@ fn css_rule<'a>(document: &'a str, selector: &str) -> &'a str {
 }
 
 #[dialog_common::test]
-fn it_lowers_the_standard_library() {
-    assert_library_lowers("standard library (core.yaml)", STANDARD_LIBRARY);
+async fn it_lowers_the_standard_library() {
+    assert_library_lowers(
+        "standard library (core.yaml)",
+        "core.yaml",
+        STANDARD_LIBRARY,
+    )
+    .await;
 }
 
 /// The meta library describes a real shape, not an aspirational one.
@@ -84,13 +96,18 @@ fn it_lowers_the_standard_library() {
 /// is one the worker actually writes to a `meta` branch, so lowering it
 /// is what keeps the description from drifting from the rows.
 #[dialog_common::test]
-fn it_lowers_the_meta_library() {
-    assert_library_lowers("meta library (meta.yaml)", META_LIBRARY);
+async fn it_lowers_the_meta_library() {
+    assert_library_lowers("meta library (meta.yaml)", "meta.yaml", META_LIBRARY).await;
 }
 
 #[dialog_common::test]
-fn it_lowers_the_profile_library() {
-    assert_library_lowers("profile library (profile.yaml)", PROFILE_LIBRARY);
+async fn it_lowers_the_profile_library() {
+    assert_library_lowers(
+        "profile library (profile.yaml)",
+        "profile.yaml",
+        PROFILE_LIBRARY,
+    )
+    .await;
 }
 
 /// The switcher row binds the handle a command can actually act on.
@@ -1030,80 +1047,72 @@ fn it_serves_settings_as_a_routed_page_of_the_hub() {
 
 #[dialog_common::test]
 fn it_keeps_machine_instructions_in_the_production_copy_prompt() {
-    for library in [
-        STANDARD_LIBRARY,
-        include_str!("../../tonk-core/assets/library/onboarding-agent.yaml"),
-    ] {
-        let copied = library
+    let library = STANDARD_LIBRARY;
+    let copied = library
+        .split("copy-label=\"copy prompt\"")
+        .nth(1)
+        .and_then(|tail| tail.split("</wa-copy-button>").next())
+        .expect("the agent prompt copy button");
+    let command = "npx --yes @tonk/cli join '{link}'";
+    assert_eq!(
+        copied.matches(command).count(),
+        1,
+        "the clipboard prompt must carry one production CLI command",
+    );
+    assert!(
+        !library
             .split("copy-label=\"copy prompt\"")
-            .nth(1)
-            .and_then(|tail| tail.split("</wa-copy-button>").next())
-            .expect("the agent prompt copy button");
-        let command = "npx --yes @tonk/cli join '{link}'";
-        assert_eq!(
-            copied.matches(command).count(),
-            1,
-            "the clipboard prompt must carry one production CLI command",
-        );
-        assert!(
-            !library
-                .split("copy-label=\"copy prompt\"")
-                .next()
-                .unwrap_or_default()
-                .contains(command),
-            "machine instructions must not be visible before the copy button",
-        );
-        assert!(
-            copied.contains(
-                "Only report connected after it prints &quot;Agent connection confirmed&quot;"
-            ),
-            "the clipboard prompt must define the success boundary",
-        );
-        assert!(
-            copied.contains("npx --yes @tonk/cli --space NAME join"),
-            "the resume command must work without a globally installed CLI",
-        );
-        assert!(
-            copied.contains("If access expires or is revoked, ask me for a fresh link."),
-            "the prompt must request fresh authority after expiry or revocation",
-        );
-        assert!(
-            library.contains("join --via ${JSON.stringify(page.origin)}"),
-            "non-production prompts must select the exact issuing deployment",
-        );
-        assert!(
-            library.contains("page = new URL(this.getAttribute(\"link\"))"),
-            "sandboxed space views must derive loopback from the invitation origin",
-        );
-        assert!(
-            library.contains("const executable = local ? \"tonk\" : \"npx --yes @tonk/cli\""),
-            "loopback prompts must use the locally built CLI",
-        );
-    }
+            .next()
+            .unwrap_or_default()
+            .contains(command),
+        "machine instructions must not be visible before the copy button",
+    );
+    assert!(
+        copied.contains(
+            "Only report connected after it prints &quot;Agent connection confirmed&quot;"
+        ),
+        "the clipboard prompt must define the success boundary",
+    );
+    assert!(
+        copied.contains("npx --yes @tonk/cli --space NAME join"),
+        "the resume command must work without a globally installed CLI",
+    );
+    assert!(
+        copied.contains("If access expires or is revoked, ask me for a fresh link."),
+        "the prompt must request fresh authority after expiry or revocation",
+    );
+    assert!(
+        library.contains("join --via ${JSON.stringify(page.origin)}"),
+        "non-production prompts must select the exact issuing deployment",
+    );
+    assert!(
+        library.contains("page = new URL(this.getAttribute(\"link\"))"),
+        "sandboxed space views must derive loopback from the invitation origin",
+    );
+    assert!(
+        library.contains("const executable = local ? \"tonk\" : \"npx --yes @tonk/cli\""),
+        "loopback prompts must use the locally built CLI",
+    );
 }
 
 #[test]
 fn it_keeps_ready_agent_invites_to_one_primary_action() {
-    for library in [
-        STANDARD_LIBRARY,
-        include_str!("../../tonk-core/assets/library/onboarding-agent.yaml"),
-    ] {
-        let ready = library
-            .split("<div data-agent-mode=\"scoped\" hidden>")
-            .nth(1)
-            .and_then(|tail| tail.split("</tonk-agent-prompt>").next())
-            .expect("the ready agent prompt");
-        assert!(ready.contains("class=\"agent-prompt__copy\""));
-        assert!(
-            !ready.contains("<button"),
-            "a ready reusable invite needs no competing regeneration action",
-        );
-        assert!(!ready.contains("creating a new invite"));
-        assert!(
-            library.contains("data-invite-action=\"new\""),
-            "lost and historical invitations must retain their recovery action",
-        );
-    }
+    let library = STANDARD_LIBRARY;
+    let ready = library
+        .split("<div data-agent-mode=\"scoped\" hidden>")
+        .nth(1)
+        .and_then(|tail| tail.split("</tonk-agent-prompt>").next())
+        .expect("the ready agent prompt");
+    assert!(ready.contains("class=\"agent-prompt__copy\""));
+    assert!(
+        !ready.contains("<button"),
+        "a ready reusable invite needs no competing regeneration action",
+    );
+    assert!(!ready.contains("creating a new invite"));
+    assert!(
+        library.contains("data-invite-action=\"new\""),
+        "lost and historical invitations must retain their recovery action",
+    );
 }
 
 #[dialog_common::test]
@@ -1250,28 +1259,36 @@ fn it_declares_mobile_target_and_input_floors_for_hub_and_join() {
 /// the standard library, whose `view` / `event` / `command` concepts it
 /// references. `analyze_local` resolves names within one document, so
 /// the concatenation is what stands in for "core is already seeded".
-fn assert_component_library_lowers(label: &str, document: &str) {
-    assert_library_lowers(label, &format!("{STANDARD_LIBRARY}\n{document}"));
+async fn assert_component_library_lowers(label: &str, file: &str, document: &str) {
+    assert_library_lowers(label, file, &format!("{STANDARD_LIBRARY}\n{document}")).await;
 }
 
 #[dialog_common::test]
-fn it_lowers_the_table_library() {
-    assert_component_library_lowers("table library (table.yaml)", TABLE_LIBRARY);
+async fn it_lowers_the_table_library() {
+    assert_component_library_lowers("table library (table.yaml)", "table.yaml", TABLE_LIBRARY)
+        .await;
 }
 
 #[dialog_common::test]
-fn it_lowers_the_notebook_library() {
-    assert_component_library_lowers("notebook library (notebook.yaml)", NOTEBOOK_LIBRARY);
+async fn it_lowers_the_notebook_library() {
+    assert_component_library_lowers(
+        "notebook library (notebook.yaml)",
+        "notebook.yaml",
+        NOTEBOOK_LIBRARY,
+    )
+    .await;
 }
 
 #[dialog_common::test]
-fn it_lowers_the_prose_library() {
-    assert_component_library_lowers("prose library (prose.yaml)", PROSE_LIBRARY);
+async fn it_lowers_the_prose_library() {
+    assert_component_library_lowers("prose library (prose.yaml)", "prose.yaml", PROSE_LIBRARY)
+        .await;
 }
 
 #[dialog_common::test]
-fn it_lowers_the_issue_library() {
-    assert_component_library_lowers("issue library (issue.yaml)", ISSUE_LIBRARY);
+async fn it_lowers_the_issue_library() {
+    assert_component_library_lowers("issue library (issue.yaml)", "issue.yaml", ISSUE_LIBRARY)
+        .await;
 }
 
 // The `on:` binding gates that used to live here — a dangling
@@ -1294,7 +1311,7 @@ fn it_lowers_the_issue_library() {
 /// been seeded — and a lean repo, the profile meta-branch, or a `tonk
 /// eval` fixture would all fail to parse one.
 #[dialog_common::test]
-fn an_event_declaration_lowers_without_the_library() {
+async fn an_event_declaration_lowers_without_the_library() {
     let document = r#"event!: &on/tap
   type: "click"
   prevent-default: true
@@ -1316,7 +1333,7 @@ command!: &bump
       as: float
       cardinality: one
 "#;
-    assert_library_lowers("a bare `event!:` document", document);
+    assert_library_lowers("a bare `event!:` document", "event.yaml", document).await;
 }
 
 /// The optional side-effect flags really are optional: a declaration
@@ -1324,13 +1341,13 @@ command!: &bump
 /// library omits them, so a regression here would break all of them at
 /// once.
 #[dialog_common::test]
-fn an_event_declaration_may_omit_the_side_effect_flags() {
+async fn an_event_declaration_may_omit_the_side_effect_flags() {
     let document = r#"event!: &on/plain
   type: "click"
   where:
     subject: "{this}"
 "#;
-    assert_library_lowers("an `event!:` with no flags", document);
+    assert_library_lowers("an `event!:` with no flags", "event.yaml", document).await;
 }
 
 /// The wire predicate `tonk-template` builds matches the built-in.
@@ -1720,58 +1737,45 @@ fn parse_command_attributes(
 
 #[test]
 fn it_offers_only_scoped_agent_prompts_without_account_approval() {
-    for library in [
-        STANDARD_LIBRARY,
-        include_str!("../../tonk-core/assets/library/onboarding-agent.yaml"),
-    ] {
-        assert!(library.contains("/^#tonk-agent-v[12]=/.test(hash)"));
-        assert!(!library.contains("data-agent-mode=\"legacy\""));
-        assert!(!library.contains("--switch-account"));
-        let unsupported = library
-            .split("<div data-agent-mode=\"unsupported\" hidden>")
-            .nth(1)
-            .unwrap()
-            .split("<div data-agent-mode=\"scoped\" hidden>")
-            .next()
-            .unwrap();
-        assert!(!unsupported.contains("wa-copy-button"));
-        assert!(unsupported.contains("tonk join"));
-        assert!(!unsupported.contains("tonk link"));
-        assert!(library.contains("on:new-agent-invite=tonk:new-agent-invite"));
-        assert!(library.contains("event!: &on/new-agent-invite"));
-        assert!(library.contains("the: xyz.tonk.agent-handoff/fresh"));
+    let library = STANDARD_LIBRARY;
+    assert!(library.contains("/^#tonk-agent-v[12]=/.test(hash)"));
+    assert!(!library.contains("data-agent-mode=\"legacy\""));
+    assert!(!library.contains("--switch-account"));
+    let unsupported = library
+        .split("<div data-agent-mode=\"unsupported\" hidden>")
+        .nth(1)
+        .unwrap()
+        .split("<div data-agent-mode=\"scoped\" hidden>")
+        .next()
+        .unwrap();
+    assert!(!unsupported.contains("wa-copy-button"));
+    assert!(unsupported.contains("tonk join"));
+    assert!(!unsupported.contains("tonk link"));
+    assert!(library.contains("on:new-agent-invite=tonk:new-agent-invite"));
+    assert!(library.contains("event!: &on/new-agent-invite"));
+    assert!(library.contains("the: xyz.tonk.agent-handoff/fresh"));
 
-        let scoped = library
-            .split("<div data-agent-mode=\"scoped\" hidden>")
-            .nth(1)
-            .and_then(|tail| tail.split("</wa-copy-button>").next())
-            .expect("separate scoped prompt, hidden until its envelope is selected");
-        assert_eq!(
-            scoped.matches("npx --yes @tonk/cli join '{link}'").count(),
-            1
-        );
-        assert!(scoped.contains("npx --yes @tonk/cli --space NAME join"));
-        assert!(scoped.contains(
-            "Only report connected after it prints &quot;Agent connection confirmed&quot;"
-        ));
-        assert!(scoped.contains("acknowledged receipt push"));
-        assert!(
-            scoped.contains("Multiple holders of this link share the same invitation authority")
-        );
-        assert!(scoped.contains("ask me for a fresh link"));
-        assert!(!scoped.contains("join --agent"));
-        assert!(!scoped.contains("--switch-account"));
-        assert!(!scoped.contains("requires account {account}"));
-    }
-    let playground = include_str!("../../tonk-core/assets/library/onboarding-agent.yaml");
-    assert!(playground.contains("<page-mount on:invite=tonk:agent-handoff></page-mount>"));
-    let scoped = playground
+    let scoped = library
         .split("<div data-agent-mode=\"scoped\" hidden>")
         .nth(1)
-        .unwrap();
-    assert!(scoped.contains("Do not change the space home, other pages, shared components, shared schemas, or space-wide settings."));
-    assert!(scoped.contains("Agent playground&quot; page"));
-    assert!(!scoped.contains("Finish with `npx --yes @tonk/cli space home"));
+        .and_then(|tail| tail.split("</wa-copy-button>").next())
+        .expect("separate scoped prompt, hidden until its envelope is selected");
+    assert_eq!(
+        scoped.matches("npx --yes @tonk/cli join '{link}'").count(),
+        1
+    );
+    assert!(scoped.contains("npx --yes @tonk/cli --space NAME join"));
+    assert!(
+        scoped.contains(
+            "Only report connected after it prints &quot;Agent connection confirmed&quot;"
+        )
+    );
+    assert!(scoped.contains("acknowledged receipt push"));
+    assert!(scoped.contains("Multiple holders of this link share the same invitation authority"));
+    assert!(scoped.contains("ask me for a fresh link"));
+    assert!(!scoped.contains("join --agent"));
+    assert!(!scoped.contains("--switch-account"));
+    assert!(!scoped.contains("requires account {account}"));
 }
 
 #[test]
@@ -1792,5 +1796,64 @@ fn it_renders_all_grant_set_receipts_without_claiming_agent_presence() {
     assert!(
         !STANDARD_LIBRARY
             .contains("entity=\"id:tonk:agent-connection\" model=tonk:agent-connection")
+    );
+}
+
+/// `/seed/<url>` offers the New-space dialog with the URL carried as the
+/// `seed` of the `space/create` it submits, and says where the definitions
+/// come from before anything is created.
+#[dialog_common::test]
+fn it_offers_to_create_a_space_from_the_url_in_a_seed_link() {
+    assert!(
+        PROFILE_LIBRARY.contains(r#"path: "/seed/{*url}""#),
+        "the profile must route /seed/<url>"
+    );
+    let view = PROFILE_LIBRARY
+        .split("this: tonk:seed/route\n  show:")
+        .nth(1)
+        .expect("the seed route must have a view");
+    assert!(
+        view.contains(r#"<input type="hidden" name="seed" value="{url}">"#),
+        "the dialog's form must carry the captured URL as its seed"
+    );
+    assert!(
+        view.contains("<space-create autoopen>"),
+        "the seed page must open its dialog on arrival"
+    );
+    assert!(
+        view.contains("continue only if you trust where they come from"),
+        "the dialog must warn that the definitions come from elsewhere"
+    );
+    assert!(
+        PROFILE_LIBRARY.contains("parameters.seed = seed;")
+            && PROFILE_LIBRARY.contains("the: 'xyz.tonk.command.create-space/seed'"),
+        "<space-create> must forward a form's seed to space/create"
+    );
+}
+
+/// A real seed link reaches the seed route, not the profile's catch-all,
+/// with the source URL captured whole: its `//` and its own path intact.
+#[dialog_common::test]
+fn it_routes_a_seed_link_to_the_seed_page_with_the_url_intact() {
+    let mut router = tonk_router::Router::new();
+    for line in PROFILE_LIBRARY.lines() {
+        let Some(path) = line
+            .trim()
+            .strip_prefix("path: \"")
+            .and_then(|path| path.strip_suffix('"'))
+        else {
+            continue;
+        };
+        if let Ok(route) = tonk_router::Route::parse_pattern(path) {
+            router.insert(route, path.to_owned());
+        }
+    }
+    let matched = router
+        .recognize("/seed/https://tonk.network/library/notebook.yaml")
+        .expect("a seed link matches a route");
+    assert_eq!(matched.value, "/seed/{*url}");
+    assert_eq!(
+        matched.params.get("url"),
+        Some("https://tonk.network/library/notebook.yaml")
     );
 }

@@ -969,6 +969,11 @@ fn stringify_simple_value(field: &tonk_notation::Field) -> Result<String, Analyz
         FieldValue::Literal(other) => scalar_to_string(other)?,
         FieldValue::Uri(s) => s.clone(),
         FieldValue::Symbol(s) => s.clone(),
+        FieldValue::Include(include) => {
+            return Err(
+                super::field::unexpanded_include(include, None).with_range(field.value_range)
+            );
+        }
         FieldValue::Variable(_)
         | FieldValue::Blank
         | FieldValue::Nested(_)
@@ -992,6 +997,8 @@ fn stringify_simple_value(field: &tonk_notation::Field) -> Result<String, Analyz
 fn require_string_description(field: &tonk_notation::Field) -> Result<String, AnalyzeError> {
     match &field.value {
         FieldValue::Literal(Scalar::String(s)) => Ok(s.clone()),
+        // Prose kept in its own file is still prose.
+        FieldValue::Literal(Scalar::Included(bytes)) => super::field::included_text(bytes),
         FieldValue::Symbol(s) => Err(AnalyzeErrorKind::InvalidAttributeBody {
             reason: format!(
                 "`description:` value {s:?} looks like a bare symbol — write a \

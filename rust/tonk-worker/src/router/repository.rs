@@ -42,6 +42,8 @@ use url::Url;
 use zeroize::Zeroizing;
 
 use super::AppState;
+
+mod duplication;
 use crate::{Notification, RepositoryError, TonkWorkerError, broadcast, worker::TonkState};
 
 /// Name of the device-local meta branch every *space* repository has
@@ -313,6 +315,15 @@ const LEGACY_REMOTE_ATTR: &str = "dom.event.current-target.elements.remote/value
 /// required name continue to trigger the same provider.
 const DESCRIPTION_ATTR: &str = "xyz.tonk.command.create-space/description";
 
+/// The `space/create` transient's optional seed: the URL of a notation
+/// document evaluated into the new space on top of the standard library
+/// (see [`super::seed`]). Read from the raw facts for the same reasons as
+/// the remote: the command is matched name-only, and a URL decodes as an
+/// entity rather than as text.
+const SEED_ATTR: &str = "xyz.tonk.command.create-space/seed";
+
+const COPY_FROM_ATTR: &str = "xyz.tonk.command.create-space/copy-from";
+
 /// Read the optional remote URL from a transient's facts, tolerating
 /// both `Value::String` and `Value::Entity`.
 ///
@@ -353,6 +364,20 @@ fn description_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String>
     facts
         .iter()
         .find(|artifact| artifact.the.to_string() == DESCRIPTION_ATTR)
+        .and_then(|artifact| match &artifact.is {
+            Value::String(value) => Some(value.trim().to_owned()),
+            Value::Entity(value) => Some(value.to_string().trim().to_owned()),
+            _ => None,
+        })
+        .filter(|value| !value.is_empty())
+}
+
+fn seed_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
+    use dialog_artifacts::Value;
+
+    facts
+        .iter()
+        .find(|artifact| artifact.the.to_string() == SEED_ATTR)
         .and_then(|artifact| match &artifact.is {
             Value::String(value) => Some(value.trim().to_owned()),
             Value::Entity(value) => Some(value.to_string().trim().to_owned()),
@@ -551,6 +576,10 @@ pub(crate) struct CreateSpaceRequest {
     remote: Option<String>,
     /// The optional description, read from the transient's raw facts.
     description: Option<String>,
+    /// The optional seed URL, read from the transient's raw facts.
+    seed: Option<String>,
+    /// Source space whose main-branch content should be copied.
+    copy_from: Option<String>,
 }
 
 impl crate::reactor::Decode for CreateSpaceRequest {
@@ -576,6 +605,15 @@ impl crate::reactor::Decode for CreateSpaceRequest {
             command,
             remote: remote_from_facts(facts),
             description: description_from_facts(facts),
+            seed: seed_from_facts(facts),
+            copy_from: facts
+                .iter()
+                .find(|fact| fact.the.as_str() == COPY_FROM_ATTR)
+                .map(|fact| match &fact.is {
+                    dialog_artifacts::Value::String(value) => value.clone(),
+                    dialog_artifacts::Value::Entity(value) => value.to_string(),
+                    _ => String::new(),
+                }),
         })
     }
 }
@@ -635,7 +673,67 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
     } else {
         name
     };
-    log!("command CreateSpace name={} remote={:?}", name, remote);
+    log!(
+        "command CreateSpace name={} remote={:?} seed={:?}",
+        name,
+        remote,
+        request.seed
+    );
+
+    // A seed is fetched and checked before anything is created, so one that
+    // cannot be used fails the create instead of leaving a space without the
+    // definitions it was made for.
+    let seed = match &request.seed {
+        None => None,
+        Some(reference) => match prepare_seed(reference).await {
+            Ok(syntax) => Some(syntax),
+            Err(error) => {
+                log!(
+                    "CreateSpace '{}': seed {} refused: {}",
+                    name,
+                    reference,
+                    error
+                );
+                report_space_creation(
+                    env.state(),
+                    &receipt,
+                    "failed",
+                    &format!("Couldn't use those definitions: {error}"),
+                )
+                .await;
+                return;
+            }
+        },
+    };
+
+    // Read and validate the source before allocating a new identity. Never
+    // combine a copy with a seed that could overwrite its application.
+    let copy = match &request.copy_from {
+        Some(source) => {
+            let result = if request.seed.is_some() {
+                Err(RepositoryError::Internal(
+                    "A duplicate cannot also have a seed URL".into(),
+                ))
+            } else {
+                let tonk = env.state().read().await;
+                duplication::prepare(&tonk, source).await
+            };
+            match result {
+                Ok(copy) => Some(copy),
+                Err(error) => {
+                    report_space_creation(
+                        env.state(),
+                        &receipt,
+                        "failed",
+                        &format!("Couldn't copy this space: {error}"),
+                    )
+                    .await;
+                    return;
+                }
+            }
+        }
+        None => None,
+    };
 
     // The space's seed is custodied under the account before the
     // space exists. A linked device whose root record predates the
@@ -658,7 +756,11 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
     //    whether or not a remote was given (and never vanishes on
     //    a remote failure). The create mints a fresh identity and
     //    returns its routing key.
-    let key = match create_space_inner(env.state(), &name, description.as_deref()).await {
+    let created = match copy {
+        Some(copy) => duplication::create(env.state(), &name, copy).await,
+        None => create_space_inner(env.state(), &name, description.as_deref()).await,
+    };
+    let key = match created {
         Ok(key) => key,
         Err(error) => {
             log!("CreateSpace '{}' failed: {}", name, error);
@@ -677,6 +779,31 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
         env.client(),
         tonk_worker_api::AnalyticsEvent::SpaceCreated { space: key.clone() },
     );
+
+    // The standard library is in; the seed goes on top of it, before the
+    // creator is taken into the space.
+    if let Some(seed) = seed {
+        let applied = {
+            let tonk = env.state().read().await;
+            super::evaluate::seed_syntax_on_branch(
+                &tonk,
+                tonk.reactor.repository(&key).branch("main"),
+                seed,
+            )
+            .await
+        };
+        if let Err(error) = applied {
+            log!("CreateSpace '{}': seed failed: {}", key, error);
+            report_space_creation(
+                env.state(),
+                &receipt,
+                "failed",
+                &format!("The space was created, but its definitions couldn't be added: {error}"),
+            )
+            .await;
+            return;
+        }
+    }
 
     // 2. The space is created and seeded — drop the creator into
     //    it. Same page-capability channel as the join redirect: a
@@ -732,6 +859,18 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
     {
         log!("CreateSpace '{}': remote attach failed: {}", key, error);
     }
+}
+
+/// Fetch and check the seed at `reference` against the standard library a
+/// new space is seeded with first. See [`super::seed::prepare`].
+async fn prepare_seed(reference: &str) -> Result<tonk_notation::Syntax, String> {
+    let library = fetch_standard_library(STANDARD_LIBRARY_URL)
+        .await
+        .map_err(|error| format!("the standard library is unavailable: {error}"))?;
+    let core = super::library::parse(&library)
+        .await
+        .map_err(|error| format!("the standard library does not parse: {error}"))?;
+    super::seed::prepare(reference, &core).await
 }
 
 /// Per-command feedback is local overlay state, never account data. A fresh
@@ -2771,7 +2910,7 @@ pub(crate) async fn remove_space_inner(
         let _admission_mutation = tonk.admission.mutation(subject.repo_key());
         remove_replica_from_profile(&tonk, subject).await?;
         // Drain the poll the retraction scheduled so the Hub's meta
-        // subscription reflects the removal (mirrors set_replica_status).
+        // subscription reflects the removal (mirrors the seed completion path).
         tonk.reactor.run_scheduled_polls(&tonk.operator).await;
         tonk.reactor.evict(subject.repo_key());
         // Same repo, same lock: a dirty stamp left in the sync queue would
@@ -3447,7 +3586,7 @@ fn spawn_seed(
 /// Whether `subject` still has a recorded [`Replica`] on the profile's
 /// meta branch. The replica entity is content-derived from `(profile,
 /// subject)` — the same hash [`Replica::new`] uses (see
-/// [`set_replica_status`]) — so its presence is checked directly rather
+/// [`write_replica_status`]) — so its presence is checked directly rather
 /// than searched for.
 ///
 /// Guards [`seed_and_initialize`] against a `RemoveSpace` landing
@@ -3695,7 +3834,7 @@ impl ProfileLibraryCache {
         let library = fetch_profile_library()
             .await
             .map_err(|e| RepositoryError::Internal(format!("fetch profile library: {e}")))?;
-        let prepared = prepare_profile_library(library)?;
+        let prepared = prepare_profile_library(library).await?;
         *cached = Some(prepared.clone());
         Ok(prepared)
     }
@@ -3704,7 +3843,7 @@ impl ProfileLibraryCache {
         &self,
         library: String,
     ) -> Result<PreparedProfileLibrary, RepositoryError> {
-        let prepared = prepare_profile_library(library)?;
+        let prepared = prepare_profile_library(library).await?;
         let mut cached = self.input.lock().await;
         *cached = Some(prepared.clone());
         Ok(prepared)
@@ -4135,6 +4274,40 @@ async fn commit_replica_stamp(
     }
 }
 
+// Preserve authored snapshots created by older Welcome-space builds.
+async fn has_welcome_snapshot(tonk: &TonkState, key: &str) -> Result<bool, RepositoryError> {
+    use dialog_artifacts::ArtifactSelector;
+    use futures_util::StreamExt as _;
+    fn internal(error: impl std::fmt::Display) -> RepositoryError {
+        RepositoryError::Internal(format!("welcome marker: {error}"))
+    }
+    let repository = tonk
+        .profile
+        .repository(key)
+        .load()
+        .perform(&tonk.operator)
+        .await
+        .map_err(internal)?;
+    let branch = repository
+        .branch("main")
+        .open()
+        .perform(&tonk.operator)
+        .await
+        .map_err(internal)?;
+    let stream = branch
+        .claims()
+        .select(
+            ArtifactSelector::new()
+                .the("xyz.tonk.onboarding/imported".parse().map_err(internal)?)
+                .of("id:tonk/onboarding-v2/welcome".parse().map_err(internal)?),
+        )
+        .perform(&tonk.operator)
+        .await
+        .map_err(internal)?;
+    tokio::pin!(stream);
+    Ok(stream.next().await.transpose().map_err(internal)?.is_some())
+}
+
 /// Bring a space's seed up to the one this worker ships, if it is behind.
 ///
 /// One atomic batch: the previous seed's assertions are retracted and the
@@ -4175,7 +4348,7 @@ pub(crate) async fn upgrade_seed(tonk: &TonkState, key: &str) -> Result<bool, Re
     // Replaying that library over the imported app replaces its home alias.
     // Snapshot spaces have no single replaceable library; preserve their
     // authored state, including custom home aliases and agent-page changes.
-    if super::onboarding_space::has_welcome_snapshot(tonk, key)
+    if has_welcome_snapshot(tonk, key)
         .await
         .map_err(|e| RepositoryError::Internal(format!("read welcome marker: {e}")))?
     {
@@ -4438,14 +4611,27 @@ const SEED_NONE: &str = "seed:none";
 /// creation fails loudly rather than seeding an empty repo.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(super) async fn fetch_standard_library(url: &str) -> Result<String, TonkWorkerError> {
+    String::from_utf8(fetch_library_bytes(url).await?)
+        .map_err(|_| TonkWorkerError::Internal(format!("library {url} is not UTF-8 text")))
+}
+
+/// Fetch a served library file's bytes: the document itself, or a file a
+/// library document includes (see [`super::library`]). Read from this
+/// worker's immutable generation first, then from the network with the
+/// HTTP cache sidestepped.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(super) async fn fetch_library_bytes(url: &str) -> Result<Vec<u8>, TonkWorkerError> {
     use wasm_bindgen::JsCast;
     use wasm_bindgen_futures::JsFuture;
     use web_sys::{Request, RequestCache, RequestInit, Response};
 
-    if let Some(library) = crate::cache::immutable_asset_text(url).await.map_err(|e| {
-        TonkWorkerError::Internal(format!("read {url} from worker generation: {e:?}"))
-    })? {
-        return Ok(library);
+    if let Some(bytes) = crate::cache::immutable_asset_bytes(url)
+        .await
+        .map_err(|e| {
+            TonkWorkerError::Internal(format!("read {url} from worker generation: {e:?}"))
+        })?
+    {
+        return Ok(bytes);
     }
 
     let init = RequestInit::new();
@@ -4466,15 +4652,14 @@ pub(super) async fn fetch_standard_library(url: &str) -> Result<String, TonkWork
             response.status()
         )));
     }
-    let text = JsFuture::from(
+    let buffer = JsFuture::from(
         response
-            .text()
-            .map_err(|e| TonkWorkerError::Internal(format!("library text(): {e:?}")))?,
+            .array_buffer()
+            .map_err(|e| TonkWorkerError::Internal(format!("library arrayBuffer(): {e:?}")))?,
     )
     .await
     .map_err(|e| TonkWorkerError::Internal(format!("library body: {e:?}")))?;
-    text.as_string()
-        .ok_or_else(|| TonkWorkerError::Internal("library body is not a string".to_owned()))
+    Ok(js_sys::Uint8Array::new(&buffer).to_vec())
 }
 
 /// Wasm profile-library tests run in the pooled browser harness rather than the
@@ -4512,48 +4697,10 @@ fn embedded_standard_library(url: &str) -> Result<String, TonkWorkerError> {
         PROFILE_LIBRARY_URL => {
             Ok(include_str!("../../../tonk-core/assets/library/profile.yaml").to_owned())
         }
-        "/library/onboarding-agent.yaml" => {
-            Ok(include_str!("../../../tonk-core/assets/library/onboarding-agent.yaml").to_owned())
-        }
-        "/library/onboarding-demos.yaml" => {
-            Ok(include_str!("../../../tonk-core/assets/library/onboarding-demos.yaml").to_owned())
-        }
-        "/library/onboarding.yaml" => {
-            Ok(include_str!("../../../tonk-core/assets/library/onboarding.yaml").to_owned())
-        }
         other => Err(TonkWorkerError::Internal(format!(
             "no embedded library for '{other}'"
         ))),
     }
-}
-
-/// Seed a notation document into `branch` by running it through the
-/// evaluate pipeline — the same `parse → analyze → commit` path as
-/// the `/evaluate` route, which commits concept claims and `rule!:`
-/// installs alike. A bad library is a deployment fault, surfaced as
-/// an internal error.
-pub(super) async fn seed_standard_library(
-    tonk: &TonkState,
-    repo: &str,
-    branch: &str,
-    library: &str,
-) -> Result<(), TonkWorkerError> {
-    // Onboarding composes a scaffold, a named repository, an agent supplement,
-    // and an imported application snapshot. These bytes are not core.yaml and
-    // must not advertise it as an upgrade source. Ordinary space creation uses
-    // seed_and_initialize, which records the actual seed separately.
-    super::evaluate::seed_on_branch(
-        tonk,
-        tonk.reactor.repository(repo).branch(branch),
-        library.to_owned(),
-    )
-    .await
-    .map(|_| ())
-    .map_err(|e| {
-        TonkWorkerError::Internal(format!(
-            "failed to seed standard library on branch '{branch}': {e}"
-        ))
-    })
 }
 
 /// Build the notation document asserting the repository's own
@@ -5434,27 +5581,6 @@ async fn record_replica_visibility(
     Ok(())
 }
 
-/// Flip a replica's seeding [`Status`] by stamping a [`SpaceStatus`]
-/// on its entity. `status` is cardinality-one, so the new value
-/// supersedes the prior one. Goes through the reactor (like
-/// [`record_replica_in_profile`]) so the Hub's subscription re-polls
-/// and the card reflects the change.
-///
-/// The replica entity is re-derived from `(profile, subject)` — the
-/// same hash `Replica::new` uses — so no read is needed to find it.
-///
-/// Called from the background seed path, which only runs in the worker.
-pub(super) async fn set_replica_status(
-    tonk: &TonkState,
-    subject: &Did,
-    status: tonk_schema::domain::replica::Status,
-    description: Option<&str>,
-) -> Result<(), RepositoryError> {
-    write_replica_status(tonk, subject, status, description).await?;
-    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
-    Ok(())
-}
-
 async fn write_replica_status(
     tonk: &TonkState,
     subject: &Did,
@@ -5717,22 +5843,17 @@ pub(crate) async fn retract_local_profile_library(
 /// so existing facts cannot suppress unchanged definitions from the result.
 /// `Changes` preserves whether each final write used cardinality-one replace
 /// semantics before any repository commit can deduplicate it.
-fn prepare_profile_library(library: String) -> Result<PreparedProfileLibrary, RepositoryError> {
+async fn prepare_profile_library(
+    library: String,
+) -> Result<PreparedProfileLibrary, RepositoryError> {
     use dialog_artifacts::{Changes, Instruction, Statement as _};
     use dialog_query::{Parameters, Term};
     use tonk_schema::transact::{Planner as _, Statement};
 
     let target = seed_version(&library);
-    let parsed = tonk_notation::parse(&library);
-    if let Some(diagnostic) = parsed.diagnostics.first() {
-        return Err(RepositoryError::Internal(format!(
-            "parse profile library: {}",
-            diagnostic.message
-        )));
-    }
-    let syntax = parsed
-        .syntax
-        .ok_or_else(|| RepositoryError::Internal("profile library is empty".to_owned()))?;
+    let syntax = super::library::parse(&library)
+        .await
+        .map_err(|error| RepositoryError::Internal(format!("profile library: {error}")))?;
     let analyzed = tonk_analyzer::analyzer::analyze_local(&syntax)
         .map_err(|error| RepositoryError::Internal(format!("analyze profile library: {error}")))?;
     let mut bindings = Parameters::new();
@@ -5995,7 +6116,7 @@ pub(crate) async fn reconcile_profile_library_from(
     tonk: &TonkState,
     library: String,
 ) -> Result<ProfileLibraryOutcome, RepositoryError> {
-    let prepared = prepare_profile_library(library)?;
+    let prepared = prepare_profile_library(library).await?;
     reconcile_prepared_profile_library(tonk, prepared).await
 }
 
@@ -8299,6 +8420,7 @@ pub(crate) mod profile_library_tests {
                 tonk,
                 &session,
                 &prepare_profile_library(CURRENT.to_owned())
+                    .await
                     .unwrap()
                     .assertions
             )
@@ -8360,7 +8482,7 @@ pub(crate) mod profile_library_tests {
         assert_eq!(spaces, vec![space]);
         let revision = session.handle().revision();
         // Discard the worker's receipt to exercise persisted idempotence.
-        let fresh = prepare_profile_library(CURRENT.to_owned()).unwrap();
+        let fresh = prepare_profile_library(CURRENT.to_owned()).await.unwrap();
         tonk.profile_library.receipt.lock().unwrap().clear();
         assert_eq!(
             reconcile_prepared_profile_library(tonk, fresh)
@@ -8935,6 +9057,7 @@ route!: &foreign-profile-route
                 .await
                 .expect("profile library installs");
             let expected = prepare_profile_library(CURRENT.to_owned())
+                .await
                 .expect("profile library prepares")
                 .assertions
                 .into_iter()

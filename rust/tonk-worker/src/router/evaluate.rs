@@ -387,13 +387,21 @@ async fn evaluate_on_branch<'a>(
     evaluate_on_branch_with(
         tonk_state,
         tonk_branch,
-        body,
+        Document::Text(body),
         query,
         Retractions::Fixed(Vec::new()),
         None,
         EvaluationMode::Interactive,
     )
     .await
+}
+
+/// What an evaluation runs: request text to parse, or a document already
+/// parsed where it lives with its includes inlined (a seed fetched from a
+/// URL).
+enum Document {
+    Text(Bytes),
+    Parsed(Syntax),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -438,6 +446,7 @@ impl Retractions<'_> {
 
 /// Libraries are known mutation documents. Take the writer lock before their
 /// first evaluation, sharing the interactive path's commit, refresh and retry.
+#[cfg(test)]
 pub(super) async fn seed_on_branch<'a>(
     tonk_state: &'a crate::worker::TonkState,
     tonk_branch: crate::reactor::BranchReference<'a>,
@@ -446,7 +455,28 @@ pub(super) async fn seed_on_branch<'a>(
     evaluate_on_branch_with(
         tonk_state,
         tonk_branch,
-        Bytes::from(body.into_bytes()),
+        Document::Text(Bytes::from(body.into_bytes())),
+        EvaluateQuery { transact: true },
+        Retractions::Fixed(Vec::new()),
+        None,
+        EvaluationMode::LibrarySeed,
+    )
+    .await
+    .map(|(Json(response), _)| response)
+}
+
+/// Seed a document already parsed at its own location, with its includes
+/// inlined. Take the writer lock before evaluation and share commit/retry
+/// behavior with the interactive path.
+pub(super) async fn seed_syntax_on_branch<'a>(
+    tonk_state: &'a crate::worker::TonkState,
+    tonk_branch: crate::reactor::BranchReference<'a>,
+    syntax: Syntax,
+) -> Result<EvaluateResponse, TonkWorkerError> {
+    evaluate_on_branch_with(
+        tonk_state,
+        tonk_branch,
+        Document::Parsed(syntax),
         EvaluateQuery { transact: true },
         Retractions::Fixed(Vec::new()),
         None,
@@ -481,7 +511,7 @@ pub(super) async fn seed_on_branch<'a>(
 async fn evaluate_on_branch_with<'a>(
     tonk_state: &'a crate::worker::TonkState,
     tonk_branch: crate::reactor::BranchReference<'a>,
-    body: Bytes,
+    body: Document,
     query: EvaluateQuery,
     retract: Retractions<'a>,
     record: Option<SeedRecord<'_>>,
@@ -489,12 +519,22 @@ async fn evaluate_on_branch_with<'a>(
 ) -> Result<(Json<EvaluateResponse>, Option<Changes>), TonkWorkerError> {
     let total_start = web_time::Instant::now();
     let evaluation_passes = std::sync::atomic::AtomicUsize::new(0);
-    let text = std::str::from_utf8(&body)
-        .map_err(|e| TonkWorkerError::Router(format!("body is not valid UTF-8: {e}")))?;
-
     let t_parse = web_time::Instant::now();
-    let parsed = parse(text);
-    let syntax = surface_parse_diagnostics(parsed)?;
+    let syntax = match body {
+        // Already parsed where it lives, its includes inlined.
+        Document::Parsed(syntax) => syntax,
+        Document::Text(body) => {
+            let text = std::str::from_utf8(&body)
+                .map_err(|e| TonkWorkerError::Router(format!("body is not valid UTF-8: {e}")))?;
+            // A library seed is parsed where the library lives, so it can
+            // `!include` the files beside it. Anything else arrived as a
+            // request body with no location of its own, and may not.
+            match mode {
+                EvaluationMode::Interactive => surface_parse_diagnostics(parse(text))?,
+                _ => super::library::parse(text).await?,
+            }
+        }
+    };
     let parse_ms = t_parse.elapsed().as_millis();
 
     let exprs = syntax.expressions.len();
@@ -829,7 +869,7 @@ pub async fn evaluate_body_recording(
     evaluate_on_branch_with(
         tonk_state,
         tonk_branch,
-        bytes,
+        Document::Text(bytes),
         query,
         Retractions::Fixed(Vec::new()),
         Some(record),
@@ -860,7 +900,7 @@ pub async fn evaluate_with_retractions(
     evaluate_on_branch_with(
         tonk_state,
         tonk_branch,
-        bytes,
+        Document::Text(bytes),
         query,
         Retractions::Fixed(retract),
         Some(record),
@@ -886,7 +926,7 @@ pub async fn evaluate_profile_body_recording(
     evaluate_on_branch_with(
         tonk_state,
         tonk_branch,
-        bytes,
+        Document::Text(bytes),
         query,
         Retractions::Fixed(Vec::new()),
         Some(record),
@@ -912,7 +952,7 @@ pub(super) async fn evaluate_profile_with_retraction_plan<'a>(
     evaluate_on_branch_with(
         tonk_state,
         tonk_branch,
-        Bytes::from(body.into_bytes()),
+        Document::Text(Bytes::from(body.into_bytes())),
         EvaluateQuery { transact: true },
         Retractions::Planned { retract, desired },
         Some(record),
@@ -1199,7 +1239,6 @@ mod tests {
         for library in [
             include_str!("../../../tonk-core/assets/library/core.yaml"),
             include_str!("../../../tonk-core/assets/library/profile.yaml"),
-            include_str!("../../../tonk-core/assets/library/onboarding-agent.yaml"),
         ] {
             let single_before = facts(&single, &single_repo).await;
             let interactive_before = facts(&interactive, &interactive_repo).await;
@@ -1262,7 +1301,7 @@ mod tests {
         let response = super::evaluate_on_branch_with(
             &tonk,
             tonk.reactor.repository(&repo).branch("main"),
-            CONCEPTS.to_owned().into(),
+            super::Document::Text(CONCEPTS.to_owned().into()),
             super::EvaluateQuery { transact: true },
             super::Retractions::Planned {
                 retract: &retractions,

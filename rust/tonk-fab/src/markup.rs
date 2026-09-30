@@ -21,6 +21,7 @@
 /// [`crate::skin::SKIN`] in the bar's shadow root.
 pub const BAR_CSS: &str = r#"
 :host{ display:inline-block; max-width:100%; vertical-align:top; --fabb-space-width:360px;
+  --_ease:cubic-bezier(0.25,0.46,0.45,0.94);
   transition:left .4s var(--_ease),top .4s var(--_ease),transform .2s var(--_ease); }
 :host([dragging]){ transition:none; }
 :host([hidden]){ display:none; }
@@ -35,7 +36,11 @@ pub const BAR_CSS: &str = r#"
   grid-template-columns:calc(var(--fabb-space-width) - 3px) minmax(0,1fr); }
 .w.closing-panel{ width:min(var(--fabb-space-width),var(--_room,calc(100vw - 32px)),calc(100vw - 32px)); }
 .w.closing-panel .panel > *{ visibility:hidden; }
-.bar{ min-width:0; position:relative; display:flex; flex-direction:column; }
+/* Telescope a full-sized rail through the surface; never reflow its contents
+   through the intermediate widths between the circle and the open bar. */
+.bar{ min-width:0; width:calc(min(var(--fabb-space-width),var(--_room,calc(100vw - 32px)),calc(100vw - 32px)) - 3px);
+  position:relative; display:flex; flex-direction:column; }
+.w.flip .bar{ justify-self:end; }
 :host([up]) .bar{ flex-direction:column-reverse; }
 .header{ height:48px; display:flex; align-items:stretch; cursor:grab; touch-action:none; user-select:none; }
 :host([dragging]) .header,:host([dragging]) .header button{ cursor:grabbing; }
@@ -106,8 +111,10 @@ button,a{ min-height:48px; font:600 17px/1.1 'IBM Plex Sans Condensed','Arial Na
 :host([alert]) .share{ animation:fabb-wash var(--_blink) var(--_ease) infinite; }
 :host([alert]) .share:hover{ animation:none; }
 :host([data-account-required][alert]) .disc.st{ animation:none; }
-.w.collapsed{ width:51px; grid-template-columns:48px; border-radius:50%; overflow:hidden; }
-.w.collapsed .space,.w.collapsed .run,.w.collapsed .panel{ display:none!important; }
+.w:not(.menu-open){ overflow:hidden; }
+.w.collapsed{ width:51px; border-radius:25px; overflow:hidden; }
+.w.collapsed .space{ visibility:hidden; }
+.w.collapsed .run,.w.collapsed .panel{ display:none!important; }
 .w.flip.has-panel:not(.stacked){ grid-template-columns:minmax(0,1fr) calc(var(--fabb-space-width) - 3px); }
 .w.flip.has-panel:not(.stacked) .bar{ grid-column:2; grid-row:1; }
 .w.flip.has-panel:not(.stacked) .panel{ grid-column:1; grid-row:1; }
@@ -436,8 +443,8 @@ mod tests {
     #[test]
     fn it_collapses_to_the_48px_circle_at_every_width() {
         assert!(BAR_CSS.contains(".w.collapsed{ width:51px"));
-        assert!(BAR_CSS.contains("grid-template-columns:48px"));
-        assert!(BAR_CSS.contains(".w.collapsed .space,.w.collapsed .run,.w.collapsed .panel"));
+        assert!(BAR_CSS.contains(".w.collapsed .space{ visibility:hidden; }"));
+        assert!(BAR_CSS.contains(".w.collapsed .run,.w.collapsed .panel"));
         assert!(!BAR_CSS.contains(".w.compact"));
     }
 
