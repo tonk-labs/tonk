@@ -27,3 +27,9 @@ the unchanged compiled binary passed with storage access. Built with the local
 `profile.test.package.tonk-worker.opt-level=0` override to reduce compile time.
 Final `cargo fmt --all -- --check` and `git diff --check` passed. No full app E2E or hosted CI
 has been run.
+
+CI follow-up: the shipped-library inlining test still expected the retired
+`on/space-remove` binding. Pin the profile's declarative rename form instead,
+preserving the check that real profile bindings are inlined. The focused failing
+test and all six `analyzer::library_analysis_tests` passed locally after this
+test-only correction; formatting and diff checks passed. Full CI must rerun.
