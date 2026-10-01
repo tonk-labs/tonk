@@ -85,6 +85,15 @@ async fn main() {
                 tonk_ui::register_dialog::resume();
                 return;
             }
+            // Option on "add an account": sign in through the Tonk that
+            // holds the account rather than with a passkey on this one.
+            "sign-in-via" if !tonk_ui::register_dialog::is_open() => {
+                let restore = return_focus.map(|return_focus| {
+                    Box::new(move || return_focus.restore()) as Box<dyn FnOnce()>
+                });
+                tonk_ui::register_dialog::open_sign_in_via(&request, restore);
+                return;
+            }
             _ => {}
         }
         if tonk_ui::register_dialog::is_open() {

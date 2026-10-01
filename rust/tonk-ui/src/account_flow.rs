@@ -9442,19 +9442,28 @@ pub(crate) mod tests {
     }
 
     /// Sign the sibling deployment in through `home`, the way a person
-    /// does: ask on the sibling, approve on `home` with its passkey, and
-    /// come back to the sibling's Hub. Reports the pane's status and the
-    /// browser log when the sibling never comes back signed in.
+    /// does: Option on its "add an account", name `home` in the dialog that
+    /// asks which Tonk, approve on `home` with its passkey, and come back to
+    /// the sibling's Hub. Reports the pane's status and the browser log when
+    /// the sibling never comes back signed in.
     async fn sign_in_through(driver: &WebDriver, env: &TestEnvironment, home: &str) -> Result<()> {
         let here = env.sibling_web();
         let here_origin = here.origin().ascii_serialization();
-        let mut ask = here.join("settings/link")?;
-        ask.query_pairs_mut().append_pair("via", home);
-        goto(driver, ask.as_str()).await?;
+        // Option on "add an account" asks which Tonk holds the account.
+        goto(driver, here.as_str()).await?;
         enter_hub(driver).await?;
-        wait_for_displayed(driver, "account-settings [data-pane=\"via\"]").await?;
-        wait_for_text(driver, "[data-via-origin]", home).await?;
-        click(driver, "[data-via-continue]").await?;
+        let trigger = wait_for_displayed(driver, "[data-account-trigger]").await?;
+        driver
+            .action_chain()
+            .key_down(Key::Alt)
+            .click_element(&trigger)
+            .key_up(Key::Alt)
+            .perform()
+            .await?;
+        driver.enter_default_frame().await?;
+        let field = wait_for_displayed(driver, "#tonk-register #tonk-register-via").await?;
+        field.send_keys(home).await?;
+        click(driver, "#tonk-register #tonk-register-action").await?;
 
         // On the deployment holding the account, the approval names the
         // page the grant would go to.

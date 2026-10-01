@@ -362,11 +362,11 @@
       "variants": "Empty, same-account, unrelated-account, or malformed-legacy CLI; person link; repeated bearer holders; independent issuers/invites; fresh/returning space; profile/space switch; restart; offline or revoked authority."
     },
     {
-      "evidence": "Worker unit and store tests for the request binding, grant install, and provisioning at the account's deployment; settings-element tests for the via pane (the answer waits for the bound display) and a web request's approval pane; whole real-browser flow across two deployments with separate access services: sign in, then a space made on the asking deployment provisions, pushes, and is recovered at home.",
+      "evidence": "Worker unit and store tests for the request binding, grant install, and provisioning at the account's deployment; settings-element tests for the via pane (the answer waits for the bound display), the Option press on the account cell, and a web request's approval pane; dialog tests for the Tonk address it accepts; whole real-browser flow across two deployments with separate access services: sign in, then a space made on the asking deployment provisions, pushes, and is recovered at home.",
       "gaps": "Asking browser reloaded or closed mid-approval, service worker restarted between ask and answer, a space created before the account's encryption key has synced in, revoking the asking browser from the approving one, an approving deployment older than the asking one.",
       "group": "Accounts: CLI and browser handoff",
       "id": "ACCT-C15",
-      "title": "Sign a browser in through another deployment: open /settings/link?via=<origin> on a deployment that does not hold the account, approve there with its passkey, and come back signed in.",
+      "title": "Sign a browser in through another deployment: Option+click \"add an account\" (or open /account?via) on a deployment that does not hold the account, name the Tonk that does, approve there with its passkey, and come back signed in. /settings/link?via=<origin> asks for a named Tonk directly.",
       "variants": "Unlinked asking browser; asking branch already following an account; approve/decline; answer replayed, crafted, or late."
     },
     {

@@ -2077,6 +2077,119 @@ mod tests {
         bar.remove();
     }
 
+    /// Option on "add an account" asks which Tonk to sign in through: the
+    /// account page reached with a bare `?via` raises that ceremony rather
+    /// than the email one.
+    #[dialog_common::test]
+    async fn it_asks_which_tonk_on_an_account_page_reached_with_option() {
+        install_fake_host();
+        install();
+        let calls = record_bridge_calls("register");
+        set_context(&[
+            ("origin", "https://tonk.test"),
+            ("path", "/account"),
+            ("search", "?via"),
+        ]);
+        let bar = document().create_element("nav").expect("bar");
+        bar.set_class_name("hubbar");
+        bar.set_inner_html(
+            r#"<a data-account-trigger><span data-account-link data-state="loading"></span></a>"#,
+        );
+        document()
+            .body()
+            .expect("body")
+            .append_child(&bar)
+            .expect("attach");
+        let host = account_settings(r#"<div class="pane" data-pane="account"></div>"#);
+        settle_briefly().await;
+        let before = calls.length();
+        let registration = bar
+            .query_selector("[data-account-link]")
+            .expect("query")
+            .expect("the link display");
+        let _ = registration.set_attribute("data-state", "empty");
+        settle_until(|| calls.length() > before).await;
+        let asked: serde_json::Value =
+            serde_json::from_str(&calls.get(before).as_string().expect("a payload")).expect("json");
+        assert_eq!(asked["reason"], "sign-in-via");
+        // Close the ceremony the way the top page does, and let the panel
+        // settle, so nothing it raised is still up to be suspended into
+        // whichever test records next.
+        let closed = js_sys::Function::new_no_args(
+            "window.dispatchEvent(new CustomEvent('tonk:registration-closed'));",
+        );
+        let _ = closed.call0(&JsValue::NULL);
+        settle_until(|| host.get_attribute("data-linking").as_deref() != Some("true")).await;
+        settle_briefly().await;
+        host.remove();
+        bar.remove();
+        set_context(&[
+            ("origin", "https://tonk.test"),
+            ("path", "/"),
+            ("search", ""),
+        ]);
+    }
+
+    /// Option on the account cell points its link at the ask for another
+    /// Tonk for the click it is held through, and the link is put back
+    /// after. Without Option the link is left alone.
+    #[dialog_common::test]
+    async fn it_points_the_account_link_at_another_tonk_while_option_is_held() {
+        install_fake_host();
+        install();
+        define_from_library(PROFILE_LIBRARY, "hub-bar");
+        let bar = document().create_element("hub-bar").expect("bar");
+        bar.set_inner_html(
+            r#"<nav><a data-account-trigger href="/account">add an account</a></nav>"#,
+        );
+        document()
+            .body()
+            .expect("body")
+            .append_child(&bar)
+            .expect("attach");
+        settle_until(|| defined("hub-bar")).await;
+        settle_briefly().await;
+        let trigger = bar
+            .query_selector("[data-account-trigger]")
+            .expect("query")
+            .expect("the account cell");
+        // Stands in for the guest's relay, which takes every link click
+        // before the page could follow it.
+        let hold = js_sys::Function::new_with_args(
+            "add",
+            "const hold = (event) => event.preventDefault();
+             if (add) { globalThis.__tonkHoldClicks = hold; document.addEventListener('click', hold, true); }
+             else { document.removeEventListener('click', globalThis.__tonkHoldClicks, true); }",
+        );
+        let _ = hold.call1(&JsValue::NULL, &JsValue::TRUE);
+        let fire = js_sys::Function::new_with_args(
+            "target, type, alt",
+            "const init = { bubbles: true, cancelable: true, altKey: alt };
+             target.dispatchEvent(type === 'pointerdown' ? new PointerEvent(type, init) : new MouseEvent(type, init));",
+        );
+        let press = |kind: &str, alt: bool| {
+            let _ = fire.call3(&JsValue::NULL, &trigger, &kind.into(), &alt.into());
+        };
+
+        press("pointerdown", false);
+        assert_eq!(trigger.get_attribute("href").as_deref(), Some("/account"));
+        press("pointerdown", true);
+        assert_eq!(
+            trigger.get_attribute("href").as_deref(),
+            Some("/account?via")
+        );
+        press("click", true);
+        settle_briefly().await;
+        assert_eq!(
+            trigger.get_attribute("href").as_deref(),
+            Some("/account"),
+            "the link is put back once the click has been followed"
+        );
+
+        let _ = hold.call1(&JsValue::NULL, &JsValue::FALSE);
+        bar.remove();
+    }
+
     /// A bare settings page with no account here goes to the account
     /// page, where signing up happens, instead of raising the ceremony.
     #[dialog_common::test]
