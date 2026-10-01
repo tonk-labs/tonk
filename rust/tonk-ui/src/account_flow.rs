@@ -9452,7 +9452,14 @@ pub(crate) mod tests {
         // Option on "add an account" asks which Tonk holds the account.
         goto(driver, here.as_str()).await?;
         enter_hub(driver).await?;
-        let trigger = wait_for_displayed(driver, "[data-account-trigger]").await?;
+        // Pressed once the bar is live and the cell offers to add an
+        // account: before that, the link is the bare page's `/settings`
+        // and nothing yet hears Option.
+        let trigger = wait_for_displayed(
+            driver,
+            "hub-bar:defined [data-account-trigger][href=\"/account\"]",
+        )
+        .await?;
         driver
             .action_chain()
             .key_down(Key::Alt)

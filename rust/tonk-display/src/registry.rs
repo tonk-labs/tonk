@@ -2130,9 +2130,11 @@ mod tests {
         ]);
     }
 
-    /// Option on the account cell points its link at the ask for another
-    /// Tonk for the click it is held through, and the link is put back
-    /// after. Without Option the link is left alone.
+    /// Option on "add an account" points the link at the ask for another
+    /// Tonk for that one click: the guest's relay, which reads the link at
+    /// the document, sees `/account?via`, and the link is put back after.
+    /// Without Option, or on a cell that is not offering to add an account,
+    /// the relay reads the link as it is.
     #[dialog_common::test]
     async fn it_points_the_account_link_at_another_tonk_while_option_is_held() {
         install_fake_host();
@@ -2153,40 +2155,51 @@ mod tests {
             .query_selector("[data-account-trigger]")
             .expect("query")
             .expect("the account cell");
-        // Stands in for the guest's relay, which takes every link click
-        // before the page could follow it.
-        let hold = js_sys::Function::new_with_args(
+        // Stands in for the guest's relay: it takes every link click at
+        // the document, capturing, and follows the link as it reads then.
+        let relay = js_sys::Function::new_with_args(
             "add",
-            "const hold = (event) => event.preventDefault();
-             if (add) { globalThis.__tonkHoldClicks = hold; document.addEventListener('click', hold, true); }
-             else { document.removeEventListener('click', globalThis.__tonkHoldClicks, true); }",
+            "if (add) {
+               globalThis.__tonkRelayed = [];
+               globalThis.__tonkRelay = (event) => {
+                 event.preventDefault();
+                 globalThis.__tonkRelayed.push(event.target.closest('a')?.getAttribute('href'));
+               };
+               document.addEventListener('click', globalThis.__tonkRelay, true);
+             } else {
+               document.removeEventListener('click', globalThis.__tonkRelay, true);
+             }
+             return globalThis.__tonkRelayed;",
         );
-        let _ = hold.call1(&JsValue::NULL, &JsValue::TRUE);
-        let fire = js_sys::Function::new_with_args(
-            "target, type, alt",
-            "const init = { bubbles: true, cancelable: true, altKey: alt };
-             target.dispatchEvent(type === 'pointerdown' ? new PointerEvent(type, init) : new MouseEvent(type, init));",
+        let relayed: js_sys::Array = relay
+            .call1(&JsValue::NULL, &JsValue::TRUE)
+            .expect("the relay")
+            .unchecked_into();
+        let click = js_sys::Function::new_with_args(
+            "target, alt",
+            "target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, altKey: alt }));",
         );
-        let press = |kind: &str, alt: bool| {
-            let _ = fire.call3(&JsValue::NULL, &trigger, &kind.into(), &alt.into());
+        let press = |alt: bool| {
+            let _ = click.call2(&JsValue::NULL, &trigger, &alt.into());
         };
+        let followed = |at: u32| relayed.get(at).as_string();
 
-        press("pointerdown", false);
-        assert_eq!(trigger.get_attribute("href").as_deref(), Some("/account"));
-        press("pointerdown", true);
-        assert_eq!(
-            trigger.get_attribute("href").as_deref(),
-            Some("/account?via")
-        );
-        press("click", true);
+        press(false);
+        assert_eq!(followed(0).as_deref(), Some("/account"));
+        press(true);
+        assert_eq!(followed(1).as_deref(), Some("/account?via"));
         settle_briefly().await;
         assert_eq!(
             trigger.get_attribute("href").as_deref(),
             Some("/account"),
             "the link is put back once the click has been followed"
         );
+        // A signed-in cell goes to the account's settings, Option or not.
+        let _ = trigger.set_attribute("href", "/settings");
+        press(true);
+        assert_eq!(followed(2).as_deref(), Some("/settings"));
 
-        let _ = hold.call1(&JsValue::NULL, &JsValue::FALSE);
+        let _ = relay.call1(&JsValue::NULL, &JsValue::FALSE);
         bar.remove();
     }
 

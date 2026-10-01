@@ -2519,30 +2519,20 @@ element!: &hub-bar
           }
         }
       }
-    # Option (Alt) on the account cell signs in through another Tonk. The
-    # press points the link at `/account?via`, the click that follows routes
-    # there the ordinary way, and the link is put back after it. The link
-    # moves rather than the click being caught because the guest relays link
-    # clicks before any element sees them.
+    # Option (Alt) on "add an account" signs in through another Tonk: for
+    # that one click the link points at `/account?via`, and it is put back
+    # after. The window sees a click before the guest's relay at the
+    # document reads the link, so the click routes there the ordinary way.
     option-account: |
       (self, event) => {
+        if (!event.altKey) return;
         const trigger = event.target?.closest?.('[data-account-trigger]');
-        if (!trigger) return;
-        const via = '/account?via';
-        if (!event.altKey) {
-          self.plainAccount(trigger);
-          return;
-        }
-        if (trigger.getAttribute('href') === via) return;
-        trigger.dataset.plainHref = trigger.getAttribute('href') ?? '/account';
-        trigger.setAttribute('href', via);
-      }
-    plain-account: |
-      (self, trigger) => {
-        const plain = trigger?.dataset?.plainHref;
-        if (!plain) return;
-        delete trigger.dataset.plainHref;
-        if (trigger.getAttribute('href') === '/account?via') trigger.setAttribute('href', plain);
+        if (!trigger || !self.contains(trigger)) return;
+        if (trigger.getAttribute('href') !== '/account') return;
+        trigger.setAttribute('href', '/account?via');
+        setTimeout(() => {
+          if (trigger.getAttribute('href') === '/account?via') trigger.setAttribute('href', '/account');
+        }, 0);
       }
     connected: |
       (self) => {
@@ -2550,22 +2540,15 @@ element!: &hub-bar
         const moved = () => self.route();
         window.addEventListener('tonk:context', moved);
         self._moved = moved;
-        if (!self._option) {
-          self._option = (event) => {
-            if (event.type === 'keydown' && event.key !== 'Enter') return;
-            self.optionAccount(event);
-          };
-          for (const type of ['pointerdown', 'keydown']) self.addEventListener(type, self._option, true);
-          // After the click: the relay has read the link by then.
-          self.addEventListener('click', (event) => {
-            const trigger = event.target?.closest?.('[data-account-trigger]');
-            if (trigger?.dataset.plainHref) setTimeout(() => self.plainAccount(trigger), 0);
-          });
-        }
+        if (self._option) window.removeEventListener('click', self._option, true);
+        self._option = (event) => self.optionAccount(event);
+        window.addEventListener('click', self._option, true);
       }
     disconnected: |
       (self) => {
         if (self._moved) window.removeEventListener('tonk:context', self._moved);
+        if (self._option) window.removeEventListener('click', self._option, true);
+        self._option = null;
       }
     released: |
       (self) => self.disconnected()
