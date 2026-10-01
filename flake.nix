@@ -593,25 +593,28 @@
             fixupPhase = darwinBinaryFixup;
           };
 
-          tonk-ui = buildTrunkCrate {
-            pname = "tonk-ui";
-            trunkConfig = "./rust/tonk-ui/Trunk.toml";
-            TONK_POSTHOG_KEY = posthogKey;
-            postFixup = ''
-              ${./rust/tonk-ui/scripts/stamp-service-worker.sh} "$out"
-            '';
-          };
+          tonk-ui =
+            (buildTrunkCrate {
+              pname = "tonk-ui";
+              trunkConfig = "./rust/tonk-ui/Trunk.toml";
+              TONK_POSTHOG_KEY = posthogKey;
+              postFixup = ''
+                ${./rust/tonk-ui/scripts/stamp-service-worker.sh} "$out"
+              '';
+            }).overrideAttrs
+              (old: {
+                # Enable invitations in every deployment, including production.
+                # Select features per binary; the guest crate has no such feature.
+                preBuild = old.preBuild + ''
+                  sed -i \
+                    -e 's/data-bin="ui"/data-bin="ui" data-cargo-features="connection-invites"/' \
+                    -e 's/data-bin="worker"/data-bin="worker" data-cargo-features="connection-invites"/' \
+                    index.html
+                '';
+              });
 
-          # Enable invitations in PR previews and staging deployments.
-          # Select features per binary; the guest crate has no such feature.
-          tonk-ui-preview = tonk-ui.overrideAttrs (old: {
+          tonk-ui-preview = tonk-ui.overrideAttrs (_: {
             pname = "tonk-ui-preview";
-            preBuild = old.preBuild + ''
-              sed -i \
-                -e 's/data-bin="ui"/data-bin="ui" data-cargo-features="connection-invites"/' \
-                -e 's/data-bin="worker"/data-bin="worker" data-cargo-features="connection-invites"/' \
-                index.html
-            '';
           });
 
           tonk-access-service = buildWasmCrate {
