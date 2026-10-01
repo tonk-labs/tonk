@@ -9514,6 +9514,62 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// Option after a plain "add an account": the email ceremony the plain
+    /// click raised, left suspended by going back to the spaces, gives way
+    /// to the one asking which Tonk instead of coming back.
+    #[dialog_common::test]
+    async fn it_asks_which_tonk_after_a_plain_add_an_account(env: TestEnvironment) -> Result<()> {
+        let driver = driver_with_prf(&env).await?;
+        goto(&driver, env.tonk_web.as_str()).await?;
+        enter_hub(&driver).await?;
+        let cell = "hub-bar:defined [data-account-trigger][href=\"/account\"]";
+        wait_for_displayed(&driver, cell).await?.click().await?;
+        driver.enter_default_frame().await?;
+        wait_for_displayed(&driver, "#tonk-register #tonk-register-email").await?;
+
+        // Back to the spaces: the ceremony is suspended, not closed.
+        driver.back().await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        while driver.current_url().await?.path() != "/"
+            || driver
+                .execute(
+                    "return !!document.querySelector('#tonk-register')?.open",
+                    Vec::new(),
+                )
+                .await?
+                .json()
+                .as_bool()
+                == Some(true)
+        {
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "going back did not suspend the ceremony"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        enter_hub(&driver).await?;
+        let trigger = wait_for_displayed(&driver, cell).await?;
+        driver
+            .action_chain()
+            .key_down(Key::Alt)
+            .click_element(&trigger)
+            .key_up(Key::Alt)
+            .perform()
+            .await?;
+        driver.enter_default_frame().await?;
+        wait_for_displayed(&driver, "#tonk-register #tonk-register-via").await?;
+        anyhow::ensure!(
+            driver
+                .find(By::Css("#tonk-register #tonk-register-email"))
+                .await
+                .is_err(),
+            "the email face is still up beside the one asking which Tonk"
+        );
+        driver.quit().await?;
+        Ok(())
+    }
+
     /// Signing a browser in through another deployment, the browser's
     /// `tonk account login --via`, and then using it. A browser on a second
     /// deployment, which has never seen the account or its passkey, asks

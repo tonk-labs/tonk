@@ -174,12 +174,62 @@ const VIA_HTML: &str = r##"
 </div>
 "##;
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const VIA_INPUT: &str = "#tonk-register-via";
 
 /// Raise the dialog. A no-op while one is already up.
 pub fn open() {
     open_with_return(None);
+}
+
+/// Raise the face that asks which Tonk to sign in through, for a guest's
+/// request. A cluster standing for the email, open or suspended on a route
+/// change, gives way to it; one already asking which Tonk is re-seated and
+/// shown, typed address and all.
+pub fn raise_sign_in_via(request: &Request, guest_restore: Option<Box<dyn FnOnce()>>) {
+    if stands() && !is_sign_in_via() {
+        give_way();
+    }
+    if stands() {
+        reanchor(request);
+        resume();
+        return;
+    }
+    open_sign_in_via(request, guest_restore);
+}
+
+/// Before raising the email face for a guest's request: a cluster standing
+/// to ask which Tonk gives way to it.
+pub fn leave_sign_in_via() {
+    if is_sign_in_via() {
+        give_way();
+    }
+}
+
+/// Whether a cluster stands in this document, open or suspended.
+pub fn stands() -> bool {
+    web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.get_element_by_id(DIALOG_ID))
+        .is_some()
+}
+
+/// Whether the standing cluster is the face asking which Tonk to sign in
+/// through.
+pub fn is_sign_in_via() -> bool {
+    web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.get_element_by_id(DIALOG_ID))
+        .and_then(|host| host.query_selector(VIA_INPUT).ok().flatten())
+        .is_some()
+}
+
+/// Take the standing cluster down so its other face can stand in its
+/// place. The guest that asked is not told a ceremony closed, since its
+/// ceremony goes on as the other face: the old opener's return is dropped
+/// rather than restored.
+fn give_way() {
+    RETURN_FOCUS.with(|held| held.borrow_mut().take());
+    close();
 }
 
 /// Raise the cluster to sign in through another Tonk, seated where the
@@ -3265,6 +3315,52 @@ mod tests {
         );
         dialog.close();
         host.remove();
+    }
+
+    /// The face a guest asks for is the face that stands. An email cluster
+    /// suspended on a route change gives way when the face asking which
+    /// Tonk is asked for; that face, asked for again, keeps what was typed;
+    /// and it gives way in turn when the email is asked for.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_raises_the_face_each_request_asks_for() {
+        use wasm_bindgen::JsCast as _;
+
+        super::close();
+        super::open();
+        assert!(super::stands() && !super::is_sign_in_via());
+        super::suspend();
+        super::wait_ms(10).await;
+        assert!(!super::is_open(), "a route change suspends the email face");
+
+        let request = super::parse_request(r#"{"reason":"sign-in-via","space":""}"#);
+        super::raise_sign_in_via(&request, None);
+        assert!(
+            super::is_sign_in_via(),
+            "the suspended email face gave way to the one asking which Tonk"
+        );
+        let typed = || {
+            web_sys::window()
+                .unwrap()
+                .document()
+                .unwrap()
+                .query_selector(super::VIA_INPUT)
+                .unwrap()
+                .expect("the tonk address field")
+                .dyn_into::<web_sys::HtmlInputElement>()
+                .unwrap()
+        };
+        typed().set_value("tonk.network");
+        super::raise_sign_in_via(&request, None);
+        assert_eq!(
+            typed().value(),
+            "tonk.network",
+            "asked again, it keeps what was typed"
+        );
+
+        super::leave_sign_in_via();
+        assert!(!super::stands(), "it gives way when the email is asked for");
+        super::close();
     }
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
