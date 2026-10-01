@@ -52,7 +52,8 @@ even though the CLI flushes the batch only when the command finishes.
 | `account_event` | The same closed account journey schema emitted by the CLI. |
 | `visit` | `schema_version=2`, `channel` (`warm_outreach` / `organic_reshare` / `clearnet_discovery`), `attribution_source` (`url_parameter` / `utm` / `referrer` / `inferred`), `source_platform` (the closed list below), `source_detection` (`url_parameter` / `utm` / `referrer` / `direct`), `entry_type` (`tonk_network` / `shared_space`), normalized `entry_route`, and optional hashed `entry_space_id` |
 | `account_created` | `schema_version`; fired after account creation, configured enrollment, and a background refresh of the hashed profile identity, even though the account journey then waits for email activation |
-| `space_conversion` | `schema_version`, `conversion` (`created` / `joined`), hashed `space_id` |
+| `space_conversion` | `schema_version`, `conversion` (`created` / `joined`), hashed `space_id`, optional hashed `template_id` after successful catalog template installation |
+| `space_entered` | `schema_version`, hashed `space_id`; initial space routes and navigation between spaces, excluding internal route changes. See [Discover metric definitions](analytics/discover.md). |
 | `space_shared` | `schema_version`, hashed `space_id`; fired only after an invite is successfully minted |
 | `product_event` | Closed product interaction lifecycle for startup, active Settings/profile operations, invite resolution/retry, share-and-copy, sheet activation, and CLI operations. |
 
