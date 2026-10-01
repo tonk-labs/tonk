@@ -9568,10 +9568,7 @@ pub(crate) mod tests {
         wait_for_service_worker(&driver).await?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
         let mut restored = get_json(&driver, &format!("/api/repository/{key}")).await?;
-        while !restored["status"]
-            .as_u64()
-            .is_some_and(|status| status == 200)
-        {
+        while restored["status"].as_u64() != Some(200) {
             anyhow::ensure!(
                 tokio::time::Instant::now() < deadline,
                 "the home device never found the space made on the other deployment: {restored}"
