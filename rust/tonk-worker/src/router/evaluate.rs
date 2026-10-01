@@ -806,10 +806,9 @@ async fn evaluate_on_branch_with<'a>(
 /// the same logic as [`evaluate_on_branch`] but accepts plain
 /// `String` arguments instead of HTTP-level types so the bridge
 /// handler can call it without constructing an axum request.
-/// Gated to match its callers: every seeding path that needs its record
-/// to name the installing commit now goes through
-/// [`evaluate_body_recording`], leaving this reachable only from tests
-/// and the service worker.
+/// Gated to match its callers: seed installs stage their own commits
+/// (see the repository module's `stage_reinstall`), leaving this reachable
+/// only from tests and the service worker.
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 pub async fn evaluate_body(
     tonk_state: &crate::worker::TonkState,
@@ -851,11 +850,12 @@ pub async fn evaluate_body_with_transients(
 /// [`evaluate_body`], with a second commit that names the first's
 /// version.
 ///
-/// The seed install's entry point. The document stages, its minted
-/// version is handed to `record`, and the facts that come back commit as
-/// the next link of the same batch — one publish for both. Nothing
-/// predicts a version, and no reader ever sees a library without the
-/// record describing it.
+/// How seeds were installed before installs were complete: the document
+/// stages, its minted version is handed to `record`, and the facts that
+/// come back commit as the next link of the same batch. Seeds now install
+/// through the repository module's `stage_reinstall`; tests use this to
+/// create spaces the way earlier releases did.
+#[cfg(test)]
 pub async fn evaluate_body_recording(
     tonk_state: &crate::worker::TonkState,
     repo: &str,

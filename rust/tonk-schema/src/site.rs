@@ -18,7 +18,9 @@
 use dialog_artifacts::Entity;
 use dialog_query::Concept;
 
-use crate::domain::route::{Concept as RoutePathConcept, Path as RouteTablePath};
+use crate::domain::route::{
+    Concept as RoutePathConcept, DefaultConcept as RouteDefaultConcept, Path as RouteTablePath,
+};
 use crate::domain::site::{
     Anchor, Branch, BranchEntity, Concept as SiteConcept, Path, ProfileBranch, Replica,
     Route as SiteRoute, Space,
@@ -201,6 +203,22 @@ pub struct Route {
     pub concept: RoutePathConcept,
 }
 
+/// A route a library ships as a default: what to mount at `path` unless the
+/// space routes that path itself.
+///
+/// A rule in the library writes a [`Route`] from each default whose path no
+/// route claims, on the default's own entity. The router reads that entity
+/// as a default and lets a route the space wrote win over it.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RouteDefault {
+    /// The default's entity, which also carries the route it writes.
+    pub this: Entity,
+    /// The axum/matchit path pattern.
+    pub path: RouteTablePath,
+    /// The route model mounted when no route of the space claims the path.
+    pub concept: RouteDefaultConcept,
+}
+
 /// A seed-update check IN FLIGHT on this device, keyed on the replica.
 ///
 /// The replica entity already pairs this profile with this subject, and
@@ -283,4 +301,19 @@ pub struct SeedInstalled {
     pub prior: crate::domain::seed::Prior,
     /// The version of the commit that installed it.
     pub version: crate::domain::seed::Version,
+}
+
+/// Whether a seed's install commit holds every claim of its library, on the
+/// same entity as [`SeedInstalled`].
+///
+/// Kept apart from [`SeedInstalled`] so installs written before it existed
+/// still read as installs: their upgrade reverts every recorded install
+/// instead of the last one.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SeedComplete {
+    /// The seed's entity: the content hash of its bytes.
+    pub this: Entity,
+    /// The version of the install it vouches for; an install whose
+    /// version differs, or that has none, was written in place.
+    pub complete: crate::domain::seed::Complete,
 }

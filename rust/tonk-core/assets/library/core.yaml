@@ -1636,11 +1636,39 @@ concept!: &space
       as: entity
 
 # The space's default content: the blank canvas. The space route mounts
-# `<tonk-display entity={replica} model=tonk/space>`; this alias resolves
-# `tonk/space` to `tonk:blank`. `name!` is cardinality-one, so anything
-# authored into a space later can re-point the alias at its own root
-# model and take over the space home.
-name!:
+# `<tonk-display entity={replica} model=tonk/space>`, and `tonk/space`
+# points at the blank canvas until the space points it at its own root
+# model, which takes over the space home.
+#
+# A default rather than a `name!`. Every upgrade reverts what the last
+# install wrote and installs the library again, and a `name!` would point
+# the alias back at the canvas each time, over the home the space chose.
+# The rule writes the name only while nothing names the alias, so the
+# write is part of the install, and the next upgrade reverts it with the
+# rest when the space never chose a home of its own.
+concept!: &name/default
+  description: Where a name points until the space points it itself.
+  with:
+    entity:
+      description: The entity the name points at by default.
+      the: xyz.tonk.name/default
+      cardinality: one
+      as: entity
+
+rule!:
+  description: A default name applies until the space points the name itself.
+  assert!: name
+  when:
+    - assert: name/default
+      where:
+        this: ?this
+        entity: ?entity
+  unless:
+    - assert: name
+      where:
+        this: ?this
+
+name/default!:
   this: id:tonk/space
   entity: tonk:blank
 
@@ -1787,6 +1815,40 @@ concept!: &route
       cardinality: one
       as: entity
 
+# The routes this library ships are defaults, not routes. The rule writes a
+# route from each default whose path no route claims yet, on the default's
+# own entity, so the router can tell the two apart and prefers the space's.
+# An upgrade reverts everything the previous install wrote, the routes this
+# rule wrote included, and installs the library again: a default the library
+# changed applies, and a path the space routed keeps the space's route.
+concept!: &route/default
+  description: A route this library ships, unless the space routes the same path.
+  with:
+    path:
+      description: The axum/matchit path pattern.
+      the: xyz.tonk.route/path
+      cardinality: one
+      as: text
+    concept:
+      description: The route model to render when no route of the space claims the path.
+      the: xyz.tonk.route/default-concept
+      cardinality: one
+      as: entity
+
+rule!:
+  description: A default route applies where no route claims its path.
+  assert!: route
+  when:
+    - assert: route/default
+      where:
+        this: ?this
+        path: ?path
+        concept: ?concept
+  unless:
+    - assert: route
+      where:
+        path: ?path
+
 # A seed that EXISTS and where its bytes came from — global, durable,
 # and silent about whether anything installed it. The entity is the
 # content hash of the bytes, so two devices fetching the same library
@@ -1817,6 +1879,21 @@ concept!: &seed/available
       the: xyz.tonk.seed/replaces
       cardinality: one
       as: entity
+
+# Whether an install's commit holds its whole library. An upgrade reverts
+# the install it replaces, and a commit records only what it changes, so an
+# install written in place over the previous one names only the difference.
+# Installs now revert everything first and assert the library in a commit of
+# their own, which holds all of it; this marks them. An install without it
+# was written before, and its upgrade reverts every recorded install.
+concept!: &seed/complete
+  description: An install whose commit holds its whole library.
+  with:
+    complete:
+      description: The version of the install it vouches for; any other install was written in place.
+      the: xyz.tonk.seed/complete
+      cardinality: one
+      as: text
 
 # The seed a space is RUNNING — the install-specific half, asserted on
 # the same entity as `seed/available`.
@@ -2060,23 +2137,19 @@ view!:
 # The bare `/` route resolves the declarative workspace shell (the site's
 # `{concept}` indirection mounts it on the site entity); the sub-routes resolve
 # the directory/artifact/ad-hoc page concepts.
-route!: &route/space
-  this: id:tonk:route/space
+route/default!:
   path: "/"
   concept: tonk:workspace/shell
 
-route!: &route/adhoc
-  this: id:tonk:route/adhoc
+route/default!:
   path: "/{*entity}@{*model}!{*view}"
   concept: tonk:adhoc/route
 
-route!: &route/artifact
-  this: id:tonk:route/artifact
+route/default!:
   path: "/{*entity}@{*model}"
   concept: tonk:artifact/route
 
-route!: &route/directory
-  this: id:tonk:route/directory
+route/default!:
   path: "/{*model}"
   concept: tonk:directory/route
 

@@ -499,6 +499,16 @@ pub mod route {
     #[domain("xyz.tonk.route")]
     #[cardinality(one)]
     pub struct Concept(pub Entity);
+
+    /// The model a library mounts at this path unless the space routes it.
+    ///
+    /// A library ships its routes as defaults rather than as routes: a rule
+    /// writes a route from each default whose path no route claims yet, so
+    /// a route the space writes is never overwritten by an upgrade.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.route")]
+    #[cardinality(one)]
+    pub struct DefaultConcept(pub Entity);
 }
 
 /// Attributes describing a seed update this device has looked for —
@@ -602,6 +612,22 @@ pub mod seed {
     #[domain("xyz.tonk.seed")]
     #[cardinality(one)]
     pub struct Version(pub String);
+
+    /// The version of an install whose commit holds its whole library.
+    ///
+    /// An upgrade reverts the install it replaces, and a commit records only
+    /// what it changes. An install that reverts everything first and then
+    /// asserts its library in a commit of its own records all of it, so the
+    /// next upgrade can revert that one commit. Installs written before
+    /// carry no marker, and their upgrade reverts every recorded install.
+    ///
+    /// A version rather than a flag, so a marker only vouches for the
+    /// install it was written with: a record an older worker rewrote in
+    /// place cannot inherit it.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.seed")]
+    #[cardinality(one)]
+    pub struct Complete(pub String);
 }
 
 /// Attributes for transient *command* concepts — the effect triggers
