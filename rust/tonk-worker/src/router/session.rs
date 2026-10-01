@@ -634,23 +634,24 @@ struct MatchedRoute {
 }
 
 /// Order routes for insertion into the router: the space's own routes first,
-/// then the library's defaults, each group by entity URI.
+/// then the ones a library pinned, each group by entity URI.
 ///
 /// The router preserves insertion order among routes of equal specificity, so
-/// this ordering is what settles those ties. A library writes the route for
-/// each of its defaults on the default's own entity, and only where no route
-/// claims the path. A route the space writes for that path afterwards stands
-/// beside the default's until the next upgrade withdraws the default's, and
-/// wins meanwhile; the URI tiebreak keeps the result deterministic within a
-/// group.
+/// this ordering is what settles those ties. Libraries pinned their routes to
+/// fixed entities before they shipped them as commands, and a space keeps
+/// them until its upgrade withdraws them; a route the space wrote for the
+/// same path wins meanwhile. A library's commands write routes only where no
+/// route claims the path, so the routes they write tie with nothing until
+/// the space writes its own, and then only until the next upgrade. The URI
+/// tiebreak keeps the result deterministic within a group.
 ///
 /// Split out of [`match_route`] so it is testable off-target — `match_route`
 /// itself needs a branch session and so is wasm-only.
-fn route_order(routes: &mut [tonk_schema::Route], defaults: &std::collections::HashSet<String>) {
-    let default = |route: &tonk_schema::Route| defaults.contains(&route.this.to_string());
+fn route_order(routes: &mut [tonk_schema::Route], pinned: &std::collections::HashSet<String>) {
+    let library = |route: &tonk_schema::Route| pinned.contains(&route.this.to_string());
     routes.sort_by(|a, b| {
-        default(a)
-            .cmp(&default(b))
+        library(a)
+            .cmp(&library(b))
             .then_with(|| a.this.to_string().cmp(&b.this.to_string()))
     });
 }
@@ -689,30 +690,13 @@ async fn match_route(
         .await
         .unwrap_or_default();
 
-    // Which routes are a library's defaults: the route a default writes sits
-    // on the default's own entity. The routes libraries pinned before they
-    // shipped defaults are theirs too, until the upgrade that withdraws them.
-    let mut defaults: std::collections::HashSet<String> = state
-        .handle()
-        .query()
-        .select(Query::<tonk_schema::RouteDefault> {
-            this: Term::var("this"),
-            path: Term::var("path"),
-            concept: Term::var("concept"),
-        })
-        .perform(&tonk.operator)
-        .try_vec()
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(|default| default.this.to_string())
+    // The routes libraries pinned before they shipped them as commands, which
+    // a space keeps until the upgrade that withdraws them.
+    let pinned = super::repository::LEGACY_ROUTES
+        .iter()
+        .map(|route| (*route).to_owned())
         .collect();
-    defaults.extend(
-        super::repository::LEGACY_ROUTES
-            .iter()
-            .map(|route| (*route).to_owned()),
-    );
-    route_order(&mut routes, &defaults);
+    route_order(&mut routes, &pinned);
 
     let mut router = tonk_router::Router::new();
     for route in &routes {
@@ -757,28 +741,16 @@ pub(super) async fn matched_route(
 
 /// End-to-end: the route table a branch actually holds, resolved through
 /// `match_route`. Complements `route_order_tests`, which pins the ordering
-/// alone — these prove the `RouteDefault` query and the router wiring agree
-/// with it.
+/// alone — these prove the router wiring agrees with it.
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 mod match_route_tests {
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     wasm_bindgen_test_configure!(run_in_service_worker);
 
-    /// The default `/probe` route a library ships beside core's.
-    const PROBE_DEFAULT: &str = "route/default!:\n  path: \"/probe\"\n  concept: tonk:blank\n";
-
     /// Install core plus `library` the way creation does, author `authored`
-    /// on top if given, and resolve `path` through the real router.
-    ///
-    /// Answers with the matched route's entity, and the entities of the
-    /// routes at `path` the library wrote for its defaults.
-    async fn resolve(
-        library: &str,
-        authored: Option<&str>,
-        path: &str,
-    ) -> (Option<String>, Vec<String>) {
-        use dialog_query::{Output as _, Query, Term};
-
+    /// on top if given, and resolve `path` through the real router to the
+    /// model it mounts.
+    async fn resolve(library: &str, authored: Option<&str>, path: &str) -> Option<String> {
         const LIBRARY: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
 
         let (app, state, _lsp) =
@@ -809,67 +781,34 @@ mod match_route_tests {
             .acquire(&tonk.operator)
             .await
             .expect("main acquires");
-        let defaults = session
-            .handle()
-            .query()
-            .select(Query::<tonk_schema::RouteDefault> {
-                this: Term::var("this"),
-                path: Term::var("path"),
-                concept: Term::var("concept"),
-            })
-            .perform(&tonk.operator)
-            .try_vec()
+        super::match_route(&tonk, &session, path)
             .await
-            .expect("default query")
-            .into_iter()
-            .filter(|default| default.path.0 == path)
-            .map(|default| default.this.to_string())
-            .collect();
-        let matched = super::match_route(&tonk, &session, path)
-            .await
-            .map(|matched| matched.route.to_string());
-        (matched, defaults)
+            .map(|matched| matched.concept.to_string())
     }
 
-    /// The collision this whole mechanism exists for: the library ships a
-    /// default for a path and the space routes it too. Until the next
-    /// upgrade both routes stand, and the space's must win — resolved
-    /// through the real router, not just the sort.
+    /// A route a library ships as a command resolves: the rule wrote it.
     #[dialog_common::test]
-    async fn it_prefers_a_space_route_over_a_default() {
-        let authored =
-            "route!:\n  this: id:zzz/space-probe\n  path: \"/probe\"\n  concept: tonk:blank\n";
-        let (matched, defaults) = resolve(PROBE_DEFAULT, Some(authored), "/probe").await;
+    async fn it_resolves_a_route_the_library_ships() {
+        let shipped = "seed/route!:\n  path: \"/probe\"\n  concept: probe:library\n";
 
         assert_eq!(
-            defaults.len(),
-            1,
-            "the default's route stands: {defaults:?}"
-        );
-        assert!(
-            defaults[0].as_str() < "id:zzz/space-probe",
-            "the default's entity sorts first, so entity order alone would \
-             pick it: {defaults:?}"
-        );
-        assert_eq!(
-            matched.as_deref(),
-            Some("id:zzz/space-probe"),
-            "the space's own route must win the tie against the default's"
+            resolve(shipped, None, "/probe").await.as_deref(),
+            Some("probe:library")
         );
     }
 
-    /// With nothing but the default's route the default still resolves —
-    /// demoting it must not mean dropping it.
+    /// A route a library pinned before it shipped routes as commands loses
+    /// to the space's own route for the same path, though its entity sorts
+    /// first: resolved through the real router, not just the sort.
     #[dialog_common::test]
-    async fn it_falls_back_to_a_default() {
-        let (matched, defaults) = resolve(PROBE_DEFAULT, None, "/probe").await;
+    async fn it_prefers_a_space_route_over_one_a_library_pinned() {
+        let routes = "route!:\n  this: id:tonk:route/space\n  path: \"/probe\"\n  concept: probe:pinned\n\nroute!:\n  this: id:zzz/space-probe\n  path: \"/probe\"\n  concept: probe:space\n";
 
         assert_eq!(
-            matched,
-            defaults.first().cloned(),
-            "the default's route resolves when the space wrote none"
+            resolve("", Some(routes), "/probe").await.as_deref(),
+            Some("probe:space"),
+            "the space's own route must win the tie against the pinned one"
         );
-        assert!(matched.is_some());
     }
 }
 
@@ -896,21 +835,20 @@ mod route_order_tests {
         routes.iter().map(|route| route.this.to_string()).collect()
     }
 
-    /// The tie this exists to settle: a space's own route and a default's
-    /// on the same path. The space's wins because it is no default, and it
-    /// wins regardless of how the URIs sort — which is what the old
-    /// entity-URI-only order got wrong.
+    /// The tie this exists to settle: a space's own route and one a library
+    /// pinned on the same path. The space's wins regardless of how the URIs
+    /// sort — which is what the old entity-URI-only order got wrong.
     #[test]
-    fn it_orders_a_space_route_before_a_default() {
-        let mut routes = vec![route("id:aaa/default", "/"), route("id:zzz/space", "/")];
-        let defaults = HashSet::from(["id:aaa/default".to_string()]);
+    fn it_orders_a_space_route_before_a_pinned_one() {
+        let mut routes = vec![route("id:aaa/pinned", "/"), route("id:zzz/space", "/")];
+        let pinned = HashSet::from(["id:aaa/pinned".to_string()]);
 
-        super::route_order(&mut routes, &defaults);
+        super::route_order(&mut routes, &pinned);
 
         assert_eq!(
             ordered(&routes),
-            vec!["id:zzz/space", "id:aaa/default"],
-            "the space's own route must precede the default's"
+            vec!["id:zzz/space", "id:aaa/pinned"],
+            "the space's own route must precede the pinned one"
         );
     }
 
@@ -925,14 +863,14 @@ mod route_order_tests {
         assert_eq!(ordered(&routes), vec!["id:aaa", "id:zzz"]);
     }
 
-    /// Two defaults' routes on one path still order deterministically
-    /// between themselves, so every device builds the same router.
+    /// Two pinned routes on one path still order deterministically between
+    /// themselves, so every device builds the same router.
     #[test]
-    fn it_orders_two_defaults_by_entity_uri() {
+    fn it_orders_two_pinned_routes_by_entity_uri() {
         let mut routes = vec![route("id:zzz/second", "/"), route("id:aaa/first", "/")];
-        let defaults = HashSet::from(["id:zzz/second".to_string(), "id:aaa/first".to_string()]);
+        let pinned = HashSet::from(["id:zzz/second".to_string(), "id:aaa/first".to_string()]);
 
-        super::route_order(&mut routes, &defaults);
+        super::route_order(&mut routes, &pinned);
 
         assert_eq!(ordered(&routes), vec!["id:aaa/first", "id:zzz/second"]);
     }

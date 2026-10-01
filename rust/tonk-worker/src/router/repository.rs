@@ -4514,10 +4514,9 @@ async fn installed_seed(
 /// the space without a library.
 ///
 /// The library is asserted as analyzed on its own (see
-/// [`library_assertions`]), and commit-time induction runs over it: the
-/// defaults it ships, routes and the space home among them, are written only
-/// where the space has not written its own, in the install commit with the
-/// rest. [`uninstall_claims`] is what the uninstall reverts; the space's own
+/// [`library_claims`]), and commit-time induction runs over it: the routes
+/// and the space home it ships as commands are written only where the space
+/// has not written its own, in the install commit with the rest. [`uninstall_claims`] is what the uninstall reverts; the space's own
 /// facts are never among them.
 async fn install_seed(
     tonk: &TonkState,
@@ -4530,7 +4529,7 @@ async fn install_seed(
     if current.seed.to_string() == shipped {
         return Ok(false);
     }
-    let install = library_assertions(&library, "space library").await?;
+    let install = library_claims(&library, "space library").await?;
     let subject = space_entity(key)?;
 
     // The writer lock the evaluate path takes, so another committer lines up
@@ -4563,7 +4562,7 @@ async fn install_seed(
                 log!(
                     "seed upgrade: '{key}' moves from {prior} to {shipped}: reverted {}, installed {}",
                     uninstall.len(),
-                    install.len()
+                    install.durable.len()
                 );
                 break;
             }
@@ -4597,7 +4596,7 @@ pub(super) async fn install_fresh_seed(
     library: &str,
     own: &[super::claim::RawClaim],
 ) -> Result<(), RepositoryError> {
-    let install = library_assertions(library, "space library").await?;
+    let install = library_claims(library, "space library").await?;
     let seed = seed_version(library);
     let session = tonk
         .reactor
@@ -4627,27 +4626,26 @@ async fn stage_reinstall(
     tonk: &TonkState,
     session: &crate::reactor::BranchSession,
     uninstall: &[super::claim::RawClaim],
-    install: &[super::claim::RawClaim],
+    install: &LibraryClaims,
     record: super::evaluate::SeedRecord<'_>,
     own: &[super::claim::RawClaim],
 ) -> Result<(), dialog_repository::CommitError> {
     let operator = &tonk.operator;
     let mut first = session.handle().transaction();
     let installed = if uninstall.is_empty() {
-        for claim in install {
-            first = first.assert(claim.clone());
-        }
-        first.commit().perform(operator).await?
+        with_library(first, install)
+            .commit()
+            .perform(operator)
+            .await?
     } else {
         for claim in uninstall {
             first = first.retract(claim.clone());
         }
         let reverted = first.commit().perform(operator).await?;
-        let mut next = reverted.transaction();
-        for claim in install {
-            next = next.assert(claim.clone());
-        }
-        next.commit().perform(operator).await?
+        with_library(reverted.transaction(), install)
+            .commit()
+            .perform(operator)
+            .await?
     };
     let version = installed.version();
     let mut last = installed.transaction();
@@ -4682,6 +4680,22 @@ async fn stage_reinstall(
         .perform(operator)
         .await?;
     Ok(())
+}
+
+/// `transaction` with `install`'s claims asserted and its commands
+/// dispatched: commit-time induction reads the commands, and the commit keeps
+/// only what the rules they trigger write.
+fn with_library<Line>(
+    mut transaction: dialog_repository::Transaction<Line>,
+    install: &LibraryClaims,
+) -> dialog_repository::Transaction<Line> {
+    for claim in &install.durable {
+        transaction = transaction.assert(claim.clone());
+    }
+    for command in &install.transient {
+        transaction = transaction.dispatch(command.clone());
+    }
+    transaction
 }
 
 /// The record of an install at `installed`: the seed and its source
@@ -6305,18 +6319,37 @@ async fn prepare_profile_library(
     })
 }
 
-/// Every claim a self-contained library document asserts, lowered without a
-/// branch source, so existing facts cannot suppress unchanged definitions
-/// from the result. `Changes` preserves whether each final write used
-/// cardinality-one replace semantics (`unique`) before any repository commit
-/// can deduplicate it. `what` names the library in errors.
+/// Every durable claim a self-contained library document asserts; see
+/// [`library_claims`].
 async fn library_assertions(
     library: &str,
     what: &str,
 ) -> Result<Vec<super::claim::RawClaim>, RepositoryError> {
+    Ok(library_claims(library, what).await?.durable)
+}
+
+/// What a self-contained library document writes when installed.
+struct LibraryClaims {
+    /// Claims of durable concepts, which the install commits.
+    durable: Vec<super::claim::RawClaim>,
+    /// Instances of transient concepts — commands such as `seed/route` —
+    /// which the install dispatches into the same commit: commit-time
+    /// induction reads them, and nothing keeps them.
+    transient: Vec<super::claim::RawClaim>,
+}
+
+/// Every claim a self-contained library document asserts, lowered without a
+/// branch source, so existing facts cannot suppress unchanged definitions
+/// from the result. `Changes` preserves whether each final write used
+/// cardinality-one replace semantics (`unique`) before any repository commit
+/// can deduplicate it. An instance of a transient concept is a command, kept
+/// apart the way evaluation keeps it apart, because a claim asserted into a
+/// transaction is committed whatever its concept. `what` names the library
+/// in errors.
+async fn library_claims(library: &str, what: &str) -> Result<LibraryClaims, RepositoryError> {
     use dialog_artifacts::{Changes, Instruction, Statement as _};
     use dialog_query::{Parameters, Term};
-    use tonk_schema::transact::{Planner as _, Statement};
+    use tonk_schema::transact::{ApplicationPlan, Planner as _, Statement};
 
     let syntax = super::library::parse(library)
         .await
@@ -6331,14 +6364,25 @@ async fn library_assertions(
         );
     }
 
+    let transient = analyzed.analysis.transient_entities();
     let mut desired = Changes::new();
+    let mut commands = Changes::new();
     for planned in analyzed.analysis.statements() {
         match planned.statement {
             Statement::Assert(application) => {
                 let plan = application
                     .plan(&bindings)
                     .map_err(|error| RepositoryError::Internal(format!("plan {what}: {error}")))?;
-                plan.assert(&mut desired);
+                let command = matches!(
+                    &plan,
+                    ApplicationPlan::Concept(concept)
+                        if transient.contains(&concept.statement.predicate.this())
+                );
+                if command {
+                    plan.assert(&mut commands);
+                } else {
+                    plan.assert(&mut desired);
+                }
             }
             Statement::Retract(_) => {
                 return Err(RepositoryError::Internal(format!(
@@ -6348,25 +6392,31 @@ async fn library_assertions(
         }
     }
 
-    Ok(desired
-        .into_instructions()
-        .into_iter()
-        .filter_map(|instruction| match instruction {
-            Instruction::Assert(artifact) => Some(super::claim::RawClaim {
-                the: artifact.the,
-                of: artifact.of,
-                is: artifact.is,
-                unique: false,
-            }),
-            Instruction::Replace(artifact) => Some(super::claim::RawClaim {
-                the: artifact.the,
-                of: artifact.of,
-                is: artifact.is,
-                unique: true,
-            }),
-            Instruction::Retract(_) => None,
-        })
-        .collect())
+    let claims = |changes: Changes| -> Vec<super::claim::RawClaim> {
+        changes
+            .into_instructions()
+            .into_iter()
+            .filter_map(|instruction| match instruction {
+                Instruction::Assert(artifact) => Some(super::claim::RawClaim {
+                    the: artifact.the,
+                    of: artifact.of,
+                    is: artifact.is,
+                    unique: false,
+                }),
+                Instruction::Replace(artifact) => Some(super::claim::RawClaim {
+                    the: artifact.the,
+                    of: artifact.of,
+                    is: artifact.is,
+                    unique: true,
+                }),
+                Instruction::Retract(_) => None,
+            })
+            .collect()
+    };
+    Ok(LibraryClaims {
+        durable: claims(desired),
+        transient: claims(commands),
+    })
 }
 
 /// Read every complete installation whose provenance is the exact shipped
@@ -12937,9 +12987,9 @@ mod seed_tests {
         assert!(
             claims
                 .iter()
-                .any(|claim| claim.the.as_str() == "xyz.tonk.route/default-concept"),
+                .any(|claim| claim.the.as_str() == "xyz.tonk.route/concept"),
             "the recorded version names the commit that installed the \
-             library, so its history lists the defaults it ships: {version:?}"
+             library, so its history lists the routes it wrote: {version:?}"
         );
     }
 
@@ -13080,14 +13130,15 @@ route!: &probe/dropped
     /// Seed a branch the way creation does and read the routes back.
     ///
     /// The end-to-end check the unit tests around it kept missing: the
-    /// body can parse, the concept can analyze, the rule can install — and
-    /// a space can still hold no route at all, or routes the router cannot
-    /// tell from the space's own. Every route the library writes sits on
-    /// one of its defaults, which is how the router tells them apart.
+    /// body can parse, the command can analyze, the rule can install — and
+    /// a space can still hold no route at all. Every route core ships is
+    /// written, and nothing of the commands that carried them stays.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     #[dialog_common::test]
     async fn it_records_every_seeded_component_on_the_branch() {
+        use dialog_artifacts::ArtifactSelector;
         use dialog_query::{Output as _, Query, Term};
+        use futures_util::StreamExt as _;
 
         const LIBRARY: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
 
@@ -13109,26 +13160,7 @@ route!: &probe/dropped
             .await
             .expect("main acquires");
 
-        let defaults: Vec<String> = session
-            .handle()
-            .query()
-            .select(Query::<tonk_schema::RouteDefault> {
-                this: Term::var("this"),
-                path: Term::var("path"),
-                concept: Term::var("concept"),
-            })
-            .perform(&tonk.operator)
-            .try_vec()
-            .await
-            .expect("default query")
-            .into_iter()
-            .map(|default| default.this.to_string())
-            .collect();
-        assert!(
-            defaults.len() > 1,
-            "the library must ship several defaults for this to mean anything: {defaults:?}"
-        );
-        let declared: Vec<tonk_schema::Route> = session
+        let mut paths: Vec<String> = session
             .handle()
             .query()
             .select(Query::<tonk_schema::Route> {
@@ -13139,18 +13171,36 @@ route!: &probe/dropped
             .perform(&tonk.operator)
             .try_vec()
             .await
-            .expect("route query");
+            .expect("route query")
+            .into_iter()
+            .map(|route| route.path.0)
+            .collect();
+        paths.sort();
         assert_eq!(
-            declared.len(),
-            defaults.len(),
-            "each default writes its route on a space that routes nothing: {declared:?}"
+            paths,
+            [
+                "/",
+                "/{*entity}@{*model}",
+                "/{*entity}@{*model}!{*view}",
+                "/{*model}"
+            ],
+            "every route core ships is written"
         );
-        for route in &declared {
-            assert!(
-                defaults.contains(&route.this.to_string()),
-                "every route the library wrote sits on one of its defaults: {route:?}"
-            );
-        }
+
+        let commands = session
+            .handle()
+            .claims()
+            .select(
+                ArtifactSelector::new().the("xyz.tonk.seed-route/path".parse().expect("attribute")),
+            )
+            .perform(&tonk.operator)
+            .await
+            .expect("command query");
+        tokio::pin!(commands);
+        assert!(
+            commands.next().await.is_none(),
+            "the commands that carried the routes leave nothing behind"
+        );
     }
 }
 
@@ -13932,8 +13982,8 @@ name!:
             .collect()
     }
 
-    /// Every claim `library` asserts, analyzed on its own.
-    async fn library_claims(library: &str) -> std::collections::HashSet<Triple> {
+    /// Every claim `library` commits, analyzed on its own.
+    async fn durable_claims(library: &str) -> std::collections::HashSet<Triple> {
         library_assertions(library, "library")
             .await
             .expect("the library analyzes")
@@ -13942,10 +13992,24 @@ name!:
             .collect()
     }
 
+    /// Every entity `library` writes on, the ones its commands make the rules
+    /// write routes on included.
+    async fn library_entities(library: &str) -> Vec<String> {
+        let claims = library_claims(library, "library")
+            .await
+            .expect("the library analyzes");
+        claims
+            .durable
+            .iter()
+            .chain(&claims.transient)
+            .map(|claim| claim.of.to_string())
+            .collect()
+    }
+
     /// The claims of `library` its install commit is missing.
     async fn missing_from_install(tonk: &TonkState, key: &str, library: &str) -> Vec<Triple> {
         let installed = installed_claims(tonk, key).await;
-        let mut missing: Vec<Triple> = library_claims(library)
+        let mut missing: Vec<Triple> = durable_claims(library)
             .await
             .into_iter()
             .filter(|claim| !installed.contains(claim))
@@ -14025,9 +14089,9 @@ name!:
         text
     }
 
-    /// Core with a default route at `/probe` mounting `probe:{concept}`.
+    /// Core shipping a route at `/probe` mounting `probe:{concept}`.
     fn routing(concept: &str) -> String {
-        format!("{CORE}\nroute/default!:\n  path: \"/probe\"\n  concept: probe:{concept}\n")
+        format!("{CORE}\nseed/route!:\n  path: \"/probe\"\n  concept: probe:{concept}\n")
     }
 
     /// A new space's install commit holds its whole library and nothing
@@ -14051,6 +14115,45 @@ name!:
             "the install commit says nothing about the space itself"
         );
         assert_eq!(space_names(&tonk, &key, &subject).await, ["Garden"]);
+    }
+
+    /// The routes and home a library ships are commands: the rules they
+    /// trigger write what the space has not, and nothing of the commands
+    /// themselves is kept, on install or upgrade.
+    #[dialog_common::test]
+    async fn a_library_keeps_nothing_of_its_commands() {
+        use dialog_artifacts::ArtifactSelector;
+        use futures_util::StreamExt as _;
+
+        async fn kept(tonk: &TonkState, key: &str, attribute: &str) -> bool {
+            let session = content(tonk, key).await;
+            let stream = session
+                .handle()
+                .claims()
+                .select(ArtifactSelector::new().the(attribute.parse().expect("attribute")))
+                .perform(&tonk.operator)
+                .await
+                .expect("claim query");
+            tokio::pin!(stream);
+            stream.next().await.is_some()
+        }
+
+        let tonk = test_state().await;
+        let (key, _) = new_space(&tonk, CORE, "Garden").await;
+        assert!(install(&tonk, &key, &format!("{CORE}\n# the next release\n")).await);
+
+        assert_eq!(routes_at(&tonk, &key, "/").await, ["tonk:workspace/shell"]);
+        assert_eq!(referents(&tonk, &key, "tonk/space").await, ["tonk:blank"]);
+        for attribute in [
+            "xyz.tonk.seed-route/path",
+            "xyz.tonk.seed-route/concept",
+            "xyz.tonk.seed-name/entity",
+        ] {
+            assert!(
+                !kept(&tonk, &key, attribute).await,
+                "{attribute} is a command's, and nothing keeps it"
+            );
+        }
     }
 
     /// An upgrade reverts the install before it in a commit of its own, so
@@ -14093,11 +14196,10 @@ name!:
         .await;
         assert!(install(&tonk, &upgraded, CORE).await);
 
-        let mut entities: Vec<String> = library_claims(PRODUCTION_CORE)
+        let mut entities: Vec<String> = library_entities(PRODUCTION_CORE)
             .await
             .into_iter()
-            .chain(library_claims(CORE).await)
-            .map(|(_, of, _)| of)
+            .chain(library_entities(CORE).await)
             .chain(LEGACY_ROUTES.iter().map(|route| route.to_string()))
             .collect();
         entities.sort();
@@ -14217,7 +14319,7 @@ name!:
     /// recorded only what changed, and `y` is in A's.
     #[dialog_common::test]
     async fn a_definition_carried_through_a_release_is_withdrawn_by_the_next() {
-        let route = "route/default!:\n  path: \"/kept\"\n  concept: probe:thing\n";
+        let route = "seed/route!:\n  path: \"/kept\"\n  concept: probe:thing\n";
         let first = format!("{CORE}\n{}\n{route}", probe(&["x", "y"]));
         let second = format!("{first}\n# an unrelated change\n");
         let third = format!("{CORE}\n{}", probe(&["x", "z"]));
@@ -14269,9 +14371,10 @@ name!:
         assert_eq!(space_names(&tonk, &key, &subject).await, ["Garden"]);
     }
 
-    /// A route the space writes for a path the library ships a default for
-    /// wins over the default's route while both stand, and the next upgrade
-    /// writes no route for the default at all.
+    /// A route the space writes for a path the library already routed
+    /// outlives upgrades. Until the next one both routes stand, and the
+    /// router does not know which is the library's; that upgrade withdraws
+    /// the library's and writes no route for the path again.
     #[dialog_common::test]
     async fn a_route_the_space_writes_outlives_upgrades() {
         let tonk = test_state().await;
@@ -14281,13 +14384,12 @@ name!:
         author(
             &tonk,
             &key,
-            "route!:\n  this: id:zzz/probe\n  path: \"/probe\"\n  concept: probe:app\n",
+            "route!:\n  path: \"/probe\"\n  concept: probe:app\n",
         )
         .await;
         assert_eq!(
-            resolved(&tonk, &key, "/probe").await.as_deref(),
-            Some("probe:app"),
-            "the space's route wins over the default's"
+            routes_at(&tonk, &key, "/probe").await,
+            ["probe:app", "probe:library"]
         );
 
         let next = format!("{}\n# the next release\n", routing("library"));
@@ -14297,12 +14399,16 @@ name!:
             ["probe:app"],
             "the upgrade writes no route where the space wrote one"
         );
+        assert_eq!(
+            resolved(&tonk, &key, "/probe").await.as_deref(),
+            Some("probe:app")
+        );
 
         assert!(install(&tonk, &key, &routing("moved")).await);
         assert_eq!(
             routes_at(&tonk, &key, "/probe").await,
             ["probe:app"],
-            "nor when the library moves its default"
+            "nor when the library moves its route"
         );
     }
 
@@ -14336,7 +14442,7 @@ name!:
             format!("{CORE}\nname!:\n  this: id:probe/home\n  entity: probe:{entity}\n")
         };
         let default = |entity: &str| {
-            format!("{CORE}\nname/default!:\n  this: id:probe/home\n  entity: probe:{entity}\n")
+            format!("{CORE}\nseed/name!:\n  this: id:probe/home\n  entity: probe:{entity}\n")
         };
         let choice = "name!:\n  this: id:probe/home\n  entity: probe:mine\n";
 

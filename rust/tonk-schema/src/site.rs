@@ -18,9 +18,7 @@
 use dialog_artifacts::Entity;
 use dialog_query::Concept;
 
-use crate::domain::route::{
-    Concept as RoutePathConcept, DefaultConcept as RouteDefaultConcept, Path as RouteTablePath,
-};
+use crate::domain::route::{Concept as RoutePathConcept, Path as RouteTablePath};
 use crate::domain::site::{
     Anchor, Branch, BranchEntity, Concept as SiteConcept, Path, ProfileBranch, Replica,
     Route as SiteRoute, Space,
@@ -201,22 +199,6 @@ pub struct Route {
     pub path: RouteTablePath,
     /// The route model mounted when this path matches.
     pub concept: RoutePathConcept,
-}
-
-/// A route a library ships as a default: what to mount at `path` unless the
-/// space routes that path itself.
-///
-/// A rule in the library writes a [`Route`] from each default whose path no
-/// route claims, on the default's own entity. The router reads that entity
-/// as a default and lets a route the space wrote win over it.
-#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct RouteDefault {
-    /// The default's entity, which also carries the route it writes.
-    pub this: Entity,
-    /// The axum/matchit path pattern.
-    pub path: RouteTablePath,
-    /// The route model mounted when no route of the space claims the path.
-    pub concept: RouteDefaultConcept,
 }
 
 /// A seed-update check IN FLIGHT on this device, keyed on the replica.

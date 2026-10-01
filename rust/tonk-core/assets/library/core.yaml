@@ -1640,26 +1640,26 @@ concept!: &space
 # points at the blank canvas until the space points it at its own root
 # model, which takes over the space home.
 #
-# A default rather than a `name!`. Every upgrade reverts what the last
-# install wrote and installs the library again, and a `name!` would point
-# the alias back at the canvas each time, over the home the space chose.
-# The rule writes the name only while nothing names the alias, so the
+# A `seed/name` command rather than a `name!`. Every upgrade reverts what
+# the last install wrote and installs the library again, and a `name!` would
+# point the alias back at the canvas each time, over the home the space
+# chose. The rule writes the name only while nothing names the alias, so the
 # write is part of the install, and the next upgrade reverts it with the
-# rest when the space never chose a home of its own.
-concept!: &name/default
+# rest when the space never chose a home of its own. The command is
+# transient: nothing of it stays but the name the rule wrote.
+command!: &seed/name
   description: Where a name points until the space points it itself.
   with:
     entity:
-      description: The entity the name points at by default.
-      the: xyz.tonk.name/default
-      cardinality: one
+      description: The entity the name points at until then.
+      the: xyz.tonk.seed-name/entity
       as: entity
 
 rule!:
-  description: A default name applies until the space points the name itself.
+  description: A name the library ships applies until the space points the name itself.
   assert!: name
   when:
-    - assert: name/default
+    - assert: seed/name
       where:
         this: ?this
         entity: ?entity
@@ -1668,7 +1668,7 @@ rule!:
       where:
         this: ?this
 
-name/default!:
+seed/name!:
   this: id:tonk/space
   entity: tonk:blank
 
@@ -1815,31 +1815,30 @@ concept!: &route
       cardinality: one
       as: entity
 
-# The routes this library ships are defaults, not routes. The rule writes a
-# route from each default whose path no route claims yet, on the default's
-# own entity, so the router can tell the two apart and prefers the space's.
-# An upgrade reverts everything the previous install wrote, the routes this
-# rule wrote included, and installs the library again: a default the library
-# changed applies, and a path the space routed keeps the space's route.
-concept!: &route/default
-  description: A route this library ships, unless the space routes the same path.
+# The routes this library ships are `seed/route` commands, not routes. The
+# rule writes a route for each one whose path no route claims yet, and
+# nothing of the command stays. An upgrade reverts everything the previous
+# install wrote, the routes this rule wrote included, and installs the
+# library again: a route the library moved applies, and a path the space
+# routed keeps the space's route. A route the space writes for a path this
+# library already routed stands beside the library's until that upgrade.
+command!: &seed/route
+  description: A route this library ships, unless a route already claims its path.
   with:
     path:
       description: The axum/matchit path pattern.
-      the: xyz.tonk.route/path
-      cardinality: one
+      the: xyz.tonk.seed-route/path
       as: text
     concept:
-      description: The route model to render when no route of the space claims the path.
-      the: xyz.tonk.route/default-concept
-      cardinality: one
+      description: The route model to render at the path.
+      the: xyz.tonk.seed-route/concept
       as: entity
 
 rule!:
-  description: A default route applies where no route claims its path.
+  description: A route the library ships applies where no route claims its path.
   assert!: route
   when:
-    - assert: route/default
+    - assert: seed/route
       where:
         this: ?this
         path: ?path
@@ -2147,7 +2146,8 @@ view!:
 
 # ---- Seeded routes (bootstrap) ----
 #
-# Built-in routes every space starts with. The SW matches against these. Patterns
+# The routes every space starts with, shipped as `seed/route` commands: the
+# rule above writes each one where no route claims its path. Patterns
 # use the route grammar: `{name}` is one segment, `{name:path}` is slash-tolerant
 # (so a namespaced `{model:path}` captures `tonk/person` whole), `@` and `!` are
 # literal delimiters between params. The SW matches most-specific-first, so the
@@ -2157,19 +2157,19 @@ view!:
 # The bare `/` route resolves the declarative workspace shell (the site's
 # `{concept}` indirection mounts it on the site entity); the sub-routes resolve
 # the directory/artifact/ad-hoc page concepts.
-route/default!:
+seed/route!:
   path: "/"
   concept: tonk:workspace/shell
 
-route/default!:
+seed/route!:
   path: "/{*entity}@{*model}!{*view}"
   concept: tonk:adhoc/route
 
-route/default!:
+seed/route!:
   path: "/{*entity}@{*model}"
   concept: tonk:artifact/route
 
-route/default!:
+seed/route!:
   path: "/{*model}"
   concept: tonk:directory/route
 

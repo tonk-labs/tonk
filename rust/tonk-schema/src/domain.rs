@@ -499,16 +499,6 @@ pub mod route {
     #[domain("xyz.tonk.route")]
     #[cardinality(one)]
     pub struct Concept(pub Entity);
-
-    /// The model a library mounts at this path unless the space routes it.
-    ///
-    /// A library ships its routes as defaults rather than as routes: a rule
-    /// writes a route from each default whose path no route claims yet, so
-    /// a route the space writes is never overwritten by an upgrade.
-    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.route")]
-    #[cardinality(one)]
-    pub struct DefaultConcept(pub Entity);
 }
 
 /// Attributes describing a seed update this device has looked for —
