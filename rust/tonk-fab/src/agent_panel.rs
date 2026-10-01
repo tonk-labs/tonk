@@ -10,7 +10,10 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::{JsFuture, spawn_local};
 use web_sys::{Element, HtmlElement, Url, window};
 
-use crate::logic::{agent_handoff_claim_json, agent_handoff_query_body, agent_prompt};
+use crate::logic::{
+    AgentConnectionFeedback, agent_handoff_claim_json, agent_handoff_query_body, agent_prompt,
+    agent_receipts_query_body,
+};
 use crate::shadow::{self, Bound};
 use crate::subscribing;
 
@@ -23,6 +26,8 @@ struct AgentState {
     pending: bool,
     attempt: u64,
     uncertain: bool,
+    receipt: String,
+    feedback: AgentConnectionFeedback,
 }
 
 impl AgentState {
@@ -64,11 +69,7 @@ impl CustomElement for TonkAgentPanel {
     fn inject_children(&mut self, _this: &HtmlElement) {}
 
     fn connected_callback(&mut self, this: &HtmlElement) {
-        let behaviour: Rc<dyn subscribing::Subscribing> = Rc::new(AgentBehaviour {
-            state: self.state.clone(),
-            host: this.clone(),
-        });
-        self.scaffold.connect(this, behaviour);
+        self.connect(this);
         if let Some(view) = target(this) {
             render(&view, &self.state.borrow());
         }
@@ -126,6 +127,7 @@ impl CustomElement for TonkAgentPanel {
                 if !link.is_empty()
                     && let Some(view) = target(&host)
                 {
+                    expect_connection(&state);
                     copy_text(&view, &view.copy_link, &link, "link");
                 }
             }));
@@ -139,6 +141,7 @@ impl CustomElement for TonkAgentPanel {
                     return;
                 }
                 if let Some(view) = target(&host) {
+                    expect_connection(&state);
                     copy_prompt(&view, &link);
                 }
             }));
@@ -174,27 +177,123 @@ impl CustomElement for TonkAgentPanel {
         }
         self.scaffold.disconnect();
         *self.state.borrow_mut() = AgentState::default();
+        clear_connection_feedback(this);
         if let Some(target) = target(this) {
-            let behaviour: Rc<dyn subscribing::Subscribing> = Rc::new(AgentBehaviour {
-                state: self.state.clone(),
-                host: this.clone(),
-            });
             render(&target, &self.state.borrow());
-            self.scaffold.connect(this, behaviour);
-        } else {
-            let behaviour: Rc<dyn subscribing::Subscribing> = Rc::new(AgentBehaviour {
-                state: self.state.clone(),
-                host: this.clone(),
-            });
-            self.scaffold.connect(this, behaviour);
         }
+        self.connect(this);
     }
 
-    fn disconnected_callback(&mut self, _this: &HtmlElement) {
+    fn disconnected_callback(&mut self, this: &HtmlElement) {
+        clear_connection_feedback(this);
         self.scaffold.disconnect();
         self.listeners.clear();
         *self.state.borrow_mut() = AgentState::default();
     }
+}
+
+impl TonkAgentPanel {
+    fn connect(&self, this: &HtmlElement) {
+        self.scaffold.connect_all(
+            this,
+            vec![
+                Rc::new(AgentBehaviour {
+                    state: self.state.clone(),
+                    host: this.clone(),
+                }),
+                Rc::new(ReceiptBehaviour {
+                    state: self.state.clone(),
+                }),
+            ],
+        );
+    }
+}
+
+struct ReceiptBehaviour {
+    state: Rc<RefCell<AgentState>>,
+}
+
+impl subscribing::Subscribing for ReceiptBehaviour {
+    fn query_body(&self, _this: &HtmlElement) -> Result<String, String> {
+        Ok(agent_receipts_query_body())
+    }
+
+    fn render_reset(&self, host: &HtmlElement, payload: &wasm_bindgen::JsValue) {
+        // A snapshot establishes history, including one delayed until after
+        // the copy click. Only a live assertion may announce a connection.
+        self.receive(host, payload, false);
+    }
+
+    fn render_update(&self, host: &HtmlElement, payload: &wasm_bindgen::JsValue) {
+        if let Ok(asserted) = Reflect::get(payload, &"asserted".into()) {
+            self.receive(host, &asserted, true);
+        }
+    }
+
+    fn tag(&self) -> &'static str {
+        "tonk-agent-receipts"
+    }
+}
+
+impl ReceiptBehaviour {
+    fn receive(&self, host: &HtmlElement, payload: &wasm_bindgen::JsValue, live: bool) {
+        for row in js_sys::Array::from(payload).iter() {
+            let Some(receipt) = Reflect::get(&row, &"this".into())
+                .ok()
+                .and_then(|v| v.as_string())
+            else {
+                continue;
+            };
+            if self.state.borrow_mut().feedback.receive(&receipt) && live {
+                show_connection_feedback(host);
+            }
+        }
+    }
+}
+
+fn expect_connection(state: &Rc<RefCell<AgentState>>) {
+    let mut current = state.borrow_mut();
+    let receipt = current.receipt.clone();
+    // A cached handoff may be delivered to several FAB instances. Only the
+    // one whose user copies it should turn its receipt into a notification.
+    current.feedback.expect(&receipt);
+}
+
+fn clear_connection_feedback(host: &HtmlElement) {
+    if let Some(view) = target(host) {
+        let _ = view.bar.remove_attribute("data-agent-connected");
+        if let Some(root) = view.bar.shadow_root()
+            && let Ok(Some(notice)) = root.query_selector(".agent-notice")
+        {
+            notice.set_text_content(None);
+        }
+    }
+}
+
+fn show_connection_feedback(host: &HtmlElement) {
+    let Some(view) = target(host) else { return };
+    let Some(win) = window() else { return };
+    // The token prevents an older timeout from retiring a newer notice.
+    let token = js_sys::Date::now().to_string();
+    if let Some(root) = view.bar.shadow_root()
+        && let Ok(Some(notice)) = root.query_selector(".agent-notice")
+    {
+        notice.set_text_content(Some("agent connected"));
+    }
+    let _ = view.bar.set_attribute("data-agent-connected", &token);
+    let bar = view.bar;
+    let retire = Closure::once_into_js(move || {
+        if bar.get_attribute("data-agent-connected").as_deref() == Some(&token) {
+            let _ = bar.remove_attribute("data-agent-connected");
+            if let Some(root) = bar.shadow_root()
+                && let Ok(Some(notice)) = root.query_selector(".agent-notice")
+            {
+                notice.set_text_content(None);
+            }
+        }
+    });
+    let _ =
+        win.set_timeout_with_callback_and_timeout_and_arguments_0(retire.unchecked_ref(), 3_200);
 }
 
 struct AgentBehaviour {
@@ -209,16 +308,18 @@ impl subscribing::Subscribing for AgentBehaviour {
 
     fn render_reset(&self, _host: &HtmlElement, payload: &wasm_bindgen::JsValue) {
         let rows = js_sys::Array::from(payload);
-        if let Some((status, link)) = read_row(&rows.get(rows.length().saturating_sub(1))) {
-            apply(&self.state, &self.host, status, link);
+        if let Some((status, link, receipt)) = read_row(&rows.get(rows.length().saturating_sub(1)))
+        {
+            apply(&self.state, &self.host, status, link, receipt);
         }
     }
 
     fn render_update(&self, _host: &HtmlElement, payload: &wasm_bindgen::JsValue) {
         let asserted = Reflect::get(payload, &"asserted".into()).unwrap_or_default();
         let rows = js_sys::Array::from(&asserted);
-        if let Some((status, link)) = read_row(&rows.get(rows.length().saturating_sub(1))) {
-            apply(&self.state, &self.host, status, link);
+        if let Some((status, link, receipt)) = read_row(&rows.get(rows.length().saturating_sub(1)))
+        {
+            apply(&self.state, &self.host, status, link, receipt);
         }
     }
 
@@ -252,28 +353,42 @@ fn target(this: &HtmlElement) -> Option<Target> {
     })
 }
 
-fn read_row(row: &wasm_bindgen::JsValue) -> Option<(String, String)> {
+fn read_row(row: &wasm_bindgen::JsValue) -> Option<(String, String, String)> {
     let fields = Reflect::get(row, &"fields".into()).ok()?;
     let status = Reflect::get(&fields, &"status".into()).ok()?.as_string()?;
     let link = Reflect::get(&fields, &"link".into())
         .ok()
         .and_then(|value| value.as_string())
         .unwrap_or_default();
-    Some((status, link))
+    let receipt = Reflect::get(&fields, &"receipt".into())
+        .ok()
+        .and_then(|v| v.as_string())
+        .unwrap_or_default();
+    Some((status, link, receipt))
 }
 
-fn apply(state: &Rc<RefCell<AgentState>>, host: &HtmlElement, status: String, link: String) {
-    let attempt = state.borrow().attempt;
+fn apply(
+    state: &Rc<RefCell<AgentState>>,
+    host: &HtmlElement,
+    status: String,
+    link: String,
+    receipt: String,
+) {
     // The query intentionally works for older spaces without a mode fact.
     // This is the worker's published in-progress status for a current mint.
     let pending = status == "creating agent invitation…";
-    *state.borrow_mut() = AgentState {
-        status,
-        link,
-        pending,
-        attempt,
-        uncertain: false,
-    };
+    {
+        let mut current = state.borrow_mut();
+        current.receipt = if status == "ready" {
+            receipt
+        } else {
+            String::new()
+        };
+        current.status = status;
+        current.link = link;
+        current.pending = pending;
+        current.uncertain = false;
+    }
     if let Some(target) = target(host) {
         render(&target, &state.borrow());
     }

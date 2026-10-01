@@ -1284,6 +1284,32 @@ async fn publish_connection_invite(
     Ok(())
 }
 
+/// Match a receipt to the invitation issued on this device without adding
+/// notification state to replicated space content.
+#[cfg(feature = "connection-invites")]
+async fn publish_connection_receipt(
+    tonk: &TonkState,
+    repo: &str,
+    subject: &Did,
+    grant_id: &str,
+) -> Result<(), TonkWorkerError> {
+    tonk.reactor
+        .repository(repo)
+        .branch(CONTENT_BRANCH)
+        .overlay()
+        .assert(
+            dialog_query::the!("xyz.tonk.agent-handoff/receipt")
+                .of(subject.this())
+                .is(format!("id:tonk:agent-connection:{grant_id}"))
+                .cardinality(dialog_query::Cardinality::One),
+        )
+        .write()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|error| TonkWorkerError::Internal(error.to_string()))?;
+    Ok(())
+}
+
 async fn run_agent_handoff(
     env: &crate::router::CommandEnv,
     _fresh: bool,
@@ -1699,6 +1725,7 @@ async fn run_connection_invite_for(
                 .await;
             }
             let digest = *blake3::hash(response.url.as_bytes()).as_bytes();
+            publish_connection_receipt(&tonk, repo, &subject, &response.connection.id).await?;
             publish_connection_invite(
                 &tonk,
                 repo,
@@ -13324,6 +13351,99 @@ mod connection_invite_overlay_tests {
             .unwrap();
         assert_eq!(rows.len(), 1);
         rows[0].mode.0.clone()
+    }
+
+    async fn fab_query(tonk: &TonkState, repo: &str, body: &str) -> serde_json::Value {
+        let wire: crate::reactor::Query = serde_json::from_str(body).unwrap();
+        let rows = tonk
+            .reactor
+            .repository(repo)
+            .branch(CONTENT_BRANCH)
+            .query(wire.into_concept_query().unwrap())
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        serde_json::to_value(rows).unwrap()
+    }
+
+    #[dialog_common::test]
+    async fn connection_feedback_receipt_is_overlay_only() {
+        let state = crate::router::command::tests::native::test_state().await;
+        let repo = create_space_inner(&state, "Receipt feedback", None)
+            .await
+            .unwrap();
+        let subject = space_did(&state, &repo).await;
+        let tonk = state.read().await;
+        let branch = tonk
+            .reactor
+            .repository(&repo)
+            .branch(CONTENT_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let before = branch.handle().revision().unwrap().tree;
+        publish_connection_receipt(&tonk, &repo, &subject, "first")
+            .await
+            .unwrap();
+        publish_connection_receipt(&tonk, &repo, &subject, "second")
+            .await
+            .unwrap();
+        publish_connection_invite(
+            &tonk,
+            &repo,
+            &subject,
+            &tonk.profile.did(),
+            "scoped",
+            "ready".into(),
+            "https://example.test/#test-link".into(),
+        )
+        .await
+        .unwrap();
+        let body = tonk_fab::logic::agent_handoff_query_body(subject.as_str()).unwrap();
+        let rows = fab_query(&tonk, &repo, &body).await;
+        assert_eq!(rows.as_array().unwrap().len(), 1);
+        assert_eq!(
+            rows[0]["fields"]["receipt"],
+            "id:tonk:agent-connection:second"
+        );
+        assert_eq!(rows[0]["fields"]["status"], "ready");
+        assert_eq!(
+            branch.handle().revision().unwrap().tree,
+            before,
+            "notification metadata must not change replicated space content"
+        );
+        branch.state.clear_overlay();
+        let rows = fab_query(&tonk, &repo, &body).await;
+        assert!(
+            rows.as_array().unwrap().is_empty(),
+            "notification metadata must not survive the session"
+        );
+
+        // Exercise the FAB's actual receipt query against the same durable
+        // acknowledgement the CLI writes, without depending on seeded views.
+        let receipt_body = tonk_fab::logic::agent_receipts_query_body();
+        assert!(
+            fab_query(&tonk, &repo, &receipt_body)
+                .await
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        tonk.reactor
+            .repository(&repo)
+            .branch(CONTENT_BRANCH)
+            .transaction()
+            .assert(tonk_schema::agent_connection::AgentConnectionConfirmation {
+                this: "id:tonk:agent-connection:second".parse().unwrap(),
+                status: tonk_schema::agent_connection::Status("Agent connection confirmed".into()),
+            })
+            .commit()
+            .perform(&tonk.operator)
+            .await
+            .unwrap();
+        let rows = fab_query(&tonk, &repo, &receipt_body).await;
+        assert_eq!(rows.as_array().unwrap().len(), 1);
+        assert_eq!(rows[0]["this"], "id:tonk:agent-connection:second");
     }
 
     #[test]

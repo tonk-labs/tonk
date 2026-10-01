@@ -785,94 +785,17 @@ concept!: &agent-connection
       cardinality: one
       as: text
 
+# Receipts are durable access-management data. Connection feedback belongs to
+# the initiating session's FAB, never to the shared space's rendered content.
 view!:
   this: tonk:agent-connection
   show:
     directory: |
       <div class="agent-connection-receipts" aria-label="Agent connection receipts">
-        <style>
-          .agent-connection-receipts {
-            position: fixed;
-            left: 50%;
-            bottom: max(64px, calc(env(safe-area-inset-bottom) + 56px));
-            z-index: 12;
-            width: min(432px, calc(100vw - 48px));
-            max-height: 40dvh;
-            overflow-y: auto;
-            transform: translateX(-50%);
-            display: flex;
-            flex-direction: column;
-            gap: 7px;
-          }
-        </style>
         <tonk-display entity={this} model=tonk:agent-connection />
       </div>
     ui: |
-      <details open class="agent-connection" data-this={this}>
-        <summary aria-label="Dismiss agent connection notification">×</summary>
-        <span role="status">agent setup confirmed</span><span class="agent-connection-note">this confirms a completed sync, not whether the agent is online.</span>
-        <style>
-          .agent-connection {
-            position: relative;
-            box-sizing: border-box;
-            border: 0;
-            border-radius: 0;
-            margin: 0;
-            width: 100%;
-            min-height: 44px;
-            padding: 12px 52px 12px 24px;
-            background: var(--wa-color-surface-raised);
-            color: var(--wa-color-text-normal);
-            box-shadow: 0 0 0 1px var(--wa-color-neutral-border-normal);
-            -webkit-backdrop-filter: blur(12px) saturate(1.5);
-            backdrop-filter: blur(12px) saturate(1.5);
-            font: 400 13px/1.45 var(--wa-font-family-body);
-            text-align: center;
-            animation: agent-connection-enter .4s cubic-bezier(.25,.46,.45,.94) both,
-              agent-connection-exit .4s ease-out 120s forwards;
-          }
-          .agent-connection-note { display: block; margin-top: 4px; color: var(--wa-color-text-quiet); }
-          .agent-connection:not([open]) { display: none; }
-          .agent-connection > summary {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-            border-radius: 0;
-            position: absolute;
-            top: 0;
-            right: 0;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            width: 44px;
-            height: 100%;
-            min-height: 44px;
-            list-style: none;
-            cursor: pointer;
-            font-size: 20px;
-            line-height: 1;
-          }
-          .agent-connection > summary::after { display: none; }
-          .agent-connection > summary::-webkit-details-marker { display: none; }
-          .agent-connection > summary:hover { background: rgb(56 24 42 / 6%); }
-          .agent-connection > summary:focus-visible {
-            outline: 2px solid currentColor;
-            outline-offset: -3px;
-          }
-          @keyframes agent-connection-enter {
-            from { opacity: 0; transform: translateY(12px); }
-            to { opacity: 1; transform: translateY(0); }
-          }
-          @keyframes agent-connection-exit {
-            from { opacity: 1; transform: translateY(0); }
-            to { opacity: 0; transform: translateY(12px); visibility: hidden; }
-          }
-
-          @media (prefers-reduced-motion: reduce) {
-            .agent-connection { animation-duration: 0s; }
-          }
-        </style>
-      </details>
+      <p data-this={this}>agent setup confirmed — this confirms a completed sync, not whether the agent is online.</p>
 
 # A space member, as seen in the "shared with" roster. Reads the
 # `Membership` + `MemberRole` facts the worker records on the content
@@ -2028,9 +1951,6 @@ view!:
   show:
     ui: |
       <div class="workspace-shell" style="display:flex; flex-direction:column; min-height:100dvh;">
-        <tonk-display model=tonk:agent-connection with="{branch}@{repo}">
-          <span slot="no-entity"></span>
-        </tonk-display>
         <div class='display-view-slot'>
           <tonk-display entity={replica} model=tonk/space with="{branch}@{repo}" />
         </div>
