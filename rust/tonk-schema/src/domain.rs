@@ -1275,6 +1275,30 @@ pub mod command {
             pub struct Time(pub f64);
         }
 
+        /// `account/sign-in-via` — sign this browser in through another
+        /// deployment that holds the account.
+        pub mod sign_in_via {
+            use dialog_query::Attribute;
+
+            /// The deployment holding the account, as an origin
+            /// (`https://tonk.network`).
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.sign-in-via")]
+            pub struct Via(pub String);
+        }
+
+        /// `account/finish-sign-in-via` — install what that deployment
+        /// answered.
+        pub mod finish_sign_in_via {
+            use dialog_query::Attribute;
+
+            /// The page address the answer came back on, fragment
+            /// included: the grant rides the fragment.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.finish-sign-in-via")]
+            pub struct Url(pub String);
+        }
+
         /// `tonk/switch-profile` — make another profile on this browser
         /// the active one.
         pub mod switch_profile {
