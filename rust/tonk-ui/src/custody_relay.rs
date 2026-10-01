@@ -355,8 +355,10 @@ fn activated() -> bool {
 /// Ask for the passkey on the click that asserted the command: "approve
 /// with passkey" brings up the passkey, with no screen in between. The
 /// worker still owns the operation and reports its status in the settings
-/// row. When the prompt is dismissed or fails, the card offers it again
-/// and says why.
+/// row. A prompt the browser would not show, or the person dismissed, is
+/// offered again on the card. Any other failure is the operation's own
+/// answer, which asking again would not change: the card says it for a
+/// moment, as after its own click, and the settings row keeps it.
 fn assert_on_the_click(intent: tonk_worker_api::CustodyIntent, credential_id: Option<String>) {
     if BUSY.with(|busy| busy.replace(true)) {
         tonk_common::log!(
@@ -379,10 +381,28 @@ fn assert_on_the_click(intent: tonk_worker_api::CustodyIntent, credential_id: Op
             Err(error) => Err(error),
         };
         BUSY.with(|busy| busy.set(false));
-        if let Err(error) = outcome {
-            report(&error.message);
+        let Err(error) = outcome else {
+            return;
+        };
+        report(&error.message);
+        let said = user_error::ceremony(action, &error);
+        if matches!(
+            error.refusal,
+            Some(
+                tonk_identity::passkey::CeremonyRefusal::NotAllowed
+                    | tonk_identity::passkey::CeremonyRefusal::Security
+            )
+        ) {
             run_command_ceremony(intent, credential_id);
-            set_card_message(&user_error::ceremony(action, &error));
+            set_card_message(&said);
+        } else if !BUSY.with(|busy| busy.replace(true)) {
+            let anchored = matches!(&intent, tonk_worker_api::CustodyIntent::AuthorizeDevice(_));
+            if mount_card(anchored).is_some() {
+                set_card_text(&said);
+                remove_card_after(4000);
+            } else {
+                BUSY.with(|busy| busy.set(false));
+            }
         }
     });
 }
