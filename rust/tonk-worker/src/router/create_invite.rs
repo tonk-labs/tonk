@@ -187,7 +187,7 @@ async fn mint_invite(
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     if expected.is_some()
-        && super::repository::remote_is_own_service(remote.access_url.as_str())
+        && super::repository::remote_is_own_service(&tonk, remote.access_url.as_str()).await
         && !super::customer::space_provider_recorded(&tonk, &repository.did()).await
     {
         match super::repository::provision_space_consumer(&tonk, &repository.did()).await {

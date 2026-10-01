@@ -634,21 +634,24 @@ struct MatchedRoute {
 }
 
 /// Order routes for insertion into the router: the space's own routes first,
-/// then the seed's, each group by entity URI.
+/// then the ones a library pinned, each group by entity URI.
 ///
 /// The router preserves insertion order among routes of equal specificity, so
-/// this ordering is what settles those ties. A route the space authored is not
-/// named by any `xyz.tonk.seed/route` fact and so wins over a seed route of
-/// the same shape; the URI tiebreak keeps the result deterministic within a
-/// group.
+/// this ordering is what settles those ties. Libraries pinned their routes to
+/// fixed entities before they shipped them as commands, and a space keeps
+/// them until its upgrade withdraws them; a route the space wrote for the
+/// same path wins meanwhile. A library's commands write routes only where no
+/// route claims the path, so the routes they write tie with nothing until
+/// the space writes its own, and then only until the next upgrade. The URI
+/// tiebreak keeps the result deterministic within a group.
 ///
 /// Split out of [`match_route`] so it is testable off-target — `match_route`
 /// itself needs a branch session and so is wasm-only.
-fn route_order(routes: &mut [tonk_schema::Route], seed: &std::collections::HashSet<String>) {
-    let from_seed = |route: &tonk_schema::Route| seed.contains(&route.this.to_string());
+fn route_order(routes: &mut [tonk_schema::Route], pinned: &std::collections::HashSet<String>) {
+    let library = |route: &tonk_schema::Route| pinned.contains(&route.this.to_string());
     routes.sort_by(|a, b| {
-        from_seed(a)
-            .cmp(&from_seed(b))
+        library(a)
+            .cmp(&library(b))
             .then_with(|| a.this.to_string().cmp(&b.this.to_string()))
     });
 }
@@ -687,29 +690,13 @@ async fn match_route(
         .await
         .unwrap_or_default();
 
-    // Which routes the seed installed, read from the revision it committed
-    // at: a route it installed is a claim it asserted, so the changelog
-    // already names them and nothing has to be recorded twice. A route the
-    // space authored is simply absent.
-    let seeds: Vec<tonk_schema::SeedInstalled> = state
-        .handle()
-        .query()
-        .select(Query::<tonk_schema::SeedInstalled> {
-            this: Term::var("this"),
-            prior: Term::var("prior"),
-            version: Term::var("version"),
-        })
-        .perform(&tonk.operator)
-        .try_vec()
-        .await
-        .unwrap_or_default();
-    let seed = match seeds.first() {
-        Some(seed) => super::repository::seed_routes(tonk, state, &seed.version.0.to_string())
-            .await
-            .unwrap_or_default(),
-        None => std::collections::HashSet::new(),
-    };
-    route_order(&mut routes, &seed);
+    // The routes libraries pinned before they shipped them as commands, which
+    // a space keeps until the upgrade that withdraws them.
+    let pinned = super::repository::LEGACY_ROUTES
+        .iter()
+        .map(|route| (*route).to_owned())
+        .collect();
+    route_order(&mut routes, &pinned);
 
     let mut router = tonk_router::Router::new();
     for route in &routes {
@@ -739,24 +726,31 @@ async fn match_route(
     }
 }
 
+/// The route entity [`match_route`] picks for `rest`, for tests outside this
+/// module that need the router's real answer.
+#[cfg(test)]
+pub(super) async fn matched_route(
+    tonk: &crate::worker::TonkState,
+    state: &dialog_reactor::BranchSession,
+    rest: &str,
+) -> Option<dialog_artifacts::Entity> {
+    match_route(tonk, state, rest)
+        .await
+        .map(|matched| matched.route)
+}
+
 /// End-to-end: the route table a branch actually holds, resolved through
 /// `match_route`. Complements `route_order_tests`, which pins the ordering
-/// alone — these prove the `SeedRoute` query and the router wiring agree
-/// with it.
+/// alone — these prove the router wiring agrees with it.
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 mod match_route_tests {
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     wasm_bindgen_test_configure!(run_in_service_worker);
 
-    /// Seed `body` onto a fresh repo's `main` and resolve `path` against it,
-    /// answering with the matched route's entity.
-    /// Install `seed` as a seed, optionally author `authored` on top, and
-    /// resolve `path` through the real router.
-    ///
-    /// The seed is recorded the way an install does — naming the revision
-    /// it committed at — because that record is how the router tells a
-    /// seed route from one the space wrote.
-    async fn matched_route(seed: &str, authored: Option<&str>, path: &str) -> Option<String> {
+    /// Install core plus `library` the way creation does, author `authored`
+    /// on top if given, and resolve `path` through the real router to the
+    /// model it mounts.
+    async fn resolve(library: &str, authored: Option<&str>, path: &str) -> Option<String> {
         const LIBRARY: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
 
         let (app, state, _lsp) =
@@ -764,24 +758,15 @@ mod match_route_tests {
         let key = crate::router::tests::put_repo(&app, "route-e2e").await;
         let tonk = state.read().await;
 
-        let installed = crate::router::evaluate::evaluate_body_recording(
+        crate::router::repository::install_fresh_seed(
             &tonk,
             &key,
             "main",
-            format!("{LIBRARY}\n{seed}"),
-            &|minted| {
-                crate::router::repository::seed_record_facts(
-                    "seed:probe",
-                    "/library/core.yaml",
-                    "seed:none",
-                    "seed:none",
-                    &crate::router::repository::encode_seed_version(minted),
-                )
-            },
+            &format!("{LIBRARY}\n{library}"),
+            &[],
         )
         .await
-        .expect("the seed installs");
-        let _ = installed;
+        .expect("the library installs");
 
         if let Some(authored) = authored {
             crate::router::evaluate::evaluate_body(&tonk, &key, "main", authored.to_owned(), true)
@@ -798,67 +783,31 @@ mod match_route_tests {
             .expect("main acquires");
         super::match_route(&tonk, &session, path)
             .await
-            .map(|matched| matched.route.to_string())
+            .map(|matched| matched.concept.to_string())
     }
 
-    /// The collision this whole mechanism exists for: the seed installs
-    /// `/` and the space authors its own `/`. The space's must win —
-    /// resolved through the real router, not just the sort.
-    ///
-    /// Which routes came from the seed is read from the revision it
-    /// committed at, so the two must be SEPARATE commits here: a route
-    /// authored in the same batch as the seed is indistinguishable from
-    /// one the seed installed, and rightly so.
+    /// A route a library ships as a command resolves: the rule wrote it.
     #[dialog_common::test]
-    async fn it_prefers_a_space_route_over_a_seed_route() {
-        // `id:` entities sort with the seed's FIRST, so a plain entity-URI
-        // order would pick the seed route. Only its provenance demotes it.
-        let matched = matched_route(
-            r#"
-route!:
-  this: id:aaa/seed-home
-  path: "/"
-  concept: tonk:blank
-"#,
-            Some(
-                r#"
-route!:
-  this: id:zzz/space-home
-  path: "/"
-  concept: tonk:blank
-"#,
-            ),
-            "/",
-        )
-        .await;
+    async fn it_resolves_a_route_the_library_ships() {
+        let shipped = "seed/route!:\n  path: \"/probe\"\n  concept: probe:library\n";
 
         assert_eq!(
-            matched.as_deref(),
-            Some("id:zzz/space-home"),
-            "the space's own route must win the tie against the seed's"
+            resolve(shipped, None, "/probe").await.as_deref(),
+            Some("probe:library")
         );
     }
 
-    /// With nothing but seed routes the seed still resolves — demoting
-    /// them must not mean dropping them.
+    /// A route a library pinned before it shipped routes as commands loses
+    /// to the space's own route for the same path, though its entity sorts
+    /// first: resolved through the real router, not just the sort.
     #[dialog_common::test]
-    async fn it_falls_back_to_a_seed_route() {
-        let matched = matched_route(
-            r#"
-route!:
-  this: id:aaa/seed-home
-  path: "/"
-  concept: tonk:blank
-"#,
-            None,
-            "/",
-        )
-        .await;
+    async fn it_prefers_a_space_route_over_one_a_library_pinned() {
+        let routes = "route!:\n  this: id:tonk:route/space\n  path: \"/probe\"\n  concept: probe:pinned\n\nroute!:\n  this: id:zzz/space-probe\n  path: \"/probe\"\n  concept: probe:space\n";
 
         assert_eq!(
-            matched.as_deref(),
-            Some("id:aaa/seed-home"),
-            "a seed route still resolves when the space authored none"
+            resolve("", Some(routes), "/probe").await.as_deref(),
+            Some("probe:space"),
+            "the space's own route must win the tie against the pinned one"
         );
     }
 }
@@ -886,21 +835,20 @@ mod route_order_tests {
         routes.iter().map(|route| route.this.to_string()).collect()
     }
 
-    /// The tie this exists to settle: a space's own route and a seed route
-    /// on the same path. The space's wins because it carries no layer, and it
-    /// wins regardless of how the URIs sort — which is what the old
-    /// entity-URI-only order got wrong.
+    /// The tie this exists to settle: a space's own route and one a library
+    /// pinned on the same path. The space's wins regardless of how the URIs
+    /// sort — which is what the old entity-URI-only order got wrong.
     #[test]
-    fn it_orders_a_space_route_before_a_seed_route() {
-        let mut routes = vec![route("id:aaa/seed", "/"), route("id:zzz/space", "/")];
-        let seed = HashSet::from(["id:aaa/seed".to_string()]);
+    fn it_orders_a_space_route_before_a_pinned_one() {
+        let mut routes = vec![route("id:aaa/pinned", "/"), route("id:zzz/space", "/")];
+        let pinned = HashSet::from(["id:aaa/pinned".to_string()]);
 
-        super::route_order(&mut routes, &seed);
+        super::route_order(&mut routes, &pinned);
 
         assert_eq!(
             ordered(&routes),
-            vec!["id:zzz/space", "id:aaa/seed"],
-            "the space's own route must precede the seed's"
+            vec!["id:zzz/space", "id:aaa/pinned"],
+            "the space's own route must precede the pinned one"
         );
     }
 
@@ -915,16 +863,16 @@ mod route_order_tests {
         assert_eq!(ordered(&routes), vec!["id:aaa", "id:zzz"]);
     }
 
-    /// Two seed routes still order deterministically between themselves —
-    /// the `/` collision core.yaml and notebook.yaml both declare.
+    /// Two pinned routes on one path still order deterministically between
+    /// themselves, so every device builds the same router.
     #[test]
-    fn it_orders_two_seed_routes_by_entity_uri() {
-        let mut routes = vec![route("id:zzz/notebook", "/"), route("id:aaa/core", "/")];
-        let seed = HashSet::from(["id:zzz/notebook".to_string(), "id:aaa/core".to_string()]);
+    fn it_orders_two_pinned_routes_by_entity_uri() {
+        let mut routes = vec![route("id:zzz/second", "/"), route("id:aaa/first", "/")];
+        let pinned = HashSet::from(["id:zzz/second".to_string(), "id:aaa/first".to_string()]);
 
-        super::route_order(&mut routes, &seed);
+        super::route_order(&mut routes, &pinned);
 
-        assert_eq!(ordered(&routes), vec!["id:aaa/core", "id:zzz/notebook"]);
+        assert_eq!(ordered(&routes), vec!["id:aaa/first", "id:zzz/second"]);
     }
 }
 

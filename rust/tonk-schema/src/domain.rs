@@ -602,6 +602,25 @@ pub mod seed {
     #[domain("xyz.tonk.seed")]
     #[cardinality(one)]
     pub struct Version(pub String);
+
+    /// The version of the commit that installed this seed, which holds its
+    /// whole library.
+    ///
+    /// An upgrade reverts the install it replaces, and a commit records only
+    /// what it changes. An install that reverts everything first and then
+    /// asserts its library in a commit of its own records all of it, so the
+    /// next upgrade can revert that one commit. Encoded like [`Version`].
+    ///
+    /// Kept apart from [`Version`], which installs written before carry and
+    /// which releases from before read to find the install to upgrade. A
+    /// worker from one of them, still running on a device until its
+    /// successor takes over, finds no install on a space recorded this way
+    /// and leaves it alone, rather than moving it back to its own library
+    /// over what the space chose since.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.seed")]
+    #[cardinality(one)]
+    pub struct InstallVersion(pub String);
 }
 
 /// Attributes for transient *command* concepts — the effect triggers
@@ -1304,6 +1323,30 @@ pub mod command {
             #[derive(Attribute, Clone, PartialEq, PartialOrd)]
             #[domain("xyz.tonk.command.sign-out")]
             pub struct Time(pub f64);
+        }
+
+        /// `account/sign-in-via` — sign this browser in through another
+        /// deployment that holds the account.
+        pub mod sign_in_via {
+            use dialog_query::Attribute;
+
+            /// The deployment holding the account, as an origin
+            /// (`https://tonk.network`).
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.sign-in-via")]
+            pub struct Via(pub String);
+        }
+
+        /// `account/finish-sign-in-via` — install what that deployment
+        /// answered.
+        pub mod finish_sign_in_via {
+            use dialog_query::Attribute;
+
+            /// The page address the answer came back on, fragment
+            /// included: the grant rides the fragment.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.finish-sign-in-via")]
+            pub struct Url(pub String);
         }
 
         /// `tonk/switch-profile` — make another profile on this browser

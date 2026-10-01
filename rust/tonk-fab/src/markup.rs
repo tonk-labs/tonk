@@ -50,8 +50,17 @@ button,a{ min-height:48px; font:600 17px/1.1 'IBM Plex Sans Condensed','Arial Na
 .fab{ width:48px; flex:none; display:grid; place-items:center; touch-action:none; user-select:none; }
 .fab .disc{ width:18px; height:18px; }
 .space{ flex:1; min-width:0; display:flex; align-items:center; justify-content:flex-start;
-  padding:0 6px; text-align:left; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  position:relative; padding:0 6px; text-align:left; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .space .n{ min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.agent-feedback{ display:grid; grid-template-rows:0fr; opacity:0; transform:translateY(8px);
+  transition:grid-template-rows .4s var(--_ease),opacity .2s var(--_ease),transform .4s var(--_ease); }
+.agent-feedback-clip{ min-height:0; overflow:hidden; }
+.agent-feedback-message{ display:flex; align-items:center; gap:16px; margin:0; padding:32px 18px;
+  background:var(--_hover); font:400 18px/1.5 'IBM Plex Sans Condensed','Arial Narrow',sans-serif; }
+.agent-feedback-message svg{ width:18px; height:18px; flex:none; }
+:host([data-agent-connected]) .agent-feedback{ grid-template-rows:1fr; opacity:1; transform:none; }
+:host([data-agent-connected]) .w.collapsed{ width:min(var(--fabb-space-width),var(--_room,calc(100vw - 32px)),calc(100vw - 32px)); }
+:host([data-agent-connected]) .w.collapsed .space{ visibility:visible; }
 .space .edit{ text-align:left; }
 .run{ display:grid; }
 /* Command mode (`commanding` on the host, set by what fills the `command`
@@ -202,6 +211,7 @@ button,a{ min-height:48px; font:600 17px/1.1 'IBM Plex Sans Condensed','Arial Na
 .task-ack:focus-visible,.task-title:focus-visible{ outline:2px solid currentColor; outline-offset:-3px; }
 @media (prefers-reduced-motion: reduce){
   :host,.w{ transition:none; }
+  .agent-feedback{ transition:none; transform:none; }
   :host([alert]) .disc.st,:host([alert]) .share{ animation:none!important; }
 }
 "#;
@@ -217,6 +227,7 @@ pub const BAR_HTML: &str = r#"<div class="w">
       <button class="space" data-cell="space" aria-expanded="false" aria-controls="fabb-actions"><span class="n"></span></button>
       <slot name="command"></slot>
     </div>
+    <div class="agent-feedback"><div class="agent-feedback-clip"><p class="agent-feedback-message"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m20 6-11 11-5-5"/></svg><span class="agent-notice" role="status" aria-live="polite"></span></p></div></div>
     <div class="command"><slot name="command-list"></slot></div>
     <nav class="run" id="fabb-actions" aria-label="space actions" hidden>
       <button class="action login" data-action="account" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3h6v18h-6M3 12h12m-5-5 5 5-5 5"/></svg><span>add an account</span></button>
@@ -709,12 +720,12 @@ mod tests {
 
     #[test]
     fn it_draws_its_marks_as_geometry() {
-        assert_eq!(BAR_HTML.matches("<svg").count(), 6);
+        assert_eq!(BAR_HTML.matches("<svg").count(), 7);
         assert_eq!(
             BAR_HTML
                 .matches(r#"stroke-linejoin="round" aria-hidden="true""#)
                 .count(),
-            6
+            7
         );
         assert!(BAR_HTML.contains("stroke=\"currentColor\""));
         assert!(BAR_HTML.contains(r#"<rect x="1.5" y="9.5" width="21" height="13" rx="4"/>"#));

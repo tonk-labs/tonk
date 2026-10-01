@@ -1494,16 +1494,51 @@ pub fn agent_handoff_query_body(subject: &str) -> Result<String, String> {
         "predicate": { "with": {
             "status": { "the": "xyz.tonk.agent-handoff/status", "as": "Text", "cardinality": "one" },
             "link": { "the": "xyz.tonk.agent-handoff/link", "as": "Text", "cardinality": "one" },
+            "receipt": { "the": "xyz.tonk.agent-handoff/receipt", "as": "Text", "cardinality": "one", "optional": true },
             "account": { "the": "xyz.tonk.agent-handoff/account", "as": "Entity", "cardinality": "one" }
         } },
         "terms": {
             "this": subject,
             "status": { "?": { "name": "status" } },
             "link": { "?": { "name": "link" } },
+            "receipt": { "?": { "name": "receipt" } },
             "account": { "?": { "name": "account" } }
         }
     })
     .to_string())
+}
+
+/// Receipts remain durable data; only a locally requested invitation may
+/// turn one into transient feedback. This state is deliberately not persisted.
+#[derive(Clone, Debug, Default)]
+pub struct AgentConnectionFeedback {
+    pending: std::collections::HashSet<String>,
+    seen: std::collections::HashSet<String>,
+}
+
+impl AgentConnectionFeedback {
+    pub fn expect(&mut self, receipt: &str) {
+        if !receipt.is_empty() && !self.seen.contains(receipt) {
+            self.pending.insert(receipt.to_owned());
+        }
+    }
+
+    pub fn receive(&mut self, receipt: &str) -> bool {
+        let fresh = self.seen.insert(receipt.to_owned());
+        self.pending.remove(receipt) && fresh
+    }
+}
+
+pub fn agent_receipts_query_body() -> String {
+    json!({
+        "predicate": { "with": {
+            "status": { "the": "xyz.tonk.agent-connection/status", "as": "Text", "cardinality": "one" }
+        } },
+        "terms": {
+            "this": { "?": { "name": "this" } },
+            "status": "Agent connection confirmed"
+        }
+    }).to_string()
 }
 
 /// Build the inline transient understood by the worker's agent handoff provider.
@@ -1544,6 +1579,23 @@ pub fn agent_prompt(name: &str, link: &str) -> String {
 #[cfg(test)]
 mod agent_handoff {
     use super::*;
+
+    #[test]
+    fn feedback_is_local_once_only_and_does_not_replay_receipts() {
+        let mut issuer = AgentConnectionFeedback::default();
+        let mut viewer = AgentConnectionFeedback::default();
+        assert!(!issuer.receive("old"));
+        issuer.expect("old");
+        assert!(!issuer.receive("old"));
+        issuer.expect("mine");
+        assert!(!issuer.receive("someone-elses"));
+        assert!(!viewer.receive("mine"));
+        assert!(issuer.receive("mine"));
+        issuer.expect("mine");
+        assert!(!issuer.receive("mine"));
+        let mut reopened = AgentConnectionFeedback::default();
+        assert!(!reopened.receive("mine"));
+    }
 
     #[test]
     fn it_uses_raw_handoff_attributes_for_old_spaces() {

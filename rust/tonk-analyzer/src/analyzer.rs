@@ -5131,8 +5131,9 @@ mod library_analysis_tests {
     /// The worker asserts these as typed facts rather than notation, so
     /// what is pinned here is that the DECLARATIONS exist and accept the
     /// shape: identity plus source on `seed/available`, and the install
-    /// fields on `seed/installed` over the same entity. A seed a check
-    /// merely found asserts only the first, which is why the two are
+    /// fields on `seed/install` over the same entity — or on
+    /// `seed/installed`, as releases before it recorded installs. A seed a
+    /// check merely found asserts only the first, which is why the two are
     /// separable rather than one concept with optional fields.
     #[test]
     fn it_analyzes_a_seed_record() {
@@ -5142,10 +5143,15 @@ mod library_analysis_tests {
   source: "/library/core.yaml"
   replaces: seed:none
 
-seed/installed!:
+seed/install!:
   this: seed:abc
   prior: seed:none
   version: "1@abc"
+
+seed/installed!:
+  this: seed:def
+  prior: seed:none
+  version: "1@def"
 "#;
         assert_analyzes("core.yaml + seed record", &format!("{core}\n{body}"));
     }

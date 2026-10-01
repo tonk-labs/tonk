@@ -1792,6 +1792,19 @@ fn it_renders_all_grant_set_receipts_without_claiming_agent_presence() {
     assert!(receipt.contains("agent setup confirmed"));
     assert!(receipt.contains("not whether the agent is online"));
     assert!(receipt.contains("data-this={this}"));
+    assert!(!receipt.contains("position: fixed"));
+    assert!(!receipt.contains("role=\"status\""));
+    let shell = STANDARD_LIBRARY
+        .split("view!:\n  this: tonk:workspace/shell\n")
+        .nth(1)
+        .unwrap()
+        .split("# The directory page")
+        .next()
+        .unwrap();
+    assert!(
+        !shell.contains("tonk:agent-connection"),
+        "opening a space must not render shared receipts as notifications"
+    );
     assert!(!receipt.contains("Your agent connected"));
     assert!(
         !STANDARD_LIBRARY

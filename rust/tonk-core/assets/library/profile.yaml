@@ -1730,6 +1730,42 @@ command!: &device/authorize
       the: xyz.tonk.authorize-device/expected-account
       as: entity
 
+# Signing this browser in through another deployment, the browser's
+# `tonk account login --via`. `/settings/link?via=<origin>` shows the ask;
+# the pane copies the origin onto its continue control so the click can
+# assert it.
+event!: &on/sign-in-via
+  type: "click"
+  prevent-default: true
+  where:
+    via: ".currentTarget.dataset.via"
+
+command!: &account/sign-in-via
+  this: tonk:sign-in-via
+  description: Sign this browser in through another deployment that holds the account.
+  with:
+    via:
+      description: The origin of the deployment holding the account.
+      the: xyz.tonk.command.sign-in-via/via
+      as: text
+
+# That deployment's answer, read off the location the way `/join` reads an
+# invite: the grant rides the fragment, which the service worker never
+# sees, so the pane dispatches the whole address in the event's `detail`.
+event!: &on/finish-sign-in-via
+  type: "sign-in-via-return"
+  where:
+    url: ".detail.href"
+
+command!: &account/finish-sign-in-via
+  this: tonk:finish-sign-in-via
+  description: Install the grant another deployment approved for this browser.
+  with:
+    url:
+      description: The address the answer came back on, fragment included.
+      the: xyz.tonk.command.finish-sign-in-via/url
+      as: text
+
 # The switcher list. Renders every profile but the active one: the active
 # account is already named in the bar above, and offering to switch to
 # where you are is a no-op the worker would reject anyway.
@@ -2692,11 +2728,12 @@ view!:
                   </div>
                 </div>
                 <div class="pane" data-pane="link" hidden data-link-approval>
-                  <div class="sect">a terminal is asking for access</div>
+                  <div class="sect" data-link-heading>a terminal is asking for access</div>
                   <div class="srowd"><span>name</span><b data-link-name></b></div>
+                  <div class="srowd"><span>goes to</span><b class="lft" data-link-return></b></div>
                   <div class="srowd"><span>account</span><b class="lft" data-link-account></b></div>
                   <div class="srowd"><span>device</span><b class="lft" data-link-did></b></div>
-                  <p class="expl">
+                  <p class="expl" data-link-explanation>
                     approving gives that terminal the same access to your account as this
                     browser: every space, on every device. decline if you did not request
                     account access from this device yourself.
@@ -2720,6 +2757,21 @@ view!:
                     <button class="m-cancel" type="button" data-local-link-decline>decline</button>
                     <button class="m-go" type="button" data-local-link-approve>approve this space</button>
                   </div>
+                </div>
+                <div class="pane" data-pane="via" hidden data-via-approval>
+                  <div class="sect">sign in through another tonk</div>
+                  <div class="srowd"><span>account on</span><b class="lft" data-via-origin></b></div>
+                  <p class="expl">
+                    you approve this browser there, with the passkey that holds your account,
+                    and come back here signed in to it. this browser then has the access any
+                    device you approve has: every space, until you revoke it there.
+                  </p>
+                  <div class="link-foot">
+                    <button class="m-cancel" type="button" data-via-cancel>cancel</button>
+                    <button class="m-go" type="button" data-via-continue on:sign-in-via=tonk:sign-in-via
+                      data-via="">continue</button>
+                  </div>
+                  <span hidden data-via-return on:finish-sign-in-via=tonk:finish-sign-in-via></span>
                 </div>
                 <p class="expl" data-ceremony-status role="status" aria-live="polite" hidden></p>
                 <tonk-display model="state:ceremony" view="settings"></tonk-display>
@@ -4999,6 +5051,87 @@ element!: &account-settings
         const name = (params.get('name') ?? '').trim() || 'terminal';
         return { audience, callback, name, expectedAccount: params.get('expectedAccount') };
       }
+    # An https callback is a page on another deployment signing a browser
+    # in through this one; a loopback callback is a terminal. Answers the
+    # page's origin, or null for anything that is not a deliverable https
+    # page, with the same rules the worker applies before it delivers.
+    web-callback: |
+      (self, callback) => {
+        let target;
+        try { target = new URL(callback); } catch { return null; }
+        const deliverable = target.protocol === 'https:' && !!target.hostname
+          && !target.username && !target.password && !target.hash;
+        return deliverable ? target.origin : null;
+      }
+    # This browser asking another deployment to sign it in, the browser's
+    # `tonk account login --via`: `/settings/link?via=<origin>` asks, and
+    # the same address with `request=` and a fragment is the answer coming
+    # back. An approval request (`audience=`) is never this.
+    via-request: |
+      (self) => {
+        const at = self.context();
+        if (at.path !== '/settings/link') return null;
+        const params = new URLSearchParams(at.search);
+        if (params.has('audience')) return null;
+        const via = (params.get('via') ?? '').trim();
+        if (!via) return null;
+        let origin = null;
+        try { origin = new URL(via).origin; } catch {}
+        const hash = at.hash ?? '';
+        const answer = new URLSearchParams(hash.replace(/^#/, ''));
+        return {
+          via,
+          origin,
+          request: params.get('request'),
+          granted: answer.has('authorize'),
+          denied: answer.get('deny'),
+          href: `${at.origin}${at.path}${at.search}${hash}`,
+        };
+      }
+    # Show the ask, or hand the answer to the worker. The grant is in the
+    # fragment, which only this page can read, so the whole address goes
+    # to `tonk:finish-sign-in-via`; the worker checks it answers the
+    # request this profile made. Dispatched once per page load, so a
+    # re-render does not install the same grant twice, and only once the
+    # enclosing display is bound (`data-bound`): the binding that turns
+    # the event into the command is installed with it, and an answer
+    # handed over before then is lost (see `page-mount`).
+    via-show: |
+      (self) => {
+        const via = self.viaRequest();
+        if (!via) return false;
+        self.text('[data-via-origin]', via.origin ?? via.via);
+        const go = self.querySelector('[data-via-continue]');
+        if (go) {
+          if (go.dataset.via !== (via.origin ?? '')) go.dataset.via = via.origin ?? '';
+          const answered = !!via.request;
+          if (go.hidden !== answered) go.hidden = answered;
+        }
+        self.pane('via');
+        if (!via.origin) {
+          self.status('the address to sign in through is not a valid URL');
+        } else if (via.request && via.denied) {
+          self.status(`${via.origin} did not approve this browser: ${via.denied}`);
+        } else if (via.request && via.granted && !self.hasAttribute('data-via-finishing')) {
+          self.status('Signing in…');
+          const display = self.closest('tonk-display');
+          const hand = () => {
+            if (self.hasAttribute('data-via-finishing')) return;
+            if (!display?.hasAttribute('data-bound')) return;
+            self._viaBound?.disconnect();
+            self._viaBound = null;
+            self.setAttribute('data-via-finishing', '');
+            self.querySelector('[data-via-return]')?.dispatchEvent(
+              new CustomEvent('sign-in-via-return', { bubbles: true, detail: { href: via.href } }));
+          };
+          hand();
+          if (display && !self.hasAttribute('data-via-finishing') && !self._viaBound) {
+            self._viaBound = new MutationObserver(hand);
+            self._viaBound.observe(display, { attributes: true, attributeFilter: ['data-bound'] });
+          }
+        }
+        return true;
+      }
     # Base58 over the callback URL: a bare URL carries a `:` and would
     # decode as an entity on the worker's side.
     base58: |
@@ -5026,6 +5159,7 @@ element!: &account-settings
     refresh: |
       (self) => {
         if (self.localLinkShow()) return;
+        if (self.viaShow()) return;
         const request = self.linkRequest();
         if (!request) {
           self.pane('account');
@@ -5033,6 +5167,14 @@ element!: &account-settings
           self.connectionsRefresh();
           return;
         }
+        // A web callback is a page on another deployment, and approving
+        // sends the grant there: name the page, not a terminal.
+        const page = self.webCallback(request.callback);
+        self.text('[data-link-heading]', page ? `${new URL(page).host} is asking for access` : 'a terminal is asking for access');
+        self.text('[data-link-return]', page ?? 'this computer');
+        self.text('[data-link-explanation]', page
+          ? `approving signs that page into your account as a new device, with the same access as this browser: every space, on every device. decline if you did not ask ${new URL(page).host} to sign in yourself.`
+          : 'approving gives that terminal the same access to your account as this browser: every space, on every device. decline if you did not request account access from this device yourself.');
         self.text('[data-link-name]', request.name);
         self.text('[data-link-did]', request.audience);
         self.text('[data-link-account]', request.expectedAccount ?? 'your signed-in account');
@@ -5219,11 +5361,13 @@ element!: &account-settings
           'delete-account': 'Deleting the account',
           'authorize-device': 'Approving the terminal',
           'add-passkey': 'Adding the passkey',
+          'sign-in-via': 'Signing in',
         }[which];
         if (!subject) return;
         const done = {
           'delete-account': 'Account deleted.',
           'authorize-device': 'Approved. Handing the terminal its access…',
+          'sign-in-via': 'Signed in.',
         }[which] ?? 'Done.';
         const text = {
           'pending-ceremony': `${subject}: waiting for passkey…`,
@@ -5243,9 +5387,9 @@ element!: &account-settings
         }
         self.status(text);
       }
-    # Declining hands the terminal a deny on its own callback. The same
-    # loopback check the worker makes on approval: a callback that is
-    # not a Tonk loopback address gets nothing.
+    # Declining hands the requester a deny on its own callback. The same
+    # check the worker makes on approval: a callback that is neither a Tonk
+    # loopback address nor an https page gets nothing.
     decline: |
       (self) => {
         const request = self.linkRequest();
@@ -5254,7 +5398,10 @@ element!: &account-settings
         try { target = new URL(request.callback); } catch { self.status('the authorization callback address is invalid'); return; }
         const loopback = target.protocol === 'http:' && target.hostname === '127.0.0.1' && !!target.port
           && target.pathname === '/' && !target.search && !target.hash && !target.username && !target.password;
-        if (!loopback) { self.status('the authorization callback is not a Tonk loopback address'); return; }
+        if (!loopback && !self.webCallback(request.callback)) {
+          self.status('the authorization callback is neither a Tonk loopback address nor an https page');
+          return;
+        }
         const fields = new URLSearchParams([['deny', 'declined in the browser'], ['redirect', `${self.context().origin}/settings`]]);
         target.hash = fields.toString();
         window.tonk?.navigate?.(target.toString());
@@ -5319,7 +5466,9 @@ element!: &account-settings
           return;
         }
         if (changed && linked === 'true' && path === '/settings') self.connectionsRefresh();
-        if (account && self.unlinked() && !linking) self.link('needs-account');
+        // Signing in through another deployment needs no passkey here, so
+        // its page raises no ceremony of its own.
+        if (account && self.unlinked() && !linking && !self.viaRequest()) self.link('needs-account');
         // Route changes can suspend and restore the ceremony with its
         // typed address intact.
         const shown = account ? 'show' : 'suspend';
@@ -5338,6 +5487,8 @@ element!: &account-settings
             self.localLinkApprove();
           } else if (hit('[data-local-link-decline]')) {
             self.localLinkDecline();
+          } else if (hit('[data-via-cancel]')) {
+            window.tonk?.navigate?.('/');
           } else if (hit('[data-sign-out-open]')) {
             self.querySelector('[data-sign-out-dialog]')?.show?.();
           } else if (hit('[data-delete-account-open]')) {
@@ -5421,6 +5572,8 @@ element!: &account-settings
         self._nameReader = null;
         if (self._moved) window.removeEventListener('tonk:context', self._moved);
         self._resolved?.disconnect();
+        self._viaBound?.disconnect();
+        self._viaBound = null;
         if (self._torn) window.removeEventListener('tonk:registration-closed', self._torn);
         if (self._moveSeat) {
           window.removeEventListener('resize', self._moveSeat);

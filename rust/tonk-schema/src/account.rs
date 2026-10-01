@@ -612,6 +612,10 @@ pub mod ceremony {
     /// exists so the hub can show that a signup is up without holding
     /// that fact in element state, which a re-render would lose.
     pub const ADD_PROFILE: &str = "add-profile";
+    /// `tonk:sign-in-via` and `tonk:finish-sign-in-via`: signing this
+    /// browser in through another deployment. One name for both halves,
+    /// so the page shows one line however far the round trip got.
+    pub const SIGN_IN_VIA: &str = "sign-in-via";
 }
 
 /// The states a [`CeremonyStatus`] can report.

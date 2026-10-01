@@ -33,6 +33,7 @@ use wasm_bindgen::closure::Closure;
 use crate::api;
 
 thread_local! {
+    static SPACE_ENTRIES: RefCell<tonk_analytics::discover::SpaceEntries> = RefCell::new(Default::default());
     static STARTUP: RefCell<Option<StartupAttempt>> = const { RefCell::new(None) };
     static PENDING_CREATE: RefCell<Option<WorkerAttempt>> = const { RefCell::new(None) };
     static PENDING_JOIN: RefCell<Option<WorkerAttempt>> = const { RefCell::new(None) };
@@ -186,6 +187,9 @@ fn capture_current_pageview() {
         .and_then(|w| w.location().pathname().ok())
         .unwrap_or_else(|| "/".to_owned());
     tonk_analytics::web::capture_pageview(&path);
+    SPACE_ENTRIES.with(|entries| {
+        tonk_analytics::web::capture_space_entry(&mut entries.borrow_mut(), &path);
+    });
 }
 
 fn attach_listeners() {
@@ -373,16 +377,13 @@ fn attach_worker_lifecycle_listener() {
                 return;
             }
             match message.event {
-                tonk_worker_api::AnalyticsEvent::SpaceCreated { space } => {
+                tonk_worker_api::AnalyticsEvent::SpaceCreated { space, template } => {
                     finish_worker_attempt(
                         &PENDING_CREATE,
                         tonk_analytics::product::Journey::Space,
                         tonk_analytics::product::ProductAction::CreateSpace,
                     );
-                    tonk_analytics::web::capture_space_conversion(
-                        tonk_analytics::launch::SpaceConversion::Created,
-                        &space,
-                    );
+                    tonk_analytics::web::capture_space_created(&space, template.as_deref());
                 }
                 tonk_worker_api::AnalyticsEvent::SpaceJoined { space } => {
                     finish_worker_attempt(
