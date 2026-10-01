@@ -589,7 +589,7 @@ pub(crate) async fn provision_consumer(
         .map_err(|error| {
             TonkWorkerError::Internal(format!("failed to build the add invocation: {error}"))
         })?;
-    let origin = service_origin()?;
+    let origin = home_service_origin(state).await?;
     match post_cbor(&ucan_endpoint(&origin)?, &body).await {
         Ok(_) => {
             // Only a SPACE lands in the directory. A custody namespace
@@ -783,6 +783,29 @@ pub(crate) fn service_origin() -> Result<Url, TonkWorkerError> {
     Err(TonkWorkerError::Internal(
         "the worker origin is only known in a service-worker scope".to_string(),
     ))
+}
+
+/// The access service this profile's account lives on.
+///
+/// Usually the deployment the page came from: a passkey sign-in mints the
+/// device's grant here, and that grant names no address. A browser signed
+/// in through another deployment holds a grant minted there, whose signed
+/// meta names that deployment's `/ucan/`. Its spaces sync there, so they
+/// are provisioned and deprovisioned there, not with the service the page
+/// happens to be served from.
+pub(crate) async fn home_service_origin(
+    state: &crate::worker::TonkState,
+) -> Result<Url, TonkWorkerError> {
+    if let Ok(root) = super::identity::local_root(state).await
+        && let Ok(Some(home)) = tonk_invite::home_address(&root.delegation)
+    {
+        return format!("{}/", home.origin().ascii_serialization())
+            .parse()
+            .map_err(|error| {
+                TonkWorkerError::Internal(format!("the account's home is not a URL: {error}"))
+            });
+    }
+    service_origin()
 }
 
 /// The same-origin `/ucan/` endpoint.

@@ -2271,6 +2271,141 @@ mod tests {
         ]);
     }
 
+    /// A page on another deployment asks the way a terminal does, with an
+    /// https callback. The pane names that page, so approving is a
+    /// decision about where the grant goes, and declining answers the page
+    /// on its own callback.
+    #[dialog_common::test]
+    async fn it_names_the_page_a_web_request_would_sign_in() {
+        let navigations = record_bridge_calls("navigate");
+        let callback = "https://tonk.host/settings/link?via=https%3A%2F%2Ftonk.test&request=r1";
+        let search = format!(
+            "?audience=did%3Akey%3AzBrowser&callback={}&name=tonk.host",
+            String::from(js_sys::encode_uri_component(callback))
+        );
+        set_context(&[
+            ("origin", "https://tonk.test"),
+            ("path", "/settings/link"),
+            ("search", &search),
+            ("hash", ""),
+        ]);
+        let host = account_settings(
+            r#"<div class="pane" data-pane="account"></div><div class="pane" data-pane="link" hidden><b data-link-heading></b><b data-link-name></b><b data-link-return></b><b data-link-account></b><b data-link-did></b><p data-link-explanation></p><button type="button" data-link-decline>decline</button><button type="button" data-link-approve data-audience="" data-callback="" data-name="" data-expected-account="">approve</button></div><p data-ceremony-status hidden></p>"#,
+        );
+        settle_until(|| defined("account-settings")).await;
+        settle_briefly().await;
+
+        assert_eq!(
+            text_of(&host, "[data-link-heading]"),
+            "tonk.host is asking for access"
+        );
+        assert_eq!(text_of(&host, "[data-link-return]"), "https://tonk.host");
+        assert!(
+            text_of(&host, "[data-link-explanation]")
+                .contains("decline if you did not ask tonk.host to sign in yourself"),
+            "the warning names the page, not a terminal"
+        );
+
+        let decline = host
+            .query_selector("[data-link-decline]")
+            .expect("query")
+            .expect("the decline control");
+        fire(&decline, "click");
+        settle_until(|| navigations.length() >= 1).await;
+        assert_eq!(
+            navigations.get(0).as_string().as_deref(),
+            Some(
+                "https://tonk.host/settings/link?via=https%3A%2F%2Ftonk.test&request=r1#deny=declined+in+the+browser&redirect=https%3A%2F%2Ftonk.test%2Fsettings"
+            ),
+            "declining answers the page on its callback, keeping the request it named"
+        );
+        host.remove();
+        set_context(&[
+            ("origin", "https://tonk.test"),
+            ("path", "/"),
+            ("search", ""),
+            ("hash", ""),
+        ]);
+    }
+
+    /// The way back from another deployment: its answer rides the
+    /// fragment, which only the page can read, so the pane hands the whole
+    /// address to the worker as `sign-in-via-return`. Once: a re-render
+    /// must not hand the same grant over twice.
+    #[dialog_common::test]
+    async fn it_hands_another_deployments_answer_to_the_worker_once() {
+        // On the document, before the element mounts: its first refresh
+        // can run during the upgrade itself.
+        let answers = js_sys::Array::new();
+        let recorded = answers.clone();
+        let listener =
+            Closure::<dyn FnMut(web_sys::CustomEvent)>::new(move |event: web_sys::CustomEvent| {
+                let href = Reflect::get(&event.detail(), &"href".into()).unwrap_or_default();
+                recorded.push(&href);
+            });
+        document()
+            .add_event_listener_with_callback(
+                "sign-in-via-return",
+                listener.as_ref().unchecked_ref(),
+            )
+            .expect("listen");
+        set_context(&[
+            ("origin", "https://tonk.host"),
+            ("path", "/settings/link"),
+            ("search", "?via=https%3A%2F%2Ftonk.network&request=r1"),
+            ("hash", "#authorize=abc"),
+        ]);
+        let host = account_settings(
+            r#"<div class="pane" data-pane="account"></div><div class="pane" data-pane="via" hidden><b data-via-origin></b><button type="button" data-via-continue data-via="">continue</button><span hidden data-via-return></span></div><p data-ceremony-status hidden></p>"#,
+        );
+        settle_until(|| defined("account-settings")).await;
+        settle_until(|| answers.length() >= 1).await;
+
+        let via = host
+            .query_selector("[data-pane=\"via\"]")
+            .expect("query")
+            .expect("the via pane");
+        assert!(!via.has_attribute("hidden"), "the via pane is shown");
+        assert_eq!(text_of(&host, "[data-via-origin]"), "https://tonk.network");
+        assert_eq!(
+            answers.get(0).as_string().as_deref(),
+            Some(
+                "https://tonk.host/settings/link?via=https%3A%2F%2Ftonk.network&request=r1#authorize=abc"
+            ),
+            "the worker gets the whole address, fragment and all"
+        );
+        let go = host
+            .query_selector("[data-via-continue]")
+            .expect("query")
+            .expect("the continue control");
+        assert!(
+            go.has_attribute("hidden"),
+            "with an answer in hand there is nothing to continue"
+        );
+
+        let announce =
+            js_sys::Function::new_no_args("window.dispatchEvent(new CustomEvent('tonk:context'));");
+        let _ = announce.call0(&JsValue::NULL);
+        settle_briefly().await;
+        assert_eq!(
+            answers.length(),
+            1,
+            "a re-render does not hand the grant over again"
+        );
+
+        let _ = document().remove_event_listener_with_callback(
+            "sign-in-via-return",
+            listener.as_ref().unchecked_ref(),
+        );
+        host.remove();
+        set_context(&[
+            ("origin", "https://tonk.test"),
+            ("path", "/"),
+            ("search", ""),
+            ("hash", ""),
+        ]);
+    }
+
     /// Deleting is armed by the exact phrase, and what it deletes is
     /// counted off the owned-space rows the view renders.
     #[dialog_common::test]

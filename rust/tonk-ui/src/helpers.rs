@@ -194,6 +194,25 @@ mod native {
     }
 
     impl TestEnvironment {
+        /// The other name the test server answers on. Caddy serves the one
+        /// deployment as both `tonk.network` and `localhost`, and the
+        /// browser keeps them apart the way it keeps two deployments apart:
+        /// each origin has its own service worker, its own storage, and
+        /// passkeys that do not cross. A test signing a browser in through
+        /// another deployment uses one as each.
+        pub fn sibling_web(&self) -> Url {
+            let mut sibling = self.tonk_web.clone();
+            let host = if self.tonk_web.host_str() == Some("localhost") {
+                "tonk.network"
+            } else {
+                "localhost"
+            };
+            sibling
+                .set_host(Some(host))
+                .expect("a web origin's host can be replaced");
+            sibling
+        }
+
         fn chrome_capabilities(&self) -> Result<ChromeCapabilities> {
             let profile = tempfile::Builder::new()
                 .prefix("chrome-profile-")
@@ -221,9 +240,13 @@ mod native {
             caps.add_arg("--host-resolver-rules=MAP tonk.network 127.0.0.1")?;
             caps.add_arg(&format!("--user-data-dir={}", profile.display()))?;
             caps.accept_insecure_certs(true)?;
+            // Both names the server answers on: a service worker registers
+            // only on a secure origin, and Caddy's internal certificate is
+            // no more trusted on one name than the other.
             let secure_origin = format!(
-                "--unsafely-treat-insecure-origin-as-secure={}",
-                self.tonk_web.origin().ascii_serialization()
+                "--unsafely-treat-insecure-origin-as-secure={},{}",
+                self.tonk_web.origin().ascii_serialization(),
+                self.sibling_web().origin().ascii_serialization()
             );
             caps.add_arg(&secure_origin)?;
 

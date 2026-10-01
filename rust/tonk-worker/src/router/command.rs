@@ -219,6 +219,10 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         .command::<tonk_schema::command::ResendActivation>()
         .command::<tonk_schema::command::DeleteAccount>()
         .command::<super::ceremony::AuthorizeDeviceRequest>()
+        // Signing in through another deployment is new, so neither half
+        // has a legacy shape to migrate.
+        .command::<tonk_schema::command::SignInVia>()
+        .command::<tonk_schema::command::FinishSignInVia>()
         .migrated::<tonk_schema::command::AddPasskey, tonk_schema::command::legacy::AddPasskey>()
         .migrated::<tonk_schema::command::ExpelMember, tonk_schema::command::legacy::ExpelMember>()
         .migrated::<tonk_schema::command::RemoveSpace, tonk_schema::command::legacy::RemoveSpace>()

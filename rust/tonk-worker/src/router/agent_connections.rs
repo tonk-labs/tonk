@@ -270,7 +270,7 @@ pub(crate) async fn mint(
         }
     };
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    if super::repository::remote_is_own_service(remote.as_str())
+    if super::repository::remote_is_own_service(&tonk, remote.as_str()).await
         && !super::customer::space_provider_recorded(&tonk, &subject).await
     {
         match super::repository::provision_space_consumer(&tonk, &subject).await {

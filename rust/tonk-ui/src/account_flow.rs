@@ -9415,6 +9415,87 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// Signing a browser in through another deployment, the browser's
+    /// `tonk account login --via`. A browser on one origin, which has never
+    /// seen the account or its passkey, asks the deployment holding it; the
+    /// person approves there with that passkey; and the asking origin comes
+    /// back signed in to the same account. The account's name showing there
+    /// proves it synced through the deployment that approved.
+    #[dialog_common::test]
+    async fn it_signs_a_browser_in_through_another_deployment(env: TestEnvironment) -> Result<()> {
+        const EMAIL: &str = "sign-in-via@example.com";
+        const NAME: &str = "Via";
+
+        let driver = driver_with_prf(&env).await?;
+        sign_up(&driver, &env, EMAIL).await?;
+        let home = env.tonk_web.origin().ascii_serialization();
+        let root = successful_body(
+            "the account's root",
+            &get_json(&driver, "/api/identity/root").await?,
+        )["rootDid"]
+            .as_str()
+            .context("root DID missing")?
+            .to_owned();
+        successful_body(
+            "name the account",
+            &post_json(
+                &driver,
+                "/api/account/display-name",
+                serde_json::json!({ "name": NAME }),
+            )
+            .await?,
+        );
+        successful_body(
+            "publish the account name",
+            &post_json(&driver, "/api/sync", serde_json::json!({})).await?,
+        );
+
+        let here = env.sibling_web();
+        let here_origin = here.origin().ascii_serialization();
+        let mut ask = here.join("settings/link")?;
+        ask.query_pairs_mut().append_pair("via", &home);
+        goto(&driver, ask.as_str()).await?;
+        enter_hub(&driver).await?;
+        wait_for_displayed(&driver, "account-settings [data-pane=\"via\"]").await?;
+        wait_for_text(&driver, "[data-via-origin]", &home).await?;
+        click(&driver, "[data-via-continue]").await?;
+
+        // On the deployment holding the account, the approval names the
+        // page the grant would go to.
+        await_url_containing(&driver, &format!("{home}/settings/link?")).await?;
+        enter_hub(&driver).await?;
+        wait_for_displayed(&driver, "account-settings [data-pane=\"link\"]").await?;
+        wait_for_text(&driver, "[data-link-return]", &here_origin).await?;
+        click(&driver, "[data-link-approve]").await?;
+        use_passkey_consent(&driver).await?;
+
+        // Back on the asking origin, at home and signed in.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+        loop {
+            driver.enter_default_frame().await?;
+            let url = driver.current_url().await?;
+            if url.origin().ascii_serialization() == here_origin && url.path() == "/" {
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the asking origin never came back signed in; the page is at {url}"
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        let installed = get_json(&driver, "/api/identity/root").await?;
+        assert_eq!(
+            successful_body("the installed root", &installed)["rootDid"],
+            root.as_str(),
+            "the asking origin holds a grant from the account that approved"
+        );
+        await_account_name(&driver, NAME).await?;
+        enter_hub(&driver).await?;
+        wait_for_text(&driver, "[data-account-label]", NAME).await?;
+        driver.quit().await?;
+        Ok(())
+    }
+
     /// Revocation as the user experiences it: a guest who claimed an
     /// invite loses access to the space when that invite is withdrawn.
     ///
