@@ -4011,11 +4011,13 @@ async fn read_installed_seed(
 /// an upgrade the branch records one running seed, not every seed it
 /// ever ran.
 ///
-/// [`prior_seed_retractions`] cannot cover this: the record commits as
-/// the link AFTER the version it names, so inverting that version's
-/// history withdraws the library and leaves its record standing. The
-/// `seed/available` half stays: it says the seed exists and where it
-/// came from, which is still true of a seed no longer running.
+/// The install's own history cannot cover this: the record commits as
+/// the link AFTER the version it names, so that version's history holds
+/// the library and not its record. The withdrawal rides the upgrade's
+/// commit, which is also what links the installs into a chain (see
+/// [`install_chain`]). The `seed/available` half stays: it says the seed
+/// exists and where it came from, which is still true of a seed no longer
+/// running.
 fn installed_record_retractions(current: &InstalledSeed) -> Vec<super::claim::RawClaim> {
     use dialog_artifacts::Statement as _;
 
@@ -4380,16 +4382,12 @@ async fn has_welcome_snapshot(tonk: &TonkState, key: &str) -> Result<bool, Repos
     Ok(stream.next().await.transpose().map_err(internal)?.is_some())
 }
 
-/// Bring a space's seed up to the one this worker ships, if it is behind.
+/// Bring a space's seed up to the one this worker ships, if it is behind,
+/// and put back what an earlier release's upgrade overwrote in it.
 ///
-/// One atomic batch: the previous seed's assertions are retracted and the
-/// new library installed together. A retract followed by an assert of the
-/// same fact keeps it, citing what it overrode, so the overlap between
-/// two seeds survives untouched — only what the old seed had and the new
-/// one does not actually goes.
-///
-/// A space whose seed already matches is left alone, which is the common
-/// case: this runs on every mount.
+/// A space on the shipped seed that no upgrade ever touched is left alone,
+/// which is the common case: this runs on every mount. See
+/// [`install_seed`] for what an upgrade writes and what it leaves alone.
 pub(crate) async fn upgrade_seed(tonk: &TonkState, key: &str) -> Result<bool, RepositoryError> {
     let Some((key, session, current)) = installed_seed(tonk, key).await? else {
         return Ok(false);
@@ -4466,6 +4464,26 @@ async fn installed_seed(
 }
 
 /// Move a space from the seed it runs to `library`.
+///
+/// The library is planned against what the space holds now, not replayed
+/// over it. Replaying re-asserted every single-valued fact the library
+/// ships, so whatever the space had written there since lost to the
+/// library's default: the 2026-09-30 release blanked spaces that way, when
+/// `name!: id:tonk/space -> tonk:blank` superseded the home an agent had
+/// built. It also withdrew the space's own name, installed beside the
+/// library when the space was created. See [`SeedUpgrade::plan`] for the
+/// rules, and [`install_chain`] for how an upgrade knows what the library
+/// owns.
+///
+/// Values earlier releases overwrote are put back first (see
+/// [`SeedRepair`]), in a commit of their own: they are the space's writes,
+/// so they must not land in an install the next upgrade reads as the
+/// library's. That runs even when the space already has `library`, since
+/// the release that overwrote them may have been the one it is on.
+///
+/// The upgrade itself is one staged commit that also withdraws the install
+/// record it replaces, which is what links installs into a chain. The record
+/// naming the commit chains on, and a single publish makes both visible.
 async fn install_seed(
     tonk: &TonkState,
     key: &str,
@@ -4473,22 +4491,44 @@ async fn install_seed(
     current: InstalledSeed,
     library: String,
 ) -> Result<bool, RepositoryError> {
-    let source = current.source.clone();
     let shipped = seed_version(&library);
-    if current.seed.to_string() == shipped {
+    let upgrade = current.seed.to_string() != shipped;
+    // Only an upgrade can have overwritten anything: a space still on the
+    // seed it was created with is either current or simply behind.
+    if !upgrade && current.prior.to_string() == SEED_NONE {
         return Ok(false);
     }
+    let subject = space_entity(key)?;
+    let chain = install_chain(tonk, session, &current.version).await?;
 
-    let mut retract = prior_seed_retractions(tonk, session, &current.version).await?;
-    retract.extend(installed_record_retractions(&current));
-    log!(
-        "seed upgrade: '{key}' moves to {shipped}, withdrawing {} claims",
-        retract.len()
-    );
+    // The writer lock the evaluate path takes, so another committer lines up
+    // behind both commits. A sync can still advance the head between a plan
+    // and its publish; the plan read that head, so a lost race re-plans.
+    let _committing = session.transactor().lock().await;
+    let mut attempt = 0;
+    let restored = loop {
+        let repair = SeedRepair::find(tonk, session, &chain, &subject).await?;
+        if repair.restore.is_empty() {
+            break 0;
+        }
+        match stage_seed_change(tonk, session, &[], &repair.restore, None).await {
+            Ok(()) => break repair.restore.len(),
+            Err(error) => retry_after_race(tonk, key, session, &mut attempt, error).await?,
+        }
+    };
+    if restored > 0 {
+        log!("seed upgrade: '{key}' restored {restored} value(s) an earlier release overwrote");
+    }
+    if !upgrade {
+        if restored > 0 {
+            session.poll(&tonk.operator).await;
+        }
+        return Ok(restored > 0);
+    }
 
-    // The record names the commit that installs the new library. That
-    // commit stages, so the version is minted before the record is
-    // written rather than predicted.
+    let desired = library_assertions(&library, "space library").await?;
+    let owned = owned_by_library(&chain, Some(&subject));
+    let source = current.source.clone();
     let prior = current.seed.to_string();
     let record = |minted: &dialog_artifacts::history::Version| {
         seed_record_facts(
@@ -4499,63 +4539,510 @@ async fn install_seed(
             &encode_seed_version(minted),
         )
     };
-
-    // Retractions and the new library are one staged commit; the record
-    // naming it chains on, and a single publish makes both visible. A
-    // retract followed by an assert of the same fact keeps it, so what
-    // both seeds carry survives while what only the old one had goes.
-    super::evaluate::evaluate_with_retractions(
-        tonk,
-        key,
-        CONTENT_BRANCH,
-        library,
-        retract,
-        &record,
-    )
-    .await
-    .map_err(|e| RepositoryError::Internal(format!("upgrade seed '{key}': {e}")))?;
+    let mut attempt = 0;
+    loop {
+        let plan = SeedUpgrade::plan(tonk, session, &owned, &desired).await?;
+        let retract: Vec<super::claim::RawClaim> = plan
+            .withdraw
+            .iter()
+            .cloned()
+            .chain(installed_record_retractions(&current))
+            .collect();
+        match stage_seed_change(tonk, session, &retract, &plan.add, Some(&record)).await {
+            Ok(()) => {
+                log!(
+                    "seed upgrade: '{key}' moves to {shipped}: withdrew {}, added {}, \
+                     left {} the space has written",
+                    plan.withdraw.len(),
+                    plan.add.len(),
+                    plan.kept
+                );
+                break;
+            }
+            Err(error) => retry_after_race(tonk, key, session, &mut attempt, error).await?,
+        }
+    }
+    session.poll(&tonk.operator).await;
     Ok(true)
 }
 
-/// The routes the seed installed at `version`.
+/// Stage `retract` then `assert` as one commit on the space's content
+/// branch and publish it, with `record` chained on when given.
+async fn stage_seed_change(
+    tonk: &TonkState,
+    session: &crate::reactor::BranchSession,
+    retract: &[super::claim::RawClaim],
+    assert: &[super::claim::RawClaim],
+    record: Option<super::evaluate::SeedRecord<'_>>,
+) -> Result<(), dialog_repository::CommitError> {
+    let mut transaction = session.handle().transaction();
+    for claim in retract {
+        transaction = transaction.retract(claim.clone());
+    }
+    for claim in assert {
+        transaction = transaction.assert(claim.clone());
+    }
+    super::evaluate::stage_and_publish(tonk, transaction, record)
+        .await
+        .map(|_| ())
+}
+
+/// Refresh the head after a commit lost a race to a sync, or give up after
+/// a few tries; any other error is returned as is.
+async fn retry_after_race(
+    tonk: &TonkState,
+    key: &str,
+    session: &crate::reactor::BranchSession,
+    attempt: &mut usize,
+    error: dialog_repository::CommitError,
+) -> Result<(), RepositoryError> {
+    const RETRY_LIMIT: usize = 4;
+    if !error.to_string().contains("Version mismatch") || *attempt + 1 >= RETRY_LIMIT {
+        return Err(RepositoryError::Internal(format!(
+            "upgrade seed '{key}': {error}"
+        )));
+    }
+    *attempt += 1;
+    session
+        .handle()
+        .refresh(&tonk.operator)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("refresh '{key}': {e}")))
+}
+
+/// The entity a space's own facts are about: its subject DID, whichever
+/// key spelling names it.
+fn space_entity(key: &str) -> Result<dialog_artifacts::Entity, RepositoryError> {
+    let did = if key.starts_with("did:key:") {
+        key.to_owned()
+    } else {
+        format!("did:key:{key}")
+    };
+    did.parse()
+        .map_err(|e| RepositoryError::Internal(format!("'{key}' names no space: {e}")))
+}
+
+/// An `(entity, attribute)` pair: where a value lives.
+type Slot = (dialog_artifacts::Entity, dialog_artifacts::Attribute);
+
+/// The attribute of an install record naming the commit that installed it.
+const SEED_VERSION_ATTRIBUTE: &str = "xyz.tonk.seed/version";
+
+/// The install records' own attributes, which describe installs rather
+/// than anything a library defines.
+const SEED_RECORD_PREFIX: &str = "xyz.tonk.seed/";
+
+/// One install of the library a space runs, read back from history: the
+/// commit that installed it and everything that commit wrote.
+struct Install {
+    version: dialog_artifacts::history::Version,
+    records: Vec<dialog_artifacts::history::Record>,
+}
+
+/// Every install of the library a space runs, oldest first, from the one
+/// that committed at `version` back to the space's first.
 ///
-/// Read from that commit's own history rather than recorded separately:
-/// a route the seed installed is a claim it asserted, so the changelog
-/// already names them. The router asks this to settle an
-/// equal-specificity tie — a route the seed installed loses to one the
-/// space authored.
+/// A commit records only what it changes, so an install does not name the
+/// definitions it carried over unchanged from the one before; an earlier
+/// install recorded those. What the library owns is therefore the whole
+/// chain, not its last link. Each upgrade withdraws the install record it
+/// replaces in the same commit that changes the library, and that record
+/// names the install before it, which is how the chain walks back.
+async fn install_chain(
+    tonk: &TonkState,
+    session: &crate::reactor::BranchSession,
+    version: &str,
+) -> Result<Vec<Install>, RepositoryError> {
+    use futures_util::StreamExt as _;
+
+    const LONGEST: usize = 256;
+    let history = session.handle().history(&tonk.operator).await;
+    let mut chain: Vec<Install> = Vec::new();
+    let mut next = Some(version.to_owned());
+    while let Some(encoded) = next.take() {
+        let version = decode_seed_version(&encoded).ok_or_else(|| {
+            RepositoryError::Internal(format!("seed version '{encoded}' does not decode"))
+        })?;
+        if chain.len() == LONGEST || chain.iter().any(|install| install.version == version) {
+            return Err(RepositoryError::Internal(format!(
+                "the install chain through {encoded} does not end"
+            )));
+        }
+        let records = history.select(version);
+        tokio::pin!(records);
+        let mut install = Install {
+            version,
+            records: Vec::new(),
+        };
+        while let Some(record) = records.next().await {
+            let (_, record) = record
+                .map_err(|e| RepositoryError::Internal(format!("read install history: {e}")))?;
+            let claim = record.claim();
+            if !record.is_assertion()
+                && claim.the.as_str() == SEED_VERSION_ATTRIBUTE
+                && let dialog_artifacts::Value::String(previous) = &claim.is
+            {
+                next = Some(previous.clone());
+            }
+            install.records.push(record);
+        }
+        chain.push(install);
+    }
+    chain.reverse();
+    Ok(chain)
+}
+
+/// What the library owns on a space after `chain`, by slot: every value an
+/// install asserted that no later install withdrew. Facts about `subject`,
+/// the space itself, are its own even though its first install carried its
+/// name, and the install records describe installs, not the library.
+fn owned_by_library(
+    chain: &[Install],
+    subject: Option<&dialog_artifacts::Entity>,
+) -> HashMap<Slot, Vec<dialog_artifacts::Value>> {
+    let mut owned: HashMap<Slot, Vec<dialog_artifacts::Value>> = HashMap::new();
+    for install in chain {
+        for record in &install.records {
+            let claim = record.claim();
+            if Some(&claim.of) == subject || claim.the.as_str().starts_with(SEED_RECORD_PREFIX) {
+                continue;
+            }
+            let values = owned
+                .entry((claim.of.clone(), claim.the.clone()))
+                .or_default();
+            if !record.is_assertion() {
+                values.retain(|value| value != &claim.is);
+            } else if !values.contains(&claim.is) {
+                values.push(claim.is.clone());
+            }
+        }
+    }
+    owned.retain(|_, values| !values.is_empty());
+    owned
+}
+
+/// What every slot of `entities` holds now, read one entity at a time: a
+/// library's claims cluster on its definitions.
+async fn live_values(
+    tonk: &TonkState,
+    session: &crate::reactor::BranchSession,
+    entities: Vec<dialog_artifacts::Entity>,
+) -> Result<HashMap<Slot, Vec<dialog_artifacts::Value>>, RepositoryError> {
+    use dialog_artifacts::ArtifactSelector;
+    use futures_util::StreamExt as _;
+
+    let mut live: HashMap<Slot, Vec<dialog_artifacts::Value>> = HashMap::new();
+    let mut read = std::collections::HashSet::new();
+    for entity in entities {
+        if !read.insert(entity.clone()) {
+            continue;
+        }
+        let stream = session
+            .handle()
+            .claims()
+            .select(ArtifactSelector::new().of(entity.clone()))
+            .perform(&tonk.operator)
+            .await
+            .map_err(|e| RepositoryError::Internal(format!("read {entity}: {e}")))?;
+        tokio::pin!(stream);
+        while let Some(found) = stream.next().await {
+            let found = found
+                .map_err(|e| RepositoryError::Internal(format!("read {entity}: {e}")))?
+                .to_owned()
+                .map_err(|e| RepositoryError::Internal(format!("materialize {entity}: {e:?}")))?;
+            let values = live.entry((found.of, found.the)).or_default();
+            if !values.contains(&found.is) {
+                values.push(found.is);
+            }
+        }
+    }
+    Ok(live)
+}
+
+/// What a seed upgrade writes.
+struct SeedUpgrade {
+    /// Values the library owns, still standing, that it no longer ships.
+    withdraw: Vec<super::claim::RawClaim>,
+    /// Claims of the new library to write.
+    add: Vec<super::claim::RawClaim>,
+    /// Claims of the new library left out because the space has written
+    /// its own value, or removed the library's, where it would go.
+    kept: usize,
+}
+
+impl SeedUpgrade {
+    /// Plan moving a space whose library owns `owned` to the library that
+    /// asserts `desired`, against what the space holds now.
+    ///
+    /// The library owns the values its installs wrote; anything else in a
+    /// slot the space wrote, and the space's write stands:
+    ///
+    /// - A value the library owns and no longer ships is withdrawn, if it
+    ///   still stands. One the space already replaced is left as it is.
+    /// - A claim already standing is left alone. It changes nothing, and
+    ///   the chain already says whose it is.
+    /// - A single value goes in where the slot is empty and the library never
+    ///   had one there, or holds only the library's own values. A slot the
+    ///   space wrote, or emptied of the library's value, keeps its choice.
+    /// - Any other claim goes in unless the library had it before and the
+    ///   space has since removed it.
+    async fn plan(
+        tonk: &TonkState,
+        session: &crate::reactor::BranchSession,
+        owned: &HashMap<Slot, Vec<dialog_artifacts::Value>>,
+        desired: &[super::claim::RawClaim],
+    ) -> Result<Self, RepositoryError> {
+        let slot = |claim: &super::claim::RawClaim| (claim.of.clone(), claim.the.clone());
+        let mut shipped: HashMap<Slot, Vec<dialog_artifacts::Value>> = HashMap::new();
+        for claim in desired {
+            shipped
+                .entry(slot(claim))
+                .or_default()
+                .push(claim.is.clone());
+        }
+        let entities = owned
+            .keys()
+            .chain(shipped.keys())
+            .map(|(entity, _)| entity.clone())
+            .collect();
+        let live = live_values(tonk, session, entities).await?;
+
+        let none = Vec::new();
+        let mut add = Vec::new();
+        let mut replaced = std::collections::HashSet::new();
+        let mut kept = 0;
+        for claim in desired {
+            let key = slot(claim);
+            let now = live.get(&key).unwrap_or(&none);
+            if now.contains(&claim.is) {
+                continue;
+            }
+            let mine = owned.get(&key).unwrap_or(&none);
+            let library_slot = if claim.unique {
+                if now.is_empty() {
+                    mine.is_empty()
+                } else {
+                    now.iter().all(|value| mine.contains(value))
+                }
+            } else {
+                !mine.contains(&claim.is)
+            };
+            if library_slot {
+                if claim.unique {
+                    replaced.insert(key);
+                }
+                add.push(claim.clone());
+            } else {
+                kept += 1;
+            }
+        }
+
+        // A replace supersedes the slot's old value by itself.
+        let mut withdraw = Vec::new();
+        for (key, values) in owned {
+            if replaced.contains(key) {
+                continue;
+            }
+            let now = live.get(key).unwrap_or(&none);
+            let ships = shipped.get(key).unwrap_or(&none);
+            for value in values {
+                if now.contains(value) && !ships.contains(value) {
+                    withdraw.push(super::claim::RawClaim {
+                        the: key.1.clone(),
+                        of: key.0.clone(),
+                        is: value.clone(),
+                        unique: false,
+                    });
+                }
+            }
+        }
+        Ok(Self {
+            withdraw,
+            add,
+            kept,
+        })
+    }
+}
+
+/// Values the upgrades before this one overwrote, found in their own
+/// history, to put back.
+///
+/// Those upgrades replayed the whole library over the space. A single value
+/// the space had re-pointed was replaced back with the library's, and that
+/// replace's cause names the write it superseded: a write that is not one of
+/// the space's installs is the space's own. The space's own facts, its name
+/// and description, were withdrawn with the library, and the withdrawal is in
+/// the install's history.
+///
+/// A value is put back only while its slot still holds nothing but values
+/// installs wrote (for the space's own facts: nothing at all), so a choice
+/// made since is not overwritten. A superseded value that an install had
+/// written too was never a choice: a template that repeats a library
+/// definition writes outside any install, and putting its copy back would
+/// undo the library's next change on every mount.
+struct SeedRepair {
+    /// The values to write back.
+    restore: Vec<super::claim::RawClaim>,
+}
+
+impl SeedRepair {
+    async fn find(
+        tonk: &TonkState,
+        session: &crate::reactor::BranchSession,
+        chain: &[Install],
+        subject: &dialog_artifacts::Entity,
+    ) -> Result<Self, RepositoryError> {
+        use futures_util::StreamExt as _;
+
+        let installs: std::collections::HashSet<_> =
+            chain.iter().map(|install| install.version).collect();
+        // Every value any install wrote, by slot: the library's, at some
+        // point, whether or not it still owns it.
+        let mut written: HashMap<Slot, Vec<dialog_artifacts::Value>> = HashMap::new();
+        for install in chain {
+            for record in install
+                .records
+                .iter()
+                .filter(|record| record.is_assertion())
+            {
+                let claim = record.claim();
+                written
+                    .entry((claim.of.clone(), claim.the.clone()))
+                    .or_default()
+                    .push(claim.is.clone());
+            }
+        }
+        // Later installs first: the last overwrite of a slot is the one
+        // standing, and only it can be undone.
+        let mut candidates: Vec<(Slot, Vec<_>)> = Vec::new();
+        let mut withdrawn: Vec<(Slot, dialog_artifacts::Value)> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for install in chain.iter().skip(1).rev() {
+            for record in &install.records {
+                let claim = record.claim();
+                if claim.the.as_str().starts_with(SEED_RECORD_PREFIX) {
+                    continue;
+                }
+                let key = (claim.of.clone(), claim.the.clone());
+                if record.is_assertion() {
+                    let overwritten: Vec<_> = claim
+                        .cause
+                        .versions()
+                        .iter()
+                        .filter(|version| !installs.contains(version))
+                        .copied()
+                        .collect();
+                    if !overwritten.is_empty() && seen.insert(key.clone()) {
+                        candidates.push((key, overwritten));
+                    }
+                } else if &claim.of == subject && seen.insert(key.clone()) {
+                    withdrawn.push((key, claim.is.clone()));
+                }
+            }
+        }
+        if candidates.is_empty() && withdrawn.is_empty() {
+            return Ok(Self {
+                restore: Vec::new(),
+            });
+        }
+
+        let entities = candidates
+            .iter()
+            .map(|(key, _)| key.0.clone())
+            .chain(withdrawn.iter().map(|(key, _)| key.0.clone()))
+            .collect();
+        let live = live_values(tonk, session, entities).await?;
+        let none = Vec::new();
+        let history = session.handle().history(&tonk.operator).await;
+        let mut restore = Vec::new();
+        for (key, overwritten) in candidates {
+            let ours = written.get(&key).unwrap_or(&none);
+            let now = live.get(&key).unwrap_or(&none);
+            if now.is_empty() || !now.iter().all(|value| ours.contains(value)) {
+                continue;
+            }
+            'versions: for version in overwritten {
+                let records = history.select(version);
+                tokio::pin!(records);
+                while let Some(record) = records.next().await {
+                    let (_, record) = record.map_err(|e| {
+                        RepositoryError::Internal(format!("read overwritten history: {e}"))
+                    })?;
+                    let claim = record.claim();
+                    if record.is_assertion() && claim.of == key.0 && claim.the == key.1 {
+                        if !ours.contains(&claim.is) {
+                            restore.push(super::claim::RawClaim {
+                                the: key.1.clone(),
+                                of: key.0.clone(),
+                                is: claim.is.clone(),
+                                unique: true,
+                            });
+                        }
+                        break 'versions;
+                    }
+                }
+            }
+        }
+        for (key, value) in withdrawn {
+            if live.get(&key).is_none_or(Vec::is_empty) {
+                restore.push(super::claim::RawClaim {
+                    the: key.1,
+                    of: key.0,
+                    is: value,
+                    unique: true,
+                });
+            }
+        }
+        Ok(Self { restore })
+    }
+}
+
+/// The routes the seed installed at `version`, with every install before it.
+///
+/// Read from the installs' own history rather than recorded separately: a
+/// route a seed installed is a claim it asserted, so the changelog already
+/// names it. The whole chain, because an install does not record a route it
+/// carried over unchanged. The router asks this to settle an
+/// equal-specificity tie — a route the seed installed loses to one the space
+/// authored — so it is asked on every navigation, and a chain's history never
+/// changes: the answer is kept per version.
 pub(crate) async fn seed_routes(
     tonk: &TonkState,
     session: &dialog_reactor::BranchSession,
     version: &str,
 ) -> Result<std::collections::HashSet<String>, RepositoryError> {
-    use futures_util::StreamExt as _;
+    static KNOWN: std::sync::OnceLock<
+        std::sync::Mutex<HashMap<String, std::collections::HashSet<String>>>,
+    > = std::sync::OnceLock::new();
+    let known = KNOWN.get_or_init(Default::default);
+    if let Some(routes) = known
+        .lock()
+        .ok()
+        .and_then(|known| known.get(version).cloned())
+    {
+        return Ok(routes);
+    }
 
-    let Some(version) = decode_seed_version(version) else {
+    if decode_seed_version(version).is_none() {
         return Ok(std::collections::HashSet::new());
-    };
-
-    let history = session.handle().history(&tonk.operator).await;
-    let records = history.select(version);
-    tokio::pin!(records);
-
-    let mut routes = std::collections::HashSet::new();
-    while let Some(record) = records.next().await {
-        let (_, record) =
-            record.map_err(|e| RepositoryError::Internal(format!("read seed history: {e}")))?;
-        if !record.is_assertion() {
-            continue;
-        }
-        let claim = record.claim();
-        if claim.the.as_str() == "xyz.tonk.route/path" {
-            routes.insert(claim.of.to_string());
-        }
+    }
+    let chain = install_chain(tonk, session, version).await?;
+    let routes: std::collections::HashSet<String> = owned_by_library(&chain, None)
+        .into_keys()
+        .filter(|(_, the)| the.as_str() == "xyz.tonk.route/path")
+        .map(|(route, _)| route.to_string())
+        .collect();
+    if let Ok(mut known) = known.lock() {
+        known.insert(version.to_owned(), routes.clone());
     }
     Ok(routes)
 }
 
 /// Retract everything the seed installed at `version` asserted, as claims
-/// ride the same batch that installs its replacement.
+/// ride the same batch that installs its replacement — the replay upgrades
+/// ran before ownership was read from the whole install chain. Tests use it
+/// to recreate the spaces those upgrades left behind.
+#[cfg(test)]
 ///
 /// A revision's history is a changelog: every claim it wrote, with its
 /// polarity. Inverting only its ASSERTIONS is load-bearing — a seed
@@ -5939,23 +6426,37 @@ pub(crate) async fn retract_local_profile_library(
 }
 
 /// Parse, analyze, and lower a self-contained profile-library document into
-/// the complete desired assertion set. This happens without a branch source,
-/// so existing facts cannot suppress unchanged definitions from the result.
-/// `Changes` preserves whether each final write used cardinality-one replace
-/// semantics before any repository commit can deduplicate it.
+/// the complete desired assertion set. See [`library_assertions`].
 async fn prepare_profile_library(
     library: String,
 ) -> Result<PreparedProfileLibrary, RepositoryError> {
+    let target = seed_version(&library);
+    let assertions = library_assertions(&library, "profile library").await?;
+    Ok(PreparedProfileLibrary {
+        source: library,
+        target,
+        assertions,
+    })
+}
+
+/// Every claim a self-contained library document asserts, lowered without a
+/// branch source, so existing facts cannot suppress unchanged definitions
+/// from the result. `Changes` preserves whether each final write used
+/// cardinality-one replace semantics (`unique`) before any repository commit
+/// can deduplicate it. `what` names the library in errors.
+async fn library_assertions(
+    library: &str,
+    what: &str,
+) -> Result<Vec<super::claim::RawClaim>, RepositoryError> {
     use dialog_artifacts::{Changes, Instruction, Statement as _};
     use dialog_query::{Parameters, Term};
     use tonk_schema::transact::{Planner as _, Statement};
 
-    let target = seed_version(&library);
-    let syntax = super::library::parse(&library)
+    let syntax = super::library::parse(library)
         .await
-        .map_err(|error| RepositoryError::Internal(format!("profile library: {error}")))?;
+        .map_err(|error| RepositoryError::Internal(format!("{what}: {error}")))?;
     let analyzed = tonk_analyzer::analyzer::analyze_local(&syntax)
-        .map_err(|error| RepositoryError::Internal(format!("analyze profile library: {error}")))?;
+        .map_err(|error| RepositoryError::Internal(format!("analyze {what}: {error}")))?;
     let mut bindings = Parameters::new();
     for (name, entity) in &analyzed.analysis.variables {
         bindings.insert(
@@ -5968,20 +6469,20 @@ async fn prepare_profile_library(
     for planned in analyzed.analysis.statements() {
         match planned.statement {
             Statement::Assert(application) => {
-                let plan = application.plan(&bindings).map_err(|error| {
-                    RepositoryError::Internal(format!("plan profile library: {error}"))
-                })?;
+                let plan = application
+                    .plan(&bindings)
+                    .map_err(|error| RepositoryError::Internal(format!("plan {what}: {error}")))?;
                 plan.assert(&mut desired);
             }
             Statement::Retract(_) => {
-                return Err(RepositoryError::Internal(
-                    "profile library desired manifest contains a retraction".to_owned(),
-                ));
+                return Err(RepositoryError::Internal(format!(
+                    "{what} desired manifest contains a retraction"
+                )));
             }
         }
     }
 
-    let assertions = desired
+    Ok(desired
         .into_instructions()
         .into_iter()
         .filter_map(|instruction| match instruction {
@@ -5999,12 +6500,7 @@ async fn prepare_profile_library(
             }),
             Instruction::Retract(_) => None,
         })
-        .collect();
-    Ok(PreparedProfileLibrary {
-        source: library,
-        target,
-        assertions,
-    })
+        .collect())
 }
 
 /// Read every complete installation whose provenance is the exact shipped
@@ -12668,24 +13164,28 @@ route!: &probe/dropped
             .acquire(&tonk.operator)
             .await
             .expect("main acquires");
-        let retract = super::prior_seed_retractions(&tonk, &session, &old_revision)
-            .await
-            .expect("the prior seed's assertions are readable");
+        let installed = super::InstalledSeed {
+            seed: super::seed_version(&format!("{library}\n{old}"))
+                .parse()
+                .expect("a seed identity is an entity"),
+            source: super::STANDARD_LIBRARY_URL.to_owned(),
+            prior: super::SEED_NONE
+                .parse()
+                .expect("the empty seed is an entity"),
+            version: old_revision,
+        };
         assert!(
-            !retract.is_empty(),
-            "the old seed asserted something to withdraw"
+            super::install_seed(
+                &tonk,
+                &key,
+                &session,
+                installed,
+                format!("{library}\n{new}")
+            )
+            .await
+            .expect("the upgrade commits"),
+            "a different library is an upgrade"
         );
-
-        crate::router::evaluate::evaluate_with_retractions(
-            &tonk,
-            &key,
-            "main",
-            format!("{library}\n{new}"),
-            retract,
-            &|_minted| Vec::new(),
-        )
-        .await
-        .expect("the upgrade commits");
 
         let routes: Vec<tonk_schema::Route> = session
             .handle()
@@ -13571,6 +14071,207 @@ name!:
             ));
         }
         text
+    }
+
+    /// Upgrade the way workers before this fix did — withdraw what the last
+    /// install asserted, evaluate the whole library over the space — to
+    /// recreate the spaces those releases left behind.
+    async fn replay(tonk: &TonkState, key: &str, library: &str) {
+        let (key, session, current) = installed_seed(tonk, key)
+            .await
+            .expect("the seed record reads")
+            .expect("the space runs a recorded seed");
+        let mut retract = prior_seed_retractions(tonk, &session, &current.version)
+            .await
+            .expect("the install's history reads");
+        retract.extend(installed_record_retractions(&current));
+        let shipped = seed_version(library);
+        let prior = current.seed.to_string();
+        let source = current.source.clone();
+        let record = |minted: &dialog_artifacts::history::Version| {
+            seed_record_facts(
+                &shipped,
+                &source,
+                &prior,
+                &prior,
+                &encode_seed_version(minted),
+            )
+        };
+        super::super::evaluate::evaluate_with_retractions(
+            tonk,
+            &key,
+            CONTENT_BRANCH,
+            library.to_owned(),
+            retract,
+            &record,
+        )
+        .await
+        .expect("the replay commits");
+    }
+
+    /// An upgrade plans from the library analyzed on its own, so that has to
+    /// be exactly what installing it on a branch commits: nothing a
+    /// branch-backed evaluation derives on top, nothing it leaves out.
+    #[dialog_common::test]
+    async fn a_library_analyzed_alone_is_what_its_install_commits() {
+        let tonk = test_state().await;
+        for library in [PRODUCTION_CORE, CORE] {
+            let (key, subject) = seeded_space(&tonk, library, "Garden").await;
+            let (_, session, current) = installed_seed(&tonk, &key)
+                .await
+                .expect("the record reads")
+                .expect("the install is recorded");
+            let subject: dialog_artifacts::Entity = subject.as_str().parse().unwrap();
+            let chain = install_chain(&tonk, &session, &current.version)
+                .await
+                .expect("the install's history reads");
+            let mut committed: Vec<String> = owned_by_library(&chain, Some(&subject))
+                .into_iter()
+                .flat_map(|((of, the), values)| {
+                    values
+                        .into_iter()
+                        .map(move |is| format!("{of} {the} {is:?}"))
+                })
+                .collect();
+            let mut analyzed: Vec<String> = library_assertions(library, "core library")
+                .await
+                .expect("the library analyzes")
+                .into_iter()
+                .map(|claim| format!("{} {} {:?}", claim.of, claim.the, claim.is))
+                .collect();
+            committed.sort();
+            analyzed.sort();
+            analyzed.dedup();
+            assert_eq!(committed, analyzed);
+        }
+    }
+
+    /// A space a pre-fix release already damaged — home pointed back at the
+    /// blank canvas, name withdrawn — gets both back on its next upgrade.
+    #[dialog_common::test]
+    async fn an_upgrade_restores_what_an_earlier_release_overwrote() {
+        let tonk = test_state().await;
+        let (key, subject) = seeded_space(&tonk, PRODUCTION_CORE, "Garden").await;
+        author(&tonk, &key, AGENT_APP).await;
+        replay(
+            &tonk,
+            &key,
+            &format!("{PRODUCTION_CORE}\n# a pre-fix release\n"),
+        )
+        .await;
+        assert_eq!(referents(&tonk, &key, "tonk/space").await, ["tonk:blank"]);
+        assert!(space_names(&tonk, &key, &subject).await.is_empty());
+
+        assert!(upgrade_seed(&tonk, &key).await.expect("the upgrade runs"));
+
+        assert_eq!(referents(&tonk, &key, "tonk/space").await, ["space:home"]);
+        assert_eq!(space_names(&tonk, &key, &subject).await, ["Garden"]);
+        assert!(declares(&tonk, &key, "tonk:site", "profile-branch").await);
+    }
+
+    /// The release that did the damage may be the one the space is on. It
+    /// is still put back, without an upgrade to ride on.
+    #[dialog_common::test]
+    async fn a_space_already_on_the_shipped_library_is_still_repaired() {
+        let tonk = test_state().await;
+        let (key, subject) = seeded_space(&tonk, PRODUCTION_CORE, "Garden").await;
+        author(&tonk, &key, AGENT_APP).await;
+        replay(&tonk, &key, CORE).await;
+        assert_eq!(referents(&tonk, &key, "tonk/space").await, ["tonk:blank"]);
+
+        assert!(
+            upgrade_seed(&tonk, &key).await.expect("the check runs"),
+            "putting the values back is a change"
+        );
+
+        assert_eq!(referents(&tonk, &key, "tonk/space").await, ["space:home"]);
+        assert_eq!(space_names(&tonk, &key, &subject).await, ["Garden"]);
+        assert!(
+            !upgrade_seed(&tonk, &key)
+                .await
+                .expect("a second check runs"),
+            "a repaired space is current"
+        );
+    }
+
+    /// A home chosen after the damage is the space's choice, and stays.
+    #[dialog_common::test]
+    async fn a_repair_leaves_a_home_chosen_since() {
+        let tonk = test_state().await;
+        let (key, _) = seeded_space(&tonk, PRODUCTION_CORE, "Garden").await;
+        author(&tonk, &key, AGENT_APP).await;
+        replay(
+            &tonk,
+            &key,
+            &format!("{PRODUCTION_CORE}\n# a pre-fix release\n"),
+        )
+        .await;
+        author(
+            &tonk,
+            &key,
+            "name!:\n  this: id:tonk/space\n  entity: garden:plot\n",
+        )
+        .await;
+
+        assert!(upgrade_seed(&tonk, &key).await.expect("the upgrade runs"));
+
+        assert_eq!(referents(&tonk, &key, "tonk/space").await, ["garden:plot"]);
+    }
+
+    /// A pre-fix release overwrote the space's choice, and a later one moved
+    /// the library's own default on top. The choice still comes back.
+    #[dialog_common::test]
+    async fn a_choice_comes_back_after_the_library_moved_its_default() {
+        let shipping = |default: &str| {
+            format!("{PRODUCTION_CORE}\nname!:\n  this: id:probe/home\n  entity: probe:{default}\n")
+        };
+        let tonk = test_state().await;
+        let (key, _) = seeded_space(&tonk, &shipping("old"), "Probe").await;
+        author(
+            &tonk,
+            &key,
+            "name!:\n  this: id:probe/home\n  entity: probe:mine\n",
+        )
+        .await;
+        replay(
+            &tonk,
+            &key,
+            &format!("{}\n# a pre-fix release\n", shipping("old")),
+        )
+        .await;
+        replay(&tonk, &key, &shipping("new")).await;
+        assert_eq!(referents(&tonk, &key, "probe/home").await, ["probe:new"]);
+
+        assert!(install(&tonk, &key, &shipping("newer")).await);
+
+        assert_eq!(referents(&tonk, &key, "probe/home").await, ["probe:mine"]);
+    }
+
+    /// A template that repeats a library definition writes outside any
+    /// install. Its copy is the library's value, not a choice: the library
+    /// moves it, and the repair does not move it back on the next mount.
+    #[dialog_common::test]
+    async fn a_copy_of_a_library_value_is_not_put_back() {
+        let shipping = |default: &str| {
+            format!("{PRODUCTION_CORE}\nname!:\n  this: id:probe/home\n  entity: probe:{default}\n")
+        };
+        let tonk = test_state().await;
+        let (key, _) = seeded_space(&tonk, &shipping("old"), "Probe").await;
+        author(
+            &tonk,
+            &key,
+            "name!:\n  this: id:probe/home\n  entity: probe:old\n",
+        )
+        .await;
+
+        assert!(install(&tonk, &key, &shipping("new")).await);
+        assert_eq!(referents(&tonk, &key, "probe/home").await, ["probe:new"]);
+
+        assert!(
+            !install(&tonk, &key, &shipping("new")).await,
+            "nothing to put back on the next mount"
+        );
+        assert_eq!(referents(&tonk, &key, "probe/home").await, ["probe:new"]);
     }
 
     /// The incident: a space an agent built is upgraded from production's
