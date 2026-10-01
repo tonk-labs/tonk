@@ -9790,10 +9790,12 @@ pub(crate) mod tests {
             if remote.contains(env.tonk_web.join("ucan/")?.as_str()) {
                 break;
             }
-            anyhow::ensure!(
-                tokio::time::Instant::now() < deadline,
-                "the space made while signed out never moved to the account's deployment: {info}"
-            );
+            if tokio::time::Instant::now() >= deadline {
+                dump_browser_log(&driver, &env).await;
+                anyhow::bail!(
+                    "the space made while signed out never moved to the account's deployment: {info}"
+                );
+            }
             let _ = post_json(&driver, "/api/sync", serde_json::json!({})).await;
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
