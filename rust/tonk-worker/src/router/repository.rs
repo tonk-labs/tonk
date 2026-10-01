@@ -4509,7 +4509,18 @@ async fn install_seed(
     // publish. The record is then read again, because the commit that won may
     // be another member's upgrade.
     let _committing = session.transactor().lock().await;
-    let mut current = current;
+    // Read the record again under the lock: an upgrade that held it first
+    // may have moved the space already, and uninstalling from the record
+    // read before would revert an install the space no longer runs.
+    let Some(mut current) = read_installed_seed(tonk, session)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("read seed record: {e}")))?
+    else {
+        return Ok(false);
+    };
+    if current.seed.to_string() == shipped {
+        return Ok(false);
+    }
     let mut attempt = 0;
     loop {
         let uninstall = uninstall_claims(tonk, session, &current, &subject).await?;
@@ -6131,11 +6142,7 @@ async fn recorded_install_versions(
     }
     Ok(versions
         .into_iter()
-        .filter(|(seed, _)| {
-            sources
-                .get(seed)
-                .is_some_and(|recorded| recorded == source)
-        })
+        .filter(|(seed, _)| sources.get(seed).is_some_and(|recorded| recorded == source))
         .map(|(_, version)| version)
         .collect())
 }
@@ -13994,7 +14001,10 @@ name!:
         let (key, subject) = new_space(&tonk, CORE, "Garden").await;
 
         assert!(running(&tonk, &key).await.complete);
-        assert_eq!(missing_from_install(&tonk, &key, CORE).await, Vec::<Triple>::new());
+        assert_eq!(
+            missing_from_install(&tonk, &key, CORE).await,
+            Vec::<Triple>::new()
+        );
         assert!(
             !installed_claims(&tonk, &key)
                 .await
@@ -14022,7 +14032,10 @@ name!:
         for library in [CORE, next.as_str()] {
             assert!(install(&tonk, &key, library).await);
             assert!(running(&tonk, &key).await.complete);
-            assert_eq!(missing_from_install(&tonk, &key, library).await, Vec::<Triple>::new());
+            assert_eq!(
+                missing_from_install(&tonk, &key, library).await,
+                Vec::<Triple>::new()
+            );
         }
     }
 
@@ -14058,7 +14071,10 @@ name!:
         let mut lacking: Vec<&Triple> = fresh.difference(&upgraded).collect();
         left.sort();
         lacking.sort();
-        assert!(left.is_empty(), "left over from earlier libraries: {left:?}");
+        assert!(
+            left.is_empty(),
+            "left over from earlier libraries: {left:?}"
+        );
         assert!(lacking.is_empty(), "missing after the upgrade: {lacking:?}");
     }
 
@@ -14100,7 +14116,10 @@ name!:
         assert!(install(&tonk, &legacy, CORE).await);
 
         assert_eq!(referents(&tonk, &new, "tonk/space").await, ["tonk:blank"]);
-        assert_eq!(referents(&tonk, &legacy, "tonk/space").await, ["tonk:blank"]);
+        assert_eq!(
+            referents(&tonk, &legacy, "tonk/space").await,
+            ["tonk:blank"]
+        );
     }
 
     /// A space created before installs were complete carried its name in its
@@ -14360,10 +14379,7 @@ name!:
         assert!(install(&tonk, &key, CORE).await);
 
         assert!(state_of(&tonk, &key, &LEGACY_ROUTES).await.is_empty());
-        assert_eq!(
-            routes_at(&tonk, &key, "/").await,
-            ["tonk:workspace/shell"]
-        );
+        assert_eq!(routes_at(&tonk, &key, "/").await, ["tonk:workspace/shell"]);
         assert_eq!(
             resolved(&tonk, &key, "/").await.as_deref(),
             Some("tonk:workspace/shell")

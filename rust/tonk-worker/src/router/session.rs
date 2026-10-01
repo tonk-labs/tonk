@@ -837,10 +837,15 @@ mod match_route_tests {
     /// through the real router, not just the sort.
     #[dialog_common::test]
     async fn it_prefers_a_space_route_over_a_default() {
-        let authored = "route!:\n  this: id:zzz/space-probe\n  path: \"/probe\"\n  concept: tonk:blank\n";
+        let authored =
+            "route!:\n  this: id:zzz/space-probe\n  path: \"/probe\"\n  concept: tonk:blank\n";
         let (matched, defaults) = resolve(PROBE_DEFAULT, Some(authored), "/probe").await;
 
-        assert_eq!(defaults.len(), 1, "the default's route stands: {defaults:?}");
+        assert_eq!(
+            defaults.len(),
+            1,
+            "the default's route stands: {defaults:?}"
+        );
         assert!(
             defaults[0].as_str() < "id:zzz/space-probe",
             "the default's entity sorts first, so entity order alone would \
