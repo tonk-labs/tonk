@@ -13,7 +13,7 @@ use dialog_effects::storage::{self as storage_fx, Directory, Location, LocationE
 use dialog_peer::{Allowance, OpenCredential, Peer, PeerError, PeerSpace, SpaceVaultExt as _};
 use dialog_repository::{
     ACCESS_BRANCH, AddAddressError, Branch, ConnectError, ConnectedBranch, ConnectedReplica,
-    PeersEnv, Repository, ResolveEnv, SiteAddress, Upstream, contact, peer_did,
+    PeersEnv, Repository, ResolveEnv, SiteAddress, Upstream, contact,
 };
 use dialog_storage::provider::storage::{CredentialStore, Storage};
 use dialog_storage::resource::Resource;
@@ -431,22 +431,51 @@ where
         .await
 }
 
-/// Connect to the replica of `subject` held by the peer reached at
-/// `address`, recording the address among the host's contacts first.
+/// The DID of the service reached at `address`: the `did:web` its host
+/// publishes a document for, whatever path the service is served under.
+pub fn service_did(address: &SiteAddress) -> Result<dialog_varsig::Did, ConnectReplicaError> {
+    let authority = service_name(address)?.replacen(':', "%3A", 1);
+    format!("did:web:{authority}")
+        .parse()
+        .map_err(|_| ConnectReplicaError::NotAService(format!("{address:?}")))
+}
+
+/// The name the host knows the service reached at `address` by: the
+/// host and port of its endpoint, the authority its `did:web` names.
 ///
-/// This is what a named remote of a repository was: an address and a
-/// subject. The peer is picked out by the DID its address names, not by
-/// a name: contact names are the host's, so a name like `origin` that
-/// every repository used would name one peer for all of them.
+/// Contact names are the host's, so one name is one peer: every
+/// repository at a service, and every account signed in through it, is
+/// reached through the same contact.
+pub fn service_name(address: &SiteAddress) -> Result<String, ConnectReplicaError> {
+    let SiteAddress::Ucan(ucan) = address else {
+        return Err(ConnectReplicaError::NotAService(format!("{address:?}")));
+    };
+    let endpoint = url::Url::parse(ucan.endpoint())
+        .map_err(|_| ConnectReplicaError::NotAService(ucan.endpoint().to_string()))?;
+    let host = endpoint
+        .host_str()
+        .ok_or_else(|| ConnectReplicaError::NotAService(ucan.endpoint().to_string()))?;
+    Ok(match endpoint.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host.to_string(),
+    })
+}
+
+/// Connect to the replica of `subject` held by the service reached at
+/// `address`, looking the service up among the host's contacts by its
+/// [`service_name`].
+///
+/// A service the host does not know at `address` yet is recorded first,
+/// under the DID it publishes and its name. A contact that already has
+/// the address is left alone: recording commits to the host's state
+/// even when nothing changes.
 pub async fn connect<Env: PeersEnv>(
     address: SiteAddress,
     subject: dialog_varsig::Did,
     env: &Env,
 ) -> Result<ConnectedReplica, ConnectReplicaError> {
-    let peer = peer_did(&address)?;
-    // Recording an address commits to the host's state even when it is
-    // already there, so a contact that already has it is left alone.
-    if let Ok(replica) = contact(&peer)
+    let name = service_name(&address)?;
+    if let Ok(replica) = contact(name.as_str())
         .connect()
         .repository(subject.clone())
         .open()
@@ -456,8 +485,13 @@ pub async fn connect<Env: PeersEnv>(
     {
         return Ok(replica);
     }
-    contact(&peer).add_address(address).perform(env).await?;
-    Ok(contact(&peer)
+    let did = service_did(&address)?;
+    contact(&did)
+        .add_address(address)
+        .name(name.as_str())
+        .perform(env)
+        .await?;
+    Ok(contact(name)
         .connect()
         .repository(subject)
         .open()
@@ -468,9 +502,10 @@ pub async fn connect<Env: PeersEnv>(
 /// Why [`connect`] could not reach a replica.
 #[derive(Debug, thiserror::Error)]
 pub enum ConnectReplicaError {
-    /// The address names no peer.
-    #[error(transparent)]
-    Peer(#[from] dialog_repository::PeerError),
+    /// The address is not a tonk service's endpoint, so it names no
+    /// service to look up.
+    #[error("{0} is not the endpoint of a service")]
+    NotAService(String),
     /// The address could not be recorded among the host's contacts.
     #[error(transparent)]
     AddAddress(#[from] AddAddressError),
@@ -614,6 +649,94 @@ mod tests {
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_dedicated_worker);
+
+    fn service(endpoint: &str) -> SiteAddress {
+        SiteAddress::from(dialog_remote_ucan::UcanAddress::new(endpoint))
+    }
+
+    /// A service is named by the authority of its endpoint, whatever
+    /// path it is served under, and its DID is the `did:web` of that
+    /// authority, a port percent-encoded so it is not read as a path.
+    #[dialog_common::test]
+    fn it_names_a_service_by_its_host() -> anyhow::Result<()> {
+        let hosted = service("https://tonk.network/ucan");
+        assert_eq!(service_name(&hosted)?, "tonk.network");
+        assert_eq!(service_did(&hosted)?.to_string(), "did:web:tonk.network");
+        assert_eq!(
+            service_name(&service("https://tonk.network/sync"))?,
+            "tonk.network"
+        );
+
+        let local = service("http://localhost:8090/ucan");
+        assert_eq!(service_name(&local)?, "localhost:8090");
+        assert_eq!(service_did(&local)?.to_string(), "did:web:localhost%3A8090");
+
+        assert!(matches!(
+            service_name(&service("not a url")),
+            Err(ConnectReplicaError::NotAService(_))
+        ));
+        Ok(())
+    }
+
+    /// Every repository at a service is reached through one contact,
+    /// looked up by the service's name and recorded under its `did:web`;
+    /// connecting again records nothing new.
+    ///
+    /// Native only, like the tests above, for the temporary profile
+    /// directory: the browser opens the same peer over OPFS, and the
+    /// worker's `it_takes_a_new_space_into_custody_on_a_device_linked_without_a_key`
+    /// connects through this path there.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_reaches_every_repository_at_a_service_through_one_contact() -> anyhow::Result<()> {
+        use dialog_storage::provider::storage::NativeSpace;
+
+        let temp = tempfile::tempdir()?;
+        let directory = Directory::At(temp.path().to_string_lossy().into_owned());
+        let (credentials, system) = open_system::<NativeSpace>(directory.clone()).await?;
+        let peer = open_peer(
+            Location::new(directory.clone(), "contacts"),
+            directory,
+            Storage::<NativeSpace>::default().owned_by(system.did()),
+            &credentials,
+            &system,
+            true,
+        )
+        .await?;
+        let ucan = service("https://tonk.network/ucan");
+        let sync = service("https://tonk.network/sync");
+        let first = Ed25519Signer::generate().await?.did();
+        let second = Ed25519Signer::generate().await?.did();
+
+        connect(ucan.clone(), first.clone(), &peer).await?;
+        let state = peer.state().revision();
+        connect(ucan.clone(), first.clone(), &peer).await?;
+        assert_eq!(
+            peer.state().revision(),
+            state,
+            "a known service is not recorded again"
+        );
+        connect(sync.clone(), second.clone(), &peer).await?;
+
+        let by_name = peer
+            .contact("tonk.network")
+            .connect()
+            .repository(second)
+            .open()
+            .perform(&peer)
+            .await?;
+        assert!(by_name.addresses().contains(&ucan));
+        assert!(by_name.addresses().contains(&sync));
+        let by_did = peer
+            .contact(service_did(&ucan)?)
+            .connect()
+            .repository(first)
+            .open()
+            .perform(&peer)
+            .await?;
+        assert_eq!(by_did.addresses(), by_name.addresses());
+        Ok(())
+    }
 
     /// Signing in hands the account made up at onboarding over to the
     /// account tonk signed in, forgets the custodian that guarded it, and

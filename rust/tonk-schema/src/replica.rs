@@ -454,17 +454,7 @@ impl PeerAddress {
 /// `https://tonk.network/sync` are one peer. `None` for an address that
 /// names no host.
 pub fn peer_of(address: &dialog_repository::SiteAddress) -> Option<dialog_varsig::Did> {
-    let endpoint = match address {
-        dialog_repository::SiteAddress::Ucan(ucan) => ucan.endpoint(),
-        _ => return None,
-    };
-    let authority = url::Url::parse(endpoint).ok()?;
-    let host = authority.host_str()?;
-    let authority = match authority.port() {
-        Some(port) => format!("{host}%3A{port}"),
-        None => host.to_string(),
-    };
-    format!("did:web:{authority}").parse().ok()
+    tonk_account::peer::service_did(address).ok()
 }
 
 /// What a branch follows.

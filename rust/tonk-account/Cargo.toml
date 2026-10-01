@@ -37,6 +37,7 @@ url = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
+dialog-remote-ucan = { workspace = true }
 dialog-peer = { workspace = true, features = ["helpers"] }
 dialog-storage = { workspace = true, features = ["helpers"] }
 tokio = { workspace = true, features = ["macros", "rt"] }

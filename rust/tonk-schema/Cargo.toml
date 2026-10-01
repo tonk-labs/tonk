@@ -45,6 +45,7 @@ tonk-core = { workspace = true }
 url = { workspace = true }
 tonk-notation = { workspace = true }
 tonk-worker-api = { workspace = true }
+tonk-account = { workspace = true }
 
 [dev-dependencies]
 zeroize = { workspace = true }
