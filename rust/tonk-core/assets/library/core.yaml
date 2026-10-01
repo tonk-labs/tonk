@@ -1854,9 +1854,9 @@ rule!:
 # content hash of the bytes, so two devices fetching the same library
 # converge on one entity without coordinating.
 #
-# `seed/installed` below adds the install-specific fields on this same
+# `seed/install` below adds the install-specific fields on this same
 # entity. Keeping them apart means a fetched-but-uninstalled seed can
-# never look half-installed, and `version` never has an absent case a
+# never look half-installed, and the version never has an absent case a
 # reader has to interpret.
 concept!: &seed/available
   this: tonk:seed/available
@@ -1880,23 +1880,43 @@ concept!: &seed/available
       cardinality: one
       as: entity
 
-# Whether an install's commit holds its whole library. An upgrade reverts
-# the install it replaces, and a commit records only what it changes, so an
-# install written in place over the previous one names only the difference.
-# Installs now revert everything first and assert the library in a commit of
-# their own, which holds all of it; this marks them. An install without it
-# was written before, and its upgrade reverts every recorded install.
-concept!: &seed/complete
-  description: An install whose commit holds its whole library.
+# The seed a space is RUNNING — the install-specific half, asserted on
+# the same entity as `seed/available`.
+#
+# An upgrade reverts the install it replaces, and a commit records only
+# what it changes, so an install written in place over the previous one
+# would name only the difference. An install reverts everything first and
+# asserts its library in a commit of its own, which then holds all of it,
+# and the next upgrade reverts that one commit.
+#
+# Releases before this recorded installs as `seed/installed` below, and
+# read only that to find the install to upgrade. A worker from one of them,
+# still running on a device until its successor takes over, finds no
+# install on a space recorded this way and leaves it alone, rather than
+# moving it back to its own library over what the space chose since.
+concept!: &seed/install
+  description: The seed a space is running, installed in a commit that holds its whole library.
   with:
-    complete:
-      description: The version of the install it vouches for; any other install was written in place.
-      the: xyz.tonk.seed/complete
+    prior:
+      description: >
+        The seed this one replaced, or `seed:none` on a first install —
+        present on every seed rather than absent on the first, so the
+        chain reads uniformly.
+      the: xyz.tonk.seed/prior
+      cardinality: one
+      as: entity
+    version:
+      description: >
+        The version of the commit that installed this seed, which holds
+        every claim of its library.
+      the: xyz.tonk.seed/install-version
       cardinality: one
       as: text
 
-# The seed a space is RUNNING — the install-specific half, asserted on
-# the same entity as `seed/available`.
+# How releases before complete installs recorded the seed a space runs. An
+# upgrade still reads it: a space that carries it was installed, at least
+# in part, the way those releases did, and moves to a complete install by
+# reverting every install it recorded.
 concept!: &seed/installed
   this: tonk:seed/installed
   description: The seed a space is running — what an upgrade withdraws.

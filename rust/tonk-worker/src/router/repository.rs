@@ -3927,12 +3927,11 @@ struct InstalledSeed {
     seed: dialog_artifacts::Entity,
     /// Where those bytes were fetched from.
     source: String,
-    /// The seed it replaced, or `seed:none` on a first install.
-    prior: dialog_artifacts::Entity,
     /// The version of the commit that installed it.
     version: String,
-    /// Whether that commit holds the whole library: its record carries the
-    /// marker for this very version (see [`tonk_schema::SeedComplete`]).
+    /// Whether that commit holds the whole library: the install was recorded
+    /// as [`tonk_schema::SeedInstall`], with no record a release from
+    /// before wrote beside it.
     complete: bool,
 }
 
@@ -3944,13 +3943,18 @@ struct ProfileInstallation {
 }
 
 /// Read the seed a space is running, if it recorded one.
+///
+/// A record a release from before wrote ([`tonk_schema::SeedInstalled`])
+/// wins over a complete one: the space was then installed, at least in
+/// part, the way those releases did, and only reverting every install it
+/// recorded undoes that.
 async fn read_installed_seed(
     tonk: &TonkState,
     session: &crate::reactor::BranchSession,
 ) -> Result<Option<InstalledSeed>, String> {
     use dialog_query::{Output as _, Query, Term};
 
-    let installed: Vec<tonk_schema::SeedInstalled> = session
+    let legacy: Vec<tonk_schema::SeedInstalled> = session
         .handle()
         .query()
         .select(Query::<tonk_schema::SeedInstalled> {
@@ -3962,15 +3966,33 @@ async fn read_installed_seed(
         .try_vec()
         .await
         .map_err(|e| format!("{e:?}"))?;
-    let Some(current) = installed.into_iter().next() else {
-        return Ok(None);
+    let (seed, version, complete) = match legacy.into_iter().next() {
+        Some(record) => (record.this, record.version.0, false),
+        None => {
+            let installed: Vec<tonk_schema::SeedInstall> = session
+                .handle()
+                .query()
+                .select(Query::<tonk_schema::SeedInstall> {
+                    this: Term::var("this"),
+                    prior: Term::var("prior"),
+                    version: Term::var("version"),
+                })
+                .perform(&tonk.operator)
+                .try_vec()
+                .await
+                .map_err(|e| format!("{e:?}"))?;
+            let Some(record) = installed.into_iter().next() else {
+                return Ok(None);
+            };
+            (record.this, record.version.0, true)
+        }
     };
 
     let available: Vec<tonk_schema::SeedAvailable> = session
         .handle()
         .query()
         .select(Query::<tonk_schema::SeedAvailable> {
-            this: Term::from(current.this.clone()),
+            this: Term::from(seed.clone()),
             source: Term::var("source"),
             replaces: Term::var("replaces"),
         })
@@ -3981,60 +4003,67 @@ async fn read_installed_seed(
     let Some(source) = available.into_iter().next() else {
         // The install half without its identity half. A seed is always
         // written as both, so this means the record was damaged.
-        return Err(format!("seed {} records no source", current.this));
+        return Err(format!("seed {seed} records no source"));
     };
-    let complete = session
-        .handle()
-        .query()
-        .select(Query::<tonk_schema::SeedComplete> {
-            this: Term::from(current.this.clone()),
-            complete: Term::var("complete"),
-        })
-        .perform(&tonk.operator)
-        .try_vec()
-        .await
-        .map_err(|e| format!("{e:?}"))?
-        .iter()
-        .any(|marker| marker.complete.0 == current.version.0);
 
     Ok(Some(InstalledSeed {
-        seed: current.this,
+        seed,
         source: source.source.0,
-        prior: current.prior.0,
-        version: current.version.0,
+        version,
         complete,
     }))
 }
 
-/// The retractions that withdraw `current`'s install half, so that after
-/// an upgrade the branch records one running seed, not every seed it
-/// ever ran.
+/// The retractions that withdraw every install record standing on the
+/// branch, so that after an upgrade it records one running seed, not every
+/// seed it ever ran.
 ///
-/// The install's own history cannot cover this: the record commits as
-/// the link AFTER the version it names, so that version's history holds
-/// the library and not its record. The withdrawal rides the upgrade's
-/// commit, which is also what links the installs into a chain (see
-/// [`install_chain`]). The `seed/available` half stays: it says the seed
-/// exists and where it came from, which is still true of a seed no longer
-/// running.
-fn installed_record_retractions(current: &InstalledSeed) -> Vec<super::claim::RawClaim> {
+/// The install's own history cannot cover this: the record commits as the
+/// link AFTER the version it names, so that version's history holds the
+/// library and not its record. Both kinds are withdrawn, so a record a
+/// release from before wrote beside a complete one goes too. The
+/// `seed/available` half stays: it says the seed exists and where it came
+/// from, which is still true of a seed no longer running.
+async fn live_install_records(
+    tonk: &TonkState,
+    session: &crate::reactor::BranchSession,
+) -> Result<Vec<super::claim::RawClaim>, RepositoryError> {
     use dialog_artifacts::Statement as _;
+    use dialog_query::{Output as _, Query, Term};
 
+    let failed = |e| RepositoryError::Internal(format!("read seed record: {e:?}"));
     let mut changes = dialog_artifacts::Changes::new();
-    tonk_schema::SeedInstalled {
-        this: current.seed.clone(),
-        prior: tonk_schema::domain::seed::Prior(current.prior.clone()),
-        version: tonk_schema::domain::seed::Version(current.version.clone()),
+    for record in session
+        .handle()
+        .query()
+        .select(Query::<tonk_schema::SeedInstalled> {
+            this: Term::var("this"),
+            prior: Term::var("prior"),
+            version: Term::var("version"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(failed)?
+    {
+        record.retract(&mut changes);
     }
-    .retract(&mut changes);
-    if current.complete {
-        tonk_schema::SeedComplete {
-            this: current.seed.clone(),
-            complete: tonk_schema::domain::seed::Complete(current.version.clone()),
-        }
-        .retract(&mut changes);
+    for record in session
+        .handle()
+        .query()
+        .select(Query::<tonk_schema::SeedInstall> {
+            this: Term::var("this"),
+            prior: Term::var("prior"),
+            version: Term::var("version"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(failed)?
+    {
+        record.retract(&mut changes);
     }
-    changes
+    Ok(changes
         .into_instructions()
         .into_iter()
         .filter_map(|instruction| match instruction {
@@ -4046,7 +4075,7 @@ fn installed_record_retractions(current: &InstalledSeed) -> Vec<super::claim::Ra
             }),
             _ => None,
         })
-        .collect()
+        .collect())
 }
 
 /// Check whether a newer seed is waiting for the space the command names.
@@ -4655,9 +4684,13 @@ async fn stage_reinstall(
     Ok(())
 }
 
-/// The record of an install at `installed`: the seed and its source, the
-/// seed it replaced, the version of its install commit, and the marker that
-/// this install's commit holds its whole library.
+/// The record of an install at `installed`: the seed and its source
+/// ([`tonk_schema::SeedAvailable`]), and the seed it replaced and the
+/// version of its install commit ([`tonk_schema::SeedInstall`]).
+///
+/// Never [`tonk_schema::SeedInstalled`]: releases from before read only that
+/// to find the install to upgrade, so a worker from one of them leaves a
+/// space recorded this way alone.
 fn installed_seed_facts(
     seed: &str,
     source: &str,
@@ -4666,18 +4699,27 @@ fn installed_seed_facts(
 ) -> Vec<dialog_artifacts::Instruction> {
     use dialog_artifacts::Statement as _;
 
-    let version = encode_seed_version(installed);
-    let mut facts = seed_record_facts(seed, source, prior, prior, &version);
-    if let Ok(this) = seed.parse::<dialog_artifacts::Entity>() {
-        let mut changes = dialog_artifacts::Changes::new();
-        tonk_schema::SeedComplete {
-            this,
-            complete: tonk_schema::domain::seed::Complete(version),
-        }
-        .assert(&mut changes);
-        facts.extend(changes.into_instructions());
+    let (Ok(this), Ok(prior)) = (
+        seed.parse::<dialog_artifacts::Entity>(),
+        prior.parse::<dialog_artifacts::Entity>(),
+    ) else {
+        log!("seed record: '{seed}' or '{prior}' is not an entity");
+        return Vec::new();
+    };
+    let mut changes = dialog_artifacts::Changes::new();
+    tonk_schema::SeedAvailable {
+        this: this.clone(),
+        source: tonk_schema::domain::seed::Source(source.to_owned()),
+        replaces: tonk_schema::domain::seed::Replaces(prior.clone()),
     }
-    facts
+    .assert(&mut changes);
+    tonk_schema::SeedInstall {
+        this,
+        prior: tonk_schema::domain::seed::Prior(prior),
+        version: tonk_schema::domain::seed::InstallVersion(encode_seed_version(installed)),
+    }
+    .assert(&mut changes);
+    changes.into_instructions()
 }
 
 /// What an upgrade reverts: every claim the installs it replaces asserted,
@@ -4723,7 +4765,7 @@ async fn uninstall_claims(
             }
         }
     }
-    claims.extend(installed_record_retractions(current));
+    claims.extend(live_install_records(tonk, session).await?);
     Ok(claims)
 }
 
@@ -6134,7 +6176,10 @@ async fn recorded_install_versions(
             ("xyz.tonk.seed/source", dialog_artifacts::Value::String(source)) => {
                 sources.insert(claim.of.to_string(), source.clone());
             }
-            ("xyz.tonk.seed/version", dialog_artifacts::Value::String(version)) => {
+            (
+                "xyz.tonk.seed/version" | "xyz.tonk.seed/install-version",
+                dialog_artifacts::Value::String(version),
+            ) => {
                 versions.push((claim.of.to_string(), version.clone()));
             }
             _ => {}
@@ -12865,10 +12910,10 @@ mod seed_tests {
             .acquire(&tonk.operator)
             .await
             .expect("the branch acquires");
-        let installed: Vec<tonk_schema::SeedInstalled> = session
+        let installed: Vec<tonk_schema::SeedInstall> = session
             .handle()
             .query()
-            .select(Query::<tonk_schema::SeedInstalled> {
+            .select(Query::<tonk_schema::SeedInstall> {
                 this: Term::var("this"),
                 prior: Term::var("prior"),
                 version: Term::var("version"),
@@ -12928,21 +12973,9 @@ route!: &probe/dropped
   concept: tonk:blank
 "#;
         let library = include_str!("../../../tonk-core/assets/library/core.yaml");
-        let seeded = crate::router::evaluate::evaluate_body(
-            &tonk,
-            &key,
-            "main",
-            format!("{library}\n{old}"),
-            true,
-        )
-        .await
-        .expect("the old seed evaluates");
-        let old_revision = super::encode_seed_version(
-            &seeded
-                .revision_after
-                .expect("a committing seed has a revision")
-                .version(),
-        );
+        super::install_fresh_seed(&tonk, &key, "main", &format!("{library}\n{old}"), &[])
+            .await
+            .expect("the old seed installs");
 
         // The "new seed": keeps one route, drops the other.
         let new = r#"route!: &probe/kept
@@ -12950,24 +12983,10 @@ route!: &probe/dropped
   path: "/kept"
   concept: tonk:blank
 "#;
-        let session = tonk
-            .reactor
-            .repository(&key)
-            .branch("main")
-            .acquire(&tonk.operator)
+        let (key, session, installed) = super::installed_seed(&tonk, &key)
             .await
-            .expect("main acquires");
-        let installed = super::InstalledSeed {
-            seed: super::seed_version(&format!("{library}\n{old}"))
-                .parse()
-                .expect("a seed identity is an entity"),
-            source: super::STANDARD_LIBRARY_URL.to_owned(),
-            prior: super::SEED_NONE
-                .parse()
-                .expect("the empty seed is an entity"),
-            version: old_revision,
-            complete: true,
-        };
+            .expect("the install record reads")
+            .expect("the old seed is recorded");
         assert!(
             super::install_seed(
                 &tonk,
@@ -13766,8 +13785,8 @@ name!:
 
     /// Upgrade the way releases before complete installs did: withdraw what
     /// the last install asserted and evaluate the whole library over the
-    /// space in the same commit, which then records only what changed.
-    /// Those releases knew nothing of the completeness marker and left it.
+    /// space in the same commit, which then records only what changed. They
+    /// only ever upgraded a space recorded the way they record one.
     async fn replay(tonk: &TonkState, key: &str, library: &str) {
         let (key, session, current) = installed_seed(tonk, key)
             .await
@@ -13776,10 +13795,11 @@ name!:
         let mut retract = prior_seed_retractions(tonk, &session, &current.version)
             .await
             .expect("the install's history reads");
-        retract.extend(installed_record_retractions(&InstalledSeed {
-            complete: false,
-            ..current.clone()
-        }));
+        retract.extend(
+            live_install_records(tonk, &session)
+                .await
+                .expect("the install records read"),
+        );
         let shipped = seed_version(library);
         let prior = current.seed.to_string();
         let source = current.source.clone();
@@ -13881,6 +13901,24 @@ name!:
             .expect("field query");
         tokio::pin!(stream);
         stream.next().await.is_some()
+    }
+
+    /// How many install records a release from before could read.
+    async fn legacy_records(tonk: &TonkState, key: &str) -> usize {
+        content(tonk, key)
+            .await
+            .handle()
+            .query()
+            .select(Query::<tonk_schema::SeedInstalled> {
+                this: Term::var("this"),
+                prior: Term::var("prior"),
+                version: Term::var("version"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("install record query")
+            .len()
     }
 
     /// The claims the commit that installed the running seed asserted.
@@ -14025,7 +14063,7 @@ name!:
         let (key, _) = legacy_space(&tonk, PRODUCTION_CORE, "Garden").await;
         assert!(
             !running(&tonk, &key).await.complete,
-            "an install written in one commit with its name carries no marker"
+            "an install recorded the way releases before did is not complete"
         );
 
         let next = format!("{CORE}\n# the next release\n");
@@ -14386,42 +14424,52 @@ name!:
         );
     }
 
-    /// The marker vouches for the install whose version it names, and no
-    /// other: not a record an older worker rewrote in place, and not the
-    /// install of another seed an older worker wrote over it.
+    /// Releases from before read `seed/installed` to find the install to
+    /// upgrade, and a worker from one of them can run on a device until its
+    /// successor takes over. It would move a space this release installed
+    /// back to its own library over what the space chose since. It finds no
+    /// install to upgrade on one, new or upgraded, and leaves it alone.
     #[dialog_common::test]
-    async fn a_marker_vouches_only_for_the_install_it_names() {
+    async fn a_release_from_before_finds_no_install_to_upgrade() {
         let tonk = test_state().await;
-        let (rewritten, _) = new_space(&tonk, CORE, "Rewritten").await;
-        let current = running(&tonk, &rewritten).await;
-        assert!(current.complete);
-        let later = super::super::evaluate::evaluate_body(
-            &tonk,
-            &rewritten,
-            CONTENT_BRANCH,
-            "name!:\n  this: id:probe/later\n  entity: probe:later\n".to_owned(),
-            true,
-        )
-        .await
-        .expect("a later commit lands")
-        .revision_after
-        .expect("a committing document has a revision")
-        .version();
+        let (new, _) = new_space(&tonk, CORE, "Fresh").await;
+        let (upgraded, _) = legacy_space(&tonk, PRODUCTION_CORE, "Upgraded").await;
+        assert!(install(&tonk, &upgraded, CORE).await);
+
+        for key in [&new, &upgraded] {
+            assert!(running(&tonk, key).await.complete);
+            assert_eq!(legacy_records(&tonk, key).await, 0);
+        }
+    }
+
+    /// A record a release from before wrote beside a complete one means the
+    /// space was installed, at least in part, the way those releases did:
+    /// the next upgrade reverts every install it recorded and leaves one
+    /// complete record.
+    #[dialog_common::test]
+    async fn a_record_from_before_beside_a_complete_one_reverts_every_install() {
+        let tonk = test_state().await;
+        let (key, _) = new_space(&tonk, CORE, "Garden").await;
+        let current = running(&tonk, &key).await;
         author(
             &tonk,
-            &rewritten,
+            &key,
             &format!(
-                "seed/installed!:\n  this: {}\n  prior: {}\n  version: \"{}\"\n",
-                current.seed,
-                current.prior,
-                encode_seed_version(&later)
+                "seed/installed!:\n  this: {}\n  prior: {SEED_NONE}\n  version: \"{}\"\n",
+                current.seed, current.version
             ),
         )
         .await;
-        assert!(!running(&tonk, &rewritten).await.complete);
+        assert!(!running(&tonk, &key).await.complete);
 
-        let (replaced, _) = new_space(&tonk, CORE, "Replaced").await;
-        replay(&tonk, &replaced, &format!("{CORE}\n# an older worker's\n")).await;
-        assert!(!running(&tonk, &replaced).await.complete);
+        let next = format!("{CORE}\n# the next release\n");
+        assert!(install(&tonk, &key, &next).await);
+
+        assert!(running(&tonk, &key).await.complete);
+        assert_eq!(legacy_records(&tonk, &key).await, 0);
+        assert_eq!(
+            missing_from_install(&tonk, &key, &next).await,
+            Vec::<Triple>::new()
+        );
     }
 }
