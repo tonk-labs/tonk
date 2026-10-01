@@ -150,8 +150,14 @@ pub(crate) async fn carry_from(tonk: &TonkState, signed_out: &str) {
     if signed_out == tonk.active_branch {
         return;
     }
-    let Ok(root) = super::identity::local_root(tonk).await else {
-        return;
+    // The sign-in records the root before the link finishes; signing out
+    // forgot the last one.
+    let root = match super::identity::local_root(tonk).await {
+        Ok(root) => root,
+        Err(error) => {
+            log!("carry from '{signed_out}' deferred: {error}");
+            return;
+        }
     };
     let secret = match crate::onboarding::account_on(tonk, signed_out).await {
         Ok(Some(secret)) => secret,
@@ -1147,6 +1153,9 @@ mod tests {
         let guard = for_account(state.clone(), &root_did, None).await.unwrap();
         assert_eq!(guard.active_branch, account_branch);
         assert_eq!(guard.signed_out(), Some(workspace.as_str()));
+        // What the sign-in records before its link finishes: signing out
+        // forgot the root.
+        assert_eq!(persist_test_root(&guard).await, root_did);
         let sealed_before = sealed_to(&guard, &account_recipient).await.unwrap().len();
         carry_from(&guard, &workspace).await;
 
