@@ -324,39 +324,54 @@ delimited arguments, and scoring. It stops being where nouns are resolved.
 | `noun()` in `lingo.rs`: every instance of a concept, plus a `label` facet | candidate rules; labels still from the `label` view facet |
 | `role: lingo/now` time fields | still needed, and still a workaround (see gaps) |
 
-## Ranking is replaceable, if choices are closed
+## What to learn from structured-decision models
 
-Everything above turns the palette's decision into closed, typed choice
-sets: which command (from the schema, each with a `description`), and which
-value for each attribute (from rules). Today's lingo resolves nouns inside
-the parser, so there is no such set to hand to anything else.
+TypeSafe's Jev ([post](https://typesafe.ai/blog/introducing-system-one-models-and-jev),
+[docs](https://docs.typesafe.ai/introduction)) is a hosted model, and we
+are not using it or anything hosted. Its *interface* is worth learning
+from, because it is a careful answer to the question the palette asks:
+given a described situation, which of a known set of things is meant, and
+how sure are we? Each lesson below applies to a local, deterministic
+palette.
 
-With closed sets, the scorer is a part that can be swapped:
-
-- hand-tuned weights, as Ubiquity's ×1.2 and `matchScore`;
-- weights learned from `lingo/choice` and `intent/used` history;
-- a structured-decision model. TypeSafe's Jev
-  ([post](https://typesafe.ai/blog/introducing-system-one-models-and-jev),
-  [Choice](https://docs.typesafe.ai/primitives/choice),
-  [State](https://docs.typesafe.ai/concepts/state)) is shaped exactly like
-  this. Its `state` is a JSON object (our `intent/context`), and its
-  questions are `Choice`s over up to 255 described options, all answered in
-  one call with a probability per option. Their docs recommend asking
-  "speculative" questions whose answers only matter for some outcomes, which
-  is filling arguments for commands that might not be chosen.
-
-Jev is not a fit as the primary path. It claims 70–500 ms, which is too
-slow per keystroke. It is a network service, and tonk is local-first and
-would be sending what the user is looking at. And its numbers are the
-vendor's own, from a launch post with early access only. At most it is an
-optional re-ranker after typing pauses.
-
-The lasting lesson is **confidence gating with per-command stakes**
-([confidence routing](https://docs.typesafe.ai/patterns/confidence-routing)).
-Act or fill when sure, otherwise show a placeholder. Use a higher bar for
-destructive commands: `expel member` should need more certainty than
-`view members` before arguments are filled for it. That is a fact on the
-command (`stakes`), whatever does the ranking.
+1. **The situation is one structured object.** Its `state` is a single JSON
+   value holding everything relevant, kept apart from the questions asked
+   about it ([State](https://docs.typesafe.ai/concepts/state)). That is
+   `intent/context`: facts about the situation in one place, and the
+   schema (commands, attributes) as the questions.
+2. **Decisions are closed, typed, described choice sets.** A `Choice` is
+   one of named options, each with a description
+   ([Choice](https://docs.typesafe.ai/primitives/choice)). For us that is
+   which command (from the schema, matched against verbs *and* the
+   command's `description`) and which value per attribute (from rules).
+   Today's lingo resolves nouns inside the parser, so there is no such set.
+   Closing the sets is what makes ranking a replaceable part.
+3. **Every option gets a probability, and confidence is how peaked they
+   are.** A flat distribution means unsure, one peak means sure. We can
+   compute the same locally: normalise our scores over the options and
+   look at the margin between the top two. Today we keep only the order.
+4. **Act on confidence, with a threshold per action**
+   ([confidence routing](https://docs.typesafe.ai/patterns/confidence-routing)).
+   Fill an argument or run without asking only when sure, and require
+   more for destructive commands: `expel member` needs more certainty than
+   `view members`. That is a `stakes` fact on the command. It is the
+   precise form of the 2009 "ask only when there is no other way".
+5. **Ask every question at once, including speculative ones.** Their docs
+   recommend asking about outcomes that only matter if another answer goes
+   a certain way. For us: derive candidates for every attribute of every
+   plausible command from one context, then choose, instead of parsing
+   first and resolving nouns per reading.
+6. **Always have a "none of these" option.** A choice without one forces a
+   wrong answer. The palette needs an explicit outcome for "nothing fits":
+   take the input as text, or say so.
+7. **Large sets narrow in stages.** Above 255 options they choose
+   level by level and keep the best few paths (beam search). For us: pick
+   the kind of thing first (space, notebook, member), then the instance,
+   rather than scoring every entity at once.
+8. **Evaluate the decision function on a corpus.** Their "workflow evals"
+   fix the workflow and compare answers on recorded inputs. For us: a
+   table of `(context, input) → expected command and arguments`, run as a
+   test, so ranking changes are measured rather than eyeballed.
 
 ## Gaps
 
