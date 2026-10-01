@@ -282,7 +282,14 @@ argument. That is gap 1 again, in its sharpest form.
 
 ### Argument memory is a rule over what was used
 
-Each run records the values it was given:
+Emacs keeps two things apart, and so should we:
+- **past values** of an argument kind (`M-p`, one history list per kind);
+- **likely values** from the context ("future history" on `M-n`: the file
+  or URL at point).
+
+It also keeps whole invocations with their arguments, so they can be
+replayed (`command-history`). Here, likely values are the context rules
+above. Past values are a record of each run and the values it was given:
 
 ```yaml
 concept!: &intent/used
@@ -299,7 +306,9 @@ discussing" behaviour, and it needs nothing per command.
 
 ### What the palette does with it
 
-For each command whose verb matches what was typed:
+There are two ways in, and they use the same index.
+
+**Verb first.** For each command whose verb matches what was typed:
 
 1. Read its attributes.
 2. For each one, take the candidates (from rules), or the typed text if the
@@ -308,6 +317,23 @@ For each command whose verb matches what was typed:
    best-weighted values. If exactly one candidate exists, use it without
    asking.
 4. Otherwise, show the reading with the missing attribute as a placeholder.
+   A command is shown before its arguments are resolved, as a sentence with
+   slots ("rename *space* to …"), and the rest are asked for in turn.
+
+**Noun first.** When what was typed matches a thing rather than a verb, or
+the context has a selected or focused entity: find which shared attributes
+that entity can fill, and list the commands that take them. This is the
+attribute → commands index inverted. Shared attributes give it for free;
+per-command attributes can't. It matters because users type nouns
+([Prior art](#prior-art)).
+
+In both directions the candidate that makes a command proposable is the
+value it runs with. There is no separate "is this applicable" check that
+the handler then has to repeat.
+
+Inapplicable commands are ranked lower, not hidden, and "take what was
+typed as text" is always available. Hiding hurts discovery: Emacs leaves
+mode filtering off in `M-x` by default for that reason.
 
 The parser keeps what it is good at: splitting the input into verb and
 delimited arguments, and scoring. It stops being where nouns are resolved.
@@ -323,6 +349,106 @@ delimited arguments, and scoring. It stops being where nouns are resolved.
 | the `this` term, always the space | `intent/context` plus rules |
 | `noun()` in `lingo.rs`: every instance of a concept, plus a `label` facet | candidate rules; labels still from the `label` view facet |
 | `role: lingo/now` time fields | still needed, and still a workaround (see gaps) |
+
+## Prior art
+
+From the docs and sources of Quicksilver, Alfred, LaunchBar, Raycast, VS
+Code, Emacs (`interactive`, Embark, Marginalia, Consult), Apple App
+Intents, PowerToys and the Ubiquity team's own writing. Links are inline.
+
+### Context
+
+Every system lands on the same few slots: the selection (typed as file,
+text or URL), the current entity or document, the frontmost app or mode,
+the clipboard, time, the last result, and the typed text.
+
+- **Snapshot at invocation; don't resolve live.** Quicksilver resolves
+  "Current Selection" live through proxies and caches them for 3 s. Its own
+  docs describe the delay, and a "serious, well-known bug" with Finder
+  selection
+  ([Finder_Selection.md](https://github.com/quicksilver/Documentation/blob/main/Finder_Selection.md)).
+  LaunchBar's Instant Send and Embark take the target once, when invoked.
+  `intent/context` is written once when the palette opens, and updated
+  only by typing.
+- **Applicability and the argument must be one fact.** VS Code's palette
+  passes *no* arguments to a command. A `when` clause decides whether it
+  shows, but "does not pass its context keys to the command handler", so
+  handlers re-read the editor and can disagree with what made them
+  applicable
+  ([command guide](https://github.com/microsoft/vscode-docs/blob/main/api/extension-guides/command.md)).
+  Here, the candidate that makes a command proposable is the value it runs
+  with.
+- **Ship a context inspector.** VS Code's "Inspect Context Keys" is how
+  authors debug applicability. Rule authors here need "show this intent
+  context and its candidates".
+
+### Nouns, verbs, and which comes first
+
+- **Users type nouns.** Ubiquity's parser author found that only 23 of 74
+  built-in commands were really verbs, and users typed "weather" and
+  "flickr" first
+  ([DiCarlo, 2009](https://jonoscript.wordpress.com/2009/01/17/when-is-a-verb-not-a-verb/)).
+  Raycast's most installed extensions (Chrome tabs, Spotify, Linear, Slack)
+  are all "find a thing, then pick an action"
+  ([store](https://www.raycast.com/store)).
+- **Both directions are one mechanism.** Embark acts on the thing at point
+  by inserting it into an ordinary command's first prompt. The remaining
+  arguments are prompted for as usual
+  ([README](https://github.com/oantolin/embark)). Alfred has keywords plus
+  Universal Actions, and Raycast has root commands plus per-item action
+  panels. Declare inputs on commands, and get the noun-first view by
+  inverting the index.
+- **Pure noun→verb→object was hard to learn.** Quicksilver's three panes
+  are powerful, but reviewers describe them as feeling "a little weird"
+  ([The Sweet Setup](https://thesweetsetup.com/apps/best-app-keyboard-launcher-mac/)).
+  That is opinion, not a study.
+- **Coarse types and a text escape hatch.** LaunchBar's actions accept only
+  `string` and `path`. Alfred's Universal Actions know file, text and URL.
+  Both sustained large ecosystems. Precise attributes help find candidates,
+  but a strict match must never be the only way in.
+
+### Arguments
+
+- **Shared slots exist in shipped products.** In Raycast, "placeholders
+  with matching names are replaced by the same value"
+  ([dynamic placeholders](https://manual.raycast.com/dynamic-placeholders)):
+  the name is the slot's identity.
+- **A command needs every required argument filled or defaulted to be
+  offered.** Apple drops an intent from Spotlight if its summary lacks a
+  required parameter with no default
+  ([WWDC25 #260](https://developer.apple.com/videos/play/wwdc2025/260/)).
+  That is close to this design's rule, but Apple applies it to *showing*.
+  We show with placeholders and apply it to *running*.
+- **One argument's candidates can depend on another's.** Apple's
+  `@IntentParameterDependency` filters one parameter's query by another's
+  value
+  ([doc](https://developer.apple.com/documentation/appintents/intentparameterdependency)).
+  Ubiquity had nothing like it.
+- **Keep argument lists short.** Raycast caps arguments at 3.
+
+### Learning
+
+- **Key it on (typed string, entity id).** Quicksilver adds `1 - 1/(n+1)`
+  for the exact string typed for an object. Alfred "latches" the typed
+  phrase to the chosen result, and uses a 4-week window
+  ([result ordering](https://www.alfredapp.com/help/kb/understanding-result-ordering/)).
+  Both need stable ids (Alfred's `uid`). Entities give us that.
+- **Ranking actions per thing is harder than ranking things.** Quicksilver
+  has per-type learned action ranking in its source, disabled
+  (`QSExecutor.m`). Its actions are ranked by one global list.
+- **Order recent, then similar, then everything.** That is VS Code's
+  palette (`commandsQuickAccess.ts`). Alfred and PowerToys add fallbacks
+  for text that matches nothing.
+- **Nobody models "what we were discussing".** Quicksilver's result
+  becoming the next subject, and Raycast's `launchContext`, last one hop.
+  Emacs per-kind history is the closest thing. The argument-memory rule
+  here would be new.
+
+### Chaining
+
+A result can become the next subject (Quicksilver), or be exported to
+another view (Embark). In a fact database this is cheap: a command's result
+is one more candidate in the context ("the thing just made").
 
 ## What to learn from structured-decision models
 
@@ -428,6 +554,9 @@ A test in `tonk-worker` (next to `router::lingo`), on a fixture library:
    command.
 4. **Ask only when needed.** With one candidate, the claim is complete.
    With two, the reading carries a placeholder and both candidates.
+5. **Noun first.** With a notebook as the focused entity and no input, the
+   proposals are the commands that take `notebook/target` (retitle, insert
+   block, …), found by the inverted index and not by any per-command fact.
 
 Each check reads facts with ordinary concept queries. No Rust is written
 per command.
