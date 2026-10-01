@@ -662,6 +662,11 @@
               PORT=''${1:-8080}
               ACCESS_SERVICE_PORT=''${2:-8090}
               DEPLOYMENT_FIXTURE_ROOT=''${3:-}
+              # A second deployment, for tests that sign a browser in through
+              # another one: the same app at https://127.0.0.1:$SIBLING_PORT,
+              # in front of its own access service.
+              SIBLING_PORT=''${4:-}
+              SIBLING_ACCESS_SERVICE_PORT=''${5:-}
               ARTIFACT_ROOT=''${TONK_UI_TEST_ARTIFACT:-${self.packages.${system}.tonk-ui}}
               if [ ! -f "$ARTIFACT_ROOT/index.html" ] || [ ! -f "$ARTIFACT_ROOT/service_worker.js" ]; then
                   echo "Invalid Tonk test artifact: $ARTIFACT_ROOT" >&2
@@ -696,6 +701,27 @@
                           ;;
                   esac
               done < "$ARTIFACT_ROOT/service_worker.js"
+              SIBLING_SITE=""
+              if [ -n "$SIBLING_PORT" ]; then
+                  SIBLING_SITE="https://127.0.0.1:$SIBLING_PORT {
+                  tls internal
+                  handle /.well-known/tonk {
+                      reverse_proxy localhost:$SIBLING_ACCESS_SERVICE_PORT
+                  }
+                  handle /ucan/* {
+                      reverse_proxy localhost:$SIBLING_ACCESS_SERVICE_PORT
+                  }
+                  handle /customer/* {
+                      reverse_proxy localhost:$SIBLING_ACCESS_SERVICE_PORT
+                  }
+                  handle {
+                      root * \"$TONK_UI_ROOT\"
+                      try_files {path} {path}/index.html /index.html
+                      file_server
+                  }
+              }"
+              fi
+
               echo "Test server artifact $ARTIFACT_ROOT build $BUILD_ID"
               echo "Test server live at https://tonk.network:$PORT and https://localhost:$PORT"
               # `nix run` execs this script, and this exec in turn makes Caddy
@@ -730,6 +756,7 @@
                       file_server
                   }
               }
+              $SIBLING_SITE
               EOF
             '';
         };

@@ -24,6 +24,11 @@ pub struct TestEnvironment {
     pub service_worker_script: std::path::PathBuf,
     /// Parent directory for every Chrome profile created by this harness.
     pub browser_profile_root: std::path::PathBuf,
+    /// A second deployment, when the test asked for one with
+    /// `#[dialog_common::test(sibling = true)]`. See
+    /// [`TestEnvironment::sibling_web`].
+    #[serde(default)]
+    pub sibling: Option<Url>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -194,23 +199,21 @@ mod native {
     }
 
     impl TestEnvironment {
-        /// The other name the test server answers on. Caddy serves the one
-        /// deployment as both `tonk.network` and `localhost`, and the
-        /// browser keeps them apart the way it keeps two deployments apart:
-        /// each origin has its own service worker, its own storage, and
-        /// passkeys that do not cross. A test signing a browser in through
-        /// another deployment uses one as each.
+        /// The second deployment: the same app at `https://127.0.0.1:<port>`,
+        /// in front of an access service of its own. A browser keeps it
+        /// apart from [`TestEnvironment::tonk_web`] the way it keeps
+        /// tonk.host apart from tonk.network: its own service worker, its
+        /// own storage, and no passkey from the other (an IP address is no
+        /// relying party at all). Its service holds none of the other's
+        /// customers or data, so a call sent to the wrong deployment is
+        /// refused rather than quietly served.
+        ///
+        /// Only there when the test asked for it with
+        /// `#[dialog_common::test(sibling = true)]`.
         pub fn sibling_web(&self) -> Url {
-            let mut sibling = self.tonk_web.clone();
-            let host = if self.tonk_web.host_str() == Some("localhost") {
-                "tonk.network"
-            } else {
-                "localhost"
-            };
-            sibling
-                .set_host(Some(host))
-                .expect("a web origin's host can be replaced");
-            sibling
+            self.sibling.clone().expect(
+                "no second deployment: ask for one with #[dialog_common::test(sibling = true)]",
+            )
         }
 
         fn chrome_capabilities(&self) -> Result<ChromeCapabilities> {
@@ -240,15 +243,17 @@ mod native {
             caps.add_arg("--host-resolver-rules=MAP tonk.network 127.0.0.1")?;
             caps.add_arg(&format!("--user-data-dir={}", profile.display()))?;
             caps.accept_insecure_certs(true)?;
-            // Both names the server answers on: a service worker registers
+            // Every origin the harness serves: a service worker registers
             // only on a secure origin, and Caddy's internal certificate is
-            // no more trusted on one name than the other.
-            let secure_origin = format!(
-                "--unsafely-treat-insecure-origin-as-secure={},{}",
-                self.tonk_web.origin().ascii_serialization(),
-                self.sibling_web().origin().ascii_serialization()
-            );
-            caps.add_arg(&secure_origin)?;
+            // no more trusted on one than another.
+            let secure_origins = std::iter::once(&self.tonk_web)
+                .chain(self.sibling.as_ref())
+                .map(|web| web.origin().ascii_serialization())
+                .collect::<Vec<_>>()
+                .join(",");
+            caps.add_arg(&format!(
+                "--unsafely-treat-insecure-origin-as-secure={secure_origins}"
+            ))?;
 
             if let Ok(chrome_binary) = std::env::var("CHROME") {
                 caps.set_binary(&chrome_binary)?;
@@ -526,6 +531,9 @@ mod native {
         chromedriver: Option<ManagedChild>,
         access_service:
             Option<Service<AccessServiceAddress, tonk_access_service::helpers::AccessServer>>,
+        /// The second deployment's own service, when one was asked for.
+        sibling_access_service:
+            Option<Service<AccessServiceAddress, tonk_access_service::helpers::AccessServer>>,
         workspace: Option<TestWorkspace>,
         /// Where every browser this harness launched keeps its profile;
         /// see [`reap_browsers`].
@@ -558,14 +566,23 @@ mod native {
             .status();
     }
 
+    /// What a test asks of its servers beyond the one deployment every
+    /// test gets, set with `#[dialog_common::test(field = value)]`.
+    #[derive(Debug, Clone, Default)]
+    pub struct TestServerSettings {
+        /// Stand up a second deployment, [`TestEnvironment::sibling_web`].
+        pub sibling: bool,
+    }
+
     impl TestServers {
         /// Starts the test servers and returns the server handles and environment configuration.
         ///
         /// Startup order:
-        /// 1. Start the access service with deployment discovery configured
-        /// 2. Start Caddy web server with access service port
+        /// 1. Start the access service with deployment discovery configured,
+        ///    and a second one when `settings` asks for a sibling deployment
+        /// 2. Start Caddy web server with the access service ports
         /// 3. Start the selected WebDriver server
-        pub async fn start() -> Result<(Self, TestEnvironment)> {
+        pub async fn start(settings: TestServerSettings) -> Result<(Self, TestEnvironment)> {
             let started = std::time::Instant::now();
             let workspace = TestWorkspace::new()?;
             let caddy_data = workspace.directory("caddy-data")?;
@@ -586,6 +603,7 @@ mod native {
             // access service's own port.
             let web_port =
                 free_local_port().expect("Could not get a free local port for test server");
+            let TestServerSettings { sibling } = settings;
             let settings = AccessServiceSettings {
                 // The identity is filled in by the server itself.
                 deployment: Some(DeploymentConfig::default()),
@@ -594,6 +612,26 @@ mod native {
             };
             let access_service = tonk_access_service::helpers::access_service(settings).await?;
             let access_service_address = access_service.address.clone();
+            // The second deployment's service starts empty and stays apart:
+            // its own store, its own signing key, none of the first one's
+            // customers.
+            let sibling = if sibling {
+                let port = free_local_port()
+                    .expect("Could not get a free local port for the sibling deployment");
+                let web = Url::parse(&format!("https://127.0.0.1:{port}"))?;
+                let service = tonk_access_service::helpers::access_service(AccessServiceSettings {
+                    deployment: Some(DeploymentConfig::default()),
+                    public_origin: Some(web.origin().ascii_serialization()),
+                    ..Default::default()
+                })
+                .await?;
+                let service_port = Url::parse(&service.address.access_service_url)?
+                    .port()
+                    .ok_or_else(|| anyhow!("Sibling access service URL has no port"))?;
+                Some((web, port, service, service_port))
+            } else {
+                None
+            };
             record_diagnostic(format!(
                 "phase=access-service-ready elapsed_ms={}",
                 started.elapsed().as_millis()
@@ -652,6 +690,9 @@ mod native {
                     .to_str()
                     .ok_or_else(|| anyhow!("service-worker root is not valid UTF-8"))?,
             ]);
+            if let Some((_, port, _, service_port)) = &sibling {
+                test_server.args([format!("{port}"), format!("{service_port}")]);
+            }
             let mut web_server = ManagedChild::new(
                 test_server
                     // Pin Caddy's data dir so its per-run internal CA
@@ -689,22 +730,27 @@ mod native {
                     break;
                 }
             }
-            let mut listening = false;
-            for _ in 0..100 {
-                if tokio::net::TcpStream::connect(("127.0.0.1", web_port))
-                    .await
-                    .is_ok()
-                {
-                    listening = true;
-                    break;
+            let ports = std::iter::once(web_port)
+                .chain(sibling.as_ref().map(|(_, port, _, _)| *port))
+                .collect::<Vec<_>>();
+            for port in ports {
+                let mut listening = false;
+                for _ in 0..100 {
+                    if tokio::net::TcpStream::connect(("127.0.0.1", port))
+                        .await
+                        .is_ok()
+                    {
+                        listening = true;
+                        break;
+                    }
+                    if let Some(status) = web_server.child_mut().try_wait()? {
+                        return Err(anyhow!("test web server exited before binding: {status}"));
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 }
-                if let Some(status) = web_server.child_mut().try_wait()? {
-                    return Err(anyhow!("test web server exited before binding: {status}"));
+                if !listening {
+                    return Err(anyhow!("test web server did not bind port {port}"));
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            }
-            if !listening {
-                return Err(anyhow!("test web server did not bind port {web_port}"));
             }
 
             // Caddy mints its internal CA lazily; wait for the root and
@@ -827,11 +873,16 @@ mod native {
                 started.elapsed().as_millis()
             ));
 
+            let (sibling, sibling_access_service) = match sibling {
+                Some((web, _, service, _)) => (Some(web), Some(service)),
+                None => (None, None),
+            };
             Ok((
                 Self {
                     web_server,
                     chromedriver,
                     access_service: Some(access_service),
+                    sibling_access_service,
                     workspace: Some(workspace),
                     browser_profile_root: browser_profile_root.clone(),
                 },
@@ -843,6 +894,7 @@ mod native {
                     deployment_root,
                     service_worker_script,
                     browser_profile_root,
+                    sibling,
                 },
             ))
         }
@@ -861,6 +913,11 @@ mod native {
             } else {
                 Ok(())
             };
+            let sibling_result = if let Some(access_service) = self.sibling_access_service.take() {
+                access_service.stop().await
+            } else {
+                Ok(())
+            };
             let workspace_result = self.workspace.take().map(TestWorkspace::close).transpose();
 
             let mut failures = Vec::new();
@@ -872,6 +929,9 @@ mod native {
             }
             if let Err(error) = access_result {
                 failures.push(format!("access service: {error}"));
+            }
+            if let Err(error) = sibling_result {
+                failures.push(format!("sibling access service: {error}"));
             }
             if let Err(error) = workspace_result {
                 failures.push(format!("test workspace cleanup: {error}"));
@@ -897,6 +957,7 @@ mod native {
             // Dropping providers closes their shutdown senders; explicit
             // success paths still await orderly shutdown in `stop`.
             self.access_service.take();
+            self.sibling_access_service.take();
             // Child processes must be gone before the workspace tree is removed.
             self.workspace.take();
         }
@@ -910,8 +971,10 @@ mod native {
     }
 
     #[dialog_common::provider]
-    async fn test_servers(_: ()) -> Result<Service<TestEnvironment, TestServers>> {
-        let (server, address) = TestServers::start().await?;
+    async fn test_servers(
+        settings: TestServerSettings,
+    ) -> Result<Service<TestEnvironment, TestServers>> {
+        let (server, address) = TestServers::start(settings).await?;
         Ok(Service::new(address, server))
     }
 
@@ -970,6 +1033,7 @@ mod native {
                 deployment_root: workspace.directory("deployments")?,
                 service_worker_script: workspace.path().join("service_worker.js"),
                 browser_profile_root: browser_profile_root.clone(),
+                sibling: None,
             };
 
             let profile_from = |caps: ChromeCapabilities| -> anyhow::Result<std::path::PathBuf> {

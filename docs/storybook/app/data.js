@@ -355,8 +355,8 @@ window.STORYBOOK_DATA = {
       "variants": "Empty, same-account, unrelated-account, or malformed-legacy CLI; person link; repeated bearer holders; independent issuers/invites; fresh/returning space; profile/space switch; restart; offline or revoked authority."
     },
     {
-      "evidence": "Worker unit and store tests for the request binding and grant install; settings-element tests for the via pane and a web request's approval pane; whole real-browser flow across the harness's two origins.",
-      "gaps": "Asking browser reloaded or closed mid-approval, service worker restarted between ask and answer, passkey ceremonies from the asking origin, revoking the asking browser from the approving one.",
+      "evidence": "Worker unit and store tests for the request binding, grant install, and provisioning at the account's deployment; settings-element tests for the via pane (the answer waits for the bound display) and a web request's approval pane; whole real-browser flow across two deployments with separate access services: sign in, then a space made on the asking deployment provisions, pushes, and is recovered at home.",
+      "gaps": "Asking browser reloaded or closed mid-approval, service worker restarted between ask and answer, a space created before the account's encryption key has synced in, revoking the asking browser from the approving one, an approving deployment older than the asking one.",
       "group": "Accounts: CLI and browser handoff",
       "id": "ACCT-C15",
       "title": "Sign a browser in through another deployment: open /settings/link?via=<origin> on a deployment that does not hold the account, approve there with its passkey, and come back signed in.",
