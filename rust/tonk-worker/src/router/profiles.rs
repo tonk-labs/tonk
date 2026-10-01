@@ -11,19 +11,16 @@
 //! worker, so the in-place swap is what a switch IS; the pointer write
 //! only covers a genuine SW restart.
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use std::ops::Deref;
 use std::sync::{Arc, atomic::Ordering};
 
 use axum::{Extension, Json, extract::State};
 use axum_wasm_macros::wasm_compat;
 use dialog_artifacts::Entity;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use dialog_varsig::Did;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tonk_schema::prelude::DidExt as _;
 use tonk_worker_api::{ActivateProfileRequest, ProfileRosterEntry, ProfilesResponse};
 
@@ -35,7 +32,6 @@ use crate::worker::TonkState;
 /// How account routing selected the profile pinned by an
 /// [`AccountProfileGuard`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) enum AccountProfileDisposition {
     /// The active profile was already the correct target.
     Current,
@@ -48,20 +44,17 @@ pub(crate) enum AccountProfileDisposition {
 /// A read lock that pins the account ceremony to the selected profile.
 /// Profile changes queue behind this guard until all local account writes have
 /// completed.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) struct AccountProfileGuard {
     tonk: tokio::sync::OwnedRwLockReadGuard<TonkState>,
     disposition: AccountProfileDisposition,
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 impl AccountProfileGuard {
     pub(crate) fn disposition(&self) -> AccountProfileDisposition {
         self.disposition
     }
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 impl Deref for AccountProfileGuard {
     type Target = TonkState;
 
@@ -498,7 +491,6 @@ pub(crate) async fn sign_out(
 /// profile is on takes the upstream once the ceremony links — after
 /// leaving whatever account it followed, so the new account starts from
 /// an empty branch and the old one keeps its grant withdrawn.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) async fn for_account(
     state: AppState,
     root: &Did,

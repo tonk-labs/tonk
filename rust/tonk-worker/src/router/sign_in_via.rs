@@ -259,14 +259,23 @@ async fn answer(state: &TonkState, url: &str) -> Result<Delivered, String> {
 /// account where the grant says it syncs. Local only: what reaches the
 /// network comes after, in [`finish`].
 ///
-/// [`super::identity::persist_root`] checks the grant the way it checks
-/// every root: one proof, addressed to this profile, open in subject and
-/// command, signed by the account it names.
-async fn adopt(state: &TonkState, delivered: Delivered) -> Result<(), String> {
+/// Validate before selecting a branch, using the same checks as every
+/// root: one proof, addressed to this profile, open in subject and command,
+/// signed by the account it names. Keep the selected branch pinned through
+/// installation and link completion.
+async fn adopt(
+    state: &super::AppState,
+    source: Option<&super::ClientId>,
+    delivered: Delivered,
+) -> Result<super::profiles::AccountProfileGuard, String> {
     let bytes = hex::decode(delivered.delegation_hex.trim())
         .map_err(|_| "the delivered grant is not hex".to_string())?;
-    let chain = dialog_ucan_core::DelegationChain::try_from(bytes.as_slice())
-        .map_err(|error| format!("the delivered grant is not a delegation: {error:?}"))?;
+    let chain = {
+        let tonk = state.read().await;
+        super::identity::validate_grant(bytes.clone(), &tonk.profile.did())
+            .await
+            .map_err(|error| format!("the delivered grant is invalid: {error}"))?
+    };
     let remote = tonk_invite::home_address(&chain)
         .map_err(|error| format!("the grant names an unusable sync address: {error:#}"))?
         .map(String::from)
@@ -277,8 +286,15 @@ async fn adopt(state: &TonkState, delivered: Delivered) -> Result<(), String> {
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| root_did.clone());
     let delegation_hex = hex::encode(&bytes);
+    let tonk = super::profiles::for_account(state.clone(), chain.issuer(), source)
+        .await
+        .map_err(|error| format!("the account profile could not be selected: {error}"))?;
+    log!(
+        "sign-in-via: account profile disposition {:?}",
+        tonk.disposition()
+    );
     super::identity::persist_root(
-        state,
+        &tonk,
         tonk_worker_api::SaveRootRequest {
             credential_id: credential_id.clone(),
             delegation_hex: delegation_hex.clone(),
@@ -289,7 +305,7 @@ async fn adopt(state: &TonkState, delivered: Delivered) -> Result<(), String> {
     .await
     .map_err(|error| format!("the grant was not installed: {error}"))?;
     super::account::persist_link(
-        state,
+        &tonk,
         &tonk_worker_api::AccountLinkRequest {
             provider: String::new(),
             root_did,
@@ -300,14 +316,23 @@ async fn adopt(state: &TonkState, delivered: Delivered) -> Result<(), String> {
         },
     )
     .await
-    .map_err(|error| format!("the account was not attached: {error}"))
+    .map_err(|error| format!("the account was not attached: {error}"))?;
+    Ok(tonk)
 }
 
 /// Install the answer on `url`, then bring the account down the way a
 /// passkey sign-in does once its root is recorded.
-async fn finish(state: &TonkState, url: &str) -> Result<(), String> {
-    let delivered = answer(state, url).await?;
-    adopt(state, delivered).await?;
+async fn finish(
+    state: &super::AppState,
+    source: Option<&super::ClientId>,
+    url: &str,
+) -> Result<(), String> {
+    let delivered = {
+        let tonk = state.read().await;
+        answer(&tonk, url).await?
+    };
+    let tonk = adopt(state, source, delivered).await?;
+    let state = &*tonk;
     super::account::finish_link(state)
         .await
         .map_err(|error| format!("the account did not finish linking: {error}"))?;
@@ -346,7 +371,10 @@ impl dialog_capability::Provider<FinishSignInVia> for super::CommandEnv {
     async fn execute(&self, command: FinishSignInVia) {
         let tonk = self.state().read().await;
         super::ceremony::report(&tonk, ceremony::SIGN_IN_VIA, ceremony_state::WORKING, "").await;
-        match finish(&tonk, &command.url.0).await {
+        drop(tonk);
+        let result = finish(self.state(), self.client(), &command.url.0).await;
+        let tonk = self.state().read().await;
+        match result {
             Ok(()) => {
                 super::ceremony::report(&tonk, ceremony::SIGN_IN_VIA, ceremony_state::DONE, "")
                     .await;
@@ -566,7 +594,8 @@ mod store_tests {
         waiting_on(&state, "r1").await;
 
         let delivered = answer(&state, &callback("r1", &encoded)).await.unwrap();
-        adopt(&state, delivered).await.unwrap();
+        let app_state = std::sync::Arc::new(tokio::sync::RwLock::new(state));
+        let state = adopt(&app_state, None, delivered).await.unwrap();
 
         let root = super::super::identity::local_root(&state).await.unwrap();
         assert_eq!(root.root_did.to_string(), root_did);
@@ -579,6 +608,61 @@ mod store_tests {
             load_pending(&state).await.unwrap().is_none(),
             "the request is spent"
         );
+    }
+
+    /// The local branch record written when the initial link finishes.
+    /// Record it directly so the directory is never fetched from a remote.
+    async fn record_linked_branch(state: &TonkState) {
+        let root = super::super::identity::root_did(state).await.unwrap();
+        let address =
+            dialog_repository::SiteAddress::from(dialog_remote_ucan::UcanAddress::new(HOME));
+        super::super::account_state::record_account_branch(state, &root, &address).await;
+    }
+
+    #[dialog_common::test]
+    async fn it_restores_the_retained_account_branch_and_local_directory_on_relogin() {
+        let (app, state, _lsp) = crate::api_router_with_state(test_state_without_root().await);
+        let space = crate::router::tests::put_repo(&app, "unsynced-space").await;
+        let (encoded, _) = delivery_for(75, &state.read().await.profile.did()).await;
+        let original = state.read().await.active_branch.clone();
+        let selected = adopt(&state, None, decode_delivery(&encoded).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(selected.active_branch, original);
+        record_linked_branch(&selected).await;
+        drop(selected);
+
+        for request in ["return-1", "return-2"] {
+            super::super::profiles::sign_out(&state, None)
+                .await
+                .unwrap();
+            let before = {
+                let tonk = state.read().await;
+                assert_ne!(tonk.active_branch, original);
+                waiting_on(&tonk, request).await;
+                super::super::profile::local_branches(&tonk).await.len()
+            };
+            let delivered = {
+                let tonk = state.read().await;
+                answer(&tonk, &callback(request, &encoded)).await.unwrap()
+            };
+            let selected = adopt(&state, None, delivered).await.unwrap();
+            assert_eq!(selected.active_branch, original);
+            assert_eq!(
+                super::super::profile::local_branches(&selected).await.len(),
+                before,
+                "re-login must not create another account branch"
+            );
+            drop(selected);
+            let axum::Json(profile) =
+                super::super::profile::get_profile(axum::extract::State(state.clone()))
+                    .await
+                    .unwrap();
+            assert!(
+                profile.space.iter().any(|entry| entry.key == space),
+                "the restored session must include the retained local directory"
+            );
+        }
     }
 
     #[dialog_common::test]
@@ -614,15 +698,14 @@ mod store_tests {
     /// customer for the account.
     #[dialog_common::test]
     async fn it_provisions_and_deprovisions_at_the_deployment_it_signed_in_through() {
-        use std::sync::Arc;
-        use tokio::sync::RwLock;
         use tonk_schema::prelude::DidExt as _;
 
         let state = test_state_without_root().await;
         let (encoded, _) = delivery_for(74, &state.profile.did()).await;
         waiting_on(&state, "r1").await;
         let delivered = answer(&state, &callback("r1", &encoded)).await.unwrap();
-        adopt(&state, delivered).await.unwrap();
+        let app_state = std::sync::Arc::new(tokio::sync::RwLock::new(state));
+        let state = adopt(&app_state, None, delivered).await.unwrap();
 
         // What the account's branch brings once it syncs in: the key its
         // first device published, which a new space's seed is sealed to.
@@ -686,7 +769,8 @@ mod store_tests {
 
         // Through the command the Hub fires, which has no request to say
         // where the space was provided.
-        let state = Arc::new(RwLock::new(state));
+        drop(state);
+        let state = app_state;
         let env =
             crate::router::CommandEnv::new(state.clone(), crate::router::CommandOrigin::default());
         <crate::router::CommandEnv as dialog_capability::Provider<
@@ -714,13 +798,34 @@ mod store_tests {
 
     #[dialog_common::test]
     async fn it_refuses_a_grant_addressed_to_another_device() {
-        let state = test_state_without_root().await;
+        let app_state =
+            std::sync::Arc::new(tokio::sync::RwLock::new(test_state_without_root().await));
+        let device = app_state.read().await.profile.did();
+        let (valid, _) = delivery_for(73, &device).await;
+        let selected = adopt(&app_state, None, decode_delivery(&valid).unwrap())
+            .await
+            .unwrap();
+        record_linked_branch(&selected).await;
+        drop(selected);
+        super::super::profiles::sign_out(&app_state, None)
+            .await
+            .unwrap();
         let elsewhere = Ed25519Signer::import(&[9; 32]).await.unwrap().did();
         let (encoded, _) = delivery_for(73, &elsewhere).await;
-        waiting_on(&state, "r1").await;
-
-        let delivered = answer(&state, &callback("r1", &encoded)).await.unwrap();
-        let installed = adopt(&state, delivered).await;
+        let (delivered, before) = {
+            let state = app_state.read().await;
+            waiting_on(&state, "r1").await;
+            (
+                answer(&state, &callback("r1", &encoded)).await.unwrap(),
+                state.active_branch.clone(),
+            )
+        };
+        let installed = adopt(&app_state, None, delivered).await;
+        let state = app_state.read().await;
+        assert_eq!(
+            state.active_branch, before,
+            "an invalid grant must not select its issuer's retained branch"
+        );
         assert!(
             matches!(installed, Err(ref error) if error.contains("audience is not the current profile"))
         );
