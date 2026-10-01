@@ -100,16 +100,11 @@ rule!:
     - assert: notebook/route                            # notebook.yaml:276
       where: { this: ?site, entity: ?notebook }
 
-rule!:
-  description: Selected text is a title candidate.
-  assert: notebook/retitle-title               # { title: xyz.tonk.notebook.retitle/title }
-  where: { this: ?intent, title: ?title }
-  when:
-    - assert: intent
-      where: { this: ?intent, command: notebook/retitle, expression: ?expression }
-    - assert: intent/expression
-      where: { this: ?expression, selection: ?title }
 ```
+
+The title needs no rule. It is text, so it comes from the parser as a
+phrase: typed ("to Plans") or from the selection, scored as in
+[open question 1](#open-questions).
 
 Rules name the commands they serve (`command: notebook/retitle`), so a
 rule only runs when its command is a live possibility.
@@ -235,7 +230,7 @@ when the overlay path is fast enough to replace it.
 
 1. The `intent/express` command and its handler (the existing parser),
    writing the expression and intents.
-2. The two rules above.
+2. The subject rule above, and passing the selection to the parser.
 3. The palette reading fragments and assembling readings.
 4. Tests: "rename to Plans" on a notebook page; plain "rename" with "Plans"
    selected; the same input on a page that isn't a notebook proposes no
