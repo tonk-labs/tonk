@@ -378,7 +378,14 @@ impl dialog_capability::Provider<FinishSignInVia> for super::CommandEnv {
             Ok(()) => {
                 super::ceremony::report(&tonk, ceremony::SIGN_IN_VIA, ceremony_state::DONE, "")
                     .await;
-                super::navigate::notify_navigate(self.client(), "/");
+                // A load, not a route change: signing back in can switch
+                // the page onto the branch the account kept, and the page
+                // that asked is left out of the reload every other tab gets
+                // (see `profiles::promote`), so a route change would leave
+                // it bound to the branch it started on and refused. The
+                // callback, with the grant in its fragment, leaves the
+                // history too.
+                super::navigate::notify_replace(self.client(), "/");
             }
             Err(error) => {
                 super::ceremony::report(

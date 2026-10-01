@@ -9706,6 +9706,86 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// Signing back in through another deployment, after signing out there,
+    /// returns the browser to the branch the account kept. The page that
+    /// asked lands there too: it loads afresh rather than routing, since a
+    /// document still bound to the signed-out profile has every request
+    /// refused, and the account's spaces show at once. A space made while
+    /// signed out is that browser's own work and stays on it.
+    #[dialog_common::test(sibling = true)]
+    async fn it_lands_on_the_account_when_signing_back_in_through_another_deployment(
+        env: TestEnvironment,
+    ) -> Result<()> {
+        const EMAIL: &str = "sign-in-via-again@example.com";
+        const KEPT: &str = "Kept by the account";
+        const MADE: &str = "Made while signed out";
+
+        let driver = driver_with_prf(&env).await?;
+        sign_up(&driver, &env, EMAIL).await?;
+        let home = env.tonk_web.origin().ascii_serialization();
+        sign_in_through(&driver, &env, &home).await?;
+        let kept = create_space_awaiting_remote(&driver, KEPT, true).await?;
+
+        let here = env.sibling_web();
+        goto(&driver, here.join("settings")?.as_str()).await?;
+        enter_hub(&driver).await?;
+        click(&driver, "[data-sign-out-open]").await?;
+        driver.enter_default_frame().await?;
+        let before_sign_out = driver
+            .execute("return performance.timeOrigin", Vec::new())
+            .await?
+            .json()
+            .clone();
+        enter_hub(&driver).await?;
+        click(&driver, "[data-sign-out-submit]").await?;
+        wait_for_top_reload(&driver, &before_sign_out, "sign-out").await?;
+        let made = create_space(&driver, MADE).await?;
+
+        sign_in_through(&driver, &env, &home).await?;
+        // The page it landed on, as it landed: no reload by the test.
+        let landed = get_json(&driver, "/api/profile").await?;
+        let listed: Vec<String> =
+            successful_body("the Hub after signing back in", &landed)["space"]
+                .as_array()
+                .map(|spaces| {
+                    spaces
+                        .iter()
+                        .filter_map(|space| space["key"].as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default();
+        assert!(
+            listed.contains(&kept),
+            "signing back in did not land on the account's spaces: {listed:?}"
+        );
+
+        // Still on this browser, with the profile it was made on.
+        let roster = get_json(&driver, "/api/profiles").await?;
+        let roster = successful_body("profiles after signing back in", &roster).clone();
+        let mut found = false;
+        for entry in roster["profiles"].as_array().cloned().unwrap_or_default() {
+            if entry["active"].as_bool() == Some(true) {
+                continue;
+            }
+            let switched = post_json(
+                &driver,
+                "/api/profiles/activate",
+                serde_json::json!({ "profile": entry["profileName"] }),
+            )
+            .await?;
+            successful_body("switch to another profile", &switched);
+            goto(&driver, here.as_str()).await?;
+            wait_for_service_worker(&driver).await?;
+            found |= space_keys(&driver).await?.contains(&made);
+        }
+        assert!(
+            found,
+            "the space made while signed out is gone from this browser"
+        );
+        driver.quit().await?;
+        Ok(())
+    }
+
     /// Revocation as the user experiences it: a guest who claimed an
     /// invite loses access to the space when that invite is withdrawn.
     ///
