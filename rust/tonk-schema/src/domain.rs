@@ -602,6 +602,25 @@ pub mod seed {
     #[domain("xyz.tonk.seed")]
     #[cardinality(one)]
     pub struct Version(pub String);
+
+    /// The version of the commit that installed this seed, which holds its
+    /// whole library.
+    ///
+    /// An upgrade reverts the install it replaces, and a commit records only
+    /// what it changes. An install that reverts everything first and then
+    /// asserts its library in a commit of its own records all of it, so the
+    /// next upgrade can revert that one commit. Encoded like [`Version`].
+    ///
+    /// Kept apart from [`Version`], which installs written before carry and
+    /// which releases from before read to find the install to upgrade. A
+    /// worker from one of them, still running on a device until its
+    /// successor takes over, finds no install on a space recorded this way
+    /// and leaves it alone, rather than moving it back to its own library
+    /// over what the space chose since.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.seed")]
+    #[cardinality(one)]
+    pub struct InstallVersion(pub String);
 }
 
 /// Attributes for transient *command* concepts — the effect triggers

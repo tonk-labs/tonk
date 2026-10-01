@@ -327,7 +327,7 @@ pub type SeedRecord<'a> = &'a (
     not(all(target_arch = "wasm32", target_os = "unknown")),
     allow(dead_code)
 )]
-async fn stage_and_publish(
+pub(super) async fn stage_and_publish(
     tonk_state: &crate::worker::TonkState,
     txn: dialog_repository::Transaction<&dialog_repository::Branch>,
     record: Option<SeedRecord<'_>>,
@@ -490,12 +490,12 @@ pub(super) async fn seed_syntax_on_branch<'a>(
 /// document commits in, and an optional second commit that can name the
 /// first's version.
 ///
-/// A seed upgrade is the caller: it withdraws the previous seed's claims
-/// and installs the new library atomically. Order matters and is fixed
-/// here — the retractions seed the transaction, the document follows —
-/// because a retract followed by an assert of the same fact KEEPS it,
-/// citing what it overrode, while the reverse order cancels. So the
-/// overlap between two seeds survives an upgrade untouched.
+/// The profile library's reconciliation is the caller: it withdraws the
+/// previous install's claims and installs the new library atomically.
+/// Order matters and is fixed here — the retractions seed the
+/// transaction, the document follows — because a retract followed by an
+/// assert of the same fact KEEPS it, citing what it overrode, while the
+/// reverse order cancels.
 ///
 /// `record` is how a seed record names the very commit that installed
 /// the library. The document's commit STAGES rather than publishes, so
@@ -806,10 +806,9 @@ async fn evaluate_on_branch_with<'a>(
 /// the same logic as [`evaluate_on_branch`] but accepts plain
 /// `String` arguments instead of HTTP-level types so the bridge
 /// handler can call it without constructing an axum request.
-/// Gated to match its callers: every seeding path that needs its record
-/// to name the installing commit now goes through
-/// [`evaluate_body_recording`], leaving this reachable only from tests
-/// and the service worker.
+/// Gated to match its callers: seed installs stage their own commits
+/// (see the repository module's `stage_reinstall`), leaving this reachable
+/// only from tests and the service worker.
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 pub async fn evaluate_body(
     tonk_state: &crate::worker::TonkState,
@@ -851,11 +850,12 @@ pub async fn evaluate_body_with_transients(
 /// [`evaluate_body`], with a second commit that names the first's
 /// version.
 ///
-/// The seed install's entry point. The document stages, its minted
-/// version is handed to `record`, and the facts that come back commit as
-/// the next link of the same batch — one publish for both. Nothing
-/// predicts a version, and no reader ever sees a library without the
-/// record describing it.
+/// How seeds were installed before installs were complete: the document
+/// stages, its minted version is handed to `record`, and the facts that
+/// come back commit as the next link of the same batch. Seeds now install
+/// through the repository module's `stage_reinstall`; tests use this to
+/// create spaces the way earlier releases did.
+#[cfg(test)]
 pub async fn evaluate_body_recording(
     tonk_state: &crate::worker::TonkState,
     repo: &str,
@@ -882,10 +882,10 @@ pub async fn evaluate_body_recording(
 /// [`evaluate_body`], with `retract` folded into the same commit and a
 /// `record` naming that commit's version.
 ///
-/// The seed upgrade's entry point: withdrawing the previous seed and
-/// installing its replacement is one staged commit, so a subscriber never
-/// sees a space with no definitions, and the record naming it chains on
-/// before the single publish.
+/// The seed upgrade before ownership was read from the whole install
+/// chain: withdraw what the last install asserted, evaluate the whole new
+/// library over the space. Tests use it to recreate the spaces it damaged.
+#[cfg(test)]
 pub async fn evaluate_with_retractions(
     tonk_state: &crate::worker::TonkState,
     repo: &str,

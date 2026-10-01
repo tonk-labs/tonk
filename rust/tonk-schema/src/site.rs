@@ -241,7 +241,7 @@ pub struct ReplicaChecked {
 /// Text rather than a case: an unreachable source and a malformed
 /// document are different problems and the message is the useful part.
 /// A space that never recorded a seed is not a failure — it simply has
-/// no [`SeedInstalled`] fact, and that absence is the answer.
+/// no install record, and that absence is the answer.
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ReplicaCheckFailure {
     /// The replica entity being stamped.
@@ -255,9 +255,9 @@ pub struct ReplicaCheckFailure {
 ///
 /// The entity is the content hash of the bytes, so two devices fetching
 /// the same library converge on one entity without coordinating.
-/// [`SeedInstalled`] adds the install-specific fields on this same
-/// entity; keeping them apart means a fetched-but-uninstalled seed can
-/// never look half-installed.
+/// [`SeedInstall`] adds the install-specific fields on this same entity;
+/// keeping them apart means a fetched-but-uninstalled seed can never look
+/// half-installed.
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SeedAvailable {
     /// The seed's entity: the content hash of its bytes.
@@ -269,12 +269,15 @@ pub struct SeedAvailable {
     pub replaces: crate::domain::seed::Replaces,
 }
 
-/// The seed a space is RUNNING — the install-specific half, asserted on
-/// the same entity as [`SeedAvailable`].
+/// How releases before [`SeedInstall`] recorded the seed a space runs, on
+/// the same entity as [`SeedAvailable`]. Profile libraries are still
+/// recorded this way.
 ///
 /// The version names the commit that installed it, and a commit's history
 /// is a changelog — so an upgrade inverts that commit's assertions rather
-/// than consulting a per-component tag.
+/// than consulting a per-component tag. Those releases upgraded in one
+/// commit, which records only what changed, so that commit need not hold
+/// the whole library.
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SeedInstalled {
     /// The seed's entity: the content hash of its bytes.
@@ -283,4 +286,23 @@ pub struct SeedInstalled {
     pub prior: crate::domain::seed::Prior,
     /// The version of the commit that installed it.
     pub version: crate::domain::seed::Version,
+}
+
+/// The seed a space is RUNNING, installed in a commit that holds its whole
+/// library, on the same entity as [`SeedAvailable`].
+///
+/// Written in place of [`SeedInstalled`], which installs written before
+/// carry. Releases from before read only that one to find the install to
+/// upgrade, so a worker from one of them finds no install here and leaves the
+/// space alone. A space that carries [`SeedInstalled`] was installed, at
+/// least in part, the way those releases did, and its upgrade reverts every
+/// install it recorded.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SeedInstall {
+    /// The seed's entity: the content hash of its bytes.
+    pub this: Entity,
+    /// The seed it replaced, or `seed:none` on a first install.
+    pub prior: crate::domain::seed::Prior,
+    /// The version of the commit that installed it.
+    pub version: crate::domain::seed::InstallVersion,
 }
