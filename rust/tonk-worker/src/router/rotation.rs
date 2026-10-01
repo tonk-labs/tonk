@@ -271,6 +271,13 @@ pub(crate) async fn carry_from(tonk: &TonkState, signed_out: &str) {
     for (subject, reason) in &outcome.failures {
         log!("carry: {subject} stayed in '{signed_out}': {reason}");
     }
+    // What moved is local-only until the account's remote is attached, the
+    // step the account sweep runs after each account pull. Run it now, so
+    // what moved syncs without waiting on a pull that may not come.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    if !outcome.rotated.is_empty() {
+        super::adopt::reconcile_account_spaces(tonk).await;
+    }
     if !outcome.failures.is_empty() {
         return;
     }
