@@ -58,6 +58,71 @@ Four things about it matter for us:
 4. **Previews and executes got the same `context`.** It was a live handle,
    not a description.
 
+## What Ubiquity's commands used
+
+The 88 commands Ubiquity subscribed by default: the built-in feed, plus
+firefox, social, developer, pageedit, general, email, calendar, map and
+search.
+
+- **Most take little.** 33 take no argument, 45 take one, 8 take two and 2
+  take three (`share on delicious`, `translate`). Of 67 argument slots, 52
+  are `object`. `format` has 4, `source` 3, and `goal`, `instrument`,
+  `alias` and `location` 2 each. `time` and `modifier` are never used. The
+  role grammar mostly served two commands.
+- **One argument type was shared: text.** `noun_arb_text` fills 32 of the
+  67 slots. No other typed noun is used by more than two commands, and 19
+  are used by one. Commands spanned unrelated services (tabs, Twitter,
+  maps, Amazon), so there was little to share.
+- **The current page was the main context.** About 36 commands read the
+  current page, URL or window, and 11 read the selection in their own code.
+  Every command with an argument got the selection through the parser as
+  well.
+- **Writing back was common.** 12 commands replace the selection with their
+  result (`translate`, `calculate`, `link to Wikipedia`, `tinyurl`, …), and
+  about 11 more change the page directly. "Transform what I selected" was a
+  large share of real use.
+- **Context defaults were scattered.** Some lived in noun types (current
+  URL, today, geolocation, default search engine). Others were hard-coded
+  in commands: `close tab`'s current tab, `translate`'s target language
+  from prefs, Yelp's geolocation fallback.
+- **No argument could depend on another.** A noun's `suggest` never sees
+  the other arguments. `translate` swaps its languages, and Yelp searches
+  near the geolocation instead of the given location, in execute code. The
+  2009 "adjectives" request was asking for a real gap.
+- **Composition was rare.** `CreateAlias` with fixed arguments (`anglicize`
+  is `translate` to English) is the only command-to-command mechanism.
+  `mixNouns` and a `__proto__` noun with a new `default` (weather: towns,
+  defaulting to the geolocation) are the closest thing to "a shared type
+  plus a context rule".
+
+## What tonk's commands look like
+
+The 46 `command!` declarations in the library today:
+
+- **Argument counts, not counting `time` nonces:** 8 take none, 18 take
+  one, 11 take two, 7 take three, 2 take four. That's more arguments per
+  command than Ubiquity had, and more multi-argument commands.
+- **Field types:** 36 text, 32 entity, 11 float (mostly `time` nonces),
+  5 integer.
+- **No entity field is shared.** Every one of the 32 is a command-specific
+  attribute (`xyz.tonk.pause-sync/space`, `xyz.tonk.command.check-update/space`, …).
+  `tonk/rename-repository` has both a `subject` and a `space`.
+
+Grouped by what they point at, they collapse to about 12 shared attributes:
+
+| Points at | Fields | Commands |
+| --- | --- | --- |
+| space | 6 | rename (twice), replicate, remove, check-update, pause-sync |
+| notebook | 5 | block insert/edit/place/remove, notebook retitle |
+| block | 5 | block edit/place/remove, and insert's `prev` and `next` |
+| sheet | 4 | rename-sheet, create-cell, create-column, create-row |
+| cell, row, column, member, account, device, concept, … | 1–2 each | |
+
+So sharing pays off much more in tonk than it did in Ubiquity. Tonk's
+commands act on its own few kinds of thing, not on unrelated web services.
+`block/insert` also gives a real same-branch dependency: its `prev` and
+`next` must be blocks of the chosen `notebook`.
+
 ## What the 2009 posts asked for
 
 From [Some mock-up around Ubiquity](https://github.com/Gozala/gozala.github.com/blob/main/deprecated.site/_posts/mozilla/ubiquity/2009-02-17-some-mock-up-around-ubiquity.md)
@@ -259,6 +324,40 @@ delimited arguments, and scoring. It stops being where nouns are resolved.
 | `noun()` in `lingo.rs`: every instance of a concept, plus a `label` facet | candidate rules; labels still from the `label` view facet |
 | `role: lingo/now` time fields | still needed, and still a workaround (see gaps) |
 
+## Ranking is replaceable, if choices are closed
+
+Everything above turns the palette's decision into closed, typed choice
+sets: which command (from the schema, each with a `description`), and which
+value for each attribute (from rules). Today's lingo resolves nouns inside
+the parser, so there is no such set to hand to anything else.
+
+With closed sets, the scorer is a part that can be swapped:
+
+- hand-tuned weights, as Ubiquity's ×1.2 and `matchScore`;
+- weights learned from `lingo/choice` and `intent/used` history;
+- a structured-decision model. TypeSafe's Jev
+  ([post](https://typesafe.ai/blog/introducing-system-one-models-and-jev),
+  [Choice](https://docs.typesafe.ai/primitives/choice),
+  [State](https://docs.typesafe.ai/concepts/state)) is shaped exactly like
+  this. Its `state` is a JSON object (our `intent/context`), and its
+  questions are `Choice`s over up to 255 described options, all answered in
+  one call with a probability per option. Their docs recommend asking
+  "speculative" questions whose answers only matter for some outcomes, which
+  is filling arguments for commands that might not be chosen.
+
+Jev is not a fit as the primary path. It claims 70–500 ms, which is too
+slow per keystroke. It is a network service, and tonk is local-first and
+would be sending what the user is looking at. And its numbers are the
+vendor's own, from a launch post with early access only. At most it is an
+optional re-ranker after typing pauses.
+
+The lasting lesson is **confidence gating with per-command stakes**
+([confidence routing](https://docs.typesafe.ai/patterns/confidence-routing)).
+Act or fill when sure, otherwise show a placeholder. Use a higher bar for
+destructive commands: `expel member` should need more certainty than
+`view members` before arguments are filled for it. That is a fact on the
+command (`stakes`), whatever does the ranking.
+
 ## Gaps
 
 These need resolving before or during the proof:
@@ -298,11 +397,15 @@ A test in `tonk-worker` (next to `router::lingo`), on a fixture library:
    `space/target`. One context rule ("the tab's space") yields the same
    candidate for both, and the palette proposes both, filled, for empty
    input.
-2. **Dependency.** `expel member` takes `member/target`. Its candidates are
-   the members of the tab's space, from that space's branch. A same-branch
-   join is checked too, on a fixture where both values live on one branch.
-   The cross-branch case (a member of a space named by an earlier argument)
-   is expected to fail, and the test records how.
+2. **Dependency.** Two cases:
+   - **Same branch:** `block/insert` takes a `notebook` and `prev`/`next`
+     blocks. With `block/target` shared, `prev` and `next` candidates come
+     from a join rule over the chosen notebook's blocks. Without a notebook
+     candidate, there are no block candidates.
+   - **Across branches:** `expel member` takes `member/target`. Its
+     candidates are the members of the tab's space, from that space's
+     branch. A member of a space named by an earlier argument is expected
+     to fail, and the test records how.
 3. **Memory crosses commands.** Run `rename <space B> to X` from a tab on
    space A. A following `pause sync` ranks space B above the tab's space A
    only if the memory rule weighs recency above location. The test pins
