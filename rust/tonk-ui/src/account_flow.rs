@@ -9415,6 +9415,187 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// Signing a browser in through another deployment, the browser's
+    /// `tonk account login --via`, and then using it. A browser on a second
+    /// deployment, which has never seen the account or its passkey, asks
+    /// the deployment holding it; the person approves there with that
+    /// passkey; and the asking origin comes back signed in to the same
+    /// account. The account's name showing there proves it synced through
+    /// the deployment that approved.
+    ///
+    /// Then a space made on the second deployment has to land at home: it
+    /// is provisioned and pushed to the account's deployment, whose service
+    /// is the only one holding the account, and the home device recovers it
+    /// from there. The second deployment runs its own access service, so a
+    /// call sent to it instead is refused rather than quietly served.
+    #[dialog_common::test(sibling = true)]
+    async fn it_signs_a_browser_in_through_another_deployment(env: TestEnvironment) -> Result<()> {
+        const EMAIL: &str = "sign-in-via@example.com";
+        const NAME: &str = "Via";
+        const SPACE: &str = "Made elsewhere";
+
+        let driver = driver_with_prf(&env).await?;
+        sign_up(&driver, &env, EMAIL).await?;
+        let home = env.tonk_web.origin().ascii_serialization();
+        let root = successful_body(
+            "the account's root",
+            &get_json(&driver, "/api/identity/root").await?,
+        )["rootDid"]
+            .as_str()
+            .context("root DID missing")?
+            .to_owned();
+        successful_body(
+            "name the account",
+            &post_json(
+                &driver,
+                "/api/account/display-name",
+                serde_json::json!({ "name": NAME }),
+            )
+            .await?,
+        );
+        successful_body(
+            "publish the account name",
+            &post_json(&driver, "/api/sync", serde_json::json!({})).await?,
+        );
+
+        let here = env.sibling_web();
+        let here_origin = here.origin().ascii_serialization();
+        let mut ask = here.join("settings/link")?;
+        ask.query_pairs_mut().append_pair("via", &home);
+        goto(&driver, ask.as_str()).await?;
+        enter_hub(&driver).await?;
+        wait_for_displayed(&driver, "account-settings [data-pane=\"via\"]").await?;
+        wait_for_text(&driver, "[data-via-origin]", &home).await?;
+        click(&driver, "[data-via-continue]").await?;
+
+        // On the deployment holding the account, the approval names the
+        // page the grant would go to.
+        await_url_containing(&driver, &format!("{home}/settings/link?")).await?;
+        enter_hub(&driver).await?;
+        wait_for_displayed(&driver, "account-settings [data-pane=\"link\"]").await?;
+        wait_for_text(&driver, "[data-link-return]", &here_origin).await?;
+        click(&driver, "[data-link-approve]").await?;
+        use_passkey_consent(&driver).await?;
+
+        // Back on the asking origin, at home and signed in.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+        loop {
+            driver.enter_default_frame().await?;
+            let url = driver.current_url().await?;
+            if url.origin().ascii_serialization() == here_origin && url.path() == "/" {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                dump_browser_log(&driver, &env).await;
+                // What the page said last: its status row carries the
+                // worker's refusal when finishing failed.
+                let said = async {
+                    enter_hub(&driver).await?;
+                    let settings = element(&driver, "account-settings").await?;
+                    let pane = settings.attr("data-pane").await?;
+                    let status = element(&driver, "account-settings [data-ceremony-status]")
+                        .await?
+                        .prop("textContent")
+                        .await?;
+                    driver.enter_default_frame().await?;
+                    Ok::<_, anyhow::Error>(format!("pane {pane:?}, status {status:?}"))
+                }
+                .await
+                .unwrap_or_else(|error| format!("its state is unreadable: {error}"));
+                anyhow::bail!(
+                    "the asking origin never came back signed in; the page is at {url}, {said}"
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        let installed = get_json(&driver, "/api/identity/root").await?;
+        assert_eq!(
+            successful_body("the installed root", &installed)["rootDid"],
+            root.as_str(),
+            "the asking origin holds a grant from the account that approved"
+        );
+
+        // A space made the moment the page lands. Its seed is sealed to the
+        // account's key, which this origin can only learn from the account
+        // itself, having no passkey to derive it from: the sign-in pulls
+        // the account before landing, or this asks for a passkey that can
+        // never answer here. And it syncs with the account's deployment.
+        let key = create_space_awaiting_remote(&driver, SPACE, true).await?;
+        let info = get_json(&driver, &format!("/api/repository/{key}")).await?;
+        let info = successful_body("read the new space", &info);
+        let remote = info["remote"]["origin"].to_string();
+        assert!(
+            remote.contains(env.tonk_web.join("ucan/")?.as_str()) && !remote.contains(&here_origin),
+            "the space syncs with the deployment holding the account: {info}"
+        );
+        // The home service accepts the push only for a space provisioned
+        // there under this account.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let pushed = post_json(
+                &driver,
+                &format!("/api/repository/{key}/branch/main/sync/push"),
+                serde_json::json!({}),
+            )
+            .await?;
+            if pushed["status"]
+                .as_u64()
+                .is_some_and(|status| (200..300).contains(&status))
+            {
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the space never pushed to the account's deployment: {pushed}"
+            );
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        // Making the space opened it; the account's name is on the Hub.
+        await_account_name(&driver, NAME).await?;
+        goto(&driver, here.as_str()).await?;
+        enter_hub(&driver).await?;
+        wait_for_text(&driver, "[data-account-label]", NAME).await?;
+        driver.enter_default_frame().await?;
+
+        // And the account's own device, on its deployment, finds it. In a
+        // tab of its own: this one stays open so its worker keeps running
+        // until the account branch carrying the space has gone out, since
+        // a sync poke schedules work rather than finishing it.
+        let elsewhere = driver.window().await?;
+        let home_tab = driver.new_tab().await?;
+        driver.switch_to_window(home_tab.clone()).await?;
+        goto(&driver, env.tonk_web.as_str()).await?;
+        wait_for_service_worker(&driver).await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+        let mut restored = get_json(&driver, &format!("/api/repository/{key}")).await?;
+        while restored["status"].as_u64() != Some(200) {
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the home device never found the space made on the other deployment: {restored}"
+            );
+            driver.switch_to_window(elsewhere.clone()).await?;
+            let _ = post_json(&driver, "/api/sync", serde_json::json!({})).await;
+            driver.switch_to_window(home_tab.clone()).await?;
+            let _ = post_json(&driver, "/api/sync", serde_json::json!({})).await;
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            restored = get_json(&driver, &format!("/api/repository/{key}")).await?;
+        }
+        let pulled = post_json(
+            &driver,
+            &format!("/api/repository/{key}/branch/main/sync/pull"),
+            serde_json::json!({}),
+        )
+        .await?;
+        successful_body("pull the space at home", &pulled);
+        let hydrated = get_json(&driver, &format!("/api/repository/{key}")).await?;
+        assert_eq!(
+            successful_body("load the space at home", &hydrated)["label"],
+            SPACE
+        );
+        driver.quit().await?;
+        Ok(())
+    }
+
     /// Revocation as the user experiences it: a guest who claimed an
     /// invite loses access to the space when that invite is withdrawn.
     ///

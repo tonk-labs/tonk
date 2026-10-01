@@ -43,7 +43,8 @@ jobs:
     # exact store paths from Cachix instead of racing three identical cold
     # builds on separate runners. This is independent of lint, so overlap the
     # two expensive prerequisites; shards still require both to succeed.
-    timeout-minutes: 30
+    # Cold native archive builds can exceed 30 minutes before tests start.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
       - name: Free disk space

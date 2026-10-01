@@ -130,7 +130,8 @@ pub struct AccountPurge {}
 pub struct DeviceAuthorization {
     /// The device DID the grant is addressed to.
     pub audience: String,
-    /// The loopback URL the waiting process listens on.
+    /// Where the grant goes: the loopback URL a waiting CLI listens on, or
+    /// the https page of a deployment signing a browser in through this one.
     pub callback: String,
     /// The name the waiting process gave itself.
     pub name: String,

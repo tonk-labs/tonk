@@ -122,11 +122,11 @@
       "surface": "browser",
       "area": "Accounts",
       "name": "CLI authorization handoff",
-      "summary": "The browser names the waiting CLI device and requires explicit passkey approval or cancellation.",
+      "summary": "The browser names the waiting CLI device, or the page another deployment is signing in, and requires explicit passkey approval or cancellation.",
       "artifact": "app/screens/web-10-cli-handoff.png",
       "capture": "production-source fixture",
       "status": "captured",
-      "journey_ids": ["ACCT-C02", "ACCT-C03", "ACCT-C04", "ACCT-C05", "ACCT-C06"],
+      "journey_ids": ["ACCT-C02", "ACCT-C03", "ACCT-C04", "ACCT-C05", "ACCT-C06", "ACCT-C15"],
       "source_paths": ["rust/tonk-core/assets/library/profile.yaml", "rust/tonk-ui/styles.css", "rust/tonk-cli/src/account.rs"]
     },
     {

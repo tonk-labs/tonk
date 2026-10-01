@@ -2084,6 +2084,7 @@ async fn run_invite(
     // attach: a foreign remote (self-hosted, a test server) is not our
     // access service, and refusing the mint over it would make those
     // unshareable.
+    let own_service = remote_is_own_service(&tonk, remote_execution.access_url.as_str()).await;
     match if super::customer::space_provider_recorded(&tonk, &repository.did()).await {
         Ok(())
     } else {
@@ -2095,8 +2096,7 @@ async fn run_invite(
         // will not serve — the recipient meets "you don't have this
         // space" — so the share is refused with the reason instead.
         Err(error @ TonkWorkerError::Upstream { .. })
-            if remote_is_own_service(remote_execution.access_url.as_str())
-                && !super::customer::is_retryable(&error) =>
+            if own_service && !super::customer::is_retryable(&error) =>
         {
             log!("Invite for repo '{repo_name}': the service refused to provision: {error}");
             drop(tonk);
@@ -2880,10 +2880,11 @@ impl dialog_capability::Provider<tonk_schema::command::RemoveSpace> for crate::r
         // ACCOUNT, which is a different command.
         {
             let tonk = self.state().read().await;
-            // The worker's own origin: a command has no request behind
-            // it to carry one, and the access service that provides the
-            // space is the one this worker is served from.
-            let origin = super::customer::service_origin();
+            // The account's home service: a command has no request behind
+            // it to carry one, and the space was provided where the
+            // account syncs, which for a browser signed in through another
+            // deployment is not the one this worker is served from.
+            let origin = super::customer::home_service_origin(&tonk).await;
             if super::customer::space_provider_recorded(&tonk, &subject).await
                 && let Ok(origin) = origin
                 && let Err(error) =
@@ -3514,9 +3515,10 @@ async fn enable_sync_for_repository(
     // to an upstream that refuses every presign terminally: the sync
     // loop hammers it forever and a link handed out against it answers
     // "you don't have this space". That refusal fails the attach.
+    let own_service = remote_is_own_service(tonk, remote).await;
     match provision_space_consumer(tonk, &repository.did()).await {
         Ok(()) => {}
-        Err(error) if remote_is_own_service(remote) && !super::customer::is_retryable(&error) => {
+        Err(error) if own_service && !super::customer::is_retryable(&error) => {
             return Err(RepositoryError::Internal(format!(
                 "enable sync '{key}': the service refused to provision this space, and \
                  attaching its own remote anyway would wire the space to an upstream \
@@ -5454,12 +5456,13 @@ pub(crate) async fn provision_space_consumer(
     super::customer::provision_consumer(tonk, subject, &prefix, None).await
 }
 
-/// Whether `remote` is this deployment's own access service — the one
-/// party whose provisioning refusal is authoritative for it. A foreign
-/// remote (self-hosted, a test server) is attached and shared without
-/// asking our service's opinion.
-pub(super) fn remote_is_own_service(remote: &str) -> bool {
-    let Ok(own) = super::customer::service_origin() else {
+/// Whether `remote` is the access service this profile's account syncs
+/// with — where it provisions, and so the one party whose provisioning
+/// refusal is authoritative ([`super::customer::home_service_origin`]).
+/// A foreign remote (self-hosted, a test server) is attached and shared
+/// without asking that service's opinion.
+pub(super) async fn remote_is_own_service(tonk: &TonkState, remote: &str) -> bool {
+    let Ok(own) = super::customer::home_service_origin(tonk).await else {
         return false;
     };
     url::Url::parse(remote)
@@ -11679,9 +11682,10 @@ block/insert!:
         );
     }
 
-    /// Direct owned authority must still reach provisioning. This harness
-    /// has no worker origin, so reaching the service boundary returns an
-    /// error rather than silently treating the owned space as already served.
+    /// Direct owned authority must still reach provisioning, at the
+    /// service the account syncs with, rather than being treated as
+    /// already served. The service refuses here, and that refusal is what
+    /// comes back.
     #[dialog_common::test]
     async fn it_requires_provisioning_for_owned_space_authority() {
         let (_app, state, key) = fresh_repo("owned-space-provisioning").await;
@@ -11689,12 +11693,32 @@ block/insert!:
         let subject = key.parse().unwrap();
         let prefix = super::space_root_prefix(&tonk, &subject).await.unwrap();
         assert_eq!(prefix.proofs().count(), 1);
+
+        let calls = js_sys::Array::new();
+        let _calls =
+            crate::router::tests::GlobalPropertyGuard::replace("__tonkProviderCalls", &calls);
+        let fetch = js_sys::Function::new_with_args(
+            "request",
+            "globalThis.__tonkProviderCalls.push(request.url);
+             return Promise.resolve(new Response(
+                 JSON.stringify({ error: { code: 'UnknownCustomer', message: 'no such customer' } }),
+                 { status: 404, headers: { 'content-type': 'application/json' } }));",
+        );
+        let _fetch = crate::router::tests::GlobalPropertyGuard::replace("fetch", fetch.as_ref());
+
         let error = super::provision_space_consumer(&tonk, &subject)
             .await
             .expect_err("owned authority must still attempt provisioning");
         assert!(
-            matches!(error, crate::TonkWorkerError::Internal(ref detail) if detail == "the worker origin is unavailable"),
-            "expected the service boundary, got {error}",
+            matches!(error, crate::TonkWorkerError::Upstream { ref code, .. } if code.as_deref() == Some("UnknownCustomer")),
+            "expected the service's refusal, got {error}",
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .map(|call| call.as_string().unwrap())
+                .collect::<Vec<_>>(),
+            [crate::router::account::TEST_ACCOUNT_REMOTE]
         );
     }
 
