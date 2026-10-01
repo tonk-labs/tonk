@@ -100,10 +100,17 @@ async fn it_attaches_blob_bytes_without_asserting_metadata() -> Result<()> {
     )
     .await?;
     let csv = tokio::fs::read_to_string(export).await?;
+    // The branch records the bytes as an asset, by dialog's own
+    // `dialog.asset/size` fact; nothing else may name the blob.
+    let rows: Vec<&str> = csv
+        .lines()
+        .filter(|row| row.contains(attached.entity.as_str()))
+        .collect();
     assert!(
-        !csv.contains(attached.entity.as_str()),
-        "raw attachment must not invent metadata facts: {csv}"
+        rows.iter().all(|row| row.starts_with("dialog.asset/size,")),
+        "raw attachment must not invent metadata facts: {rows:?}"
     );
+    assert_eq!(rows.len(), 1, "the attachment is recorded as an asset");
     Ok(())
 }
 
