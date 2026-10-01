@@ -2330,12 +2330,28 @@ mod tests {
 
     /// The way back from another deployment: its answer rides the
     /// fragment, which only the page can read, so the pane hands the whole
-    /// address to the worker as `sign-in-via-return`. Once: a re-render
-    /// must not hand the same grant over twice.
+    /// address to the worker as `sign-in-via-return`. Not before the
+    /// display around it is bound: the binding that turns the event into
+    /// `tonk:finish-sign-in-via` is installed with it, and an answer handed
+    /// over earlier is lost, leaving the page on "Signing in…" for good.
+    /// Once: a re-render must not hand the same grant over twice.
     #[dialog_common::test]
-    async fn it_hands_another_deployments_answer_to_the_worker_once() {
-        // On the document, before the element mounts: its first refresh
-        // can run during the upgrade itself.
+    async fn it_hands_another_deployments_answer_to_the_worker_once_bound() {
+        install_fake_host();
+        install();
+        define_from_library(PROFILE_LIBRARY, "account-settings");
+        set_context(&[
+            ("origin", "https://tonk.host"),
+            ("path", "/settings/link"),
+            ("search", "?via=https%3A%2F%2Ftonk.network&request=r1"),
+            ("hash", "#authorize=abc"),
+        ]);
+        let display = document().create_element("tonk-display").expect("display");
+        let host = document().create_element("account-settings").expect("host");
+        host.set_inner_html(
+            r#"<div class="pane" data-pane="account"></div><div class="pane" data-pane="via" hidden><b data-via-origin></b><button type="button" data-via-continue data-via="">continue</button><span hidden data-via-return></span></div><p data-ceremony-status hidden></p>"#,
+        );
+        display.append_child(&host).expect("nest");
         let answers = js_sys::Array::new();
         let recorded = answers.clone();
         let listener =
@@ -2343,23 +2359,19 @@ mod tests {
                 let href = Reflect::get(&event.detail(), &"href".into()).unwrap_or_default();
                 recorded.push(&href);
             });
-        document()
+        display
             .add_event_listener_with_callback(
                 "sign-in-via-return",
                 listener.as_ref().unchecked_ref(),
             )
             .expect("listen");
-        set_context(&[
-            ("origin", "https://tonk.host"),
-            ("path", "/settings/link"),
-            ("search", "?via=https%3A%2F%2Ftonk.network&request=r1"),
-            ("hash", "#authorize=abc"),
-        ]);
-        let host = account_settings(
-            r#"<div class="pane" data-pane="account"></div><div class="pane" data-pane="via" hidden><b data-via-origin></b><button type="button" data-via-continue data-via="">continue</button><span hidden data-via-return></span></div><p data-ceremony-status hidden></p>"#,
-        );
+        document()
+            .body()
+            .expect("body")
+            .append_child(&display)
+            .expect("attach");
         settle_until(|| defined("account-settings")).await;
-        settle_until(|| answers.length() >= 1).await;
+        settle_until(|| text_of(&host, "[data-ceremony-status]") == "Signing in…").await;
 
         let via = host
             .query_selector("[data-pane=\"via\"]")
@@ -2367,13 +2379,6 @@ mod tests {
             .expect("the via pane");
         assert!(!via.has_attribute("hidden"), "the via pane is shown");
         assert_eq!(text_of(&host, "[data-via-origin]"), "https://tonk.network");
-        assert_eq!(
-            answers.get(0).as_string().as_deref(),
-            Some(
-                "https://tonk.host/settings/link?via=https%3A%2F%2Ftonk.network&request=r1#authorize=abc"
-            ),
-            "the worker gets the whole address, fragment and all"
-        );
         let go = host
             .query_selector("[data-via-continue]")
             .expect("query")
@@ -2381,6 +2386,22 @@ mod tests {
         assert!(
             go.has_attribute("hidden"),
             "with an answer in hand there is nothing to continue"
+        );
+        settle_briefly().await;
+        assert_eq!(
+            answers.length(),
+            0,
+            "nothing is handed over before the binding that receives it exists"
+        );
+
+        let _ = display.set_attribute("data-bound", "");
+        settle_until(|| answers.length() >= 1).await;
+        assert_eq!(
+            answers.get(0).as_string().as_deref(),
+            Some(
+                "https://tonk.host/settings/link?via=https%3A%2F%2Ftonk.network&request=r1#authorize=abc"
+            ),
+            "the worker gets the whole address, fragment and all"
         );
 
         let announce =
@@ -2393,11 +2414,11 @@ mod tests {
             "a re-render does not hand the grant over again"
         );
 
-        let _ = document().remove_event_listener_with_callback(
+        let _ = display.remove_event_listener_with_callback(
             "sign-in-via-return",
             listener.as_ref().unchecked_ref(),
         );
-        host.remove();
+        display.remove();
         set_context(&[
             ("origin", "https://tonk.test"),
             ("path", "/"),

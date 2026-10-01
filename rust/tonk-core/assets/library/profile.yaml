@@ -5004,8 +5004,11 @@ element!: &account-settings
     # Show the ask, or hand the answer to the worker. The grant is in the
     # fragment, which only this page can read, so the whole address goes
     # to `tonk:finish-sign-in-via`; the worker checks it answers the
-    # request this profile made. Dispatched once per page load: a
-    # re-render must not install the same grant twice.
+    # request this profile made. Dispatched once per page load, so a
+    # re-render does not install the same grant twice, and only once the
+    # enclosing display is bound (`data-bound`): the binding that turns
+    # the event into the command is installed with it, and an answer
+    # handed over before then is lost (see `page-mount`).
     via-show: |
       (self) => {
         const via = self.viaRequest();
@@ -5023,10 +5026,22 @@ element!: &account-settings
         } else if (via.request && via.denied) {
           self.status(`${via.origin} did not approve this browser: ${via.denied}`);
         } else if (via.request && via.granted && !self.hasAttribute('data-via-finishing')) {
-          self.setAttribute('data-via-finishing', '');
           self.status('Signing in…');
-          self.querySelector('[data-via-return]')?.dispatchEvent(
-            new CustomEvent('sign-in-via-return', { bubbles: true, detail: { href: via.href } }));
+          const display = self.closest('tonk-display');
+          const hand = () => {
+            if (self.hasAttribute('data-via-finishing')) return;
+            if (!display?.hasAttribute('data-bound')) return;
+            self._viaBound?.disconnect();
+            self._viaBound = null;
+            self.setAttribute('data-via-finishing', '');
+            self.querySelector('[data-via-return]')?.dispatchEvent(
+              new CustomEvent('sign-in-via-return', { bubbles: true, detail: { href: via.href } }));
+          };
+          hand();
+          if (display && !self.hasAttribute('data-via-finishing') && !self._viaBound) {
+            self._viaBound = new MutationObserver(hand);
+            self._viaBound.observe(display, { attributes: true, attributeFilter: ['data-bound'] });
+          }
         }
         return true;
       }
@@ -5470,6 +5485,8 @@ element!: &account-settings
         self._nameReader = null;
         if (self._moved) window.removeEventListener('tonk:context', self._moved);
         self._resolved?.disconnect();
+        self._viaBound?.disconnect();
+        self._viaBound = null;
         if (self._torn) window.removeEventListener('tonk:registration-closed', self._torn);
         if (self._moveSeat) {
           window.removeEventListener('resize', self._moveSeat);
