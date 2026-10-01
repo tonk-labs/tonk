@@ -794,11 +794,6 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
         }
     };
 
-    crate::router::navigate::notify_analytics(
-        env.client(),
-        tonk_worker_api::AnalyticsEvent::SpaceCreated { space: key.clone() },
-    );
-
     // The standard library is in; the seed goes on top of it, before the
     // creator is taken into the space.
     if let Some(seed) = seed {
@@ -823,6 +818,14 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
             return;
         }
     }
+
+    crate::router::navigate::notify_analytics(
+        env.client(),
+        tonk_worker_api::AnalyticsEvent::SpaceCreated {
+            space: key.clone(),
+            template: request.template,
+        },
+    );
 
     // 2. The space is created and seeded — drop the creator into
     //    it. Same page-capability channel as the join redirect: a
