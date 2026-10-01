@@ -853,36 +853,6 @@ pub(crate) mod tests {
         }
     }
 
-    /// Answer the worker's ask for a passkey: the custody relay raises a
-    /// consent card in the TOP document, and its button runs the
-    /// assertion the virtual authenticator answers.
-    async fn use_passkey_consent(driver: &WebDriver) -> Result<()> {
-        driver.enter_default_frame().await?;
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-        while tokio::time::Instant::now() < deadline {
-            if let Ok(button) = driver.find(By::Css("#tonk-custody-continue")).await {
-                // An anchored card is seated by the guest relay a moment
-                // after it appears, and a click aimed while it moves lands
-                // where it was. Click once its place has held still.
-                let place =
-                    |rect: thirtyfour::ElementRect| (rect.x, rect.y, rect.width, rect.height);
-                let placed = place(button.rect().await?);
-                tokio::time::sleep(Duration::from_millis(150)).await;
-                if button.rect().await.map(place).ok() != Some(placed) {
-                    continue;
-                }
-                println!(
-                    "consent card before the click: {}",
-                    custody_consent_diagnostic(driver).await
-                );
-                button.click().await?;
-                return Ok(());
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        Err(anyhow!("the worker never raised its passkey consent card"))
-    }
-
     /// Content-safe state for locating a stalled command ceremony. This says
     /// whether WebAuthn was still pending, failed visibly, or the card had
     /// already gone; it carries no credential, account, or request values.
@@ -6908,8 +6878,8 @@ pub(crate) mod tests {
             );
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+        // The passkey is asked for on this click, with no card between.
         click(&driver, "[data-delete-account-submit]").await?;
-        use_passkey_consent(&driver).await?;
 
         // The purge retires this profile and rotates onto a fresh one;
         // the top page leaves for the Hub, which offers to add an
@@ -9268,7 +9238,6 @@ pub(crate) mod tests {
             expected
         );
         click(&driver, "[data-link-approve]").await?;
-        use_passkey_consent(&driver).await?;
         enter_hub(&driver).await?;
         wait_for_text_containing(
             &driver,
@@ -9327,7 +9296,8 @@ pub(crate) mod tests {
             expected
         );
 
-        click(&driver, "[data-link-approve]").await?;
+        // The passkey is asked for on the approving click itself, so the
+        // watch on what it allows goes in before that click.
         driver.enter_default_frame().await?;
         driver
             .execute(
@@ -9341,13 +9311,37 @@ pub(crate) mod tests {
                 Vec::new(),
             )
             .await?;
-        use_passkey_consent(&driver).await?;
-        let allowed = driver
-            .execute("return window.__cliLinkAllowCredentials", Vec::new())
-            .await?;
+        enter_hub(&driver).await?;
+        click(&driver, "[data-link-approve]").await?;
+        driver.enter_default_frame().await?;
+        // Read on this page: the approval ends by leaving it for the
+        // callback, where the watch is gone and reads as nothing.
+        let home = env.tonk_web.origin().ascii_serialization();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let allowed = loop {
+            let seen = driver
+                .execute(
+                    "return [location.origin, window.__cliLinkAllowCredentials]",
+                    Vec::new(),
+                )
+                .await?;
+            let seen = seen.json();
+            anyhow::ensure!(
+                seen[0] == home.as_str(),
+                "the page left before the passkey was seen being asked for: {seen}"
+            );
+            if seen[1] != "not called" {
+                break seen[1].clone();
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "approving never asked for the passkey"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        };
         assert_eq!(
-            allowed.json(),
-            &serde_json::Value::Null,
+            allowed,
+            serde_json::Value::Null,
             "CLI linking must let the passkey provider offer any credential for this account"
         );
 
@@ -9478,8 +9472,8 @@ pub(crate) mod tests {
         enter_hub(driver).await?;
         wait_for_displayed(driver, "account-settings [data-pane=\"link\"]").await?;
         wait_for_text(driver, "[data-link-return]", &here_origin).await?;
+        // One step: the click asks for the passkey, with no screen between.
         click(driver, "[data-link-approve]").await?;
-        use_passkey_consent(driver).await?;
 
         // Back on the asking origin, at home and signed in.
         let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
@@ -9489,6 +9483,11 @@ pub(crate) mod tests {
             if url.origin().ascii_serialization() == here_origin && url.path() == "/" {
                 break;
             }
+            anyhow::ensure!(
+                driver.find(By::Css("#tonk-custody-consent")).await.is_err(),
+                "approving put a second passkey screen up instead of asking on the click: {}",
+                custody_consent_diagnostic(driver).await
+            );
             if tokio::time::Instant::now() >= deadline {
                 dump_browser_log(driver, env).await;
                 // What the page said last: its status row carries the

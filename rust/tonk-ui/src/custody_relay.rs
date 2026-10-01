@@ -11,6 +11,11 @@
 //! card's button runs the assertion inside the click, saves the derived
 //! key with the root (`POST /api/identity/root`, what the worker is
 //! waiting on), and stays up to say what happened.
+//!
+//! A command the person just asserted in a guest ("approve with passkey",
+//! "delete account") already has its context and its gesture: the click.
+//! It asks for the passkey on that click, and falls back to the card only
+//! when the click no longer counts here or the first ask fails.
 
 use std::cell::{Cell, RefCell};
 
@@ -326,15 +331,71 @@ fn command_action(intent: &tonk_worker_api::CustodyIntent) -> AccountAction {
     }
 }
 
-/// Raise the top-document consent a guest-asserted command needs.
+/// Which ceremony a guest-asserted command runs: adding a passkey creates
+/// one, everything else asserts the account's.
+fn command_method(intent: &tonk_worker_api::CustodyIntent) -> &'static str {
+    match intent {
+        tonk_worker_api::CustodyIntent::AddPasskey(_) => "addPasskey",
+        _ => "usePasskey",
+    }
+}
+
+/// Whether this document holds a live user activation. A click in a guest
+/// activates every frame above it, so the click that asserted a command
+/// still counts here for a few seconds. A browser without the API reads as
+/// inactive, and gets the card.
+fn activated() -> bool {
+    web_sys::window()
+        .and_then(|window| js_sys::Reflect::get(&window.navigator(), &"userActivation".into()).ok())
+        .and_then(|activation| js_sys::Reflect::get(&activation, &"isActive".into()).ok())
+        .and_then(|active| active.as_bool())
+        .unwrap_or(false)
+}
+
+/// Ask for the passkey on the click that asserted the command: "approve
+/// with passkey" brings up the passkey, with no screen in between. The
+/// worker still owns the operation and reports its status in the settings
+/// row. When the prompt is dismissed or fails, the card offers it again
+/// and says why.
+fn assert_on_the_click(intent: tonk_worker_api::CustodyIntent, credential_id: Option<String>) {
+    if BUSY.with(|busy| busy.replace(true)) {
+        tonk_common::log!(
+            "custody: a ceremony is already up; {} not asked for",
+            intent_label(&intent)
+        );
+        return;
+    }
+    tonk_common::log!("custody: asking at once for {}", intent_label(&intent));
+    let action = command_action(&intent);
+    // Invoked here, inside the activation, and only awaited below.
+    let started = begin_with(
+        command_method(&intent),
+        intent.clone(),
+        credential_id.clone(),
+    );
+    wasm_bindgen_futures::spawn_local(async move {
+        let outcome = match started {
+            Ok(mediation) => mediation.finish().await,
+            Err(error) => Err(error),
+        };
+        BUSY.with(|busy| busy.set(false));
+        if let Err(error) = outcome {
+            report(&error.message);
+            run_command_ceremony(intent, credential_id);
+            set_card_message(&user_error::ceremony(action, &error));
+        }
+    });
+}
+
+/// Raise the top-document consent a guest-asserted command needs when the
+/// click that asserted it no longer counts here, or a first ask failed.
 ///
 /// The command starts in a sealed guest, crosses an asynchronous worker
-/// transaction, and only then reaches this document. The guest's click
-/// activation is not reliable across that boundary, so the assertion is
-/// invoked synchronously by this card's click. The worker still owns the
-/// operation and reports its status in the settings row. The assertion is
-/// pinned to the account's passkey so a browser holding several for this
-/// origin cannot answer with another account's.
+/// transaction, and only then reaches this document; an activation that
+/// expired on the way, or never reached this document, leaves the
+/// assertion to this card's click. The assertion is pinned to the
+/// account's passkey so a browser holding several for this origin cannot
+/// answer with another account's.
 fn run_command_ceremony(intent: tonk_worker_api::CustodyIntent, credential_id: Option<String>) {
     if BUSY.with(|busy| busy.replace(true)) {
         tonk_common::log!(
@@ -354,10 +415,7 @@ fn run_command_ceremony(intent: tonk_worker_api::CustodyIntent, credential_id: O
     tonk_common::log!("custody: consent card raised for {}", intent_label(&intent));
     on_click(&host, "#tonk-custody-dismiss", remove_card);
 
-    let method = match &intent {
-        tonk_worker_api::CustodyIntent::AddPasskey(_) => "addPasskey",
-        _ => "usePasskey",
-    };
+    let method = command_method(&intent);
     let action = command_action(&intent);
     on_click(&host, "#tonk-custody-continue", move || {
         set_card_text("Waiting for passkey…");
@@ -443,9 +501,10 @@ pub fn install() {
                     // Enrollment arrives mid-ceremony, on a page whose
                     // gesture is still live.
                     intent @ tonk_worker_api::CustodyIntent::Enroll(_) => mediate_custody(intent),
-                    // A command the guest asserted. Its async trip through the
-                    // worker cannot carry transient activation, so this page
-                    // asks for one explicit top-document click.
+                    // A command the guest asserted, on the click that is
+                    // still live here: ask now. Past it, the card asks for
+                    // one explicit top-document click.
+                    intent if activated() => assert_on_the_click(intent, message.credential_id),
                     intent => run_command_ceremony(intent, message.credential_id),
                 }
             }
