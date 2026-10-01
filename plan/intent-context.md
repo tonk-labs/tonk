@@ -1,27 +1,256 @@
-# Intent context: commands as attributes, arguments from context
+# Intent: commands from what was typed and what is in view
 
-Status: design, no code. The YAML below is illustrative: it shows the
-shape, and has not been run through the notation. Follows [command-palette-ubiquity.md](command-palette-ubiquity.md)
-and [command-palette-resolver.md](command-palette-resolver.md).
+Status: design, no code. The YAML is illustrative: it shows the shape and
+has not been run through the notation. Follows
+[command-palette-ubiquity.md](command-palette-ubiquity.md) and
+[command-palette-resolver.md](command-palette-resolver.md).
 
-## The claim
+## Goal
 
-A command is a combination of attributes. Commands reuse shared attributes
-(`space/target`, `member/target`, …) instead of minting their own. Context
-is data: an `intent/context` entity that describes where and when the
-palette was asked. Rules derive candidate values for attributes from that
-context. The palette proposes a command when every attribute it combines
-has a candidate, or can take what was typed.
+The system already defines commands that make things happen. The palette's
+job is to **produce those commands' claims** from what you typed and what
+is in view: the open notebook, the selected text, the time. Commands do not
+change to suit the palette.
 
-If that holds, then:
+Example: on a notebook's page, "rename to Plans" produces
+`notebook/retitle` with `subject` = the open notebook and `title` = "Plans".
+With "Plans" selected, plain "rename" produces the same thing.
 
-- `lingo/noun` and `lingo/argument` go away;
-- "this is always the space" goes away;
-- argument memory ("the bug we were just talking about") is one rule;
-- the vocabulary left is verbs, synonyms, and which word introduces which
-  attribute.
+## The model
 
-[Proof](#proof) says what would show the claim wrong.
+```
+page                          worker                                 rules
+────                          ──────                                 ─────
+open palette / keystroke
+  │ transacts
+  ▼
+intent/express ─────────────▶ parser (the command's handler)
+{ expression, input,            │ writes to the session overlay:
+  site, selection, time }       ▼
+                              the expression (snapshot + input)
+                              intent, one per command that fits ──▶ fragments on each intent
+                              { expression, command, phrases }       (subject from the route,
+                                                                      title from the selection
+palette reads intents + fragments ◀──────────────────────────────────  or from typed text)
+  → readings → Enter transacts the claim → keep a little memory
+```
+
+### `intent/express`: what the page sends
+
+A command, transacted by the palette when it opens and on every change of
+input. Its handler is the parser.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `expression` | entity | One per opening of the palette, made by the page. Every `intent/express` from that opening names the same one. |
+| `input` | text | Exactly what is typed now. |
+| `site` | entity | The tab's site *on the branch being asked*: for a space, the space frame's site, which the worker stamps onto the space branch's overlay (`router/session.rs:327`). |
+| `selection` | text, optional | The selected text, captured when the palette opens; absent when nothing is selected. |
+| `time` | float | When the palette opened. |
+
+### The expression and its intents: what the parser writes
+
+The handler writes session-overlay facts: never stored, never synced, gone
+with the tab. It writes them on the branch whose commands are being
+proposed (the space branch for space commands, the profile branch for
+profile ones).
+
+- **The expression** (`this` = the `expression` entity): `input`, `site`,
+  `selection`, `time`. The snapshot fields are written once, and `input`
+  changes as the user types.
+- **One `intent` per command the input could mean**, matched through
+  `intent/action` names. Its id is derived from the expression and the
+  command, so re-parsing updates it in place, and intents that no longer
+  fit are retracted. Fields:
+  - `expression`: the expression it came from;
+  - `command`: the command it would produce;
+  - phrases: the typed text the parser assigned to each role, e.g. goal →
+    "Plans" in "rename to Plans".
+
+The intent *is* the choice. Fragments for one command use that command's
+own attributes, so several values for one field (e.g. `go <location>`,
+one location per route) are several derived rows on one intent, not several
+entities.
+
+The parser stays code because rules can't split text into words. What it
+produces is facts, so everything after it is rules.
+
+### Fragments: what rules derive
+
+A rule derives a value for one field of one command, onto an intent for
+that command, using the command field's own attribute. Each field has a
+one-field concept for this. The notation can generate it from the command's
+fields.
+
+For `notebook/retitle` (`notebook.yaml:401`), whose fields are
+`xyz.tonk.notebook.retitle/subject` and `xyz.tonk.notebook.retitle/title`:
+
+```yaml
+rule!:
+  description: The notebook this page shows is the one being renamed.
+  assert: notebook/retitle-subject             # { subject: xyz.tonk.notebook.retitle/subject }
+  where: { this: ?intent, subject: ?notebook }
+  when:
+    - assert: intent
+      where: { this: ?intent, command: notebook/retitle, expression: ?expression }
+    - assert: intent/expression
+      where: { this: ?expression, site: ?site }
+    - assert: site
+      where: { this: ?site, concept: notebook/route }   # only notebook pages
+    - assert: notebook/route                            # notebook.yaml:276
+      where: { this: ?site, entity: ?notebook }
+
+rule!:
+  description: Selected text is a title candidate.
+  assert: notebook/retitle-title               # { title: xyz.tonk.notebook.retitle/title }
+  where: { this: ?intent, title: ?title }
+  when:
+    - assert: intent
+      where: { this: ?intent, command: notebook/retitle, expression: ?expression }
+    - assert: intent/expression
+      where: { this: ?expression, selection: ?title }
+```
+
+Rules name the commands they serve (`command: notebook/retitle`), so a
+rule only runs when its command is a live possibility.
+
+Concepts match by shape, so `notebook/route` alone would also match a site
+on another kind of page that carries an entity. The `concept` check on the
+site is what says a notebook route actually matched.
+
+### Assembling a claim
+
+Dialog does not merge these fragments into the command by itself. A
+concept's built-in rule reads stored attribute facts
+(`concept/descriptor.rs:278`, and `DeductiveRule::from` at
+`rule/deductive.rs:416`), so derived fragments are invisible to a query of
+`notebook/retitle`. The palette therefore reads each field's fragments on
+each intent and assembles readings itself. It has to anyway, because a
+partial reading ("rename *this notebook* to …", with the title still
+missing) is one where some fragments exist and others don't.
+
+A reading with every field filled carries the claim. Enter transacts it as
+a fresh command entity with those values.
+
+### Actions: how commands are named
+
+`intent/action { this: notebook/retitle, name: "rename" }` replaces
+`lingo/verb`. A command can carry a shorthand that lowers to these facts:
+
+```yaml
+command!: &notebook/retitle
+  action: [rename, retitle]
+```
+
+The fact stays the source of truth, because names can come from places
+that do not own the command: a translation, a library adding a synonym, or
+a user's own alias.
+
+### Memory
+
+Kept small:
+
+- **which command was chosen for a typed prefix**, as `lingo/choice` does
+  today (renamed under `intent/`);
+- **the last value used per field**, for "the notebook you were just
+  working on". To be decided when it is built.
+
+The full expression is not kept.
+
+### Lifecycle
+
+| Moment | What happens |
+| --- | --- |
+| Open | The page makes an `expression` id and transacts `intent/express` with the snapshot. |
+| Keystroke | `intent/express` again, with the new `input`. The parser updates the expression and its intents. Rules re-derive. |
+| Enter | The chosen claim is transacted. A little memory is recorded. |
+| Escape, or the tab goes | The overlay facts go. |
+
+## Naming
+
+The tonk side is `intent`: the `tonk-lingo` crate, the `lingo/suggest`
+query (replaced by the above) and the `tonk.dialog.lingo.*` vocabulary all
+move to it. `dialog-lingo` keeps its name: it parses language with no
+dialog dependencies, and is not specific to this use. Nothing has shipped,
+so renames are cheap now.
+
+## Speed, and a fallback
+
+Every keystroke becomes a transact, a parse, an overlay write, rule
+evaluation and reads. Today it is one query. Ubiquity debounced input at
+50 ms (`inputDelay`), which is a reasonable budget for the worker's part.
+
+**Measure first:** keystroke to rows, in the worker, on a space with
+realistic content, split by stage.
+
+**If it is too slow, emulate the same model without the overlay.** The
+query handler opens a transaction on the branch, stages the expression and
+its intents, queries the fragments through `Transaction::query()` (which
+reads staged writes; `dialog-repository`'s `transaction.rs:143`), and drops
+the transaction without committing. The facts and rules are the same;
+only where the facts live changes. So the rules written now keep working
+when the overlay path is fast enough to replace it.
+
+## Open questions
+
+1. **Typed text versus the selection.** With "Plans" selected and "to
+   Notes" typed, both are title fragments. Which wins: typed, then
+   selection, then nothing? Ubiquity boosted the selection (×1.2), which
+   suits the thing acted on but not a new value.
+2. **Empty input.** If every rule requires `intent.command`, an empty
+   palette derives nothing, and "what can I do with this open notebook?"
+   has no answer. Either the parser proposes every command when the input
+   is empty, or some rules don't require a command.
+3. **Phrases.** How typed text per role is modelled, and whether the
+   parser can produce several splits for one command.
+4. **The route check.** How a library reference (`notebook/route`) compares
+   with the value the site stamp writes in `site/concept`.
+5. **Comparisons.** `text/length` exists in dialog. A `>` premise does not
+   appear in its formula list. Recording the selection only when there is
+   one avoids needing it.
+6. **Confidence.** Scores order readings but don't say how sure the
+   palette is. A margin between the top readings, and a higher bar for
+   destructive commands, would decide when to fill without asking
+   ([lessons](#what-to-learn-from-structured-decision-models)).
+
+## First build
+
+`notebook/retitle` end to end:
+
+1. The `intent/express` command and its handler (the existing parser),
+   writing the expression and intents.
+2. The two rules above.
+3. The palette reading fragments and assembling readings.
+4. Tests: "rename to Plans" on a notebook page; plain "rename" with "Plans"
+   selected; the same input on a page that isn't a notebook proposes no
+   retitle.
+5. The timing measurement, before building more on it.
+
+# Background
+
+The research behind the model.
+
+## Mapping to tonk
+
+What exists today, and where it would come from.
+
+| Context | Ubiquity | tonk today | In this model |
+| --- | --- | --- | --- |
+| Where the user is | focused window/tab, URL | `site:<client>` in the profile's session overlay: `path`, `anchor`, `space` (text), `branch`, `branch-entity`, `replica`, `route`, `concept`, `profile-branch` | `intent/express`'s `site` |
+| What the user is looking at | focused document | route params on the site: `site/entity`, `site/model`, `site/view` | read through `site` by rules (e.g. `notebook/route`) |
+| What the user selected | selection text/HTML | **nothing** | `intent/express`'s `selection`, captured when the palette opens |
+| What the user typed | input | the `input` term of `lingo/suggest` | `intent/express`'s `input` |
+| Now | `new Date()` | the `now` term | `intent/express`'s `time` |
+| Who is asking | logins | the profile; operator | not yet needed |
+| Where output goes | focused element | a command handler's `site/request` on the tab (the bar acts) | out of scope here |
+| Verb memory | `suggestion_memory` | `lingo/choice` facts on the profile | kept, renamed under `intent/` |
+| Argument memory | (none; `CreateAdjective` by hand) | **nothing**: commands are transient concepts, so a run leaves no facts behind | open: a little is kept per run (see [Memory](#memory)) |
+| Locale | parser language | none | `locale`, later |
+| Collections (tabs, history, contacts) | noun types | concept queries on the branch | no change: rules read them like any other data |
+
+The last row is the main departure from Ubiquity. A noun type mixed two
+jobs: reading the world, and reading the context. Here the world is
+already data, so only the context needs a home.
 
 ## What Ubiquity used as context
 
@@ -97,6 +326,9 @@ search.
 
 ## What tonk's commands look like
 
+The model above doesn't depend on commands sharing attributes. This
+measurement is kept for if field reuse is considered later.
+
 The 46 `command!` declarations in the library today:
 
 - **Argument counts, not counting `time` nonces:** 8 take none, 18 take
@@ -142,214 +374,6 @@ and [Adjectives](https://github.com/Gozala/gozala.github.com/blob/main/deprecate
 - **Clipboard and screenshot** as candidates for `attach`.
 - **Commands scoped by target** (`bugzilla get`, `bugzilla comment`).
 
-## Mapping to tonk
-
-What exists today, and where it would come from.
-
-| Context | Ubiquity | tonk today | `intent/context` |
-| --- | --- | --- | --- |
-| Where the user is | focused window/tab, URL | `site:<client>` in the profile's session overlay: `path`, `anchor`, `space` (text), `branch`, `branch-entity`, `replica`, `route`, `concept`, `profile-branch` | `site` → the tab's site entity |
-| What the user is looking at | focused document | route params on the site: `site/entity`, `site/model`, `site/view` | read through `site`; `focus` for an entity the view marks |
-| What the user selected | selection text/HTML | **nothing** | `selection` (text) and `selected` (entities), written by the page when it opens the palette |
-| What the user typed | input | the `input` term of `lingo/suggest` | `input` |
-| Now | `new Date()` | the `now` term | `time` |
-| Who is asking | logins | the profile; operator | `profile` (the profile entity) |
-| Where output goes | focused element | a command handler's `site/request` on the tab (the bar acts) | out of scope here |
-| Verb memory | `suggestion_memory` | `lingo/choice` facts on the profile | unchanged |
-| Argument memory | (none; `CreateAdjective` by hand) | **nothing**: commands are transient concepts, so a run leaves no facts behind | `intent/used`: each run records the attribute values it was given |
-| Locale | parser language | none | `locale`, later |
-| Collections (tabs, history, contacts) | noun types | concept queries on the branch | no change: collections are candidates of a rule, not context |
-
-The last row is the main departure from Ubiquity. A noun type mixed two
-jobs: reading the world, and reading the context. Here the world is
-already data, so only the context needs a home.
-
-### The concept
-
-```yaml
-concept!: &intent/context
-  this: tonk:intent/context
-  description: Where, when and by whom the palette was asked.
-  with:
-    site:      { the: tonk.dialog.intent/site, as: entity }       # site:<client>
-    input:     { the: tonk.dialog.intent/input, as: text }
-    time:      { the: tonk.dialog.intent/time, as: float }
-    selection: { the: tonk.dialog.intent/selection, as: text, optional: true }
-    selected:  { the: tonk.dialog.intent/selected, as: entity, optional: true }  # many
-```
-
-It is written as session-overlay facts, like the site stamp. Nothing is
-stored, and it goes when the tab does. One context entity per palette
-session (`intent:<client>`), updated as the user types.
-
-## How the claim manifests
-
-### Commands combine shared attributes
-
-Today every command mints its own attribute, so nothing can be said about
-"a space argument" in general:
-
-```yaml
-# today
-attribute!: &rename-space/space { the: xyz.tonk.rename-repository/space, as: entity }
-attribute!: &pause-sync/space   { the: xyz.tonk.pause-sync/space,         as: entity }
-```
-
-With a shared attribute, both commands say "a space":
-
-```yaml
-attribute!: &space/target
-  description: The space a command acts on.
-  the: xyz.tonk.space/target
-  as: entity
-
-command!: &tonk/rename-repository
-  with: { space: space/target, name: name/text }
-
-command!: &tonk/pause-sync
-  with: { space: space/target }
-```
-
-The attribute doubles as the role. "Move X to Y" is `move/from` and `move/to`,
-two attributes. So lingo's roles reduce to which word introduces which
-attribute ("to" → `name/text`), and that fact is shared too.
-
-### Candidates come from rules over the context
-
-A candidate is a value for a shared attribute, given a context. Dialog
-rules conclude concepts, so a candidate is a small derived concept:
-
-```yaml
-concept!: &candidate/space
-  with:
-    context: { the: tonk.dialog.candidate/context, as: entity }
-    space:   { the: xyz.tonk.space/target, as: entity }
-    weight:  { the: tonk.dialog.candidate/weight, as: float }
-
-# the space the asking tab is on
-rule!:
-  assert: candidate/space
-  when:
-    - assert: intent/context
-      where: { this: ?context, site: ?site }
-    - assert: site
-      where: { this: ?site, space-entity: ?space }   # see "gaps"
-  # weight 1.0
-
-# any space this profile holds
-rule!:
-  assert: candidate/space
-  when:
-    - assert: intent/context
-      where: { this: ?context }
-    - assert: tonk/repository
-      where: { this: ?space }
-  # weight 0.3
-```
-
-One pair of rules serves rename, pause-sync, view-members and every later
-command that takes `space/target`. The rule that says "the current space" is
-what replaces the hard-coded `this`.
-
-### Dependencies are joins, or branches
-
-Where both values are on one branch, a dependency is a join: a rule that
-reads one candidate to derive another. That is `BugById` depending on
-`Connection`, without a `dependencies` array or a `reliable` getter. No
-connection candidate means no bug candidate.
-
-The case tonk has first is different. `member` (`core.yaml:806`) has no
-space field: a space's roster lives on that space's own branch. So
-"a member of *this* space" is not a join. It is the `member` rows of the
-branch the candidate space names:
-
-```yaml
-# on a space branch: every member here is a candidate
-rule!:
-  assert: candidate/member
-  when:
-    - assert: intent/context
-      where: { this: ?context }
-    - assert: member
-      where: { this: ?row, member: ?member }
-```
-
-The dependency on the space is carried by *which branch is asked*. That
-works for the space the tab is on, since the palette already queries that
-branch. It does not work for "a member of the space I mentioned two words
-ago", which would need the palette to query a branch chosen by an earlier
-argument. That is gap 1 again, in its sharpest form.
-
-### Argument memory is a rule over what was used
-
-Emacs keeps two things apart, and so should we:
-- **past values** of an argument kind (`M-p`, one history list per kind);
-- **likely values** from the context ("future history" on `M-n`: the file
-  or URL at point).
-
-It also keeps whole invocations with their arguments, so they can be
-replayed (`command-history`). Here, likely values are the context rules
-above. Past values are a record of each run and the values it was given:
-
-```yaml
-concept!: &intent/used
-  with:
-    attribute: { the: tonk.dialog.intent.used/attribute, as: text }
-    value:     { the: tonk.dialog.intent.used/value, as: entity }
-    time:      { the: tonk.dialog.intent.used/time, as: float }
-```
-
-and one rule per shared attribute turns that record into candidates, ranked
-by recency. Because the attribute is shared, the space you renamed is a
-candidate for the next `pause sync`. That is the "remembers whatever I'm
-discussing" behaviour, and it needs nothing per command.
-
-### What the palette does with it
-
-There are two ways in, and they use the same index.
-
-**Verb first.** For each command whose verb matches what was typed:
-
-1. Read its attributes.
-2. For each one, take the candidates (from rules), or the typed text if the
-   attribute is text.
-3. If every attribute has a value, propose the reading with the
-   best-weighted values. If exactly one candidate exists, use it without
-   asking.
-4. Otherwise, show the reading with the missing attribute as a placeholder.
-   A command is shown before its arguments are resolved, as a sentence with
-   slots ("rename *space* to …"), and the rest are asked for in turn.
-
-**Noun first.** When what was typed matches a thing rather than a verb, or
-the context has a selected or focused entity: find which shared attributes
-that entity can fill, and list the commands that take them. This is the
-attribute → commands index inverted. Shared attributes give it for free;
-per-command attributes can't. It matters because users type nouns
-([Prior art](#prior-art)).
-
-In both directions the candidate that makes a command proposable is the
-value it runs with. There is no separate "is this applicable" check that
-the handler then has to repeat.
-
-Inapplicable commands are ranked lower, not hidden, and "take what was
-typed as text" is always available. Hiding hurts discovery: Emacs leaves
-mode filtering off in `M-x` by default for that reason.
-
-The parser keeps what it is good at: splitting the input into verb and
-delimited arguments, and scoring. It stops being where nouns are resolved.
-
-## What it replaces
-
-| Today | With this |
-| --- | --- |
-| `lingo/argument {command, field, role, noun}`, one per field | gone: the field's attribute is the role, and rules supply candidates |
-| `lingo/noun` | gone: candidates are rule results |
-| `lingo/role` | a word per shared attribute ("to" → `name/text`) |
-| `lingo/verb` | stays: verbs and synonyms |
-| the `this` term, always the space | `intent/context` plus rules |
-| `noun()` in `lingo.rs`: every instance of a concept, plus a `label` facet | candidate rules; labels still from the `label` view facet |
-| `role: lingo/now` time fields | still needed, and still a workaround (see gaps) |
-
 ## Prior art
 
 From the docs and sources of Quicksilver, Alfred, LaunchBar, Raycast, VS
@@ -368,7 +392,7 @@ the clipboard, time, the last result, and the typed text.
   selection
   ([Finder_Selection.md](https://github.com/quicksilver/Documentation/blob/main/Finder_Selection.md)).
   LaunchBar's Instant Send and Embark take the target once, when invoked.
-  `intent/context` is written once when the palette opens, and updated
+  `intent/express`'s snapshot is captured once when the palette opens, and updated
   only by typing.
 - **Applicability and the argument must be one fact.** VS Code's palette
   passes *no* arguments to a command. A `when` clause decides whether it
@@ -463,7 +487,7 @@ palette.
 1. **The situation is one structured object.** Its `state` is a single JSON
    value holding everything relevant, kept apart from the questions asked
    about it ([State](https://docs.typesafe.ai/concepts/state)). That is
-   `intent/context`: facts about the situation in one place, and the
+   the expression: facts about the situation in one place, and the
    schema (commands, attributes) as the questions.
 2. **Decisions are closed, typed, described choice sets.** A `Choice` is
    one of named options, each with a description
@@ -498,74 +522,3 @@ palette.
    fix the workflow and compare answers on recorded inputs. For us: a
    table of `(context, input) → expected command and arguments`, run as a
    test, so ranking changes are measured rather than eyeballed.
-
-## Gaps
-
-These need resolving before or during the proof:
-
-1. **Context lives on the profile; candidates often live on the space.**
-   `site:<client>` is in the profile's session overlay. Members, documents
-   and other per-space data are on the space branch. Dialog rules do not
-   join across branches. The fix that keeps "context is data": write
-   `intent:<client>` into the session overlay of *each* branch the palette
-   queries. The palette already queries both and merges.
-2. **`site/space` is text.** It is a repository name, not an entity, so a
-   rule can't use it as `space/target`. The site stamp needs an
-   entity-valued field for the space.
-3. **Commands are transient.** A run leaves no facts, so argument memory
-   needs `intent/used` to be written explicitly, as `lingo/choice` is today.
-4. **Nothing records a selection.** The page would write it when it opens
-   the palette. Without it, there is no anaphora and no noun-first.
-5. **Weights.** Rules derive facts, not scores. A weight attribute on the
-   candidate works, but two rules deriving the same value with different
-   weights produce two rows. The palette takes the max. That is acceptable,
-   but it is the palette's job, not a rule's.
-6. **Re-fire timestamps.** `role: lingo/now` exists because a command with
-   the same values would not fire twice. That is an engine question, not a
-   language one. Keep it until the engine answers it.
-7. **Migration.** Moving existing commands to shared attributes changes
-   their shape. It is cheap for the transient bar commands, but any command
-   whose claim another device reads has to move with care.
-
-## Proof
-
-Show it on two commands that should share an attribute, with rules and no
-per-command glue. If per-command exceptions creep in, the claim is wrong.
-
-A test in `tonk-worker` (next to `router::lingo`), on a fixture library:
-
-1. **Shared attribute, one rule.** `rename-space` and `pause-sync` both take
-   `space/target`. One context rule ("the tab's space") yields the same
-   candidate for both, and the palette proposes both, filled, for empty
-   input.
-2. **Dependency.** Two cases:
-   - **Same branch:** `block/insert` takes a `notebook` and `prev`/`next`
-     blocks. With `block/target` shared, `prev` and `next` candidates come
-     from a join rule over the chosen notebook's blocks. Without a notebook
-     candidate, there are no block candidates.
-   - **Across branches:** `expel member` takes `member/target`. Its
-     candidates are the members of the tab's space, from that space's
-     branch. A member of a space named by an earlier argument is expected
-     to fail, and the test records how.
-3. **Memory crosses commands.** Run `rename <space B> to X` from a tab on
-   space A. A following `pause sync` ranks space B above the tab's space A
-   only if the memory rule weighs recency above location. The test pins
-   whichever order we decide. The point is that it needs no code per
-   command.
-4. **Ask only when needed.** With one candidate, the claim is complete.
-   With two, the reading carries a placeholder and both candidates.
-5. **Noun first.** With a notebook as the focused entity and no input, the
-   proposals are the commands that take `notebook/target` (retitle, insert
-   block, …), found by the inverted index and not by any per-command fact.
-
-Each check reads facts with ordinary concept queries. No Rust is written
-per command.
-
-**What would falsify it:**
-
-- **A command that needs a rule nobody else can use.** If every command
-  ends up with its own candidate rule, shared attributes buy nothing over
-  `lingo/argument`.
-- **Gap 1 not closing.** If cross-branch context can't be expressed as
-  overlay facts, context stops being data, and the palette is back to
-  passing it in by hand.
