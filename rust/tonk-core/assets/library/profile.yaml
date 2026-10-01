@@ -5588,55 +5588,55 @@ element!: &account-settings
 # The command palette's schema, as in the core library: this library lowers
 # on its own, so it declares the same four concepts (same attributes, so the
 # same concepts) for the profile's commands. See core.yaml for the prose.
-concept!: &lingo/verb
+concept!: &intent/action
   description: Words that say a command. Asserted on the command itself.
   with:
     name:
       description: A word or phrase the command answers to.
-      the: tonk.dialog.lingo.verb/name
+      the: tonk.dialog.intent.action/name
       cardinality: many
       as: text
 
-concept!: &lingo/noun
+concept!: &intent/noun
   description: Words for a kind of thing. Asserted on the concept itself.
   with:
     name:
       description: A word naming the concept, shown for an empty argument.
-      the: tonk.dialog.lingo.noun/name
+      the: tonk.dialog.intent.noun/name
       cardinality: many
       as: text
 
-concept!: &lingo/role
+concept!: &intent/role
   description: A grammatical role an argument can play.
   with:
     name:
       description: The role's name in the grammar (object, goal, source, ...).
-      the: tonk.dialog.lingo.role/name
+      the: tonk.dialog.intent.role/name
       cardinality: one
       as: text
 
-concept!: &lingo/argument
+concept!: &intent/argument
   description: How one field of a command is filled from what was typed.
   with:
     command:
       description: The command the field belongs to.
-      the: tonk.dialog.lingo.argument/command
+      the: tonk.dialog.intent.argument/command
       cardinality: one
       as: entity
     field:
       description: The field's attribute.
-      the: tonk.dialog.lingo.argument/field
+      the: tonk.dialog.intent.argument/field
       cardinality: one
       as: entity
     role:
       description: The role that fills it.
-      the: tonk.dialog.lingo.argument/role
+      the: tonk.dialog.intent.argument/role
       cardinality: one
       as: entity
   maybe:
     noun:
       description: The concept whose rows may fill it. Absent for text fields.
-      the: tonk.dialog.lingo.argument/noun
+      the: tonk.dialog.intent.argument/noun
       cardinality: one
       as: entity
 
@@ -5644,35 +5644,35 @@ concept!: &lingo/argument
 # verb words. One fact per run rather than a counter, so runs on two devices
 # both count; the palette counts them. Kept on the profile, because it is
 # the person's habit, not the space's.
-concept!: &lingo/choice
+concept!: &intent/choice
   description: A command run from the palette, and the words typed for its verb.
   with:
     command:
       description: The command that was run.
-      the: tonk.dialog.lingo.choice/command
+      the: tonk.dialog.intent.choice/command
       cardinality: one
       as: entity
     input:
       description: The words typed for the verb; empty when it was suggested from a noun.
-      the: tonk.dialog.lingo.choice/input
+      the: tonk.dialog.intent.choice/input
       cardinality: one
       as: text
     time:
       description: When it was run, so two runs are two choices.
-      the: tonk.dialog.lingo.choice/time
+      the: tonk.dialog.intent.choice/time
       cardinality: one
       as: float
 
-lingo/role!: &lingo/object
+intent/role!: &intent/object
   name: "object"
 
-lingo/role!: &lingo/goal
+intent/role!: &intent/goal
   name: "goal"
 
 # Not a grammatical role: the moment the command is run. Nothing typed
 # fills it; the palette does, the way an event's `.timeStamp` fills a
 # button's command. For the nonce fields that keep two runs distinct.
-lingo/role!: &lingo/now
+intent/role!: &intent/now
   name: "now"
 
 # The directory row IS the repository's own entity (its subject DID), which
@@ -5683,109 +5683,109 @@ view!:
     label: |
       {name}
 
-lingo/noun!:
+intent/noun!:
   this: space
   name: "space"
 
 # The FABB's commands.
-lingo/verb!:
+intent/action!:
   this: tonk/pause-sync
   name: "pause sync"
 
-lingo/verb!:
+intent/action!:
   this: tonk/pause-sync
   name: "resume sync"
 
-lingo/argument!:
+intent/argument!:
   command: tonk/pause-sync
   field: pause-sync/space
-  role: lingo/object
+  role: intent/object
   noun: space
 
-lingo/argument!:
+intent/argument!:
   command: tonk/pause-sync
   field: pause-sync/time
-  role: lingo/now
+  role: intent/now
 
-lingo/verb!:
+intent/action!:
   this: tonk/rename-repository
   name: "rename"
 
-lingo/verb!:
+intent/action!:
   this: tonk/rename-repository
   name: "rename space"
 
-lingo/argument!:
+intent/argument!:
   command: tonk/rename-repository
   field: rename-space/space
-  role: lingo/object
+  role: intent/object
   noun: space
 
-lingo/argument!:
+intent/argument!:
   command: tonk/rename-repository
   field: rename-space/name
-  role: lingo/goal
+  role: intent/goal
 
-lingo/verb!:
+intent/action!:
   this: tonk/home
   name: "home"
 
-lingo/verb!:
+intent/action!:
   this: tonk/home
   name: "go home"
 
-lingo/argument!:
+intent/argument!:
   command: tonk/home
   field: home/time
-  role: lingo/now
+  role: intent/now
 
-lingo/verb!:
+intent/action!:
   this: tonk/home
   name: "go to tonk home"
 
-lingo/verb!:
+intent/action!:
   this: account/add
   name: "add an account"
 
-lingo/argument!:
+intent/argument!:
   command: account/add
   field: add-account/time
-  role: lingo/now
+  role: intent/now
 
-lingo/verb!:
+intent/action!:
   this: space/share-link
   name: "copy share link"
 
-lingo/verb!:
+intent/action!:
   this: space/share-link
   name: "share"
 
-lingo/argument!:
+intent/argument!:
   command: space/share-link
   field: share-link/time
-  role: lingo/now
+  role: intent/now
 
-lingo/verb!:
+intent/action!:
   this: space/view-members
   name: "view members"
 
-lingo/verb!:
+intent/action!:
   this: space/view-members
   name: "members"
 
-lingo/argument!:
+intent/argument!:
   command: space/view-members
   field: view-members/time
-  role: lingo/now
+  role: intent/now
 
-lingo/verb!:
+intent/action!:
   this: agent/connect
   name: "connect agent"
 
-lingo/argument!:
+intent/argument!:
   command: agent/connect
   field: connect-agent/time
-  role: lingo/now
+  role: intent/now
 
 # The command palette is the FABB's command mode. Cmd/Ctrl+K (or
 # Cmd/Ctrl+Shift+P) puts the bar in it (`commanding` on `<tonk-fab>`): the
@@ -5800,12 +5800,12 @@ lingo/argument!:
 # leaves; so does leaving the line.
 #
 # It only queries and transacts. What the line could mean is the named query
-# `lingo/suggest` — `{input, this, now}` in, one row per reading out —
+# `intent/suggest` — `{input, this, now}` in, one row per reading out —
 # asked of the space branch and of the profile, whose readings are merged by
 # score. Running one transacts its `claim` on the branch it came from, as a
-# button bound to that command would, and records a `lingo/choice` on the
-# profile. What can be said is data (`lingo/verb`, `lingo/argument`,
-# `lingo/role`, `lingo/noun`); the query reads it.
+# button bound to that command would, and records a `intent/choice` on the
+# profile. What can be said is data (`intent/action`, `intent/argument`,
+# `intent/role`, `intent/noun`); the query reads it.
 #
 # Keys pressed inside the space's own frame are relayed to this document by
 # the portal bridge, so the shortcut works wherever focus is.
@@ -6011,7 +6011,7 @@ element!: &command-palette
         if (!space || !window.tonk || !(fab && fab.hasAttribute('commanding'))) return;
         const branches = [`main@${space}`, self.getAttribute('profile')].filter(Boolean);
         const body = {
-          predicate: 'lingo/suggest',
+          predicate: 'intent/suggest',
           // Nothing typed lists everything that runs as it is; a line, its best.
           terms: { input: typed, this: space, now: Date.now(), max: typed ? 5 : 12 },
         };
@@ -6035,7 +6035,7 @@ element!: &command-palette
             .then((found) => (Array.isArray(found) ? found : (found && found.rows) || [])
               .map((row) => read(branch, row)))
             .catch((error) => {
-              console.warn('<command-palette> lingo/suggest failed on', branch, error);
+              console.warn('<command-palette> intent/suggest failed on', branch, error);
               return [];
             })));
         if (self.__asked !== asked || !fab.hasAttribute('commanding')) return;
@@ -6099,7 +6099,7 @@ element!: &command-palette
       (self, proposal) => {
         const profile = self.getAttribute('profile');
         if (!profile) return;
-        const field = (name, as) => ({ the: `tonk.dialog.lingo.choice/${name}`, as });
+        const field = (name, as) => ({ the: `tonk.dialog.intent.choice/${name}`, as });
         window.tonk.transact({ claims: [{ op: 'assert', application: {
           predicate: { kind: 'durable', concept: { with: {
             command: field('command', 'Entity'), input: field('input', 'Text'), time: field('time', 'Float'),

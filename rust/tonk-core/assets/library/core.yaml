@@ -846,7 +846,7 @@ concept!: &member
 # construction, so the name can just say what it means.
 #
 # The field is a named attribute rather than an inline one so the palette's
-# `lingo/argument` below can point at it. The descriptor is the same, so
+# `intent/argument` below can point at it. The descriptor is the same, so
 # the command's identity is unchanged.
 attribute!: &expel-member/member
   description: The DID of the member to remove.
@@ -2585,95 +2585,95 @@ element!: &drag-frame
 # `<command-palette>` reads four relations and parses typed text against
 # them, the way Ubiquity's Parser 2 did:
 #
-# - `lingo/verb` — words that say a command, asserted on the command
+# - `intent/action` — words that say a command, asserted on the command
 #   itself, one assertion per word.
-# - `lingo/argument` — which grammatical role fills one of a command's
+# - `intent/argument` — which grammatical role fills one of a command's
 #   fields (the field is its attribute), and which concept's rows may
 #   fill it. An argument without a noun takes typed text.
-# - `lingo/noun` — words for a concept, shown for an empty argument
+# - `intent/noun` — words for a concept, shown for an empty argument
 #   ("expel [member]").
-# - `lingo/role` — the grammar's slots. The words that introduce them
+# - `intent/role` — the grammar's slots. The words that introduce them
 #   ("to" for goal) belong to the parser's grammar for a language.
 #
 # A noun's rows are matched by their `label` facet, so every concept an
 # argument names needs one. See plan/command-palette-sketch.md.
-concept!: &lingo/verb
+concept!: &intent/action
   description: Words that say a command. Asserted on the command itself.
   with:
     name:
       description: A word or phrase the command answers to.
-      the: tonk.dialog.lingo.verb/name
+      the: tonk.dialog.intent.action/name
       cardinality: many
       as: text
 
-concept!: &lingo/noun
+concept!: &intent/noun
   description: Words for a kind of thing. Asserted on the concept itself.
   with:
     name:
       description: A word naming the concept, shown for an empty argument.
-      the: tonk.dialog.lingo.noun/name
+      the: tonk.dialog.intent.noun/name
       cardinality: many
       as: text
 
-concept!: &lingo/role
+concept!: &intent/role
   description: A grammatical role an argument can play.
   with:
     name:
       description: The role's name in the grammar (object, goal, source, ...).
-      the: tonk.dialog.lingo.role/name
+      the: tonk.dialog.intent.role/name
       cardinality: one
       as: text
 
-concept!: &lingo/argument
+concept!: &intent/argument
   description: How one field of a command is filled from what was typed.
   with:
     command:
       description: The command the field belongs to.
-      the: tonk.dialog.lingo.argument/command
+      the: tonk.dialog.intent.argument/command
       cardinality: one
       as: entity
     field:
       description: The field's attribute.
-      the: tonk.dialog.lingo.argument/field
+      the: tonk.dialog.intent.argument/field
       cardinality: one
       as: entity
     role:
       description: The role that fills it.
-      the: tonk.dialog.lingo.argument/role
+      the: tonk.dialog.intent.argument/role
       cardinality: one
       as: entity
   maybe:
     noun:
       description: The concept whose rows may fill it. Absent for text fields.
-      the: tonk.dialog.lingo.argument/noun
+      the: tonk.dialog.intent.argument/noun
       cardinality: one
       as: entity
 
-lingo/role!: &lingo/object
+intent/role!: &intent/object
   name: "object"
 
-lingo/role!: &lingo/goal
+intent/role!: &intent/goal
   name: "goal"
 
-lingo/role!: &lingo/source
+intent/role!: &intent/source
   name: "source"
 
-lingo/role!: &lingo/location
+intent/role!: &intent/location
   name: "location"
 
-lingo/role!: &lingo/time
+intent/role!: &intent/time
   name: "time"
 
-lingo/role!: &lingo/instrument
+intent/role!: &intent/instrument
   name: "instrument"
 
-lingo/role!: &lingo/format
+intent/role!: &intent/format
   name: "format"
 
-lingo/role!: &lingo/modifier
+intent/role!: &intent/modifier
   name: "modifier"
 
-lingo/role!: &lingo/alias
+intent/role!: &intent/alias
   name: "alias"
 
 # A member as the account `member/expel` wants. A roster row is the
@@ -2703,26 +2703,26 @@ view!:
     label: |
       {name}
 
-lingo/noun!:
+intent/noun!:
   this: member/account
   name: "member"
 
-lingo/noun!:
+intent/noun!:
   this: tonk/repository
   name: "space"
 
-lingo/verb!:
+intent/action!:
   this: member/expel
   name: "expel"
 
-lingo/verb!:
+intent/action!:
   this: member/expel
   name: "remove member"
 
-lingo/argument!:
+intent/argument!:
   command: member/expel
   field: expel-member/member
-  role: lingo/object
+  role: intent/object
   noun: member/account
 
 # `tonk/rename-repository` has no verb here: the profile's own rename

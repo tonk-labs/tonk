@@ -31,7 +31,7 @@ serde_ipld_dagjson = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tonk-evaluator = { workspace = true }
-tonk-lingo = { workspace = true }
+tonk-intent = { workspace = true }
 tonk-schema = { workspace = true }
 web-time = { workspace = true }
 

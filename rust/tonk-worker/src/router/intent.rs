@@ -1,4 +1,4 @@
-//! `lingo/suggest` end to end: a space seeded with the core library,
+//! `intent/suggest` end to end: a space seeded with the core library,
 //! asked over the `/query` route exactly as the `<command-palette>` element
 //! asks (through the portal, which relays `window.tonk.query` there), and
 //! the reading it returns transacted.
@@ -19,20 +19,20 @@ const CORE: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
 /// The core library leaves the space's rename unsaid (the profile's says
 /// it); say it here, so a rule-handled command runs end to end.
 const RENAME: &str = r#"
-lingo/verb!:
+intent/action!:
   this: tonk/rename-repository
   name: "rename"
 
-lingo/argument!:
+intent/argument!:
   command: tonk/rename-repository
   field: rename-repository/subject
-  role: lingo/object
+  role: intent/object
   noun: tonk/repository
 
-lingo/argument!:
+intent/argument!:
   command: tonk/rename-repository
   field: rename-repository/name
-  role: lingo/goal
+  role: intent/goal
 "#;
 
 async fn send(app: &Router, method: &str, uri: &str, kind: &str, body: String) -> Value {
@@ -60,7 +60,7 @@ async fn send(app: &Router, method: &str, uri: &str, kind: &str, body: String) -
     serde_json::from_slice(&bytes).unwrap_or(Value::Null)
 }
 
-/// Ask `lingo/suggest` what `input` could mean, as the element does.
+/// Ask `intent/suggest` what `input` could mean, as the element does.
 async fn suggest(app: &Router, key: &str, input: &str, this: &str) -> Vec<Value> {
     let rows = send(
         app,
@@ -68,7 +68,7 @@ async fn suggest(app: &Router, key: &str, input: &str, this: &str) -> Vec<Value>
         &format!("/api/repository/{key}/branch/main/query"),
         "application/json",
         json!({
-            "predicate": "lingo/suggest",
+            "predicate": "intent/suggest",
             "terms": { "input": input, "this": this, "now": 1.0 }
         })
         .to_string(),
@@ -163,9 +163,9 @@ async fn it_suggests_from_a_seeded_space_and_runs_what_it_suggests() {
     );
 }
 
-/// How `lingo/suggest` scales with a noun's rows, store reads included.
+/// How `intent/suggest` scales with a noun's rows, store reads included.
 /// Run with `cargo test --release -p tonk-worker --lib -- --ignored
-/// --nocapture lingo::it_scales`.
+/// --nocapture intent::it_scales`.
 #[dialog_common::test]
 #[ignore = "timing, not a check"]
 async fn it_scales_with_candidates() {
@@ -210,7 +210,7 @@ async fn it_scales_with_candidates() {
 
 /// How one `/evaluate` of `count` rows scales. Run with `cargo test
 /// --release -p tonk-worker --lib -- --ignored --nocapture
-/// lingo::it_evaluates`.
+/// intent::it_evaluates`.
 #[dialog_common::test]
 #[ignore = "timing, not a check"]
 async fn it_evaluates_many_rows() {

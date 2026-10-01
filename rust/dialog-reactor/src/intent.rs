@@ -1,9 +1,9 @@
-//! `lingo/suggest` — what a typed command could mean, as query rows.
+//! `intent/suggest` — what a typed command could mean, as query rows.
 //!
-//! A named query (`{ "predicate": "lingo/suggest", "terms": {…} }`),
+//! A named query (`{ "predicate": "intent/suggest", "terms": {…} }`),
 //! answered here by reading the branch's palette vocabulary with ordinary
 //! concept queries and parsing with `dialog-lingo` (through
-//! [`tonk_lingo`]). The inputs are terms:
+//! [`tonk_intent`]). The inputs are terms:
 //!
 //! - `input` — what was typed; `""` asks for what can be done without
 //!   saying more (the palette's empty state).
@@ -33,15 +33,15 @@ use dialog_repository::Branch;
 use futures_util::TryStreamExt as _;
 use ipld_core::ipld::Ipld;
 use serde_json::{Value as Json, json};
-use tonk_lingo::{ConceptRows, Proposal, Request, Row, Source};
+use tonk_intent::{ConceptRows, Proposal, Request, Row, Source};
 
 use crate::env::SelectProvider;
 use crate::{Conclusion, FormulaError, Query, project};
 
 /// The query's name, and every row's `this`.
-pub const NAME: &str = "lingo/suggest";
+pub const NAME: &str = "intent/suggest";
 
-/// Rows for one `lingo/suggest` query on `branch`.
+/// Rows for one `intent/suggest` query on `branch`.
 pub async fn suggest<Env: SelectProvider>(
     branch: &Branch,
     env: &Env,
@@ -56,9 +56,9 @@ pub async fn suggest<Env: SelectProvider>(
         branch: String::new(),
         ..Source::default()
     };
-    source.verbs = rows(branch, env, named("tonk.dialog.lingo.verb/name", "many")).await?;
-    source.nouns = rows(branch, env, named("tonk.dialog.lingo.noun/name", "many")).await?;
-    source.roles = rows(branch, env, named("tonk.dialog.lingo.role/name", "one")).await?;
+    source.verbs = rows(branch, env, named("tonk.dialog.intent.action/name", "many")).await?;
+    source.nouns = rows(branch, env, named("tonk.dialog.intent.noun/name", "many")).await?;
+    source.roles = rows(branch, env, named("tonk.dialog.intent.role/name", "one")).await?;
     source.attributes = rows(branch, env, attributes()).await?;
     source.arguments = rows(branch, env, arguments()).await?;
     let nouns: Vec<String> = source
@@ -90,9 +90,9 @@ pub async fn suggest<Env: SelectProvider>(
         now,
     };
     let proposals = if input.is_empty() {
-        tonk_lingo::menu(&request)
+        tonk_intent::menu(&request)
     } else {
-        tonk_lingo::propose(&request)
+        tonk_intent::propose(&request)
     };
     Ok(proposals
         .into_iter()
@@ -199,7 +199,7 @@ fn entity(the: &str, optional: bool) -> Json {
     field
 }
 
-/// `lingo/verb`, `lingo/noun`, `lingo/role`: an entity and its words.
+/// `intent/action`, `intent/noun`, `intent/role`: an entity and its words.
 fn named(the: &str, cardinality: &str) -> Json {
     json!({
         "predicate": { "with": { "name": text(the, cardinality) } },
@@ -218,14 +218,14 @@ fn attributes() -> Json {
     })
 }
 
-/// `lingo/argument`.
+/// `intent/argument`.
 fn arguments() -> Json {
     json!({
         "predicate": { "with": {
-            "command": entity("tonk.dialog.lingo.argument/command", false),
-            "field": entity("tonk.dialog.lingo.argument/field", false),
-            "role": entity("tonk.dialog.lingo.argument/role", false),
-            "noun": entity("tonk.dialog.lingo.argument/noun", true)
+            "command": entity("tonk.dialog.intent.argument/command", false),
+            "field": entity("tonk.dialog.intent.argument/field", false),
+            "role": entity("tonk.dialog.intent.argument/role", false),
+            "noun": entity("tonk.dialog.intent.argument/noun", true)
         } },
         "terms": {
             "this": var("this"), "command": var("command"), "field": var("field"),
@@ -234,13 +234,13 @@ fn arguments() -> Json {
     })
 }
 
-/// `lingo/choice`: what was run before, for the parser's memory.
+/// `intent/choice`: what was run before, for the parser's memory.
 fn choices() -> Json {
     json!({
         "predicate": { "with": {
-            "command": entity("tonk.dialog.lingo.choice/command", false),
-            "input": text("tonk.dialog.lingo.choice/input", "one"),
-            "time": { "the": "tonk.dialog.lingo.choice/time", "as": "Float", "cardinality": "one" }
+            "command": entity("tonk.dialog.intent.choice/command", false),
+            "input": text("tonk.dialog.intent.choice/input", "one"),
+            "time": { "the": "tonk.dialog.intent.choice/time", "as": "Float", "cardinality": "one" }
         } },
         "terms": {
             "this": var("this"), "command": var("command"), "input": var("input"),

@@ -314,7 +314,7 @@ fn it_lists_what_can_be_done_without_saying_more() {
 }
 
 /// How the parse scales with a noun's rows. Run with
-/// `cargo test --release -p tonk-lingo -- --ignored --nocapture scales`.
+/// `cargo test --release -p tonk-intent -- --ignored --nocapture scales`.
 #[test]
 #[ignore = "timing, not a check"]
 fn it_scales_with_candidates() {

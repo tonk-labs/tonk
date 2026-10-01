@@ -29,7 +29,7 @@ mod error;
 mod export;
 mod formula;
 mod import;
-mod lingo;
+mod intent;
 mod overlay;
 mod pull;
 mod push;

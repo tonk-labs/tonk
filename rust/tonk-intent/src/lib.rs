@@ -1,13 +1,13 @@
 //! The command palette's glue between tonk's data and `dialog-lingo`.
 //!
-//! The rows of `lingo/verb`, `lingo/argument`, `lingo/role`,
-//! `lingo/noun`, the attributes those arguments name, and the rows and
+//! The rows of `intent/action`, `intent/argument`, `intent/role`,
+//! `intent/noun`, the attributes those arguments name, and the rows and
 //! `label` facet of every noun concept come in as [`Source`]s; this crate
 //! joins them into a [`dialog_lingo::Registry`], parses the input, and
 //! answers with ranked proposals, each carrying the transient claim that
 //! runs it.
 //!
-//! Nothing here reads a store. `lingo/suggest` (in `dialog-reactor`)
+//! Nothing here reads a store. `intent/suggest` (in `dialog-reactor`)
 //! reads the rows with ordinary concept queries and calls in here, so the
 //! page asks one query and gets readings back.
 
@@ -56,16 +56,16 @@ pub struct Source {
     /// The routing context the rows came from (`main@did:key:…`), echoed
     /// on each proposal so its claim is transacted on the same branch.
     pub branch: String,
-    /// `lingo/verb` rows: `this` is the command, `name` a word for it.
+    /// `intent/action` rows: `this` is the command, `name` a word for it.
     #[serde(default)]
     pub verbs: Vec<Row>,
-    /// `lingo/argument` rows: `command`, `field`, `role`, `noun`.
+    /// `intent/argument` rows: `command`, `field`, `role`, `noun`.
     #[serde(default)]
     pub arguments: Vec<Row>,
-    /// `lingo/role` rows: `name`.
+    /// `intent/role` rows: `name`.
     #[serde(default)]
     pub roles: Vec<Row>,
-    /// `lingo/noun` rows: `this` is the concept, `name` a word for it.
+    /// `intent/noun` rows: `this` is the concept, `name` a word for it.
     #[serde(default)]
     pub nouns: Vec<Row>,
     /// Attribute rows for argument fields: `id` (the selector) and
@@ -91,7 +91,7 @@ pub struct Request {
     /// The branches read.
     #[serde(default)]
     pub sources: Vec<Source>,
-    /// Suggestion memory: `lingo/choice` rows, one per command run
+    /// Suggestion memory: `intent/choice` rows, one per command run
     /// from the palette, with `command` (the command entity) and `input`
     /// (the words typed for its verb, "" when none were).
     #[serde(default)]
