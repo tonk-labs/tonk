@@ -176,19 +176,16 @@ ACCOUNT_SERVICE_URL = "https://accounts-staging.tonk.xyz"
 EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 
 # Host. A `-preview` release tag (`v0.7.0-preview.1`) deploys here, so
-# tonk.host runs the next release against production's data before
-# tonk.network does. It is production in all but its databases and the cache
-# derived from them: it inherits the top-level build, and it binds
-# production's bucket, revocation index and variables. Its secrets are set by
-# hand, once, to production's own values: `wrangler secret put <NAME> --env
-# host` for SERVICE_SECRET_KEY, so it is the same service, and RESEND_API_KEY.
-#
-# Its databases are forks. A preview must not migrate production's database,
-# whose migrations drop and rebuild tables (`0006_account_schema.sql`). Each
-# deploy instead copies production's control database into a fresh one and
-# migrates the copy (`publish.yml`). What tonk.host writes to control is
-# dropped with its fork at the next deploy; what it writes to the bucket or
-# the revocation index is production's.
+# tonk.host runs a preview of the next release as production will run it: it
+# inherits the top-level build, which is production's artifact, without the
+# invitation features staging and dev turn on. Its state is its own, though.
+# A preview applies its migrations before its release reaches production, and
+# those migrations drop and rebuild tables (`0006_account_schema.sql`), so a
+# database shared with production would break production's worker the moment
+# a preview deployed. Being off the tonk.network apex it mints its own passkey
+# credentials. It needs its own secrets too, set with
+# `wrangler secret put <NAME> --env host`: SERVICE_SECRET_KEY (a fresh seed,
+# so a service identity of its own) and RESEND_API_KEY.
 #
 # Named after its domain because `preview` is taken: `[env.preview]` below is
 # the per-pull-request environment.
@@ -205,37 +202,39 @@ enabled = true
 head_sampling_rate = 1
 invocation_logs = false
 
+# Create it beside production's, in Europe, before the first deploy:
+# `wrangler r2 bucket create tonk-spaces-host --location weur`.
 [[env.host.r2_buckets]]
 binding = "BUCKET"
-bucket_name = "tonk-spaces"
+bucket_name = "tonk-spaces-host"
 
-# Replaced per deploy with that deploy's forks, the way the preview
-# environment's databases are replaced per pull request. The sentinels name no
-# real database, so a deploy that skipped the fork fails instead of binding one.
+# The ids are sentinels until bootstrap mints the real ones, with
+# `wrangler d1 create <database_name> --location weur` and
+# `wrangler kv namespace create <title>`. An empty id would not stop a deploy:
+# Wrangler provisions a fresh resource for a binding without one, with no
+# location hint and, for KV, under a generated name. A sentinel fails the
+# migrations step before anything is created.
 [[env.host.d1_databases]]
 binding = "CONTROL"
 database_name = "tonk-access-control-host"
-database_id = "FORKED-PER-DEPLOY"
+database_id = "MINTED-AT-BOOTSTRAP"
 migrations_dir = "rust/tonk-access-service/migrations"
 
 [[env.host.d1_databases]]
 binding = "INGEST"
 database_name = "tonk-access-ingest-host"
-database_id = "INGEST-FORKED-PER-DEPLOY"
+database_id = "MINTED-AT-BOOTSTRAP"
 migrations_dir = "rust/tonk-access-service/migrations-ingest"
 
-# Production's. The bucket is shared, so a delegation revoked through either
-# origin has to be refused by both.
+# Title `tonk-access-revocations-host`.
 [[env.host.kv_namespaces]]
 binding = "REVOCATIONS_KV"
-id = "04f72780ec4541318e768ec26d9cc5e4"
+id = "MINTED-AT-BOOTSTRAP"
 
-# Its own, found or created by title per deploy. Verdicts are derived from
-# control, and one derived from the fork must not answer for production: a
-# customer who registered after the fork would be cached as unregistered.
+# Title `tonk-access-servability-host`.
 [[env.host.kv_namespaces]]
 binding = "SERVABILITY_KV"
-id = "SERVABILITY-RESOLVED-PER-DEPLOY"
+id = "MINTED-AT-BOOTSTRAP"
 
 [[env.host.ratelimits]]
 name = "LOOKUP_LIMITER"
@@ -245,8 +244,9 @@ namespace_id = "1001"
   limit = 60
   period = 60
 
+# No ACCOUNT_SERVICE_URL, as dev has none: nothing reads it any more, and
+# Wrangler's warning that it is not inherited is expected.
 [env.host.vars]
-ACCOUNT_SERVICE_URL = "https://accounts.tonk.xyz"
 EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 
 # Dev. Every push to `main` deploys here, so tonk.foundation always runs the

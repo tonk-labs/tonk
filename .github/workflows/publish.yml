@@ -21,13 +21,9 @@ on:
 # commit is the one worth previewing. Different pull requests use different
 # databases, so their migrations cannot invalidate each other's workers. PRs
 # are keyed by number because a merged `closed` event uses the target branch as
-# `github.ref` and must not cancel that branch's push deployment. Every
-# `-preview` tag shares one key instead of its own: they all deploy tonk.host
-# and each retires the forks before it, so two at once could retire the fork
-# the other just deployed. The newer tag supersedes the older one, as a newer
-# commit does in a pull request.
+# `github.ref` and must not cancel that branch's push deployment.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'push' && (contains(github.ref_name, '-preview') && 'host' || github.ref) || format('pr-{0}', github.event.pull_request.number) }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.ref || format('pr-{0}', github.event.pull_request.number) }}
   cancel-in-progress: true
 
 jobs:
@@ -297,131 +293,23 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
-      # tonk.host runs on production's bucket but never on production's
-      # databases: a preview's migrations would land there before its
-      # release does. Each deploy copies production's control database into
-      # a fresh fork and migrates that, so the preview runs on the database
-      # the release will leave production with. Ingest is created fresh
-      # rather than copied: the worker only appends to it, it only grows, and
-      # an export blocks the database it reads while it runs.
-      #
-      # Forks are named for the run, and the earlier ones are retired only
-      # after this one is serving. A run that fails leaves tonk.host on the
-      # fork it already had, and its own forks go with the next run's.
-      - name: Fork production access databases for the host
-        if: steps.release.outputs.channel == 'preview'
-        id: host-fork
-        run: |
-          set -euo pipefail
-          wrangler() {
-            nix --accept-flake-config develop .#ci --command wrangler "$@"
-          }
-          database_id() {
-            wrangler d1 list --json \
-              | jq -r --arg name "$1" '.[] | select(.name == $name) | .uuid' \
-              | head -n 1
-          }
-          # `kv namespace list` takes no --json flag; strip anything ahead of
-          # the array so a banner line cannot break the parse.
-          namespace_id() {
-            wrangler kv namespace list 2>/dev/null \
-              | sed -n '/^[[:space:]]*\[/,$p' \
-              | jq -r --arg title "$1" '.[] | select(.title == $title) | .id' \
-              | head -n 1
-          }
-          fork="host-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          control="tonk-access-control-$fork"
-          ingest="tonk-access-ingest-$fork"
-          servability="tonk-access-servability-host"
-          snapshot="$RUNNER_TEMP/tonk-access-control.sql"
-          config="$PWD/wrangler.host.toml"
-
-          # The export carries production's `d1_migrations` table, so the
-          # fork's migrations resume where production's left off.
-          wrangler d1 export tonk-access-control --remote -y \
-            --output "$snapshot" -c wrangler.toml
-          wrangler d1 create "$control" --location weur
-          wrangler d1 execute "$control" --remote -y --file "$snapshot"
-          wrangler d1 create "$ingest" --location weur
-          control_id="$(database_id "$control")"
-          ingest_id="$(database_id "$ingest")"
-
-          servability_id="$(namespace_id "$servability")"
-          if [ -z "$servability_id" ]; then
-            wrangler kv namespace create "$servability"
-            servability_id="$(namespace_id "$servability")"
-          fi
-
-          if [ -z "$control_id" ] || [ -z "$ingest_id" ] || [ -z "$servability_id" ]; then
-            echo "::error::Could not resolve the host's forks ($control, $ingest) or its $servability namespace"
-            exit 1
-          fi
-          cp wrangler.toml "$config"
-          sed -i \
-            -e "s/database_name = \"tonk-access-control-host\"/database_name = \"$control\"/" \
-            -e "s/database_id = \"FORKED-PER-DEPLOY\"/database_id = \"$control_id\"/" \
-            -e "s/database_name = \"tonk-access-ingest-host\"/database_name = \"$ingest\"/" \
-            -e "s/database_id = \"INGEST-FORKED-PER-DEPLOY\"/database_id = \"$ingest_id\"/" \
-            -e "s/id = \"SERVABILITY-RESOLVED-PER-DEPLOY\"/id = \"$servability_id\"/" \
-            "$config"
-          for binding in \
-            "database_name = \"$control\"" \
-            "database_id = \"$control_id\"" \
-            "database_name = \"$ingest\"" \
-            "database_id = \"$ingest_id\"" \
-            "id = \"$servability_id\""; do
-            if ! grep -Fq "$binding" "$config"; then
-              echo "::error::Could not bind the host config to its forks: missing $binding"
-              exit 1
-            fi
-          done
-          echo "control=$control" >> "$GITHUB_OUTPUT"
-          echo "ingest=$ingest" >> "$GITHUB_OUTPUT"
-          echo "config=$config" >> "$GITHUB_OUTPUT"
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-
       - name: Apply host access migrations
         if: steps.release.outputs.channel == 'preview'
         run: |
           nix --accept-flake-config develop --command \
-            wrangler d1 migrations apply "${{ steps.host-fork.outputs.control }}" --remote \
-              --env host -c "${{ steps.host-fork.outputs.config }}"
+            wrangler d1 migrations apply tonk-access-control-host --remote \
+              --env host -c wrangler.toml
           nix --accept-flake-config develop --command \
-            wrangler d1 migrations apply "${{ steps.host-fork.outputs.ingest }}" --remote \
-              --env host -c "${{ steps.host-fork.outputs.config }}"
+            wrangler d1 migrations apply tonk-access-ingest-host --remote \
+              --env host -c wrangler.toml
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       - name: Deploy host
         if: steps.release.outputs.channel == 'preview'
-        run: |
-          nix --accept-flake-config develop --command \
-            wrangler deploy --env host -c "${{ steps.host-fork.outputs.config }}"
+        run: nix --accept-flake-config develop --command wrangler deploy --env host -c wrangler.toml
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-
-      - name: Retire earlier host forks
-        if: steps.release.outputs.channel == 'preview'
-        run: |
-          set -euo pipefail
-          wrangler() {
-            nix --accept-flake-config develop .#ci --command wrangler "$@"
-          }
-          retired="$(wrangler d1 list --json \
-            | jq -r --arg control "$CONTROL" --arg ingest "$INGEST" \
-                '.[].name
-                 | select(test("^tonk-access-(control|ingest)-host-"))
-                 | select(. != $control and . != $ingest)')"
-          for database in $retired; do
-            wrangler d1 delete "$database" -y
-          done
-        env:
-          CONTROL: ${{ steps.host-fork.outputs.control }}
-          INGEST: ${{ steps.host-fork.outputs.ingest }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
