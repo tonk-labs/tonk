@@ -250,7 +250,7 @@ async fn publish_settled_status(
     let handle = session.handle();
     let local = handle.revision();
 
-    if handle.upstream().is_none() {
+    if tonk_account::peer::upstream(handle).is_none() {
         publish_sync_status(tonk, repo, branch, SyncState::NoUpstream).await;
         return;
     }
@@ -262,7 +262,10 @@ async fn publish_settled_status(
     let remote = match observed {
         Some(remote) => remote,
         None => match handle.fetch().perform(&tonk.operator).await {
-            Ok(remote) => remote,
+            Ok(fetched) => fetched
+                .into_iter()
+                .next()
+                .and_then(|fetched| fetched.revision),
             Err(e) => {
                 log!("publish_settled_status: fetch {repo}/{branch} failed: {e}");
                 // An unserved subject is not offline: the service answered,
@@ -698,7 +701,7 @@ pub async fn pull(
     // pull reaches dialog, comes back `BranchHasNoUpstream`, and lands in
     // the catch-all as a 503 "temporarily unavailable", which is untrue:
     // nothing is going to become available until a remote is attached.
-    if session.handle().upstream().is_none() {
+    if tonk_account::peer::upstream(session.handle()).is_none() {
         log!(
             "Pull skipped, no upstream: {}@{}",
             params.branch,
@@ -901,7 +904,7 @@ pub async fn sync_status(
     let handle = session.handle();
     let local = handle.revision();
 
-    if handle.upstream().is_none() {
+    if tonk_account::peer::upstream(handle).is_none() {
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         publish_sync_status(
             &tonk_state,
@@ -918,7 +921,10 @@ pub async fn sync_status(
     }
 
     let remote = match handle.fetch().perform(&tonk_state.operator).await {
-        Ok(remote) => remote,
+        Ok(fetched) => fetched
+            .into_iter()
+            .next()
+            .and_then(|fetched| fetched.revision),
         Err(e) => {
             let error = classified_service_failure(&e).unwrap_or(TonkWorkerError::Upstream {
                 status: 503,
@@ -1433,8 +1439,8 @@ pub(crate) async fn ensure_session_authority(state: &AppState) -> Result<(), Ton
     // session it replaces; renewing on `main` would sign the profile
     // out of its account mid-session.
     let access_branch = state.read().await.active_branch.clone();
-    renew_session_with(state, move |profile, storage| async move {
-        crate::session::rotate(&profile, &storage, &access_branch).await
+    renew_session_with(state, move |profile, _storage| async move {
+        crate::session::rotate(&profile, &access_branch).await
     })
     .await
 }
@@ -1442,7 +1448,7 @@ pub(crate) async fn ensure_session_authority(state: &AppState) -> Result<(), Ton
 async fn renew_session_with<F, Fut>(state: &AppState, build: F) -> Result<(), TonkWorkerError>
 where
     F: FnOnce(
-        dialog_operator::Profile,
+        crate::worker::DefaultProfile,
         dialog_storage::provider::storage::Storage<crate::worker::DefaultSpace>,
     ) -> Fut,
     Fut: std::future::Future<Output = Result<crate::session::Session, TonkWorkerError>>,
@@ -1782,7 +1788,7 @@ mod renewal_tests {
 
     async fn revision(state: &AppState) -> Option<dialog_repository::Revision> {
         let tonk = state.read().await;
-        dialog_repository::Repository::from(tonk.profile.signer().clone())
+        dialog_repository::Repository::from(tonk.profile.credential().clone())
             .branch(dialog_repository::ACCESS_BRANCH)
             .open()
             .perform(&tonk.operator)
@@ -1851,14 +1857,9 @@ mod renewal_tests {
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
         let (installed_tx, installed_rx) = tokio::sync::oneshot::channel();
         let winner = async {
-            renew_session_with(&state, |profile, storage| async move {
+            renew_session_with(&state, |profile, _storage| async move {
                 ready_rx.await.unwrap();
-                crate::session::rotate(
-                    &profile,
-                    &storage,
-                    crate::router::repository::PROFILE_BRANCH,
-                )
-                .await
+                crate::session::rotate(&profile, crate::router::repository::PROFILE_BRANCH).await
             })
             .await
             .unwrap();
@@ -1866,14 +1867,11 @@ mod renewal_tests {
             installed_tx.send(installed.clone()).unwrap();
             installed
         };
-        let loser = renew_session_with(&state, |profile, storage| async move {
-            let candidate = crate::session::rotate(
-                &profile,
-                &storage,
-                crate::router::repository::PROFILE_BRANCH,
-            )
-            .await
-            .unwrap();
+        let loser = renew_session_with(&state, |profile, _storage| async move {
+            let candidate =
+                crate::session::rotate(&profile, crate::router::repository::PROFILE_BRANCH)
+                    .await
+                    .unwrap();
             ready_tx.send(()).unwrap();
             let installed = installed_rx.await.unwrap();
             assert_ne!(candidate.operator.did().to_string(), installed);

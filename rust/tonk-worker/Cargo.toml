@@ -19,6 +19,7 @@ web-integration-tests = []
 helpers = ["dep:tower"]
 
 [dependencies]
+sha2_0_10 = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true, features = ["json", "macros", "query"] }
 base58 = { workspace = true }
@@ -36,7 +37,7 @@ dialog-reactor = { workspace = true }
 dialog-credentials = { workspace = true }
 dialog-csv = { workspace = true }
 dialog-effects = { workspace = true }
-dialog-operator = { workspace = true }
+dialog-peer = { workspace = true }
 dialog-query = { workspace = true }
 dialog-remote-ucan-s3 = { workspace = true }
 dialog-remote-ucan = { workspace = true }
@@ -141,7 +142,7 @@ axum = { workspace = true, features = ["tokio", "http1"] }
 tonk-template = { workspace = true }
 anyhow = { workspace = true }
 dialog-common = { workspace = true, features = ["helpers"] }
-dialog-operator = { workspace = true, features = ["helpers"] }
+dialog-peer = { workspace = true, features = ["helpers"] }
 dialog-repository = { workspace = true, features = ["helpers"] }
 rand = { workspace = true }
 tonk-access-service = { workspace = true, features = ["helpers"] }

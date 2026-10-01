@@ -695,14 +695,13 @@ pub(crate) mod tests {
         /// access service (nothing here needs an account). The registry
         /// installed is the REAL one, not a test double.
         pub(crate) async fn test_state() -> AppState {
-            use dialog_operator::Profile;
-            use dialog_storage::provider::storage::Storage;
-
-            let storage = Storage::<crate::worker::DefaultSpace>::default();
             let name = format!("command-dispatch-test-{}", rand::random::<u64>());
-            let profile = Profile::open(&name).perform(&storage).await.unwrap();
-            let session = crate::session::open(&profile, &storage).await.unwrap();
-            let reactor = crate::Reactor::new(profile.clone());
+            let (storage, profile) =
+                crate::device::open_profile_at(&name, dialog_effects::storage::Directory::Profile)
+                    .await
+                    .unwrap();
+            let session = crate::session::open(&profile).await.unwrap();
+            let reactor = crate::Reactor::new(profile.credential().clone());
             let state = TonkState {
                 profile,
                 operator: session.operator,
@@ -938,6 +937,31 @@ pub(crate) mod tests {
             ),
             ("/lib/body.txt", "hello from a seed\n"),
         ];
+
+        /// SPACE-15: fetch the catalog and ordered required files before
+        /// allocating a space. Optional files are deliberately unavailable.
+        #[dialog_common::test]
+        async fn it_creates_from_a_remote_catalog_and_refuses_changed_sources() {
+            const CATALOG: &str = include_str!("../../tests/fixtures/discover/catalog.json");
+            const MODEL: &str = include_str!("../../tests/fixtures/discover/model.yaml");
+            const VIEW: &str = include_str!("../../tests/fixtures/discover/view.yaml");
+            for (view, expected) in [(VIEW, 1), ("changed after catalog publication", 0)] {
+                let files = Box::leak(Box::new([
+                    ("/catalog.json", CATALOG),
+                    ("/model.yaml", MODEL),
+                    ("/view.yaml", view),
+                ]));
+                let base = serve(files);
+                let state = test_state().await;
+                let mut changes = create_space_transient("Remote template");
+                dialog_query::the!("xyz.tonk.command.create-space/template")
+                    .of("cmd:create".parse::<Entity>().unwrap())
+                    .is(format!("{base}/catalog.json#remote-demo"))
+                    .assert(&mut changes);
+                dispatch(&state, CommandOrigin::default(), changes).await;
+                assert_eq!(space_subjects(&state).await.len(), expected);
+            }
+        }
 
         /// A seeded `space/create` evaluates the document at the seed URL
         /// into the new space, on top of the standard library, with what it

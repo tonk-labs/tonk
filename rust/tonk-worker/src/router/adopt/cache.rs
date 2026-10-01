@@ -6,6 +6,7 @@ use dialog_reactor::{BranchState, RepositoryState};
 use dialog_repository::{Revision, Upstream};
 use parking_lot::Mutex;
 
+use crate::router::remotes::RecordedRemote;
 use crate::worker::TonkState;
 
 #[derive(Default)]
@@ -100,7 +101,7 @@ impl Start {
 
 struct Receipt {
     stamp: Stamp,
-    upstreams: Vec<(String, String, String)>,
+    upstreams: Vec<(String, RecordedRemote, String)>,
 }
 
 impl Stamp {
@@ -206,9 +207,9 @@ impl Entry {
         let branches = repo.branches().read();
         receipt.upstreams.iter().all(|(name, remote, target)| {
             branches.get(name).is_some_and(|branch| {
-                matches!(branch.branch.upstream(),
+                matches!(tonk_account::peer::upstream(&branch.branch),
                     Some(Upstream::Remote { remote: current_remote, branch: current_branch, .. })
-                        if current_remote == *remote && current_branch == *target
+                        if remote.is(&current_remote) && current_branch == *target
                 )
             })
         })
@@ -219,7 +220,7 @@ impl Entry {
         tonk: &TonkState,
         key: &str,
         before: Option<Stamp>,
-        upstreams: Vec<(String, String, String)>,
+        upstreams: Vec<(String, RecordedRemote, String)>,
     ) {
         let Some(before) = before else {
             return;

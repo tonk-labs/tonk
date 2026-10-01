@@ -3,13 +3,9 @@
 mod common;
 
 use anyhow::Result;
-use dialog_capability::Subject;
-use dialog_credentials::{Credential, Ed25519Signer, Ed25519Verifier, Signer};
-use dialog_effects::space::{Space, SpaceExt as _};
-use dialog_effects::storage::Directory;
-use dialog_operator::{DeriveOperator, Profile};
+use dialog_credentials::{Ed25519Signer, Signer};
+use dialog_effects::storage::{Directory, Location};
 use dialog_repository::SiteAddress;
-use dialog_storage::provider::storage::{NativeSpace, Storage};
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::time::{Duration, SystemTime, Timestamp};
 use dialog_ucan_core::{DelegationBuilder, DelegationChain};
@@ -26,17 +22,19 @@ async fn scoped_site(
     let config = common::isolated_config(&root)?;
     let unrelated = TonkSite::init_at_with(&root.join("unrelated"), config.clone()).await?;
     let unrelated_subject = unrelated.repository.did();
-    let storage = Storage::<NativeSpace>::default();
-    let profile = Profile::load(config.profile_name.clone())
-        .at(config.profile_directory.clone())
-        .perform(&storage)
-        .await?;
+    let profile = tonk_cli::site::open_profile(
+        config.profile_name.clone(),
+        config.profile_directory.clone(),
+        false,
+    )
+    .await?;
     let replica = root.join("replica");
     std::fs::create_dir_all(&replica)?;
     let operator = profile
-        .derive("connection-mount")
+        .session("connection-mount")
+        .space(profile.state())
         .base(Directory::At(replica.to_string_lossy().into_owned()))
-        .build(storage)
+        .build()
         .await?;
     let expiry = Timestamp::new(SystemTime::now() + Duration::from_secs(90 * 86400))?;
     // The profile already owns an unrelated local space. No target-space signer
@@ -52,37 +50,32 @@ async fn scoped_site(
             .try_build()
             .await?;
         profile
+            .access()
             .save(UcanDelegation(DelegationChain::new(grant)))
             .perform(&operator)
             .await?;
     }
-    let verifier: Ed25519Verifier = owner
-        .did()
-        .to_string()
-        .parse()
-        .map_err(|error| anyhow::anyhow!("{error:?}"))?;
-    Subject::from(profile.did())
-        .attenuate(Space::new("main"))
-        .create(Credential::from(verifier))
-        .perform(&operator)
-        .await?;
+    tonk_account::peer::mount_verifier(
+        profile.storage(),
+        Location::new(
+            Directory::At(replica.to_string_lossy().into_owned()),
+            "main",
+        ),
+        &owner.did(),
+    )
+    .await?;
     let site = TonkSite::open_with(&replica, config).await?;
     assert_ne!(site.repository.did(), unrelated_subject);
     // Deliberately wire only content. The legacy remote helper also syncs meta,
     // which is outside these grants and cannot silently be added to the preset.
-    site.repository
-        .remote("origin")
-        .create(SiteAddress::from(dialog_remote_ucan::UcanAddress::new(
-            format!("{endpoint}/ucan/"),
-        )))
-        .perform(&site.operator)
-        .await?;
-    let remote = site
-        .repository
-        .remote("origin")
-        .load()
-        .perform(&site.operator)
-        .await?;
+    let remote = tonk_account::peer::connect(
+        SiteAddress::from(dialog_remote_ucan::UcanAddress::new(format!(
+            "{endpoint}/ucan/"
+        ))),
+        site.repository.did(),
+        &site.operator,
+    )
+    .await?;
     let upstream = remote.branch("main").open().perform(&site.operator).await?;
     site.branch()
         .await?
@@ -326,7 +319,7 @@ async fn connection_import_preserves_identity_private_credentials_and_offline_ed
     assert_eq!(binding.recipient, recipient);
     assert!(!root.join("main").exists());
     assert!(root.join("data/main").is_dir());
-    let key = root.join("credentials/invitation/credential/key/self");
+    let key = root.join("credentials/invitation.credentials/credential/key/self");
     assert_eq!(std::fs::metadata(&key)?.permissions().mode() & 0o777, 0o600);
     assert_eq!(
         std::fs::metadata(root.join("credentials"))?
@@ -341,7 +334,7 @@ async fn connection_import_preserves_identity_private_credentials_and_offline_ed
     let site = connections::open_bound(&root, &binding, ambient.clone()).await?;
     assert!(site.is_scoped());
     assert_eq!(site.profile.did().to_string(), recipient);
-    assert!(tonk_cli::custody::site_seed(&site).await?.is_none());
+    assert!(!site.profile.holds_key(&site.repository.did()).await?);
     assert!(
         tonk_cli::site::Identity::of(&site)
             .await?
@@ -442,7 +435,7 @@ async fn connection_rejects_legacy_opens_binding_loss_and_missing_credentials() 
             .is_err()
     );
     std::fs::remove_dir(root.join("main"))?;
-    let key = root.join("credentials/invitation/credential/key/self");
+    let key = root.join("credentials/invitation.credentials/credential/key/self");
     std::fs::remove_file(&key)?;
     assert!(
         connections::open_bound(&root, &binding, config.account_store.clone())

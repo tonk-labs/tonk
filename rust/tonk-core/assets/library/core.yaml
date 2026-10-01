@@ -1672,7 +1672,7 @@ concept!: &tonk/replica
     profile:
       description: |
           Profile entity (as did:key) representing persistent identity on this device
-      the: dialog.replica/profile
+      the: dialog.replica/peer
       as: entity
 
 # This device's live sync STATUS — the observation the chip renders. The worker

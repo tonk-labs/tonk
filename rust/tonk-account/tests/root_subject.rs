@@ -1,7 +1,6 @@
-use dialog_capability::Subject;
-use dialog_credentials::{Credential, Ed25519Signer, Ed25519Verifier};
-use dialog_effects::space::{Space, SpaceExt as _};
-use dialog_operator::helpers::test_operator_with_profile;
+use dialog_credentials::{Credential, Ed25519Signer};
+use dialog_effects::storage::Location;
+use dialog_peer::helpers::test_session_with_peer;
 use dialog_repository::Repository;
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::subject::Subject as UcanSubject;
@@ -15,7 +14,7 @@ wasm_bindgen_test_configure!(run_in_browser);
 
 #[dialog_common::test]
 async fn it_commits_a_root_subject_revision_without_storing_the_root_key() -> anyhow::Result<()> {
-    let (operator, profile) = test_operator_with_profile().await;
+    let (operator, profile) = test_session_with_peer().await;
     let root = Ed25519Signer::generate().await?;
     let root_did = root.did();
 
@@ -32,12 +31,12 @@ async fn it_commits_a_root_subject_revision_without_storing_the_root_key() -> an
         .perform(&operator)
         .await?;
 
-    let verifier: Ed25519Verifier = root_did.to_string().parse()?;
-    let local = Subject::from(profile.did()).attenuate(Space::new(root_did.to_string()));
-    let credential = local
-        .create(Credential::from(verifier))
-        .perform(&operator)
-        .await?;
+    let credential = tonk_account::peer::mount_verifier(
+        profile.storage(),
+        Location::profile(root_did.to_string()),
+        &root_did,
+    )
+    .await?;
     let repository = Repository::from(credential);
 
     assert!(

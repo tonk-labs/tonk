@@ -11,10 +11,10 @@ use tonk_worker_api::{PasskeyMetadata, RootStatus, SaveRootRequest};
 
 use super::AppState;
 use crate::TonkWorkerError;
-use crate::worker::{DefaultOperator, TonkState};
-use dialog_operator::Profile;
+use crate::worker::DefaultProfile;
+use crate::worker::TonkState;
 
-const LOCAL_ROOT_SITE: &str = "tonk-local-root-v1";
+pub(crate) const LOCAL_ROOT_SITE: &str = "tonk-local-root-v1";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct LocalRootRecord {
@@ -87,22 +87,21 @@ pub(crate) async fn validate_grant(
 pub(crate) async fn load_record(
     state: &TonkState,
 ) -> Result<Option<LocalRootRecord>, TonkWorkerError> {
-    load_record_from(&state.profile, &state.operator, &state.active_branch).await
+    load_record_from(&state.profile, &state.active_branch).await
 }
 
 /// Load and validate the serialized root record belonging to an explicit
 /// profile. Account routing uses this without constructing a full TonkState
 /// for every inactive roster entry.
 async fn load_record_from(
-    profile: &Profile,
-    operator: &DefaultOperator,
+    profile: &DefaultProfile,
     branch: &str,
 ) -> Result<Option<LocalRootRecord>, TonkWorkerError> {
     let bytes = match profile
-        .credential()
+        .secrets()
         .site(crate::credential::branch_site(LOCAL_ROOT_SITE, branch).as_str())
         .load::<Vec<u8>>()
-        .perform(operator)
+        .perform(profile)
         .await
     {
         Ok(bytes) => bytes,
@@ -146,6 +145,28 @@ pub(crate) async fn local_root(state: &TonkState) -> Result<LocalRoot, TonkWorke
         passkey: record.passkey,
         encryption_key,
     })
+}
+
+/// Have the peer act for the account its branch signed in to. A branch
+/// signed in while branches shared one peer recorded its root, but its
+/// own peer starts on an onboarding account; handing it over is what
+/// signing in did. A branch never signed in, or one already acting for
+/// its root, is left as it is.
+pub(crate) async fn follow_signed_in_account(state: &TonkState) -> Result<(), TonkWorkerError> {
+    if load_record(state).await?.is_none() {
+        return Ok(());
+    }
+    let root = local_root(state).await?;
+    if state.profile.authority().await.ok().as_ref() == Some(&root.root_did) {
+        return Ok(());
+    }
+    tonk_account::peer::hand_over(&state.profile, &root.delegation)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!(
+                "failed to hand the branch's account over to its signed-in account: {error}"
+            ))
+        })
 }
 
 /// Return the verified local root DID.
@@ -192,10 +213,10 @@ pub(crate) async fn forget_encryption_key(state: &TonkState) -> Result<(), TonkW
     })?;
     state
         .profile
-        .credential()
+        .secrets()
         .site(crate::credential::branch_site(LOCAL_ROOT_SITE, &state.active_branch).as_str())
         .save(encoded)
-        .perform(&state.operator)
+        .perform(&state.profile)
         .await
         .map_err(|error| TonkWorkerError::Internal(format!("failed to save local root: {error}")))
 }
@@ -208,10 +229,10 @@ pub(crate) async fn forget_encryption_key(state: &TonkState) -> Result<(), TonkW
 pub(crate) async fn forget_root(state: &TonkState) -> Result<(), TonkWorkerError> {
     state
         .profile
-        .credential()
+        .secrets()
         .site(crate::credential::branch_site(LOCAL_ROOT_SITE, &state.active_branch).as_str())
         .retract()
-        .perform(&state.operator)
+        .perform(&state.profile)
         .await
         .map_err(|error| TonkWorkerError::Internal(format!("failed to forget local root: {error}")))
 }
@@ -326,13 +347,21 @@ pub(crate) async fn persist_root(
     })?;
     state
         .profile
-        .credential()
+        .secrets()
         .site(crate::credential::branch_site(LOCAL_ROOT_SITE, &state.active_branch).as_str())
         .save(encoded)
-        .perform(&state.operator)
+        .perform(&state.profile)
         .await
         .map_err(|error| {
             TonkWorkerError::Internal(format!("failed to save local root: {error}"))
+        })?;
+    // The peer now acts for the account it signed in to.
+    tonk_account::peer::hand_over(&state.profile, &chain)
+        .await
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!(
+                "failed to hand the profile's account over to the signed-in account: {error}"
+            ))
         })?;
 
     let encryption_key = record

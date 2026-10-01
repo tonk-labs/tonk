@@ -172,7 +172,7 @@ pub(crate) async fn expel_member(
         .map_err(|error| TonkWorkerError::NotFound(format!("repository not found: {error}")))?;
     let repository = tonk
         .profile
-        .repository(repo)
+        .space(repo)
         .load()
         .perform(&tonk.operator)
         .await
@@ -220,7 +220,7 @@ pub(crate) async fn admit_member(
         .map_err(|error| TonkWorkerError::NotFound(format!("repository not found: {error}")))?;
     let repository = tonk
         .profile
-        .repository(repo)
+        .space(repo)
         .load()
         .perform(&tonk.operator)
         .await
@@ -381,7 +381,7 @@ mod tests {
             .unwrap();
         let repository = tonk
             .profile
-            .repository(key)
+            .space(key)
             .load()
             .perform(&tonk.operator)
             .await

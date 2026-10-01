@@ -20,7 +20,7 @@ pub(crate) fn is_missing(error: &CredentialError) -> bool {
     match error {
         CredentialError::NotFound(_) => true,
         CredentialError::Storage(message) => message.contains(NOT_FOUND_OS_ERROR),
-        CredentialError::Corrupted(_) => false,
+        CredentialError::Corrupted(_) | CredentialError::Withheld(_) => false,
     }
 }
 

@@ -3350,6 +3350,108 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// SPACE-15: Discover copies a bundled template in place, using the same receipt
+    /// lifecycle as duplication. Cancellation and a failed seed allocate nothing.
+    #[dialog_common::test]
+    async fn it_copies_a_remote_template_from_discover(env: TestEnvironment) -> Result<()> {
+        let catalog = include_str!("../../tonk-worker/tests/fixtures/discover/catalog.json");
+        let base = serve_cross_origin(vec![
+            ("/catalog.json", catalog.to_owned()),
+            ("/model.yaml", include_str!("../../tonk-worker/tests/fixtures/discover/model.yaml").to_owned()),
+            ("/view.yaml", include_str!("../../tonk-worker/tests/fixtures/discover/view.yaml").to_owned()),
+            ("/preview.svg", "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"200\" height=\"100\"><rect width=\"200\" height=\"100\" fill=\"gray\"/></svg>".to_owned()),
+        ])?;
+        let driver = driver_with_prf(&env).await?;
+        driver.goto(env.tonk_web.as_str()).await?;
+        let before = space_keys(&driver).await?;
+        enter_hub(&driver).await?;
+        driver
+            .execute(
+                "document.querySelector('hub-discover').setAttribute('catalog-url', arguments[0])",
+                vec![serde_json::json!(format!("{base}/missing.json"))],
+            )
+            .await?;
+        click(&driver, "[data-collection=discover]").await?;
+        wait_for_displayed(&driver, "[data-discover-retry]").await?;
+        driver
+            .execute(
+                "document.querySelector('hub-discover').setAttribute('catalog-url', arguments[0])",
+                vec![serde_json::json!(format!("{base}/catalog.json"))],
+            )
+            .await?;
+        click(&driver, "[data-discover-retry]").await?;
+        wait_for_displayed(&driver, "[data-template=remote-demo]").await?;
+        click(&driver, "[data-collection=spaces]").await?;
+        let collection = driver.find(By::Css(".discover-collection")).await?;
+        assert!(
+            !collection.is_displayed().await?,
+            "templates stay off Your spaces, even when empty"
+        );
+        click(&driver, "[data-collection=discover]").await?;
+        assert!(collection.is_displayed().await?);
+        click(&driver, "[data-collection=spaces]").await?;
+        assert!(!collection.is_displayed().await?);
+        click(&driver, "[data-collection=discover]").await?;
+        let card = "[data-template=remote-demo]";
+        click(&driver, &format!("{card} [data-template-details-open]")).await?;
+        assert!(
+            !driver
+                .find(By::Css(format!("{card} input[name=name]")))
+                .await?
+                .is_displayed()
+                .await?
+        );
+        click(&driver, &format!("{card} [data-template-image-open]")).await?;
+        wait_for_displayed(&driver, &format!("{card} [data-template-image] img")).await?;
+        click(&driver, &format!("{card} [data-template-image-close]")).await?;
+        click(&driver, &format!("{card} [data-space-create-open]")).await?;
+        let name = wait_for_displayed(&driver, &format!("{card} input[name=name]")).await?;
+        assert_eq!(name.value().await?.as_deref(), Some("Remote demo"));
+        click(&driver, &format!("{card} [data-template-back]")).await?;
+        wait_for_displayed(&driver, &format!("{card} [data-template-image-open]")).await?;
+        driver.enter_default_frame().await?;
+        assert_eq!(space_keys(&driver).await?, before);
+        enter_hub(&driver).await?;
+        click(&driver, &format!("{card} [data-space-create-open]")).await?;
+        // Refuse a missing asset without creating a partially seeded space.
+        driver.execute(
+            "document.querySelector('[data-template=remote-demo] input[name=template]').value = arguments[0]",
+            vec![serde_json::json!(format!("{base}/missing.json#remote-demo"))],
+        ).await?;
+        click(&driver, &format!("{card} [data-space-create-submit]")).await?;
+        wait_for_text_containing(
+            &driver,
+            &format!("{card} [data-space-create-error]"),
+            "Couldn't use those definitions",
+        )
+        .await?;
+        driver.enter_default_frame().await?;
+        assert_eq!(space_keys(&driver).await?, before);
+        enter_hub(&driver).await?;
+        // Repair the injected failure. A hidden input's value reflects its
+        // attribute, so form.reset() cannot undo the test's seed substitution.
+        driver.execute(
+            "document.querySelector('[data-template=remote-demo] input[name=template]').value = arguments[0]",
+            vec![serde_json::json!(format!("{base}/catalog.json#remote-demo"))],
+        ).await?;
+        click(&driver, &format!("{card} [data-template-back]")).await?;
+        wait_for_displayed(&driver, &format!("{card} [data-template-image-open]")).await?;
+        click(&driver, &format!("{card} [data-space-create-open]")).await?;
+        click(&driver, &format!("{card} [data-space-create-submit]")).await?;
+        driver.enter_default_frame().await?;
+        await_url_containing(&driver, "/space/").await?;
+        let after = space_keys(&driver).await?;
+        assert_eq!(
+            after.len(),
+            before.len() + 1,
+            "one template copy creates one space"
+        );
+        enter_space_view(&driver).await?;
+        wait_for_displayed(&driver, ".remote-copy").await?;
+        driver.quit().await?;
+        Ok(())
+    }
+
     /// Serve `files` (path → body) over plain HTTP on a loopback port,
     /// as some other site would, and return the base URL. Every response
     /// allows any origin to read it: a seed is fetched by the service
@@ -8296,7 +8398,7 @@ pub(crate) mod tests {
         );
         let blob = added.stdout.trim().to_owned();
         anyhow::ensure!(
-            blob.starts_with("blob:"),
+            blob.starts_with("asset:"),
             "blob add omitted its content reference"
         );
         let second_registry =
@@ -9650,13 +9752,12 @@ pub(crate) mod tests {
         }
     }
 
-    /// A device linked before the account's encryption key existed has
-    /// nothing to seal a new space's seed to. Creating one from a page makes
-    /// the worker ask that page for a passkey assertion; the page answers by
-    /// saving the key with the root, and the create resumes. The space ends
-    /// up custodied under the account, and the device now carries the key.
+    /// A device linked before the account published an encryption key
+    /// still takes a new space into the account's custody: the space's key
+    /// is sealed to the account's own DID, so nothing asks the page for a
+    /// passkey assertion to learn a key first.
     #[dialog_common::test]
-    async fn it_asks_the_page_for_a_passkey_assertion_when_custody_needs_the_key(
+    async fn it_takes_a_new_space_into_custody_on_a_device_linked_without_a_key(
         env: TestEnvironment,
     ) -> Result<()> {
         let (creator, authenticator) = driver_with_prf_authenticator(&env).await?;
@@ -9710,24 +9811,17 @@ pub(crate) mod tests {
         .await?;
         successful_body("create space command", &created);
 
-        // Two correct endings race from here. Either the worker needs
-        // this page's assertion — it raises the consent card and waits
-        // on its button — or the account pull has already delivered the
-        // encryption key the first profile published, and the worker
-        // seals straight to it without asking. Which side wins is
-        // timing, not behaviour, so drive whichever happens: click the
-        // card whenever it shows, and wait on the durable outcome — the
-        // space exists and its seed is custodied.
+        // Custody needs no key the device lacks, so the create completes
+        // without raising the passkey card.
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
-        let mut asserted_through_the_card = false;
         let key = loop {
-            if let Ok(button) = creator.find(By::Css("#tonk-custody-continue")).await {
-                // A card that re-renders between find and click is "not
-                // yet", the same staleness `click` absorbs elsewhere.
-                if button.click().await.is_ok() {
-                    asserted_through_the_card = true;
-                }
-            }
+            anyhow::ensure!(
+                creator
+                    .find(By::Css("#tonk-custody-continue"))
+                    .await
+                    .is_err(),
+                "the create asked the page for a passkey assertion"
+            );
             if let Ok(profile) = get_json(&creator, "/api/profile").await
                 && profile.get("error").is_none()
                 && let Some(key) = profile["body"]["space"]
@@ -9739,17 +9833,16 @@ pub(crate) mod tests {
             }
             anyhow::ensure!(
                 tokio::time::Instant::now() < deadline,
-                "the create finished neither way: no consent card appeared \
-                 and no space was recorded"
+                "the create never recorded a space"
             );
             tokio::time::sleep(Duration::from_millis(250)).await;
         };
 
-        // Whichever path ran, the new space's seed ends up sealed to the
-        // account's X25519 recipient — a `SecretPrincipal` row naming the
-        // space, whose `seed` points at the `SecretMessage` carrying the
-        // sealed bytes, whose `to` is the recipient. The facts follow the
-        // seal, so poll for them rather than assert on the first read.
+        // The new space's key is held for the account: a principal row
+        // naming the space, whose `seed` points at the sealed message
+        // carrying its key, whose `to` is the account's root DID. The
+        // facts follow the create, so poll for them rather than assert on
+        // the first read.
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
         let mut sealed: Vec<serde_json::Value> = Vec::new();
         let recipient = loop {
@@ -9763,7 +9856,7 @@ pub(crate) mod tests {
                     },
                     "predicate": {
                         "with": {
-                            "seed": { "the": "xyz.tonk.secret/seed", "cardinality": "one", "as": "Entity" }
+                            "seed": { "the": "dialog.secret/seed", "cardinality": "one", "as": "Entity" }
                         }
                     }
                 }),
@@ -9786,7 +9879,7 @@ pub(crate) mod tests {
                         },
                         "predicate": {
                             "with": {
-                                "to": { "the": "xyz.tonk.secret/to", "cardinality": "one", "as": "Entity" }
+                                "to": { "the": "dialog.secret/to", "cardinality": "one", "as": "Entity" }
                             }
                         }
                     }),
@@ -9808,27 +9901,13 @@ pub(crate) mod tests {
             );
             tokio::time::sleep(Duration::from_millis(250)).await;
         };
-        assert!(recipient.starts_with("did:key:z6LS"), "{recipient}");
-
-        // The card path exists to record the key on the device root —
-        // that is what the assertion was for — and it must be the same
-        // recipient the seed was sealed to. The direct-seal path leaves
-        // the legacy root record keyless by design.
-        if asserted_through_the_card {
-            let root = poll_json(
-                &creator,
-                "/api/identity/root",
-                "the assertion to record the key",
-                |body| body.get("encryptionKey").is_some(),
-            )
-            .await?;
-            assert_eq!(
-                root["encryptionKey"].as_str(),
-                Some(recipient.as_str()),
-                "the assertion's key and the seed's recipient must be the \
-                 same account key: {root}"
-            );
-        }
+        assert_eq!(
+            recipient,
+            root["rootDid"]
+                .as_str()
+                .context("root status omitted rootDid")?,
+            "the space's key is held for the account"
+        );
 
         creator.quit().await?;
         Ok(())

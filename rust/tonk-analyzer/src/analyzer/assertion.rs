@@ -643,16 +643,15 @@ pub(crate) fn derive_head_intent(
             FieldValue::Variable(v) => ThisIntent::Variable(v.clone()),
             FieldValue::Uri(uri) => {
                 let entity: Entity =
-                    uri.parse()
-                        .map_err(|e: dialog_artifacts::DialogArtifactsError| {
-                            AnalyzeError::at(
-                                AnalyzeErrorKind::InvalidSubjectUri {
-                                    subject: uri.clone(),
-                                    reason: e.to_string(),
-                                },
-                                field.value_range,
-                            )
-                        })?;
+                    uri.parse().map_err(|e: dialog_artifacts::IdentityError| {
+                        AnalyzeError::at(
+                            AnalyzeErrorKind::InvalidSubjectUri {
+                                subject: uri.clone(),
+                                reason: e.to_string(),
+                            },
+                            field.value_range,
+                        )
+                    })?;
                 ThisIntent::Uri(entity)
             }
             FieldValue::Symbol(name) => {
@@ -851,16 +850,15 @@ fn digest_into(
             }
             FieldValue::Uri(uri) => {
                 let entity: Entity =
-                    uri.parse()
-                        .map_err(|e: dialog_artifacts::DialogArtifactsError| {
-                            AnalyzeError::at(
-                                AnalyzeErrorKind::InvalidSubjectUri {
-                                    subject: uri.clone(),
-                                    reason: e.to_string(),
-                                },
-                                field.value_range,
-                            )
-                        })?;
+                    uri.parse().map_err(|e: dialog_artifacts::IdentityError| {
+                        AnalyzeError::at(
+                            AnalyzeErrorKind::InvalidSubjectUri {
+                                subject: uri.clone(),
+                                reason: e.to_string(),
+                            },
+                            field.value_range,
+                        )
+                    })?;
                 Value::Entity(entity)
             }
             // Unbound variables, blanks and premises carry no content

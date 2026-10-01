@@ -542,13 +542,13 @@ async fn self_account_handoff_retains_a_reusable_prefix() -> anyhow::Result<()> 
     let checked = tonk_cli::handoff::preflight_connect(&minted.url).await?;
     account
         .profile
-        .credential()
+        .secrets()
         .site(tonk_account::prefix::space_root_site(
             &owned.repository.did(),
             account.link.issuer(),
         ))
         .save(Vec::<u8>::new())
-        .perform(&owned.operator)
+        .perform(&account.profile)
         .await?;
     let root = account.tmp.path().join("self-handoff");
     tonk_cli::invite::claim(&root, &minted.url, account.config.clone()).await?;

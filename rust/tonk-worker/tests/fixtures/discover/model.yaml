@@ -1,0 +1,13 @@
+concept!: &remote-demo
+  this: test:remote-demo
+  description: A remotely fetched template fixture.
+  with:
+    title:
+      description: The displayed title.
+      the: xyz.test.remote-demo/title
+      as: text
+      cardinality: one
+
+remote-demo!:
+  this: id:remote-demo
+  title: Copied from the remote catalog

@@ -18,11 +18,10 @@ use ::axum::{
     http::{HeaderMap, StatusCode},
 };
 use axum_wasm_macros::wasm_compat;
-use dialog_credentials::{Credential, Ed25519Signer, Ed25519Verifier};
-use dialog_effects::space::{Space, SpaceExt as _};
+use dialog_credentials::Ed25519Signer;
 use dialog_query::{Output as _, Query, Term};
 use dialog_repository::{
-    RemoteRepository, Repository, RepositoryExt as _, Revision, SiteAddress, Upstream,
+    ConnectedReplica, Repository, RepositoryExt as _, Revision, SiteAddress, Upstream,
 };
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
@@ -543,7 +542,7 @@ async fn existing_space_labels(state: &AppState) -> Vec<String> {
         let key = did.repo_key().to_owned();
         match tonk
             .profile
-            .repository(&key)
+            .space(&key)
             .load()
             .perform(&tonk.operator)
             .await
@@ -578,6 +577,7 @@ pub(crate) struct CreateSpaceRequest {
     description: Option<String>,
     /// The optional seed URL, read from the transient's raw facts.
     seed: Option<String>,
+    template: Option<String>,
     /// Source space whose main-branch content should be copied.
     copy_from: Option<String>,
 }
@@ -606,6 +606,14 @@ impl crate::reactor::Decode for CreateSpaceRequest {
             remote: remote_from_facts(facts),
             description: description_from_facts(facts),
             seed: seed_from_facts(facts),
+            template: facts
+                .iter()
+                .find(|fact| fact.the.as_str() == "xyz.tonk.command.create-space/template")
+                .and_then(|fact| match &fact.is {
+                    dialog_artifacts::Value::String(value) => Some(value.clone()),
+                    dialog_artifacts::Value::Entity(value) => Some(value.to_string()),
+                    _ => None,
+                }),
             copy_from: facts
                 .iter()
                 .find(|fact| fact.the.as_str() == COPY_FROM_ATTR)
@@ -683,9 +691,19 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
     // A seed is fetched and checked before anything is created, so one that
     // cannot be used fails the create instead of leaving a space without the
     // definitions it was made for.
-    let seed = match &request.seed {
+    if request.template.is_some() && (request.seed.is_some() || request.copy_from.is_some()) {
+        report_space_creation(
+            env.state(),
+            &receipt,
+            "failed",
+            "Choose either a template, seed, or duplicate source.",
+        )
+        .await;
+        return;
+    }
+    let seed = match request.template.as_ref().or(request.seed.as_ref()) {
         None => None,
-        Some(reference) => match prepare_seed(reference).await {
+        Some(reference) => match prepare_seed(reference, request.template.is_some()).await {
             Ok(syntax) => Some(syntax),
             Err(error) => {
                 log!(
@@ -863,14 +881,18 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
 
 /// Fetch and check the seed at `reference` against the standard library a
 /// new space is seeded with first. See [`super::seed::prepare`].
-async fn prepare_seed(reference: &str) -> Result<tonk_notation::Syntax, String> {
+async fn prepare_seed(reference: &str, template: bool) -> Result<tonk_notation::Syntax, String> {
     let library = fetch_standard_library(STANDARD_LIBRARY_URL)
         .await
         .map_err(|error| format!("the standard library is unavailable: {error}"))?;
     let core = super::library::parse(&library)
         .await
         .map_err(|error| format!("the standard library does not parse: {error}"))?;
-    super::seed::prepare(reference, &core).await
+    if template {
+        super::seed::prepare_template(reference, &core).await
+    } else {
+        super::seed::prepare(reference, &core).await
+    }
 }
 
 /// Per-command feedback is local overlay state, never account data. A fresh
@@ -1368,7 +1390,7 @@ async fn run_connection_invite_for(
         let tonk = env.state().read().await;
         let repository = tonk
             .profile
-            .repository(repo)
+            .space(repo)
             .load()
             .perform(&tonk.operator)
             .await
@@ -1654,7 +1676,7 @@ async fn run_connection_invite_for(
             };
             let current_repository = tonk
                 .profile
-                .repository(repo)
+                .space(repo)
                 .load()
                 .perform(&tonk.operator)
                 .await
@@ -1719,7 +1741,7 @@ async fn agent_invitations_unavailable(
     let tonk = env.state().read().await;
     let repository = tonk
         .profile
-        .repository(repo)
+        .space(repo)
         .load()
         .perform(&tonk.operator)
         .await
@@ -1932,7 +1954,7 @@ async fn run_invite(
 
     let repository = tonk
         .profile
-        .repository(repo_name)
+        .space(repo_name)
         .load()
         .perform(&tonk.operator)
         .await
@@ -2815,6 +2837,7 @@ async fn run_rename_repository(
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl dialog_capability::Provider<tonk_schema::command::RemoveSpace> for crate::router::CommandEnv {
     async fn execute(&self, command: tonk_schema::command::RemoveSpace) {
+        let receipt = command.this;
         let subject = command.subject.0;
         // See the doc above: only the profile branch (empty origin
         // repo) may fire this. A non-empty origin means the fact came
@@ -2832,6 +2855,13 @@ impl dialog_capability::Provider<tonk_schema::command::RemoveSpace> for crate::r
             Ok(did) => did,
             Err(error) => {
                 log!("RemoveSpace: '{}' is not a DID: {}", subject, error);
+                report_space_removal(
+                    self.state(),
+                    &receipt,
+                    "failed",
+                    "Invalid space identifier.",
+                )
+                .await;
                 return;
             }
         };
@@ -2870,7 +2900,48 @@ impl dialog_capability::Provider<tonk_schema::command::RemoveSpace> for crate::r
         }
         if let Err(error) = remove_space_inner(self.state(), &subject).await {
             log!("RemoveSpace '{}' failed: {}", subject, error);
+            report_space_removal(
+                self.state(),
+                &receipt,
+                "failed",
+                "Couldn't remove this space. Try again.",
+            )
+            .await;
+        } else {
+            report_space_removal(self.state(), &receipt, "removed", "").await;
         }
+    }
+}
+
+async fn report_space_removal(
+    state: &AppState,
+    receipt: &dialog_artifacts::Entity,
+    status: &str,
+    detail: &str,
+) {
+    let tonk = state.read().await;
+    if let Err(error) = tonk
+        .reactor
+        .profile_repository()
+        .branch(&tonk.active_branch)
+        .overlay()
+        .assert(
+            dialog_query::the!("xyz.tonk.space-removal/status")
+                .of(receipt.clone())
+                .is(status.to_owned())
+                .cardinality(dialog_query::Cardinality::One),
+        )
+        .assert(
+            dialog_query::the!("xyz.tonk.space-removal/detail")
+                .of(receipt.clone())
+                .is(detail.to_owned())
+                .cardinality(dialog_query::Cardinality::One),
+        )
+        .write()
+        .perform(&tonk.operator)
+        .await
+    {
+        log!("RemoveSpace: failed to publish result: {error}");
     }
 }
 
@@ -3408,13 +3479,7 @@ async fn enable_sync_for_repository(
     // stale key (e.g. an enable-sync form whose hidden repo field didn't
     // populate). The create path always runs `create_space_inner` first,
     // so the repo is present by the time this is reached on that path.
-    let repository = match tonk
-        .profile
-        .repository(key)
-        .load()
-        .perform(&tonk.operator)
-        .await
-    {
+    let repository = match tonk.profile.space(key).load().perform(&tonk.operator).await {
         Ok(repository) => repository,
         Err(error) => {
             log!(
@@ -3481,13 +3546,7 @@ pub(super) async fn attach_account_remote_if_local(
     key: &str,
     remote: &str,
 ) -> Result<bool, RepositoryError> {
-    let repository = match tonk
-        .profile
-        .repository(key)
-        .load()
-        .perform(&tonk.operator)
-        .await
-    {
+    let repository = match tonk.profile.space(key).load().perform(&tonk.operator).await {
         Ok(repository) => repository,
         Err(error) => {
             log!(
@@ -4283,7 +4342,7 @@ async fn has_welcome_snapshot(tonk: &TonkState, key: &str) -> Result<bool, Repos
     }
     let repository = tonk
         .profile
-        .repository(key)
+        .space(key)
         .load()
         .perform(&tonk.operator)
         .await
@@ -4435,7 +4494,7 @@ pub(crate) async fn seed_routes(
         return Ok(std::collections::HashSet::new());
     };
 
-    let history = session.handle().history(&tonk.operator).await;
+    let history = session.handle().history(&tonk.operator);
     let records = history.select(version);
     tokio::pin!(records);
 
@@ -4483,7 +4542,7 @@ async fn assertions_at_version(
         )));
     };
 
-    let history = session.handle().history(&tonk.operator).await;
+    let history = session.handle().history(&tonk.operator);
     let records = history.select(version);
     tokio::pin!(records);
 
@@ -4735,7 +4794,7 @@ pub(super) fn repository_name_body(
 ///
 /// Runs the full create-side pipeline in a single pass:
 ///
-/// 1. `profile.repository(name).create()` — allocate a new
+/// 1. `profile.space(name).create()` — allocate a new
 ///    signer-owned repository in dialog-db.
 /// 2. Delegate repository access to the profile and save the
 ///    delegation, so future operations authenticated by the
@@ -4842,34 +4901,50 @@ pub async fn create_repository(
         ));
     }
 
-    let verifier: Ed25519Verifier = did.to_string().parse().map_err(|e| {
-        RepositoryError::Internal(format!("space DID is not a valid Ed25519 did:key: {e:?}"))
+    let space_credential = tonk_account::peer::mount_verifier(
+        tonk.profile.storage(),
+        crate::device::space_location(key),
+        &did,
+    )
+    .await
+    .map_err(|e| {
+        RepositoryError::Internal(format!("Failed to create repository '{}': {}", key, e))
     })?;
-    let space_credential = Subject::from(tonk.profile.did())
-        .attenuate(Space::new(key))
-        .create(Credential::from(verifier))
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| {
-            RepositoryError::Internal(format!("Failed to create repository '{}': {}", key, e))
-        })?;
     let repository = Repository::from(space_credential);
     log!("Repository created. DID: {}", repository.did());
 
-    // 2. Delegate subject-specific authority to the owner key, from the
-    //    signer this function still holds.
-    let minter = Repository::from(signer);
-    let delegation = minter
-        .access()
-        .claim(&minter)
-        .delegate(owner.clone())
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| {
-            RepositoryError::Internal(format!("Failed to delegate repo access to profile: {}", e))
-        })?;
-
-    let prefix = delegation.into_chain();
+    // 2. The space's authority, delegated to the owner. Taking it into
+    //    custody had it delegate to the account the peer acts for, so an
+    //    owner that is that account takes that delegation: a second one,
+    //    minted here, would leave two for proving to choose between. An
+    //    owner the peer does not act for (an onboarding account before
+    //    sign-in) is delegated to from the signer this function holds.
+    let custodied = match tonk.profile.authority().await {
+        Ok(account) if account == owner => super::rotation::proven(tonk, &did, &owner)
+            .await
+            .ok()
+            .filter(|chain| chain.issuer() == &did && chain.proofs().count() == 1),
+        _ => None,
+    };
+    let prefix = match custodied {
+        Some(chain) => chain,
+        None => {
+            let minter = Repository::from(signer);
+            minter
+                .access()
+                .claim(&minter)
+                .delegate(owner.clone())
+                .perform(&tonk.operator)
+                .await
+                .map_err(|e| {
+                    RepositoryError::Internal(format!(
+                        "Failed to delegate repo access to profile: {}",
+                        e
+                    ))
+                })?
+                .into_chain()
+        }
+    };
 
     tonk.profile
         .access()
@@ -4914,10 +4989,10 @@ pub async fn create_repository(
         ))
     })?;
     tonk.profile
-        .credential()
+        .secrets()
         .site(format!("{SPACE_ROOT_SITE_PREFIX}{}", repository.did()))
         .save(prefix_bytes)
-        .perform(&tonk.operator)
+        .perform(&tonk.profile)
         .await
         .map_err(|error| {
             RepositoryError::Internal(format!("Failed to persist space root delegation: {error}"))
@@ -5008,10 +5083,10 @@ pub(crate) async fn space_root_prefix(
 ) -> Result<DelegationChain, TonkWorkerError> {
     let bytes = tonk
         .profile
-        .credential()
+        .secrets()
         .site(format!("{SPACE_ROOT_SITE_PREFIX}{subject}"))
         .load::<Vec<u8>>()
-        .perform(&tonk.operator)
+        .perform(&tonk.profile)
         .await
         .map_err(|error| {
             if crate::credential::is_missing(&error) {
@@ -5091,12 +5166,12 @@ where
 
     // 4. Create remotes at the dialog layer and assert their
     // concepts on the same transaction. Stash each created
-    // `RemoteRepository` alongside its `Remote` concept so the
+    // `ConnectedReplica` alongside its `Remote` concept so the
     // branch loop below can resolve upstream references without
     // a second `.load()` round-trip against dialog — we just
     // created these remotes, so the data we'd load is still in
     // hand.
-    let mut remotes: HashMap<String, (RemoteRepository, Remote)> =
+    let mut remotes: HashMap<String, (ConnectedReplica, Remote)> =
         HashMap::with_capacity(configuration.remote.len());
 
     for (remote_name, remote_config) in &configuration.remote {
@@ -5109,38 +5184,26 @@ where
             .clone()
             .unwrap_or_else(|| repository.did());
 
-        let remote = match repository
-            .remote(remote_name.as_str())
-            .load()
-            .perform(&tonk.operator)
-            .await
+        if let Some(existing) =
+            super::remotes::find(repository, remote_name.as_str(), &tonk.operator)
+                .await
+                .map_err(|e| RepositoryError::Internal(e.to_string()))?
+            && (existing.subject != subject || existing.address != remote_config.address)
         {
-            Ok(remote) => {
-                if remote.address().subject() != &subject
-                    || remote.address().site() != &remote_config.address
-                {
-                    return Err(RepositoryError::InvalidConfiguration(format!(
-                        "Remote '{}' is already configured differently",
-                        remote_name
-                    )));
-                }
-                remote
-            }
-            Err(_) => {
-                let mut create = repository
-                    .remote(remote_name.as_str())
-                    .create(remote_config.address.clone());
-                if remote_config.subject.is_some() {
-                    create = create.subject(subject.clone());
-                }
-                create.perform(&tonk.operator).await.map_err(|e| {
-                    RepositoryError::Internal(format!(
-                        "Failed to create remote '{}': {}",
-                        remote_name, e
-                    ))
-                })?
-            }
-        };
+            return Err(RepositoryError::InvalidConfiguration(format!(
+                "Remote '{}' is already configured differently",
+                remote_name
+            )));
+        }
+        let remote = super::remotes::RecordedRemote {
+            subject: subject.clone(),
+            address: remote_config.address.clone(),
+        }
+        .connect(&tonk.operator)
+        .await
+        .map_err(|e| {
+            RepositoryError::Internal(format!("Failed to create remote '{}': {}", remote_name, e))
+        })?;
 
         log!("Remote '{}' prepared", remote_name);
 
@@ -5197,9 +5260,9 @@ where
                     ))
                 })?;
 
-            branch
-                .set_upstream(&target)
-                .perform(&tonk.operator)
+            // A configured upstream replaces the one configured before: a
+            // branch tracks the one remote branch its configuration names.
+            tonk_account::peer::repoint_upstream(&branch, &target, &tonk.operator)
                 .await
                 .map_err(|e| {
                     RepositoryError::Internal(format!(
@@ -5229,7 +5292,12 @@ where
 
     // 6. Commit the meta transaction. Everything above has
     // already happened at the dialog layer; committing here
-    // makes the schema view of it land atomically.
+    // makes the schema view of it land atomically. `meta` is the
+    // repository's registry too, which recording the upstreams above
+    // moved, so the commit builds on the head that left.
+    meta.refresh(&tonk.operator).await.map_err(|e| {
+        RepositoryError::Internal(format!("Failed to refresh meta for '{}': {}", key, e))
+    })?;
     let revision = transaction
         .commit()
         .publish()
@@ -5541,7 +5609,7 @@ async fn record_replica_visibility(
     let status = SpaceStatus::new(replica.this().clone(), status);
 
     // Write through the *reactor's* profile-repository handle, not a
-    // fresh `Repository::from(&tonk.profile)`. The reactor caches the
+    // fresh `Repository::from(tonk.profile.did())`. The reactor caches the
     // profile repo and its meta-branch handle (opened the first time
     // the Hub queried, at boot); a commit through a separate handle
     // leaves that cached handle pinned at its old head, so the Hub —
@@ -5705,7 +5773,7 @@ async fn recorded_library_install_versions(
     use dialog_artifacts::history::HistorySelector;
     use futures_util::StreamExt as _;
 
-    let history = session.handle().history(&tonk.operator).await;
+    let history = session.handle().history(&tonk.operator);
     let records = history.select(HistorySelector::All);
     tokio::pin!(records);
 
@@ -6284,7 +6352,7 @@ pub async fn get_repository(
     };
     let repository = tonk
         .profile
-        .repository(&name)
+        .space(&name)
         .load()
         .perform(&tonk.operator)
         .await
@@ -6881,6 +6949,8 @@ where
     // mirror it on the meta branch. A remote that already exists is
     // loaded rather than recreated — `create` errors on a duplicate.
     let mut remotes: HashMap<String, Remote> = HashMap::with_capacity(configuration.remote.len());
+    let mut recorded: HashMap<String, super::remotes::RecordedRemote> =
+        HashMap::with_capacity(configuration.remote.len());
     for (remote_name, remote_config) in &configuration.remote {
         let subject = remote_config
             .subject
@@ -6894,34 +6964,39 @@ where
         // `revocationUrl` beside it (the share prompt's relay repair) would
         // silently rewrite its address to whatever origin that caller
         // happened to be served from.
-        let (subject, address) = match repository
-            .remote(remote_name.as_str())
-            .load()
-            .perform(&tonk.operator)
-            .await
-        {
-            Ok(existing) => {
-                log!("Remote '{}' already present; left as-is", remote_name);
-                let address = existing.address();
-                (address.subject().clone(), address.site().clone())
-            }
-            Err(_) => {
-                let mut create = repository
-                    .remote(remote_name.as_str())
-                    .create(remote_config.address.clone());
-                if remote_config.subject.is_some() {
-                    create = create.subject(subject.clone());
+        let (subject, address) =
+            match super::remotes::find(repository, remote_name.as_str(), &tonk.operator)
+                .await
+                .map_err(|e| RepositoryError::Internal(e.to_string()))?
+            {
+                Some(existing) => {
+                    log!("Remote '{}' already present; left as-is", remote_name);
+                    (existing.subject, existing.address)
                 }
-                create.perform(&tonk.operator).await.map_err(|e| {
-                    RepositoryError::Internal(format!(
-                        "Failed to create remote '{}': {}",
-                        remote_name, e
-                    ))
-                })?;
-                log!("Remote '{}' created", remote_name);
-                (subject, remote_config.address.clone())
-            }
-        };
+                None => {
+                    super::remotes::RecordedRemote {
+                        subject: subject.clone(),
+                        address: remote_config.address.clone(),
+                    }
+                    .connect(&tonk.operator)
+                    .await
+                    .map_err(|e| {
+                        RepositoryError::Internal(format!(
+                            "Failed to create remote '{}': {}",
+                            remote_name, e
+                        ))
+                    })?;
+                    log!("Remote '{}' created", remote_name);
+                    (subject, remote_config.address.clone())
+                }
+            };
+        recorded.insert(
+            remote_name.clone(),
+            super::remotes::RecordedRemote {
+                subject: subject.clone(),
+                address: address.clone(),
+            },
+        );
 
         if let Some(effective_remote) = effective.remote.get_mut(remote_name) {
             effective_remote.address = address.clone();
@@ -6964,11 +7039,16 @@ where
             ))
         })?;
 
-        let already_tracking = matches!(
-            branch.upstream(),
-            Some(Upstream::Remote { ref remote, branch: ref tracked, .. })
-                if *remote == upstream.remote && *tracked == upstream.branch
-        );
+        let configured = recorded.get(&upstream.remote).ok_or_else(|| {
+            RepositoryError::InvalidConfiguration(format!(
+                "Upstream for branch '{}' references remote '{}', which is not in the request",
+                branch_name, upstream.remote
+            ))
+        })?;
+        let already_tracking = branch.pulls().iter().any(|tracking| {
+            matches!(tracking, Upstream::Remote { remote, branch: tracked, .. }
+                if configured.is(remote) && *tracked == upstream.branch)
+        });
 
         if already_tracking {
             log!(
@@ -6978,17 +7058,12 @@ where
                 upstream.branch
             );
         } else {
-            let remote = repository
-                .remote(upstream.remote.as_str())
-                .load()
-                .perform(&tonk.operator)
-                .await
-                .map_err(|e| {
-                    RepositoryError::Internal(format!(
-                        "Failed to load remote '{}' for upstream: {}",
-                        upstream.remote, e
-                    ))
-                })?;
+            let remote = configured.connect(&tonk.operator).await.map_err(|e| {
+                RepositoryError::Internal(format!(
+                    "Failed to load remote '{}' for upstream: {}",
+                    upstream.remote, e
+                ))
+            })?;
             let target = remote
                 .branch(upstream.branch.as_str())
                 .open()
@@ -7000,9 +7075,9 @@ where
                         upstream.remote, upstream.branch, e
                     ))
                 })?;
-            branch
-                .set_upstream(&target)
-                .perform(&tonk.operator)
+            // A configured upstream replaces the one configured before: a
+            // branch tracks the one remote branch its configuration names.
+            tonk_account::peer::repoint_upstream(&branch, &target, &tonk.operator)
                 .await
                 .map_err(|e| {
                     RepositoryError::Internal(format!(
@@ -7028,6 +7103,11 @@ where
             .assert(replica.branch(branch_name.as_str()).set_upstream(&tracked));
     }
 
+    // `meta` is the repository's registry too, which recording the
+    // upstreams above moved, so the commit builds on the head that left.
+    meta.refresh(&tonk.operator).await.map_err(|e| {
+        RepositoryError::Internal(format!("Failed to refresh meta for '{}': {}", name, e))
+    })?;
     let revision = transaction
         .commit()
         .publish()
@@ -7126,7 +7206,7 @@ pub async fn attach_remote(
 
     let repository = tonk
         .profile
-        .repository(&name)
+        .space(&name)
         .load()
         .perform(&tonk.operator)
         .await
@@ -7321,6 +7401,70 @@ mod space_creation_feedback_tests {
             })).await;
             assert_eq!(rows[0]["this"], receipt);
             assert_eq!(rows[0]["fields"]["status"], "renamed", "{rows}");
+        }
+    }
+
+    #[dialog_common::test]
+    async fn space_removal_reports_success_and_failure_for_the_submitted_request() {
+        let (app, state, _lsp) =
+            crate::router::api_router_with_state(super::profile_library_tests::test_state().await);
+        let branch = state.read().await.active_branch.clone();
+        let mut claim = tonk_worker_api::create_space_claim_json("Removal test");
+        claim["claims"][0]["application"]["parameters"]["this"] = "urn:uuid:removal-create".into();
+        post(
+            &app,
+            &format!("/api/profile/branch/{branch}/transact"),
+            claim,
+        )
+        .await;
+        let created = post(&app, &format!("/api/profile/branch/{branch}/query"), serde_json::json!({
+            "predicate": { "with": { "detail": { "the": "xyz.tonk.space-creation/detail", "as": "Text", "cardinality": "one" } } },
+            "terms": { "this": "urn:uuid:removal-create", "detail": { "?": { "name": "detail" } } }
+        })).await;
+        let subject = created[0]["fields"]["detail"]
+            .as_str()
+            .unwrap()
+            .strip_prefix("/space/")
+            .unwrap()
+            .to_owned();
+        {
+            let tonk = state.read().await;
+            let profile = tonk.profile.did();
+            let replica = super::Replica::new(profile.clone(), profile);
+            tonk.reactor
+                .profile_repository()
+                .branch(&tonk.active_branch)
+                .transaction()
+                .assert(replica.clone())
+                .assert(replica.branch(super::PROFILE_BRANCH))
+                .commit()
+                .perform(&tonk.operator)
+                .await
+                .unwrap();
+            tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+        }
+        let profile = state.read().await.profile.did().to_string();
+        for (receipt, subject, expected) in [
+            ("urn:uuid:removal-success", subject, "removed"),
+            ("urn:uuid:removal-failure", profile, "failed"),
+        ] {
+            post(&app, &format!("/api/profile/branch/{branch}/transact"), serde_json::json!({
+                "claims": [{ "op": "assert", "application": {
+                    "predicate": { "kind": "transient", "concept": { "with": {
+                        "subject": { "the": "xyz.tonk.command.remove-space/subject", "as": "Entity" }
+                    } } },
+                    "parameters": { "this": receipt, "subject": subject }
+                } }]
+            })).await;
+            let rows = post(&app, &format!("/api/profile/branch/{branch}/query"), serde_json::json!({
+                "predicate": { "with": {
+                    "status": { "the": "xyz.tonk.space-removal/status", "as": "Text", "cardinality": "one" },
+                    "detail": { "the": "xyz.tonk.space-removal/detail", "as": "Text", "cardinality": "one" }
+                } },
+                "terms": { "this": receipt, "status": { "?": { "name": "status" } }, "detail": { "?": { "name": "detail" } } }
+            })).await;
+            assert_eq!(rows[0]["this"], receipt);
+            assert_eq!(rows[0]["fields"]["status"], expected, "{rows}");
         }
     }
 
@@ -8559,13 +8703,11 @@ route!: &foreign-profile-route
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         );
-        let storage =
-            dialog_storage::provider::storage::Storage::<crate::worker::DefaultSpace>::default();
-        let profile = dialog_operator::Profile::open(&name)
-            .perform(&storage)
-            .await
-            .expect("test profile opens");
-        let session = crate::session::open(&profile, &storage)
+        let (storage, profile) =
+            crate::device::open_profile_at(&name, dialog_effects::storage::Directory::Profile)
+                .await
+                .expect("test profile opens");
+        let session = crate::session::open(&profile)
             .await
             .expect("test session opens");
         TonkState {
@@ -8576,7 +8718,7 @@ route!: &foreign-profile-route
             session_expires_at: session.expires_at,
             profile_name: name.clone(),
             active_branch: crate::router::repository::PROFILE_BRANCH.to_owned(),
-            reactor: crate::Reactor::new(profile),
+            reactor: crate::Reactor::new(profile.credential().clone()),
             admission: Default::default(),
             reject_admission_content_reads: Default::default(),
             retiring: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -9377,26 +9519,23 @@ mod tests {
     use crate::router::tests::{content_invitations, put_repo, put_repo_info};
     use crate::router::{AppState, CreateInviteResponse, api_router_with_state, tests::test_state};
 
-    /// The seed sealed to the account is the only copy of a created
-    /// space's secret: the repository stores the verifier, the space still
-    /// proves for the operator through `space -> account -> device`, and
-    /// opening the custodied seed with the account key re-derives exactly
-    /// the space's signer.
+    /// A created space's key is held for the account: the repository stores
+    /// the verifier, the space still proves for the operator through
+    /// `space -> account -> device`, and the key is held sealed to the
+    /// account, with a copy the device keeps.
     #[dialog_common::test]
     async fn it_creates_a_space_with_a_public_key_and_custodies_its_seed() {
         use dialog_capability::Subject;
         use dialog_effects::Use;
-        use dialog_query::{Output as _, Query, Term};
         use dialog_repository::RepositoryExt as _;
         use dialog_varsig::Principal as _;
-        use tonk_schema::prelude::DidExt as _;
 
         let (app, state, _lsp) = api_router_with_state(test_state().await);
         let key = put_repo(&app, "public-key-space").await;
         let tonk = state.read().await;
         let repository: dialog_repository::Repository = tonk
             .profile
-            .repository(&key)
+            .space(&key)
             .load()
             .perform(&tonk.operator)
             .await
@@ -9415,57 +9554,24 @@ mod tests {
             .await
             .expect("the space proves through the account without its own key");
 
-        let branch = tonk
-            .reactor
-            .profile_repository()
-            .branch(&tonk.active_branch)
-            .acquire(&tonk.operator)
-            .await
-            .unwrap();
-        let principals: Vec<tonk_schema::SecretPrincipal> = branch
-            .handle()
-            .query()
-            .select(Query::<tonk_schema::SecretPrincipal> {
-                this: Term::from(subject.this()),
-                kind: Term::var("kind"),
-                seed: Term::var("seed"),
-            })
-            .perform(&tonk.operator)
-            .try_vec()
-            .await
-            .unwrap();
-        assert_eq!(principals.len(), 1, "one sealed space principal");
+        let held = dialog_repository::secrets::held_principal(
+            tonk.profile.state(),
+            &subject,
+            &tonk.profile,
+        )
+        .await
+        .unwrap()
+        .expect("the space's key is held");
+        assert_eq!(held.kind, tonk_schema::SeedKind::Space.held());
         assert_eq!(
-            principals[0].kind.0.to_string(),
-            tonk_schema::SeedKind::SPACE
+            held.to,
+            tonk.profile.authority().await.unwrap(),
+            "held for the account"
         );
-
-        let rows: Vec<tonk_schema::SecretMessage> = branch
-            .handle()
-            .query()
-            .select(Query::<tonk_schema::SecretMessage> {
-                this: Term::from(principals[0].seed.0.clone()),
-                to: Term::var("to"),
-                message: Term::var("message"),
-                from: Term::var("from"),
-            })
-            .perform(&tonk.operator)
-            .try_vec()
-            .await
-            .unwrap();
-        assert_eq!(rows.len(), 1, "the principal names a real message");
-        let sealed = tonk_identity::sealed::Sealed::decode(&rows[0].message.0).unwrap();
-        let account = tonk_identity::envelope::AccountSecret::from_bytes(zeroize::Zeroizing::new(
-            crate::router::tests::test_root_seed(&tonk.profile_name),
-        ));
-        let opened = account
-            .secret()
-            .reveal(&sealed, &subject)
-            .expect("the account key opens the custodied seed");
-        let reissued = dialog_credentials::Ed25519Signer::import(&*opened)
-            .await
-            .unwrap();
-        assert_eq!(reissued.did(), subject, "the seed derives the space's key");
+        assert!(
+            tonk.profile.holds_key(&subject).await.unwrap(),
+            "the device keeps its copy"
+        );
     }
 
     /// The scaffold notation, embedded at compile time.
@@ -9635,7 +9741,7 @@ mod tests {
             use dialog_repository::RepositoryExt as _;
             let repository: dialog_repository::Repository = tonk
                 .profile
-                .repository(&key)
+                .space(&key)
                 .load()
                 .perform(&tonk.operator)
                 .await
@@ -9691,7 +9797,7 @@ mod tests {
             use dialog_repository::RepositoryExt as _;
             let repository: dialog_repository::Repository = tonk
                 .profile
-                .repository(&key)
+                .space(&key)
                 .load()
                 .perform(&tonk.operator)
                 .await
@@ -10028,7 +10134,7 @@ mod tests {
         use dialog_repository::RepositoryExt as _;
         let repository: dialog_repository::Repository = tonk
             .profile
-            .repository(key)
+            .space(key)
             .load()
             .perform(&tonk.operator)
             .await
@@ -10523,7 +10629,7 @@ block/insert!:
             let tonk = state.read().await;
             let repository: dialog_repository::Repository = tonk
                 .profile
-                .repository(repo)
+                .space(repo)
                 .load()
                 .perform(&tonk.operator)
                 .await
@@ -10774,8 +10880,6 @@ block/insert!:
     /// fails with `BranchHasNoUpstream` even though the upstream is durable.
     #[dialog_common::test]
     async fn it_reconciles_the_cached_branch_handle_after_attach() {
-        use dialog_repository::Upstream;
-
         let (app, state, repo) = fresh_repo("test-attach-refreshes-cache").await;
         let repo = repo.as_str();
 
@@ -10794,16 +10898,10 @@ block/insert!:
             .acquire(&guard.operator)
             .await
             .expect("acquire cached main");
-        let upstream = session
-            .handle()
-            .upstream()
+        let upstream = tonk_account::peer::upstream(session.handle())
             .expect("cached main must report the upstream after attach");
         assert!(
-            matches!(
-                upstream,
-                Upstream::Remote { ref remote, ref branch, .. }
-                    if remote == "origin" && branch == "main"
-            ),
+            crate::router::remotes::tracks(&guard, repo, session.handle(), "origin", "main").await,
             "cached main must track origin/main, got {upstream:?}",
         );
     }
@@ -10895,7 +10993,7 @@ block/insert!:
         );
         // The refreshed handle must still track the wired upstream…
         assert!(
-            session.state.branch.upstream().is_some(),
+            tonk_account::peer::upstream(&session.state.branch).is_some(),
             "the in-place refresh must pick up the wired upstream",
         );
         // …and still fold the session overlay: a fresh subscriber's
@@ -11430,7 +11528,7 @@ block/insert!:
         );
         let repository: dialog_repository::Repository = tonk
             .profile
-            .repository(&repo)
+            .space(&repo)
             .load()
             .perform(&tonk.operator)
             .await
@@ -11906,7 +12004,7 @@ block/insert!:
         let tonk = state.read().await;
         let Ok(repository) = tonk
             .profile
-            .repository(repo)
+            .space(repo)
             .load()
             .perform(&tonk.operator)
             .await
@@ -11921,7 +12019,10 @@ block/insert!:
         else {
             return false;
         };
-        matches!(main.upstream(), Some(Upstream::Remote { .. }))
+        matches!(
+            tonk_account::peer::upstream(&main),
+            Some(Upstream::Remote { .. })
+        )
     }
 
     /// Build a one-entity transient `RemoveSpace{this, subject}` batch —
@@ -11963,7 +12064,7 @@ block/insert!:
             use dialog_repository::RepositoryExt as _;
             let repository: dialog_repository::Repository = tonk
                 .profile
-                .repository(&key)
+                .space(&key)
                 .load()
                 .perform(&tonk.operator)
                 .await
@@ -12235,7 +12336,7 @@ mod seed_tests {
             use dialog_repository::RepositoryExt as _;
             let repository: dialog_repository::Repository = tonk
                 .profile
-                .repository(&key)
+                .space(&key)
                 .load()
                 .perform(&tonk.operator)
                 .await
@@ -12707,7 +12808,7 @@ mod connection_invite_overlay_tests {
     async fn space_did(state: &AppState, repo: &str) -> Did {
         let tonk = state.read().await;
         tonk.profile
-            .repository(repo)
+            .space(repo)
             .load()
             .perform(&tonk.operator)
             .await
@@ -12893,7 +12994,7 @@ mod connection_invite_overlay_tests {
             let tonk = state.read().await;
             let repository = tonk
                 .profile
-                .repository(&repo)
+                .space(&repo)
                 .load()
                 .perform(&tonk.operator)
                 .await
@@ -12949,10 +13050,10 @@ mod connection_invite_overlay_tests {
                 tonk_account::AccountProviderRecord::attach("https://example.test/ucan/", 1)
                     .unwrap();
             tonk.profile
-                .credential()
+                .secrets()
                 .site(tonk_account::ACCOUNT_PROVIDER_CREDENTIAL_SITE)
                 .save(provider.encode().unwrap())
-                .perform(&tonk.operator)
+                .perform(&tonk.profile)
                 .await
                 .unwrap();
 
@@ -12979,7 +13080,7 @@ mod connection_invite_overlay_tests {
             let tonk = state.read().await;
             let repository = tonk
                 .profile
-                .repository(&repo)
+                .space(&repo)
                 .load()
                 .perform(&tonk.operator)
                 .await
@@ -13000,7 +13101,7 @@ mod connection_invite_overlay_tests {
         let tonk = state.read().await;
         assert_eq!(
             tonk.profile
-                .repository(&repo)
+                .space(&repo)
                 .load()
                 .perform(&tonk.operator)
                 .await
@@ -13041,10 +13142,10 @@ mod connection_invite_overlay_tests {
                 tonk_account::AccountProviderRecord::attach("https://example.test/ucan/", 1)
                     .unwrap();
             tonk.profile
-                .credential()
+                .secrets()
                 .site(tonk_account::ACCOUNT_PROVIDER_CREDENTIAL_SITE)
                 .save(provider.encode().unwrap())
-                .perform(&tonk.operator)
+                .perform(&tonk.profile)
                 .await
                 .unwrap();
         }
@@ -13058,7 +13159,7 @@ mod connection_invite_overlay_tests {
             let tonk = state.read().await;
             let repository = tonk
                 .profile
-                .repository(&repo)
+                .space(&repo)
                 .load()
                 .perform(&tonk.operator)
                 .await

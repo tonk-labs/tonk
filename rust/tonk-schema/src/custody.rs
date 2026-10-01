@@ -153,6 +153,15 @@ impl SeedKind {
         Kind(self.uri().parse().expect("a constant kind URI parses"))
     }
 
+    /// The kind the peer holds a principal of this kind as, in the custody
+    /// tonk and dialog share.
+    pub fn held(self) -> &'static str {
+        match self {
+            Self::Space => dialog_repository::spaces::SPACE,
+            Self::Invite => "invite",
+        }
+    }
+
     /// The kind a stored URI names.
     pub fn parse(uri: &str) -> Option<Self> {
         match uri {
@@ -167,7 +176,7 @@ impl SeedKind {
 mod tests {
     use super::*;
     use anyhow::Result;
-    use dialog_operator::helpers;
+    use dialog_peer::helpers;
     use dialog_query::{Output as _, Query, Term};
     use dialog_varsig::did;
     #[cfg(target_arch = "wasm32")]
@@ -205,7 +214,7 @@ mod tests {
     /// message it names is found by the entity it points at.
     #[dialog_common::test]
     async fn it_finds_a_principals_seed_through_the_message_it_names() -> Result<()> {
-        let (operator, profile) = helpers::test_operator_with_profile().await;
+        let (operator, profile) = helpers::test_session_with_peer().await;
         let repository = helpers::test_repo(&operator, &profile).await;
         let branch = repository.branch("main").open().perform(&operator).await?;
         let subject = did!("test:space");
@@ -259,7 +268,7 @@ mod tests {
     /// knowing which principals they belong to — the query rotation runs.
     #[dialog_common::test]
     async fn it_lists_every_message_sealed_to_one_recipient() -> Result<()> {
-        let (operator, profile) = helpers::test_operator_with_profile().await;
+        let (operator, profile) = helpers::test_session_with_peer().await;
         let repository = helpers::test_repo(&operator, &profile).await;
         let branch = repository.branch("main").open().perform(&operator).await?;
         let mine = did!("test:mine");
@@ -293,12 +302,100 @@ mod tests {
         Ok(())
     }
 
+    /// Migrating moves a seed sealed in tonk's custody rows into the
+    /// peer's custody, held for the account the peer acts for, and the
+    /// rows go; a second pass finds nothing left to move.
+    #[dialog_common::test]
+    async fn it_migrates_a_sealed_seed_into_the_peers_custody() -> Result<()> {
+        use dialog_credentials::key::{ExtractableKey as _, KeyExport};
+        use dialog_credentials::{Ed25519Signer, Extractable};
+        use dialog_varsig::Principal as _;
+        use zeroize::Zeroizing;
+
+        let peer = helpers::test_peer().await;
+        let secret = tonk_identity::envelope::AccountSecret::from_bytes(Zeroizing::new([7; 32]));
+        let space = <Ed25519Signer<Extractable>>::generate().await?;
+        // A generated key is extractable; only the browser also has keys
+        // it never gives back.
+        #[allow(irrefutable_let_patterns)]
+        let KeyExport::Extractable(seed) = space.export().await? else {
+            anyhow::bail!("a generated key exports its seed");
+        };
+        let seed: Zeroizing<[u8; 32]> = Zeroizing::new(seed.as_slice().try_into()?);
+        let recipient = secret.secret().did();
+        let sealed = tonk_identity::sealed::RecipientKey::try_from(&recipient)?
+            .secret()
+            .conceal(&seed, &space.did())?
+            .encode();
+        let message = SecretMessage::new(&recipient, sealed);
+        peer.state()
+            .transaction()
+            .assert(message.clone())
+            .assert(SecretPrincipal::new(
+                &space.did(),
+                SeedKind::Space,
+                message.this(),
+            ))
+            .commit()
+            .publish()
+            .perform(&peer)
+            .await?;
+
+        let migrate_once = || {
+            let peer = &peer;
+            migrate(
+                peer.state(),
+                secret.secret(),
+                peer,
+                move |kind, key, principal, message| async move {
+                    peer.adopt_principal(kind.held(), key)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    peer.state()
+                        .transaction()
+                        .retract(principal)
+                        .retract(message)
+                        .commit()
+                        .publish()
+                        .perform(peer)
+                        .await
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())
+                },
+            )
+        };
+        let moved = migrate_once().await?;
+        assert!(moved.failures.is_empty(), "{:?}", moved.failures);
+        assert_eq!(moved.rotated, vec![space.did()]);
+
+        let held = dialog_repository::secrets::held_principal(peer.state(), &space.did(), &peer)
+            .await?
+            .expect("the space's key is held");
+        assert_eq!(held.to, peer.authority().await?, "held for the account");
+        let rows: Vec<SecretPrincipal> = peer
+            .state()
+            .query()
+            .select(Query::<SecretPrincipal> {
+                this: Term::from(space.did().this()),
+                kind: Term::var("kind"),
+                seed: Term::var("seed"),
+            })
+            .perform(&peer)
+            .try_vec()
+            .await?;
+        assert!(rows.is_empty(), "the custody rows are retracted");
+
+        let again = migrate_once().await?;
+        assert!(again.rotated.is_empty() && again.failures.is_empty());
+        Ok(())
+    }
+
     /// Sealing the same seed to a second recipient adds a second message
     /// and a second principal row — the recovery-custodian case. The
     /// principal entity carries no recipient, so nothing collides.
     #[dialog_common::test]
     async fn it_seals_one_seed_to_two_recipients() -> Result<()> {
-        let (operator, profile) = helpers::test_operator_with_profile().await;
+        let (operator, profile) = helpers::test_session_with_peer().await;
         let repository = helpers::test_repo(&operator, &profile).await;
         let branch = repository.branch("main").open().perform(&operator).await?;
         let subject = did!("test:space");
@@ -389,6 +486,7 @@ pub async fn rotate<'a, Env, Fut>(
 where
     Fut: Future<Output = Result<(), String>> + ConditionalSend,
     Env: dialog_capability::Provider<dialog_effects::archive::Get>
+        + dialog_capability::Provider<dialog_effects::blob::Read>
         + dialog_capability::Provider<dialog_effects::archive::Put>
         + dialog_capability::Provider<dialog_effects::archive::Import>
         + dialog_capability::Provider<dialog_effects::memory::Resolve>
@@ -460,6 +558,122 @@ where
         }
     }
     Ok(rotation)
+}
+
+/// Move every seed sealed to `old` on `branch` out of tonk's custody rows
+/// and into the peer's custody, the custody tonk and dialog share now.
+///
+/// Per seed the core opens the message with the old key, derives the key
+/// and checks it is the principal's, and hands the adapter the seed's kind,
+/// the key, and the two rows it came from: the adapter takes the key into
+/// the peer's custody and only then retracts the rows, through its own
+/// branch handle, since taking custody advances the branch under any handle
+/// the core could hold. A seed the adapter fails on stays in its rows, so
+/// a later pass resumes where this one stopped, and a pass with nothing
+/// sealed to `old` changes nothing.
+pub async fn migrate<'a, Env, Fut>(
+    branch: &'a dialog_repository::Branch,
+    old: tonk_identity::sealed::AccountSecretKey<'a>,
+    env: &'a Env,
+    mut adopt: impl FnMut(
+        SeedKind,
+        dialog_credentials::Ed25519Signer<dialog_credentials::Extractable>,
+        SecretPrincipal,
+        SecretMessage,
+    ) -> Fut,
+) -> Result<Rotation, RotateError>
+where
+    Fut: Future<Output = Result<(), String>> + ConditionalSend,
+    Env: dialog_capability::Provider<dialog_effects::archive::Get>
+        + dialog_capability::Provider<dialog_effects::blob::Read>
+        + dialog_capability::Provider<dialog_effects::archive::Put>
+        + dialog_capability::Provider<dialog_effects::archive::Import>
+        + dialog_capability::Provider<dialog_effects::memory::Resolve>
+        + dialog_capability::Provider<dialog_effects::memory::Publish>
+        + dialog_capability::Provider<dialog_effects::authority::Identify>
+        + dialog_capability::Provider<dialog_effects::authority::Attest>
+        + dialog_capability::Provider<dialog_repository::Hydrate>
+        + dialog_capability::Provider<dialog_artifacts::Preload>
+        + dialog_capability::Provider<dialog_artifacts::Speculation>
+        + dialog_capability::Provider<
+            dialog_capability::Fork<dialog_repository::RemoteSite, dialog_effects::archive::Get>,
+        > + dialog_capability::Provider<
+            dialog_capability::Fork<dialog_repository::RemoteSite, dialog_effects::memory::Resolve>,
+        > + dialog_common::ConditionalSync
+        + 'static,
+{
+    use dialog_credentials::key::ExtractableKey as _;
+    use dialog_query::{Output as _, Query, Term};
+    use dialog_varsig::Principal as _;
+
+    let old_recipient = old.did();
+    let principals: Vec<SecretPrincipal> = branch
+        .query()
+        .select(Query::<SecretPrincipal> {
+            this: Term::var("this"),
+            kind: Term::var("kind"),
+            seed: Term::var("seed"),
+        })
+        .perform(env)
+        .try_vec()
+        .await
+        .map_err(|error| RotateError::Read(format!("{error:?}")))?;
+    let messages: Vec<SecretMessage> = branch
+        .query()
+        .select(Query::<SecretMessage> {
+            this: Term::var("this"),
+            to: Term::from(To(old_recipient.this())),
+            message: Term::var("message"),
+            from: Term::var("from"),
+        })
+        .perform(env)
+        .try_vec()
+        .await
+        .map_err(|error| RotateError::Read(format!("{error:?}")))?;
+
+    let mut moved = Rotation::default();
+    for principal in principals {
+        let Some(message) = messages.iter().find(|row| row.this == principal.seed.0) else {
+            continue;
+        };
+        let subject: Did = match principal.this.to_string().parse() {
+            Ok(subject) => subject,
+            Err(error) => {
+                moved.failures.push((
+                    old_recipient.clone(),
+                    format!("sealed principal is not a DID: {error}"),
+                ));
+                continue;
+            }
+        };
+        let opened = async {
+            let kind = SeedKind::parse(&principal.kind.0.to_string())
+                .ok_or_else(|| format!("unknown seed kind {}", principal.kind.0))?;
+            let sealed = tonk_identity::sealed::Sealed::decode(&message.message.0)
+                .map_err(|error| error.to_string())?;
+            let seed = old
+                .reveal(&sealed, &subject)
+                .map_err(|error| error.to_string())?;
+            let key = <dialog_credentials::Ed25519Signer<dialog_credentials::Extractable>>::import(
+                &*seed,
+            )
+            .await
+            .map_err(|error| format!("{error:?}"))?;
+            if key.did() != subject {
+                return Err(format!("the sealed seed derives {}", key.did()));
+            }
+            Ok((kind, key))
+        };
+        let result = match opened.await {
+            Ok((kind, key)) => adopt(kind, key, principal.clone(), message.clone()).await,
+            Err(reason) => Err(reason),
+        };
+        match result {
+            Ok(()) => moved.rotated.push(subject),
+            Err(reason) => moved.failures.push((subject, reason)),
+        }
+    }
+    Ok(moved)
 }
 
 /// The rows that replace one rotated seed: a message sealed to the new

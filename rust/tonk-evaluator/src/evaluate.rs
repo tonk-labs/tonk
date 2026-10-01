@@ -148,6 +148,7 @@ pub enum EvaluateError {
 /// signature stays a single trait alias.
 pub trait EvaluateEnv:
     Provider<Get>
+    + Provider<dialog_effects::blob::Read>
     + Provider<Put>
     + Provider<Resolve>
     + Provider<Publish>
@@ -164,6 +165,7 @@ pub trait EvaluateEnv:
 
 impl<T> EvaluateEnv for T where
     T: Provider<Get>
+        + Provider<dialog_effects::blob::Read>
         + Provider<Put>
         + Provider<Resolve>
         + Provider<Publish>
@@ -867,9 +869,9 @@ async fn collect_single_matches<Env: EvaluateEnv>(
         if let Term::Variable {
             name: Some(name), ..
         } = term
-            && !variable_names.contains(name)
+            && !variable_names.iter().any(|known| known.as_str() == &**name)
         {
-            variable_names.push(name.clone());
+            variable_names.push(name.to_string());
         }
     }
 
@@ -1026,9 +1028,9 @@ fn render_block(
             if let Term::Variable {
                 name: Some(name), ..
             } = term
-                && !my_vars.contains(name)
+                && !my_vars.iter().any(|known| known.as_str() == &**name)
             {
-                my_vars.push(name.clone());
+                my_vars.push(name.to_string());
             }
         }
     }
@@ -1225,9 +1227,9 @@ fn render_resolver_block(
         if let Term::Variable {
             name: Some(name), ..
         } = term
-            && !my_vars.contains(name)
+            && !my_vars.iter().any(|known| known.as_str() == &**name)
         {
-            my_vars.push(name.clone());
+            my_vars.push(name.to_string());
         }
     }
 
@@ -1302,7 +1304,7 @@ mod tests {
 
     use dialog_artifacts::Changes;
     use dialog_artifacts::Statement as ArtifactsStatement;
-    use dialog_operator::helpers::{test_operator_with_profile, test_repo};
+    use dialog_peer::helpers::{test_repo, test_session_with_peer};
     use dialog_query::artifact::Type;
     use dialog_query::attribute::Cardinality as DialogCardinality;
     use dialog_query::concept::descriptor::ConceptDescriptor;
@@ -1392,7 +1394,7 @@ mod tests {
     /// through the branch tables, not document-local scope.
     #[dialog_common::test]
     async fn it_resolves_branch_attribute_references_in_maybe_blocks() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -1457,7 +1459,7 @@ attribute!: &foo/title
     /// carried.
     #[dialog_common::test]
     async fn it_mirrors_dispatched_transients_for_command_dispatch() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -1548,7 +1550,7 @@ concept!: &note
     /// replaced the prior value (last-write-wins).
     #[dialog_common::test]
     async fn it_accumulates_many_valued_attributes_through_domain_heads() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -1621,7 +1623,7 @@ concept!: &note
     /// under its key — the form you would evaluate to get it.
     #[dialog_common::test]
     async fn it_folds_collection_entries_in_match_json() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -1720,7 +1722,7 @@ concept!: &note
     /// missing any requested key does not match at all.
     #[dialog_common::test]
     async fn it_binds_several_dictionary_entries_at_once() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -1907,7 +1909,7 @@ concept!: &note
     /// spelling (`+41` finds the signed fact, bare `41` does not).
     #[dialog_common::test]
     async fn it_reads_raw_domains_untyped() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -2026,7 +2028,7 @@ concept!: &note
     /// typed read agree without the domain head imposing anything.
     #[dialog_common::test]
     async fn it_types_a_domain_write_by_its_spelling() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -2101,7 +2103,7 @@ concept!: &note
     /// domain query matches values of every type.
     #[dialog_common::test]
     async fn it_keeps_raw_domains_open_ended() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -2163,7 +2165,7 @@ concept!: &note
     /// and the facts land under `domain/key`.
     #[dialog_common::test]
     async fn it_writes_collection_entries_under_their_keys() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -2257,7 +2259,7 @@ concept!: &note
     /// render.
     #[dialog_common::test]
     async fn it_retracts_a_collection_entry_by_key() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -2352,7 +2354,7 @@ concept!: &note
     /// zeroes the join and the assert's `?var` goes unbound.
     #[dialog_common::test]
     async fn it_binds_assert_var_from_query_for_distinct_target() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -2415,7 +2417,7 @@ name!:
 
     #[dialog_common::test]
     async fn it_installs_and_fires_a_notation_rule() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -2555,7 +2557,7 @@ name!:
     /// correctly.
     #[dialog_common::test]
     async fn it_declares_transient_concept_via_notation() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -2709,7 +2711,7 @@ rule!:
     /// update to `1`.
     #[dialog_common::test]
     async fn it_induces_unsigned_sum_from_transient_increment() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -2851,7 +2853,7 @@ counter!: &counter-demo
     /// it is the path the live `/evaluate` bug actually hit.
     #[dialog_common::test]
     async fn it_chains_unsigned_sum_across_two_notation_increments() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -2986,7 +2988,7 @@ counter!: &counter-demo
     /// `increment{by: 1}` made the counter jump by 2.
     #[dialog_common::test]
     async fn it_converges_two_identical_rules_within_a_round() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -3105,7 +3107,7 @@ counter!: &counter-demo
     /// silently dropped — the rule never reached the branch.
     #[dialog_common::test]
     async fn it_lifts_an_effect_from_a_rule_only_document() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -3184,7 +3186,7 @@ concept!: &pong
     /// be inert to dialog's readers.
     #[dialog_common::test]
     async fn it_rejects_a_pinned_rule_install() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -3254,7 +3256,7 @@ concept!: &pong
     /// dissociate byte-exact) and the rule must stop firing.
     #[dialog_common::test]
     async fn it_retracts_an_installed_rule_via_notation() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -3383,7 +3385,7 @@ concept!: &pong
     /// after it is retracted.
     #[dialog_common::test]
     async fn it_deduces_concepts_until_the_rule_is_retracted() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -3507,7 +3509,7 @@ concept!: &pong
     /// `person-entered!:`. Expect a durable `person` to appear.
     #[dialog_common::test]
     async fn it_fires_a_rule_on_a_two_field_notation_transient() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -3640,7 +3642,7 @@ concept!: &person
     /// durable head lands.
     #[dialog_common::test]
     async fn it_fires_a_rule_on_a_notation_transient_instance() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -3743,7 +3745,7 @@ rule!:
     /// commit. The transient should not persist; the head should.
     #[dialog_common::test]
     async fn it_drives_fixpoint_from_one_document_with_rule_plus_transient() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -3847,7 +3849,7 @@ ping!:
     /// background close must not match it.
     #[dialog_common::test]
     async fn it_keeps_active_when_a_background_sheet_closes() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -4065,7 +4067,7 @@ workspace!:
     /// active one. Shares the same workspace model.
     #[dialog_common::test]
     async fn it_moves_active_to_the_neighbour_when_the_active_sheet_closes() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -4215,7 +4217,7 @@ workspace!:
     #[dialog_common::test]
     async fn it_keeps_active_after_creating_then_closing_a_background_sheet() -> anyhow::Result<()>
     {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -4448,7 +4450,7 @@ workspace!:
     /// the standard library.
     #[dialog_common::test]
     async fn it_creates_a_self_describing_empty_sheet_and_activates_it() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -4675,7 +4677,7 @@ workspace!:
     /// document's [`Analysis`] directly.
     #[dialog_common::test]
     async fn it_analyzes_a_document_via_the_syntax_chain() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -4727,7 +4729,7 @@ workspace!:
     /// storage round-trip for optionality.
     #[dialog_common::test]
     async fn it_persists_optional_marker_for_maybe_field() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -4839,7 +4841,7 @@ workspace!:
     /// the ignored [`it_set_widens_body_derived_entities_with_bare_query`].
     #[dialog_common::test]
     async fn it_set_widens_optional_field_in_query() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -4953,7 +4955,7 @@ person!:
     /// on `feat/narrowing-diagnostics`; kept as a regression guard.
     #[dialog_common::test]
     async fn it_set_widens_body_derived_entities_with_bare_query() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -5044,7 +5046,7 @@ person!:
         use dialog_query::concept::query::ConceptQuery;
         use dialog_query::{Output as _, Parameters, Term};
 
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
@@ -5120,7 +5122,7 @@ person!:
     /// through `evaluate`.
     #[dialog_common::test]
     async fn it_errors_evaluating_integer_into_text_field() -> anyhow::Result<()> {
-        let (operator, profile) = test_operator_with_profile().await;
+        let (operator, profile) = test_session_with_peer().await;
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 

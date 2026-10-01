@@ -16,8 +16,12 @@ pub(super) struct Copy {
 
 // These are space lifecycle records, even when stored on main. Definitions
 // describing their attributes are ordinary application content and remain.
+//
+// Everything under `dialog.` is dialog's own record, which an application
+// commit may not write: a revision, or an asset's size, which the copy
+// records again by importing the asset's bytes.
 fn is_metadata(attribute: &str) -> bool {
-    attribute == "dialog.db/revision"
+    attribute.starts_with("dialog.")
         || [
             "xyz.tonk.repo/",
             "xyz.tonk.membership/",
@@ -43,7 +47,7 @@ pub(super) async fn prepare(tonk: &TonkState, source: &str) -> Result<Copy, Repo
     // source for a typo, an unmounted space, or an inaccessible subject.
     let repository = tonk
         .profile
-        .repository(source)
+        .space(source)
         .load()
         .perform(&tonk.operator)
         .await
@@ -65,15 +69,8 @@ pub(super) async fn prepare(tonk: &TonkState, source: &str) -> Result<Copy, Repo
     // Materialize the pinned revision before reading it. A pulled branch may
     // only have its root locally; failure must precede destination creation.
     let mut export = snapshot.clone().export();
-    if let Some(Upstream::Remote { remote, .. }) = branch.upstream() {
-        export = export.download(
-            repository
-                .remote(remote)
-                .load()
-                .perform(&tonk.operator)
-                .await
-                .map_err(error)?,
-        );
+    if let Some(Upstream::Remote { remote, .. }) = tonk_account::peer::upstream(branch) {
+        export = export.download(remote);
     }
     let stream = export.perform(&tonk.operator);
     tokio::pin!(stream);
@@ -89,8 +86,14 @@ pub(super) async fn prepare(tonk: &TonkState, source: &str) -> Result<Copy, Repo
         .map_err(error)?;
     tokio::pin!(stream);
     let mut content = Changes::new();
+    // The blobs to copy: every asset the branch records, and every blob a
+    // tree written before assets recorded in the blob index.
+    let mut blobs = Vec::new();
     while let Some(artifact) = stream.next().await {
         let artifact = artifact.map_err(error)?.to_owned().map_err(error)?;
+        if artifact.the.as_str() == dialog_artifacts::ASSET_SIZE {
+            blobs.push(artifact.of.clone());
+        }
         if !is_metadata(artifact.the.as_str()) {
             content.associate(artifact.the, artifact.of, artifact.is);
         }
@@ -102,10 +105,12 @@ pub(super) async fn prepare(tonk: &TonkState, source: &str) -> Result<Copy, Repo
     );
     let stream = Index::from_hash((*snapshot.revision().tree.hash()).into()).list_blobs(store);
     tokio::pin!(stream);
-    let mut blobs = Vec::new();
     while let Some(blob) = stream.next().await {
         let (hash, _) = blob.map_err(error)?;
-        blobs.push(dialog_artifacts::Entity::from_blob(&hash).map_err(error)?);
+        let entity = dialog_artifacts::Entity::from_blob(&hash).map_err(error)?;
+        if !blobs.contains(&entity) {
+            blobs.push(entity);
+        }
     }
     Ok(Copy {
         snapshot: snapshot.clone(),

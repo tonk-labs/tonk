@@ -600,7 +600,7 @@ async fn origin_entity(
     state: &dialog_reactor::BranchSession,
 ) -> Option<dialog_artifacts::Entity> {
     use dialog_query::{Output as _, Query, Term};
-    use dialog_repository::schema::replica::{Profile, Subject};
+    use dialog_repository::schema::replica::{Peer, Subject};
     use dialog_repository::schema::{DidExt as _, Replica};
 
     let subject = state.handle().of().this();
@@ -612,7 +612,7 @@ async fn origin_entity(
         .select(Query::<Replica> {
             this: Term::var("this"),
             subject: Term::from(Subject(subject)),
-            profile: Term::from(Profile(profile)),
+            peer: Term::from(Peer(profile)),
         })
         .perform(&tonk.operator)
         .try_vec()

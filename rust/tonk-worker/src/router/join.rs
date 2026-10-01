@@ -56,21 +56,15 @@
 
 use ::axum::{Json, extract::State, http::StatusCode};
 use axum_wasm_macros::wasm_compat;
-use dialog_artifacts::{
-    ArtifactSelector, Attribute, Changes, Entity, Preload, Speculation, Statement as _, Value,
-};
+use dialog_artifacts::{ArtifactSelector, Attribute, Changes, Entity, Statement as _, Value};
 use dialog_capability::access::{AuthorizeError, Prove, Retain};
-use dialog_capability::{Fork, Provider, Subject};
-use dialog_common::ConditionalSync;
-use dialog_credentials::{Credential, Ed25519Verifier};
-use dialog_effects::archive::{Get, Import, Put};
-use dialog_effects::authority::{Attest, Identify};
-use dialog_effects::memory::{Publish, Resolve};
-use dialog_effects::space::{Space, SpaceExt as _};
+use dialog_capability::{Fork, Provider};
+use dialog_credentials::Credential;
+use dialog_effects::archive::Get;
 use dialog_query::{Output as _, Query, Term};
 use dialog_remote_ucan::UcanAddress;
 use dialog_repository::{
-    Branch, Hydrate, PullError, RemoteSite, Repository, RepositoryExt as _, SiteAddress,
+    Branch, PullError, RemoteSite, Repository, RepositoryExt as _, ResolveEnv, SiteAddress,
 };
 use dialog_ucan::{Ucan, UcanDelegation};
 use dialog_ucan_core::DelegationChain;
@@ -129,42 +123,15 @@ const CONCEPT_MARKER: &str = "db.meta/concept";
 /// generic over this bundle rather than over `TonkState`, so they can be
 /// exercised against any operator that provides it.
 pub(crate) trait BranchEnv:
-    Provider<Get>
-    + Provider<Put>
-    + Provider<Import>
-    + Provider<Resolve>
-    + Provider<Publish>
-    + Provider<Identify>
-    + Provider<Attest>
-    + Provider<Prove<Ucan>>
-    + Provider<Retain<Ucan>>
-    + Provider<Hydrate>
-    + Provider<Preload>
-    + Provider<Speculation>
-    + Provider<Fork<RemoteSite, Get>>
-    + Provider<Fork<RemoteSite, Resolve>>
-    + ConditionalSync
-    + 'static
+    ResolveEnv + Provider<Prove<Ucan>> + Provider<Retain<Ucan>> + Provider<Fork<RemoteSite, Get>>
 {
 }
 
 impl<T> BranchEnv for T where
-    T: Provider<Get>
-        + Provider<Put>
-        + Provider<Import>
-        + Provider<Resolve>
-        + Provider<Publish>
-        + Provider<Identify>
-        + Provider<Attest>
+    T: ResolveEnv
         + Provider<Prove<Ucan>>
         + Provider<Retain<Ucan>>
-        + Provider<Hydrate>
-        + Provider<Preload>
-        + Provider<Speculation>
         + Provider<Fork<RemoteSite, Get>>
-        + Provider<Fork<RemoteSite, Resolve>>
-        + ConditionalSync
-        + 'static
 {
 }
 
@@ -526,7 +493,7 @@ async fn joined_response(
 ) -> Result<(StatusCode, Json<JoinResponse>), TonkWorkerError> {
     let repository = tonk
         .profile
-        .repository(outcome.key.as_str())
+        .space(outcome.key.as_str())
         .load()
         .perform(&tonk.operator)
         .await
@@ -732,7 +699,7 @@ async fn perform_join(
         })?
     } else {
         tonk.profile
-            .repository(prepared.key.as_str())
+            .space(prepared.key.as_str())
             .load()
             .perform(&tonk.operator)
             .await
@@ -957,10 +924,10 @@ async fn save_authority(
             JoinFailure::claim_failed(format!("failed to save the accepted authority: {error}"))
         })?;
     tonk.profile
-        .credential()
+        .secrets()
         .site(format!("{SPACE_ROOT_SITE_PREFIX}{subject}"))
         .save(prefix_bytes)
-        .perform(&tonk.operator)
+        .perform(&tonk.profile)
         .await
         .map_err(|error| {
             JoinFailure::claim_failed(format!(
@@ -1272,26 +1239,22 @@ pub(crate) async fn mount_replica(
     // identity). An earlier attempt may already have done this.
     let repository = match tonk
         .profile
-        .repository(key.as_str())
+        .space(key.as_str())
         .load()
         .perform(&tonk.operator)
         .await
     {
         Ok(repository) => repository,
         Err(_) => {
-            let verifier: Ed25519Verifier = subject.to_string().parse().map_err(|e| {
-                TonkWorkerError::Router(format!("subject is not a valid Ed25519 did:key: {e:?}"))
+            let space_credential = tonk_account::peer::mount_verifier(
+                tonk.profile.storage(),
+                crate::device::space_location(&key),
+                subject,
+            )
+            .await
+            .map_err(|e| {
+                TonkWorkerError::Internal(format!("failed to create local replica '{key}': {e}"))
             })?;
-            let space_capability = Subject::from(tonk.profile.did()).attenuate(Space::new(&key));
-            let space_credential = space_capability
-                .create(Credential::from(verifier))
-                .perform(&tonk.operator)
-                .await
-                .map_err(|e| {
-                    TonkWorkerError::Internal(format!(
-                        "failed to create local replica '{key}': {e}"
-                    ))
-                })?;
             Repository::from(space_credential)
         }
     };
@@ -1352,26 +1315,22 @@ pub(crate) async fn mount_replica_with_configuration(
     }
     let repository = match tonk
         .profile
-        .repository(key.as_str())
+        .space(key.as_str())
         .load()
         .perform(&tonk.operator)
         .await
     {
         Ok(repository) => repository,
         Err(_) => {
-            let verifier: Ed25519Verifier = subject.to_string().parse().map_err(|e| {
-                TonkWorkerError::Router(format!("subject is not a valid Ed25519 did:key: {e:?}"))
+            let space_credential = tonk_account::peer::mount_verifier(
+                tonk.profile.storage(),
+                crate::device::space_location(&key),
+                subject,
+            )
+            .await
+            .map_err(|e| {
+                TonkWorkerError::Internal(format!("failed to create local replica '{key}': {e}"))
             })?;
-            let space_capability = Subject::from(tonk.profile.did()).attenuate(Space::new(&key));
-            let space_credential = space_capability
-                .create(Credential::from(verifier))
-                .perform(&tonk.operator)
-                .await
-                .map_err(|e| {
-                    TonkWorkerError::Internal(format!(
-                        "failed to create local replica '{key}': {e}"
-                    ))
-                })?;
             Repository::from(space_credential)
         }
     };
@@ -2381,10 +2340,10 @@ pub(crate) mod tests {
             let root = crate::router::identity::root_did(&tonk).await.unwrap();
             let bytes = tonk
                 .profile
-                .credential()
+                .secrets()
                 .site(format!("{SPACE_ROOT_SITE_PREFIX}{subject}"))
                 .load::<Vec<u8>>()
-                .perform(&tonk.operator)
+                .perform(&tonk.profile)
                 .await
                 .unwrap();
             (root, bytes)
@@ -2483,7 +2442,7 @@ pub(crate) mod tests {
             use dialog_repository::RepositoryExt as _;
             let repository: dialog_repository::Repository = tonk
                 .profile
-                .repository(&key)
+                .space(&key)
                 .load()
                 .perform(&tonk.operator)
                 .await
@@ -2717,7 +2676,7 @@ pub(crate) mod tests {
             use dialog_repository::RepositoryExt as _;
             let repository: dialog_repository::Repository = tonk
                 .profile
-                .repository(&key)
+                .space(&key)
                 .load()
                 .perform(&tonk.operator)
                 .await
@@ -3083,63 +3042,24 @@ pub(crate) mod tests {
             "the membership is keyed on the onboarding account",
         );
 
-        // The invite principal's seed is custodied on profile main, sealed
-        // to the onboarding account, which is what accreditation opens to
-        // re-root the membership.
-        use dialog_query::{Output as _, Query, Term};
+        // The invite principal's key is held for the account the peer acts
+        // for, which the sign-in handover re-issues to the passkey root
+        // from, and the device keeps a copy of its own.
         let tonk = state.read().await;
-        let branch = tonk
-            .reactor
-            .profile_repository()
-            .branch(&tonk.active_branch)
-            .acquire(&tonk.operator)
-            .await
-            .unwrap();
-        // The principal's entity IS the subject, so the invite principal
-        // is read from `this` rather than from a repeated field.
-        let principals: Vec<tonk_schema::SecretPrincipal> = branch
-            .handle()
-            .query()
-            .select(Query::<tonk_schema::SecretPrincipal> {
-                this: Term::var("this"),
-                kind: Term::from(tonk_schema::SeedKind::Invite.kind()),
-                seed: Term::var("seed"),
-            })
-            .perform(&tonk.operator)
-            .try_vec()
-            .await
-            .unwrap();
-        assert_eq!(principals.len(), 1, "one sealed invite principal");
-        let principal: dialog_varsig::Did = principals[0].this.to_string().parse().unwrap();
-
-        let rows: Vec<tonk_schema::SecretMessage> = branch
-            .handle()
-            .query()
-            .select(Query::<tonk_schema::SecretMessage> {
-                this: Term::from(principals[0].seed.0.clone()),
-                to: Term::var("to"),
-                message: Term::var("message"),
-                from: Term::var("from"),
-            })
-            .perform(&tonk.operator)
-            .try_vec()
-            .await
-            .unwrap();
-        assert_eq!(rows.len(), 1, "the principal names a real message");
-        let sealed = tonk_identity::sealed::Sealed::decode(&rows[0].message.0).unwrap();
-        let opened = crate::onboarding::account(&tonk)
-            .await
-            .unwrap()
-            .secret()
-            .reveal(&sealed, &principal)
-            .expect("the onboarding account opens its custodied seed");
-        let reissued = dialog_credentials::Ed25519Signer::import(&*opened)
-            .await
-            .unwrap();
-        assert_eq!(
-            reissued.did(),
-            principal,
-            "the seed derives the invite principal the membership hangs off",
+        let invites: Vec<_> = dialog_repository::secrets::held_by(
+            tonk.profile.state(),
+            &tonk.profile.authority().await.unwrap(),
+            &tonk.profile,
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|(_, held)| held.kind == tonk_schema::SeedKind::Invite.held())
+        .collect();
+        assert_eq!(invites.len(), 1, "one held invite principal");
+        assert!(
+            tonk.profile.holds_key(&invites[0].0).await.unwrap(),
+            "the device keeps its copy"
         );
     }
 
@@ -3170,7 +3090,7 @@ pub(crate) mod tests {
             );
             let tonk = state.read().await;
             let account = crate::onboarding::did(&tonk).await.unwrap().unwrap();
-            let branch = dialog_repository::Repository::from(tonk.profile.signer().clone())
+            let branch = dialog_repository::Repository::from(tonk.profile.credential().clone())
                 .branch(dialog_repository::ACCESS_BRANCH)
                 .open()
                 .perform(&tonk.operator)
@@ -3187,16 +3107,14 @@ pub(crate) mod tests {
                 branch.revision(),
             )
         };
-        let storage =
-            dialog_storage::provider::storage::Storage::<crate::worker::DefaultSpace>::default();
-        let profile = dialog_operator::Profile::open(&name)
-            .perform(&storage)
-            .await
-            .unwrap();
+        let (_, profile) =
+            crate::device::open_profile_at(&name, dialog_effects::storage::Directory::Profile)
+                .await
+                .unwrap();
         assert_eq!(profile.did(), profile_did);
         // Isolate session construction from boot's legitimate meta work.
-        let session = crate::session::open(&profile, &storage).await.unwrap();
-        let branch = dialog_repository::Repository::from(profile.signer().clone())
+        let session = crate::session::open(&profile).await.unwrap();
+        let branch = dialog_repository::Repository::from(profile.credential().clone())
             .branch(dialog_repository::ACCESS_BRANCH)
             .open()
             .perform(&session.operator)
@@ -3205,7 +3123,7 @@ pub(crate) mod tests {
         assert_eq!(branch.revision(), revision);
         drop(branch);
         drop(session);
-        let rebuilt = crate::worker::boot_state(storage, name, profile, registry)
+        let rebuilt = crate::worker::boot_state(profile.storage().clone(), name, profile, registry)
             .await
             .unwrap();
         assert_ne!(rebuilt.operator.did(), operator_did);
@@ -3321,7 +3239,7 @@ pub(crate) mod tests {
             let tonk = state.read().await;
             let repository: Repository = tonk
                 .profile
-                .repository(&repo)
+                .space(&repo)
                 .load()
                 .perform(&tonk.operator)
                 .await
@@ -3378,7 +3296,7 @@ name!:
         let tonk = state.read().await;
         let repository: Repository = tonk
             .profile
-            .repository(&repo)
+            .space(&repo)
             .load()
             .perform(&tonk.operator)
             .await

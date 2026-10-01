@@ -551,7 +551,7 @@ async fn complete_login(
         tonk.disposition()
     );
     let profile_changed = tonk.disposition() != super::profiles::AccountProfileDisposition::Current;
-    let device = tonk.profile.signer().signer().clone();
+    let device = tonk.profile.credential().signer().clone();
     let ceremony =
         tonk_identity::ceremony::link_device(root.clone(), device.did(), link.device_name.clone())
             .await
@@ -569,6 +569,30 @@ async fn complete_login(
     crate::router::identity::persist_root(&tonk, root_record)
         .await
         .map_err(|error| format!("the account root was not recorded: {error}"))?;
+
+    // Seeds an earlier release sealed to this account's encryption key in
+    // tonk's own custody rows move into the custody tonk and dialog share
+    // now, the one moment the account's secret is here to open them.
+    // Best-effort: a seed that stays is picked up at the next login.
+    match tonk
+        .reactor
+        .profile_repository()
+        .branch(&tonk.active_branch)
+        .acquire(&tonk.operator)
+        .await
+    {
+        Ok(branch) => {
+            match super::rotation::migrate_custody(&tonk, branch.handle(), account.secret()).await {
+                Ok(moved) => {
+                    for (subject, reason) in &moved.failures {
+                        log!("custody: {subject} stayed in the old custody: {reason}");
+                    }
+                }
+                Err(error) => log!("custody: the old custody was not read: {error}"),
+            }
+        }
+        Err(error) => log!("custody: the old custody was not opened: {error}"),
+    }
 
     // No request: the roster is DeviceLink facts on the account's own
     // branch, and the sweep describes this device's row from the root
@@ -891,7 +915,7 @@ async fn create(
         tonk.disposition()
     );
     let profile_changed = tonk.disposition() != super::profiles::AccountProfileDisposition::Current;
-    let device = tonk.profile.signer().signer().clone();
+    let device = tonk.profile.credential().signer().clone();
     let device_did = device.did();
 
     let ceremony = tonk_identity::ceremony::create_custody_request(

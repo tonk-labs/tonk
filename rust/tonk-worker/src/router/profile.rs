@@ -593,7 +593,7 @@ pub async fn get_profile(
 
     // Read through the reactor's cached profile-repository handle so
     // reads see exactly what writes (which also go through the reactor)
-    // committed — a separate `Repository::from(&tonk.profile)` handle
+    // committed — a separate `Repository::from(tonk.profile.did())` handle
     // would resolve a different cached branch state and could disagree.
     let profile_repository = tonk
         .reactor
@@ -846,20 +846,16 @@ pub(crate) mod tests {
         );
     }
 
-    /// A branch name may carry a DID, colons and all.
-    ///
-    /// Account branches are named `account/<did>`, following
-    /// `repo_key`'s "one identifier, no suffix-stripping". Dialog does
-    /// not validate branch names — they are cell paths — but that is
-    /// worth pinning rather than assuming, since the whole naming
-    /// scheme rests on it.
+    /// A branch name is one plain path segment, so a branch cannot be
+    /// named for a DID: dialog refuses the name before anything is
+    /// written, since stores lay a branch's cells out under it.
     #[dialog_common::test]
-    async fn it_opens_a_branch_named_for_a_did() {
+    async fn it_refuses_a_branch_named_for_a_did() {
         use tonk_schema::Branch as MetaBranch;
 
         let state = test_state().await;
         let name = "account/did:key:z6MkTestAccountBranchName";
-        state
+        let refused = state
             .reactor
             .profile_repository()
             .branch(name)
@@ -870,8 +866,15 @@ pub(crate) mod tests {
             ))
             .commit()
             .perform(&state.operator)
-            .await
-            .expect("a branch named for a DID commits");
+            .await;
+        assert!(
+            matches!(
+                &refused,
+                Err(dialog_reactor::ReactorError::BranchNotFound { reason, .. })
+                    if reason.contains("is not a branch name")
+            ),
+            "{refused:?}"
+        );
     }
 
     /// A fresh profile starts on a branch with no upstream.

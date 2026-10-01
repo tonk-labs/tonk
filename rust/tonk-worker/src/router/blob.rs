@@ -59,7 +59,7 @@ pub async fn serve(
     let tonk = state.read().await;
     let repo = tonk
         .profile
-        .repository(&params.repo)
+        .space(&params.repo)
         .load()
         .perform(&tonk.operator)
         .await
@@ -194,7 +194,7 @@ pub async fn upload(
     // graph, so it doesn't go through the reactor.
     let repository = tonk
         .profile
-        .repository(&path.repo)
+        .space(&path.repo)
         .load()
         .perform(&tonk.operator)
         .await
@@ -335,7 +335,7 @@ mod tests {
             let guard = app_state.read().await;
             let repository = guard
                 .profile
-                .repository(&repo)
+                .space(&repo)
                 .load()
                 .perform(&guard.operator)
                 .await
@@ -423,8 +423,8 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let entity = json["entity"].as_str().unwrap().to_string();
         assert!(
-            entity.starts_with("blob:"),
-            "entity is a blob ref: {entity}"
+            entity.starts_with("asset:"),
+            "entity is an asset ref: {entity}"
         );
         assert_eq!(json["contentType"], "image/png");
         assert_eq!(json["name"], "shot.png");
@@ -678,7 +678,7 @@ async fn hydrate_media(
     let tonk = state.write().await;
     let repository = tonk
         .profile
-        .repository(key)
+        .space(key)
         .load()
         .perform(&tonk.operator)
         .await

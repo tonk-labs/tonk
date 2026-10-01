@@ -199,7 +199,7 @@ async fn it_reaches_a_minted_invite_from_the_account() -> Result<()> {
     );
 
     let union = tonk_account::delegations::mint_account_union(
-        &site.site.profile.signer().signer().clone(),
+        &site.site.profile.credential().signer().clone(),
         &account,
     )
     .await?;

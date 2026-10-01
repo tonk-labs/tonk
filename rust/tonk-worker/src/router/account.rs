@@ -1,9 +1,9 @@
 //! Attach optional provider services to the provider-neutral local root, and
 //! name the account repository that root owns.
 
+use crate::worker::DefaultProfile;
 use axum::{Extension, Json, extract::State};
 use axum_wasm_macros::wasm_compat;
-use dialog_operator::Profile;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_account::AccountProviderRecord;
@@ -14,7 +14,6 @@ use tonk_worker_api::{
 
 use super::AppState;
 use crate::TonkWorkerError;
-use crate::worker::DefaultOperator;
 
 const ACCOUNT_PROVIDER_SITE: &str = tonk_account::ACCOUNT_PROVIDER_CREDENTIAL_SITE;
 
@@ -35,19 +34,18 @@ async fn load_provider(
     state: &crate::worker::TonkState,
     _root_did: &dialog_varsig::Did,
 ) -> Result<Option<AccountProviderRecord>, TonkWorkerError> {
-    load_provider_from(&state.profile, &state.operator, &state.active_branch).await
+    load_provider_from(&state.profile, &state.active_branch).await
 }
 
 async fn load_provider_from(
-    profile: &Profile,
-    operator: &DefaultOperator,
+    profile: &DefaultProfile,
     branch: &str,
 ) -> Result<Option<AccountProviderRecord>, TonkWorkerError> {
     let bytes = match profile
-        .credential()
+        .secrets()
         .site(crate::credential::branch_site(ACCOUNT_PROVIDER_SITE, branch).as_str())
         .load::<Vec<u8>>()
-        .perform(operator)
+        .perform(profile)
         .await
     {
         Ok(bytes) => bytes,
@@ -75,10 +73,10 @@ async fn save_provider(
     })?;
     state
         .profile
-        .credential()
+        .secrets()
         .site(crate::credential::branch_site(ACCOUNT_PROVIDER_SITE, &state.active_branch).as_str())
         .save(bytes)
-        .perform(&state.operator)
+        .perform(&state.profile)
         .await
         .map_err(|error| {
             TonkWorkerError::Internal(format!("failed to save account provider: {error}"))
@@ -211,10 +209,10 @@ pub(crate) async fn detach_test_account(
 ) -> Result<(), TonkWorkerError> {
     state
         .profile
-        .credential()
+        .secrets()
         .site(crate::credential::branch_site(ACCOUNT_PROVIDER_SITE, &state.active_branch).as_str())
         .save(Vec::<u8>::new())
-        .perform(&state.operator)
+        .perform(&state.profile)
         .await
         .map_err(|error| {
             TonkWorkerError::Internal(format!("failed to clear account provider: {error}"))
@@ -447,10 +445,10 @@ pub(crate) async fn disconnect(
     // account meanwhile.
     state
         .profile
-        .credential()
+        .secrets()
         .site(crate::credential::branch_site(ACCOUNT_PROVIDER_SITE, &state.active_branch).as_str())
         .save(Vec::<u8>::new())
-        .perform(&state.operator)
+        .perform(&state.profile)
         .await
         .map_err(|error| {
             TonkWorkerError::Internal(format!("failed to clear account provider: {error}"))

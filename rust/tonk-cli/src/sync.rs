@@ -227,7 +227,7 @@ pub async fn push(site: &TonkSite) -> Result<SyncOutcome, SyncError> {
         .perform(&site.operator)
         .await
         .map_err(|error| SyncError::Io(format!("open meta branch: {error}")))?;
-    if meta.upstream().is_some() {
+    if tonk_account::peer::upstream(&meta).is_some() {
         run_remote(
             "push metadata",
             upstream_target(&meta),
@@ -265,7 +265,7 @@ pub async fn pull(site: &TonkSite) -> Result<SyncOutcome, SyncError> {
         .perform(&site.operator)
         .await
         .map_err(|error| SyncError::Io(format!("open meta branch: {error}")))?;
-    if meta.upstream().is_some() {
+    if tonk_account::peer::upstream(&meta).is_some() {
         run_remote(
             "pull metadata",
             upstream_target(&meta),
@@ -305,7 +305,7 @@ pub async fn status_with_hash(site: &TonkSite) -> Result<SyncStatus, SyncError> 
     let branch = session.handle();
     let local = branch.revision();
     let hash = local.as_ref().map(|revision| revision.tree.clone());
-    if branch.upstream().is_none() {
+    if tonk_account::peer::upstream(branch).is_none() {
         return Ok(SyncStatus {
             state: SyncState::NoUpstream,
             hash,
@@ -319,7 +319,15 @@ pub async fn status_with_hash(site: &TonkSite) -> Result<SyncStatus, SyncError> 
     )
     .await?;
     Ok(SyncStatus {
-        state: classify(local.as_ref(), remote.as_ref()).into(),
+        state: classify(
+            local.as_ref(),
+            remote
+                .into_iter()
+                .next()
+                .and_then(|fetched| fetched.revision)
+                .as_ref(),
+        )
+        .into(),
         hash,
     })
 }
@@ -407,7 +415,7 @@ pub async fn status_offline(site: &TonkSite) -> Result<crate::context::SyncConte
     let branch = session.handle();
     let hash = branch.revision().map(|revision| revision.tree.to_string());
     Ok(crate::context::SyncContext::offline(
-        branch.upstream().is_some(),
+        tonk_account::peer::upstream(branch).is_some(),
         hash,
     ))
 }
@@ -446,9 +454,10 @@ fn map_run_error<E>(
 }
 
 fn upstream_target(branch: &Branch) -> String {
-    match branch.upstream() {
-        Some(Upstream::Remote { remote, branch, .. }) => format!("{remote}/{branch}"),
+    match tonk_account::peer::upstream(branch) {
+        Some(Upstream::Remote { remote, branch, .. }) => format!("{}/{branch}", remote.name()),
         Some(Upstream::Local { branch, .. }) => format!("local/{branch}"),
+        Some(Upstream::Unreachable { target, .. }) => format!("unreachable upstream {target}"),
         None => format!("configured upstream for {}", branch.name()),
     }
 }

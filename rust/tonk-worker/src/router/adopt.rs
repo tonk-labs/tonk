@@ -115,11 +115,24 @@ pub(crate) async fn ensure_space_mounted(
                 }
                 let upstreams = configuration
                     .into_iter()
-                    .flat_map(|(configuration, _)| configuration.branch)
-                    .filter_map(|(name, branch)| {
-                        branch
-                            .upstream
-                            .map(|upstream| (name, upstream.remote, upstream.branch))
+                    .flat_map(|(configuration, _)| {
+                        let subject = subject.clone();
+                        let remotes = configuration.remote;
+                        configuration
+                            .branch
+                            .into_iter()
+                            .filter_map(move |(name, branch)| {
+                                let upstream = branch.upstream?;
+                                let remote = remotes.get(&upstream.remote)?;
+                                let recorded = super::remotes::RecordedRemote {
+                                    subject: remote
+                                        .subject
+                                        .clone()
+                                        .unwrap_or_else(|| subject.clone()),
+                                    address: remote.address.clone(),
+                                };
+                                Some((name, recorded, upstream.branch))
+                            })
                     })
                     .collect();
                 entry.install(tonk, key, before, upstreams);
@@ -348,7 +361,7 @@ async fn reconcile_mounted_configuration(
     };
     let repository = tonk
         .profile
-        .repository(key)
+        .space(key)
         .load()
         .perform(&tonk.operator)
         .await
@@ -532,13 +545,18 @@ where
         else {
             return Ok(false);
         };
+        let Some(recorded) =
+            super::remotes::find(repository, &upstream.remote, &tonk.operator).await?
+        else {
+            return Ok(false);
+        };
         if !matches!(
-            session.handle().upstream(),
+            tonk_account::peer::upstream(session.handle()),
             Some(dialog_repository::Upstream::Remote {
                 ref remote,
                 ref branch,
                 ..
-            }) if *remote == upstream.remote && *branch == upstream.branch
+            }) if recorded.is(remote) && *branch == upstream.branch
         ) {
             return Ok(false);
         }
@@ -604,7 +622,7 @@ pub(crate) async fn reconcile_account_spaces(tonk: &TonkState) {
 
         let repository = match tonk
             .profile
-            .repository(&key)
+            .space(&key)
             .load()
             .perform(&tonk.operator)
             .await
@@ -731,7 +749,7 @@ mod tests {
         );
         let repository: dialog_repository::Repository = tonk
             .profile
-            .repository(&key)
+            .space(&key)
             .load()
             .perform(&tonk.operator)
             .await
@@ -753,7 +771,7 @@ mod tests {
         let tonk = state.read().await;
         let repository: dialog_repository::Repository = tonk
             .profile
-            .repository(&key)
+            .space(&key)
             .load()
             .perform(&tonk.operator)
             .await
@@ -931,7 +949,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            matches!(main.handle().upstream(), Some(dialog_repository::Upstream::Remote { branch, .. }) if branch == "other")
+            matches!(tonk_account::peer::upstream(main.handle()), Some(dialog_repository::Upstream::Remote { branch, .. }) if branch == "other")
         );
         tonk.reactor
             .repository(&key)
@@ -1200,7 +1218,7 @@ mod tests {
             assert!(ensure_space_mounted(&tonk, key).await.unwrap());
             let repository: dialog_repository::Repository = tonk
                 .profile
-                .repository(key)
+                .space(key)
                 .load()
                 .perform(&tonk.operator)
                 .await
@@ -1229,7 +1247,7 @@ mod tests {
         let (first_revision, ()) = futures_util::join!(leader, waiters);
         let repository: dialog_repository::Repository = tonk
             .profile
-            .repository(key)
+            .space(key)
             .load()
             .perform(&tonk.operator)
             .await
@@ -1431,7 +1449,7 @@ mod tests {
     /// reconcile those facts rather than returning early.
     #[dialog_common::test]
     async fn it_reconciles_a_mounted_space_from_the_latest_directory_record() {
-        use dialog_repository::{SiteAddress, Upstream};
+        use dialog_repository::SiteAddress;
 
         let (app, state, _lsp) =
             crate::router::api_router_with_state(crate::router::tests::test_state().await);
@@ -1470,17 +1488,13 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            matches!(
-                session.handle().upstream(),
-                Some(Upstream::Remote { ref remote, ref branch, .. })
-                    if remote == "origin" && branch == "main"
-            ),
+            crate::router::remotes::tracks(&tonk, &key, session.handle(), "origin", "main").await,
             "the mounted replica must adopt the directory's origin/main tracking facts",
         );
 
         let repository: dialog_repository::Repository = tonk
             .profile
-            .repository(&key)
+            .space(&key)
             .load()
             .perform(&tonk.operator)
             .await
@@ -1566,7 +1580,7 @@ mod tests {
         assert!(ensure_space_mounted(&tonk, &key).await.unwrap());
         let repository: dialog_repository::Repository = tonk
             .profile
-            .repository(&key)
+            .space(&key)
             .load()
             .perform(&tonk.operator)
             .await

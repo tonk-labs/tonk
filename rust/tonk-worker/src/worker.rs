@@ -18,7 +18,7 @@ use axum::{
     body::Body,
     http::{HeaderValue, header::HeaderName},
 };
-use dialog_operator::{Operator, Profile};
+use dialog_peer::{Peer, Session};
 use dialog_storage::provider::storage::Storage;
 use js_sys::Promise;
 use send_wrapper::SendWrapper;
@@ -355,12 +355,15 @@ pub type DefaultSpace = dialog_storage::provider::storage::WebSpace;
 pub type DefaultSpace = dialog_storage::provider::storage::NativeSpace;
 
 /// Concrete operator type for the default storage backend.
-pub type DefaultOperator = Operator<DefaultSpace>;
+pub type DefaultOperator = Peer<DefaultSpace, Session>;
+
+/// The profile this worker signs as: a peer acting with its own key.
+pub type DefaultProfile = Peer<DefaultSpace>;
 
 /// Application state containing the profile and operator.
 pub struct TonkState {
     /// The user's persistent profile.
-    pub profile: Profile,
+    pub profile: DefaultProfile,
     /// The operator derived from the profile — the key that signs
     /// presign invocations. Rotated by
     /// [`session`](crate::session) before its delegation lapses, so it
@@ -464,7 +467,7 @@ impl TonkState {
 }
 
 // SAFETY: Web browsers run Wasm in a single thread only. The interior types
-// (Profile, Operator) contain `web_sys::CryptoKey` handles (via
+// (the profile and operator peers) contain `web_sys::CryptoKey` handles (via
 // Ed25519SigningKey::WebCrypto) which are !Send/!Sync, but cross-thread access
 // cannot occur in a single-threaded browser context.
 #[cfg(target_arch = "wasm32")]
@@ -1759,7 +1762,7 @@ const SYNC_HIDDEN_MAX_MS: i32 = 3_600_000;
 pub(crate) async fn boot_state(
     storage: Storage<DefaultSpace>,
     profile_name: String,
-    profile: Profile,
+    profile: DefaultProfile,
     registry: crate::device::Registry,
 ) -> Result<TonkState, crate::TonkWorkerError> {
     boot_state_with_profile_library(storage, profile_name, profile, registry, Default::default())
@@ -1771,26 +1774,57 @@ pub(crate) async fn boot_state(
 pub(crate) async fn boot_state_with_profile_library(
     storage: Storage<DefaultSpace>,
     profile_name: String,
-    profile: Profile,
+    profile: DefaultProfile,
     registry: crate::device::Registry,
     profile_library: crate::router::ProfileLibraryCache,
 ) -> Result<TonkState, crate::TonkWorkerError> {
-    let reactor = crate::Reactor::new(profile.clone());
+    // A switch hands over the peer of the branch it leaves; the profile's
+    // own branch is where every other branch's peer is derived from.
+    let profile = if profile.state().name() == crate::router::repository::PROFILE_BRANCH {
+        profile
+    } else {
+        registry
+            .open_on(
+                &storage,
+                &profile_name,
+                crate::router::repository::PROFILE_BRANCH,
+            )
+            .await?
+    };
+    let reactor = crate::Reactor::new(profile.credential().clone());
     // Session construction reads branch reference cells, but no longer
     // walks or retains delegation content. Hydrating after a construction
     // failure cannot repair entropy, signing, or local reference errors;
     // surface them without touching the profile's durable contents.
-    let session = crate::session::open(&profile, &storage).await?;
+    let session = crate::session::open(&profile).await?;
     // Which branch the profile is on. Reading `meta` takes an operator,
     // so the bootstrap session opens on `main`; a profile that is on
     // another branch gets a session whose authority is that branch's.
     let active_branch = crate::router::profile::active_branch_name(&reactor, &session.operator)
         .await
         .unwrap_or_else(|| crate::router::repository::PROFILE_BRANCH.to_owned());
-    let session = if active_branch == crate::router::repository::PROFILE_BRANCH {
-        session
+    let (profile, session) = if active_branch == crate::router::repository::PROFILE_BRANCH {
+        (profile, session)
     } else {
-        crate::session::open_on(&profile, &storage, &active_branch).await?
+        // Each account branch is its own account: the peer acting on it
+        // keeps its records, custody and delegations in the branch, and
+        // what the branch kept while branches shared one peer follows it.
+        let branch = registry
+            .open_on(&storage, &profile_name, &active_branch)
+            .await?;
+        let suffix = format!("-{active_branch}");
+        tonk_account::peer::copy_site_secrets(&profile, &branch, |name| name.ends_with(&suffix))
+            .await
+            .map_err(|error| {
+                crate::TonkWorkerError::Internal(format!(
+                    "failed to move the branch's site secrets: {error}"
+                ))
+            })?;
+        registry
+            .migrate_branch_secrets(&branch, &profile_name, &active_branch)
+            .await?;
+        let session = crate::session::open_on(&branch, &active_branch).await?;
+        (branch, session)
     };
 
     let state = TonkState {
@@ -1820,6 +1854,7 @@ pub(crate) async fn boot_state_with_profile_library(
     bootstrap_profile(&state).await.map_err(|e| {
         crate::TonkWorkerError::Internal(format!("failed to bootstrap profile meta: {e}"))
     })?;
+    crate::router::identity::follow_signed_in_account(&state).await?;
     Ok(state)
 }
 
@@ -1887,14 +1922,17 @@ impl TonkServiceWorker {
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         crate::patch_idb_dead_shims();
 
-        // 1. Create storage backend
-        let storage = Storage::<DefaultSpace>::default();
+        // 1. Create storage backend, owned by the system tonk runs as.
+        let registry = crate::device::Registry::device();
+        let storage = registry
+            .storage()
+            .await
+            .map_err(|e| JsError::new(&format!("Failed to open storage: {}", e)))?;
 
         // 2. Open the profile this device signs as. Usually the one it
         // started with; a device that has signed out (or added an
         // account) since then signs as whatever profile the registry's
         // pointer names.
-        let registry = crate::device::Registry::device();
         let (profile_name, profile) = registry
             .open_active(&storage)
             .await

@@ -56,6 +56,9 @@ mod mi;
 #[cfg(target_arch = "wasm32")]
 mod shadow;
 
+#[cfg(any(target_arch = "wasm32", test))]
+mod member_graph;
+
 #[cfg(target_arch = "wasm32")]
 mod member_roster;
 
