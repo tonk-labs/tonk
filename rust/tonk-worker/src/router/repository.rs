@@ -13842,11 +13842,12 @@ mod connection_invite_overlay_tests {
 
 /// What the mount-time seed upgrade does to a space people have built in.
 ///
-/// The 2026-09-30 release of v0.6.16 left spaces blank. Every space mounted
-/// after a release whose `core.yaml` differs runs [`upgrade_seed`], which
-/// withdrew everything its install commit had asserted and evaluated the
-/// whole new library over the space. Three things followed, each pinned
-/// here against the exact `core.yaml` production shipped before the release:
+/// B-09: the 2026-09-30 deploys to production left spaces blank. Every
+/// space mounted after a release whose `core.yaml` differed ran
+/// [`upgrade_seed`], which withdrew everything its install commit had
+/// asserted and evaluated the whole new library over the space. Three things
+/// followed, each pinned here against the exact `core.yaml` production
+/// shipped before the release:
 ///
 /// - The library's `name!: id:tonk/space -> tonk:blank` is a
 ///   cardinality-one replace, so evaluating it again superseded the home an
@@ -14274,8 +14275,8 @@ name!:
         assert_eq!(referents(&tonk, &key, "probe/home").await, ["probe:new"]);
     }
 
-    /// The incident: a space an agent built is upgraded from production's
-    /// library to the shipped one, and must still open on the agent's home.
+    /// B-09: a space an agent built is upgraded from production's library to
+    /// the shipped one, and must still open on the agent's home.
     #[dialog_common::test]
     async fn upgrading_keeps_the_home_an_agent_built() {
         let tonk = test_state().await;

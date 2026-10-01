@@ -9,7 +9,7 @@ stale design contract before implementation work begins.
 ## Summary
 
 Four findings remain after merging related observations: two high and two
-medium; `B-02`, `B-07`, and `B-08` are fixed and kept for their history. `B-06` is gone with the
+medium; `B-02`, `B-07`, `B-08`, and `B-09` are fixed and kept for their history. `B-06` is gone with the
 account service it described. The high findings share one theme: a
 user-visible account transition can cross an irreversible authority or
 durability boundary without a tested, monotonic recovery state. The medium findings make real service errors or
@@ -25,6 +25,7 @@ behavior remain in the verification backlog rather than this file.
 | `B-05` | Activation accepts concurrent duplicate submissions | medium | Activation page | fix | — |
 | `B-07` | Renamed account retains an old founder membership in a space | medium | Account and space membership | fixed | — |
 | `B-08` | Returning device cannot open a space with old branch facts | high | Space adoption and sync | fixed in source | — |
+| `B-09` | A release resets a space's home and name | high | Space library upgrade | fixed in source | — |
 
 ## High
 
@@ -174,6 +175,47 @@ behavior remain in the verification backlog rather than this file.
   old facts, and a service-worker test verifies the repaired branch enters the
   sync sweep; both passed locally. A deployed staging build and reopening the
   affected space remain unverified.
+
+### B-09: A release resets a space's home and name
+
+- **Where the user meets it:** Opening a space after the browser picks up a
+  release whose standard library (`core.yaml`) differs from the one the space
+  was seeded with. A space whose home an agent built opens on the blank
+  canvas, and the space can lose its name. Every member sees the same, and
+  rolling the release back does not bring the home back.
+- **Observed evidence:** On 2026-09-30, production moved from `561b4b7` to
+  `503a5d6` and then to v0.6.16 (`a578abb`), each with a different
+  `core.yaml`. Spaces opened after the update rendered blank, and production
+  was rolled back to `561b4b7`.
+- **Root cause:** On mount, the worker withdrew everything the space's last
+  library install had asserted and evaluated the whole new library over the
+  space. The library's `name!: id:tonk/space` → `tonk:blank` is a
+  single-valued replace, so evaluating it again superseded the home an agent
+  had pointed at its app. The space's first install also carried its name,
+  which the upgrade withdrew and nothing asserted again. A commit records
+  only what it changes, so an install omits the definitions it carried over
+  unchanged and the next upgrade cannot withdraw them: a concept keeps a
+  field a later release renamed and then matches nothing, an app's `/` route
+  can lose to the library's, and rolling a release back fails to analyze.
+- **Severity:** `high`. The upgrade writes to the space's content branch, so
+  the damage syncs to every member and outlives the release that caused it.
+- **Resolution:** Read what the library owns from the whole chain of
+  installs, and apply only the difference between the installed and the
+  shipped library. A single-valued slot the space wrote or emptied keeps the
+  space's value. Spaces an earlier release damaged are repaired from the same
+  history: a home or name an install overwrote is put back while the slot
+  still holds only what installs wrote.
+- **Raised by:** the 2026-09-30 production incident; `UI-04` (open a space
+  home), `SPACE-09` (set home concepts).
+- **Status:** Fixed in source. `seed_upgrade_tests` in
+  [`repository.rs`](../../rust/tonk-worker/src/router/repository.rs) seed a
+  space with production's `core.yaml` from `561b4b7`, build an app in it, and
+  upgrade, roll back, and upgrade again; the reproductions fail on the
+  previous upgrade and pass with the fix. Replaying every `core.yaml` from
+  the deploy sequence keeps the home and name and leaves no stray
+  definitions. Opening a damaged production space after a redeploy remains
+  unverified, as does the profile library's reconcile, which withdraws and
+  replays the same way.
 
 ## Medium
 

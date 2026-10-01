@@ -49,6 +49,13 @@ window.STORYBOOK_DATA = {
       "id": "B-08",
       "severity": "high",
       "title": "Returning device cannot open a space with old branch facts"
+    },
+    {
+      "area": "Space library upgrade",
+      "decision": "fixed in source",
+      "id": "B-09",
+      "severity": "high",
+      "title": "A release resets a space's home and name"
     }
   ],
   "coverage": [
