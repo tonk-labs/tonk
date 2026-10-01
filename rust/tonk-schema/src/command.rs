@@ -496,6 +496,58 @@ impl Command for SignOut {
     type Output = ();
 }
 
+/// `tonk:sign-in-via`: sign this browser in through another deployment.
+///
+/// The browser-side `tonk account login --via`: the worker sends the page
+/// to `<via>/settings/link` asking for an `account -> device` grant for
+/// this profile, with this deployment's `/settings/link` as the callback.
+/// The person approves there with the passkey that deployment holds.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SignInVia {
+    /// The command entity (a fresh id per click).
+    pub this: Entity,
+    /// The deployment holding the account, as an origin.
+    pub via: crate::domain::command::current::sign_in_via::Via,
+}
+
+impl Command for SignInVia {
+    type Input = Self;
+    type Output = ();
+}
+
+/// `tonk:finish-sign-in-via`: install the grant the other deployment
+/// approved for this browser.
+///
+/// Dispatched by the settings page when it loads on the callback the
+/// approval came back to. The worker checks the answer belongs to the
+/// request this profile made, installs the grant as this profile's
+/// account root, attaches the account where the grant says it syncs, and
+/// reports through [`crate::CeremonyStatus`].
+#[derive(Concept, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct FinishSignInVia {
+    /// The command entity (a fresh id per return).
+    pub this: Entity,
+    /// The callback address, fragment included.
+    pub url: crate::domain::command::current::finish_sign_in_via::Url,
+}
+
+/// Redacted like [`Join`]'s: the url carries the grant in its fragment,
+/// so it must never reach a log.
+impl std::fmt::Debug for FinishSignInVia {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("FinishSignInVia")
+            .field("this", &self.this)
+            .field("url", &"[redacted]")
+            .finish()
+    }
+}
+
+impl Command for FinishSignInVia {
+    type Input = Self;
+    type Output = ();
+}
+
 /// Rename a space's repository from the FAB.
 ///
 /// The space-side `tonk/rename-repository` rule (`core.yaml`) cannot

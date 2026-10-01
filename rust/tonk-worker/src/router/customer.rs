@@ -589,7 +589,7 @@ pub(crate) async fn provision_consumer(
         .map_err(|error| {
             TonkWorkerError::Internal(format!("failed to build the add invocation: {error}"))
         })?;
-    let origin = service_origin()?;
+    let origin = home_service_origin(state).await?;
     match post_cbor(&ucan_endpoint(&origin)?, &body).await {
         Ok(_) => {
             // Only a SPACE lands in the directory. A custody namespace
@@ -783,6 +783,28 @@ pub(crate) fn service_origin() -> Result<Url, TonkWorkerError> {
     Err(TonkWorkerError::Internal(
         "the worker origin is only known in a service-worker scope".to_string(),
     ))
+}
+
+/// The access service this profile's account lives on: the origin of the
+/// address its spaces sync to, [`super::account_state::account_remote`].
+///
+/// Spaces are provisioned and deprovisioned where they sync, so this reads
+/// the same answer space creation does rather than the origin the page
+/// happens to be served from. The two are usually one deployment, but not
+/// for a browser signed in through another deployment, whose account is
+/// attached at, and registered with, the deployment that approved it.
+pub(crate) async fn home_service_origin(
+    state: &crate::worker::TonkState,
+) -> Result<Url, TonkWorkerError> {
+    let remote = super::account_state::account_remote(state).await?;
+    let remote = Url::parse(&remote).map_err(|error| {
+        TonkWorkerError::Internal(format!("the account's sync address is not a URL: {error}"))
+    })?;
+    format!("{}/", remote.origin().ascii_serialization())
+        .parse()
+        .map_err(|error| {
+            TonkWorkerError::Internal(format!("the account's sync origin is not a URL: {error}"))
+        })
 }
 
 /// The same-origin `/ucan/` endpoint.
@@ -1476,6 +1498,43 @@ pub(crate) async fn clear_customer(
         .map_err(|error| {
             TonkWorkerError::Internal(format!("failed to clear the customer record: {error}"))
         })
+}
+
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+mod home_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    wasm_bindgen_test_configure!(run_in_service_worker);
+
+    /// Provisioning follows where the account syncs, not what the
+    /// device's grant names. The fixture's grant names no home, and its
+    /// account syncs at [`super::super::account::TEST_ACCOUNT_REMOTE`],
+    /// so that is the service it provisions with and whose refusal counts.
+    #[dialog_common::test]
+    async fn it_provisions_where_the_account_syncs() {
+        let state = crate::router::tests::test_state().await;
+        let root = super::super::identity::local_root(&state).await.unwrap();
+        assert_eq!(
+            tonk_invite::home_address(&root.delegation).ok().flatten(),
+            None
+        );
+
+        assert_eq!(
+            home_service_origin(&state).await.unwrap().as_str(),
+            "https://accounts.tonk.xyz/"
+        );
+        assert!(
+            super::super::repository::remote_is_own_service(
+                &state,
+                super::super::account::TEST_ACCOUNT_REMOTE
+            )
+            .await
+        );
+        assert!(
+            !super::super::repository::remote_is_own_service(&state, "https://tonk.network/ucan/")
+                .await
+        );
+    }
 }
 
 #[cfg(test)]

@@ -54,6 +54,7 @@ mod account_deletion;
 mod ceremony;
 pub(crate) mod customer;
 mod email_status;
+mod sign_in_via;
 
 pub(crate) mod account_state;
 pub use account_state::AccountKeys;

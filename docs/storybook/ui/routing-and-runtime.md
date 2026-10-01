@@ -282,6 +282,8 @@ avoid recording credential/passkey inputs.
   canonicalization.
 - `/settings/link` without one of audience/callback/name, or with duplicated and
   malformed encoded values.
+- `/settings/link?via=` with an origin that is not https, or coming back with a
+  `request` this browser never made, or with both `#authorize` and `#deny`.
 - `next` is absolute/external, host-relative, encoded twice, or missing.
 - Activation query is missing, empty, padded, invalid base64url, expired,
   already used, or returns non-JSON error.

@@ -36,10 +36,14 @@ fn shadow(bar: &HtmlElement, selector: &str) -> Element {
 }
 
 fn deliver_reset(agent: &HtmlElement, status: &str, link: &str) {
+    deliver_handoff(agent, status, link, "");
+}
+
+fn deliver_handoff(agent: &HtmlElement, status: &str, link: &str, receipt: &str) {
     let row = js_sys::JSON::parse(
         &serde_json::json!({
             "this": "did:key:zAgentSpace",
-            "fields": { "status": status, "link": link, "account": "did:key:account" }
+            "fields": { "status": status, "link": link, "account": "did:key:account", "receipt": receipt }
         })
         .to_string(),
     )
@@ -385,4 +389,205 @@ async fn an_account_refusal_uses_the_typed_task_and_retains_the_space() {
     clear_tonk();
     drop(task);
     drop(transact);
+}
+
+fn agent_child(bar: &HtmlElement) -> HtmlElement {
+    bar.query_selector("tonk-agent-panel")
+        .unwrap()
+        .unwrap()
+        .unchecked_into()
+}
+
+fn deliver_receipts(agent: &HtmlElement, receipts: &[&str], update: bool) {
+    let rows = serde_json::json!(receipts.iter().map(|receipt| {
+        serde_json::json!({ "this": receipt, "fields": { "status": "Agent connection confirmed" } })
+    }).collect::<Vec<_>>());
+    let payload = if update {
+        serde_json::json!({ "asserted": rows, "retracted": [] })
+    } else {
+        rows
+    };
+    let payload = js_sys::JSON::parse(&payload.to_string()).unwrap();
+    let opts = Object::new();
+    Reflect::set(&opts, &"tag".into(), &"tonk-agent-receipts".into()).unwrap();
+    Reflect::get(agent, &if update { "update" } else { "reset" }.into())
+        .unwrap()
+        .dyn_into::<Function>()
+        .unwrap()
+        .call2(agent, &payload, &opts)
+        .unwrap();
+}
+
+async fn next_frame() {
+    let promise = js_sys::Promise::new(&mut |resolve, _| {
+        window().unwrap().request_animation_frame(&resolve).unwrap();
+    });
+    JsFuture::from(promise).await.unwrap();
+}
+
+async fn await_width(bar: &HtmlElement, expected: f64) {
+    let deadline = js_sys::Date::now() + 5_000.0;
+    let mut settled = 0;
+    while js_sys::Date::now() < deadline {
+        next_frame().await;
+        let width = shadow(bar, ".w").get_bounding_client_rect().width();
+        settled = if (width - expected).abs() < 1.0 {
+            settled + 1
+        } else {
+            0
+        };
+        if settled >= 3 {
+            return;
+        }
+    }
+    panic!("FAB did not settle at {expected}px");
+}
+
+async fn await_feedback_height(bar: &HtmlElement, expanded: bool) {
+    let deadline = js_sys::Date::now() + 5_000.0;
+    let mut settled = 0;
+    while js_sys::Date::now() < deadline {
+        next_frame().await;
+        let height = shadow(bar, ".agent-feedback")
+            .get_bounding_client_rect()
+            .height();
+        let reached = if expanded {
+            height >= 90.0
+        } else {
+            height < 1.0
+        };
+        settled = if reached { settled + 1 } else { 0 };
+        if settled >= 3 {
+            return;
+        }
+    }
+    panic!("connection popup did not reach expanded={expanded}");
+}
+
+#[dialog_common::test]
+async fn connection_feedback_is_local_transient_and_restores_the_collapsed_fab() {
+    let tonk = Object::new();
+    Reflect::set(&tonk, &"transact".into(), &Function::new_no_args("")).unwrap();
+    Reflect::set(&window().unwrap(), &"tonk".into(), &tonk).unwrap();
+    let bar = mount();
+    let viewer = mount();
+    let agent = agent_child(&bar);
+    let other = agent_child(&viewer);
+    let mine = "id:tonk:agent-connection:mine";
+    let bearer = "https://example.test/#tonk-agent-v2=secret";
+    deliver_handoff(&agent, "ready", bearer, "old");
+    shadow(&bar, ".agent-copy-link")
+        .unchecked_into::<HtmlElement>()
+        .click();
+    // A delayed initial snapshot is still history, even after a copy click.
+    deliver_receipts(&agent, &["old"], false);
+    deliver_receipts(&agent, &["old"], true);
+    assert!(!bar.has_attribute("data-agent-connected"));
+
+    // A retained ready invitation works too: only the FAB where it is copied
+    // arms the receipt, even when both instances receive the same handoff.
+    deliver_handoff(&agent, "ready", bearer, mine);
+    deliver_handoff(&other, "ready", bearer, mine);
+    shadow(&bar, ".agent-copy-link")
+        .unchecked_into::<HtmlElement>()
+        .click();
+    // This is the collapsed presentation; feedback must not change its state.
+    shadow(&bar, ".w").class_list().add_1("collapsed").unwrap();
+    await_width(&bar, 51.0).await;
+    deliver_receipts(&agent, &["someone-elses"], true);
+    assert!(!bar.has_attribute("data-agent-connected"));
+    deliver_receipts(&other, &[mine], true);
+    assert!(!viewer.has_attribute("data-agent-connected"));
+    deliver_receipts(&agent, &[mine], true);
+    assert!(bar.has_attribute("data-agent-connected"));
+    assert_eq!(
+        shadow(&bar, ".agent-notice").text_content().as_deref(),
+        Some("agent connected")
+    );
+    let wrapper = shadow(&bar, ".w");
+    let _ = wrapper.get_bounding_client_rect();
+    let animations = Reflect::get(&wrapper, &"getAnimations".into())
+        .unwrap()
+        .dyn_into::<Function>()
+        .unwrap()
+        .call0(&wrapper)
+        .unwrap();
+    assert!(
+        Array::from(&animations).length() > 0,
+        "confirmation must animate the FAB width"
+    );
+    let expanded = 360.0_f64.min(window().unwrap().inner_width().unwrap().as_f64().unwrap() - 32.0);
+    await_width(&bar, expanded).await;
+    await_feedback_height(&bar, true).await;
+    assert!(
+        shadow(&bar, ".w").get_bounding_client_rect().height() > 130.0,
+        "the notice must pop out as a message surface, not replace the header label"
+    );
+    assert_eq!(
+        shadow(&bar, ".space .n").text_content().as_deref(),
+        Some("Project Atlas")
+    );
+    await_width(&bar, 51.0).await;
+    await_feedback_height(&bar, false).await;
+    assert!(!bar.has_attribute("data-agent-connected"));
+    assert!(shadow(&bar, ".w").class_list().contains("collapsed"));
+    deliver_receipts(&agent, &[mine], false);
+    deliver_receipts(&agent, &[mine], true);
+    assert!(
+        !bar.has_attribute("data-agent-connected"),
+        "reset and repeated updates do not replay"
+    );
+
+    bar.set_attribute("space", "did:key:other-space").unwrap();
+    deliver_receipts(&agent, &[mine], true);
+    assert!(!bar.has_attribute("data-agent-connected"));
+    bar.remove();
+    viewer.remove();
+    let reopened = mount();
+    let agent = agent_child(&reopened);
+    deliver_handoff(&agent, "ready", bearer, mine);
+    deliver_receipts(&agent, &[mine], false);
+    assert!(!reopened.has_attribute("data-agent-connected"));
+    reopened.remove();
+    clear_tonk();
+}
+
+#[dialog_common::test]
+async fn connection_feedback_preserves_the_panel_and_clears_on_navigation() {
+    let tonk = Object::new();
+    Reflect::set(&tonk, &"transact".into(), &Function::new_no_args("")).unwrap();
+    Reflect::set(&window().unwrap(), &"tonk".into(), &tonk).unwrap();
+    let bar = mount();
+    bar.remove_attribute("data-account-required").unwrap();
+    shadow(&bar, ".space")
+        .unchecked_into::<HtmlElement>()
+        .click();
+    shadow(&bar, ".agent")
+        .unchecked_into::<HtmlElement>()
+        .click();
+    let agent = agent_child(&bar);
+    let receipt = "id:tonk:agent-connection:current";
+    deliver_handoff(
+        &agent,
+        "ready",
+        "https://example.test/#tonk-agent-v2=secret",
+        receipt,
+    );
+    shadow(&bar, ".agent-copy-prompt")
+        .unchecked_into::<HtmlElement>()
+        .click();
+    deliver_receipts(&agent, &[receipt], true);
+    assert!(bar.has_attribute("data-agent-connected"));
+    assert!(shadow(&bar, ".w").class_list().contains("has-panel"));
+    assert!(!shadow(&bar, "#agent-panel").has_attribute("hidden"));
+    bar.set_attribute("space", "did:key:next-space").unwrap();
+    assert!(!bar.has_attribute("data-agent-connected"));
+    assert_eq!(
+        shadow(&bar, ".agent-notice").text_content().as_deref(),
+        Some("")
+    );
+    deliver_receipts(&agent, &[receipt], true);
+    assert!(!bar.has_attribute("data-agent-connected"));
+    bar.remove();
+    clear_tonk();
 }

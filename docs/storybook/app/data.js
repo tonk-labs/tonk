@@ -49,6 +49,13 @@ window.STORYBOOK_DATA = {
       "id": "B-08",
       "severity": "high",
       "title": "Returning device cannot open a space with old branch facts"
+    },
+    {
+      "area": "Space library upgrade",
+      "decision": "fixed in source",
+      "id": "B-09",
+      "severity": "high",
+      "title": "A release resets a space's home and name"
     }
   ],
   "coverage": [
@@ -353,6 +360,14 @@ window.STORYBOOK_DATA = {
       "id": "ACCT-C14",
       "title": "Choose **connect a tool**, run one-way tonk join without browser/account approval, optionally name the connection with --agent-name, and manage completed connections grouped by space in Settings; **invite someone** remains browser-only membership.",
       "variants": "Empty, same-account, unrelated-account, or malformed-legacy CLI; person link; repeated bearer holders; independent issuers/invites; fresh/returning space; profile/space switch; restart; offline or revoked authority."
+    },
+    {
+      "evidence": "Worker unit and store tests for the request binding, grant install, and provisioning at the account's deployment; settings-element tests for the via pane (the answer waits for the bound display) and a web request's approval pane; whole real-browser flow across two deployments with separate access services: sign in, then a space made on the asking deployment provisions, pushes, and is recovered at home.",
+      "gaps": "Asking browser reloaded or closed mid-approval, service worker restarted between ask and answer, a space created before the account's encryption key has synced in, revoking the asking browser from the approving one, an approving deployment older than the asking one.",
+      "group": "Accounts: CLI and browser handoff",
+      "id": "ACCT-C15",
+      "title": "Sign a browser in through another deployment: open /settings/link?via=<origin> on a deployment that does not hold the account, approve there with its passkey, and come back signed in.",
+      "variants": "Unlinked asking browser; asking branch already following an account; approve/decline; answer replayed, crafted, or late."
     },
     {
       "evidence": "Whole browser revoke-CLI flow; DOM list tests; presenter tests require response uncertainty to lead to refresh before retry.",
@@ -1024,7 +1039,8 @@ window.STORYBOOK_DATA = {
         "ACCT-C03",
         "ACCT-C04",
         "ACCT-C05",
-        "ACCT-C06"
+        "ACCT-C06",
+        "ACCT-C15"
       ],
       "name": "CLI authorization handoff",
       "source_paths": [
@@ -1033,7 +1049,7 @@ window.STORYBOOK_DATA = {
         "rust/tonk-cli/src/account.rs"
       ],
       "status": "captured",
-      "summary": "The browser names the waiting CLI device and requires explicit passkey approval or cancellation.",
+      "summary": "The browser names the waiting CLI device, or the page another deployment is signing in, and requires explicit passkey approval or cancellation.",
       "surface": "browser"
     },
     {

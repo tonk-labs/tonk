@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "project_id": 70116,
+  "catalog_url": "https://goblinoats.github.io/honky-tonks/catalog.json",
+  "template_labels": [
+    {
+      "template_id": "4ef4920da44a6ec2",
+      "slug": "kanoodel",
+      "name": "kanoodel"
+    },
+    {
+      "template_id": "9b6eef20ae02d51a",
+      "slug": "little-writer",
+      "name": "little writer"
+    },
+    {
+      "template_id": "7b794d9527299625",
+      "slug": "nightsky",
+      "name": "Nightsky"
+    },
+    {
+      "template_id": "fd4c8cd7dd36c33d",
+      "slug": "welcome",
+      "name": "Welcome to Tonk"
+    }
+  ],
+  "dashboard": {
+    "name": "Discover templates",
+    "description": "Production template adoption, navigation, and creator returns. Empty until instrumentation is deployed. Returns use mature UTC cohorts; blank rates mean no eligible cohort. Profiles are not accounts. Navigation is not editing. Fixed 30-day activity / 90-day cohorts.",
+    "pinned": true,
+    "tags": [
+      "product",
+      "discover",
+      "privacy-reviewed"
+    ]
+  },
+  "insights": [
+    {
+      "name": "Discover: template adoption (30 days)",
+      "description": "Successful created spaces and identified creator profiles in the last 30 days. Seeding must succeed. Empty until deployment. Unknown catalog IDs remain visible.",
+      "display": "ActionsTable",
+      "query": "WITH creations AS (\n SELECT toString(properties.space_id) AS space_id,\n argMin(toString(properties.template_id), timestamp) AS template_id,\n argMin(distinct_id, timestamp) AS creator,\n argMin(toString(properties.identity_state), timestamp) AS creator_identity,\n min(timestamp) AS created_at\n FROM events\n WHERE event = 'space_conversion' AND properties.conversion = 'created'\n AND properties.environment = 'production'\n AND match(toString(properties.template_id), '^[a-f0-9]{16}$')\n AND match(toString(properties.space_id), '^[a-f0-9]{16}$')\n GROUP BY space_id\n)\n SELECT multiIf(template_id = '4ef4920da44a6ec2', 'kanoodel', template_id = '9b6eef20ae02d51a', 'little writer', template_id = '7b794d9527299625', 'Nightsky', template_id = 'fd4c8cd7dd36c33d', 'Welcome to Tonk', concat('Unlisted template ', template_id)) AS template, count() AS created_spaces,\n uniqExactIf(creator, creator_identity = 'profile' AND match(creator, '^tonk:[a-f0-9]{64}$')) AS identified_creators,\n countIf(creator_identity != 'profile' OR NOT match(creator, '^tonk:[a-f0-9]{64}$')) AS creations_without_profile\n FROM creations WHERE created_at >= now() - INTERVAL 30 DAY\n GROUP BY template_id ORDER BY created_spaces DESC"
+    },
+    {
+      "name": "Discover: template reach (30 days)",
+      "description": "Identified profiles navigating into attributed spaces in the last 30 days. Includes creation-day opens and collaborators. Navigation is not proof of rendering or editing. Profiles are not people or accounts.",
+      "display": "ActionsTable",
+      "query": "WITH creations AS (\n SELECT toString(properties.space_id) AS space_id,\n argMin(toString(properties.template_id), timestamp) AS template_id,\n argMin(distinct_id, timestamp) AS creator,\n argMin(toString(properties.identity_state), timestamp) AS creator_identity,\n min(timestamp) AS created_at\n FROM events\n WHERE event = 'space_conversion' AND properties.conversion = 'created'\n AND properties.environment = 'production'\n AND match(toString(properties.template_id), '^[a-f0-9]{16}$')\n AND match(toString(properties.space_id), '^[a-f0-9]{16}$')\n GROUP BY space_id\n), entries AS (SELECT toString(properties.space_id) AS space_id, distinct_id AS profile,\n timestamp AS entered_at, toString(properties.identity_state) AS identity_state\n FROM events WHERE event = 'space_entered' AND properties.environment = 'production'\n AND timestamp >= now() - INTERVAL 30 DAY)\n SELECT multiIf(template_id = '4ef4920da44a6ec2', 'kanoodel', template_id = '9b6eef20ae02d51a', 'little writer', template_id = '7b794d9527299625', 'Nightsky', template_id = 'fd4c8cd7dd36c33d', 'Welcome to Tonk', concat('Unlisted template ', template_id)) AS template, uniqExact(e.profile) AS visiting_profiles,\n uniqExact(c.space_id) AS visited_spaces,\n uniqExactIf(e.profile, e.profile = c.creator) AS visiting_creators,\n uniqExactIf(e.profile, e.profile != c.creator) AS visiting_collaborators\n FROM entries e JOIN creations c ON e.space_id = c.space_id\n WHERE e.identity_state = 'profile' AND match(e.profile, '^tonk:[a-f0-9]{64}$') AND e.entered_at >= c.created_at\n GROUP BY template_id ORDER BY visiting_profiles DESC"
+    },
+    {
+      "name": "Discover: active days and repeat use (30 days)",
+      "description": "Identified navigation, deduplicated by profile/space/UTC day. Same-day reloads do not inflate active days. Includes creation day. Repeat profiles entered attributed spaces on at least two distinct days in this window.",
+      "display": "ActionsTable",
+      "query": "WITH creations AS (\n SELECT toString(properties.space_id) AS space_id,\n argMin(toString(properties.template_id), timestamp) AS template_id,\n argMin(distinct_id, timestamp) AS creator,\n argMin(toString(properties.identity_state), timestamp) AS creator_identity,\n min(timestamp) AS created_at\n FROM events\n WHERE event = 'space_conversion' AND properties.conversion = 'created'\n AND properties.environment = 'production'\n AND match(toString(properties.template_id), '^[a-f0-9]{16}$')\n AND match(toString(properties.space_id), '^[a-f0-9]{16}$')\n GROUP BY space_id\n), entries AS (SELECT toString(properties.space_id) AS space_id, distinct_id AS profile,\n timestamp AS entered_at, toString(properties.identity_state) AS identity_state\n FROM events WHERE event = 'space_entered' AND properties.environment = 'production'\n AND timestamp >= now() - INTERVAL 30 DAY), profile_days AS (\n SELECT c.template_id AS template_id, e.profile AS profile,\n uniqExact(toDate(e.entered_at)) AS active_days,\n uniqExact(tuple(e.space_id, toDate(e.entered_at))) AS space_days\n FROM entries e JOIN creations c ON e.space_id = c.space_id\n WHERE e.identity_state = 'profile' AND match(e.profile, '^tonk:[a-f0-9]{64}$') AND e.entered_at >= c.created_at\n GROUP BY c.template_id, e.profile\n)\n SELECT multiIf(template_id = '4ef4920da44a6ec2', 'kanoodel', template_id = '9b6eef20ae02d51a', 'little writer', template_id = '7b794d9527299625', 'Nightsky', template_id = 'fd4c8cd7dd36c33d', 'Welcome to Tonk', concat('Unlisted template ', template_id)) AS template, count() AS visiting_profiles,\n sum(active_days) AS profile_days, sum(space_days) AS profile_space_days,\n countIf(active_days >= 2) AS repeat_profiles,\n round(avg(active_days), 2) AS active_days_per_profile\n FROM profile_days GROUP BY template_id ORDER BY profile_days DESC"
+    },
+    {
+      "name": "Discover: creator return rates (mature cohorts)",
+      "description": "First observed identified creation per profile/template in the last 90 days; return must be to that same first space. D1 requires two UTC date boundaries; days 1-7 requires eight. Day zero excluded. Immature denominators give blank rates, not 0%.",
+      "display": "ActionsTable",
+      "query": "WITH creations AS (\n SELECT toString(properties.space_id) AS space_id,\n argMin(toString(properties.template_id), timestamp) AS template_id,\n argMin(distinct_id, timestamp) AS creator,\n argMin(toString(properties.identity_state), timestamp) AS creator_identity,\n min(timestamp) AS created_at\n FROM events\n WHERE event = 'space_conversion' AND properties.conversion = 'created'\n AND properties.environment = 'production'\n AND match(toString(properties.template_id), '^[a-f0-9]{16}$')\n AND match(toString(properties.space_id), '^[a-f0-9]{16}$')\n GROUP BY space_id\n), cohorts AS (\n SELECT template_id, creator, min(created_at) AS cohort_at,\n argMin(space_id, created_at) AS first_space\n FROM creations WHERE creator_identity = 'profile' AND match(creator, '^tonk:[a-f0-9]{64}$')\n GROUP BY template_id, creator\n HAVING cohort_at >= now() - INTERVAL 90 DAY\n), returns AS (\n SELECT c.template_id AS template_id, c.creator AS creator,\n c.cohort_at AS cohort_at,\n max(if(dateDiff('day', toDate(c.cohort_at), toDate(e.timestamp)) = 1, 1, 0)) AS returned_d1,\n max(if(dateDiff('day', toDate(c.cohort_at), toDate(e.timestamp)) BETWEEN 1 AND 7, 1, 0)) AS returned_d1_7\n FROM cohorts c LEFT JOIN (\n SELECT timestamp, distinct_id, toString(properties.space_id) AS space_id\n FROM events WHERE event = 'space_entered' AND properties.environment = 'production'\n AND properties.identity_state = 'profile' AND match(distinct_id, '^tonk:[a-f0-9]{64}$')\n AND timestamp >= now() - INTERVAL 90 DAY\n ) e ON e.space_id = c.first_space AND e.distinct_id = c.creator\n GROUP BY c.template_id, c.creator, c.cohort_at\n)\n\n SELECT multiIf(template_id = '4ef4920da44a6ec2', 'kanoodel', template_id = '9b6eef20ae02d51a', 'little writer', template_id = '7b794d9527299625', 'Nightsky', template_id = 'fd4c8cd7dd36c33d', 'Welcome to Tonk', concat('Unlisted template ', template_id)) AS template, count() AS creator_cohort,\n countIf(dateDiff('day', toDate(cohort_at), toDate(now())) >= 2) AS d1_eligible,\n sumIf(returned_d1, dateDiff('day', toDate(cohort_at), toDate(now())) >= 2) AS d1_returned,\n round(100.0 * d1_returned / nullIf(d1_eligible, 0), 1) AS d1_percent,\n countIf(dateDiff('day', toDate(cohort_at), toDate(now())) >= 8) AS d1_7_eligible,\n sumIf(returned_d1_7, dateDiff('day', toDate(cohort_at), toDate(now())) >= 8) AS d1_7_returned,\n round(100.0 * d1_7_returned / nullIf(d1_7_eligible, 0), 1) AS d1_7_percent\n FROM returns GROUP BY template_id ORDER BY creator_cohort DESC"
+    },
+    {
+      "name": "Discover: attribution coverage (30 days)",
+      "description": "All production space entries, including unresolved profiles and non-template spaces. Missing attribution is expected for blank, old, duplicated, or uncaptured creations. Counts are events, not unique users. Zero entries means no data, not zero retention.",
+      "display": "ActionsTable",
+      "query": "WITH creations AS (\n SELECT toString(properties.space_id) AS space_id,\n argMin(toString(properties.template_id), timestamp) AS template_id,\n argMin(distinct_id, timestamp) AS creator,\n argMin(toString(properties.identity_state), timestamp) AS creator_identity,\n min(timestamp) AS created_at\n FROM events\n WHERE event = 'space_conversion' AND properties.conversion = 'created'\n AND properties.environment = 'production'\n AND match(toString(properties.template_id), '^[a-f0-9]{16}$')\n AND match(toString(properties.space_id), '^[a-f0-9]{16}$')\n GROUP BY space_id\n), entries AS (SELECT toString(properties.space_id) AS space_id, distinct_id AS profile,\n timestamp AS entered_at, toString(properties.identity_state) AS identity_state\n FROM events WHERE event = 'space_entered' AND properties.environment = 'production'\n AND timestamp >= now() - INTERVAL 30 DAY)\n SELECT count() AS all_space_entries,\n countIf(notEmpty(c.template_id) AND e.entered_at >= c.created_at) AS template_attributed_entries,\n all_space_entries - template_attributed_entries AS unattributed_entries,\n countIf(notEmpty(c.template_id) AND e.entered_at >= c.created_at AND e.identity_state = 'profile' AND match(e.profile, '^tonk:[a-f0-9]{64}$')) AS attributed_identified_entries,\n round(100.0 * template_attributed_entries / nullIf(all_space_entries, 0), 1) AS attribution_percent\n FROM entries e LEFT JOIN creations c ON e.space_id = c.space_id"
+    }
+  ],
+  "published": {
+    "dashboard_id": 989095,
+    "verified_at": "2026-10-01T13:29:29.095845+00:00",
+    "insights": [
+      {
+        "name": "Discover: template adoption (30 days)",
+        "id": 6264016,
+        "short_id": "KZL0Dx2x"
+      },
+      {
+        "name": "Discover: template reach (30 days)",
+        "id": 6264025,
+        "short_id": "SGM7irIp"
+      },
+      {
+        "name": "Discover: active days and repeat use (30 days)",
+        "id": 6264027,
+        "short_id": "CcuekdCk"
+      },
+      {
+        "name": "Discover: creator return rates (mature cohorts)",
+        "id": 6264028,
+        "short_id": "2cal1epO"
+      },
+      {
+        "name": "Discover: attribution coverage (30 days)",
+        "id": 6264030,
+        "short_id": "Nz4i8s5K"
+      }
+    ],
+    "url": "https://eu.posthog.com/project/70116/dashboard/989095"
+  }
+}

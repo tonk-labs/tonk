@@ -335,7 +335,6 @@ pub(crate) async fn local_branches(tonk: &crate::worker::TonkState) -> Vec<(Stri
 ///
 /// Signing back in returns to the branch that was signed in to that
 /// account before, spaces and all, rather than attaching a second one.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) async fn branch_following(
     tonk: &crate::worker::TonkState,
     account: &Did,
