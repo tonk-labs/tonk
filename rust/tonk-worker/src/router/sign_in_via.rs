@@ -607,6 +607,111 @@ mod store_tests {
         );
     }
 
+    /// A browser signed in through another deployment keeps its spaces
+    /// where its account syncs, so that deployment provisions them and
+    /// only its refusal counts. `/provider/add` and `/provider/remove` go
+    /// there, never to the deployment serving this page, which holds no
+    /// customer for the account.
+    #[dialog_common::test]
+    async fn it_provisions_and_deprovisions_at_the_deployment_it_signed_in_through() {
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+        use tonk_schema::prelude::DidExt as _;
+
+        let state = test_state_without_root().await;
+        let (encoded, _) = delivery_for(74, &state.profile.did()).await;
+        waiting_on(&state, "r1").await;
+        let delivered = answer(&state, &callback("r1", &encoded)).await.unwrap();
+        adopt(&state, delivered).await.unwrap();
+
+        // What the account's branch brings once it syncs in: the key its
+        // first device published, which a new space's seed is sealed to.
+        // This browser has no passkey to derive it from.
+        let account = super::super::identity::root_did(&state).await.unwrap();
+        let recipient =
+            tonk_identity::envelope::AccountSecret::from_bytes(zeroize::Zeroizing::new([74; 32]))
+                .secret()
+                .did();
+        state
+            .reactor
+            .profile_repository()
+            .branch(&state.active_branch)
+            .transaction()
+            .assert(tonk_schema::AccountSealedInbox::new(
+                account.this(),
+                recipient.this(),
+            ))
+            .commit()
+            .perform(&state.operator)
+            .await
+            .unwrap();
+
+        assert!(super::super::repository::remote_is_own_service(&state, HOME).await);
+        assert!(
+            !super::super::repository::remote_is_own_service(&state, "https://tonk.host/ucan/")
+                .await,
+            "the deployment serving the page does not hold this account"
+        );
+
+        let space = super::super::repository::create_repository(
+            &state,
+            "Kept at home",
+            &Default::default(),
+        )
+        .await
+        .unwrap()
+        .did();
+
+        let calls = js_sys::Array::new();
+        let _calls =
+            crate::router::tests::GlobalPropertyGuard::replace("__tonkProviderCalls", &calls);
+        let fetch = js_sys::Function::new_with_args(
+            "request",
+            "globalThis.__tonkProviderCalls.push(request.method + ' ' + request.url);
+             return Promise.resolve(new Response(new Uint8Array(0), { status: 200 }));",
+        );
+        let _fetch = crate::router::tests::GlobalPropertyGuard::replace("fetch", fetch.as_ref());
+        let sent = || {
+            calls
+                .iter()
+                .map(|call| call.as_string().unwrap())
+                .collect::<Vec<_>>()
+        };
+
+        super::super::repository::provision_space_consumer(&state, &space)
+            .await
+            .unwrap();
+        assert_eq!(sent(), ["POST https://tonk.network/ucan/"]);
+        assert!(super::super::customer::space_provider_recorded(&state, &space).await);
+
+        // Through the command the Hub fires, which has no request to say
+        // where the space was provided.
+        let state = Arc::new(RwLock::new(state));
+        let env =
+            crate::router::CommandEnv::new(state.clone(), crate::router::CommandOrigin::default());
+        <crate::router::CommandEnv as dialog_capability::Provider<
+            tonk_schema::command::RemoveSpace,
+        >>::execute(
+            &env,
+            tonk_schema::command::RemoveSpace {
+                this: "cmd:remove-space".parse().expect("entity"),
+                subject: tonk_schema::domain::command::current::remove_space::Subject(space.this()),
+            },
+        )
+        .await;
+        assert_eq!(
+            sent(),
+            [
+                "POST https://tonk.network/ucan/",
+                "POST https://tonk.network/ucan/"
+            ]
+        );
+        assert!(
+            !super::super::customer::space_provider_recorded(&*state.read().await, &space).await,
+            "the home accepted the removal"
+        );
+    }
+
     #[dialog_common::test]
     async fn it_refuses_a_grant_addressed_to_another_device() {
         let state = test_state_without_root().await;

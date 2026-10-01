@@ -5062,12 +5062,11 @@ pub(crate) async fn provision_space_consumer(
     super::customer::provision_consumer(tonk, subject, &prefix, None).await
 }
 
-/// Whether `remote` is the access service this profile's account lives on
-/// — the one party whose provisioning refusal is authoritative for it.
-/// That is this deployment's own service, or the deployment a browser
-/// signed in through (see [`super::customer::home_service_origin`]). A
-/// foreign remote (self-hosted, a test server) is attached and shared
-/// without asking our service's opinion.
+/// Whether `remote` is the access service this profile's account syncs
+/// with — where it provisions, and so the one party whose provisioning
+/// refusal is authoritative ([`super::customer::home_service_origin`]).
+/// A foreign remote (self-hosted, a test server) is attached and shared
+/// without asking that service's opinion.
 pub(super) async fn remote_is_own_service(tonk: &TonkState, remote: &str) -> bool {
     let Ok(own) = super::customer::home_service_origin(tonk).await else {
         return false;
@@ -11243,9 +11242,10 @@ block/insert!:
         );
     }
 
-    /// Direct owned authority must still reach provisioning. This harness
-    /// has no worker origin, so reaching the service boundary returns an
-    /// error rather than silently treating the owned space as already served.
+    /// Direct owned authority must still reach provisioning, at the
+    /// service the account syncs with, rather than being treated as
+    /// already served. The service refuses here, and that refusal is what
+    /// comes back.
     #[dialog_common::test]
     async fn it_requires_provisioning_for_owned_space_authority() {
         let (_app, state, key) = fresh_repo("owned-space-provisioning").await;
@@ -11253,12 +11253,32 @@ block/insert!:
         let subject = key.parse().unwrap();
         let prefix = super::space_root_prefix(&tonk, &subject).await.unwrap();
         assert_eq!(prefix.proofs().count(), 1);
+
+        let calls = js_sys::Array::new();
+        let _calls =
+            crate::router::tests::GlobalPropertyGuard::replace("__tonkProviderCalls", &calls);
+        let fetch = js_sys::Function::new_with_args(
+            "request",
+            "globalThis.__tonkProviderCalls.push(request.url);
+             return Promise.resolve(new Response(
+                 JSON.stringify({ error: { code: 'UnknownCustomer', message: 'no such customer' } }),
+                 { status: 404, headers: { 'content-type': 'application/json' } }));",
+        );
+        let _fetch = crate::router::tests::GlobalPropertyGuard::replace("fetch", fetch.as_ref());
+
         let error = super::provision_space_consumer(&tonk, &subject)
             .await
             .expect_err("owned authority must still attempt provisioning");
         assert!(
-            matches!(error, crate::TonkWorkerError::Internal(ref detail) if detail == "the worker origin is unavailable"),
-            "expected the service boundary, got {error}",
+            matches!(error, crate::TonkWorkerError::Upstream { ref code, .. } if code.as_deref() == Some("UnknownCustomer")),
+            "expected the service's refusal, got {error}",
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .map(|call| call.as_string().unwrap())
+                .collect::<Vec<_>>(),
+            [crate::router::account::TEST_ACCOUNT_REMOTE]
         );
     }
 
