@@ -199,23 +199,30 @@ behavior remain in the verification backlog rather than this file.
   can lose to the library's, and rolling a release back fails to analyze.
 - **Severity:** `high`. The upgrade writes to the space's content branch, so
   the damage syncs to every member and outlives the release that caused it.
-- **Resolution:** Read what the library owns from the whole chain of
-  installs, and apply only the difference between the installed and the
-  shipped library. A single-valued slot the space wrote or emptied keeps the
-  space's value. Spaces an earlier release damaged are repaired from the same
-  history: a home or name an install overwrote is put back while the slot
-  still holds only what installs wrote.
+- **Resolution:** An upgrade is an uninstall followed by an install, in
+  staged commits behind one publish: the first reverts everything the
+  running install asserted, the second asserts the new library, and the
+  third records the install. With nothing of the old library live, the
+  install commit holds all of the new one, so the next upgrade reverts that
+  one commit. What a space may change ships as `seed/route` and `seed/name`
+  commands, whose rules write a route or the home only where the space has
+  not, so an upgrade never writes over the space's choice. A new space's
+  name rides the record commit, and installs are recorded as `seed/install`,
+  which releases before this one do not read, so a device still running one
+  leaves an upgraded space alone instead of moving it back. Spaces installed
+  before this revert every install they recorded, once. A space an earlier
+  release already damaged is not repaired: retracting a replaced value does
+  not bring back the one it replaced.
 - **Raised by:** the 2026-09-30 production incident; `UI-04` (open a space
   home), `SPACE-09` (set home concepts).
 - **Status:** Fixed in source. `seed_upgrade_tests` in
-  [`repository.rs`](../../rust/tonk-worker/src/router/repository.rs) seed a
-  space with production's `core.yaml` from `561b4b7`, build an app in it, and
-  upgrade, roll back, and upgrade again; the reproductions fail on the
-  previous upgrade and pass with the fix. Replaying every `core.yaml` from
-  the deploy sequence keeps the home and name and leaves no stray
-  definitions. Opening a damaged production space after a redeploy remains
-  unverified, as does the profile library's reconcile, which withdraws and
-  replays the same way.
+  [`repository.rs`](../../rust/tonk-worker/src/router/repository.rs) seed
+  spaces the way creation does now and the way it did before, with
+  production's `core.yaml` from `561b4b7`, build an app in them, and
+  upgrade and roll back; the reproductions fail on the previous upgrade and
+  pass with the fix, and an upgraded space holds what a fresh install holds.
+  Damaged production spaces need manual recovery. The profile library's
+  reconcile is unchanged.
 
 ## Medium
 

@@ -10455,11 +10455,6 @@ mod tests {
         assert_ne!(head(), seeded, "an upgrade commits");
         let upgraded = installed().await.expect("the upgrade records itself");
         assert_eq!(upgraded.seed.to_string(), super::seed_version(&second));
-        assert_eq!(
-            upgraded.prior.to_string(),
-            super::seed_version(&first),
-            "the upgrade records what it replaced"
-        );
         let running: Vec<tonk_schema::SeedInstalled> = session
             .handle()
             .query()
@@ -10476,6 +10471,11 @@ mod tests {
             running.len(),
             1,
             "an upgrade withdraws the earlier install record: {running:?}"
+        );
+        assert_eq!(
+            running[0].prior.0.to_string(),
+            super::seed_version(&first),
+            "the upgrade records what it replaced"
         );
         let paths = paths().await;
         assert!(
