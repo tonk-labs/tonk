@@ -193,14 +193,30 @@ when the overlay path is fast enough to replace it.
 
 ## Open questions
 
-1. **Typed text versus the selection.** With "Plans" selected and "to
-   Notes" typed, both are title fragments. Which wins: typed, then
-   selection, then nothing? Ubiquity boosted the selection (×1.2), which
-   suits the thing acted on but not a new value.
-2. **Empty input.** If every rule requires `intent.command`, an empty
-   palette derives nothing, and "what can I do with this open notebook?"
-   has no answer. Either the parser proposes every command when the input
-   is empty, or some rules don't require a command.
+1. ~~Typed text versus the selection.~~ **Settled: as Ubiquity, which
+   the parser already does.** Both readings are offered and scored
+   differently: a copy of every parse with the selection added (×1.2,
+   then tried in each role), "this"/"it" replaced by it (×1.2), and ×0.5
+   per extra value in one role (`dialog-lingo` `parser.rs:724`, `:783`,
+   `:937`; Ubiquity `parser.js:1008`, `:1037`, `:964`). So typed "to
+   Notes" ranks above a selected "Plans", and with nothing typed for the
+   title, the selection fills it. Today tonk passes `selection: None`
+   (`dialog-reactor/src/lingo.rs`), which is the only reason it doesn't
+   happen. **Consequence:** the selection goes to the parser and arrives as
+   phrases on the intent, like typed text, so the title-from-selection
+   rule above is not needed. Rules are for what the parser can't know,
+   such as the notebook a page shows.
+2. ~~Empty input.~~ **Settled.** Context is only what is about this
+   opening of the palette: the site (and what rules derive from it), the
+   selection, the time. Everything else is data rules read, e.g. whether
+   the profile has an account, which is why the bar hides "add an account"
+   (`tonk-fab/src/element.rs`, `.login`). With nothing typed, the parser
+   makes an intent for every command, rules derive what the context and
+   data give, and the palette lists commands that are runnable or nearly
+   so, most used first: today's empty state (`tonk_lingo::menu`), except
+   that fields the context can fill now count as filled. Rules that don't
+   name a command are fine; their fragments serve every command with that
+   field.
 3. **Phrases.** How typed text per role is modelled, and whether the
    parser can produce several splits for one command.
 4. **The route check.** How a library reference (`notebook/route`) compares
