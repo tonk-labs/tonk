@@ -176,7 +176,7 @@ async fn save_pending(state: &TonkState, pending: &PendingRequest) -> Result<(),
         .secrets()
         .site(request_site(state).as_str())
         .save(bytes)
-        .perform(&state.operator)
+        .perform(&state.profile)
         .await
         .map_err(|error| format!("the sign-in request was not recorded: {error}"))
 }
@@ -187,7 +187,7 @@ async fn load_pending(state: &TonkState) -> Result<Option<PendingRequest>, Strin
         .secrets()
         .site(request_site(state).as_str())
         .load::<Vec<u8>>()
-        .perform(&state.operator)
+        .perform(&state.profile)
         .await
     {
         Ok(bytes) => serde_json::from_slice(&bytes)
@@ -204,7 +204,7 @@ async fn forget_pending(state: &TonkState) {
         .secrets()
         .site(request_site(state).as_str())
         .retract()
-        .perform(&state.operator)
+        .perform(&state.profile)
         .await
     {
         log!("sign-in-via: the answered request was not cleared: {error}");
