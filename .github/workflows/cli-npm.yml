@@ -1,10 +1,10 @@
 name: 'CLI npm'
 
 # Every `v*` release tag publishes to npm: a prerelease tag
-# (`v0.7.0-rc.1`, `v0.7.0-preview.1`) to the `next` dist-tag, a final
-# tag (`v0.7.0`) to `latest`. `release.yml` explains how to cut one. The
-# tag must be on `main`, and its version is stamped into the build, so
-# the published binaries report the tag's version.
+# (`v0.7.0-rc.1`) to the `next` dist-tag, a final tag (`v0.7.0`) to
+# `latest`. `release.yml` explains how to cut one. The tag must be on
+# `main`, and its version is stamped into the build, so the published
+# binaries report the tag's version.
 #
 # npm Trusted Publishing is bound to this file's name, which is why npm
 # lives here rather than in `release.yml`. Re-running a failed run is the

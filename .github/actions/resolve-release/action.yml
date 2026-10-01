@@ -1,12 +1,10 @@
 name: 'Resolve release'
 description: 'Validate a pushed v* tag, derive its version and channel, and stamp the version into the workspace'
 
-# The tag is the only version source. A tag without a prerelease suffix
-# (`v0.7.0`) is a stable release, one whose suffix has `-preview`
-# (`v0.7.0-preview.1`) is a preview release, and any other suffix
-# (`v0.7.0-rc.1`, `-alpha`, `-beta.2`) is a staging release. The tag must
-# point at a commit already on `main`, so nothing ships that did not land
-# through review.
+# The tag is the only version source. A tag with a prerelease suffix
+# (`v0.7.0-rc.1`) is a staging release, one without (`v0.7.0`) is a stable
+# release, and the tag must point at a commit already on `main`, so nothing
+# ships that did not land through review.
 #
 # Stamping rewrites `[workspace.package] version` and the matching
 # workspace entries in `Cargo.lock` in the working tree. Nix builds a
@@ -23,10 +21,10 @@ outputs:
     description: 'The tag without its leading v, e.g. 0.7.0-rc.1'
     value: ${{ steps.resolve.outputs.version }}
   channel:
-    description: 'preview for a -preview tag, staging for any other prerelease tag, stable otherwise'
+    description: 'staging for a prerelease tag, stable otherwise'
     value: ${{ steps.resolve.outputs.channel }}
   prerelease:
-    description: 'true for a preview or staging release'
+    description: 'true for a staging release'
     value: ${{ steps.resolve.outputs.prerelease }}
 
 runs:
@@ -60,10 +58,7 @@ runs:
           exit 1
         fi
 
-        if [[ "$version" == *-preview* ]]; then
-          channel=preview
-          prerelease=true
-        elif [[ "$version" == *-* ]]; then
+        if [[ "$version" == *-* ]]; then
           channel=staging
           prerelease=true
         else
