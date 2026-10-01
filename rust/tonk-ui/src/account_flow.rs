@@ -9691,7 +9691,7 @@ pub(crate) mod tests {
         // And the account's own space shows up here.
         let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
         let mut found = get_json(&driver, &format!("/api/repository/{at_home}")).await?;
-        while !found["status"].as_u64().is_some_and(|status| status == 200) {
+        while found["status"].as_u64().is_none_or(|status| status != 200) {
             anyhow::ensure!(
                 tokio::time::Instant::now() < deadline,
                 "the account's space never showed up after signing in: {found}; listed {:?}",
