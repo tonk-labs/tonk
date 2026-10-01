@@ -14163,7 +14163,7 @@ name!:
         assert_eq!(referents(&tonk, &key, "tonk/space").await, ["tonk:blank"]);
         assert!(space_names(&tonk, &key, &subject).await.is_empty());
 
-        assert!(upgrade_seed(&tonk, &key).await.expect("the upgrade runs"));
+        assert!(install(&tonk, &key, CORE).await);
 
         assert_eq!(referents(&tonk, &key, "tonk/space").await, ["space:home"]);
         assert_eq!(space_names(&tonk, &key, &subject).await, ["Garden"]);
@@ -14181,16 +14181,14 @@ name!:
         assert_eq!(referents(&tonk, &key, "tonk/space").await, ["tonk:blank"]);
 
         assert!(
-            upgrade_seed(&tonk, &key).await.expect("the check runs"),
+            install(&tonk, &key, CORE).await,
             "putting the values back is a change"
         );
 
         assert_eq!(referents(&tonk, &key, "tonk/space").await, ["space:home"]);
         assert_eq!(space_names(&tonk, &key, &subject).await, ["Garden"]);
         assert!(
-            !upgrade_seed(&tonk, &key)
-                .await
-                .expect("a second check runs"),
+            !install(&tonk, &key, CORE).await,
             "a repaired space is current"
         );
     }
@@ -14214,7 +14212,7 @@ name!:
         )
         .await;
 
-        assert!(upgrade_seed(&tonk, &key).await.expect("the upgrade runs"));
+        assert!(install(&tonk, &key, CORE).await);
 
         assert_eq!(referents(&tonk, &key, "tonk/space").await, ["garden:plot"]);
     }
@@ -14285,7 +14283,7 @@ name!:
         assert_eq!(referents(&tonk, &key, "tonk/space").await, ["space:home"]);
 
         assert!(
-            upgrade_seed(&tonk, &key).await.expect("the upgrade runs"),
+            install(&tonk, &key, CORE).await,
             "a space on production's library is behind the shipped one"
         );
 
@@ -14304,7 +14302,7 @@ name!:
         let (key, subject) = seeded_space(&tonk, PRODUCTION_CORE, "Garden").await;
         assert_eq!(space_names(&tonk, &key, &subject).await, ["Garden"]);
 
-        assert!(upgrade_seed(&tonk, &key).await.expect("the upgrade runs"));
+        assert!(install(&tonk, &key, CORE).await);
 
         assert_eq!(
             space_names(&tonk, &key, &subject).await,
@@ -14322,7 +14320,7 @@ name!:
         assert!(!declares(&tonk, &key, "tonk:site", "profile-branch").await);
         assert_eq!(referents(&tonk, &key, "board").await.len(), 1);
 
-        assert!(upgrade_seed(&tonk, &key).await.expect("the upgrade runs"));
+        assert!(install(&tonk, &key, CORE).await);
 
         assert!(
             declares(&tonk, &key, "tonk:site", "profile-branch").await,
@@ -14333,9 +14331,7 @@ name!:
             "a definition only the old library had is withdrawn"
         );
         assert!(
-            !upgrade_seed(&tonk, &key)
-                .await
-                .expect("a second check runs"),
+            !install(&tonk, &key, CORE).await,
             "an upgraded space is current"
         );
     }
@@ -14381,7 +14377,7 @@ name!:
                 .contains("id:tonk:route/space")
         );
 
-        assert!(upgrade_seed(&tonk, &key).await.expect("the upgrade runs"));
+        assert!(install(&tonk, &key, CORE).await);
 
         assert!(
             library_routes(&tonk, &key)
@@ -14406,7 +14402,7 @@ name!:
             Some("id:zapp/home")
         );
 
-        assert!(upgrade_seed(&tonk, &key).await.expect("the upgrade runs"));
+        assert!(install(&tonk, &key, CORE).await);
 
         assert_eq!(
             root_route(&tonk, &key).await.as_deref(),
