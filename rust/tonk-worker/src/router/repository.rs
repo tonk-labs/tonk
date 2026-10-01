@@ -4391,28 +4391,52 @@ async fn has_welcome_snapshot(tonk: &TonkState, key: &str) -> Result<bool, Repos
 /// A space whose seed already matches is left alone, which is the common
 /// case: this runs on every mount.
 pub(crate) async fn upgrade_seed(tonk: &TonkState, key: &str) -> Result<bool, RepositoryError> {
+    let Some((key, session, current)) = installed_seed(tonk, key).await? else {
+        return Ok(false);
+    };
+
+    // Re-fetch the space's OWN source, not the shipped one. A space on a
+    // custom seed follows that seed; comparing against `core.yaml` would
+    // force it onto the built-in library on its next mount.
+    let library = fetch_standard_library(&current.source)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("fetch '{}': {e}", current.source)))?;
+    install_seed(tonk, &key, &session, current, library).await
+}
+
+/// The content branch of the space `key` names, under whichever key
+/// spelling opens it, and the seed it runs.
+///
+/// `None` for a space an upgrade must not touch: a Welcome snapshot, or a
+/// space seeded before seeds were recorded.
+async fn installed_seed(
+    tonk: &TonkState,
+    key: &str,
+) -> Result<Option<(String, crate::reactor::BranchSession, InstalledSeed)>, RepositoryError> {
     // Replicas exist under either key spelling — legacy mounts used the
     // bare suffix, newer ones the full did:key URI — so try the given
     // spelling and fall back to the other before reporting a miss.
-    let session = match tonk
+    let (key, session) = match tonk
         .reactor
         .repository(key)
         .branch(CONTENT_BRANCH)
         .acquire(&tonk.operator)
         .await
     {
-        Ok(session) => session,
+        Ok(session) => (key.to_owned(), session),
         Err(first) => {
             let alternate = match key.strip_prefix("did:key:") {
                 Some(suffix) => suffix.to_string(),
                 None => format!("did:key:{key}"),
             };
-            tonk.reactor
+            let session = tonk
+                .reactor
                 .repository(&alternate)
                 .branch(CONTENT_BRANCH)
                 .acquire(&tonk.operator)
                 .await
-                .map_err(|_| RepositoryError::Internal(format!("open '{key}': {first}")))?
+                .map_err(|_| RepositoryError::Internal(format!("open '{key}': {first}")))?;
+            (alternate, session)
         }
     };
 
@@ -4420,11 +4444,11 @@ pub(crate) async fn upgrade_seed(tonk: &TonkState, key: &str) -> Result<bool, Re
     // Replaying that library over the imported app replaces its home alias.
     // Snapshot spaces have no single replaceable library; preserve their
     // authored state, including custom home aliases and agent-page changes.
-    if has_welcome_snapshot(tonk, key)
+    if has_welcome_snapshot(tonk, &key)
         .await
         .map_err(|e| RepositoryError::Internal(format!("read welcome marker: {e}")))?
     {
-        return Ok(false);
+        return Ok(None);
     }
 
     let current = read_installed_seed(tonk, &session)
@@ -4436,22 +4460,26 @@ pub(crate) async fn upgrade_seed(tonk: &TonkState, key: &str) -> Result<bool, Re
         // definitions are whatever it was created with and nothing names
         // them, so an upgrade would have to guess what to withdraw.
         log!("seed upgrade: '{key}' predates the seed record, leaving it alone");
-        return Ok(false);
+        return Ok(None);
     };
+    Ok(Some((key, session, current)))
+}
 
-    // Re-fetch the space's OWN source, not the shipped one. A space on a
-    // custom seed follows that seed; comparing against `core.yaml` would
-    // force it onto the built-in library on its next mount.
+/// Move a space from the seed it runs to `library`.
+async fn install_seed(
+    tonk: &TonkState,
+    key: &str,
+    session: &crate::reactor::BranchSession,
+    current: InstalledSeed,
+    library: String,
+) -> Result<bool, RepositoryError> {
     let source = current.source.clone();
-    let library = fetch_standard_library(&source)
-        .await
-        .map_err(|e| RepositoryError::Internal(format!("fetch '{source}': {e}")))?;
     let shipped = seed_version(&library);
     if current.seed.to_string() == shipped {
         return Ok(false);
     }
 
-    let mut retract = prior_seed_retractions(tonk, &session, &current.version).await?;
+    let mut retract = prior_seed_retractions(tonk, session, &current.version).await?;
     retract.extend(installed_record_retractions(&current));
     log!(
         "seed upgrade: '{key}' moves to {shipped}, withdrawing {} claims",
@@ -13308,6 +13336,435 @@ mod connection_invite_overlay_tests {
                     .is_some_and(|candidate| std::sync::Arc::ptr_eq(&candidate, &state)))
                 .count(),
             1
+        );
+    }
+}
+
+/// What the mount-time seed upgrade does to a space people have built in.
+///
+/// The 2026-09-30 release of v0.6.16 left spaces blank. Every space mounted
+/// after a release whose `core.yaml` differs runs [`upgrade_seed`], which
+/// withdrew everything its install commit had asserted and evaluated the
+/// whole new library over the space. Three things followed, each pinned
+/// here against the exact `core.yaml` production shipped before the release:
+///
+/// - The library's `name!: id:tonk/space -> tonk:blank` is a
+///   cardinality-one replace, so evaluating it again superseded the home an
+///   agent had pointed at its own app: the space rendered the blank canvas.
+/// - The install commit also carried the space's name, which the upgrade
+///   withdrew and nothing re-asserted.
+/// - A commit records only what it changes, so a definition carried over
+///   unchanged is not in the upgrade's history, which is all the next
+///   upgrade reads. A field or route a later release drops then stays, and
+///   the router can no longer tell the library's routes from the space's.
+///
+/// Every one of those writes landed on the content branch and synced, so it
+/// reached every member and survived the rollback.
+#[cfg(test)]
+mod seed_upgrade_tests {
+    use super::*;
+    use tonk_schema::meta::Name;
+
+    /// `core.yaml` as production (`561b4b7`) seeded spaces before v0.6.16.
+    const PRODUCTION_CORE: &str = include_str!("../../tests/fixtures/core-before-v0.6.16.yaml");
+
+    /// The `core.yaml` this worker ships.
+    const CORE: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
+
+    /// An app built into a space the way `tonk` builds one: its model, a
+    /// home concept and view over it, and the `name!:` that re-points
+    /// `id:tonk/space` at that home (`tonk-cli`'s `build_home_recipe`).
+    const AGENT_APP: &str = r#"
+concept!: &plot
+  this: garden:plot
+  description: "A garden plot."
+  with:
+    label:
+      description: "What is planted."
+      the: xyz.example.plot/label
+      as: text
+      cardinality: one
+
+concept!: &space-home
+  this: space:home
+  description: "The space home page, keyed by the repository's own subject DID."
+  with:
+    subject:
+      description: "The repository's subject DID."
+      the: dialog.replica/subject
+      as: entity
+
+view!:
+  this: space:home
+  show:
+    ui: |
+      <tonk-display model=plot />
+
+name!:
+  this: id:tonk/space
+  entity: space:home
+"#;
+
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    async fn test_state() -> TonkState {
+        super::profile_library_tests::test_state().await
+    }
+
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    async fn test_state() -> TonkState {
+        crate::router::tests::test_state_without_root().await
+    }
+
+    /// Create a space and seed it the way `seed_and_initialize` does:
+    /// `library` and the space's name in one recorded install commit.
+    async fn seeded_space(tonk: &TonkState, library: &str, name: &str) -> (String, Did) {
+        let repository = create_repository(
+            tonk,
+            name,
+            &RepositoryConfiguration::default()
+                .branch(CONTENT_BRANCH, BranchConfiguration::default()),
+        )
+        .await
+        .expect("the space creates");
+        let subject = repository.did();
+        let key = subject.repo_key().to_owned();
+        let seed = seed_version(library);
+        let body = format!(
+            "{library}\n{}",
+            repository_name_body(&subject, name, None).expect("the name encodes")
+        );
+        super::super::evaluate::evaluate_body_recording(
+            tonk,
+            &key,
+            CONTENT_BRANCH,
+            body,
+            &|minted| {
+                seed_record_facts(
+                    &seed,
+                    STANDARD_LIBRARY_URL,
+                    SEED_NONE,
+                    SEED_NONE,
+                    &encode_seed_version(minted),
+                )
+            },
+        )
+        .await
+        .expect("the library installs");
+        (key, subject)
+    }
+
+    async fn author(tonk: &TonkState, key: &str, document: &str) {
+        super::super::evaluate::evaluate_body(tonk, key, CONTENT_BRANCH, document.to_owned(), true)
+            .await
+            .expect("the authored document commits");
+    }
+
+    /// Install `library` over whatever seed the space runs, as a worker
+    /// shipping it would on mount.
+    async fn install(tonk: &TonkState, key: &str, library: &str) -> bool {
+        let (key, session, current) = installed_seed(tonk, key)
+            .await
+            .expect("the seed record reads")
+            .expect("the space runs a recorded seed");
+        install_seed(tonk, &key, &session, current, library.to_owned())
+            .await
+            .expect("the install commits")
+    }
+
+    async fn content(tonk: &TonkState, key: &str) -> crate::reactor::BranchSession {
+        tonk.reactor
+            .repository(key)
+            .branch(CONTENT_BRANCH)
+            .acquire(&tonk.operator)
+            .await
+            .expect("the content branch opens")
+    }
+
+    /// What a published name currently points at, e.g. `tonk/space`.
+    async fn referents(tonk: &TonkState, key: &str, name: &str) -> Vec<String> {
+        let anchor: dialog_artifacts::Entity = format!("id:{name}").parse().expect("anchor");
+        content(tonk, key)
+            .await
+            .handle()
+            .query()
+            .select(Query::<Name> {
+                this: Term::from(anchor),
+                entity: Term::var("entity"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("name query")
+            .into_iter()
+            .map(|row| row.entity.0.to_string())
+            .collect()
+    }
+
+    /// The name the space renders, from its own content branch.
+    async fn space_names(tonk: &TonkState, key: &str, subject: &Did) -> Vec<String> {
+        let this: dialog_artifacts::Entity = subject.as_str().parse().expect("subject entity");
+        content(tonk, key)
+            .await
+            .handle()
+            .query()
+            .select(Query::<RepositoryName> {
+                this: Term::from(this),
+                name: Term::var("name"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("repository-name query")
+            .into_iter()
+            .map(|row| row.name.0)
+            .collect()
+    }
+
+    /// Whether the concept `this` declares a field named `field`.
+    async fn declares(tonk: &TonkState, key: &str, this: &str, field: &str) -> bool {
+        use dialog_artifacts::ArtifactSelector;
+        use futures_util::StreamExt as _;
+
+        let session = content(tonk, key).await;
+        let stream = session
+            .handle()
+            .claims()
+            .select(
+                ArtifactSelector::new()
+                    .the(format!("db.concept.with/{field}").parse().expect("field"))
+                    .of(this.parse().expect("concept entity")),
+            )
+            .perform(&tonk.operator)
+            .await
+            .expect("field query");
+        tokio::pin!(stream);
+        stream.next().await.is_some()
+    }
+
+    /// The routes the space's running seed counts as its own.
+    async fn library_routes(tonk: &TonkState, key: &str) -> std::collections::HashSet<String> {
+        let (_, session, current) = installed_seed(tonk, key)
+            .await
+            .expect("the seed record reads")
+            .expect("the space runs a recorded seed");
+        seed_routes(tonk, &session, &current.version)
+            .await
+            .expect("the seed's routes read")
+    }
+
+    /// The route the router picks for the space's `/`.
+    async fn root_route(tonk: &TonkState, key: &str) -> Option<String> {
+        let session = content(tonk, key).await;
+        super::super::session::matched_route(tonk, &session, "/")
+            .await
+            .map(|route| route.to_string())
+    }
+
+    /// A concept `probe:thing` declaring `fields`, as a library would.
+    fn probe(fields: &[&str]) -> String {
+        let mut text = String::from(
+            "concept!: &probe-thing\n  this: probe:thing\n  description: \"A probe.\"\n  with:\n",
+        );
+        for field in fields {
+            text.push_str(&format!(
+                "    {field}:\n      description: \"{field}\"\n      the: probe.thing/{field}\n      as: text\n      cardinality: one\n"
+            ));
+        }
+        text
+    }
+
+    /// The incident: a space an agent built is upgraded from production's
+    /// library to the shipped one, and must still open on the agent's home.
+    #[dialog_common::test]
+    async fn upgrading_keeps_the_home_an_agent_built() {
+        let tonk = test_state().await;
+        let (key, _) = seeded_space(&tonk, PRODUCTION_CORE, "Garden").await;
+        author(&tonk, &key, AGENT_APP).await;
+        assert_eq!(referents(&tonk, &key, "tonk/space").await, ["space:home"]);
+
+        assert!(
+            upgrade_seed(&tonk, &key).await.expect("the upgrade runs"),
+            "a space on production's library is behind the shipped one"
+        );
+
+        assert_eq!(
+            referents(&tonk, &key, "tonk/space").await,
+            ["space:home"],
+            "the upgrade must not point an authored home back at the blank canvas"
+        );
+    }
+
+    /// The install commit carried the space's name beside the library, and
+    /// the upgrade withdrew everything that commit asserted.
+    #[dialog_common::test]
+    async fn upgrading_keeps_the_space_name() {
+        let tonk = test_state().await;
+        let (key, subject) = seeded_space(&tonk, PRODUCTION_CORE, "Garden").await;
+        assert_eq!(space_names(&tonk, &key, &subject).await, ["Garden"]);
+
+        assert!(upgrade_seed(&tonk, &key).await.expect("the upgrade runs"));
+
+        assert_eq!(
+            space_names(&tonk, &key, &subject).await,
+            ["Garden"],
+            "the upgrade must not withdraw the name the space was created with"
+        );
+    }
+
+    /// The upgrade still delivers the library: what only the new one
+    /// declares arrives, and what only the old one declared goes.
+    #[dialog_common::test]
+    async fn upgrading_installs_the_shipped_library() {
+        let tonk = test_state().await;
+        let (key, _) = seeded_space(&tonk, PRODUCTION_CORE, "Garden").await;
+        assert!(!declares(&tonk, &key, "tonk:site", "profile-branch").await);
+        assert_eq!(referents(&tonk, &key, "board").await.len(), 1);
+
+        assert!(upgrade_seed(&tonk, &key).await.expect("the upgrade runs"));
+
+        assert!(
+            declares(&tonk, &key, "tonk:site", "profile-branch").await,
+            "the shipped `tonk:site` concept arrives"
+        );
+        assert!(
+            referents(&tonk, &key, "board").await.is_empty(),
+            "a definition only the old library had is withdrawn"
+        );
+        assert!(
+            !upgrade_seed(&tonk, &key)
+                .await
+                .expect("a second check runs"),
+            "an upgraded space is current"
+        );
+    }
+
+    /// Release A declares `probe:thing` with fields `x` and `y` and a route.
+    /// Release B changes something else. Release C renames `y` to `z` and
+    /// drops the route. A concept matches only entities carrying every
+    /// field it declares, so a `y` left behind makes it match nothing.
+    #[dialog_common::test]
+    async fn a_definition_carried_through_a_release_is_withdrawn_by_the_next() {
+        let route = "route!: &probe/kept\n  this: id:probe/kept\n  path: \"/kept\"\n  concept: probe:thing\n";
+        let first = format!("{PRODUCTION_CORE}\n{}\n{route}", probe(&["x", "y"]));
+        let second = format!("{first}\n# an unrelated change\n");
+        let third = format!("{PRODUCTION_CORE}\n{}", probe(&["x", "z"]));
+
+        let tonk = test_state().await;
+        let (key, _) = seeded_space(&tonk, &first, "Probe").await;
+        assert!(install(&tonk, &key, &second).await);
+        assert!(install(&tonk, &key, &third).await);
+
+        assert!(declares(&tonk, &key, "probe:thing", "x").await);
+        assert!(declares(&tonk, &key, "probe:thing", "z").await);
+        assert!(
+            !declares(&tonk, &key, "probe:thing", "y").await,
+            "a field the library carried and then renamed is withdrawn"
+        );
+        assert!(
+            referents(&tonk, &key, "probe/kept").await.is_empty(),
+            "a route the library carried and then dropped is withdrawn"
+        );
+    }
+
+    /// The router breaks a tie between two routes of one shape in favour of
+    /// the one the space wrote, and tells them apart by what the seed
+    /// installed. After an upgrade the seed still installed core's `/`.
+    #[dialog_common::test]
+    async fn an_upgraded_space_still_knows_which_routes_its_library_installed() {
+        let tonk = test_state().await;
+        let (key, _) = seeded_space(&tonk, PRODUCTION_CORE, "Garden").await;
+        assert!(
+            library_routes(&tonk, &key)
+                .await
+                .contains("id:tonk:route/space")
+        );
+
+        assert!(upgrade_seed(&tonk, &key).await.expect("the upgrade runs"));
+
+        assert!(
+            library_routes(&tonk, &key)
+                .await
+                .contains("id:tonk:route/space"),
+            "core's `/` route is still the library's after the upgrade"
+        );
+    }
+
+    /// An app that takes over the space's `/` with its own route keeps it
+    /// across a release: the router has to keep preferring the space's
+    /// route over the library's.
+    #[dialog_common::test]
+    async fn an_app_route_keeps_the_space_root_across_an_upgrade() {
+        let app_root =
+            "route!: &zapp/home\n  this: id:zapp/home\n  path: \"/\"\n  concept: space:home\n";
+        let tonk = test_state().await;
+        let (key, _) = seeded_space(&tonk, PRODUCTION_CORE, "Garden").await;
+        author(&tonk, &key, &format!("{AGENT_APP}\n{app_root}")).await;
+        assert_eq!(
+            root_route(&tonk, &key).await.as_deref(),
+            Some("id:zapp/home")
+        );
+
+        assert!(upgrade_seed(&tonk, &key).await.expect("the upgrade runs"));
+
+        assert_eq!(
+            root_route(&tonk, &key).await.as_deref(),
+            Some("id:zapp/home"),
+            "the space's own `/` route still wins after the upgrade"
+        );
+    }
+
+    /// A rollback runs the same machinery the other way: the older worker's
+    /// library is just a different seed. It must move the library back and
+    /// leave what the space wrote alone.
+    #[dialog_common::test]
+    async fn rolling_back_a_release_keeps_the_home_and_name() {
+        let tonk = test_state().await;
+        let (key, subject) = seeded_space(&tonk, PRODUCTION_CORE, "Garden").await;
+        author(&tonk, &key, AGENT_APP).await;
+        assert!(install(&tonk, &key, CORE).await);
+
+        assert!(
+            install(&tonk, &key, PRODUCTION_CORE).await,
+            "the older library is a different seed"
+        );
+
+        assert_eq!(referents(&tonk, &key, "tonk/space").await, ["space:home"]);
+        assert_eq!(space_names(&tonk, &key, &subject).await, ["Garden"]);
+        assert!(
+            !declares(&tonk, &key, "tonk:site", "profile-branch").await,
+            "the older library's `tonk:site` is back: the worker it ships with \
+             never stamps `profile-branch`, so a site concept declaring it \
+             matches no site and the space renders nothing"
+        );
+    }
+
+    /// A library may change a default it ships. The new default reaches a
+    /// space still on the old one, and never one that chose its own.
+    #[dialog_common::test]
+    async fn a_changed_default_moves_only_where_the_space_kept_the_old_one() {
+        let shipping = |default: &str| {
+            format!("{PRODUCTION_CORE}\nname!:\n  this: id:probe/home\n  entity: probe:{default}\n")
+        };
+        let tonk = test_state().await;
+        let (untouched, _) = seeded_space(&tonk, &shipping("old"), "Untouched").await;
+        let (chosen, _) = seeded_space(&tonk, &shipping("old"), "Chosen").await;
+        author(
+            &tonk,
+            &chosen,
+            "name!:\n  this: id:probe/home\n  entity: probe:mine\n",
+        )
+        .await;
+
+        assert!(install(&tonk, &untouched, &shipping("new")).await);
+        assert!(install(&tonk, &chosen, &shipping("new")).await);
+
+        assert_eq!(
+            referents(&tonk, &untouched, "probe/home").await,
+            ["probe:new"]
+        );
+        assert_eq!(
+            referents(&tonk, &chosen, "probe/home").await,
+            ["probe:mine"]
         );
     }
 }

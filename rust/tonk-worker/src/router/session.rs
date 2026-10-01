@@ -739,6 +739,19 @@ async fn match_route(
     }
 }
 
+/// The route entity [`match_route`] picks for `rest`, for tests outside this
+/// module that need the router's real answer.
+#[cfg(test)]
+pub(super) async fn matched_route(
+    tonk: &crate::worker::TonkState,
+    state: &dialog_reactor::BranchSession,
+    rest: &str,
+) -> Option<dialog_artifacts::Entity> {
+    match_route(tonk, state, rest)
+        .await
+        .map(|matched| matched.route)
+}
+
 /// End-to-end: the route table a branch actually holds, resolved through
 /// `match_route`. Complements `route_order_tests`, which pins the ordering
 /// alone — these prove the `SeedRoute` query and the router wiring agree
