@@ -9726,7 +9726,9 @@ pub(crate) mod tests {
     /// asked lands there too: it loads afresh rather than routing, since a
     /// document still bound to the signed-out profile has every request
     /// refused, and the account's spaces show at once. A space made while
-    /// signed out is that browser's own work and stays on it.
+    /// signed out came before the sign-in, so it joins the account: listed
+    /// beside the account's own, syncing with and accepted by the account's
+    /// deployment, and no empty signed-out workspace is left behind.
     #[dialog_common::test(sibling = true)]
     async fn it_lands_on_the_account_when_signing_back_in_through_another_deployment(
         env: TestEnvironment,
@@ -9773,29 +9775,43 @@ pub(crate) mod tests {
             listed.contains(&kept),
             "signing back in did not land on the account's spaces: {listed:?}"
         );
+        assert!(
+            listed.contains(&made),
+            "the space made while signed out did not join the account: {listed:?}"
+        );
 
-        // Still on this browser, with the profile it was made on.
+        // Under the account: it syncs with the account's deployment, which
+        // accepts it.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+        loop {
+            let info = get_json(&driver, &format!("/api/repository/{made}")).await?;
+            let info = successful_body("read the space made while signed out", &info);
+            let remote = info["remote"]["origin"].to_string();
+            if remote.contains(env.tonk_web.join("ucan/")?.as_str()) {
+                break;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "the space made while signed out never moved to the account's deployment: {info}"
+            );
+            let _ = post_json(&driver, "/api/sync", serde_json::json!({})).await;
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+        push_until_accepted(&driver, &made).await?;
+
+        // Nothing is left on a signed-out workspace to switch back to.
         let roster = get_json(&driver, "/api/profiles").await?;
         let roster = successful_body("profiles after signing back in", &roster).clone();
-        let mut found = false;
-        for entry in roster["profiles"].as_array().cloned().unwrap_or_default() {
-            if entry["active"].as_bool() == Some(true) {
-                continue;
-            }
-            let switched = post_json(
-                &driver,
-                "/api/profiles/activate",
-                serde_json::json!({ "profile": entry["profileName"] }),
-            )
-            .await?;
-            successful_body("switch to another profile", &switched);
-            goto(&driver, here.as_str()).await?;
-            wait_for_service_worker(&driver).await?;
-            found |= space_keys(&driver).await?.contains(&made);
-        }
+        let others: Vec<_> = roster["profiles"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|entry| entry["active"].as_bool() != Some(true))
+            .collect();
         assert!(
-            found,
-            "the space made while signed out is gone from this browser"
+            others.is_empty(),
+            "an emptied signed-out workspace is still listed: {others:?}"
         );
         driver.quit().await?;
         Ok(())

@@ -47,11 +47,20 @@ pub(crate) enum AccountProfileDisposition {
 pub(crate) struct AccountProfileGuard {
     tonk: tokio::sync::OwnedRwLockReadGuard<TonkState>,
     disposition: AccountProfileDisposition,
+    signed_out: Option<String>,
 }
 
 impl AccountProfileGuard {
     pub(crate) fn disposition(&self) -> AccountProfileDisposition {
         self.disposition
+    }
+
+    /// The signed-out workspace this sign-in came back from, when it
+    /// returned to a branch that already followed the account. What was
+    /// made there was made before signing in, and belongs to the account
+    /// once the link finishes ([`super::rotation::carry_from`]).
+    pub(crate) fn signed_out(&self) -> Option<&str> {
+        self.signed_out.as_deref()
     }
 }
 
@@ -487,10 +496,12 @@ pub(crate) async fn sign_out(
 /// Route an account ceremony to the branch for `root`.
 ///
 /// Already on that account's branch: nothing moves. A branch already
-/// following it: switch there, spaces and all. Otherwise the branch the
-/// profile is on takes the upstream once the ceremony links — after
-/// leaving whatever account it followed, so the new account starts from
-/// an empty branch and the old one keeps its grant withdrawn.
+/// following it: switch there, spaces and all, and when the branch left
+/// behind is a signed-out workspace, name it on the guard so its spaces
+/// can follow once the link finishes. Otherwise the branch the profile is
+/// on takes the upstream once the ceremony links — after leaving whatever
+/// account it followed, so the new account starts from an empty branch
+/// and the old one keeps its grant withdrawn.
 pub(crate) async fn for_account(
     state: AppState,
     root: &Did,
@@ -508,6 +519,7 @@ pub(crate) async fn for_account(
         return Ok(AccountProfileGuard {
             tonk: current,
             disposition: AccountProfileDisposition::Current,
+            signed_out: None,
         });
     }
     let existing = super::profile::branch_following(&current, root).await;
@@ -516,8 +528,12 @@ pub(crate) async fn for_account(
         return Ok(AccountProfileGuard {
             tonk: current,
             disposition: AccountProfileDisposition::Current,
+            signed_out: None,
         });
     }
+    // Following no account, the branch being left is a signed-out
+    // workspace; one following another account keeps what it holds.
+    let signed_out = on.is_none().then(|| current.active_branch.clone());
 
     // The branch being left keeps its link (see `activate_named`).
     match &existing {
@@ -549,7 +565,11 @@ pub(crate) async fn for_account(
         AccountProfileDisposition::Created
     };
     log!("account branch routing disposition: {disposition:?}");
-    Ok(AccountProfileGuard { tonk, disposition })
+    Ok(AccountProfileGuard {
+        tonk,
+        disposition,
+        signed_out,
+    })
 }
 
 /// Stamp the incoming profile's roster entry, swap the state in, and
@@ -1342,6 +1362,11 @@ mod tests {
             !super::super::profile_name::real_space_keys(&second)
                 .await
                 .contains(&retained)
+        );
+        assert_eq!(
+            second.signed_out(),
+            None,
+            "a branch following another account is no signed-out workspace to carry"
         );
         drop(second);
 

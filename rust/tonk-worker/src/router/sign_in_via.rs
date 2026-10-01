@@ -336,6 +336,10 @@ async fn finish(
     super::account::finish_link(state)
         .await
         .map_err(|error| format!("the account did not finish linking: {error}"))?;
+    // What was made while signed out joins the account signed back in to.
+    if let Some(signed_out) = tonk.signed_out() {
+        super::rotation::carry_from(state, signed_out).await;
+    }
     if let Err(error) = super::account_state::push_account_main(state).await {
         log!("sign-in-via: the push behind the link did not land: {error}");
     }
