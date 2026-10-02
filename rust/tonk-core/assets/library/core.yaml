@@ -2093,6 +2093,35 @@ seed/route!:
   path: "/{*model}"
   concept: tonk:directory/route
 
+# An asset by its own URI — `/space/{name}/asset:{hash}`. The literal prefix
+# claims the path ahead of the `{*model}` directory, which would read
+# `asset:{hash}` as a model name and find none.
+seed/route!:
+  path: "/asset:{hash}"
+  concept: asset/route
+
+concept!: &asset/route
+  description: A single asset page (`/space/{name}/asset:{hash}`).
+  with:
+    hash:
+      description: The asset's hash from the path, picked off the site entity.
+      the: xyz.tonk.site/hash
+      cardinality: one
+      as: text
+
+# The asset itself, in a frame: the space's own worker answers
+# `/asset:{hash}` with the content and the media type recorded for it, and
+# the browser renders whatever that is.
+view!:
+  this: asset/route
+  show:
+    ui: |
+      <iframe
+        src="/asset:{hash}"
+        title="asset:{hash}"
+        style="display: block; width: 100%; height: 100vh; border: 0;"
+      ></iframe>
+
 # ============================================================
 # Tree inspector — `<tonk-tree>` over the branch's search-tree
 # index. Visit `/space/{repo}/dialog:diagnose` to explore the

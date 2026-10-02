@@ -4,9 +4,9 @@
 // origin. The profile renders on one too (`profile.{host}`), with no assets.
 // It answers these requests and refuses the rest:
 //
-// - Navigations get the static shell, carrying the space's CSP. The server
-//   hands out the same shell for any path, so a deep link with no worker yet
-//   still boots one.
+// - Navigations get the static shell, carrying the space's CSP, except one
+//   to an asset. The server hands out the same shell for any path, so a deep
+//   link with no worker yet still boots one.
 // - `/asset:{hash}`, an asset's own URI as a path, is read from the space's
 //   own database and served with the media type and size recorded for it,
 //   natively, so `<img>`, `<video>` and `<link>` just work.
@@ -209,6 +209,9 @@ self.tonkBundledAsset = async path => {
 };
 
 const GRANT_KEY = "/__space/grant";
+// What taking up a grant does. A grant taken up by an earlier version is
+// taken up again, so the space gets what that version left out.
+const GRANT_VERSION = 2;
 // Ask for a new delegation once the held one has less than this left.
 const RENEW_MARGIN_SECONDS = 60 * 60;
 
@@ -253,7 +256,7 @@ function renewIfDue() {
 async function ensureGrant(worker) {
     const held = await heldGrant();
     const now = Date.now() / 1000;
-    if (held && held.expires - now > RENEW_MARGIN_SECONDS) return held;
+    if (held?.version === GRANT_VERSION && held.expires - now > RENEW_MARGIN_SECONDS) return held;
     const audience = await worker.profileDid();
     const grant = await askHost({ delegate: audience });
     await worker.adoptSpace(grant.space, new Uint8Array(grant.chain), grant.remote ?? undefined);
@@ -274,6 +277,7 @@ async function ensureGrant(worker) {
         expires: grant.expires,
         remote: grant.remote,
         seeded: true,
+        version: GRANT_VERSION,
     };
     const cache = await caches.open(SHELL_CACHE);
     await cache.put(GRANT_KEY, new Response(JSON.stringify(record)));
@@ -528,9 +532,11 @@ async function siteOrigins() {
 // which are compiled from strings; space code is untrusted by design, so the
 // boundary is this origin and its lack of network, not `script-src`. Without
 // the deployment's site origins nothing may frame this origin at all.
-function spacePolicy(sites) {
+function spacePolicy(sites, { framedBySelf = false } = {}) {
     const scheme = sites ? new URL(sites.app).protocol : null;
-    const ancestors = sites ? `${sites.app} ${scheme}//profile.${sites.host}` : "'none'";
+    const outer = sites ? `${sites.app} ${scheme}//profile.${sites.host}` : "'none'";
+    // An asset opened in a frame is framed by the space that holds it.
+    const ancestors = framedBySelf && sites ? `'self' ${outer}` : outer;
     const framed = sites ? ` ${scheme}//*.${sites.host}` : "";
     return [
         "default-src 'none'",
@@ -570,7 +576,9 @@ async function serveShell() {
 // page's `/api/.../blob/...` read takes.
 async function readAsset(hash) {
     const worker = await spaceWorker();
-    const { space } = await heldGrant();
+    // An origin that holds no space (the profile's) has no assets.
+    const space = (await heldGrant())?.space;
+    if (!space) return { status: 404, headers: [], body: new TextEncoder().encode("not found").buffer };
     const request = new Request(
         new URL(`/api/repository/${space}/branch/main/blob/asset:${hash}`, self.location.origin),
     );
@@ -583,10 +591,21 @@ async function readAsset(hash) {
     return { status: response.status, headers: [...response.headers], body: await response.arrayBuffer() };
 }
 
+// Serve an asset. One opened as a document (a frame or a tab navigated to
+// it) is author content like any the space renders, so it carries the
+// site's policy as the shell does.
 async function serveAsset(hash, request) {
     const reply = await readAsset(hash);
     const headers = new Headers(reply.headers);
     headers.set("x-content-type-options", "nosniff");
+    if (request.mode === "navigate") {
+        // No such asset: the path is the page's to route, like any other.
+        if (reply.status === 404) return serveShell();
+        headers.set(
+            "content-security-policy",
+            spacePolicy(await siteOrigins(), { framedBySelf: true }),
+        );
+    }
     if (reply.status !== 200) {
         return new Response(reply.body, { status: reply.status, headers });
     }
@@ -622,11 +641,13 @@ function parseRange(header, size) {
 self.addEventListener("fetch", event => {
     const url = new URL(event.request.url);
     if (url.origin !== self.location.origin) return;
-    if (event.request.mode === "navigate") {
+    // Every navigation gets the shell, whatever its path, except one to an
+    // asset, which gets the asset.
+    const asset = ASSET_PATH.exec(url.pathname);
+    if (event.request.mode === "navigate" && !asset) {
         event.respondWith(serveShell());
         return;
     }
-    const asset = ASSET_PATH.exec(url.pathname);
     if (asset && (event.request.method === "GET" || event.request.method === "HEAD")) {
         event.respondWith(
             serveAsset(asset[1], event.request).catch(error => {
