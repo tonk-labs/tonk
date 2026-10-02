@@ -194,24 +194,24 @@ wasm-bindgen-test = "0.3"
 web-sys = { version = "0.3" }
 
 # Dialog DB
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-03" }
-dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-03" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-03" }
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-03" }
-dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-03" }
-dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-03" }
-dialog-peer = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-03" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-03" }
-dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-03" }
-dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-03" }
-dialog-remote-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-03" }
-dialog-did-web = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-03" }
-dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-03" }
-dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-03" }
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-03" }
-dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-03" }
-dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-03" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-03" }
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions" }
+dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions" }
+dialog-peer = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions" }
+dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions" }
+dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions" }
+dialog-remote-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions" }
+dialog-did-web = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions" }
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions" }
+dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions" }
+dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/cell-subscriptions" }
 
 [profile.dev]
 opt-level = 1

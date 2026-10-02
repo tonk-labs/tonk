@@ -103,6 +103,9 @@ tonk-invite = { workspace = true }
 tonk-account = { workspace = true }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+# The space's Durable Object is a class `#[durable_object]` exports
+# through wasm-bindgen, whose expansion names it.
+wasm-bindgen = { workspace = true }
 js-sys = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

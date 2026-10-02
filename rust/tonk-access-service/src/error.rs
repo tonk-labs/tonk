@@ -65,7 +65,10 @@ impl Refusal {
                 AuthorizeError::InvalidSignature { .. }
                 | AuthorizeError::InvalidAudience { .. }
                 | AuthorizeError::Expired { .. }
-                | AuthorizeError::NotValidBefore { .. } => 401,
+                | AuthorizeError::NotValidBefore { .. }
+                // A fresh invocation would do.
+                | AuthorizeError::Stale { .. }
+                | AuthorizeError::Replayed { .. } => 401,
                 AuthorizeError::UnprovenSubject { .. }
                 | AuthorizeError::CommandEscalation { .. }
                 | AuthorizeError::PolicyViolation { .. }
@@ -84,6 +87,17 @@ impl Refusal {
                 }
             }
         }
+    }
+
+    /// The JSON-encoded reason: what a refused request's body carries,
+    /// and what a socket's answer carries in its place.
+    #[cfg(target_arch = "wasm32")]
+    pub fn body(&self) -> Vec<u8> {
+        let body = match self {
+            Self::Authorization(reason) => serde_json::to_vec(reason),
+            Self::Rejection(rejection) => serde_json::to_vec(rejection),
+        };
+        body.unwrap_or_default()
     }
 
     /// Convert to a worker [`Response`]: the JSON-encoded reason under
