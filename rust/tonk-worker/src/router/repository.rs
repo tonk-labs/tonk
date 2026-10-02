@@ -14190,19 +14190,24 @@ name!:
         use futures_util::StreamExt as _;
 
         let session = content(tonk, key).await;
-        let stream = session
-            .handle()
-            .claims()
-            .select(
-                ArtifactSelector::new()
-                    .the(format!("db.concept.with/{field}").parse().expect("field"))
-                    .of(this.parse().expect("concept entity")),
-            )
-            .perform(&tonk.operator)
-            .await
-            .expect("field query");
-        tokio::pin!(stream);
-        stream.next().await.is_some()
+        for domain in ["db.concept.with", "db.concept.optional"] {
+            let stream = session
+                .handle()
+                .claims()
+                .select(
+                    ArtifactSelector::new()
+                        .the(format!("{domain}/{field}").parse().expect("field"))
+                        .of(this.parse().expect("concept entity")),
+                )
+                .perform(&tonk.operator)
+                .await
+                .expect("field query");
+            tokio::pin!(stream);
+            if stream.next().await.is_some() {
+                return true;
+            }
+        }
+        false
     }
 
     /// How many install records a release from before could read.
@@ -14534,6 +14539,94 @@ name!:
             ["Garden"]
         );
         assert_eq!(space_names(&tonk, &new, &new_subject).await, ["Orchard"]);
+    }
+
+    /// A still-running released worker stamps only these site attributes.
+    /// Syncing a newer library must not make its site or route unresolvable.
+    #[dialog_common::test]
+    async fn shipped_site_and_shells_resolve_a_legacy_worker_stamp() {
+        use tonk_schema::resolution::ConceptReference;
+        const PROFILE: &str = include_str!("../../../tonk-core/assets/library/profile.yaml");
+        for (library, shell, branch_name) in [
+            (CORE, "tonk:workspace/shell", "main"),
+            (PROFILE, "tonk:space/chrome", "account-branch"),
+        ] {
+            let tonk = test_state().await;
+            let (key, _) = empty_space(&tonk, "Site compatibility").await;
+            author(&tonk, &key, library).await;
+            // Raw attributes reproduce the old writer rather than constructing
+            // today's Rust Site, which would silently add the missing fields.
+            author(
+                &tonk,
+                &key,
+                &format!(
+                    r#"
+xyz.tonk.site!:
+  this: site:legacy
+  path: "/"
+  anchor: ""
+  space: "synthetic-space"
+  repo: "synthetic-space"
+  branch: "{branch_name}"
+  replica: replica:legacy
+  route: route:legacy
+  concept: {shell}
+  id: "synthetic-space"
+"#
+                ),
+            )
+            .await;
+            for upgraded in [false, true] {
+                if upgraded {
+                    author(
+                        &tonk,
+                        &key,
+                        "xyz.tonk.site!:\n  this: site:legacy\n  branch-entity: branch:current\n  profile-branch: \"account-branch\"\n",
+                    )
+                    .await;
+                }
+                for model in ["tonk:site", shell] {
+                    let session = content(&tonk, &key).await;
+                    let definition =
+                        ConceptReference::from(model.parse::<dialog_artifacts::Entity>().unwrap())
+                            .resolve(session.handle())
+                            .perform(&tonk.operator)
+                            .await
+                            .unwrap()
+                            .unwrap();
+                    let descriptor =
+                        serde_json::to_string(definition.descriptor.concept()).unwrap();
+                    let query = tonk_template::resolve::entity_query(&descriptor, "site:legacy")
+                        .unwrap()
+                        .into_concept_query()
+                        .unwrap();
+                    let rows = tonk
+                        .reactor
+                        .repository(&key)
+                        .branch(CONTENT_BRANCH)
+                        .query(query)
+                        .perform(&tonk.operator)
+                        .await
+                        .unwrap();
+                    let rows = serde_json::to_value(rows).unwrap();
+                    assert_eq!(
+                        rows.as_array().unwrap().len(),
+                        1,
+                        "{model} must render the legacy site: {rows}"
+                    );
+                    if model == "tonk:space/chrome" {
+                        assert_eq!(
+                            rows[0]["fields"]["profile-branch"], branch_name,
+                            "profile chrome must retain its actual account branch, not fall back to main"
+                        );
+                    }
+                    if model == "tonk:site" && upgraded {
+                        assert_eq!(rows[0]["fields"]["branch-entity"], "branch:current");
+                        assert_eq!(rows[0]["fields"]["profile-branch"], "account-branch");
+                    }
+                }
+            }
+        }
     }
 
     /// The upgrade still delivers the library: what only the new one

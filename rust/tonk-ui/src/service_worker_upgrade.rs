@@ -449,7 +449,7 @@ pub(crate) mod tests {
         Ok(())
     }
 
-    fn copy_artifact_tree(source: &Path, destination: &Path) -> Result<()> {
+    pub(crate) fn copy_artifact_tree(source: &Path, destination: &Path) -> Result<()> {
         std::fs::create_dir(destination)
             .with_context(|| format!("create generation {}", destination.display()))?;
         for entry in std::fs::read_dir(source)
@@ -716,7 +716,7 @@ pub(crate) mod tests {
         Ok(())
     }
 
-    async fn wait_for_mounted_build(driver: &WebDriver, build: &str) -> Result<Value> {
+    pub(crate) async fn wait_for_mounted_build(driver: &WebDriver, build: &str) -> Result<Value> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
         let mut last = Value::Null;
         loop {
