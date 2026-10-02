@@ -117,12 +117,40 @@ pub fn did_document(host: &str, origin: &str, signer: &Ed25519Signer) -> Value {
     // here means a client resolving the service needs nothing but its DID
     // — no side channel naming the endpoint, and no second well-known
     // path to keep in step with this one.
-    document["service"] = json!([{
-        "id": format!("{id}#ucan"),
-        "type": "TonkAccessService",
-        "serviceEndpoint": format!("{}/ucan/", origin.trim_end_matches('/')),
-    }]);
+    let origin = origin.trim_end_matches('/');
+    document["service"] = json!([
+        {
+            "id": format!("{id}#ucan"),
+            "type": "TonkAccessService",
+            "serviceEndpoint": format!("{origin}/ucan/"),
+        },
+        // The same endpoint, and its socket, under the kinds dialog
+        // discovers an access service by: a peer handed this DID learns
+        // both from the document alone.
+        {
+            "id": format!("{id}#access"),
+            "type": dialog_remote_ucan::ACCESS_SERVICE,
+            "serviceEndpoint": format!("{origin}/ucan/"),
+        },
+        {
+            "id": format!("{id}#socket"),
+            "type": dialog_remote_ucan::ACCESS_SOCKET,
+            "serviceEndpoint": format!("{}/ucan/", socket_origin(origin)),
+        },
+    ]);
     document
+}
+
+/// The origin the service's socket is reached at: the service's own, over
+/// `wss` where it is `https`, and `ws` where it is plain `http`.
+fn socket_origin(origin: &str) -> String {
+    if let Some(host) = origin.strip_prefix("https://") {
+        format!("wss://{host}")
+    } else if let Some(host) = origin.strip_prefix("http://") {
+        format!("ws://{host}")
+    } else {
+        origin.to_string()
+    }
 }
 
 /// The DID document for an email address, carrying the `did:key` of the
@@ -250,6 +278,39 @@ mod tests {
             service["id"], "did:web:tonk.network#ucan",
             "the fragment names the endpoint within the document"
         );
+    }
+
+    /// A peer handed the service's DID discovers from the document alone
+    /// where the service is reached: its endpoint, and its socket on the
+    /// same origin.
+    #[dialog_common::test]
+    fn it_announces_the_access_service_dialog_discovers() {
+        let signer = signer_from_hex(&"11".repeat(32)).unwrap();
+        for (host, origin, socket) in [
+            (
+                "tonk.network",
+                "https://tonk.network",
+                "wss://tonk.network/ucan/",
+            ),
+            (
+                "localhost:8090",
+                "http://localhost:8090",
+                "ws://localhost:8090/ucan/",
+            ),
+        ] {
+            let document: dialog_did_web::DidDocument =
+                serde_json::from_value(did_document(host, origin, &signer)).unwrap();
+            let did = document.id.clone().unwrap().parse().unwrap();
+            let services = document.services(&did).unwrap();
+            assert_eq!(
+                dialog_remote_ucan::UcanAddress::from_services(&services),
+                Some(
+                    dialog_remote_ucan::UcanAddress::new(format!("{origin}/ucan/"))
+                        .with_socket(socket)
+                ),
+                "{origin}"
+            );
+        }
     }
 
     /// A non-default port survives into the endpoint.

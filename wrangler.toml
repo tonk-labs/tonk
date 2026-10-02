@@ -48,6 +48,16 @@ run_worker_first = [
 # `/object/` path, and the worker reads and writes the bucket through
 # this binding. That keeps the bytes on an origin browsers reach over
 # HTTP/2, where the S3 endpoint's six-connection cap does not apply.
+# Each space's live side: the Durable Object that keeps its sockets,
+# answers what they carry, and tells their watches of each cell write.
+[[durable_objects.bindings]]
+name = "LIVE"
+class_name = "Live"
+
+[[migrations]]
+tag = "v1-live"
+new_sqlite_classes = ["Live"]
+
 [[r2_buckets]]
 binding = "BUCKET"
 bucket_name = "tonk-spaces"
@@ -137,6 +147,16 @@ enabled = true
 head_sampling_rate = 1
 invocation_logs = false
 
+# Each space's live side: the Durable Object that keeps its sockets,
+# answers what they carry, and tells their watches of each cell write.
+[[env.staging.durable_objects.bindings]]
+name = "LIVE"
+class_name = "Live"
+
+[[env.staging.migrations]]
+tag = "v1-live"
+new_sqlite_classes = ["Live"]
+
 [[env.staging.r2_buckets]]
 binding = "BUCKET"
 bucket_name = "tonk-spaces-staging"
@@ -193,6 +213,16 @@ redact_query_string = true
 enabled = true
 head_sampling_rate = 1
 invocation_logs = false
+
+# Each space's live side: the Durable Object that keeps its sockets,
+# answers what they carry, and tells their watches of each cell write.
+[[env.dev.durable_objects.bindings]]
+name = "LIVE"
+class_name = "Live"
+
+[[env.dev.migrations]]
+tag = "v1-live"
+new_sqlite_classes = ["Live"]
 
 [[env.dev.r2_buckets]]
 binding = "BUCKET"
@@ -257,6 +287,16 @@ redact_query_string = true
 enabled = true
 head_sampling_rate = 1
 invocation_logs = false
+
+# Each space's live side: the Durable Object that keeps its sockets,
+# answers what they carry, and tells their watches of each cell write.
+[[env.preview.durable_objects.bindings]]
+name = "LIVE"
+class_name = "Live"
+
+[[env.preview.migrations]]
+tag = "v1-live"
+new_sqlite_classes = ["Live"]
 
 [[env.preview.r2_buckets]]
 binding = "BUCKET"
