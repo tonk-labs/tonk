@@ -852,6 +852,55 @@ pub mod tests {
     /// of "not signed in": no root at all, and a root with no account behind
     /// it. Neither may create a space — one that exists without an account is
     /// local-only and never backed up, and nothing later would say so.
+    /// The profile's own repository is a repository like any other: named
+    /// by the profile's DID, it is the one the profile chain reaches, with
+    /// one cached state and one handle per branch however it is asked for.
+    /// It is not counted among the spaces.
+    #[dialog_common::test]
+    async fn it_reaches_the_profile_repository_by_its_did() {
+        use dialog_capability::Principal as _;
+
+        let (app, state, _lsp) = super::api_router_with_state(test_state_without_root().await);
+        let space = put_repo(&app, "beside-the-profile").await;
+        let tonk = state.read().await;
+        let profile = tonk.profile.did().to_string();
+        assert_eq!(tonk.reactor.profile_key(), profile);
+
+        let through_chain = tonk
+            .reactor
+            .profile_repository()
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let by_did = tonk
+            .reactor
+            .repository(&profile)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        assert!(std::sync::Arc::ptr_eq(&through_chain, &by_did));
+
+        let main = tonk
+            .reactor
+            .profile_repository()
+            .branch(&tonk.active_branch)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let same = tonk
+            .reactor
+            .repository(&profile)
+            .branch(&tonk.active_branch)
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        assert!(std::sync::Arc::ptr_eq(&main.state, &same.state));
+
+        let spaces = tonk.reactor.spaces();
+        assert!(spaces.contains(&space), "{spaces:?}");
+        assert!(!spaces.contains(&profile), "{spaces:?}");
+    }
+
     /// A space creates before any account exists, delegated to the most
     /// durable key the profile holds (plan/Account model.md §2): the
     /// device key when there is no root, the root when there is one.

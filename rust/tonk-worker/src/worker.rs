@@ -2447,8 +2447,7 @@ const SYNC_LOOP_MS: u64 = 2_000;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn has_syncable_repo(state: &AppState) -> bool {
     let tonk = state.read().await;
-    let repos: Vec<String> = tonk.reactor.repos().read().keys().cloned().collect();
-    for repo in repos {
+    for repo in tonk.reactor.spaces() {
         if crate::router::is_sync_enabled(&tonk, &repo, "main").await {
             return true;
         }
@@ -2462,17 +2461,9 @@ async fn has_syncable_repo(state: &AppState) -> bool {
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn has_live_subscribers(state: &AppState) -> bool {
     let tonk = state.read().await;
-    {
-        let repos = tonk.reactor.repos().read();
-        for repo in repos.values() {
-            for branch in repo.branches().read().values() {
-                if !branch.subscriptions().lock().is_empty() {
-                    return true;
-                }
-            }
-        }
-    }
-    if let Some(repo) = tonk.reactor.profile_repo_state() {
+    // The profile's own repository is among the cached ones.
+    let repos = tonk.reactor.repos().read();
+    for repo in repos.values() {
         for branch in repo.branches().read().values() {
             if !branch.subscriptions().lock().is_empty() {
                 return true;

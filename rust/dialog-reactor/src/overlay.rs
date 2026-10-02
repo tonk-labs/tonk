@@ -112,18 +112,20 @@ impl crate::Reactor {
     /// Only cached branches can hold overlay facts, since the overlay lives
     /// on the cached branch handle.
     pub fn export_overlays(&self) -> Vec<OverlaySnapshot> {
-        let named: Vec<(Option<String>, Arc<crate::RepositoryState>)> = self
+        // The profile's own repository is exported without a name: its
+        // key is the profile's, which a successor restoring the snapshot
+        // already knows.
+        let cached: Vec<(Option<String>, Arc<crate::RepositoryState>)> = self
             .repos()
             .read()
             .iter()
-            .map(|(name, repository)| (Some(name.clone()), Arc::clone(repository)))
+            .map(|(name, repository)| {
+                let name = (name != self.profile_key()).then(|| name.clone());
+                (name, Arc::clone(repository))
+            })
             .collect();
-        let profile = self
-            .profile_repo_state()
-            .map(|repository| (None, repository));
-        named
+        cached
             .into_iter()
-            .chain(profile)
             .flat_map(|(repository, state)| {
                 let branches = state.branches().read();
                 branches

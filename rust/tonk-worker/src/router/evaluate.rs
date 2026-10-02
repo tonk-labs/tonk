@@ -683,12 +683,11 @@ async fn evaluate_on_branch_with<'a>(
             if mode == EvaluationMode::LibrarySeedWithRace && attempt == 0 {
                 use dialog_repository::RepositoryExt as _;
 
-                let name = match tonk_branch.repository {
-                    dialog_reactor::RepositoryReference::Named { name, .. } => name,
-                    dialog_reactor::RepositoryReference::Profile { .. } => {
-                        panic!("the test race hook requires a named repository")
-                    }
-                };
+                assert!(
+                    !tonk_branch.repository.is_profile(),
+                    "the test race hook requires a space, not the profile"
+                );
+                let name = tonk_branch.repository.name();
                 let repository = tonk_state
                     .profile
                     .space(name)
