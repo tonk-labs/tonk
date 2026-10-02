@@ -1493,6 +1493,33 @@ pub mod command {
             pub struct Time(pub f64);
         }
 
+        /// `intent/interpret` — what was typed in the command palette.
+        pub mod intent_interpret {
+            use dialog_artifacts::Entity;
+            use dialog_query::Attribute;
+
+            /// The palette opening it belongs to: one per opening, made by
+            /// the page.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("tonk.dialog.intent.interpret")]
+            pub struct Expression(pub Entity);
+
+            /// Exactly what is typed.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("tonk.dialog.intent.interpret")]
+            pub struct Input(pub String);
+
+            /// The tab's site entity.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("tonk.dialog.intent.interpret")]
+            pub struct Site(pub Entity);
+
+            /// When it was typed, so typing the same line again re-fires.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("tonk.dialog.intent.interpret")]
+            pub struct Time(pub f64);
+        }
+
         /// `site/select` — what the page in a tab has selected.
         pub mod site_select {
             use dialog_artifacts::Entity;

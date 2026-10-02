@@ -201,7 +201,7 @@ dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", tag = "to
 dialog-peer = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-01" }
 # The lingo parser is pure (it depends on no dialog crate), so it can come
 # from a newer rev than the pinned tag without splitting any shared type.
-dialog-lingo = { git = "https://github.com/dialog-db/dialog-db.git", rev = "d07a15c2beb22a9a1ed4680cf4d7805a8ba84b29" }
+dialog-lingo = { git = "https://github.com/dialog-db/dialog-db.git", rev = "f464bdffd99838cb4d7863d7293270a58c82e2af" }
 dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-01" }
 dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-01" }
 dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-10-01" }

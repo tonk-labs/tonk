@@ -248,6 +248,8 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         .command::<tonk_schema::command::ConnectAgent>()
         // What the page in a tab has selected, recorded on its site.
         .command::<tonk_schema::command::SiteSelect>()
+        // What was typed in the command palette, interpreted.
+        .command::<tonk_schema::command::Interpret>()
         .command::<tonk_schema::command::ReplicateSpace>()
         .command::<tonk_schema::command::ForgetInvite>()
         .command::<tonk_schema::command::CheckUpdate>()
@@ -260,6 +262,8 @@ fn space_commands() -> CommandRegistry<CommandEnv> {
         .command::<tonk_schema::command::Load>()
         // What the space's page has selected, recorded on the tab's site.
         .command::<tonk_schema::command::SiteSelect>()
+        // What was typed in the command palette, against this space's commands.
+        .command::<tonk_schema::command::Interpret>()
         // A space may request an invite FOR ITSELF: the space view's
         // blank-canvas share (and the seeded `tonk:invite` descriptor)
         // dispatches on the space's own branch, and the refusal flow

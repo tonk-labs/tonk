@@ -2679,6 +2679,74 @@ concept!: &intent/argument
       cardinality: one
       as: entity
 
+# The command palette's interpretation of what was typed, as session facts.
+# The palette makes an `expression` per opening and sends
+# `intent/interpret` as the line changes; its handler (the parser) records
+# the expression and one `intent` per command the line could mean, in the
+# session overlay. Rules derive values for a command's fields onto its
+# intent, each as a one-field concept on the field's own attribute, scoped
+# to the command (`intent` where `command: <the command>`). `intent/suggest`
+# reads the intents and those values back as readings.
+command!: &intent/interpret
+  this: tonk:intent-interpret
+  description: Interpret what was typed in the command palette, where it was opened.
+  with:
+    expression:
+      description: The palette opening it belongs to, made by the page.
+      the: tonk.dialog.intent.interpret/expression
+      as: entity
+    input:
+      description: Exactly what is typed.
+      the: tonk.dialog.intent.interpret/input
+      as: text
+    site:
+      description: The tab's site entity.
+      the: tonk.dialog.intent.interpret/site
+      as: entity
+    time:
+      description: When it was typed, so typing the same line again re-fires.
+      the: tonk.dialog.intent.interpret/time
+      as: float
+
+concept!: &intent/expression
+  description: One opening of the command palette, as interpreted so far. Session facts.
+  with:
+    input:
+      description: What is typed.
+      the: tonk.dialog.intent.expression/input
+      cardinality: one
+      as: text
+    site:
+      description: The tab's site, where the palette was opened.
+      the: tonk.dialog.intent.expression/site
+      cardinality: one
+      as: entity
+    time:
+      description: When the line was last interpreted.
+      the: tonk.dialog.intent.expression/time
+      cardinality: one
+      as: float
+  maybe:
+    selection:
+      description: The text selected in the tab's page, when there was some.
+      the: tonk.dialog.intent.expression/selection
+      cardinality: one
+      as: text
+
+concept!: &intent
+  description: What an expression could mean as one command. Rules derive the command's field values onto it.
+  with:
+    expression:
+      description: The expression it was read from.
+      the: tonk.dialog.intent/expression
+      cardinality: one
+      as: entity
+    command:
+      description: The command it would run.
+      the: tonk.dialog.intent/command
+      cardinality: one
+      as: entity
+
 intent/role!: &intent/object
   name: "object"
 

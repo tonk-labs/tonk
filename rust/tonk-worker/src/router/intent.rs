@@ -15,6 +15,7 @@ use super::api_router_with_state;
 use super::repository::profile_library_tests::test_state;
 
 const CORE: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
+const NOTEBOOK: &str = include_str!("../../../tonk-core/assets/library/notebook.yaml");
 
 /// The core library leaves the space's rename unsaid (the profile's says
 /// it); say it here, so a rule-handled command runs end to end.
@@ -380,6 +381,199 @@ async fn it_records_a_pages_selection_on_its_site() {
     .await;
     assert_eq!(selection(&app, &space, site, None).await, None);
     assert_eq!(selection(&app, profile, site, None).await, None);
+}
+
+/// An `intent/interpret`, as the palette sends it.
+fn interpret(expression: &str, input: &str, site: &str, time: f64) -> String {
+    json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "description": "Interpret what was typed in the command palette, where it was opened.",
+                        "with": {
+                            "expression": { "the": "tonk.dialog.intent.interpret/expression", "as": "Entity" },
+                            "input": { "the": "tonk.dialog.intent.interpret/input", "as": "Text" },
+                            "site": { "the": "tonk.dialog.intent.interpret/site", "as": "Entity" },
+                            "time": { "the": "tonk.dialog.intent.interpret/time", "as": "Float" }
+                        }
+                    }
+                },
+                "parameters": { "expression": expression, "input": input, "site": site, "time": time }
+            }
+        }]
+    })
+    .to_string()
+}
+
+/// Send `input` for `expression` and wait until the handler recorded it.
+async fn interpreted(
+    app: &Router,
+    prefix: &str,
+    expression: &str,
+    input: &str,
+    site: &str,
+    time: f64,
+) {
+    send(
+        app,
+        "POST",
+        &format!("{prefix}/transact"),
+        "application/json",
+        interpret(expression, input, site, time),
+    )
+    .await;
+    for _ in 0..200 {
+        let rows = send(
+            app,
+            "POST",
+            &format!("{prefix}/query"),
+            "application/json",
+            json!({
+                "predicate": { "with": {
+                    "input": { "the": "tonk.dialog.intent.expression/input", "as": "Text", "cardinality": "one" }
+                } },
+                "terms": { "this": expression, "input": { "?": { "name": "input" } } }
+            })
+            .to_string(),
+        )
+        .await;
+        if rows
+            .as_array()
+            .and_then(|rows| rows.first())
+            .and_then(|row| row["fields"]["input"].as_str())
+            == Some(input)
+        {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("{input:?} was never interpreted for {expression}");
+}
+
+/// The readings of an interpreted expression.
+async fn readings(app: &Router, prefix: &str, expression: &str, this: &str) -> Vec<Value> {
+    let rows = send(
+        app,
+        "POST",
+        &format!("{prefix}/query"),
+        "application/json",
+        json!({
+            "predicate": "intent/suggest",
+            "terms": { "expression": expression, "this": this, "now": 1.0, "max": 8 }
+        })
+        .to_string(),
+    )
+    .await;
+    rows.as_array().cloned().unwrap_or_default()
+}
+
+/// A site on a notebook's page, as the route stamp would leave it.
+fn notebook_page(site: &str, key: &str, notebook: &str) -> String {
+    format!(
+        r#"
+site!:
+  this: {site}
+  path: "/notebook/{notebook}"
+  anchor: ""
+  space: "{key}"
+  branch: "main"
+  replica: replica:test
+  branch-entity: branch:test
+  profile-branch: "main"
+  route: route:notebook
+  concept: notebook/route
+
+notebook/route!:
+  this: {site}
+  entity: {notebook}
+  repo: "{key}"
+  branch: "main"
+"#
+    )
+}
+
+#[dialog_common::test]
+async fn it_renames_the_notebook_a_page_shows() {
+    let (app, _state, _lsp) = api_router_with_state(test_state().await);
+    let created = send(
+        &app,
+        "PUT",
+        "/api/repository/palette",
+        "application/json",
+        "{}".into(),
+    )
+    .await;
+    let key = created["name"].as_str().unwrap().to_owned();
+    let subject = created["subject"].as_str().unwrap().to_owned();
+    let space = format!("/api/repository/{key}/branch/main");
+    let evaluate = format!("{space}/evaluate");
+    send(&app, "POST", &evaluate, "application/yaml", CORE.into()).await;
+    send(&app, "POST", &evaluate, "application/yaml", NOTEBOOK.into()).await;
+    let page = "site:4a1f0c9e-2b7d-4e8a-9c3f-5d6e7f8a9b0c";
+    let notebook = "notebook:plans";
+    send(
+        &app,
+        "POST",
+        &evaluate,
+        "application/yaml",
+        notebook_page(page, &key, notebook),
+    )
+    .await;
+
+    // "rename to Plans" on the notebook's page: the page's notebook is the
+    // subject, the typed text the title.
+    let expression = "intent:test-expression-1";
+    interpreted(&app, &space, expression, "rename to Plans", page, 1.0).await;
+    let rows = readings(&app, &space, expression, &subject).await;
+    let retitle = rows
+        .iter()
+        .find(|row| {
+            field(row, "text").as_str() == Some(format!("rename [{notebook}] to [Plans]").as_str())
+        })
+        .unwrap_or_else(|| panic!("the page's notebook is renamed: {rows:?}"));
+    let claim = field(retitle, "claim")
+        .as_str()
+        .expect("both fields are filled");
+    assert!(
+        claim.contains(notebook) && claim.contains("Plans"),
+        "{claim}"
+    );
+
+    // With "Roadmap" selected in the page, bare "rename" takes it as the
+    // title.
+    send(
+        &app,
+        "POST",
+        &format!("{space}/transact"),
+        "application/json",
+        select(page, "Roadmap", 2.0),
+    )
+    .await;
+    selection(&app, &space, page, Some("Roadmap")).await;
+    interpreted(&app, &space, expression, "rename", page, 2.0).await;
+    let rows = readings(&app, &space, expression, &subject).await;
+    assert!(
+        rows.iter().any(|row| field(row, "text").as_str()
+            == Some(format!("rename [{notebook}] to [Roadmap]").as_str())
+            && field(row, "claim").is_string()),
+        "the selection is the title: {rows:?}"
+    );
+
+    // On a page that isn't a notebook's, nothing names a notebook, so the
+    // retitle can't run as it is.
+    let elsewhere = "site:7c2e1d0b-3a4f-4b5c-8d6e-9f0a1b2c3d4e";
+    let other = "intent:test-expression-2";
+    interpreted(&app, &space, other, "rename to Plans", elsewhere, 3.0).await;
+    let rows = readings(&app, &space, other, &subject).await;
+    assert!(
+        rows.iter().all(|row| !field(row, "claim")
+            .as_str()
+            .is_some_and(|claim| claim.contains("notebook.retitle"))),
+        "no notebook is renamed off a notebook's page: {rows:?}"
+    );
 }
 
 /// How `intent/suggest` scales with a noun's rows, store reads included.

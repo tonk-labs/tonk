@@ -5700,6 +5700,74 @@ concept!: &intent/choice
       cardinality: one
       as: float
 
+# The command palette's interpretation of what was typed, as session facts.
+# The palette makes an `expression` per opening and sends
+# `intent/interpret` as the line changes; its handler (the parser) records
+# the expression and one `intent` per command the line could mean, in the
+# session overlay. Rules derive values for a command's fields onto its
+# intent, each as a one-field concept on the field's own attribute, scoped
+# to the command (`intent` where `command: <the command>`). `intent/suggest`
+# reads the intents and those values back as readings.
+command!: &intent/interpret
+  this: tonk:intent-interpret
+  description: Interpret what was typed in the command palette, where it was opened.
+  with:
+    expression:
+      description: The palette opening it belongs to, made by the page.
+      the: tonk.dialog.intent.interpret/expression
+      as: entity
+    input:
+      description: Exactly what is typed.
+      the: tonk.dialog.intent.interpret/input
+      as: text
+    site:
+      description: The tab's site entity.
+      the: tonk.dialog.intent.interpret/site
+      as: entity
+    time:
+      description: When it was typed, so typing the same line again re-fires.
+      the: tonk.dialog.intent.interpret/time
+      as: float
+
+concept!: &intent/expression
+  description: One opening of the command palette, as interpreted so far. Session facts.
+  with:
+    input:
+      description: What is typed.
+      the: tonk.dialog.intent.expression/input
+      cardinality: one
+      as: text
+    site:
+      description: The tab's site, where the palette was opened.
+      the: tonk.dialog.intent.expression/site
+      cardinality: one
+      as: entity
+    time:
+      description: When the line was last interpreted.
+      the: tonk.dialog.intent.expression/time
+      cardinality: one
+      as: float
+  maybe:
+    selection:
+      description: The text selected in the tab's page, when there was some.
+      the: tonk.dialog.intent.expression/selection
+      cardinality: one
+      as: text
+
+concept!: &intent
+  description: What an expression could mean as one command. Rules derive the command's field values onto it.
+  with:
+    expression:
+      description: The expression it was read from.
+      the: tonk.dialog.intent/expression
+      cardinality: one
+      as: entity
+    command:
+      description: The command it would run.
+      the: tonk.dialog.intent/command
+      cardinality: one
+      as: entity
+
 intent/role!: &intent/object
   name: "object"
 
@@ -5860,6 +5928,8 @@ element!: &command-palette
         const fab = self.closest('tonk-fab');
         if (fab) fab.removeAttribute('commanding');
         self.__asked = null;
+        // The next opening is a new expression.
+        self.__expression = null;
         self.__typed = '';
         self.__input.value = '';
         self.__proposals = [];
@@ -6012,16 +6082,46 @@ element!: &command-palette
         const fab = self.closest('tonk-fab');
         if (!space || !window.tonk || !(fab && fab.hasAttribute('commanding'))) return;
         const branches = [`main@${space}`, self.getAttribute('profile')].filter(Boolean);
-        const body = {
-          predicate: 'intent/suggest',
-          // Nothing typed lists everything that runs as it is; a line, its best.
-          // `site`: the tab's site, whose selection the parser tries in every
-          // reading.
-          terms: {
-            input: typed, this: space, now: Date.now(), max: typed ? 5 : 12,
-            site: (window.tonk.context || {}).site || undefined,
-          },
+        const site = (window.tonk.context || {}).site;
+        const now = Date.now();
+        const max = typed ? 5 : 12;
+        // Each branch interprets the line (`intent/interpret`: its parser
+        // records the expression and an intent per command it could mean,
+        // and rules derive values for those commands' fields), then reads
+        // the expression's readings back. One expression per opening.
+        if (site && !self.__expression) self.__expression = `intent:${crypto.randomUUID()}`;
+        const expression = site ? self.__expression : null;
+        const started = performance.now();
+        const timing = {};
+        const interpreted = async (branch) => {
+          const field = (name, as) => ({ the: `tonk.dialog.intent.interpret/${name}`, as });
+          await window.tonk.transact({ claims: [{ op: 'assert', application: {
+            predicate: { kind: 'transient', concept: {
+              description: 'Interpret what was typed in the command palette, where it was opened.',
+              with: {
+                expression: field('expression', 'Entity'), input: field('input', 'Text'),
+                site: field('site', 'Entity'), time: field('time', 'Float'),
+              } } },
+            parameters: { expression, input: typed, site, time: now },
+          } }] }, { with: branch });
+          // The handler runs after the transact returns: wait until it has
+          // recorded this line.
+          const recorded = { predicate: { with: { input: {
+            the: 'tonk.dialog.intent.expression/input', as: 'Text', cardinality: 'one' } } },
+            terms: { this: expression, input: { '?': { name: 'input' } } } };
+          for (let tries = 0; tries < 100; tries++) {
+            if (self.__asked !== asked) return false;
+            const found = await window.tonk.query(recorded, { with: branch });
+            const rows = Array.isArray(found) ? found : (found && found.rows) || [];
+            if (rows.some((row) => (row.fields || {}).input === typed)) return true;
+            await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+          return false;
         };
+        const ofExpression = { predicate: 'intent/suggest', terms: { expression, this: space, now, max } };
+        // No site to interpret against, or a branch that didn't interpret
+        // the line: ask with the line itself.
+        const ofLine = { predicate: 'intent/suggest', terms: { input: typed, this: space, now, max, site } };
         const read = (branch, row) => {
           const fields = row.fields || {};
           const json = (text, fallback) => { try { return JSON.parse(text); } catch { return fallback; } };
@@ -6037,15 +6137,26 @@ element!: &command-palette
             claim: fields.claim ? json(fields.claim, null) : null,
           };
         };
-        const answers = await Promise.all(branches.map((branch) =>
-          window.tonk.query(body, { with: branch })
+        const answers = await Promise.all(branches.map(async (branch) => {
+          const done = expression ? await interpreted(branch).catch((error) => {
+            console.warn('<command-palette> intent/interpret failed on', branch, error);
+            return false;
+          }) : false;
+          if (self.__asked !== asked) return [];
+          timing[branch] = Math.round(performance.now() - started);
+          return window.tonk.query(done ? ofExpression : ofLine, { with: branch })
             .then((found) => (Array.isArray(found) ? found : (found && found.rows) || [])
               .map((row) => read(branch, row)))
             .catch((error) => {
               console.warn('<command-palette> intent/suggest failed on', branch, error);
               return [];
-            })));
+            });
+        }));
         if (self.__asked !== asked || !fab.hasAttribute('commanding')) return;
+        // How long a line took: per branch until it was interpreted, and in
+        // all until its readings arrived. For measuring, not for behaviour.
+        console.debug('[intent] interpreted', JSON.stringify(timing),
+          'readings', Math.round(performance.now() - started), 'ms', JSON.stringify(typed));
         let readings = answers.flat();
         if (typed) {
           // One ranking across both branches, the way one branch ranks its

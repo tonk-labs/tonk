@@ -1149,7 +1149,7 @@ dependencies = [
 [[package]]
 name = "dialog-lingo"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?rev=d07a15c2beb22a9a1ed4680cf4d7805a8ba84b29#d07a15c2beb22a9a1ed4680cf4d7805a8ba84b29"
+source = "git+https://github.com/dialog-db/dialog-db.git?rev=f464bdffd99838cb4d7863d7293270a58c82e2af#f464bdffd99838cb4d7863d7293270a58c82e2af"
 dependencies = [
  "serde",
 ]

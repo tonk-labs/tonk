@@ -14,6 +14,10 @@
 //! - `max` — how many rows at most (default 5).
 //! - `site` — the tab's site; its recorded `selection` is tried in every
 //!   reading, and stands in for "this" and "it".
+//! - `expression` — an expression `intent/interpret` recorded. It supplies
+//!   the input and the selection, and the readings are those of its
+//!   intents, with the values rules derived onto each intent filling the
+//!   command's fields.
 //!
 //! Each row is one reading, best first: `rank`, `score`, `command` (the
 //! command entity), `text` (the reading as plain text), `display` (its
@@ -28,7 +32,7 @@
 //! a dialog premise of the same name would bind, so moving the resolution
 //! into dialog changes nothing for the page that asks.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use dialog_query::{Term, Value};
 use dialog_repository::Branch;
@@ -49,17 +53,135 @@ pub async fn suggest<Env: SelectProvider>(
     env: &Env,
     query: &Query,
 ) -> Result<Vec<Conclusion>, FormulaError> {
-    let input = text_term(query, "input").unwrap_or_default();
     let this = text_term(query, "this");
-    // The tab's site, whose `selection` (recorded by `site/select`) the
-    // parser tries in every reading, as Ubiquity did.
-    let selection = match text_term(query, "site") {
-        Some(site) => site_selection(branch, env, &site).await?,
-        None => None,
-    };
     let now = number_term(query, "now");
     let max = number_term(query, "max").map_or(5, |max| max.max(1.0) as usize);
+    let (mut source, memory) = load(branch, env).await?;
 
+    // An interpreted expression (`intent/interpret` recorded it, with an
+    // intent per command it could mean) supplies the input and selection,
+    // and its intents carry what rules derived for each command's fields.
+    // Without one, the terms supply them.
+    let (input, selection, commands) = match text_term(query, "expression") {
+        Some(expression) => {
+            let recorded = expression_input(branch, env, &expression).await?;
+            let input = recorded
+                .or_else(|| text_term(query, "input"))
+                .unwrap_or_default();
+            let selection = expression_selection(branch, env, &expression).await?;
+            let intents = intents(branch, env, &expression).await?;
+            source.fragments = fragments(branch, env, &source, &intents).await?;
+            let commands: BTreeSet<String> =
+                intents.into_iter().map(|(_, command)| command).collect();
+            (input, selection, Some(commands))
+        }
+        None => {
+            let input = text_term(query, "input").unwrap_or_default();
+            // The tab's site, whose `selection` (recorded by `site/select`)
+            // the parser tries in every reading, as Ubiquity did.
+            let selection = match text_term(query, "site") {
+                Some(site) => site_selection(branch, env, &site).await?,
+                None => None,
+            };
+            (input, selection, None)
+        }
+    };
+
+    let request = Request {
+        input: input.clone(),
+        max,
+        context: dialog_lingo::Context {
+            selection: selection.map(|text| dialog_lingo::Selection { text, entity: None }),
+            this: this.map(|entity| dialog_lingo::Selection {
+                text: String::new(),
+                entity: Some(entity),
+            }),
+        },
+        sources: vec![source],
+        memory,
+        now,
+    };
+    let proposals = if input.is_empty() {
+        tonk_intent::menu(&request)
+    } else {
+        tonk_intent::propose(&request)
+    };
+    Ok(proposals
+        .into_iter()
+        .filter(|proposal| {
+            commands
+                .as_ref()
+                .is_none_or(|commands| commands.contains(&proposal.command))
+        })
+        .take(max)
+        .enumerate()
+        .map(|(rank, proposal)| row(rank, proposal))
+        .collect())
+}
+
+/// What `intent/interpret` makes of an input on one branch: the commands
+/// it could mean, and the selection of the tab it was typed in.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Interpretation {
+    /// Every command the input could mean, as its concept entity. With
+    /// nothing typed, every command that has a name.
+    pub commands: Vec<String>,
+    /// The text selected in the tab's page, when there is some.
+    pub selection: Option<String>,
+}
+
+/// Interpret `input`, typed in the tab whose site is `site`, against the
+/// commands `branch` declares.
+pub async fn interpret<Env: SelectProvider>(
+    branch: &Branch,
+    env: &Env,
+    input: &str,
+    site: Option<&str>,
+) -> Result<Interpretation, FormulaError> {
+    let (source, memory) = load(branch, env).await?;
+    let selection = match site {
+        Some(site) => site_selection(branch, env, site).await?,
+        None => None,
+    };
+    let mut commands: Vec<String> = Vec::new();
+    let mut add = |command: String| {
+        if !commands.contains(&command) {
+            commands.push(command);
+        }
+    };
+    if input.trim().is_empty() {
+        for row in &source.verbs {
+            add(row.this.clone());
+        }
+    } else {
+        let request = Request {
+            input: input.to_owned(),
+            max: 20,
+            context: dialog_lingo::Context {
+                selection: selection
+                    .clone()
+                    .map(|text| dialog_lingo::Selection { text, entity: None }),
+                this: None,
+            },
+            sources: vec![source],
+            memory,
+            now: None,
+        };
+        for proposal in tonk_intent::propose(&request) {
+            add(proposal.command);
+        }
+    }
+    Ok(Interpretation {
+        commands,
+        selection,
+    })
+}
+
+/// Everything `branch` says about its commands, and the parser's memory.
+async fn load<Env: SelectProvider>(
+    branch: &Branch,
+    env: &Env,
+) -> Result<(Source, Vec<Row>), FormulaError> {
     let mut source = Source {
         branch: String::new(),
         ..Source::default()
@@ -85,32 +207,151 @@ pub async fn suggest<Env: SelectProvider>(
         source.concepts.insert(concept, rows);
     }
     let memory = rows(branch, env, choices()).await?;
+    Ok((source, memory))
+}
 
-    let request = Request {
-        input: input.clone(),
-        max,
-        context: dialog_lingo::Context {
-            selection: selection.map(|text| dialog_lingo::Selection { text, entity: None }),
-            this: this.map(|entity| dialog_lingo::Selection {
-                text: String::new(),
-                entity: Some(entity),
-            }),
-        },
-        sources: vec![source],
-        memory,
-        now,
-    };
-    let proposals = if input.is_empty() {
-        tonk_intent::menu(&request)
-    } else {
-        tonk_intent::propose(&request)
-    };
-    Ok(proposals
-        .into_iter()
-        .take(max)
-        .enumerate()
-        .map(|(rank, proposal)| row(rank, proposal))
-        .collect())
+/// The input recorded for `expression`.
+async fn expression_input<Env: SelectProvider>(
+    branch: &Branch,
+    env: &Env,
+    expression: &str,
+) -> Result<Option<String>, FormulaError> {
+    first_text(
+        branch,
+        env,
+        expression,
+        "tonk.dialog.intent.expression/input",
+    )
+    .await
+}
+
+/// The selection recorded for `expression`, when there was one.
+async fn expression_selection<Env: SelectProvider>(
+    branch: &Branch,
+    env: &Env,
+    expression: &str,
+) -> Result<Option<String>, FormulaError> {
+    Ok(first_text(
+        branch,
+        env,
+        expression,
+        "tonk.dialog.intent.expression/selection",
+    )
+    .await?
+    .filter(|text| !text.is_empty()))
+}
+
+/// The one text value of `the` on `this`, if any.
+async fn first_text<Env: SelectProvider>(
+    branch: &Branch,
+    env: &Env,
+    this: &str,
+    the: &str,
+) -> Result<Option<String>, FormulaError> {
+    Ok(rows(
+        branch,
+        env,
+        json!({
+            "predicate": { "with": { "value": text(the, "one") } },
+            "terms": { "this": this, "value": var("value") }
+        }),
+    )
+    .await?
+    .into_iter()
+    .find_map(|row| row.fields.get("value")?.as_str().map(str::to_owned)))
+}
+
+/// `expression`'s intents, as (intent entity, command entity).
+async fn intents<Env: SelectProvider>(
+    branch: &Branch,
+    env: &Env,
+    expression: &str,
+) -> Result<Vec<(String, String)>, FormulaError> {
+    Ok(rows(
+        branch,
+        env,
+        json!({
+            "predicate": { "with": {
+                "expression": entity("tonk.dialog.intent/expression", false),
+                "command": entity("tonk.dialog.intent/command", false)
+            } },
+            "terms": { "this": var("this"), "expression": expression, "command": var("command") }
+        }),
+    )
+    .await?
+    .into_iter()
+    .filter_map(|row| {
+        let command = row.fields.get("command")?.as_str()?.to_owned();
+        Some((row.this, command))
+    })
+    .collect())
+}
+
+/// What rules derived onto each intent for its command's entity fields,
+/// as `fragments` rows (`command`, `field`, `value`).
+///
+/// A field's values are the rows of a one-field concept on the field's own
+/// attribute, read on the intent. A concept's identity is its attributes
+/// (domain, name, type, cardinality), not its name or field names, so this
+/// is the same concept a library rule concludes for that field, and the
+/// rule answers it.
+async fn fragments<Env: SelectProvider>(
+    branch: &Branch,
+    env: &Env,
+    source: &Source,
+    intents: &[(String, String)],
+) -> Result<Vec<Row>, FormulaError> {
+    let mut found = Vec::new();
+    for (intent, command) in intents {
+        for argument in source
+            .arguments
+            .iter()
+            .filter(|row| row.fields.get("command").and_then(Json::as_str) == Some(command))
+        {
+            let Some(field) = argument.fields.get("field").and_then(Json::as_str) else {
+                continue;
+            };
+            let Some(attribute) = source.attributes.iter().find(|row| row.this == field) else {
+                continue;
+            };
+            let kind = attribute.fields.get("type").and_then(Json::as_str);
+            let (Some(selector), Some("Entity")) =
+                (attribute.fields.get("id").and_then(Json::as_str), kind)
+            else {
+                continue;
+            };
+            let cardinality = attribute
+                .fields
+                .get("cardinality")
+                .and_then(Json::as_str)
+                .unwrap_or("one");
+            let values = rows(
+                branch,
+                env,
+                json!({
+                    "predicate": { "with": { "value": {
+                        "the": selector, "as": "Entity", "cardinality": cardinality
+                    } } },
+                    "terms": { "this": intent, "value": var("value") }
+                }),
+            )
+            .await?;
+            for value in values {
+                let Some(value) = value.fields.get("value").and_then(Json::as_str) else {
+                    continue;
+                };
+                let mut fragment = BTreeMap::new();
+                fragment.insert("command".to_owned(), json!(command));
+                fragment.insert("field".to_owned(), json!(field));
+                fragment.insert("value".to_owned(), json!(value));
+                found.push(Row {
+                    this: String::new(),
+                    fields: fragment,
+                });
+            }
+        }
+    }
+    Ok(found)
 }
 
 /// One reading as a row.
@@ -223,9 +464,13 @@ fn attributes() -> Json {
     json!({
         "predicate": { "with": {
             "id": text("db.attribute/id", "one"),
-            "type": text("db.attribute/type", "one")
+            "type": text("db.attribute/type", "one"),
+            "cardinality": text("db.attribute/cardinality", "one")
         } },
-        "terms": { "this": var("this"), "id": var("id"), "type": var("type") }
+        "terms": {
+            "this": var("this"), "id": var("id"), "type": var("type"),
+            "cardinality": var("cardinality")
+        }
     })
 }
 

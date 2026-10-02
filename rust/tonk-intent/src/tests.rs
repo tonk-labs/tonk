@@ -85,6 +85,7 @@ fn space() -> Source {
                 },
             ),
         ]),
+        fragments: Vec::new(),
     }
 }
 
@@ -104,6 +105,72 @@ fn request(input: &str) -> Request {
         memory: Vec::new(),
         now: Some(1_000.5),
     }
+}
+
+#[test]
+fn it_fills_a_field_from_a_value_derived_for_it() {
+    // The context offers Alice for expel's member: she is the field's
+    // default, shown by her concept row's label, and the reading runs.
+    let mut source = space();
+    source.fragments = vec![row(
+        "",
+        json!({ "command": "concept:expel", "field": "the:expel-member", "value": "did:key:alice" }),
+    )];
+    let mut asked = request("expel");
+    asked.sources = vec![source];
+    let top = &propose(&asked)[0];
+    assert_eq!(top.parse.display_text(), "expel [Alice]");
+    assert!(top.claim.is_some(), "a derived value completes the reading");
+
+    // Another member can still be named.
+    asked.input = "expel bob".into();
+    assert_eq!(propose(&asked)[0].parse.display_text(), "expel [Bob]");
+}
+
+#[test]
+fn it_fills_a_field_with_no_noun_from_a_value_derived_for_it() {
+    // A field that names no concept takes the derived value as is, shown
+    // by the label it was derived with.
+    let mut source = space();
+    source
+        .verbs
+        .push(row("concept:retitle", json!({ "name": "retitle" })));
+    source.arguments.push(row(
+        "",
+        json!({ "command": "concept:retitle", "field": "the:retitle-subject", "role": "object" }),
+    ));
+    source.arguments.push(row(
+        "",
+        json!({ "command": "concept:retitle", "field": "the:retitle-title", "role": "goal" }),
+    ));
+    source.attributes.push(row(
+        "the:retitle-subject",
+        json!({ "id": "xyz.tonk.notebook.retitle/subject", "type": "Entity" }),
+    ));
+    source.attributes.push(row(
+        "the:retitle-title",
+        json!({ "id": "xyz.tonk.notebook.retitle/title", "type": "Text" }),
+    ));
+    source.fragments = vec![row(
+        "",
+        json!({
+            "command": "concept:retitle", "field": "the:retitle-subject",
+            "value": "notebook:plans", "label": "Plans"
+        }),
+    )];
+    let mut asked = request("retitle to Notes");
+    asked.sources = vec![source];
+    let top = &propose(&asked)[0];
+    assert_eq!(top.parse.display_text(), "retitle [Plans] to [Notes]");
+    let claim = top
+        .claim
+        .as_ref()
+        .expect("both fields are filled")
+        .to_string();
+    assert!(
+        claim.contains("notebook:plans") && claim.contains("Notes"),
+        "{claim}"
+    );
 }
 
 #[test]

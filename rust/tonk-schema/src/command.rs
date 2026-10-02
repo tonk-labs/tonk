@@ -541,6 +541,31 @@ bar_command!(
     connect_agent
 );
 
+/// `intent/interpret`: what was typed in the command palette, where it
+/// was opened. The handler is the parser: it records the expression (the
+/// input, the site, and the site's selection) and one `intent` per command
+/// the input could mean, in the session overlay of the branch it came from.
+/// Rules derive values for those commands' fields onto the intents, and
+/// `intent/suggest` reads them back as readings.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct Interpret {
+    /// The command entity (a fresh id per keystroke).
+    pub this: Entity,
+    /// The palette opening it belongs to.
+    pub expression: crate::domain::command::current::intent_interpret::Expression,
+    /// Exactly what is typed.
+    pub input: crate::domain::command::current::intent_interpret::Input,
+    /// The tab's site.
+    pub site: crate::domain::command::current::intent_interpret::Site,
+    /// When it was typed.
+    pub time: crate::domain::command::current::intent_interpret::Time,
+}
+
+impl Command for Interpret {
+    type Input = Self;
+    type Output = ();
+}
+
 /// `site/select`: what the page in a tab has selected, reported by the
 /// page as it changes. The handler records it on the tab's site as
 /// `xyz.tonk.site/selection`, in the session overlay of the branch it came

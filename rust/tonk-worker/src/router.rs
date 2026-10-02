@@ -155,6 +155,7 @@ mod blob;
 
 mod migration;
 
+mod interpret;
 mod navigate;
 mod site_request;
 mod site_select;
