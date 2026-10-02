@@ -288,15 +288,12 @@ enabled = true
 head_sampling_rate = 1
 invocation_logs = false
 
-# Each space's live side: the Durable Object that keeps its sockets,
-# answers what they carry, and tells their watches of each cell write.
-[[env.preview.durable_objects.bindings]]
-name = "LIVE"
-class_name = "Live"
-
-[[env.preview.migrations]]
-tag = "v1-live"
-new_sqlite_classes = ["Live"]
+# No `LIVE` here yet. Preview uploads each pull request as a version of
+# one shared worker, and a version cannot carry a Durable Object migration:
+# the migration has to land through a plain `wrangler deploy --env preview`
+# first, after which every version must keep the class. Until that is done
+# once from main, a preview has no sockets, and its clients sync over
+# requests as they do against any service without one.
 
 [[env.preview.r2_buckets]]
 binding = "BUCKET"

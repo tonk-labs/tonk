@@ -369,7 +369,12 @@ pub async fn connect(req: Request, env: &Env) -> Result<Response> {
     else {
         return Response::error("name the space as ?sub=", 400);
     };
-    env.durable_object(BINDING)?
+    // An environment without the binding has no sockets: the client
+    // syncs over requests instead.
+    let Ok(spaces) = env.durable_object(BINDING) else {
+        return Response::error("this service keeps no sockets", 404);
+    };
+    spaces
         .id_from_name(&subject)?
         .get_stub()?
         .fetch_with_request(req)
@@ -380,6 +385,10 @@ pub async fn connect(req: Request, env: &Env) -> Result<Response> {
 /// `space`, so its watches are told. Best effort: a watch the report does
 /// not reach learns of the change when its host next checks.
 pub async fn changed(env: Env, subject: String, space: String, cell: String) {
+    // Without the binding there are no sockets, so no watch to tell.
+    let Ok(spaces) = env.durable_object(BINDING) else {
+        return;
+    };
     let report = async {
         let mut init = worker::RequestInit::new();
         init.with_method(Method::Post).with_body(Some(
@@ -391,7 +400,7 @@ pub async fn changed(env: Env, subject: String, space: String, cell: String) {
             "https://live.invalid/changed?sub={}",
             url::form_urlencoded::byte_serialize(subject.as_bytes()).collect::<String>()
         );
-        env.durable_object(BINDING)?
+        spaces
             .id_from_name(&subject)?
             .get_stub()?
             .fetch_with_request(Request::new_with_init(&url, &init)?)
