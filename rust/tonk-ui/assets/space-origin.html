@@ -14,34 +14,47 @@
                 // yet), and tells the person why.
                 parent.postMessage({ __tonkOrigin: "shell" }, "*");
 
-                // Written ahead of the host's markup. It hands the space worker
-                // a port to the host worker, now and whenever the worker asks
-                // for one (it loses its port on every restart). The host mints
-                // the port bound to this space, so nothing here names one.
-                // It also tells the worker when the page is hidden or leaving,
-                // the moment the worker is about to go idle and be stopped, so
-                // it saves its session first: a worker hears nothing before
-                // the browser stops it.
-                var BROKER =
-                    "<script>(function(){" +
-                    "var sw=navigator.serviceWorker;" +
-                    "function flush(){if(sw.controller)sw.controller.postMessage({type:'flush'});}" +
-                    "window.addEventListener('pagehide',flush);" +
-                    "document.addEventListener('visibilitychange',function(){" +
-                    "if(document.visibilityState==='hidden')flush();" +
-                    "});" +
-                    "function ask(){parent.postMessage({__tonkOrigin:'need-port'},'*');}" +
-                    "window.addEventListener('message',function(e){" +
-                    "if(e.source!==parent||!e.data||e.data.__tonkOrigin!=='port')return;" +
-                    "var port=e.ports&&e.ports[0];" +
-                    "if(port&&sw.controller)sw.controller.postMessage({type:'port'},[port]);" +
-                    "});" +
-                    "sw.addEventListener('message',function(e){" +
-                    "if(e.data&&e.data.type==='need-port')ask();" +
-                    "});" +
-                    "sw.startMessages();" +
-                    "ask();" +
-                    "})();<\/script>";
+                // Carries ports between this origin's worker and the frame
+                // above. A site's worker reaches the worker it answers to
+                // over a port that the frame above hands down; it loses the
+                // port on every restart and asks its pages for another. It
+                // also tells the worker when the page is hidden or leaving,
+                // the moment the worker is about to go idle and be stopped,
+                // so it saves its session first: a worker hears nothing
+                // before the browser stops it.
+                function broker() {
+                    var sw = navigator.serviceWorker;
+                    function flush() {
+                        if (sw.controller) sw.controller.postMessage({ type: "flush" });
+                    }
+                    window.addEventListener("pagehide", flush);
+                    document.addEventListener("visibilitychange", function () {
+                        if (document.visibilityState === "hidden") flush();
+                    });
+                    function ask() {
+                        parent.postMessage({ __tonkOrigin: "need-port" }, "*");
+                    }
+                    window.addEventListener("message", function (e) {
+                        if (e.source !== parent || !e.data || e.data.__tonkOrigin !== "port") return;
+                        var port = e.ports && e.ports[0];
+                        if (port && sw.controller) sw.controller.postMessage({ type: "port" }, [port]);
+                    });
+                    // A profile's worker tells the page that asked it where
+                    // to go next, or to run a passkey ceremony. That page is
+                    // the app's, around this frame, and hears it from here.
+                    var profile = location.hostname.split(".")[0].indexOf("profile") === 0;
+                    sw.addEventListener("message", function (e) {
+                        if (e.data && e.data.type === "need-port") ask();
+                        else if (profile) {
+                            parent.postMessage({ __tonkOrigin: "worker-message", message: e.data }, "*");
+                        }
+                    });
+                    sw.startMessages();
+                    ask();
+                }
+                // Written ahead of the host's markup, so the document the
+                // site renders in brokers ports too.
+                var BROKER = "<script>(" + broker.toString() + ")();<\/script>";
 
                 function report(error) {
                     parent.postMessage(
@@ -155,6 +168,29 @@
                         document.body.textContent =
                             "This address serves a Tonk site. Open it from Tonk.";
                     });
+                    return;
+                }
+
+                // The app's page frames a profile's origin this way with no
+                // site to render: only to reach the profile's worker, which
+                // holds the person's profile, before any site is on screen.
+                // The app's worker passes its requests to the profile's over
+                // a port, which is not an event to the browser: it would stop
+                // the profile's worker as idle in the middle of answering. So
+                // while the app is on screen this frame keeps telling the
+                // worker it is open.
+                if (location.hash === "#connector") {
+                    control()
+                        .then(function () {
+                            broker();
+                            setInterval(function () {
+                                var worker = navigator.serviceWorker.controller;
+                                if (worker && document.visibilityState === "visible") {
+                                    worker.postMessage({ type: "keepalive" });
+                                }
+                            }, 10000);
+                        })
+                        .catch(report);
                     return;
                 }
 

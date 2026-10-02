@@ -120,11 +120,18 @@ pub(crate) fn notify_profile_changed(except: Option<&crate::router::ClientId>) {
             &JsValue::from_str("type"),
             &JsValue::from_str("profile-changed"),
         );
-        for value in js_sys::Array::from(&windows).iter() {
-            let Ok(client) = value.dyn_into::<web_sys::Client>() else {
-                continue;
-            };
-            if client.frame_type() != web_sys::FrameType::TopLevel
+        let windows: Vec<web_sys::Client> = js_sys::Array::from(&windows)
+            .iter()
+            .filter_map(|value| value.dyn_into().ok())
+            .collect();
+        // On a site's origin no document is top-level: each page is on
+        // another origin, around a frame of this one, and the frame passes
+        // what it hears up to it.
+        let framed = !windows
+            .iter()
+            .any(|client| client.frame_type() == web_sys::FrameType::TopLevel);
+        for client in windows {
+            if (!framed && client.frame_type() != web_sys::FrameType::TopLevel)
                 || except.as_deref() == Some(client.id().as_str())
             {
                 continue;
@@ -378,9 +385,12 @@ pub(crate) async fn request_webauthn_with(
         }
     }
     if asked == 0 {
-        return Err(TonkWorkerError::Conflict(
-            "no top-level page is open to run the passkey ceremony".into(),
-        ));
+        // On a site's origin no document is top-level: the page is on
+        // another origin, around the frame that asked, and the frame passes
+        // the request up to it.
+        return client
+            .post_message(&message)
+            .map_err(|error| TonkWorkerError::Internal(format!("post_message failed: {error:?}")));
     }
     Ok(())
 }

@@ -594,6 +594,14 @@
                     onFirstControl,
                 );
 
+                // Where sites have origins of their own, the person's
+                // profile is on one, and its worker holds their database: the
+                // app's worker holds none and passes every request on. It
+                // decides which from the deployment's configuration, so that
+                // is kept where it reads it before it is registered, and the
+                // profile's origin is framed to reach its worker.
+                connectProfile((await keepDeployment())?.sites);
+
                 let registration;
                 try {
                     registration = await navigator.serviceWorker.register(
@@ -851,6 +859,79 @@
             });
             self.serviceWorkerActivates = () =>
                 serviceWorkerHandoff || serviceWorkerReadiness;
+
+            // The deployment's configuration, kept where the app's worker
+            // reads it. Offline the kept one answers.
+            async function keepDeployment() {
+                let cache, key;
+                try {
+                    key = `${location.origin}/.well-known/tonk`;
+                    cache = await caches.open("TONK_DEPLOYMENT");
+                    const response = await fetch(key, { cache: "no-cache" });
+                    if (response.ok) {
+                        await cache.put(key, response.clone());
+                        return await response.json();
+                    }
+                } catch {}
+                try {
+                    return await (await cache?.match(key))?.json();
+                } catch {
+                    return undefined;
+                }
+            }
+
+            // The origin of the person's profile: its label where a site's
+            // goes in the deployment's hostname for sites.
+            function profileOrigin(sites) {
+                const scheme = new URL(sites.app).protocol;
+                return `${scheme}//profile${sites.suffix ?? ""}.${sites.host}`;
+            }
+
+            // Frame the profile's origin, unseen, and carry ports between the
+            // app's worker and the profile's: a new one whenever either asks,
+            // which each does after a restart.
+            function connectProfile(sites) {
+                if (!sites) return;
+                const origin = profileOrigin(sites);
+                self.tonkProfileOrigin = origin;
+                const connector = document.createElement("iframe");
+                connector.hidden = true;
+                connector.title = "profile";
+                connector.setAttribute("sandbox", "allow-scripts allow-same-origin");
+                connector.src = `${origin}/space-origin.html#connector`;
+                // The frame can take a port only once its shell is listening,
+                // which it says by asking for one.
+                let listening = false;
+                const hand = () => {
+                    const worker = navigator.serviceWorker.controller;
+                    if (!listening || !worker || !connector.contentWindow) return;
+                    const channel = new MessageChannel();
+                    worker.postMessage({ type: "profile-port" }, [channel.port1]);
+                    connector.contentWindow.postMessage({ __tonkOrigin: "port" }, origin, [channel.port2]);
+                };
+                window.addEventListener("message", (event) => {
+                    if (event.source !== connector.contentWindow || event.origin !== origin) return;
+                    // What the profile's worker has to tell this page (go
+                    // here, run this passkey ceremony) reaches it as though
+                    // its own worker had said it.
+                    if (event.data?.__tonkOrigin === "worker-message") {
+                        navigator.serviceWorker.dispatchEvent(
+                            new MessageEvent("message", { data: event.data.message }),
+                        );
+                        return;
+                    }
+                    if (event.data?.__tonkOrigin !== "need-port") return;
+                    listening = true;
+                    hand();
+                });
+                navigator.serviceWorker.addEventListener("message", (event) => {
+                    if (event.data?.type === "need-profile-port") hand();
+                });
+                navigator.serviceWorker.addEventListener("controllerchange", hand);
+                const mount = () => document.body.append(connector);
+                if (document.body) mount();
+                else document.addEventListener("DOMContentLoaded", mount, { once: true });
+            }
 
             // Register a one-shot background sync under `tag` so a
             // local commit reaches its upstream even if the tab goes

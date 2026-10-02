@@ -273,9 +273,19 @@ pub(crate) fn deliver_document(iframe: &HtmlIFrameElement, origin: &str, html: &
     let _ = target.post_message(&message, origin);
 }
 
-/// Get the frame at `origin` a port to the host worker for `with`. The top
-/// document mints it; any other document asks its parent, which answers with
-/// a `relay-port` that [`relay_port`] passes down.
+/// Whether this document is on a profile's origin: its hostname's first label
+/// starts with the profile's. Its worker is the one that holds the person's
+/// profile, and so the one a space's worker asks for its delegation.
+fn on_profile_origin() -> bool {
+    window()
+        .and_then(|window| window.location().hostname().ok())
+        .and_then(|hostname| hostname.split('.').next().map(str::to_owned))
+        .is_some_and(|label| label.starts_with(PROFILE_LABEL))
+}
+
+/// Get the frame at `origin` a port to the profile's worker for `with`. The
+/// document on the profile's origin mints it; any other asks its parent,
+/// which answers with a `relay-port` that [`relay_port`] passes down.
 pub(crate) fn broker_port(iframe: &HtmlIFrameElement, origin: &str, with: &Location) {
     let Some(space) = with.space() else {
         return;
@@ -283,15 +293,18 @@ pub(crate) fn broker_port(iframe: &HtmlIFrameElement, origin: &str, with: &Locat
     let Some(window) = window() else {
         return;
     };
+    if on_profile_origin() {
+        if let Some(port) = mint_port(with) {
+            post_port(iframe, origin, "port", with, port);
+        }
+        return;
+    }
     let top = window
         .parent()
         .ok()
         .flatten()
         .is_none_or(|parent| JsValue::from(parent) == JsValue::from(window.clone()));
     if top {
-        if let Some(port) = mint_port(with) {
-            post_port(iframe, origin, "port", with, port);
-        }
         return;
     }
     let (Some(parent), Some(host)) = (window.parent().ok().flatten(), context_origin()) else {
@@ -334,14 +347,14 @@ pub(crate) fn relay_port(
     post_port(iframe, origin, "port", with, port);
 }
 
-/// Create a channel to the host worker, bound to `with`'s space and branch,
-/// and return the end the frame keeps. Only the top document has the host
-/// worker as its controller.
+/// Create a channel to the profile's worker, bound to `with`'s space and
+/// branch, and return the end the frame keeps. Only a document on the
+/// profile's origin has that worker as its controller.
 fn mint_port(with: &Location) -> Option<MessagePort> {
     let space = with.space()?;
     let Some(controller) = window().and_then(|w| w.navigator().service_worker().controller())
     else {
-        tonk_common::log!("site origin: no host worker to broker a port with");
+        tonk_common::log!("site origin: no profile worker to broker a port with");
         return None;
     };
     let channel = MessageChannel::new().ok()?;
@@ -356,7 +369,7 @@ fn mint_port(with: &Location) -> Option<MessagePort> {
     if let Err(error) =
         controller.post_message_with_transferable(&bind, &Array::of1(&channel.port1()))
     {
-        tonk_common::log!("site origin: host worker refused the port: {error:?}");
+        tonk_common::log!("site origin: the profile's worker refused the port: {error:?}");
         return None;
     }
     Some(channel.port2())

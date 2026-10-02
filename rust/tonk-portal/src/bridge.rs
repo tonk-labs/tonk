@@ -57,7 +57,10 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{AbortController, Element, HtmlIFrameElement, MessageEvent, MessagePort, window};
+use web_sys::{
+    AbortController, Element, HtmlIFrameElement, MessageEvent, MessageEventInit, MessagePort,
+    window,
+};
 
 use crate::space_origin::{
     broker_port, clear_unreachable, deliver_document, grant_relayed_port, relay_port,
@@ -1100,6 +1103,16 @@ pub(crate) fn install_message_listener() {
                             deliver_document(&iframe, origin, document);
                         }
                     }
+                    // The profile's worker told the page that asked it
+                    // something (go here, run this passkey ceremony), and
+                    // its own frame heard it. The page hears it as though
+                    // its own worker had said it. Only from the profile:
+                    // a space's frame holds author code.
+                    "worker-message" => {
+                        if state.with.as_ref().is_some_and(Location::profile) {
+                            hear_worker_message(&data);
+                        }
+                    }
                     "need-port" => match requested_location(&data) {
                         Some(requested) if state.allow.permits(&requested) => {
                             grant_relayed_port(&iframe, origin, &requested);
@@ -1249,6 +1262,31 @@ fn pass_relayed_port(
     });
     if let Some((iframe, origin, with)) = target {
         relay_port(&iframe, &origin, &with, port);
+    }
+}
+
+/// Dispatch what a site's worker said on this page's own service worker
+/// container, where the page listens for its worker. Only the top document
+/// does: a nested one is not the page.
+fn hear_worker_message(data: &JsValue) {
+    let Some(window) = window() else {
+        return;
+    };
+    let nested = window
+        .parent()
+        .ok()
+        .flatten()
+        .is_some_and(|parent| JsValue::from(parent) != JsValue::from(window.clone()));
+    if nested {
+        return;
+    }
+    let Ok(message) = Reflect::get(data, &"message".into()) else {
+        return;
+    };
+    let init = MessageEventInit::new();
+    init.set_data(&message);
+    if let Ok(event) = MessageEvent::new_with_event_init_dict("message", &init) {
+        let _ = window.navigator().service_worker().dispatch_event(&event);
     }
 }
 

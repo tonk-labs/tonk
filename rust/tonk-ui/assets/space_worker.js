@@ -1,31 +1,40 @@
-// The service worker of a site origin (`{label}.{host}`), proof of concept.
+// The service worker of a site origin (`{label}.{host}`).
 //
-// Each space renders at its own origin, and this worker controls that
-// origin. The profile renders on one too (`profile.{host}`), with no assets.
+// Every site renders at an origin of its own, and this worker controls that
+// origin and holds its database: the same Rust worker throughout, opened on
+// this origin's storage. There are two kinds of site.
+//
+// - A PROFILE's (`profile….{host}`). Its worker holds the person's profile:
+//   their key, their account, the spaces they have. The app's page reaches it
+//   through the app's own worker, which holds nothing and passes every
+//   request on over a port. It hands each space its delegation.
+// - A SPACE's (`{label}.{host}`). Its worker runs under a profile made for
+//   this origin and holds nothing but a delegation for its one space, which
+//   it asks the person's profile for.
+//
 // It answers these requests and refuses the rest:
 //
-// - Navigations get the static shell, carrying the space's CSP, except one
+// - Navigations get the static shell, carrying the site's CSP, except one
 //   to an asset. The server hands out the same shell for any path, so a deep
 //   link with no worker yet still boots one.
-// - `/asset:{hash}`, an asset's own URI as a path, is read from the space's
-//   own database and served with the media type and size recorded for it,
+// - `/api/*` is answered by this origin's database. A profile passes a read
+//   of a space it shows on to that space's worker.
+// - `/asset:{hash}`, an asset's own URI as a path, is read from a space's
+//   database and served with the media type and size recorded for it,
 //   natively, so `<img>`, `<video>` and `<link>` just work.
 // - `PUT /` stores the request's body as an asset of the space and answers
 //   with its location, `/asset:{hash}`.
-// - `/api/*` is answered by the space's own database: the Rust worker the
-//   host runs, opened on this origin's storage (see "The space's own
-//   database" below).
 // - The app's own static assets (the guest runtime, stylesheet, images and
 //   fonts) come from the server, which serves them on every host, and are
 //   kept so the site loads offline (see "This origin's runtime, offline").
 // - Everything else is a 404. Author code has no network through this worker.
 //
-// The port to the host worker carries what only the host has: the space's
-// delegation, and the snapshot a fresh replica seeds from. The host binds it
-// to this space, so nothing here ever names another. It does not survive a
-// restart of either worker. A restarted space worker has none and asks its
-// clients to broker one from the host; a restarted host worker stops
-// acknowledging, and the space worker drops the dead port and asks again.
+// Each site has a port UP, to the worker it answers to: a space's to its
+// profile's worker, a profile's to the app's. The other end passes requests
+// down it and gets answers back; a space also asks up it for its delegation.
+// A port does not survive a restart of either worker. A restarted worker has
+// none and asks its pages to broker one; a restarted worker above stops
+// acknowledging, and this one drops the dead port and asks again.
 
 import init, { activate } from "./worker.js";
 
@@ -59,7 +68,11 @@ const ACK_TIMEOUT_MS = 3_000;
 // shell replaces a worker that does not answer with the same number.
 const PROTOCOL = 1;
 
-const log = (...args) => console.log("[Space Worker]", ...args);
+// Which kind of site this origin is. A profile's label starts with
+// `profile`; a space's is its key in base32, which never does.
+const PROFILE = self.location.hostname.split(".")[0].startsWith("profile");
+
+const log = (...args) => console.log(PROFILE ? "[Profile Worker]" : "[Space Worker]", ...args);
 
 self.addEventListener("install", event => {
     self.skipWaiting();
@@ -157,7 +170,7 @@ async function dropSuperseded(cache, url) {
     }
 }
 
-// ---- The port to the host worker ----------------------------------------
+// ---- The port up ---------------------------------------------------------
 
 let hostPort = null;
 let portWaiters = [];
@@ -165,66 +178,84 @@ let nextId = 1;
 const pending = new Map();
 
 self.addEventListener("message", event => {
-    if (event.data?.type === "protocol") {
+    const type = event.data?.type;
+    if (type === "protocol") {
         event.ports[0]?.postMessage({ protocol: PROTOCOL });
         return;
     }
-    if (event.data?.type === "flush") {
+    if (type === "flush") {
         event.waitUntil(flushSession());
         return;
     }
-    if (event.data?.type !== "port") return;
+    // A page says it is still open. Hearing it is all there is to do: an
+    // event is what keeps the browser from stopping this worker as idle,
+    // and a request passed down a port is not one.
+    if (type === "keepalive") return;
+    // The profile's page frames a space and hands this worker one end of a
+    // port to that space's worker.
+    if (type === "space-port" && PROFILE) {
+        bindSpacePort(event.ports[0], event.data);
+        return;
+    }
+    if (type !== "port") return;
     const [port] = event.ports;
     if (!port) return;
-    adopt(port);
-    // With a way to ask for its delegation, bring the space's database up.
+    adopt(port, event.source?.id ?? "");
+    // A space can now ask for its delegation, and a profile be asked of:
+    // bring the database up.
     event.waitUntil(
-        spaceWorker().catch(error => log("space database failed to start:", error)),
+        siteWorker().catch(error => log("the database failed to start:", error)),
     );
 });
 
-function adopt(port) {
+// `frame` is the page that handed the port over, a frame of this origin. What
+// comes down the port was asked by the page around that frame, on another
+// origin, which this worker cannot name or reach: it answers as though the
+// frame had asked, and what it has to tell the asker it tells the frame.
+function adopt(port, frame) {
     // A replaced port is left open: replies to requests already sent on it
     // still arrive, and every reply is matched by id, not by port.
     port.onmessage = event => {
         const { data } = event;
-        if (typeof data?.call === "number") answerHost(port, data);
-        else if (typeof data?.cancel === "number") hostReads.get(data.cancel)?.cancel().catch(() => {});
+        if (typeof data?.ping === "number") port.postMessage({ pong: data.ping });
+        else if (typeof data?.call === "number") answer(port, data, frame);
+        else if (typeof data?.cancel === "number") answering.get(data.cancel)?.cancel().catch(() => {});
+        else if (typeof data?.signal === "string") signalled(data.signal);
+        else if (data?.message !== undefined) messaged(data.message, event.ports, frame);
         else onReply(event);
     };
     hostPort = port;
     for (const resolve of portWaiters.splice(0)) resolve(port);
-    log("adopted a port to the host worker");
+    log("adopted a port up");
 }
 
-// ---- Reads the host passes on --------------------------------------------
+// ---- Requests passed down the port ---------------------------------------
 //
-// The person's profile shows things about the space it frames (its title, its
-// roster) and asks the host's worker for them, which holds none of the
-// space's content. The host passes those reads here over the port, and the
-// answer goes back the same way: its status and headers, then its body in
-// pieces as it is produced, so a subscription keeps flowing.
+// The worker above this one passes requests down the port: the app's passes
+// a profile every request its page makes, and a profile passes a space the
+// reads of what it shows of that space (its title, its roster). The answer
+// goes back the same way: its status and headers, then its body in pieces as
+// it is produced, so a subscription keeps flowing.
 
-// The body readers of the reads still being answered, for the host to cancel.
-const hostReads = new Map();
+// The body readers of the requests still being answered, to cancel.
+const answering = new Map();
 
-async function answerHost(port, { call, request }) {
+async function answer(port, { call, request }, frame) {
     try {
-        const worker = await spaceWorker();
-        const response = await worker.onfetch({
+        const response = await api({
             request: new Request(new URL(request.path, self.location.origin), {
                 method: request.method,
                 headers: request.headers,
                 body: request.body ?? undefined,
             }),
-            clientId: "",
+            clientId: frame,
             resultingClientId: "",
             waitUntil() {},
         });
         port.postMessage({ call, head: { status: response.status, headers: [...response.headers] } });
         if (response.body) {
             const reader = response.body.getReader();
-            hostReads.set(call, reader);
+            answering.set(call, reader);
             for (;;) {
                 const { done, value } = await reader.read();
                 if (done) break;
@@ -236,16 +267,292 @@ async function answerHost(port, { call, request }) {
     } catch (error) {
         port.postMessage({ call, error: String(error?.message ?? error) });
     } finally {
-        hostReads.delete(call);
+        answering.delete(call);
+        // Only a write can stamp a site.
+        if (request.method !== "GET") sessionChanged();
     }
 }
 
-// ---- The space's own database -------------------------------------------
+// Something the page above told its worker, passed down for this worker to
+// hear as well: that the network came or went, or the page became visible.
+// A worker's sync loop paces itself on both, and a profile's spaces want to
+// hear them too.
+async function signalled(signal) {
+    for (const space of spacePorts.values()) space.port.postMessage({ signal });
+    try {
+        const worker = await siteWorker();
+        if (signal === "connectivity") await worker.onconnectivity?.();
+        else if (signal === "visibility") await worker.onvisibility?.();
+    } catch (error) {
+        log(`could not act on ${signal}:`, error);
+    }
+}
+
+// A message the app's page sent its worker, passed down with its ports: the
+// Rust worker reads these (a passkey's result, on its way to the account).
+async function messaged(data, ports, frame) {
+    try {
+        const worker = await siteWorker();
+        const source = frame ? ((await self.clients.get(frame)) ?? null) : null;
+        await worker.onmessage({ data, ports: [...ports], source });
+    } catch (error) {
+        log("could not deliver a message:", error);
+    }
+}
+
+// Answer an `/api/` request. A profile's read of a space it shows is that
+// space's worker's to answer; anything else is this origin's database's.
+async function api(event) {
+    if (PROFILE) {
+        const space = spaceRead(event.request);
+        if (space) {
+            const answered = await readFromSpace(event.request, space);
+            if (answered) return answered;
+        }
+    }
+    return (await siteWorker()).onfetch(event);
+}
+
+// ---- A profile's spaces ---------------------------------------------------
 //
-// The same Rust worker the host runs, here opening this origin's storage. On
-// its first boot it generates a profile of its own, whose key never leaves
-// this origin. It holds nothing but a delegation for this one space, which it
-// asks the person's profile for and asks again before it lapses.
+// A profile's worker holds none of a space's content: the worker on the
+// space's own origin does. The profile's page frames the space and hands
+// this worker one end of a port to that worker, bound to the space. Over it
+// the space's worker asks for its delegation and for what its content starts
+// from, and this worker passes it the reads of the space that the profile
+// makes, as it shows the space's title or its roster.
+//
+// The port arrives a moment after the space's frame starts loading, so a read
+// that comes first waits for it. A space with no frame open has no port; its
+// read then falls to this worker, which answers that it holds nothing.
+
+// What a read of a space looks like: its repository, then a route that only
+// reads. A query is a read however it is sent.
+const SPACE_READ =
+    /^\/api\/repository\/((?:did:key:)?z[1-9A-HJ-NP-Za-km-z]+)\/branch\/[^/]+\/(query|claim\/select|export|sync\/status|blob\/[^/]+)$/;
+const SPACE_PORT_WAIT_MS = 8_000;
+const SPACE_ANSWER_WAIT_MS = 15_000;
+
+// The port to each space's worker, by the space's key, with the reads
+// passed over it that are still being answered.
+const spacePorts = new Map();
+const spacePortWaiters = new Map();
+let nextSpaceCall = 1;
+
+const spaceKey = repo => repo.replace(/^did:key:/, "");
+
+// Serve a space's worker over `port`, bound to the space `repo`: the
+// delegation it holds for that one space, and what its content starts from
+// (the seed of a space made for it to fill, or a copy of one this worker
+// held before). Every request is acknowledged before it is answered, so the
+// space's worker can tell a restarted (silent) worker from a slow one.
+function bindSpacePort(port, { repo, branch }) {
+    if (!port || typeof repo !== "string" || typeof branch !== "string") return;
+    const space = holdSpacePort(repo, port);
+    port.onmessage = async ({ data }) => {
+        // An answer to a read this worker passed on to the space's worker.
+        if (typeof data?.call === "number") {
+            spaceAnswered(space, data);
+            return;
+        }
+        const id = data?.id;
+        if (typeof id !== "number") return;
+        port.postMessage({ id, ack: true });
+        try {
+            const worker = await siteWorker();
+            // The space's worker asks for a delegation for its own profile.
+            // It is issued for the space this port is bound to, never another.
+            if (typeof data.delegate === "string") {
+                const grant = await worker.delegateSpace(repo, data.delegate);
+                const chain = grant.chain.buffer;
+                port.postMessage(
+                    {
+                        id,
+                        space: repo,
+                        chain,
+                        expires: grant.expires,
+                        remote: grant.remote,
+                        account: grant.account,
+                    },
+                    [chain],
+                );
+                return;
+            }
+            // The space's worker has created the content it was handed the
+            // seed for.
+            if (data.seeded === true) {
+                await worker.settleSeed(repo);
+                port.postMessage({ id, settled: true });
+                return;
+            }
+            if (data.snapshot === true) {
+                // A space this worker created and left for its own worker to
+                // fill comes with the seed to fill it from, whatever this
+                // worker's branch holds: a page's own writes may have put a
+                // revision on it since, with none of the space's content.
+                const fresh = await worker.pendingSeed(repo);
+                if (fresh) {
+                    port.postMessage({ id, fresh });
+                    return;
+                }
+                const snapshot = await worker.snapshotSpace(repo);
+                if (!snapshot) {
+                    port.postMessage({ id, empty: true });
+                    return;
+                }
+                const content = snapshot.content.buffer;
+                const revision = snapshot.revision.buffer;
+                port.postMessage({ id, content, revision }, [content, revision]);
+                return;
+            }
+            throw new Error("unknown request");
+        } catch (error) {
+            port.postMessage({ id, error: String(error?.message ?? error) });
+        }
+    };
+}
+
+function holdSpacePort(repo, port) {
+    const key = spaceKey(repo);
+    const space = { port, calls: new Map() };
+    // A port replaces the last: the space's worker restarted, and whatever
+    // it was still answering will never finish. Ask the new worker the same
+    // things. A subscription carries on in the response already open: its
+    // next piece is the whole result again, as on first asking.
+    const stale = spacePorts.get(key);
+    if (stale) {
+        for (const [call, read] of stale.calls) {
+            space.calls.set(call, read);
+            port.postMessage({ call, request: read.request });
+        }
+        if (stale.calls.size > 0) {
+            log(`asking ${stale.calls.size} read(s) of ${key} again of its new worker`);
+        }
+        stale.calls.clear();
+    }
+    spacePorts.set(key, space);
+    for (const resolve of spacePortWaiters.get(key) ?? []) resolve(space);
+    spacePortWaiters.delete(key);
+    return space;
+}
+
+function spacePort(key) {
+    const held = spacePorts.get(key);
+    if (held) return Promise.resolve(held);
+    return new Promise(resolve => {
+        const waiters = spacePortWaiters.get(key) ?? [];
+        waiters.push(resolve);
+        spacePortWaiters.set(key, waiters);
+        setTimeout(() => resolve(null), SPACE_PORT_WAIT_MS);
+    });
+}
+
+// The space a request reads, when this worker is to pass it on.
+function spaceRead(request) {
+    const match = SPACE_READ.exec(new URL(request.url).pathname);
+    if (!match) return null;
+    const reads = request.method === "GET" || (request.method === "POST" && match[2] === "query");
+    return reads ? spaceKey(match[1]) : null;
+}
+
+// Pass `request` to the worker of the space `key`, and answer with what it
+// answers. `null` when that worker cannot be reached, for this worker to
+// answer in its place.
+async function readFromSpace(request, key) {
+    const space = await spacePort(key);
+    if (!space) return null;
+    const url = new URL(request.url);
+    const body = request.method === "GET" ? null : await request.arrayBuffer();
+    const call = nextSpaceCall++;
+    let controller;
+    let answered;
+    const head = new Promise((resolve, reject) => {
+        answered = { resolve, reject };
+    });
+    // The port may be replaced while this is read: find the read wherever
+    // it has moved to.
+    const drop = () => {
+        const held = spacePorts.get(key);
+        if (held?.calls.delete(call)) held.port.postMessage({ cancel: call });
+    };
+    const forget = () => spacePorts.get(key)?.calls.delete(call);
+    const passed = {
+        method: request.method,
+        path: url.pathname + url.search,
+        headers: [...request.headers],
+        body,
+    };
+    const stream = new ReadableStream({
+        start(started) {
+            controller = started;
+        },
+        cancel: drop,
+    });
+    space.calls.set(call, {
+        request: passed,
+        // Asked again of a new worker, a read already answering keeps the
+        // status it gave.
+        head: answered.resolve,
+        chunk: bytes => controller.enqueue(new Uint8Array(bytes)),
+        end() {
+            forget();
+            controller.close();
+        },
+        fail(error) {
+            forget();
+            answered.reject(error);
+            try {
+                controller.error(error);
+            } catch {}
+        },
+    });
+    request.signal?.addEventListener("abort", drop);
+    // Not transferred: the body is kept to ask a new worker with.
+    space.port.postMessage({ call, request: passed });
+    const timer = setTimeout(
+        () => answered.reject(new Error("the space's worker did not answer")),
+        SPACE_ANSWER_WAIT_MS,
+    );
+    try {
+        const { status, headers } = await head;
+        const bodiless = status === 204 || status === 304;
+        return new Response(bodiless ? null : stream, { status, headers });
+    } catch (error) {
+        log(`a read of ${key} was not answered by its own worker:`, error);
+        drop();
+        return null;
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+function spaceAnswered(space, data) {
+    const call = space.calls.get(data.call);
+    if (!call) return;
+    if (data.head) call.head(data.head);
+    else if (data.chunk) call.chunk(data.chunk);
+    else if (data.end) call.end();
+    else if (data.error) call.fail(new Error(data.error));
+}
+
+// End every read passed on to a space's worker, so that nothing this worker
+// streams outlives its retirement. Whoever was reading asks its successor.
+function releaseSpaceReads(reason) {
+    for (const space of spacePorts.values()) {
+        for (const [call, read] of [...space.calls]) {
+            space.port.postMessage({ cancel: call });
+            read.fail(new Error(reason));
+        }
+    }
+}
+
+// ---- This origin's database ----------------------------------------------
+//
+// The same Rust worker on every site, opening this origin's storage. On a
+// profile's origin it is the person's profile. On a space's it generates a
+// profile of its own on first boot, whose key never leaves this origin and
+// which holds nothing but a delegation for this one space: it asks the
+// person's profile for that, and asks again before it lapses.
 
 // The Rust worker fills a missing starter image from the app's bundled
 // library through this hook, which the host's worker defines too. The server
@@ -267,19 +574,26 @@ const RENEW_MARGIN_SECONDS = 60 * 60;
 
 let rust;
 
-function spaceWorker() {
+function siteWorker() {
     rust ??= init({ module_or_path: workerWasm() })
-        .then(() => activate("space", []))
+        .then(() => activate(PROFILE ? "profile" : "space", []))
         .then(async worker => {
-            const grant = await ensureGrant(worker);
-            // Who this worker acts for is kept, but where a view reads it
-            // (the session overlay) lasts only as long as the worker.
-            await worker.resumeSpace(grant.space);
+            if (PROFILE) {
+                // A profile's spaces each have a worker of their own, which
+                // holds their content: this one creates a space's identity
+                // and leaves the rest to that worker.
+                await worker.setSiteOrigins(true);
+            } else {
+                const grant = await ensureGrant(worker);
+                // Who this worker acts for is kept, but where a view reads it
+                // (the session overlay) lasts only as long as the worker.
+                await worker.resumeSpace(grant.space);
+            }
             await restoreSession(worker);
-            // The host passes its reads of this space over the port, and a
-            // port does not outlive the worker it was handed to. Open one
-            // now, so the host learns this is a new worker and has what it
-            // was reading asked for again.
+            // The worker above passes requests down the port, and a port
+            // does not outlive the worker it was handed to. Open one now, so
+            // the worker above learns this is a new worker and asks again
+            // what it was still being answered.
             if (!hostPort) portToHost().catch(() => {});
             return worker;
         })
@@ -308,7 +622,8 @@ let renewing = null;
 // Ask again for a delegation that is close to lapsing, once at a time. Only
 // reads the held grant's expiry until it is due.
 function renewIfDue() {
-    renewing ??= spaceWorker()
+    if (PROFILE) return Promise.resolve();
+    renewing ??= siteWorker()
         .then(ensureGrant)
         .catch(error => log("could not renew the space's delegation:", error))
         .finally(() => {
@@ -378,13 +693,13 @@ async function portToHost() {
     // Any open client can broker a port; ask them all and take the first.
     const clients = await self.clients.matchAll({ type: "window" });
     if (clients.length === 0) {
-        throw new Error("no client to broker a port to the host worker");
+        throw new Error("no page to broker a port up");
     }
     for (const client of clients) client.postMessage({ type: "need-port" });
     return within(brokered, PORT_TIMEOUT_MS, "no client brokered a port in time");
 }
 
-// Ask the host worker, re-brokering once if the port has gone dead.
+// Ask the worker above, re-brokering once if the port has gone dead.
 async function askHost(request) {
     for (let attempt = 0; ; attempt++) {
         const port = await portToHost();
@@ -396,12 +711,12 @@ async function askHost(request) {
         });
         port.postMessage({ ...request, id });
         try {
-            await within(ack, ACK_TIMEOUT_MS, "the host worker did not answer");
+            await within(ack, ACK_TIMEOUT_MS, "the worker above did not answer");
         } catch (error) {
             pending.delete(id);
             if (hostPort === port) hostPort = null;
             if (attempt > 0) throw error;
-            log("port to the host went quiet; asking for a new one");
+            log("the port up went quiet; asking for a new one");
             continue;
         }
         return reply;
@@ -505,7 +820,7 @@ function serveChanging(event) {
             event.waitUntil(promise);
         },
     };
-    const response = spaceWorker().then(worker => worker.onfetch(view));
+    const response = api(view);
     event.waitUntil(
         response
             .then(() => Promise.allSettled(work))
@@ -533,7 +848,7 @@ function isActiveIncumbent() {
 }
 
 async function retire(reason) {
-    // Nothing to release until the space's database has come up.
+    // Nothing to release until the database has come up.
     if (retired || !rust || !isActiveIncumbent()) return;
     retired = true;
     log(`handing over: ${reason}`);
@@ -542,6 +857,7 @@ async function retire(reason) {
         // The successor makes its stamps from what is saved: save first.
         await flushSession();
         await worker.onupdatefound?.();
+        releaseSpaceReads("this worker is retiring");
     } catch (error) {
         retired = false;
         log("failed to release streams:", error);
@@ -659,7 +975,7 @@ async function serveShell() {
 async function readAsset(hash) {
     const space = await heldSpace();
     if (!space) return { status: 404, headers: [], body: new TextEncoder().encode("not found").buffer };
-    const worker = await spaceWorker();
+    const worker = await siteWorker();
     const request = new Request(
         new URL(`/api/repository/${space}/branch/main/blob/asset:${hash}`, self.location.origin),
     );
@@ -678,7 +994,7 @@ async function readAsset(hash) {
 async function storeAsset(event) {
     const space = await heldSpace();
     if (!space) return new Response("not found", { status: 404 });
-    const worker = await spaceWorker();
+    const worker = await siteWorker();
     const headers = new Headers();
     for (const name of ["content-type", "x-tonk-blob-name"]) {
         const value = event.request.headers.get(name);
@@ -773,11 +1089,7 @@ self.addEventListener("fetch", event => {
     }
     if (url.pathname.startsWith("/api/")) {
         // Only a write can stamp a site.
-        event.respondWith(
-            event.request.method === "GET"
-                ? spaceWorker().then(worker => worker.onfetch(event))
-                : serveChanging(event),
-        );
+        event.respondWith(event.request.method === "GET" ? api(event) : serveChanging(event));
         // A worker kept alive past its delegation's window would otherwise
         // hold a lapsed one: check it as it serves, and ask again when due.
         event.waitUntil(renewIfDue());

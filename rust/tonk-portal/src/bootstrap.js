@@ -82,7 +82,15 @@
   // The language server is the same worker's: it reads the database its
   // editor writes to. Relayed, it would answer from the host's copy, and
   // an editor here would see none of what it just defined.
+  // The profile rendered on its own origin is the same: that origin's worker
+  // holds the person's profile, and answers everything the profile asks.
+  function ownProfile(){
+    var c=(window.tonk&&window.tonk.context)||{};
+    return location.origin!=="null"&&!!c.sitePattern&&!c.repo&&
+      location.hostname.split(".")[0].indexOf("profile")===0;
+  }
   function ownsPath(url){
+    if(ownProfile()) return url.indexOf("/api/")===0;
     var c=ownSpace();
     if(!c) return false;
     return url.indexOf("/api/repository/"+c.repo+"/")===0||
