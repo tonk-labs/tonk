@@ -4,10 +4,10 @@ version.workspace = true
 authors.workspace = true
 license.workspace = true
 edition.workspace = true
-description = "The command palette's glue: palette rows in, dialog-lingo parses and command claims out."
+description = "The command palette's glue: palette rows in, tonk-lingo parses and command claims out."
 
 [dependencies]
-dialog-lingo = { workspace = true }
+tonk-lingo = { workspace = true }
 ipld-core = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

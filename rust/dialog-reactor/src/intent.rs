@@ -2,7 +2,7 @@
 //!
 //! A named query (`{ "predicate": "intent/suggest", "terms": {…} }`),
 //! answered here by reading the branch's palette vocabulary with ordinary
-//! concept queries and parsing with `dialog-lingo` (through
+//! concept queries and parsing with `tonk-lingo` (through
 //! [`tonk_intent`]). The inputs are terms:
 //!
 //! - `input` — what was typed; `""` asks for what can be done without
@@ -62,7 +62,7 @@ pub async fn suggest<Env: SelectProvider>(
     // intent per command it could mean) supplies the input and selection,
     // and its intents carry what rules derived for each command's fields.
     // Without one, the terms supply them.
-    let (input, selection, commands) = match text_term(query, "expression") {
+    let (input, selection, commands, site) = match text_term(query, "expression") {
         Some(expression) => {
             let recorded = expression_input(branch, env, &expression).await?;
             let input = recorded
@@ -78,30 +78,49 @@ pub async fn suggest<Env: SelectProvider>(
             }
             let commands: BTreeSet<String> =
                 intents.into_iter().map(|(_, command)| command).collect();
-            (input, selection, Some(commands))
+            let site = first_entity(
+                branch,
+                env,
+                &expression,
+                "tonk.dialog.intent.expression/site",
+            )
+            .await?;
+            (input, selection, Some(commands), site)
         }
         None => {
             let input = text_term(query, "input").unwrap_or_default();
             // The tab's site, whose `selection` (recorded by `site/select`)
             // the parser tries in every reading, as Ubiquity did.
-            let selection = match text_term(query, "site") {
-                Some(site) => site_selection(branch, env, &site).await?,
+            let site = text_term(query, "site");
+            let selection = match &site {
+                Some(site) => site_selection(branch, env, site).await?,
                 None => None,
             };
-            (input, selection, None)
+            (input, selection, None, site)
         }
     };
+    // What the page shows, most specific first: the entity its route names,
+    // then the space. A field defaults to the first of these rules derived
+    // for it.
+    let mut shown = Vec::new();
+    if let Some(site) = &site
+        && let Some(entity) = first_entity(branch, env, site, "xyz.tonk.site/entity").await?
+    {
+        shown.push(entity);
+    }
+    shown.extend(this.clone());
 
     let request = Request {
         input: input.clone(),
         max,
-        context: dialog_lingo::Context {
-            selection: selection.map(|text| dialog_lingo::Selection { text, entity: None }),
-            this: this.map(|entity| dialog_lingo::Selection {
+        context: tonk_lingo::Context {
+            selection: selection.map(|text| tonk_lingo::Selection { text, entity: None }),
+            this: this.map(|entity| tonk_lingo::Selection {
                 text: String::new(),
                 entity: Some(entity),
             }),
         },
+        shown,
         sources: vec![source],
         memory,
         now,
@@ -162,12 +181,14 @@ pub async fn interpret<Env: SelectProvider>(
         let request = Request {
             input: input.to_owned(),
             max: 20,
-            context: dialog_lingo::Context {
+            context: tonk_lingo::Context {
                 selection: selection
                     .clone()
-                    .map(|text| dialog_lingo::Selection { text, entity: None }),
+                    .map(|text| tonk_lingo::Selection { text, entity: None }),
                 this: None,
             },
+            // Which commands, not their fields: no defaults to choose.
+            shown: Vec::new(),
             sources: vec![source],
             memory,
             now: None,
@@ -235,20 +256,18 @@ async fn labelled<Env: SelectProvider>(
     branch: &Branch,
     env: &Env,
 ) -> Result<BTreeMap<String, ConceptRows>, FormulaError> {
+    // A view's facets are a dictionary under `xyz.tonk.view`: the `label`
+    // facet is the `xyz.tonk.view/label` attribute on the concept.
     let concepts: BTreeSet<String> = rows(
         branch,
         env,
         json!({
-            "predicate": { "with": { "show": {
-                "the": { "domain": "xyz.tonk.view", "keyed": "dictionary" },
-                "as": "Text", "cardinality": "one"
-            } } },
-            "terms": { "this": var("this"), "show": var("show"), "show/key": var("show/key") }
+            "predicate": { "with": { "label": text("xyz.tonk.view/label", "one") } },
+            "terms": { "this": var("this"), "label": var("label") }
         }),
     )
     .await?
     .into_iter()
-    .filter(|row| row.fields.get("show/key").and_then(Json::as_str) == Some("label"))
     .map(|row| row.this)
     .collect();
     let mut labelled = BTreeMap::new();
@@ -257,6 +276,26 @@ async fn labelled<Env: SelectProvider>(
         labelled.insert(concept, rows);
     }
     Ok(labelled)
+}
+
+/// The one entity value of `the` on `this`, if any.
+async fn first_entity<Env: SelectProvider>(
+    branch: &Branch,
+    env: &Env,
+    this: &str,
+    the: &str,
+) -> Result<Option<String>, FormulaError> {
+    Ok(rows(
+        branch,
+        env,
+        json!({
+            "predicate": { "with": { "value": entity(the, false) } },
+            "terms": { "this": this, "value": var("value") }
+        }),
+    )
+    .await?
+    .into_iter()
+    .find_map(|row| row.fields.get("value")?.as_str().map(str::to_owned)))
 }
 
 /// The one text value of `the` on `this`, if any.

@@ -2629,7 +2629,8 @@ element!: &drag-frame
 #   one field). Typed words match those values by the `label` facet of
 #   the concept they are rows of. A text field takes what is typed.
 #
-# See plan/command-palette-sketch.md.
+# The parser is `rust/tonk-lingo`, a port of Ubiquity's Parser 2; see
+# plan/command-palette-ubiquity.md for how that parser worked.
 concept!: &intent/action
   description: Words that say a command. Asserted on the command itself.
   with:

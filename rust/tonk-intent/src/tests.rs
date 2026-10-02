@@ -1,7 +1,7 @@
 use serde_json::json;
 
 use super::*;
-use dialog_lingo::Selection;
+use tonk_lingo::Selection;
 
 fn row(this: &str, fields: serde_json::Value) -> Row {
     Row {
@@ -117,6 +117,8 @@ fn request(input: &str) -> Request {
                 entity: Some("did:key:space".into()),
             }),
         },
+        // The page is the space's own.
+        shown: vec!["did:key:space".into()],
         sources: vec![space()],
         memory: Vec::new(),
         now: Some(1_000.5),
@@ -124,16 +126,23 @@ fn request(input: &str) -> Request {
 }
 
 #[test]
-fn it_fills_a_field_from_the_one_value_derived_for_it() {
-    // Rules offer only Alice for expel's member: she is the field's
-    // default, shown by her concept row's label, and the reading runs.
+fn it_fills_no_field_unasked_with_a_value_the_page_does_not_show() {
+    // Rules offer only Alice for expel's member, and the page shows the
+    // space, not her: "expel" waits for a member to be named rather than
+    // expelling the only one there is.
     let mut source = space();
     source.fragments = derived("concept:expel", "the:expel-member", &["did:key:alice"]);
     let mut asked = request("expel");
     asked.sources = vec![source];
     let top = &propose(&asked)[0];
+    assert_eq!(top.parse.display_text(), "expel (member)");
+    assert_eq!(top.claim, None);
+
+    // Named, she fills it, by her concept row's label.
+    asked.input = "expel alice".into();
+    let top = &propose(&asked)[0];
     assert_eq!(top.parse.display_text(), "expel [Alice]");
-    assert!(top.claim.is_some(), "a derived value completes the reading");
+    assert!(top.claim.is_some());
 
     // What rules do not derive cannot be named: Bob is no candidate here.
     asked.input = "expel bob".into();
@@ -190,8 +199,10 @@ fn it_shows_a_derived_value_by_the_label_derived_with_it() {
             .collect::<Vec<_>>()
     );
 
+    // The page is the notebook's: what it shows comes before its space.
     let mut asked = request("retitle to Notes");
     asked.sources = vec![source];
+    asked.shown = vec!["notebook:plans".into(), "did:key:space".into()];
     let top = &propose(&asked)[0];
     assert_eq!(top.parse.display_text(), "retitle [Plans] to [Notes]");
     let claim = top
@@ -318,6 +329,7 @@ fn it_fills_the_now_role_from_the_callers_clock_without_asking_for_it() {
 
     // Off a space's page, which of several is for the user to say.
     request.context.this = None;
+    request.shown.clear();
     let top = &propose(&request)[0];
     assert_eq!(top.parse.display_text(), "pause sync (space)");
     assert_eq!(top.claim, None);

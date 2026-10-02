@@ -1,7 +1,8 @@
 # How Ubiquity actually worked
 
-Status: study notes. Companion to [command-palette.md](command-palette.md) and
-[command-palette-sketch.md](command-palette-sketch.md).
+Status: study notes. The parser `rust/tonk-lingo` ports is described here; the
+palette built on it is documented where it lives, in the library
+(`rust/tonk-core/assets/library/core.yaml`, "The command palette").
 
 Sources are the Ubiquity source at `github.com/mozilla/ubiquity`, commit
 `11dc94e` (Jan 2011, the last). Paths below are relative to its `ubiquity/`

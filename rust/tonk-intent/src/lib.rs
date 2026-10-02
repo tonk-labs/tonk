@@ -1,10 +1,10 @@
-//! The command palette's glue between tonk's data and `dialog-lingo`.
+//! The command palette's glue between tonk's data and `tonk-lingo`.
 //!
 //! What commands declare — their names (`action:`) and the role each
 //! field plays (`role:`), with the attributes those fields name — what
 //! rules derived for their entity fields, and the rows and `label` facet
 //! of the concepts that label those values come in as [`Source`]s; this
-//! crate joins them into a [`dialog_lingo::Registry`], parses the input,
+//! crate joins them into a [`tonk_lingo::Registry`], parses the input,
 //! and answers with ranked proposals, each carrying the transient claim
 //! that runs it.
 //!
@@ -14,13 +14,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use dialog_lingo::{
-    Argument, Candidate, Context, Grammar, Memory, Noun, Parse, Registry, SegmentKind, Value, Verb,
-    parse,
-};
 use ipld_core::ipld::Ipld;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tonk_lingo::{
+    Argument, Candidate, Context, Grammar, Memory, Noun, Parse, Registry, SegmentKind, Value, Verb,
+    parse,
+};
 
 /// A subscription row as the bridge delivers it: the matched entity and
 /// its projected fields. A cardinality-many field arrives as one row per
@@ -93,6 +93,12 @@ pub struct Request {
     /// Where the palette was opened.
     #[serde(default)]
     pub context: Context,
+    /// What the page shows, most specific first: the entity its route
+    /// names (the notebook of a notebook's page), then its space. An
+    /// entity field defaults to the first of these that rules derived for
+    /// it, and otherwise waits to be named.
+    #[serde(default)]
+    pub shown: Vec<String>,
     /// The branches read.
     #[serde(default)]
     pub sources: Vec<Source>,
@@ -183,7 +189,8 @@ struct Fields {
 /// Parse `request.input` against the rows in `request` and return the
 /// best proposals, best first.
 pub fn propose(request: &Request) -> Vec<Proposal> {
-    let (registry, fields) = registry(&request.sources);
+    let (mut registry, fields) = registry(&request.sources);
+    defaults(&mut registry, &request.shown);
     let memory = memory(&request.memory, &registry);
     let context = labelled(&request.context, &registry);
     parse(
@@ -238,7 +245,8 @@ pub fn propose(request: &Request) -> Vec<Proposal> {
 /// descriptive), most chosen first and then by name. The palette's empty
 /// state, where a menu would be.
 pub fn menu(request: &Request) -> Vec<Proposal> {
-    let (registry, _) = registry(&request.sources);
+    let (mut registry, _) = registry(&request.sources);
+    defaults(&mut registry, &request.shown);
     let memory = memory(&request.memory, &registry);
     let mut items: Vec<(u32, String, Proposal)> = Vec::new();
     for verb in &registry.verbs {
@@ -309,7 +317,7 @@ fn push_word(text: &mut String, word: &str) {
 /// a page knows which entity it shows, not how that entity is labelled,
 /// and an anaphor substituted by an unlabelled entity would read as "".
 fn labelled(context: &Context, registry: &Registry) -> Context {
-    let label = |selection: &Option<dialog_lingo::Selection>| {
+    let label = |selection: &Option<tonk_lingo::Selection>| {
         selection.clone().map(|mut selection| {
             if selection.text.is_empty()
                 && let Some(entity) = &selection.entity
@@ -478,15 +486,31 @@ fn registry(sources: &[Source]) -> (Registry, Fields) {
                 candidate
             })
             .collect();
-        // One value is the default. Of several, the parser takes the one
-        // the page shows when it is among them, and otherwise none: which
-        // of several was meant is for the user to say.
-        if let [only] = derived.as_slice() {
-            registry.defaults.insert(key.clone(), only.clone());
-        }
         registry.candidates.insert(key, derived);
     }
     (registry, fields)
+}
+
+/// Each entity field's default: the first thing the page shows that rules
+/// derived for it. Nothing else fills a field unasked: of several values,
+/// and even of one (a space's only member, for "expel"), which is meant is
+/// for the user to say.
+fn defaults(registry: &mut Registry, shown: &[String]) {
+    let picked: Vec<(String, Candidate)> = registry
+        .candidates
+        .iter()
+        // A field's own noun; a concept's rows are only what labels values.
+        .filter(|(key, _)| key.contains(JOIN))
+        .filter_map(|(key, candidates)| {
+            shown.iter().find_map(|entity| {
+                candidates
+                    .iter()
+                    .find(|candidate| &candidate.entity == entity)
+                    .map(|candidate| (key.clone(), candidate.clone()))
+            })
+        })
+        .collect();
+    registry.defaults.extend(picked);
 }
 
 /// The name half of a `domain/name` selector.
