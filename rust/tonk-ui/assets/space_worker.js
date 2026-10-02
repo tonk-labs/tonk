@@ -1265,14 +1265,18 @@ function spacePolicy(sites, { framedBySelf = false } = {}) {
     // An asset opened in a frame is framed by the space that holds it.
     const ancestors = framedBySelf && sites ? `'self' ${outer}` : outer;
     const framed = sites ? ` ${scheme}//*.${sites.host}` : "";
+    // A profile renders the app's own hub, not author code, and the hub
+    // reads the template catalog and its pictures from where they are
+    // published. A space gets no network at all.
+    const published = PROFILE ? " https:" : "";
     return [
         "default-src 'none'",
         "script-src 'self' blob: 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'",
         "style-src 'self' blob: 'unsafe-inline'",
-        "img-src 'self' blob: data:",
+        `img-src 'self' blob: data:${published}`,
         "media-src 'self' blob:",
         "font-src 'self' data:",
-        "connect-src 'self' blob: data:",
+        `connect-src 'self' blob: data:${published}`,
         `frame-src 'self' blob:${framed}`,
         "worker-src blob:",
         "form-action 'none'",

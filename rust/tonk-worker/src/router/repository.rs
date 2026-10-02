@@ -799,12 +799,26 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
     if let Some(seed) = seed {
         let applied = {
             let tonk = env.state().read().await;
-            super::evaluate::seed_syntax_on_branch(
-                &tonk,
-                tonk.reactor.repository(&key).branch("main"),
-                seed,
-            )
-            .await
+            // Where the space's content is its own worker's to create, so
+            // is adding these to it: that worker is handed where they come
+            // from, with the rest of what the space starts from.
+            match (
+                tonk.spaces_elsewhere(),
+                request.template.as_ref().or(request.seed.as_ref()),
+            ) {
+                (true, Some(reference)) => {
+                    deferred_definitions(&tonk, &key, reference, request.template.is_some())
+                        .await
+                        .map(|()| None)
+                }
+                _ => super::evaluate::seed_syntax_on_branch(
+                    &tonk,
+                    tonk.reactor.repository(&key).branch("main"),
+                    seed,
+                )
+                .await
+                .map(Some),
+            }
         };
         if let Err(error) = applied {
             log!("CreateSpace '{}': seed failed: {}", key, error);
@@ -881,6 +895,29 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
     {
         log!("CreateSpace '{}': remote attach failed: {}", key, error);
     }
+}
+
+/// Keep `reference` for the worker of the space `key` to add when it creates
+/// the space's content.
+async fn deferred_definitions(
+    tonk: &TonkState,
+    key: &str,
+    reference: &str,
+    template: bool,
+) -> Result<(), TonkWorkerError> {
+    let subject: Did = key
+        .parse()
+        .map_err(|e| TonkWorkerError::Internal(format!("'{key}' is not a space: {e:?}")))?;
+    defer_definitions(
+        tonk,
+        &subject,
+        SeedDefinitions {
+            reference: reference.to_owned(),
+            template,
+        },
+    )
+    .await
+    .map_err(|e| TonkWorkerError::Internal(e.to_string()))
 }
 
 /// Fetch and check the seed at `reference` against the standard library a
@@ -5684,6 +5721,22 @@ pub struct SpaceSeed {
     pub founder: String,
     /// The name the founder goes by on the space's roster.
     pub founder_name: String,
+    /// The definitions the space was made for, added on top of the standard
+    /// library. `None` for a blank space.
+    #[serde(default)]
+    pub definitions: Option<SeedDefinitions>,
+}
+
+/// Where the definitions a space is created with come from: a template the
+/// app ships, or notation at a URL. The person's profile fetched and checked
+/// them before the space was created; the space's own worker fetches them
+/// again to add them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeedDefinitions {
+    /// The template's name, or the notation's URL.
+    pub reference: String,
+    /// Whether `reference` names a template.
+    pub template: bool,
 }
 
 /// The part of a [`SpaceSeed`] known when the space is created. The founder
@@ -5693,6 +5746,8 @@ pub struct SpaceSeed {
 struct PendingSeed {
     name: String,
     description: Option<String>,
+    #[serde(default)]
+    definitions: Option<SeedDefinitions>,
 }
 
 fn pending_seed_site(subject: &Did) -> String {
@@ -5710,7 +5765,31 @@ async fn defer_seed(
     let pending = PendingSeed {
         name: display_name.to_owned(),
         description: description.map(str::to_owned),
+        definitions: None,
     };
+    let bytes = serde_json::to_vec(&pending)
+        .map_err(|e| RepositoryError::Internal(format!("space seed does not encode: {e}")))?;
+    save_pending_seed(tonk, subject, bytes).await
+}
+
+/// Have `subject`'s own worker add `definitions` when it creates the space's
+/// content. For a space this worker created and left for that worker to fill.
+async fn defer_definitions(
+    tonk: &TonkState,
+    subject: &Did,
+    definitions: SeedDefinitions,
+) -> Result<(), RepositoryError> {
+    let stored = tonk
+        .profile
+        .secrets()
+        .site(pending_seed_site(subject))
+        .load::<Vec<u8>>()
+        .perform(&tonk.profile)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("failed to load the space seed: {e}")))?;
+    let mut pending: PendingSeed = serde_json::from_slice(&stored)
+        .map_err(|e| RepositoryError::Internal(format!("stored space seed is invalid: {e}")))?;
+    pending.definitions = Some(definitions);
     let bytes = serde_json::to_vec(&pending)
         .map_err(|e| RepositoryError::Internal(format!("space seed does not encode: {e}")))?;
     save_pending_seed(tonk, subject, bytes).await
@@ -5766,6 +5845,7 @@ pub(crate) async fn pending_seed(
         description: pending.description,
         founder: founder.to_string(),
         founder_name,
+        definitions: pending.definitions,
     }))
 }
 
@@ -5829,7 +5909,40 @@ async fn create_content_with(
         MemberRole::FOUNDER,
         seed.founder_name.clone(),
     )
+    .await?;
+    // The definitions the space was made for go on top of the standard
+    // library. Only onto a space this call filled: adding them again over
+    // one already in use could overwrite what has been made of them since.
+    // The profile checked them before the space existed, so a failure here
+    // is the network's, and leaves a space that works without them.
+    if empty
+        && let Some(definitions) = &seed.definitions
+        && let Err(error) = add_definitions(tonk, key, definitions).await
+    {
+        log!(
+            "'{key}' was created without its definitions from {}: {error}",
+            definitions.reference
+        );
+    }
+    Ok(())
+}
+
+/// Fetch `definitions` and add them to `key`'s content.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn add_definitions(
+    tonk: &TonkState,
+    key: &str,
+    definitions: &SeedDefinitions,
+) -> Result<(), String> {
+    let syntax = prepare_seed(&definitions.reference, definitions.template).await?;
+    super::evaluate::seed_syntax_on_branch(
+        tonk,
+        tonk.reactor.repository(key).branch(CONTENT_BRANCH),
+        syntax,
+    )
     .await
+    .map(|_| ())
+    .map_err(|error| error.to_string())
 }
 
 /// Provision owned `subject` under this profile's account, repairing a stale
