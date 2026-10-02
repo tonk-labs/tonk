@@ -2467,7 +2467,14 @@ impl TonkServiceWorker {
         future_to_promise(async move {
             if offline {
                 crate::router::mark_offline(&state).await;
-            } else if scheduler.may_drain(js_sys::Date::now(), pending_local_work(&state).await) {
+                return Ok(JsValue::UNDEFINED);
+            }
+            // Work queued while the service could not be reached, above all
+            // provisioning a space created offline: until it replays, the
+            // service refuses that space's every sync. Before the drain
+            // below, so the sync that follows finds the space provisioned.
+            crate::router::customer::drain_pending(&*state.read().await).await;
+            if scheduler.may_drain(js_sys::Date::now(), pending_local_work(&state).await) {
                 scheduler.begin_drain();
                 crate::router::drain_sync(&state).await;
                 scheduler.end_drain(js_sys::Date::now());
