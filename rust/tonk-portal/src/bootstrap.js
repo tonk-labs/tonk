@@ -205,6 +205,15 @@
     var env=event.data; if(!env) return;
     switch(env.type){
       case "ready": tonk.context=env.context; resolveReady(); return;
+      case "key": {
+        // The chord pressed in the parent document (the top page relays
+        // the command palette's down): dispatch it here, where focus now
+        // is, as if pressed here. Untrusted, so it is not forwarded back.
+        var target=document.activeElement||document.body||document;
+        target.dispatchEvent(new KeyboardEvent("keydown",{key:env.key,ctrlKey:!!env.ctrlKey,
+          metaKey:!!env.metaKey,shiftKey:!!env.shiftKey,altKey:!!env.altKey,bubbles:true,cancelable:true,composed:true}));
+        return;
+      }
       case "context": {
         tonk.context=env.context;
         // The page moved without reloading; elements that read the

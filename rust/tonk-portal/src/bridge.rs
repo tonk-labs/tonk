@@ -85,6 +85,10 @@ pub(crate) struct PortalState {
     /// The current port's `onmessage` dispatcher, kept alive for the
     /// port's lifetime. Replaced on each handshake.
     _dispatcher: Option<Closure<dyn FnMut(MessageEvent)>>,
+    /// The top document's listener that forwards the command palette's
+    /// chord down to this guest (see [`relay_chord_down`]). Replaced on
+    /// each handshake; dropping it removes the listener.
+    chord: Option<ChordRelay>,
     /// The portal's own routing context (its `with`). Relayed guest
     /// operations with no forwarded route are pinned to it explicitly;
     /// `allow`'s `self` entry resolves to it.
@@ -121,6 +125,7 @@ impl PortalState {
             active_task: None,
             port: None,
             _dispatcher: None,
+            chord: None,
             with: None,
             allow: Allow::none(),
         }
@@ -1090,6 +1095,8 @@ pub(crate) fn bind_port(host: &Element, state: &Rc<RefCell<PortalState>>, port: 
         s._dispatcher = Some(dispatcher);
     }
 
+    state.borrow_mut().chord = relay_chord_down(host, &port, state);
+
     let ready = Object::new();
     set_v1(&ready, "ready");
     let _ = Reflect::set(&ready, &"context".into(), &build_context(host, state));
@@ -1802,6 +1809,100 @@ fn handle_key(host: &Element, data: &JsValue) {
     if let Ok(event) = web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init) {
         let _ = host.dispatch_event(&event);
     }
+}
+
+/// A document `keydown` listener, removed when dropped.
+pub(crate) struct ChordRelay {
+    document: web_sys::Document,
+    listener: Closure<dyn FnMut(web_sys::KeyboardEvent)>,
+}
+
+impl Drop for ChordRelay {
+    fn drop(&mut self) {
+        let _ = self
+            .document
+            .remove_event_listener_with_callback("keydown", self.listener.as_ref().unchecked_ref());
+    }
+}
+
+/// Whether `event` is the command palette's chord: Ctrl/Cmd+K or
+/// Ctrl/Cmd+Shift+P.
+fn is_chord(event: &web_sys::KeyboardEvent) -> bool {
+    let key = event.key().to_lowercase();
+    (event.meta_key() || event.ctrl_key()) && (key == "k" || (event.shift_key() && key == "p"))
+}
+
+/// Forward the command palette's chord from the top document down into
+/// this portal's guest.
+///
+/// The palette lives in the profile's frame, but on a fresh load focus is
+/// in the top document, whose keys never reach a frame; the chord did
+/// nothing until the page was clicked. The guest bootstrap forwards a
+/// chord UP (see `handle_key`); this is the other direction. Only the top
+/// document relays down, so a chord pressed in the profile frame is not
+/// also pushed into the space frame below it. Only a trusted, unhandled
+/// chord is relayed (the re-dispatched upward copy is untrusted, so a
+/// chord never bounces), and not while a modal dialog of the top page
+/// owns the keyboard. The guest's frame is focused first: a sandboxed
+/// guest cannot take focus from its parent, and the palette focuses its
+/// line. Only the site (the page's own frame) is relayed to, never a
+/// content portal.
+fn relay_chord_down(
+    host: &Element,
+    port: &MessagePort,
+    state: &Rc<RefCell<PortalState>>,
+) -> Option<ChordRelay> {
+    if !host.tag_name().eq_ignore_ascii_case("tonk-site") {
+        return None;
+    }
+    let window = window()?;
+    let top = window.top().ok().flatten()?;
+    if !Object::is(&top, &window) {
+        return None;
+    }
+    let document = window.document()?;
+    let port = port.clone();
+    let weak = Rc::downgrade(state);
+    let modal_host = document.clone();
+    let listener = Closure::wrap(Box::new(move |event: web_sys::KeyboardEvent| {
+        if !event.is_trusted() || event.default_prevented() || !is_chord(&event) {
+            return;
+        }
+        if modal_host
+            .query_selector("dialog:modal")
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            return;
+        }
+        let Some(state) = weak.upgrade() else {
+            return;
+        };
+        if state.borrow().disposed {
+            return;
+        }
+        event.prevent_default();
+        if let Some(iframe) = state.borrow().iframe.clone() {
+            let _ = iframe.focus();
+        }
+        let envelope = Object::new();
+        set_v1(&envelope, "key");
+        let _ = Reflect::set(&envelope, &"key".into(), &event.key().into());
+        for (name, value) in [
+            ("ctrlKey", event.ctrl_key()),
+            ("metaKey", event.meta_key()),
+            ("shiftKey", event.shift_key()),
+            ("altKey", event.alt_key()),
+        ] {
+            let _ = Reflect::set(&envelope, &name.into(), &value.into());
+        }
+        let _ = port.post_message(&envelope);
+    }) as Box<dyn FnMut(web_sys::KeyboardEvent)>);
+    document
+        .add_event_listener_with_callback("keydown", listener.as_ref().unchecked_ref())
+        .ok()?;
+    Some(ChordRelay { document, listener })
 }
 
 fn handle_title(data: &JsValue) {
