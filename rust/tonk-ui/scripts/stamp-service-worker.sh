@@ -132,6 +132,7 @@ cleanup() {
     rm -f "$ASSET_LIST_UNSORTED" "$ASSET_LIST" "$ASSET_GRAPH" "$PAGE_GRAPH"
     rm -f "$ASSET_FILES_UNSORTED" "$ASSET_FILES"
     rm -f "$NORMALIZED_INDEX" "$CANONICAL_INDEX" "$NORMALIZED_SW" "$BUILD_INPUT"
+    rm -f "$LOCK/space-worker"
     if [ "$RESTORE_FAILED" -eq 0 ]; then
         rm -f "$SW_BACKUP" "$INDEX_BACKUP" "$VERSION_BACKUP" "$MANIFEST_BACKUP"
         rmdir "$LOCK" 2>/dev/null
@@ -173,6 +174,26 @@ fi
 if [ "$(grep -c '<meta name="tonk-page-build" content="' "$INDEX")" -ne 1 ]; then
     echo "stamp-service-worker: $INDEX must have one tonk-page-build meta tag" >&2
     exit 1
+fi
+
+# A site origin's worker runs the same worker Wasm and pins it by this hash.
+# Stamped before the resource graph is hashed, so the build identity covers
+# the stamped file; restamping writes the same line.
+SPACE_SW="$DIST/space_worker.js"
+if [ -f "$SPACE_SW" ]; then
+    grep -q '^const WORKER_WASM_HASH = ' "$SPACE_SW" || {
+        echo "stamp-service-worker: $SPACE_SW has no WORKER_WASM_HASH declaration" >&2
+        exit 1
+    }
+    SPACE_WASM_HASH=$(hash_file "$WORKER_WASM")
+    SPACE_SW_TMP="$LOCK/space-worker"
+    sed -e "s|^const WORKER_WASM_HASH = .*|const WORKER_WASM_HASH = \"$SPACE_WASM_HASH\";|" \
+        "$SPACE_SW" > "$SPACE_SW_TMP"
+    grep -q "^const WORKER_WASM_HASH = \"$SPACE_WASM_HASH\";$" "$SPACE_SW_TMP" || {
+        echo "stamp-service-worker: space worker WORKER_WASM_HASH verification failed" >&2
+        exit 1
+    }
+    mv -f "$SPACE_SW_TMP" "$SPACE_SW"
 fi
 
 # The publisher owns the resource-graph interface. Enumerate every browser

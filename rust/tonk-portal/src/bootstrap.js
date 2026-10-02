@@ -83,6 +83,14 @@
     var c=ownSpace();
     return !!c&&url.indexOf("/api/repository/"+c.repo+"/")===0;
   }
+  // On an origin of its own, the app's static assets (the guest runtime, the
+  // stylesheet, images, fonts) are this origin's too: its worker serves them
+  // and keeps them for offline, which a relayed fetch would go around.
+  function ownsStatic(url){
+    if(location.origin==="null") return false;
+    var path=url.indexOf(location.origin+"/")===0?url.slice(location.origin.length):url;
+    return /^\/(guest\/|styles-|images\/|fonts\/)/.test(path);
+  }
   function nativeWithContext(input,init){
     var request=new Request(input,init);
     contextHeaders().forEach(function(h){ request.headers.set(h[0],h[1]); });
@@ -529,6 +537,7 @@
     var url=(typeof input==="string")?input:(input&&input.url)||"";
     // This space's own data, on its own origin: its own worker answers.
     if(ownsPath(url)){ return nativeWithContext(input,init); }
+    if(ownsStatic(url)){ return nativeFetch(input,init); }
     // Host-relative (`/…`, not `//`): route through the relay.
     if(url.charAt(0)==="/"&&url.charAt(1)!=="/"){
       return relayRequest(url,input,init);

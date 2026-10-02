@@ -1450,6 +1450,38 @@ async function rustFetch(event) {
     return (await activateWorker()).onfetch(event);
 }
 
+// ---- The deployment's configuration, offline ---------------------------
+//
+// The page reads `/.well-known/tonk` on every load to learn, among other
+// things, whether sites render on origins of their own. Offline that read
+// would fail and the page would fall back to sealed frames, which read this
+// worker's copy of a space and not the space's own: two copies that drift
+// apart. So the last answer the server gave is kept and served when the
+// server cannot be reached. Not named after a build: it is the deployment's,
+// and a successor reads it.
+
+const DEPLOYMENT_PATH = "/.well-known/tonk";
+const DEPLOYMENT_CACHE = "TONK_DEPLOYMENT";
+const DEPLOYMENT_KEY = new URL(DEPLOYMENT_PATH, self.location.origin).href;
+
+// Answer with what `live` (the ordinary route to the server) says, keeping a
+// good answer; when it fails, answer with the last one kept.
+async function deploymentConfig(live) {
+    const cache = await caches.open(DEPLOYMENT_CACHE);
+    try {
+        const response = await live();
+        if (response.ok) {
+            await cache.put(DEPLOYMENT_KEY, response.clone());
+            return response;
+        }
+        return (await cache.match(DEPLOYMENT_KEY)) ?? response;
+    } catch (error) {
+        const held = await cache.match(DEPLOYMENT_KEY);
+        if (held) return held;
+        throw error;
+    }
+}
+
 // ---- The session, across restarts -------------------------------------
 //
 // The browser stops an idle worker without telling it, and an update replaces
@@ -1733,6 +1765,7 @@ self.onfetch = event => {
     // Build metadata is mutable deployment information, not part of a
     // retained generation's application routing.
     if (path === "/version.json") return;
+
     // `/api/*` navigations remain real data-plane requests. All other
     // navigations use an exact stamped static document when one exists, or the
     // root SPA shell. Non-navigation assets use the immutable cache only on an
@@ -1761,6 +1794,10 @@ self.onfetch = event => {
             }
             return routeFetch(event, path);
         })());
+        return;
+    }
+    if (path === DEPLOYMENT_PATH && event.request.method === "GET") {
+        event.respondWith(deploymentConfig(() => routeFetch(event, path)));
         return;
     }
     event.respondWith(routeFetch(event, path));

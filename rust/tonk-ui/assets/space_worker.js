@@ -13,9 +13,8 @@
 //   host runs, opened on this origin's storage (see "The space's own
 //   database" below).
 // - The app's own static assets (the guest runtime, stylesheet, images and
-//   fonts) pass through to the server, which serves them on every host. A
-//   sealed frame received the runtime as injected bytes and reached the rest
-//   on the host origin; this origin now loads them itself.
+//   fonts) come from the server, which serves them on every host, and are
+//   kept so the site loads offline (see "This origin's runtime, offline").
 // - Everything else is a 404. Author code has no network through this worker.
 //
 // The port to the host worker carries what only the host has: the space's
@@ -27,12 +26,25 @@
 
 import init, { activate } from "./worker.js";
 
+// The hash of the `worker_bg.wasm` built alongside this script, written in
+// by `scripts/stamp-service-worker.sh`. It names the copy this worker runs,
+// and makes a change to the wasm alone a change to this script, which is
+// what the browser compares when it looks for an update.
+const WORKER_WASM_HASH = "dev";
+
 const SHELL_PATH = "/space-origin.html";
 const SHELL_CACHE = "tonk-space-shell";
+// What this origin runs: this worker's wasm, and the app's static assets as
+// they are loaded. Kept so the site works offline once it has loaded.
+const RUNTIME_CACHE = "tonk-space-runtime";
+const WORKER_WASM_URL = new URL("./worker_bg.wasm", self.location.href).href;
+const WORKER_WASM_KEY = `${WORKER_WASM_URL}?${WORKER_WASM_HASH}`;
 // The app's static assets, served by the server on every host: the runtime a
 // guest loads from its own origin (`/guest/`), the app stylesheet, images and
 // fonts.
 const STATIC_PREFIXES = ["/guest/", "/styles-", "/images/", "/fonts/"];
+// A name that carries its content's hash never changes what it serves.
+const HASHED_NAME = /-[0-9a-f]{16}(?=\.)/;
 // A base58btc blob hash: the only thing a `/blob/` path may carry.
 const BLOB_PATH = /^\/blob\/([1-9A-HJ-NP-Za-km-z]+)$/;
 // How long a client may take to broker a port, and the host to acknowledge a
@@ -49,15 +61,98 @@ const log = (...args) => console.log("[Space Worker]", ...args);
 self.addEventListener("install", event => {
     self.skipWaiting();
     event.waitUntil(
-        caches.open(SHELL_CACHE).then(cache => Promise.all([cache.add(SHELL_PATH), siteOrigins()])),
+        Promise.all([
+            caches.open(SHELL_CACHE).then(cache => Promise.all([cache.add(SHELL_PATH), siteOrigins()])),
+            pinWorkerWasm(),
+        ]),
     );
 });
 
 // Claim right away: the shell waits for control before it asks the host for
 // its document, so the first load is served blobs too.
 self.addEventListener("activate", event => {
-    event.waitUntil(self.clients.claim());
+    event.waitUntil(Promise.all([self.clients.claim(), dropOtherWorkerWasm()]));
 });
+
+// ---- This origin's runtime, offline -------------------------------------
+//
+// A worker the browser restarts loads its wasm again, and a page that reloads
+// loads the guest runtime again. Offline neither can come from the server, so
+// both are kept here as they are first loaded.
+
+// Keep the wasm built alongside this script. An install that gets another
+// build's wasm (a deploy landed in between) fails, and the browser tries the
+// update again later.
+async function pinWorkerWasm() {
+    const cache = await caches.open(RUNTIME_CACHE);
+    if (await cache.match(WORKER_WASM_KEY)) return;
+    const response = await fetch(WORKER_WASM_URL, { cache: "no-cache" });
+    if (!response.ok) throw new Error(`worker wasm: ${response.status}`);
+    const bytes = await response.arrayBuffer();
+    if (WORKER_WASM_HASH !== "dev") {
+        const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+        const hex = [...digest].map(byte => byte.toString(16).padStart(2, "0")).join("");
+        if (!hex.startsWith(WORKER_WASM_HASH)) {
+            throw new Error(`worker wasm is ${hex.slice(0, 16)}, expected ${WORKER_WASM_HASH}`);
+        }
+    }
+    await cache.put(
+        WORKER_WASM_KEY,
+        new Response(bytes, { headers: { "content-type": "application/wasm" } }),
+    );
+}
+
+// Once this worker is the active one, no other build's wasm is needed.
+async function dropOtherWorkerWasm() {
+    const cache = await caches.open(RUNTIME_CACHE);
+    for (const request of await cache.keys()) {
+        if (request.url.startsWith(`${WORKER_WASM_URL}?`) && request.url !== WORKER_WASM_KEY) {
+            await cache.delete(request);
+        }
+    }
+}
+
+async function workerWasm() {
+    const held = await caches.match(WORKER_WASM_KEY, { cacheName: RUNTIME_CACHE });
+    return held ?? fetch(WORKER_WASM_URL);
+}
+
+// Serve one of the app's static assets. A name with its content's hash in it
+// is served from the cache once held; any other is asked of the server
+// first, and the cache answers only when the server cannot.
+async function serveStatic(request) {
+    const url = new URL(request.url);
+    const cache = await caches.open(RUNTIME_CACHE);
+    const hashed = HASHED_NAME.test(url.pathname);
+    if (hashed) {
+        const held = await cache.match(url.href);
+        if (held) return held;
+    }
+    let response;
+    try {
+        response = await fetch(request);
+    } catch (error) {
+        const held = await cache.match(url.href);
+        if (held) return held;
+        throw error;
+    }
+    if (response.ok) {
+        await cache.put(url.href, response.clone());
+        if (hashed) await dropSuperseded(cache, url);
+    }
+    return response;
+}
+
+// A newer build's asset replaces the older one of the same name.
+async function dropSuperseded(cache, url) {
+    const stem = url.pathname.replace(HASHED_NAME, "");
+    for (const request of await cache.keys()) {
+        const other = new URL(request.url);
+        if (other.href !== url.href && other.pathname.replace(HASHED_NAME, "") === stem) {
+            await cache.delete(request);
+        }
+    }
+}
 
 // ---- The port to the host worker ----------------------------------------
 
@@ -119,7 +214,7 @@ const RENEW_MARGIN_SECONDS = 60 * 60;
 let rust;
 
 function spaceWorker() {
-    rust ??= init({ module_or_path: new URL("./worker_bg.wasm", self.location.href) })
+    rust ??= init({ module_or_path: workerWasm() })
         .then(() => activate("space", []))
         .then(async worker => {
             await ensureGrant(worker);
@@ -562,6 +657,7 @@ self.addEventListener("fetch", event => {
         event.request.method === "GET" &&
         STATIC_PREFIXES.some(prefix => url.pathname.startsWith(prefix))
     ) {
+        event.respondWith(serveStatic(event.request));
         return;
     }
     event.respondWith(new Response("not found", { status: 404 }));
