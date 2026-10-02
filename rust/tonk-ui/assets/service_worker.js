@@ -2129,7 +2129,14 @@ function bindSpacePort(port, { repo, branch }) {
                 const grant = await worker.delegateSpace(repo, data.delegate);
                 const chain = grant.chain.buffer;
                 port.postMessage(
-                    { id, space: repo, chain, expires: grant.expires, remote: grant.remote },
+                    {
+                        id,
+                        space: repo,
+                        chain,
+                        expires: grant.expires,
+                        remote: grant.remote,
+                        account: grant.account,
+                    },
                     [chain],
                 );
                 return;

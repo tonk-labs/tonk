@@ -261,7 +261,7 @@ self.tonkBundledAsset = async path => {
 const GRANT_KEY = "/__space/grant";
 // What taking up a grant does. A grant taken up by an earlier version is
 // taken up again, so the space gets what that version left out.
-const GRANT_VERSION = 2;
+const GRANT_VERSION = 3;
 // Ask for a new delegation once the held one has less than this left.
 const RENEW_MARGIN_SECONDS = 60 * 60;
 
@@ -271,7 +271,10 @@ function spaceWorker() {
     rust ??= init({ module_or_path: workerWasm() })
         .then(() => activate("space", []))
         .then(async worker => {
-            await ensureGrant(worker);
+            const grant = await ensureGrant(worker);
+            // Who this worker acts for is kept, but where a view reads it
+            // (the session overlay) lasts only as long as the worker.
+            await worker.resumeSpace(grant.space);
             await restoreSession(worker);
             // The host passes its reads of this space over the port, and a
             // port does not outlive the worker it was handed to. Open one
@@ -320,7 +323,12 @@ async function ensureGrant(worker) {
     if (held?.version === GRANT_VERSION && held.expires - now > RENEW_MARGIN_SECONDS) return held;
     const audience = await worker.profileDid();
     const grant = await askHost({ delegate: audience });
-    await worker.adoptSpace(grant.space, new Uint8Array(grant.chain), grant.remote ?? undefined);
+    await worker.adoptSpace(
+        grant.space,
+        new Uint8Array(grant.chain),
+        grant.remote ?? undefined,
+        grant.account,
+    );
     // A freshly mounted replica is empty. A space made where spaces have
     // origins of their own has no content anywhere yet: the host hands over
     // what to create it from, and it is created here, the one place it is

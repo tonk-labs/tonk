@@ -2244,6 +2244,11 @@ impl TonkServiceWorker {
                 .remote
                 .map_or(JsValue::NULL, |remote| JsValue::from_str(&remote));
             let _ = js_sys::Reflect::set(&result, &"remote".into(), &remote);
+            let _ = js_sys::Reflect::set(
+                &result,
+                &"account".into(),
+                &grant.account.to_string().into(),
+            );
             Ok(result.into())
         })
     }
@@ -2307,16 +2312,41 @@ impl TonkServiceWorker {
         space: String,
         chain: js_sys::Uint8Array,
         remote: Option<String>,
+        account: String,
     ) -> Promise {
         let state = self.state.clone();
         future_to_promise(async move {
             let space: Did = space
                 .parse()
                 .map_err(|e| JsError::new(&format!("space: {e:?}")))?;
+            let account: Did = account
+                .parse()
+                .map_err(|e| JsError::new(&format!("account: {e:?}")))?;
             let tonk = state.read().await;
-            space_worker::adopt(&tonk, &space, &chain.to_vec(), remote.as_deref())
+            space_worker::adopt(&tonk, &space, &chain.to_vec(), remote.as_deref(), &account)
                 .await
                 .map_err(|e| JsError::new(&e.to_string()))?;
+            tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+            Ok(JsValue::UNDEFINED)
+        })
+    }
+
+    /// Put back what a restart of this worker lost about `space`, which it
+    /// holds: who its session acts for. Called each time a space's own
+    /// worker starts.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "resumeSpace")]
+    pub fn resume_space(&self, space: String) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            let space: Did = space
+                .parse()
+                .map_err(|e| JsError::new(&format!("space: {e:?}")))?;
+            let tonk = state.read().await;
+            space_worker::resume(&tonk, &space)
+                .await
+                .map_err(|e| JsError::new(&e.to_string()))?;
+            tonk.reactor.run_scheduled_polls(&tonk.operator).await;
             Ok(JsValue::UNDEFINED)
         })
     }

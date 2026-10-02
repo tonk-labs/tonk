@@ -15,19 +15,24 @@
 //! The space worker stores it and publishes that revision ([`seed`]), so the
 //! replica holds the same history the host did, and syncs on from there.
 
+use dialog_artifacts::Value;
 use dialog_capability::Subject;
 use dialog_common::Blake3Hash;
 use dialog_effects::Use;
+use dialog_repository::schema::Session;
 use dialog_repository::{RepositoryExt as _, Revision, codec};
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::{DelegationChain, time::Timestamp};
 use dialog_varsig::Did;
 use futures_util::stream;
 use tonk_common::log;
+use tonk_schema::prelude::DidExt as _;
 
+use super::account::{act_for, acts_for, member_did};
+use super::claim::RawClaim;
 use super::create_invite::{ConfiguredRemoteRequirement, resolve_configured_remote_url_with};
 use super::join::mount_replica;
-use super::repository::record_initialized_replica_in_profile;
+use super::repository::{CONTENT_BRANCH, record_initialized_replica_in_profile};
 use crate::{TonkWorkerError, worker::TonkState};
 
 /// How long a space worker's delegation lasts. It asks for a new one before
@@ -43,6 +48,9 @@ pub(crate) struct Grant {
     pub(crate) expires: u64,
     /// The space's upstream, `None` for a space that only exists here.
     pub(crate) remote: Option<String>,
+    /// The account the person's profile acts for, and so the one the
+    /// space's worker acts for in turn.
+    pub(crate) account: Did,
 }
 
 /// Issue the worker whose profile is `audience` a delegation to use `space`,
@@ -82,21 +90,26 @@ pub(crate) async fn delegate(
         ConfiguredRemoteRequirement::Ready(remote) => Some(remote.access_url.to_string()),
         ConfiguredRemoteRequirement::Refused(_) => None,
     };
+    let account = member_did(tonk).await?;
     Ok(Grant {
         chain,
         expires,
         remote,
+        account,
     })
 }
 
 /// Take up a delegation for `space`: save its chain to this worker's profile,
 /// where every proof is looked up, and mount the space as a replica syncing
-/// with `remote`. Refuses a chain for another space or another audience.
+/// with `remote`. From then on this worker acts for `account`, the one the
+/// person's profile acts for. Refuses a chain for another space or another
+/// audience.
 pub(crate) async fn adopt(
     tonk: &TonkState,
     space: &Did,
     chain: &[u8],
     remote: Option<&str>,
+    account: &Did,
 ) -> Result<(), TonkWorkerError> {
     let chain = DelegationChain::try_from(chain)
         .map_err(|e| TonkWorkerError::Router(format!("malformed delegation: {e}")))?;
@@ -124,8 +137,42 @@ pub(crate) async fn adopt(
     record_initialized_replica_in_profile(tonk, space)
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("failed to list {space}: {e}")))?;
-    log!("space worker: adopted {space} (remote: {remote:?})");
+    act_for(tonk, account).await?;
+    resume(tonk, space).await?;
+    log!("space worker: adopted {space} for {account} (remote: {remote:?})");
     Ok(())
+}
+
+/// The fact saying which account a session acts for, on dialog's session
+/// entity beside the profile and operator dialog records there.
+const SESSION_ACCOUNT: &str = "xyz.tonk.session/account";
+
+/// Put back what a restart of this worker lost about `space`: the account
+/// this session acts for, in the session overlay, where a view reads who is
+/// looking at it. An overlay lives only as long as the worker, so this runs
+/// each time one starts. Nothing to do before the worker has been told an
+/// account.
+pub(crate) async fn resume(tonk: &TonkState, space: &Did) -> Result<(), TonkWorkerError> {
+    let Some(account) = acts_for(tonk).await? else {
+        return Ok(());
+    };
+    let the = SESSION_ACCOUNT
+        .parse()
+        .map_err(|e| TonkWorkerError::Internal(format!("{SESSION_ACCOUNT}: {e}")))?;
+    tonk.reactor
+        .repository(space.repo_key())
+        .branch(CONTENT_BRANCH)
+        .overlay()
+        .assert(RawClaim {
+            the,
+            of: Session::entity(),
+            is: Value::Entity(account.this()),
+            unique: true,
+        })
+        .write()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("failed to say who {space} is for: {e}")))
 }
 
 /// A space's `main` as the host holds it: the snapshot of everything its
@@ -229,7 +276,7 @@ mod tests {
     use dialog_varsig::Did;
     use tower::ServiceExt;
 
-    use super::{adopt, delegate, seed, snapshot};
+    use super::{adopt, delegate, member_did, resume, seed, snapshot};
     use crate::TonkWorkerError;
     use crate::helpers::state::{test_state, test_state_without_root};
     use crate::router::join::{find_replica_for_subject, mount_replica};
@@ -315,7 +362,9 @@ mod tests {
             grant.remote.is_none(),
             "a space only on this device has no upstream"
         );
-        adopt(&worker, &space, &grant.chain, None).await.unwrap();
+        adopt(&worker, &space, &grant.chain, None, &grant.account)
+            .await
+            .unwrap();
         assert!(
             main_revision(&worker, &space).await.is_some(),
             "the worker reads the space it was handed"
@@ -324,6 +373,12 @@ mod tests {
             find_replica_for_subject(&worker, &space).await.unwrap(),
             "the worker lists the space, so its library is kept up to date"
         );
+        assert_eq!(
+            member_did(&worker).await.unwrap(),
+            member_did(&host).await.unwrap(),
+            "the worker acts for the account the person's profile acts for"
+        );
+        resume(&worker, &space).await.unwrap();
     }
 
     #[dialog_common::test]
@@ -362,7 +417,7 @@ mod tests {
         let other = space_origin().await;
 
         let grant = delegate(&host, &space, &other.profile.did()).await.unwrap();
-        let refused = adopt(&worker, &space, &grant.chain, None).await;
+        let refused = adopt(&worker, &space, &grant.chain, None, &grant.account).await;
         assert!(matches!(refused, Err(TonkWorkerError::Forbidden(_))));
     }
 
@@ -374,7 +429,9 @@ mod tests {
         let grant = delegate(&host, &space, &worker.profile.did())
             .await
             .unwrap();
-        adopt(&worker, &space, &grant.chain, None).await.unwrap();
+        adopt(&worker, &space, &grant.chain, None, &grant.account)
+            .await
+            .unwrap();
         let seeded = main_revision(&worker, &space).await;
         assert!(seeded.is_some());
 

@@ -1502,6 +1502,18 @@ concept!: &db/session:
       the: dialog.session/branch
       as: entity
       cardinality: many
+  maybe:
+    account:
+      description: |
+          The account (as did:key) this session acts for: who is looking at
+          the space. A membership names an account, so this is what tells a
+          person's own row from the others. A space on its own origin runs
+          under a profile made for that origin, which belongs to no account;
+          the person's profile says which account it acts for when it hands
+          the space over. Absent where nothing has said.
+      the: xyz.tonk.session/account
+      as: entity
+      cardinality: one
 
 concept!: &db/branch:
   this: concept:branch
