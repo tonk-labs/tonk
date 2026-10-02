@@ -3,6 +3,24 @@
     <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <!-- The app never runs on a site's origin. The server answers an
+             unknown path with this document on every hostname, a site's
+             included, and the app booting there would register its worker
+             over the site's and keep an account's keys in storage the site's
+             own code can read. A site's hostname starts with `profile` or
+             with a space's label (its key in base32), a suffix after either;
+             the app's never does. Before anything else on the page runs,
+             leave for the site's shell. -->
+        <script>
+            (() => {
+                const label = location.hostname.split(".")[0];
+                if (/^(profile|b[a-z2-7]{40,})(-[a-z0-9]+)?$/.test(label)) {
+                    globalThis.tonkSiteOrigin = true;
+                    window.stop();
+                    location.replace("/space-origin.html");
+                }
+            })();
+        </script>
         <!-- Rewritten alongside service_worker.js at post-build. This is the
              worker API generation this DOCUMENT was emitted against; unlike
              /version.json it never changes during the document's lifetime. -->
@@ -309,7 +327,8 @@
          the shell awaits it before issuing any /api/* fetch. -->
         <script type="module">
             // Doctor observes the existing registration without starting or updating it.
-            if (!globalThis.tonkDoctorRoute) {
+            // On a site's origin the page is leaving, and registers nothing.
+            if (!globalThis.tonkDoctorRoute && !globalThis.tonkSiteOrigin) {
             const serviceWorkersSupported = "serviceWorker" in navigator;
 
             // Poke the worker to re-check connectivity. Sent BEFORE the app's

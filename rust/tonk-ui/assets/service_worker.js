@@ -962,6 +962,13 @@ async function activateWorker() {
 
 self.oninstall = event => {
     event.waitUntil((async () => {
+        // The app's worker never installs on a site's origin: it would take
+        // the scope the site's own worker serves. `index.html` leaves before
+        // registering it there; this refuses whatever registers it anyway.
+        const label = new URL(self.location.href).hostname.split(".")[0];
+        if (/^(profile|b[a-z2-7]{40,})(-[a-z0-9]+)?$/.test(label)) {
+            throw new Error("the app's worker does not install on a site's origin");
+        }
         // A first page must not wait for the whole offline graph. Pin only the
         // worker's glue-bound Wasm, then assemble the graph under later
         // fetch/message lifetimes. An update still fills behind its live

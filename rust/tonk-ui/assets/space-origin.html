@@ -124,13 +124,54 @@
                     });
                 }
 
-                // Without a worker the space still renders, only without its
-                // own blobs: say why, and ask for the document regardless.
-                control()
-                    .catch(report)
-                    .then(function () {
-                        parent.postMessage({ __tonkOrigin: "shell-ready" }, "*");
+                // Whether the site's worker served this document. Only then
+                // does it carry the site's policy: the server hands the shell
+                // out bare, to any path, so that an origin with no worker
+                // yet can start one.
+                function servedByWorker() {
+                    var navigation = performance.getEntriesByType("navigation")[0];
+                    return !!navigation && navigation.workerStart > 0;
+                }
+
+                // Load again, now that the worker is in control, so that it
+                // serves the document the site renders in. Once per frame: a
+                // worker that still does not serve it leaves the site unrendered.
+                function reloadUnderWorker() {
+                    var key = "tonk-space-shell-reload";
+                    try {
+                        if (sessionStorage.getItem(key) === location.href) return false;
+                        sessionStorage.setItem(key, location.href);
+                    } catch (error) {
+                        return false;
+                    }
+                    location.reload();
+                    return true;
+                }
+
+                // Opened on its own, not framed by the app: there is no one to
+                // ask for a document. Say what this address is.
+                if (parent === window) {
+                    document.addEventListener("DOMContentLoaded", function () {
+                        document.body.textContent =
+                            "This address serves a Tonk site. Open it from Tonk.";
                     });
+                    return;
+                }
+
+                // The site's code runs in the document this shell becomes, so
+                // the shell asks for it only once that document is one the
+                // worker served, with the site's policy on it. With no worker
+                // the site does not render.
+                control().then(function () {
+                    if (!servedByWorker()) {
+                        if (reloadUnderWorker()) return;
+                        throw new Error("the site's worker did not serve its shell");
+                    }
+                    try {
+                        sessionStorage.removeItem("tonk-space-shell-reload");
+                    } catch (error) {}
+                    parent.postMessage({ __tonkOrigin: "shell-ready" }, "*");
+                }).catch(report);
             })();
         </script>
     </head>
