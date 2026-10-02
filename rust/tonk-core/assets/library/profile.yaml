@@ -1333,6 +1333,44 @@ view!:
       </section>
 
 # ============================================================
+# ASSET
+# ============================================================
+
+# Content a branch stores, as distinct from the facts about it. The
+# entity IS the content's reference, `asset:<base58-hash>`, so any fact
+# may point at it.
+#
+# The size fact is dialog's own (`dialog.` is closed to application
+# writes): the commit that stores the bytes records it, derived from the
+# bytes rather than claimed. It is what says this branch holds the
+# content. A push ships the bytes of every asset whose fact a revision
+# adds, a read hydrates only content such a fact vouches for, and
+# retracting it drops the branch's reference to the bytes.
+#
+# What the content is called and how to read it are ordinary facts on
+# the same entity, asserted by whoever stored it; content stored without
+# them is still an asset.
+concept!: &asset
+  description: Content this branch stores, named by its hash (an image, a file, media)
+  with:
+    size:
+      description: The content's size in bytes, recorded by the commit that stored it
+      the: dialog.asset/size
+      cardinality: one
+      as: unsigned-integer
+  maybe:
+    content-type:
+      description: MIME type of the content
+      the: xyz.tonk.blob/content-type
+      cardinality: one
+      as: text
+    name:
+      description: Human-readable file name
+      the: xyz.tonk.blob/name
+      cardinality: one
+      as: text
+
+# ============================================================
 # ROUTING (profile branch) — mirrors core.yaml, scoped to the profile
 # ============================================================
 #
