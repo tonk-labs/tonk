@@ -36,6 +36,7 @@ use tonk_schema::prelude::DidExt as _;
 use url::Url;
 
 use super::account::{act_for, acts_for, member_did};
+use super::adopt::ensure_space_mounted;
 use super::create_invite::{ConfiguredRemoteRequirement, resolve_configured_remote_url_with};
 use super::join::mount_replica;
 use super::repository::{CONTENT_BRANCH, record_initialized_replica_in_profile};
@@ -146,6 +147,13 @@ impl Terms {
 
 /// The [`Terms`] the person's profile holds for `space` now.
 pub(crate) async fn terms(tonk: &TonkState, space: &Did) -> Result<Terms, TonkWorkerError> {
+    // A space of the person's account that this device has not opened yet
+    // is listed in the account's directory with where it syncs. Opening it
+    // starts here: its own worker asks for a delegation, and this profile
+    // takes it up from the directory the way a first query of it does.
+    if let Err(error) = ensure_space_mounted(tonk, space.repo_key()).await {
+        log!("space {space} was not taken up from the directory: {error}");
+    }
     let repository = tonk
         .profile
         .space(space.as_str())
