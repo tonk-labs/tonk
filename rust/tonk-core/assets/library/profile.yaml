@@ -2689,12 +2689,25 @@ concept!: &hub
       the: xyz.tonk.site/path
       cardinality: one
       as: text
+  maybe:
+    profile-branch:
+      description: >
+        The branch the profile is on, picked off the site entity: the
+        latent bar's command line talks to the profile.
+      the: xyz.tonk.site/profile-branch
+      cardinality: one
+      as: text
 
 view!:
   this: tonk:hub
   show:
     ui: |
       <div class="hub-page">
+        <!-- The bar, latent: no space here, so it shows only for the
+             command line (Cmd/Ctrl+K) and what a command opens. -->
+        <tonk-fab with="{profile-branch}@profile:tonk" latent>
+          <command-palette slot="command" profile="{profile-branch}@profile:tonk"></command-palette>
+        </tonk-fab>
         <link rel="stylesheet" with:src="ui@space">
         <!-- The hub chrome's CSS is the `space` view's own `style: ui`,
              which also says which of the two sections below shows. -->
@@ -2897,12 +2910,25 @@ concept!: &join/route
       the: xyz.tonk.site/path
       cardinality: one
       as: text
+  maybe:
+    profile-branch:
+      description: >
+        The branch the profile is on, picked off the site entity: the
+        latent bar's command line talks to the profile.
+      the: xyz.tonk.site/profile-branch
+      cardinality: one
+      as: text
 
 view!:
   this: tonk:join/route
   show:
     ui: |
       <div class="display-view-slot">
+        <!-- The bar, latent: no space here, so it shows only for the
+             command line (Cmd/Ctrl+K) and what a command opens. -->
+        <tonk-fab with="{profile-branch}@profile:tonk" latent>
+          <command-palette slot="command" profile="{profile-branch}@profile:tonk"></command-palette>
+        </tonk-fab>
         <tab-title text="Tonk"></tab-title>
         <main class="join-view">
           <style>
@@ -3019,12 +3045,25 @@ concept!: &inspector/route
       the: xyz.tonk.site/branch
       cardinality: one
       as: text
+  maybe:
+    profile-branch:
+      description: >
+        The branch the profile is on, picked off the site entity: the
+        latent bar's command line talks to the profile.
+      the: xyz.tonk.site/profile-branch
+      cardinality: one
+      as: text
 
 view!:
   this: tonk:inspector/route
   show:
     ui: |
       <div class="display-view-slot">
+        <!-- The bar, latent: no space here, so it shows only for the
+             command line (Cmd/Ctrl+K) and what a command opens. -->
+        <tonk-fab with="{profile-branch}@profile:tonk" latent>
+          <command-palette slot="command" profile="{profile-branch}@profile:tonk"></command-palette>
+        </tonk-fab>
         <tab-title text="Tonk"></tab-title>
         <tonk-inspector with="{branch}@{repo}"></tonk-inspector>
       </div>
@@ -3053,12 +3092,25 @@ concept!: &diagnose/route
       the: xyz.tonk.site/branch
       cardinality: one
       as: text
+  maybe:
+    profile-branch:
+      description: >
+        The branch the profile is on, picked off the site entity: the
+        latent bar's command line talks to the profile.
+      the: xyz.tonk.site/profile-branch
+      cardinality: one
+      as: text
 
 view!:
   this: tonk:diagnose/route
   show:
     ui: |
       <div class="display-view-slot">
+        <!-- The bar, latent: no space here, so it shows only for the
+             command line (Cmd/Ctrl+K) and what a command opens. -->
+        <tonk-fab with="{profile-branch}@profile:tonk" latent>
+          <command-palette slot="command" profile="{profile-branch}@profile:tonk"></command-palette>
+        </tonk-fab>
         <tab-title text="Tonk"></tab-title>
         <tonk-tree with="{branch}@{repo}"></tonk-tree>
       </div>
@@ -3088,12 +3140,25 @@ concept!: &seed/route
       the: xyz.tonk.site/url
       cardinality: one
       as: text
+  maybe:
+    profile-branch:
+      description: >
+        The branch the profile is on, picked off the site entity: the
+        latent bar's command line talks to the profile.
+      the: xyz.tonk.site/profile-branch
+      cardinality: one
+      as: text
 
 view!:
   this: tonk:seed/route
   show:
     ui: |
       <div class="hub-page seed-page">
+        <!-- The bar, latent: no space here, so it shows only for the
+             command line (Cmd/Ctrl+K) and what a command opens. -->
+        <tonk-fab with="{profile-branch}@profile:tonk" latent>
+          <command-palette slot="command" profile="{profile-branch}@profile:tonk"></command-palette>
+        </tonk-fab>
         <link rel="stylesheet" with:src="ui@space">
         <tab-title text="New space — Tonk"></tab-title>
         <style>
@@ -3373,12 +3438,25 @@ concept!: &not-found
       the: xyz.tonk.site/path
       cardinality: one
       as: text
+  maybe:
+    profile-branch:
+      description: >
+        The branch the profile is on, picked off the site entity: the
+        latent bar's command line talks to the profile.
+      the: xyz.tonk.site/profile-branch
+      cardinality: one
+      as: text
 
 view!:
   this: tonk:not-found
   show:
     ui: |
       <div class="display-view-slot">
+        <!-- The bar, latent: no space here, so it shows only for the
+             command line (Cmd/Ctrl+K) and what a command opens. -->
+        <tonk-fab with="{profile-branch}@profile:tonk" latent>
+          <command-palette slot="command" profile="{profile-branch}@profile:tonk"></command-palette>
+        </tonk-fab>
         <style>
           .nf { display: flex; flex-direction: column; align-items: center;
                 justify-content: center; gap: 8px; height: 100%; padding: 32px;
@@ -5899,7 +5977,8 @@ intent/action!:
 # It only queries and transacts. What the line could mean is the named query
 # `intent/suggest` — `{input, this, now}` in, one row per reading out —
 # asked of the space branch and of the profile, whose readings are merged by
-# score. Running one transacts its `claim` on the branch it came from, as a
+# score. On a page with no space (the hub, settings, join) the bar is
+# `latent`, hidden until the chord, and only the profile is asked. Running one transacts its `claim` on the branch it came from, as a
 # button bound to that command would, and records a `intent/choice` on the
 # profile. What can be said is data (`intent/action`, `intent/argument`,
 # `intent/role`, `intent/noun`); the query reads it.
@@ -5973,6 +6052,10 @@ element!: &command-palette
               color: inherit; font: inherit; outline: none; }
             command-palette input::placeholder { color: inherit; opacity: .55; }
             command-palette input::selection { background: var(--_hover, rgb(56 24 42 / 14%)); color: var(--_ink, #38182a); }
+            /* The page around the bar may ring what is focused (the hub's
+               \`.hub-page :focus-visible\`); the line is the focus here. */
+            tonk-fab[commanding] command-palette input:focus-visible { outline: none; box-shadow: none; }
+            tonk-fab[commanding] command-palette input::selection { background: var(--_hover, rgb(56 24 42 / 14%)); color: var(--_ink, #38182a); }
             tonk-fab > ol.command-suggestions { display: flex; flex-direction: column; list-style: none;
               margin: 0; padding: 0; font: 400 17px/1.3 'IBM Plex Sans Condensed', 'Arial Narrow', sans-serif;
               box-shadow: inset 0 1px 0 color-mix(in srgb, currentColor 22%, transparent); }
@@ -6105,15 +6188,18 @@ element!: &command-palette
         const typed = self.__typed || '';
         const asked = {};
         self.__asked = asked;
-        const space = self.getAttribute('space');
+        // No space on a page with none (the hub, settings): then the
+        // profile is the only branch asked, and nothing is "this".
+        const space = self.getAttribute('space') || null;
         const fab = self.closest('tonk-fab');
-        if (!space || !window.tonk || !(fab && fab.hasAttribute('commanding'))) return;
-        const branches = [`main@${space}`, self.getAttribute('profile')].filter(Boolean);
+        if (!window.tonk || !(fab && fab.hasAttribute('commanding'))) return;
+        const branches = [space && `main@${space}`, self.getAttribute('profile')].filter(Boolean);
+        if (!branches.length) return;
         // The site of the page being looked at: the space's, nested in the
         // bar's frame, else this frame's own. Its route and its selection
         // are the context every branch's rules and parser read; the page
         // reports its selection to both branches under it.
-        const page = document.querySelector(`tonk-site[data-site][with="main@${space}"]`);
+        const page = space && document.querySelector(`tonk-site[data-site][with="main@${space}"]`);
         const site = (page && page.getAttribute('data-site')) || (window.tonk.context || {}).site;
         const now = Date.now();
         const max = typed ? 5 : 12;
@@ -6150,10 +6236,11 @@ element!: &command-palette
           }
           return false;
         };
-        const ofExpression = { predicate: 'intent/suggest', terms: { expression, this: space, now, max } };
+        const subject = space ? { this: space } : {};
+        const ofExpression = { predicate: 'intent/suggest', terms: { expression, ...subject, now, max } };
         // No site to interpret against, or a branch that didn't interpret
         // the line: ask with the line itself.
-        const ofLine = { predicate: 'intent/suggest', terms: { input: typed, this: space, now, max, site } };
+        const ofLine = { predicate: 'intent/suggest', terms: { input: typed, ...subject, now, max, site } };
         const read = (branch, row) => {
           const fields = row.fields || {};
           const json = (text, fallback) => { try { return JSON.parse(text); } catch { return fallback; } };

@@ -66,13 +66,16 @@ button,a{ min-height:48px; font:600 17px/1.1 'IBM Plex Sans Condensed','Arial Na
 /* Command mode (`commanding` on the host, set by what fills the `command`
    slots): the header's space name gives way to a command line, and what it
    suggests takes the place of the actions and panels. A folded bar opens
-   out of its dot to hold it — the width transition does the unfolding. */
+   out of its dot to hold it — the width transition does the unfolding.
+   A `latent` bar (on a page with no space) shows only in command mode, or
+   while a command it ran has a panel open. */
 .header slot[name=command]{ display:none; }
 .command{ display:none; min-width:0; }
 :host([commanding]) .header slot[name=command]{ display:flex; flex:1; min-width:0; }
 :host([commanding]) .space{ display:none!important; }
 :host([commanding]) .command{ display:block; }
 :host([commanding]) .run,:host([commanding]) .panel{ display:none!important; }
+:host([latent]:not([commanding])) .w:not(.menu-open){ display:none; }
 :host([commanding]) .w.collapsed{ width:min(var(--fabb-space-width),var(--_room,calc(100vw - 32px)),calc(100vw - 32px));
   grid-template-columns:minmax(0,1fr); border-radius:25px; overflow:auto; }
 .run[hidden],.action[hidden],.panel[hidden],.more,.mw{ display:none!important; }
@@ -285,6 +288,10 @@ pub const STACKS_HTML: &str = r#"<ui-sync-status headless with="main@{space}"></
 <tonk-agent-panel headless space="{space}" with="main@{space}"></tonk-agent-panel>
 <ui-member-roster headless space="{space}"></ui-member-roster>
 <ui-site-request headless></ui-site-request>"#;
+
+/// The stacks of a bar on a page with no space: what the bar does for the
+/// profile, without the subscribers addressed to a space.
+pub const PROFILE_STACKS_HTML: &str = r#"<ui-site-request headless></ui-site-request>"#;
 
 /// Styles for the slotted stack content.
 ///
@@ -610,6 +617,10 @@ mod tests {
         assert!(space < line && line < list && list < run);
         assert!(BAR_CSS.contains(":host([commanding]) .space{ display:none!important; }"));
         assert!(BAR_CSS.contains(":host([commanding]) .w.collapsed{"));
+        assert!(
+            BAR_CSS
+                .contains(":host([latent]:not([commanding])) .w:not(.menu-open){ display:none; }")
+        );
     }
 
     #[test]
