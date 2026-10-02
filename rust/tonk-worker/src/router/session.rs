@@ -278,13 +278,6 @@ async fn stamp_site(
     let Some(RouteTarget::Space { space, rest }) = resolve_path(path) else {
         return;
     };
-    // A space is named by its DID. A path whose segment does not make one (a
-    // guest's own path, a mistyped link) addresses no space, and acquiring a
-    // repository by a name that is not an entity aborts the worker.
-    if space.name.parse::<dialog_artifacts::Entity>().is_err() {
-        tonk_common::log!("register_site: {path} names no space");
-        return;
-    }
     stamp_site_on(
         tonk,
         site,

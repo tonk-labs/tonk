@@ -505,7 +505,7 @@
   // overrides Request fields. Body is read to text (our /api bodies are JSON
   // strings); a Request body is consumed via .text() so we return a Promise.
   function relayRequest(url,input,init){
-    var method="GET", headers=contextHeaders(), bodyP=Promise.resolve(undefined);
+    var method="GET", headers=[], bodyP=Promise.resolve(undefined);
     var reqLike=(typeof input==="object"&&input)?input:null;
     if(reqLike){ method=reqLike.method||method; }
     if(init&&init.method){ method=init.method; }
@@ -515,6 +515,11 @@
       else if(Array.isArray(hsrc)){ headers=headers.concat(hsrc); }
       else { for(var k in hsrc){ if(Object.prototype.hasOwnProperty.call(hsrc,k)){headers.push([k,hsrc[k]]);} } }
     }
+    // A context header the request sets itself is the request's: adding the
+    // context's too would send two, which arrive joined (`a, b`) as one
+    // value nothing can parse.
+    var own={}; headers.forEach(function(h){ own[String(h[0]).toLowerCase()]=true; });
+    headers=contextHeaders().filter(function(h){ return !own[h[0]]; }).concat(headers);
     if(init&&"body"in init){ bodyP=Promise.resolve(init.body); }
     else if(reqLike&&!reqLike.bodyUsed&&reqLike.body){ bodyP=reqLike.clone().text(); }
     return bodyP.then(function(body){
