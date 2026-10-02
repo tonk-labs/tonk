@@ -1623,7 +1623,14 @@ function holdProfilePort(port, page) {
     // the response already open, its next piece the whole result again.
     const stale = profilePorts.get(page);
     if (stale) {
-        for (const [call, passed] of stale.calls) {
+        for (const [call, passed] of [...stale.calls]) {
+            // A write may have landed before the worker stopped. Asked
+            // again it could land twice, so whoever made it is told it was
+            // not answered and decides.
+            if (!repeatable(passed.request)) {
+                passed.fail(new Error("the profile's worker restarted"));
+                continue;
+            }
             passed.held = next;
             next.calls.set(call, passed);
             port.postMessage({ call, request: passed.request });
@@ -1634,6 +1641,12 @@ function holdProfilePort(port, page) {
     for (const resolve of profileWaiters.get(page) ?? []) resolve(next);
     profileWaiters.delete(page);
     watchProfile(next);
+}
+
+// Whether a request passed on can be asked again without doing anything
+// twice: a read, or a query however it is sent.
+function repeatable({ method, path }) {
+    return method === "GET" || method === "HEAD" || /\/(query|claim\/select)(\?|$)/.test(path);
 }
 
 // The port `page` opened to the profile's worker, asking it for one when it

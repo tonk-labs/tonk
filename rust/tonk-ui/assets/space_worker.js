@@ -526,13 +526,21 @@ function holdSpacePort(repo, port) {
     const stale = spacePorts.get(key);
     if (stale) {
         clearTimeout(stale.idle);
-        for (const [call, passed] of stale.calls) {
+        for (const [call, passed] of [...stale.calls]) {
+            // A write may have landed before the worker stopped. Asked
+            // again it could land twice, so whoever made it is told it was
+            // not answered and decides.
+            if (!repeatable(passed.request)) {
+                passed.space = stale;
+                passed.fail(new Error("the space's worker restarted"));
+                continue;
+            }
             passed.space = space;
             space.calls.set(call, passed);
             port.postMessage({ call, request: passed.request });
         }
-        if (stale.calls.size > 0) {
-            log(`asking ${stale.calls.size} thing(s) of ${key} again of its new worker`);
+        if (space.calls.size > 0) {
+            log(`asking ${space.calls.size} thing(s) of ${key} again of its new worker`);
         }
         stale.calls.clear();
     }
@@ -542,6 +550,12 @@ function holdSpacePort(repo, port) {
     watchSpace(space);
     restSpace(space);
     return space;
+}
+
+// Whether a request passed on can be asked again without doing anything
+// twice: a read, or a query however it is sent.
+function repeatable({ method, path }) {
+    return method === "GET" || method === "HEAD" || /\/(query|claim\/select)(\?|$)/.test(path);
 }
 
 // The port to the worker of the space `key`, asking the pages to open one

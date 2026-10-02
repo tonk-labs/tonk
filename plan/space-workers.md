@@ -311,7 +311,7 @@ How it hangs together:
 - **A site frame loads `/space-origin.html`**, which registers `/space_worker.js`, waits for control, and asks its parent for its document. The same Rust worker runs on every origin. The script tells a profile from a space by the first label of its hostname.
 - **Workers talk over ports that pages open.** A page frames an origin and hands each worker an end. The app's page frames the profile's origin unseen for this (`#connector`); the profile's page does the same for a space that is not on screen, and drops the frame once the space has been quiet for a minute.
 - **Requests go down a port, answers come back up it**: status and headers, then the body in pieces, so a subscription keeps flowing. The app's worker passes the profile's every `/api/` request; the profile's passes a space's everything under one of the space's branches.
-- **A port message does not wake a stopped worker.** While something is being answered the asking worker probes, and a silent worker's port is given up: the page is asked for a new one, and handing it over is what starts the worker again. What was being answered is asked again of the new worker.
+- **A port message does not wake a stopped worker.** While something is being answered the asking worker probes, and a silent worker's port is given up: the page is asked for a new one, and handing it over is what starts the worker again. A read that was being answered is asked again of the new worker; a write is failed back to whoever made it, since it may have landed.
 - **The profile's worker answers as its own frame.** A request from the app's page is answered as though the profile's frame in that tab had made it, so the site stamp has a live client, and what the worker tells "the page that asked" (go here, run this passkey ceremony) it tells that frame, which passes it up.
 - **What a command does to a space's content, the space's worker does.** A profile command that has such a part hands it over as a command for the space's worker to run: a rename forwards itself, pausing sync runs on that worker's own profile branch, an invite is minted by the profile and recorded by the space (`RecordInvite`). The other way, a space asked for an invite by its own share button passes the asking up, since a delegation it issued would lapse with its own.
 - **A space's worker is told its account and its remote in its delegation**, signed, and told to take up a new one when either changes. Signing in moves the space's own roster entry to the new account there.
@@ -356,7 +356,6 @@ Not done:
 - **`GET /api/repository/{space}`** still answers from the profile, members included. Nothing in the bar reads its members any more; it is asked only whether the device holds the space.
 - **An origin per profile.** Every profile on a device shares `profile.{host}`. The roster of profiles and the active one would have to live with the app, and signing in to another account would have to carry the ceremony's result to another origin's worker.
 - **The server does not yet answer a site's hostname with the shell and its policy.**
-- **A request passed on is asked again when a port is replaced**, a write included, so a write can land twice.
 - Firefox and Safari. Pre-warming origins for offline creation.
 
 Known and not from this work:
