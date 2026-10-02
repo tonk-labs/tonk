@@ -3039,6 +3039,34 @@ route!: &route/space-sub
   path: "/space/{id}/{*rest}"
   concept: tonk:space/chrome
 
+# The profile's own repository, as the space chrome reads any space.
+#
+# The chrome below decides a space is here by resolving `tonk:repository`
+# on the space's own branch, and takes a branch that does not carry the
+# concept for a space this device has not replicated. The profile's
+# repository is a space like any other and is always here, but its
+# branch carries this library rather than a space's, so without the
+# concept `/space/<profile did>` answered "open this space" over a
+# repository that had loaded.
+#
+# The same shape `core.yaml` declares for a space, so the name is read
+# the same way if the profile's repository is ever given one.
+concept!: &profile/repository
+  this: tonk:repository
+  description: The profile's own repository, addressed as a space.
+  with:
+    name:
+      description: The repository's display name.
+      the: xyz.tonk.repo/name
+      cardinality: one
+      as: text
+
+view!:
+  this: tonk:repository
+  show:
+    title: |
+      <tab-title text="{name} — Tonk"></tab-title>
+
 # The space chrome model. `{id}` (the repository) and `{rest}` (the sub-path) are
 # captured from the path and stamped on the site; the view reads them. `rest` is
 # optional — the bare space route does not capture it, and the nested `<tonk-site>`
