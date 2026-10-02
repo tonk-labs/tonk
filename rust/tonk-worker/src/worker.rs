@@ -2253,6 +2253,36 @@ impl TonkServiceWorker {
         })
     }
 
+    /// Where `space` syncs and which account this profile acts for, as its
+    /// own worker last has to have taken them up. Resolves to
+    /// `{ remote, account }`, the remote `null` for a space that only exists
+    /// here.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "spaceTerms")]
+    pub fn space_terms(&self, space: String) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            let space: Did = space
+                .parse()
+                .map_err(|e| JsError::new(&format!("space: {e:?}")))?;
+            let tonk = state.read().await;
+            let terms = space_worker::terms(&tonk, &space)
+                .await
+                .map_err(|e| JsError::new(&e.to_string()))?;
+            let result = js_sys::Object::new();
+            let remote = terms
+                .remote
+                .map_or(JsValue::NULL, |remote| JsValue::from_str(&remote));
+            let _ = js_sys::Reflect::set(&result, &"remote".into(), &remote);
+            let _ = js_sys::Reflect::set(
+                &result,
+                &"account".into(),
+                &terms.account.to_string().into(),
+            );
+            Ok(result.into())
+        })
+    }
+
     /// Snapshot `space`'s `main` for its own worker to seed from. Resolves to
     /// `{ content, revision }` (a CARv1 and the revision as JSON), or `null`
     /// when `main` has nothing on it yet.

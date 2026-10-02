@@ -105,6 +105,8 @@ pub(crate) async fn rotate_from_onboarding(tonk: &TonkState) {
             Err(error) => failures.push((subject, error.to_string())),
         }
     }
+    // Every space's worker acts for the account this profile does.
+    super::space_reach::changed(None);
     for (subject, reason) in &failures {
         log!("rotation: {subject} was not rotated: {reason}");
     }
@@ -434,12 +436,20 @@ pub(super) async fn reconcile_founder_membership(
 /// member DID necessarily changes the entity every role, name, and provenance
 /// stamp addresses. Existing account-side stamps win on a resumed or repeated
 /// migration; onboarding values only fill fields the account row lacks.
-async fn migrate_membership_rows(
+///
+/// Where each space's content is held by a worker of its own, this is that
+/// worker's to do, and it does it when it takes up the account its profile
+/// now acts for ([`space_worker::adopt`](super::space_worker::adopt)): the
+/// person's profile holds no roster to move.
+pub(crate) async fn migrate_membership_rows(
     tonk: &TonkState,
     space: &Did,
     onboarding: &Did,
     root: &Did,
 ) -> Result<(), TonkWorkerError> {
+    if tonk.site_origins.load(std::sync::atomic::Ordering::Relaxed) {
+        return Ok(());
+    }
     let repo = space.repo_key();
     let session = tonk
         .reactor

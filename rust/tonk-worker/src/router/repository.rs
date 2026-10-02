@@ -3610,6 +3610,8 @@ async fn enable_sync_for_repository(
     // the request's (possibly repair-supplied) address must not
     // overwrite it there.
     record_space_mount(tonk, &repository.did(), &effective, None).await;
+    // The space's own worker is the one that syncs it.
+    super::space_reach::changed(Some(key));
 
     Ok(())
 }

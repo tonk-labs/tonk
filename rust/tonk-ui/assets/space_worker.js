@@ -278,9 +278,14 @@ async function answer(port, { call, request }, frame) {
 // A worker's sync loop paces itself on both, and a profile's spaces want to
 // hear them too.
 async function signalled(signal) {
-    for (const space of spacePorts.values()) space.port.postMessage({ signal });
     try {
         const worker = await siteWorker();
+        // The profile changed what it told this space's worker.
+        if (signal === "grant") {
+            await ensureGrant(worker, { renew: true });
+            return;
+        }
+        for (const space of spacePorts.values()) space.port.postMessage({ signal });
         if (signal === "connectivity") await worker.onconnectivity?.();
         else if (signal === "visibility") await worker.onvisibility?.();
     } catch (error) {
@@ -390,6 +395,13 @@ function bindSpacePort(port, { repo, branch }) {
                     },
                     [chain],
                 );
+                return;
+            }
+            // Where the space syncs and which account this profile acts
+            // for, for the space's worker to compare with what it took up.
+            if (data.terms === true) {
+                const terms = await worker.spaceTerms(repo);
+                port.postMessage({ id, remote: terms.remote, account: terms.account });
                 return;
             }
             // The space's worker has created the content it was handed the
@@ -646,6 +658,15 @@ if (PROFILE) {
         );
         return { status: response.status, body: await response.text() };
     };
+
+    // The Rust worker says through this that what a space's worker was told has
+    // changed (where the space syncs, which account this profile acts for):
+    // of one space, or of all of them.
+    self.tonkSpaceChanged = space => {
+        for (const held of spacePorts.values()) {
+            if (space == null || held.key === spaceKey(space)) held.port.postMessage({ signal: "grant" });
+        }
+    };
 }
 
 function spaceAnswered(space, data) {
@@ -690,7 +711,7 @@ self.tonkBundledAsset = async path => {
 const GRANT_KEY = "/__space/grant";
 // What taking up a grant does. A grant taken up by an earlier version is
 // taken up again, so the space gets what that version left out.
-const GRANT_VERSION = 3;
+const GRANT_VERSION = 4;
 // Ask for a new delegation once the held one has less than this left.
 const RENEW_MARGIN_SECONDS = 60 * 60;
 
@@ -710,6 +731,9 @@ function siteWorker() {
                 // Who this worker acts for is kept, but where a view reads it
                 // (the session overlay) lasts only as long as the worker.
                 await worker.resumeSpace(grant.space);
+                // The profile may have changed what it told this worker
+                // while it was not running to hear it.
+                keepTerms(worker).catch(error => log("could not check the space's terms:", error));
             }
             await restoreSession(worker);
             // The worker above passes requests down the port, and a port
@@ -754,10 +778,24 @@ function renewIfDue() {
     return renewing;
 }
 
-async function ensureGrant(worker) {
+// Take up a new delegation when what the profile holds for this space is no
+// longer what this worker took up: where it syncs, or which account it is
+// for.
+async function keepTerms(worker) {
+    const held = await heldGrant();
+    if (!held) return;
+    const terms = await askHost({ terms: true });
+    if ((terms.remote ?? null) === (held.remote ?? null) && terms.account === held.account) return;
+    log("what the profile holds for this space changed; taking up a new delegation");
+    await ensureGrant(worker, { renew: true });
+}
+
+async function ensureGrant(worker, { renew = false } = {}) {
     const held = await heldGrant();
     const now = Date.now() / 1000;
-    if (held?.version === GRANT_VERSION && held.expires - now > RENEW_MARGIN_SECONDS) return held;
+    if (!renew && held?.version === GRANT_VERSION && held.expires - now > RENEW_MARGIN_SECONDS) {
+        return held;
+    }
     const audience = await worker.profileDid();
     const grant = await askHost({ delegate: audience });
     await worker.adoptSpace(
@@ -788,6 +826,7 @@ async function ensureGrant(worker) {
         space: grant.space,
         expires: grant.expires,
         remote: grant.remote,
+        account: grant.account,
         seeded: true,
         version: GRANT_VERSION,
     };

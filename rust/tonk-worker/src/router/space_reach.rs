@@ -79,3 +79,29 @@ pub(crate) async fn transact(
     let path = format!("/api/repository/{space}/branch/{CONTENT_BRANCH}/transact");
     ask(space, "POST", &path, Some(claims)).await.map(|_| ())
 }
+
+/// Tell the worker of `space`, or of every space with `None`, that what its
+/// profile told it has changed: where the space syncs, or which account the
+/// profile acts for. It takes up a new delegation and the new terms with it.
+/// A worker that is not running learns of it when it next starts. Nothing to
+/// tell on a host with one database.
+pub(crate) fn changed(space: Option<&str>) {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        use js_sys::{Function, Reflect};
+        use wasm_bindgen::{JsCast, JsValue};
+
+        let global = js_sys::global();
+        if let Some(hook) = Reflect::get(&global, &"tonkSpaceChanged".into())
+            .ok()
+            .and_then(|hook| hook.dyn_into::<Function>().ok())
+        {
+            let space = space.map_or(JsValue::NULL, JsValue::from_str);
+            let _ = hook.call1(&global, &space);
+        }
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    {
+        let _ = space;
+    }
+}

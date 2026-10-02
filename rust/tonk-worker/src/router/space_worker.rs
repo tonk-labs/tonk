@@ -33,6 +33,7 @@ use super::claim::RawClaim;
 use super::create_invite::{ConfiguredRemoteRequirement, resolve_configured_remote_url_with};
 use super::join::mount_replica;
 use super::repository::{CONTENT_BRANCH, record_initialized_replica_in_profile};
+use super::rotation::migrate_membership_rows;
 use crate::{TonkWorkerError, worker::TonkState};
 
 /// How long a space worker's delegation lasts. It asks for a new one before
@@ -79,6 +80,27 @@ pub(crate) async fn delegate(
         .to_bytes()
         .map_err(|e| TonkWorkerError::Internal(format!("failed to encode delegation: {e}")))?;
 
+    let Terms { remote, account } = terms(tonk, space).await?;
+    Ok(Grant {
+        chain,
+        expires,
+        remote,
+        account,
+    })
+}
+
+/// What a space's worker is told beside its delegation, and has to take up
+/// again when it changes: where the space syncs, and which account the
+/// person's profile acts for.
+pub(crate) struct Terms {
+    /// The space's upstream, `None` for a space that only exists here.
+    pub(crate) remote: Option<String>,
+    /// The account the person's profile acts for.
+    pub(crate) account: Did,
+}
+
+/// The [`Terms`] the person's profile holds for `space` now.
+pub(crate) async fn terms(tonk: &TonkState, space: &Did) -> Result<Terms, TonkWorkerError> {
     let repository = tonk
         .profile
         .space(space.as_str())
@@ -91,12 +113,7 @@ pub(crate) async fn delegate(
         ConfiguredRemoteRequirement::Refused(_) => None,
     };
     let account = member_did(tonk).await?;
-    Ok(Grant {
-        chain,
-        expires,
-        remote,
-        account,
-    })
+    Ok(Terms { remote, account })
 }
 
 /// Take up a delegation for `space`: save its chain to this worker's profile,
@@ -137,7 +154,16 @@ pub(crate) async fn adopt(
     record_initialized_replica_in_profile(tonk, space)
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("failed to list {space}: {e}")))?;
+    // The roster names the account a member acts for. A profile that has
+    // since signed in acts for another, and the entry this worker made under
+    // the last one moves to it.
+    let previous = acts_for(tonk).await?;
     act_for(tonk, account).await?;
+    if let Some(previous) = previous.filter(|previous| previous != account)
+        && let Err(error) = migrate_membership_rows(tonk, space, &previous, account).await
+    {
+        log!("space worker: the roster of {space} still names {previous}: {error}");
+    }
     resume(tonk, space).await?;
     log!("space worker: adopted {space} for {account} (remote: {remote:?})");
     Ok(())
@@ -379,6 +405,61 @@ mod tests {
             "the worker acts for the account the person's profile acts for"
         );
         resume(&worker, &space).await.unwrap();
+    }
+
+    /// The accounts the roster of `space` names, as `tonk` reads it.
+    async fn roster(tonk: &TonkState, space: &Did) -> Vec<String> {
+        use dialog_query::{Output as _, Query, Term};
+        use tonk_schema::{Membership, prelude::DidExt as _};
+
+        let session = tonk
+            .reactor
+            .repository(space.repo_key())
+            .branch("main")
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+        let rows: Vec<Membership> = session
+            .handle()
+            .query()
+            .select(Query::<Membership> {
+                this: Term::var("this"),
+                subject: Term::from(space.this()),
+                member: Term::var("member"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+        rows.into_iter()
+            .map(|row| row.member.0.to_string())
+            .collect()
+    }
+
+    /// A profile that signs in acts for another account, and tells the
+    /// space's worker so. The roster entry made under the last account is
+    /// the worker's to move: the person's profile holds no roster.
+    #[dialog_common::test]
+    async fn it_moves_its_roster_entry_to_the_account_it_is_told() {
+        let (host, space) = host_with_space().await;
+        let host = host.read().await;
+        let worker = space_origin().await;
+        let grant = delegate(&host, &space, &worker.profile.did())
+            .await
+            .unwrap();
+        adopt(&worker, &space, &grant.chain, None, &grant.account)
+            .await
+            .unwrap();
+        assert_eq!(
+            roster(&worker, &space).await,
+            vec![grant.account.to_string()]
+        );
+
+        let signed_in = space_origin().await.profile.did();
+        adopt(&worker, &space, &grant.chain, None, &signed_in)
+            .await
+            .unwrap();
+        assert_eq!(roster(&worker, &space).await, vec![signed_in.to_string()]);
     }
 
     #[dialog_common::test]
