@@ -1350,6 +1350,23 @@ pub mod command {
             pub struct Seed(pub String);
         }
 
+        /// `tonk/move-membership` — a space's own worker moves a roster
+        /// entry from one account to the account that took it over.
+        pub mod move_membership {
+            use super::super::super::Entity;
+            use dialog_query::Attribute;
+
+            /// The account the entry is under.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.move-membership")]
+            pub struct Previous(pub Entity);
+
+            /// The account it moves to.
+            #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("xyz.tonk.command.move-membership")]
+            pub struct Account(pub Entity);
+        }
+
         /// `tonk/rename-repository` — rename a space's repository.
         pub mod rename_repository {
             use dialog_query::Attribute;

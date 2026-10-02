@@ -445,6 +445,31 @@ impl Command for RecordInvite {
     type Output = ();
 }
 
+/// Move a space's roster entry from one account to the account that took it
+/// over, in the space's own worker.
+///
+/// Signing in hands a device's onboarding account over to the signed-in one,
+/// and each space's roster entry made under the first moves to the second.
+/// Where each space's content is held by a worker on the space's own origin,
+/// the profile settling the handover has no roster to move, so it hands the
+/// move to that worker. Only the handover does: a worker told a different
+/// account for any other reason (another profile on the same device taking
+/// over) is looking at somebody else's entry, and leaves it alone.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MoveMembership {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The account the entry is under.
+    pub previous: crate::domain::command::current::move_membership::Previous,
+    /// The account it moves to.
+    pub account: crate::domain::command::current::move_membership::Account,
+}
+
+impl Command for MoveMembership {
+    type Input = Self;
+    type Output = ();
+}
+
 /// Pull a space this account has but this device does not.
 ///
 /// Replication was only ever implicit: the first data-plane request

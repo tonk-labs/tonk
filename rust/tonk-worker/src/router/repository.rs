@@ -10973,6 +10973,98 @@ mod tests {
         assert_eq!(recorded, Some(proof));
     }
 
+    /// Where a space's content is held by a worker of its own, the profile
+    /// settling a sign-in hands that worker the move of the roster entry, as
+    /// a transact request. Committed on the space's branch, the request has
+    /// to decode as the command and move the entry.
+    #[dialog_common::test]
+    async fn it_moves_a_roster_entry_from_the_claim_its_profile_forwards() {
+        use super::CONTENT_BRANCH;
+        use crate::router::space_reach;
+        use dialog_query::{Output as _, Query, Term};
+        use tonk_schema::{Membership, prelude::DidExt as _};
+
+        let (app, state, key) = fresh_repo("forwarded-move").await;
+        let subject: dialog_varsig::Did = key.parse().unwrap();
+        let founder = {
+            let tonk = state.read().await;
+            crate::router::account::member_did(&tonk).await.unwrap()
+        };
+        let signed_in: dialog_varsig::Did =
+            "did:key:z6MkkAKBuUTy2r88au4Ehu6uUwdRRpDYnKd1euvreZi3YG7M"
+                .parse()
+                .unwrap();
+        let claim = space_reach::command(
+            &[
+                (
+                    "previous",
+                    "xyz.tonk.command.move-membership/previous",
+                    "Entity",
+                ),
+                (
+                    "account",
+                    "xyz.tonk.command.move-membership/account",
+                    "Entity",
+                ),
+            ],
+            serde_json::json!({
+                "previous": founder.to_string(),
+                "account": signed_in.to_string()
+            }),
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/repository/{key}/branch/{CONTENT_BRANCH}/transact"
+                    ))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(claim.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // The command runs after the commit answers.
+        let mut members = Vec::new();
+        for _ in 0..40 {
+            let tonk = state.read().await;
+            let content = tonk
+                .reactor
+                .repository(&key)
+                .branch(CONTENT_BRANCH)
+                .acquire(&tonk.operator)
+                .await
+                .unwrap();
+            let rows: Vec<Membership> = content
+                .handle()
+                .query()
+                .select(Query::<Membership> {
+                    this: Term::var("this"),
+                    subject: Term::from(subject.this()),
+                    member: Term::var("member"),
+                })
+                .perform(&tonk.operator)
+                .try_vec()
+                .await
+                .unwrap();
+            members = rows
+                .into_iter()
+                .map(|row| row.member.0.to_string())
+                .collect();
+            if members == [signed_in.to_string()] {
+                break;
+            }
+            drop(tonk);
+            crate::r#async::sleep(web_time::Duration::from_millis(50))
+                .await
+                .unwrap();
+        }
+        assert_eq!(members, [signed_in.to_string()]);
+    }
+
     #[dialog_common::test]
     async fn enable_sync_records_the_preserved_upstream_in_the_directory() {
         use dialog_query::{Output as _, Query, Term};

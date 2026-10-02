@@ -268,6 +268,9 @@ fn space_commands() -> CommandRegistry<CommandEnv> {
         // after minting an invite to the space. It records for the origin
         // and names no other space.
         .command::<tonk_schema::command::RecordInvite>()
+        // What the person's profile hands a space's own worker when a
+        // signed-in account takes over the one its roster entry is under.
+        .command::<tonk_schema::command::MoveMembership>()
         .migrated::<tonk_schema::command::ExpelMember, tonk_schema::command::legacy::ExpelMember>()
         .migrated::<tonk_schema::command::RenameRepository, tonk_schema::command::legacy::RenameRepository>()
 }
