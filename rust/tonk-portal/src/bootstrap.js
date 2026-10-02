@@ -71,13 +71,13 @@
     return headers;
   }
   // A space rendered on its own origin keeps its database in its own worker
-  // (`siteHost` says it is on one, `repo` that it renders a space). Its reads
+  // (`sitePattern` says it is on one, `repo` that it renders a space). Its reads
   // and writes to that space go there directly instead of up the relay, and
   // it claims `tonk:load` there for its path: the host stamps its site in the
   // host's worker, which this frame no longer reads from.
   function ownSpace(){
     var c=(window.tonk&&window.tonk.context)||{};
-    return location.origin!=="null"&&c.siteHost&&c.repo?c:null;
+    return location.origin!=="null"&&c.sitePattern&&c.repo?c:null;
   }
   // The language server is the same worker's: it reads the database its
   // editor writes to. Relayed, it would answer from the host's copy, and

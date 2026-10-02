@@ -2,8 +2,11 @@
 //!
 //! Where the deployment configures a site host, a `<tonk-site>` renders in an
 //! iframe at a real origin of its own instead of an opaque `srcdoc` frame: a
-//! space at `{label}.{site host}`, the profile at `profile.{site host}`. The frame keeps `allow-same-origin`, which is safe only
-//! because that origin is never its parent's: the guest cannot reach into its
+//! space at `{label}.{site host}`, the profile at `profile.{site host}`. A
+//! deployment that shares its zone puts a suffix after the label, so a pull
+//! request's preview has `{label}-pr33.{site host}`. The frame keeps
+//! `allow-same-origin`, which is safe only because that origin is never its
+//! parent's: the guest cannot reach into its
 //! parent to lift its own sandbox. What it gains is storage and a service
 //! worker of its own.
 //!
@@ -37,7 +40,7 @@ use std::str::FromStr;
 use js_sys::{Array, Function, Object, Reflect};
 use tonk_host::bridge::{context_field, context_origin};
 use tonk_host::location::Location;
-use tonk_host::space_origin::encode_label;
+use tonk_host::space_origin::{encode_label, site_hostname};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{
@@ -62,41 +65,49 @@ const PROFILE_LABEL: &str = "profile";
 /// `allow-forms` and `allow-downloads` match the sealed frame.
 pub(crate) const SANDBOX: &str = "allow-scripts allow-same-origin allow-forms allow-downloads";
 
-/// The authority `host` renders its site under, or `None` to keep it in a
-/// sealed frame. Only a `<tonk-site>` renders on an origin of its own: the top
-/// document's names the authority in its `origin` attribute (from the
-/// deployment's configuration), and a site inside a real-origin guest takes
-/// the one its parent handed it (`siteHost` in its context). Other portals
+/// The hostname `host` renders its site at, with `*` where the site's label
+/// goes (`*.tonk.spot`), or `None` to keep it in a sealed frame. Only a
+/// `<tonk-site>` renders on an origin of its own: the top document's names
+/// the pattern in its `origin` attribute (from the deployment's
+/// configuration), and a site inside a real-origin guest takes the one its
+/// parent handed it (`sitePattern` in its context). Other portals
 /// (`<tonk-portal>`, the FAB's) stay sealed.
-pub(crate) fn site_host(host: &Element) -> Option<String> {
+pub(crate) fn site_pattern(host: &Element) -> Option<String> {
     if host.tag_name() != "TONK-SITE" {
         return None;
     }
-    if let Some(site_host) = host
+    if let Some(site_pattern) = host
         .get_attribute("origin")
         .filter(|value| !value.is_empty())
     {
-        return Some(site_host);
+        return Some(site_pattern);
     }
     let own = window()?.location().origin().ok()?;
-    (own != "null").then(|| context_field("siteHost")).flatten()
+    (own != "null")
+        .then(|| context_field("sitePattern"))
+        .flatten()
 }
 
-/// The real origin a site at `with` renders at: its label under `site_host`,
-/// with the app's scheme. A space renders at `{label}.{site_host}` and the
-/// profile at `profile.{site_host}`.
+/// The real origin a site at `with` renders at: `site_pattern` with the
+/// site's label in place of its `*`, and the app's scheme. Under `*.tonk.spot`
+/// a space renders at `{label}.tonk.spot` and the profile at
+/// `profile.tonk.spot`.
 ///
 /// `None` for a location with no label, and for one that would share this
 /// document's origin: a frame on its parent's origin, with
 /// `allow-same-origin`, could lift its own sandbox.
-pub(crate) fn site_origin(with: &Location, site_host: &str) -> Option<String> {
+pub(crate) fn site_origin(with: &Location, site_pattern: &str) -> Option<String> {
     let label = match with.space() {
         Some(space) => encode_label(space)?,
         None if with.profile() => PROFILE_LABEL.to_owned(),
         None => return None,
     };
     let app = Url::new(&context_origin()?).ok()?;
-    let origin = format!("{}//{label}.{site_host}", app.protocol());
+    let origin = format!(
+        "{}//{}",
+        app.protocol(),
+        site_hostname(site_pattern, &label)
+    );
     let own = window()?.location().origin().ok()?;
     (origin != own).then_some(origin)
 }

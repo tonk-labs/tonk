@@ -17,7 +17,7 @@ use web_sys::{Element, HtmlElement, HtmlIFrameElement, window};
 
 use crate::bridge::{self, PortalState};
 use crate::site_content::head_markup as build_head_markup;
-use crate::space_origin::{SANDBOX, SHELL_PATH, site_host, site_origin, watch_shell};
+use crate::space_origin::{SANDBOX, SHELL_PATH, site_origin, site_pattern, watch_shell};
 
 /// The tags an embedder may place in a portal's light DOM to style its
 /// guest. Anything else a caller nests is ignored: the head is not a
@@ -97,11 +97,11 @@ pub(crate) fn connect_portal(
     //
     // A `<tonk-site>` on a real origin keeps `allow-same-origin` instead (see
     // `space_origin`).
-    let site_host = site_host(&host);
-    let origin = site_host
+    let site_pattern = site_pattern(&host);
+    let origin = site_pattern
         .as_deref()
         .zip(with.as_ref())
-        .and_then(|(site_host, with)| site_origin(with, site_host));
+        .and_then(|(site_pattern, with)| site_origin(with, site_pattern));
     let sandbox = if origin.is_some() {
         SANDBOX
     } else {
@@ -157,7 +157,7 @@ pub(crate) fn connect_portal(
             let shell = format!("{origin}{SHELL_PATH}");
             state
                 .borrow_mut()
-                .set_origin_document(origin, srcdoc, site_host);
+                .set_origin_document(origin, srcdoc, site_pattern);
             let load = state.borrow().shell.get().load;
             watch_shell(&host, &iframe, &state, load);
             let _ = iframe.set_attribute("src", &shell);
@@ -202,8 +202,8 @@ pub(crate) fn reload_portal(host: &Element, state: &Rc<RefCell<PortalState>>) {
         // Re-navigate to the shell; it asks for the fresh document.
         Some(origin) => {
             let shell = format!("{origin}{SHELL_PATH}");
-            let site_host = s.site_host.clone();
-            s.set_origin_document(origin, srcdoc, site_host);
+            let site_pattern = s.site_pattern.clone();
+            s.set_origin_document(origin, srcdoc, site_pattern);
             watch_shell(host, &iframe, state, s.shell.get().load);
             let _ = iframe.set_attribute("src", &shell);
         }

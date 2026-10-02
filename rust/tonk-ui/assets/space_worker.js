@@ -547,7 +547,8 @@ const NO_PASSKEYS = "publickey-credentials-get=(), publickey-credentials-create=
 
 function spacePolicy(sites, { framedBySelf = false } = {}) {
     const scheme = sites ? new URL(sites.app).protocol : null;
-    const outer = sites ? `${sites.app} ${scheme}//profile.${sites.host}` : "'none'";
+    const profile = sites ? `${scheme}//profile${sites.suffix ?? ""}.${sites.host}` : null;
+    const outer = sites ? `${sites.app} ${profile}` : "'none'";
     // An asset opened in a frame is framed by the space that holds it.
     const ancestors = framedBySelf && sites ? `'self' ${outer}` : outer;
     const framed = sites ? ` ${scheme}//*.${sites.host}` : "";

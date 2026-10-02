@@ -23,6 +23,11 @@ async fn main() -> anyhow::Result<()> {
             };
             Some(SiteOrigins {
                 host,
+                // Set to try a preview's layout locally: `-pr33` puts sites
+                // at `{label}-pr33.localhost:{port}`.
+                suffix: std::env::var("ACCESS_SITE_SUFFIX")
+                    .ok()
+                    .filter(|suffix| !suffix.is_empty()),
                 app: origin.origin().ascii_serialization(),
             })
         });

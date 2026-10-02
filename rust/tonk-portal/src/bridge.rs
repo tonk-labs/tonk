@@ -110,7 +110,7 @@ pub(crate) struct PortalState {
     document: Option<String>,
     /// The authority real-origin sites render under, handed down to the
     /// guest so the sites it nests render on origins of their own too.
-    pub(crate) site_host: Option<String>,
+    pub(crate) site_pattern: Option<String>,
     /// Which load of the real-origin frame this is, and whether its shell
     /// has announced itself. A frame that finishes loading without its
     /// shell could not be reached (see `space_origin::watch_shell`).
@@ -153,7 +153,7 @@ impl PortalState {
             allow: Allow::none(),
             origin: None,
             document: None,
-            site_host: None,
+            site_pattern: None,
             shell: Cell::default(),
         }
     }
@@ -164,11 +164,11 @@ impl PortalState {
         &mut self,
         origin: String,
         document: String,
-        site_host: Option<String>,
+        site_pattern: Option<String>,
     ) {
         self.origin = Some(origin);
         self.document = Some(document);
-        self.site_host = site_host;
+        self.site_pattern = site_pattern;
         self.shell.set(Shell {
             load: self.shell.get().load + 1,
             seen: false,
@@ -2694,8 +2694,12 @@ fn build_context(host: &Element, state: &Rc<RefCell<PortalState>>) -> Object {
         None => tonk_host::space_origin::space_origin_for(&repo).unwrap_or_default(),
     };
     let _ = Reflect::set(&context, &"base".into(), &JsValue::from_str(&base));
-    if let Some(site_host) = state.borrow().site_host.as_deref() {
-        let _ = Reflect::set(&context, &"siteHost".into(), &JsValue::from_str(site_host));
+    if let Some(site_pattern) = state.borrow().site_pattern.as_deref() {
+        let _ = Reflect::set(
+            &context,
+            &"sitePattern".into(),
+            &JsValue::from_str(site_pattern),
+        );
     }
     // A `<tonk-site>`'s own site entity and in-site path, which a guest on a
     // real origin claims `tonk:load` for against its own worker. Distinct from

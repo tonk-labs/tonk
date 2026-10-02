@@ -245,7 +245,7 @@ fn render_root(shell: &web_sys::Element) {
     let shell = shell.clone();
     wasm_bindgen_futures::spawn_local(async move {
         let with = tonk_host::bridge::resolve_profile_with().await;
-        let site_host = site_host().await;
+        let site_pattern = site_pattern().await;
         let _ = shell.remove_attribute("data-mounting");
         shell.set_inner_html("");
         let Some(document) = shell.owner_document() else {
@@ -259,8 +259,8 @@ fn render_root(shell: &web_sys::Element) {
         // Where the deployment names a site host, the profile renders on an
         // origin of its own, so the space it nests can too: a frame nested in
         // an opaque one is opaque as well.
-        if let Some(site_host) = site_host {
-            let _ = site.set_attribute("origin", &site_host);
+        if let Some(site_pattern) = site_pattern {
+            let _ = site.set_attribute("origin", &site_pattern);
         }
         // The path may have moved while the branch was being read.
         let path = web_sys::window()
@@ -272,11 +272,12 @@ fn render_root(shell: &web_sys::Element) {
     });
 }
 
-/// The authority this deployment renders sites under, from its
-/// `/.well-known/tonk`. `None` when it names none, or the configuration cannot
-/// be read: sites then stay in sealed frames.
+/// The hostname this deployment renders each site at, with `*` where the
+/// site's label goes (`*.tonk.spot`), from its `/.well-known/tonk`. `None`
+/// when it names none, or the configuration cannot be read: sites then stay
+/// in sealed frames.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn site_host() -> Option<String> {
+async fn site_pattern() -> Option<String> {
     let origin = web_sys::window()?.location().origin().ok()?;
     let config: DeploymentConfig = reqwest::get(format!("{origin}/.well-known/tonk"))
         .await
@@ -284,7 +285,7 @@ async fn site_host() -> Option<String> {
         .json()
         .await
         .ok()?;
-    config.sites.map(|sites| sites.host)
+    config.sites.map(|sites| sites.pattern())
 }
 
 /// Keep the top-document root in sync with client-side navigation.

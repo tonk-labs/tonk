@@ -27,7 +27,11 @@ pub async fn handle(_req: Request, ctx: RouteContext<()>) -> Result<Response> {
     };
     let sites = var("SITE_HOST")
         .zip(var("APP_ORIGIN"))
-        .map(|(host, app)| SiteOrigins { host, app });
+        .map(|(host, app)| SiteOrigins {
+            host,
+            suffix: var("SITE_SUFFIX"),
+            app,
+        });
     Response::from_json(&DeploymentConfig {
         service_did,
         account_service_url: None,

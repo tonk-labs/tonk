@@ -31,9 +31,24 @@ pub struct SiteOrigins {
     /// The authority every site's origin sits under, `{label}.{host}`, with
     /// the app's scheme: `tonk.spot`, or `localhost:8080` in development.
     pub host: String,
+    /// What follows the label within a site's hostname, for a deployment
+    /// that shares its zone with others. A pull request's preview keeps its
+    /// sites beside staging's, at `{label}-pr33.tonk.spot`: a level of their
+    /// own (`{label}.pr-33.tonk.spot`) is past what a wildcard certificate
+    /// covers. Absent where the zone is the deployment's alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suffix: Option<String>,
     /// The origin of the app that frames the sites, the only one a site
     /// origin lets frame it besides the profile's own.
     pub app: String,
+}
+
+impl SiteOrigins {
+    /// The hostname of every site, with `*` where its label goes:
+    /// `*.tonk.spot`, or `*-pr33.tonk.spot` with a suffix.
+    pub fn pattern(&self) -> String {
+        format!("*{}.{}", self.suffix.as_deref().unwrap_or(""), self.host)
+    }
 }
 
 #[cfg(test)]
@@ -70,6 +85,7 @@ mod tests {
         let config = DeploymentConfig {
             sites: Some(SiteOrigins {
                 host: "tonk.spot".into(),
+                suffix: None,
                 app: "https://staging.tonk.xyz".into(),
             }),
             ..DeploymentConfig::default()
@@ -81,6 +97,33 @@ mod tests {
         // same as before sites had origins of their own.
         let value = serde_json::to_value(DeploymentConfig::default()).unwrap();
         assert!(value.get("sites").is_none());
+    }
+
+    #[test]
+    fn it_places_a_preview_beside_the_sites_it_shares_a_zone_with() {
+        let staging = SiteOrigins {
+            host: "tonk.spot".into(),
+            suffix: None,
+            app: "https://staging.tonk.xyz".into(),
+        };
+        assert_eq!(staging.pattern(), "*.tonk.spot");
+        // No suffix is written, so staging's config reads as it did.
+        assert!(
+            serde_json::to_value(&staging)
+                .unwrap()
+                .get("suffix")
+                .is_none()
+        );
+
+        let preview = SiteOrigins {
+            host: "tonk.spot".into(),
+            suffix: Some("-pr33".into()),
+            app: "https://pr-33.tonk.spot".into(),
+        };
+        assert_eq!(preview.pattern(), "*-pr33.tonk.spot");
+        let read: SiteOrigins =
+            serde_json::from_value(serde_json::to_value(&preview).unwrap()).unwrap();
+        assert_eq!(read, preview);
     }
 
     #[test]
