@@ -551,6 +551,7 @@ async fn complete_login(
         tonk.disposition()
     );
     let profile_changed = tonk.disposition() != super::profiles::AccountProfileDisposition::Current;
+    let signed_out = tonk.signed_out().map(str::to_owned);
     let device = tonk.profile.signer().signer().clone();
     let ceremony =
         tonk_identity::ceremony::link_device(root.clone(), device.did(), link.device_name.clone())
@@ -635,6 +636,10 @@ async fn complete_login(
         }
         if let Err(error) = crate::router::account::finish_link(&deferred).await {
             log!("login: the account link did not finish: {error}");
+        }
+        // What was made while signed out joins the account signed back in to.
+        if let Some(signed_out) = &signed_out {
+            crate::router::rotation::carry_from(&deferred, signed_out).await;
         }
         stamp_account_linking(&deferred, account_entity, false).await;
         // The page has what it needs; the push follows now rather than

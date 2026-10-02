@@ -77,7 +77,7 @@ const ONBOARDING_KEK_SITE: &str = "tonk-onboarding-kek-v1";
 /// boot, so the account DID — and every delegation addressed to it — is
 /// stable for as long as the device is un-accredited.
 pub(crate) async fn account(state: &TonkState) -> Result<AccountSecret, TonkWorkerError> {
-    match read(state).await? {
+    match read(state, &state.active_branch).await? {
         Some(secret) => Ok(secret),
         None => create(state).await,
     }
@@ -87,7 +87,7 @@ pub(crate) async fn account(state: &TonkState) -> Result<AccountSecret, TonkWork
 /// exists. Reads rather than creates, so a caller asking "is there an
 /// onboarding account" does not bring one into being by asking.
 pub(crate) async fn signer(state: &TonkState) -> Result<Option<Ed25519Signer>, TonkWorkerError> {
-    let Some(secret) = read(state).await? else {
+    let Some(secret) = read(state, &state.active_branch).await? else {
         return Ok(None);
     };
     secret
@@ -95,6 +95,16 @@ pub(crate) async fn signer(state: &TonkState) -> Result<Option<Ed25519Signer>, T
         .await
         .map(Some)
         .map_err(|error| TonkWorkerError::Internal(format!("{error}")))
+}
+
+/// The onboarding account of `branch`, which need not be the active one,
+/// or `None` when it never made one. Reads only: a branch is never given
+/// an onboarding account by being asked about.
+pub(crate) async fn account_on(
+    state: &TonkState,
+    branch: &str,
+) -> Result<Option<AccountSecret>, TonkWorkerError> {
+    read(state, branch).await
 }
 
 /// The onboarding account's DID, or `None` before one exists.
@@ -112,11 +122,11 @@ pub(crate) async fn did(state: &TonkState) -> Result<Option<Did>, TonkWorkerErro
 /// and leaves the bytes in place for diagnosis. The one exception is a
 /// legacy envelope on a platform that cannot reproduce its KEK at all
 /// (see [`Opened::Unrecoverable`]).
-async fn read(state: &TonkState) -> Result<Option<AccountSecret>, TonkWorkerError> {
-    let Some(envelope) = load(state, ONBOARDING_ENVELOPE_SITE).await? else {
+async fn read(state: &TonkState, branch: &str) -> Result<Option<AccountSecret>, TonkWorkerError> {
+    let Some(envelope) = load(state, branch, ONBOARDING_ENVELOPE_SITE).await? else {
         return Ok(None);
     };
-    let Some(custodian) = load_custodian(state).await? else {
+    let Some(custodian) = load_custodian(state, branch).await? else {
         // An envelope outliving its custodian is the shape accreditation
         // leaves behind. While the branch follows an account, reporting
         // it as absent would send `account()` off to mint a second local
@@ -125,7 +135,9 @@ async fn read(state: &TonkState) -> Result<Option<AccountSecret>, TonkWorkerErro
         // has since left its account acts locally again and needs a local
         // account of its own; what the retired one sealed was rotated to
         // the account it joined.
-        if crate::router::identity::load_record(state).await?.is_some() {
+        if branch == state.active_branch
+            && crate::router::identity::load_record(state).await?.is_some()
+        {
             return Err(TonkWorkerError::Internal(
                 "the onboarding envelope has no custodian; this device is already accredited"
                     .into(),
@@ -136,7 +148,7 @@ async fn read(state: &TonkState) -> Result<Option<AccountSecret>, TonkWorkerErro
     let envelope = Envelope::decode(&envelope).map_err(|error| {
         TonkWorkerError::Internal(format!("the onboarding envelope is malformed: {error}"))
     })?;
-    let sealed_kek = load(state, ONBOARDING_KEK_SITE).await?;
+    let sealed_kek = load(state, branch, ONBOARDING_KEK_SITE).await?;
     // Only a legacy envelope's fate depends on how the platform signs,
     // so only that shape pays for the probe.
     let signing = match envelope.method {
@@ -149,7 +161,7 @@ async fn read(state: &TonkState) -> Result<Option<AccountSecret>, TonkWorkerErro
             // Converge on the sealed KEK, so this device stops depending
             // on how its platform signs. Best effort: the account opened,
             // and a failed reseal costs one more legacy open next boot.
-            if let Err(error) = wrap(state, &custodian, &secret).await {
+            if let Err(error) = wrap(state, branch, &custodian, &secret).await {
                 log!("onboarding envelope reseal skipped: {error}");
             }
             Ok(Some(secret))
@@ -240,8 +252,8 @@ async fn create(state: &TonkState) -> Result<AccountSecret, TonkWorkerError> {
     // as absent, while an envelope with no custodian is the unopenable
     // shape accreditation leaves. Neither half alone can be mistaken for
     // a usable account.
-    save_custodian(state, custodian.clone()).await?;
-    wrap(state, &custodian, &secret).await?;
+    save_custodian(state, &state.active_branch, custodian.clone()).await?;
+    wrap(state, &state.active_branch, &custodian, &secret).await?;
     Ok(secret)
 }
 
@@ -249,6 +261,7 @@ async fn create(state: &TonkState) -> Result<AccountSecret, TonkWorkerError> {
 /// sealed KEK and the envelope. Replaces whatever envelope was there.
 async fn wrap(
     state: &TonkState,
+    branch: &str,
     custodian: &Ed25519Signer,
     secret: &AccountSecret,
 ) -> Result<(), TonkWorkerError> {
@@ -260,8 +273,8 @@ async fn wrap(
         .map_err(|error| TonkWorkerError::Internal(format!("{error}")))?;
     // KEK first, envelope second: until the envelope names the sealed
     // KEK, a legacy one being replaced still opens the old way.
-    save(state, ONBOARDING_KEK_SITE, sealed.to_bytes()).await?;
-    save(state, ONBOARDING_ENVELOPE_SITE, envelope.encode()).await
+    save(state, branch, ONBOARDING_KEK_SITE, sealed.to_bytes()).await?;
+    save(state, branch, ONBOARDING_ENVELOPE_SITE, envelope.encode()).await
 }
 
 /// Ensure the onboarding account has granted this device a powerline,
@@ -691,10 +704,17 @@ async fn probe_signing(custodian: &Ed25519Signer) -> Result<Signing, TonkWorkerE
 /// retract for keys in the credential API, so demotion overwrites the
 /// record with a verifier.
 pub(crate) async fn retire(state: &TonkState) -> Result<(), TonkWorkerError> {
+    retire_on(state, &state.active_branch).await
+}
+
+/// [`retire`] for the onboarding account of `branch`, which need not be
+/// the active one: a signed-out branch whose spaces moved to an account
+/// is left holding nothing its onboarding account should still reach.
+pub(crate) async fn retire_on(state: &TonkState, branch: &str) -> Result<(), TonkWorkerError> {
     use dialog_credentials::Ed25519Verifier;
     use dialog_varsig::Principal as _;
 
-    let Some(custodian) = load_custodian(state).await? else {
+    let Some(custodian) = load_custodian(state, branch).await? else {
         return Ok(());
     };
     let verifier: Ed25519Verifier = custodian.did().to_string().parse().map_err(|error| {
@@ -706,9 +726,7 @@ pub(crate) async fn retire(state: &TonkState) -> Result<(), TonkWorkerError> {
         .profile
         .did()
         .credential()
-        .key(
-            crate::credential::branch_site(ONBOARDING_CUSTODIAN_KEY, &state.active_branch).as_str(),
-        )
+        .key(crate::credential::branch_site(ONBOARDING_CUSTODIAN_KEY, branch).as_str())
         .save(Credential::from(verifier))
         .perform(&state.operator)
         .await
@@ -719,14 +737,15 @@ pub(crate) async fn retire(state: &TonkState) -> Result<(), TonkWorkerError> {
         })
 }
 
-async fn load_custodian(state: &TonkState) -> Result<Option<Ed25519Signer>, TonkWorkerError> {
+async fn load_custodian(
+    state: &TonkState,
+    branch: &str,
+) -> Result<Option<Ed25519Signer>, TonkWorkerError> {
     let credential = match state
         .profile
         .did()
         .credential()
-        .key(
-            crate::credential::branch_site(ONBOARDING_CUSTODIAN_KEY, &state.active_branch).as_str(),
-        )
+        .key(crate::credential::branch_site(ONBOARDING_CUSTODIAN_KEY, branch).as_str())
         .load()
         .perform(&state.operator)
         .await
@@ -756,15 +775,14 @@ async fn load_custodian(state: &TonkState) -> Result<Option<Ed25519Signer>, Tonk
 
 async fn save_custodian(
     state: &TonkState,
+    branch: &str,
     custodian: Ed25519Signer,
 ) -> Result<(), TonkWorkerError> {
     state
         .profile
         .did()
         .credential()
-        .key(
-            crate::credential::branch_site(ONBOARDING_CUSTODIAN_KEY, &state.active_branch).as_str(),
-        )
+        .key(crate::credential::branch_site(ONBOARDING_CUSTODIAN_KEY, branch).as_str())
         .save(Credential::from(custodian))
         .perform(&state.operator)
         .await
@@ -773,11 +791,15 @@ async fn save_custodian(
         })
 }
 
-async fn load(state: &TonkState, site: &str) -> Result<Option<Vec<u8>>, TonkWorkerError> {
+async fn load(
+    state: &TonkState,
+    branch: &str,
+    site: &str,
+) -> Result<Option<Vec<u8>>, TonkWorkerError> {
     match state
         .profile
         .credential()
-        .site(crate::credential::branch_site(site, &state.active_branch).as_str())
+        .site(crate::credential::branch_site(site, branch).as_str())
         .load::<Vec<u8>>()
         .perform(&state.operator)
         .await
@@ -791,11 +813,16 @@ async fn load(state: &TonkState, site: &str) -> Result<Option<Vec<u8>>, TonkWork
     }
 }
 
-async fn save(state: &TonkState, site: &str, bytes: Vec<u8>) -> Result<(), TonkWorkerError> {
+async fn save(
+    state: &TonkState,
+    branch: &str,
+    site: &str,
+    bytes: Vec<u8>,
+) -> Result<(), TonkWorkerError> {
     state
         .profile
         .credential()
-        .site(crate::credential::branch_site(site, &state.active_branch).as_str())
+        .site(crate::credential::branch_site(site, branch).as_str())
         .save(bytes)
         .perform(&state.operator)
         .await
@@ -1031,7 +1058,7 @@ mod tests {
 
         let tonk = crate::router::tests::test_state_without_root().await;
         let minted = account(&tonk).await.expect("the account mints");
-        let read_back = read(&tonk)
+        let read_back = read(&tonk, &tonk.active_branch)
             .await
             .expect("the stored account reads")
             .expect("an account is stored");
@@ -1039,7 +1066,7 @@ mod tests {
             minted.signer().await.unwrap().did(),
             read_back.signer().await.unwrap().did(),
         );
-        let stored = load(&tonk, ONBOARDING_ENVELOPE_SITE)
+        let stored = load(&tonk, &tonk.active_branch, ONBOARDING_ENVELOPE_SITE)
             .await
             .unwrap()
             .expect("an envelope is stored");
@@ -1064,16 +1091,23 @@ mod tests {
             .unwrap()
             .seal(&secret, KekMethod::Local)
             .unwrap();
-        save_custodian(&tonk, custodian).await.unwrap();
-        save(&tonk, ONBOARDING_ENVELOPE_SITE, envelope.encode())
+        save_custodian(&tonk, &tonk.active_branch, custodian)
             .await
             .unwrap();
+        save(
+            &tonk,
+            &tonk.active_branch,
+            ONBOARDING_ENVELOPE_SITE,
+            envelope.encode(),
+        )
+        .await
+        .unwrap();
         let expected = secret.signer().await.unwrap().did();
 
         let opened = account(&tonk).await.expect("the legacy envelope opens");
         assert_eq!(opened.signer().await.unwrap().did(), expected);
 
-        let stored = load(&tonk, ONBOARDING_ENVELOPE_SITE)
+        let stored = load(&tonk, &tonk.active_branch, ONBOARDING_ENVELOPE_SITE)
             .await
             .unwrap()
             .expect("an envelope is stored");
@@ -1082,7 +1116,12 @@ mod tests {
             KekMethod::Custodian,
             "the first open reseals under the sealed KEK"
         );
-        assert!(load(&tonk, ONBOARDING_KEK_SITE).await.unwrap().is_some());
+        assert!(
+            load(&tonk, &tonk.active_branch, ONBOARDING_KEK_SITE)
+                .await
+                .unwrap()
+                .is_some()
+        );
 
         let again = account(&tonk).await.expect("the resealed envelope opens");
         assert_eq!(again.signer().await.unwrap().did(), expected);

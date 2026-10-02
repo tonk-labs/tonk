@@ -85,8 +85,19 @@ async fn main() {
                 tonk_ui::register_dialog::resume();
                 return;
             }
+            // Option on "add an account": sign in through the Tonk that
+            // holds the account rather than with a passkey on this one.
+            "sign-in-via" => {
+                let restore = return_focus.map(|return_focus| {
+                    Box::new(move || return_focus.restore()) as Box<dyn FnOnce()>
+                });
+                tonk_ui::register_dialog::raise_sign_in_via(&request, restore);
+                return;
+            }
             _ => {}
         }
+        // The email face was asked for: one asking which Tonk gives way.
+        tonk_ui::register_dialog::leave_sign_in_via();
         if tonk_ui::register_dialog::is_open() {
             // A standing anchored ceremony keeps its typed state, but the
             // guest bar may have moved after a scroll or resize.

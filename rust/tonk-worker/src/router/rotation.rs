@@ -47,27 +47,7 @@ pub(crate) async fn rotate_from_onboarding(tonk: &TonkState) {
     let Ok(secret) = crate::onboarding::account(tonk).await else {
         return;
     };
-    // The published fact is the account's word; the root record is the
-    // ceremony's. Either names the same recipient, and the record is
-    // available even while the account repository is still unhydrated
-    // (a pending email activation blocks the sweep that publishes the
-    // fact), so rotation must not wait on the publish.
-    let new_recipient =
-        match super::account_state::published_sealed_inbox(tonk, &root.root_did).await {
-            Ok(Some(recipient)) => recipient,
-            Ok(None) => match root.encryption_key.clone() {
-                Some(recipient) => recipient,
-                None => {
-                    log!("account rotation deferred: the account has no encryption key");
-                    return;
-                }
-            },
-            Err(error) => {
-                log!("account rotation deferred: {error}");
-                return;
-            }
-        };
-    let new_key = match RecipientKey::try_from(&new_recipient) {
+    let new_key = match account_seal(tonk, &root).await {
         Ok(key) => key,
         Err(error) => {
             log!("account rotation deferred: {error}");
@@ -150,6 +130,223 @@ pub(crate) async fn rotate_from_onboarding(tonk: &TonkState) {
         return;
     }
     retire_onboarding(tonk, &onboarding).await;
+}
+
+/// Bring what a signed-out workspace holds under the account this profile
+/// just signed back in to, then let the workspace go.
+///
+/// Signing back in returns to the branch that already follows the
+/// account, spaces and all ([`super::profiles::for_account`]). The
+/// workspace the profile was on meanwhile holds what was made or joined
+/// while signed out, custodied by that workspace's own onboarding
+/// account. It came before this sign-in, so it belongs to the account
+/// now, as a never-signed-in branch's spaces do when that branch takes
+/// the account ([`rotate_from_onboarding`]). Per seed: the space's
+/// listing moves to this branch, the space is re-issued to the root from
+/// its own signer, and its seed moves here resealed to the account. Once
+/// every seed has moved, the workspace's onboarding account is retired
+/// and the workspace forgotten; a seed that would not move keeps both.
+pub(crate) async fn carry_from(tonk: &TonkState, signed_out: &str) {
+    if signed_out == tonk.active_branch {
+        return;
+    }
+    // The sign-in records the root before the link finishes; signing out
+    // forgot the last one.
+    let root = match super::identity::local_root(tonk).await {
+        Ok(root) => root,
+        Err(error) => {
+            log!("carry from '{signed_out}' deferred: {error}");
+            return;
+        }
+    };
+    let secret = match crate::onboarding::account_on(tonk, signed_out).await {
+        Ok(Some(secret)) => secret,
+        // It never made or joined anything under an account of its own.
+        Ok(None) => {
+            forget_if_empty(tonk, signed_out).await;
+            return;
+        }
+        Err(error) => {
+            log!("carry from '{signed_out}' deferred: {error}");
+            return;
+        }
+    };
+    let onboarding = match secret.signer().await {
+        Ok(signer) => signer.did(),
+        Err(error) => {
+            log!("carry from '{signed_out}' deferred: {error}");
+            return;
+        }
+    };
+    let new_key = match account_seal(tonk, &root).await {
+        Ok(key) => key,
+        Err(error) => {
+            log!("carry from '{signed_out}' deferred: {error}");
+            return;
+        }
+    };
+    let branch = match tonk
+        .reactor
+        .profile_repository()
+        .branch(signed_out)
+        .acquire(&tonk.operator)
+        .await
+    {
+        Ok(branch) => branch,
+        Err(error) => {
+            log!("carry from '{signed_out}' deferred: open the workspace: {error}");
+            return;
+        }
+    };
+    let root_did = &root.root_did;
+    let onboarding_did = &onboarding;
+    let outcome = match tonk_schema::custody::rotate(
+        branch.handle(),
+        secret.secret(),
+        new_key,
+        &tonk.operator,
+        |kind, signer, row, replacement| async move {
+            match kind {
+                // Re-issued before its listing moves, so a re-issue that
+                // fails moves nothing.
+                SeedKind::Space => {
+                    let space = signer.did();
+                    reissue_space(tonk, root_did, onboarding_did, signer)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    super::repository::carry_replica_rows(tonk, signed_out, &space)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                // Listed first: the re-issue finds the membership among
+                // this branch's spaces.
+                SeedKind::Invite => {
+                    let space =
+                        joined_space(tonk, signed_out, onboarding_did, root_did, &signer.did())
+                            .await
+                            .ok_or_else(|| {
+                                format!("{}: no listed space ends at this member", signer.did())
+                            })?;
+                    super::repository::carry_replica_rows(tonk, signed_out, &space)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    reissue_membership(tonk, root_did, onboarding_did, signer)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+            }
+            tonk.reactor
+                .profile_repository()
+                .branch(&tonk.active_branch)
+                .transaction()
+                .assert(replacement.message)
+                .assert(replacement.principal)
+                .commit()
+                .perform(&tonk.operator)
+                .await
+                .map_err(|error| format!("reseal commit: {error}"))?;
+            tonk.reactor
+                .profile_repository()
+                .branch(signed_out)
+                .transaction()
+                .retract(row)
+                .commit()
+                .perform(&tonk.operator)
+                .await
+                .map(|_| ())
+                .map_err(|error| format!("release commit: {error}"))
+        },
+    )
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            log!("carry from '{signed_out}' deferred: {error}");
+            return;
+        }
+    };
+    for subject in &outcome.rotated {
+        log!("carry: {subject} moved to the account from '{signed_out}'");
+    }
+    for (subject, reason) in &outcome.failures {
+        log!("carry: {subject} stayed in '{signed_out}': {reason}");
+    }
+    // What moved is local-only until the account's remote is attached, the
+    // step the account sweep runs after each account pull. Run it now, so
+    // what moved syncs without waiting on a pull that may not come.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    if !outcome.rotated.is_empty() {
+        super::adopt::reconcile_account_spaces(tonk).await;
+    }
+    if !outcome.failures.is_empty() {
+        return;
+    }
+    if let Err(error) = crate::onboarding::retire_on(tonk, signed_out).await {
+        log!("carry: the onboarding account of '{signed_out}' was not retired: {error}");
+    }
+    forget_if_empty(tonk, signed_out).await;
+}
+
+/// The space `member` joined while on `branch`: the listed space whose
+/// stored chain ends `member -> onboarding` (or already `-> root`, when an
+/// earlier attempt re-rooted it), as [`reissue_membership`] finds it.
+async fn joined_space(
+    tonk: &TonkState,
+    branch: &str,
+    onboarding: &Did,
+    root: &Did,
+    member: &Did,
+) -> Option<Did> {
+    for key in super::profile_name::real_space_keys_on(tonk, branch).await {
+        let Ok(space) = key.parse::<Did>() else {
+            continue;
+        };
+        let Ok(prefix) = super::repository::space_root_prefix(tonk, &space).await else {
+            continue;
+        };
+        let last_issuer = prefix.proofs().last().map(|hop| hop.issuer().clone());
+        if (prefix.audience() == onboarding || prefix.audience() == root)
+            && last_issuer.as_ref() == Some(member)
+        {
+            return Some(space);
+        }
+    }
+    None
+}
+
+/// Forget `branch` once it lists no spaces: nothing on it is worth
+/// returning to, and listing it would offer an empty workspace.
+async fn forget_if_empty(tonk: &TonkState, branch: &str) {
+    if super::profile_name::real_space_keys_on(tonk, branch)
+        .await
+        .is_empty()
+    {
+        super::profile::forget_branch(tonk, branch).await;
+    }
+}
+
+/// The key the account's seeds are sealed to.
+///
+/// The published fact is the account's word; the root record is the
+/// ceremony's. Either names the same recipient, and the record is
+/// available even while the account repository is still unhydrated (a
+/// pending email activation blocks the sweep that publishes the fact), so
+/// sealing must not wait on the publish.
+async fn account_seal(
+    tonk: &TonkState,
+    root: &super::identity::LocalRoot,
+) -> Result<RecipientKey, String> {
+    let recipient = match super::account_state::published_sealed_inbox(tonk, &root.root_did)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        Some(recipient) => recipient,
+        None => root
+            .encryption_key
+            .clone()
+            .ok_or("the account has no encryption key")?,
+    };
+    RecipientKey::try_from(&recipient).map_err(|error| error.to_string())
 }
 
 /// Every sealed message addressed to `recipient`.
@@ -931,6 +1128,86 @@ mod tests {
                 .unwrap();
             assert!(links.is_empty(), "the onboarding link row is retracted");
         }
+    }
+
+    /// Signing back in carries what was made while signed out into the
+    /// account: the space is listed on the account's branch, re-rooted at
+    /// the account and still proving, its seed sealed to the account there,
+    /// and the emptied workspace is forgotten with its onboarding account
+    /// retired. What the account already held stays.
+    #[dialog_common::test]
+    async fn it_carries_spaces_made_while_signed_out_into_the_account() {
+        use crate::router::profiles::{for_account, sign_out};
+
+        let (app, state, _lsp) = api_router_with_state(crate::router::tests::test_state().await);
+        let (account_branch, root_did, account_recipient) = {
+            let tonk = state.read().await;
+            let root = super::super::identity::local_root(&tonk).await.unwrap();
+            let recipient =
+                super::super::account_state::published_sealed_inbox(&tonk, &root.root_did)
+                    .await
+                    .unwrap()
+                    .expect("the fixture publishes the account's key");
+            (tonk.active_branch.clone(), root.root_did, recipient)
+        };
+        let kept = put_repo(&app, "made-while-signed-in").await;
+        sign_out(&state, None).await.unwrap();
+        let workspace = state.read().await.active_branch.clone();
+        assert_ne!(workspace, account_branch);
+        let made_key = put_repo(&app, "made-while-signed-out").await;
+        let made: Did = made_key.parse().unwrap();
+
+        let guard = for_account(state.clone(), &root_did, None).await.unwrap();
+        assert_eq!(guard.active_branch, account_branch);
+        assert_eq!(guard.signed_out(), Some(workspace.as_str()));
+        // What the sign-in records before its link finishes: signing out
+        // forgot the root.
+        assert_eq!(persist_test_root(&guard).await, root_did);
+        let sealed_before = sealed_to(&guard, &account_recipient).await.unwrap().len();
+        carry_from(&guard, &workspace).await;
+
+        let listed = super::super::profile_name::real_space_keys(&guard).await;
+        assert!(
+            listed.contains(&made_key),
+            "the space made signed out is the account's now: {listed:?}"
+        );
+        assert!(
+            listed.contains(&kept),
+            "the account keeps its own: {listed:?}"
+        );
+        let prefix = super::super::repository::space_root_prefix(&guard, &made)
+            .await
+            .unwrap();
+        assert_eq!(prefix.audience(), &root_did, "re-rooted at the account");
+        guard
+            .profile
+            .access()
+            .prove(Subject::from(made.clone()).attenuate(Use))
+            .audience(&guard.operator)
+            .perform(&guard.operator)
+            .await
+            .expect("the re-issued chain proves");
+        assert_eq!(
+            sealed_to(&guard, &account_recipient).await.unwrap().len(),
+            sealed_before + 1,
+            "its seed is sealed to the account on the account's branch"
+        );
+        let branches: Vec<String> = crate::router::profile::local_branches(&guard)
+            .await
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert!(
+            !branches.contains(&workspace),
+            "the emptied workspace is forgotten: {branches:?}"
+        );
+        assert!(
+            crate::onboarding::account_on(&guard, &workspace)
+                .await
+                .unwrap()
+                .is_none(),
+            "its onboarding account no longer opens"
+        );
     }
 
     /// COLLAB-05 / B-07: creating before linking must preserve a complete

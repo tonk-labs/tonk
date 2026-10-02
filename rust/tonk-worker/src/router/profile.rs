@@ -496,9 +496,9 @@ pub struct SpaceEntry {
 /// `meta`, so it is no longer listed or offered. The branch's data
 /// stays where dialog keeps it, since there is no branch deletion and
 /// a retained branch keeps clocks safe; it just stops being one of
-/// this profile's branches. Used when the account a branch followed
-/// has been deleted and nothing on the branch is worth returning to.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+/// this profile's branches. Used when nothing on the branch is worth
+/// returning to: the account it followed was deleted, or what it held
+/// moved to the account a sign-in came back to.
 pub(crate) async fn forget_branch(tonk: &crate::worker::TonkState, name: &str) {
     use tonk_schema::{Branch as MetaBranch, BranchUpstream};
 
