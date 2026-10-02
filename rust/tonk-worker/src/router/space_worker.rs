@@ -27,6 +27,7 @@ use tonk_common::log;
 
 use super::create_invite::{ConfiguredRemoteRequirement, resolve_configured_remote_url_with};
 use super::join::mount_replica;
+use super::repository::record_initialized_replica_in_profile;
 use crate::{TonkWorkerError, worker::TonkState};
 
 /// How long a space worker's delegation lasts. It asks for a new one before
@@ -117,6 +118,12 @@ pub(crate) async fn adopt(
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("failed to save delegation: {e}")))?;
     mount_replica(tonk, space, remote, None).await?;
+    // Listed in this worker's profile, as a joined space is in the host's.
+    // What asks whether a space is mounted reads that listing, and a space
+    // missing from it is never brought up to the library this worker ships.
+    record_initialized_replica_in_profile(tonk, space)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("failed to list {space}: {e}")))?;
     log!("space worker: adopted {space} (remote: {remote:?})");
     Ok(())
 }
@@ -225,7 +232,7 @@ mod tests {
     use super::{adopt, delegate, seed, snapshot};
     use crate::TonkWorkerError;
     use crate::helpers::state::{test_state, test_state_without_root};
-    use crate::router::join::mount_replica;
+    use crate::router::join::{find_replica_for_subject, mount_replica};
     use crate::router::{RepositoryInfo, api_router_with_state};
     use crate::worker::TonkState;
 
@@ -312,6 +319,10 @@ mod tests {
         assert!(
             main_revision(&worker, &space).await.is_some(),
             "the worker reads the space it was handed"
+        );
+        assert!(
+            find_replica_for_subject(&worker, &space).await.unwrap(),
+            "the worker lists the space, so its library is kept up to date"
         );
     }
 
