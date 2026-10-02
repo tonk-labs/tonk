@@ -31,11 +31,12 @@ const SUB_TAG: &str = "ui-site-request";
 const PROFILE_WITH: &str = "main@profile:tonk";
 
 /// Which control performs each request.
-const CONTROLS: [(&str, &str); 4] = [
+const CONTROLS: [(&str, &str); 5] = [
     ("account", ".login"),
     ("share", "[data-panel=share]"),
     ("members", "[data-panel=members]"),
     ("agent", "[data-panel=agent]"),
+    ("connect", "[data-action=condition]"),
 ];
 
 #[derive(Default)]
@@ -171,13 +172,14 @@ impl CustomElement for UiSiteRequestElement {
         let scaffold = self.scaffold.clone();
         spawn_local(async move {
             // The tab's site is `site:<client>`, the entity a command's
-            // handler derives from the tab that asked. A page that has not
-            // registered one yet (a bar in a sealed guest whose host never
-            // did) registers now: the service worker answers with it.
+            // handler derives from the tab that asked. A bar whose page has
+            // not registered one asks the service worker for it. It asks
+            // with `/`, which routes to no space, so the call only names
+            // the site: the tab's route stamp is its host's to write, and
+            // this frame's own path is not a document path.
             let mut site = tonk_host::bridge::site_id();
             if site.is_empty() {
-                let path = tonk_host::bridge::context_field("path").unwrap_or_else(|| "/".into());
-                match tonk_host::bridge::ensure_site(&path).await {
+                match tonk_host::bridge::ensure_site("/").await {
                     Ok(assigned) => site = assigned,
                     Err(error) => {
                         tonk_common::log!("{SUB_TAG}: no site for this tab: {}", error.message);

@@ -540,6 +540,12 @@ bar_command!(
     ConnectAgent,
     connect_agent
 );
+bar_command!(
+    /// Connect this space, or confirm the email that would (the bar's
+    /// condition, when it offers one).
+    ConnectSpace,
+    connect_space
+);
 
 /// `intent/interpret`: what was typed in the command palette, where it
 /// was opened. The handler is the parser: it records the expression (the

@@ -246,6 +246,7 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         .command::<tonk_schema::command::ShareLink>()
         .command::<tonk_schema::command::ViewMembers>()
         .command::<tonk_schema::command::ConnectAgent>()
+        .command::<tonk_schema::command::ConnectSpace>()
         // What the page in a tab has selected, recorded on its site.
         .command::<tonk_schema::command::SiteSelect>()
         // What was typed in the command palette, interpreted.

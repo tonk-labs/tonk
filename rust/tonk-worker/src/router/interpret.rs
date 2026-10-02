@@ -117,16 +117,13 @@ impl dialog_capability::Provider<tonk_schema::command::Interpret> for CommandEnv
                 &expression,
                 Value::Float(time),
             ),
-            interpretation
-                .selection
-                .map(|selection| {
-                    claim(
-                        "tonk.dialog.intent.expression/selection",
-                        &expression,
-                        Value::String(selection),
-                    )
-                })
-                .flatten(),
+            interpretation.selection.and_then(|selection| {
+                claim(
+                    "tonk.dialog.intent.expression/selection",
+                    &expression,
+                    Value::String(selection),
+                )
+            }),
         ];
         for command in &interpretation.commands {
             let (Some(intent), Ok(command)) =

@@ -1292,6 +1292,17 @@ pub mod command {
             pub struct Time(pub f64);
         }
 
+        /// `space/connect` — connect this space, or confirm the email that
+        /// would, as the bar's condition offers.
+        pub mod connect_space {
+            use dialog_query::Attribute;
+
+            /// The moment it was asked, so asking again re-fires.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("xyz.tonk.command.connect-space")]
+            pub struct Time(pub f64);
+        }
+
         /// `tonk/home` — take the page that asked back to the hub.
         pub mod home {
             use dialog_query::Attribute;

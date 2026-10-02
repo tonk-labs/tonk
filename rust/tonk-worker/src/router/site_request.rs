@@ -86,3 +86,11 @@ impl dialog_capability::Provider<tonk_schema::command::ConnectAgent> for Command
         ask(self, "agent", command.time.0).await;
     }
 }
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::ConnectSpace> for CommandEnv {
+    async fn execute(&self, command: tonk_schema::command::ConnectSpace) {
+        ask(self, "connect", command.time.0).await;
+    }
+}

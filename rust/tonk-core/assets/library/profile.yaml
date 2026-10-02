@@ -1274,6 +1274,20 @@ command!: &agent/connect
   with:
     time: connect-agent/time
 
+attribute!: &connect-space/time
+  description: When it was asked, so asking again re-fires.
+  the: xyz.tonk.command.connect-space/time
+  as: float
+  role: now
+
+# The bar's condition: "connect this space" while it is local-only, "confirm
+# your email" while the account waits on it. The bar does nothing when it
+# offers neither.
+command!: &space/connect
+  description: Connect this space, or confirm the email that would, from the bar.
+  with:
+    time: connect-space/time
+
 # The FAB fallback seat — the nearest corner restored on the next page load,
 # stored on `state:fab`. The live page keeps the exact point along the nearest
 # edge; element.rs persists this compatible corner after every pointer-up drop.
@@ -5858,6 +5872,18 @@ intent/action!:
   this: agent/connect
   name: "connect agent"
 
+intent/action!:
+  this: agent/connect
+  name: "copy agent link"
+
+intent/action!:
+  this: space/connect
+  name: "connect this space"
+
+intent/action!:
+  this: space/connect
+  name: "confirm your email"
+
 # The command palette is the FABB's command mode. Cmd/Ctrl+K (or
 # Cmd/Ctrl+Shift+P) puts the bar in it (`commanding` on `<tonk-fab>`): the
 # header's space name gives way to this command line (the bar's `command`
@@ -6083,7 +6109,12 @@ element!: &command-palette
         const fab = self.closest('tonk-fab');
         if (!space || !window.tonk || !(fab && fab.hasAttribute('commanding'))) return;
         const branches = [`main@${space}`, self.getAttribute('profile')].filter(Boolean);
-        const site = (window.tonk.context || {}).site;
+        // The site of the page being looked at: the space's, nested in the
+        // bar's frame, else this frame's own. Its route and its selection
+        // are the context every branch's rules and parser read; the page
+        // reports its selection to both branches under it.
+        const page = document.querySelector(`tonk-site[data-site][with="main@${space}"]`);
+        const site = (page && page.getAttribute('data-site')) || (window.tonk.context || {}).site;
         const now = Date.now();
         const max = typed ? 5 : 12;
         // Each branch interprets the line (`intent/interpret`: its parser

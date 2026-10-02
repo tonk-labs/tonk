@@ -16,6 +16,7 @@ use super::repository::profile_library_tests::test_state;
 
 const CORE: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
 const NOTEBOOK: &str = include_str!("../../../tonk-core/assets/library/notebook.yaml");
+const PROFILE: &str = include_str!("../../../tonk-core/assets/library/profile.yaml");
 
 /// The core library leaves the space's rename unsaid (the profile's says
 /// it); say it here, so a rule-handled command runs end to end.
@@ -574,6 +575,111 @@ async fn it_renames_the_notebook_a_page_shows() {
             .is_some_and(|claim| claim.contains("notebook.retitle"))),
         "no notebook is renamed off a notebook's page: {rows:?}"
     );
+}
+
+/// Send `body` as the tab `client` would: the service worker tags every
+/// request a page makes with its client id, which is how a command's
+/// handler knows which tab asked.
+async fn send_as(app: &Router, client: &str, uri: &str, body: String) -> Value {
+    let mut request = Request::builder()
+        .uri(uri)
+        .method("POST")
+        .header("content-type", "application/json")
+        .body(Body::from(body))
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(super::ClientId(client.to_owned()));
+    let response = app.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert!(
+        status.is_success(),
+        "POST {uri}: {status} {}",
+        String::from_utf8_lossy(&bytes)
+    );
+    serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+}
+
+/// Every act in the bar's menu, said in the palette as the menu says it,
+/// runs as it is and asks the tab that said it to perform that act: the
+/// request the bar's `<ui-site-request>` presses the control for.
+#[dialog_common::test]
+async fn it_runs_every_menu_act_from_the_palette() {
+    let (app, state, _lsp) = api_router_with_state(test_state().await);
+    let branch = state.read().await.active_branch.clone();
+    let profile = format!("/api/profile/branch/{branch}");
+    let client = "tab";
+    let site = format!("site:{client}");
+    for library in [CORE, PROFILE] {
+        send(
+            &app,
+            "POST",
+            &format!("{profile}/evaluate"),
+            "application/yaml",
+            library.into(),
+        )
+        .await;
+    }
+
+    for (said, request) in [
+        ("add an account", "account"),
+        ("copy share link", "share"),
+        ("view members", "members"),
+        ("copy agent link", "agent"),
+        ("connect this space", "connect"),
+        ("confirm your email", "connect"),
+    ] {
+        let rows = send(
+            &app,
+            "POST",
+            &format!("{profile}/query"),
+            "application/json",
+            json!({
+                "predicate": "intent/suggest",
+                "terms": { "input": said, "this": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH", "now": 1.0 }
+            })
+            .to_string(),
+        )
+        .await;
+        let rows = rows.as_array().cloned().unwrap_or_default();
+        let top = rows
+            .first()
+            .unwrap_or_else(|| panic!("{said:?} is suggested: {rows:?}"));
+        assert_eq!(field(top, "text"), said, "{rows:?}");
+        let claim = field(top, "claim")
+            .as_str()
+            .unwrap_or_else(|| panic!("{said:?} runs as it is: {top:?}"))
+            .to_owned();
+        send_as(&app, client, &format!("{profile}/transact"), claim).await;
+
+        // The handler runs after the transact returns.
+        let mut seen = Value::Null;
+        for _ in 0..200 {
+            let rows = send(
+                &app,
+                "POST",
+                &format!("{profile}/query"),
+                "application/json",
+                json!({
+                    "predicate": { "with": {
+                        "request": { "the": "xyz.tonk.site/request", "as": "Text", "cardinality": "one" }
+                    } },
+                    "terms": { "this": site, "request": { "?": { "name": "request" } } }
+                })
+                .to_string(),
+            )
+            .await;
+            seen = rows[0]["fields"]["request"].clone();
+            if seen == request {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(seen, request, "{said:?} asks the tab for {request:?}");
+    }
 }
 
 /// How `intent/suggest` scales with a noun's rows, store reads included.

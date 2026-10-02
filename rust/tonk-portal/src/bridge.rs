@@ -2500,7 +2500,18 @@ fn build_context(host: &Element, state: &Rc<RefCell<PortalState>>) -> Object {
     // it, not by the guest's own `guest:…` id. Guest content that renders the
     // routing indirection binds `entity` to this so it resolves the facts the SW
     // actually stamped.
-    let site = tonk_host::bridge::site_id();
+    //
+    // A routed portal is hosted by a `<tonk-site>`, which names its own site
+    // (`data-site`, the entity its route is stamped on, on the branch it
+    // shows). That is the guest's site: what its page reports (its
+    // selection) and what the palette interprets against.
+    let site = host
+        .closest("[data-site]")
+        .ok()
+        .flatten()
+        .and_then(|site| site.get_attribute("data-site"))
+        .filter(|site| !site.is_empty())
+        .unwrap_or_else(tonk_host::bridge::site_id);
     let _ = Reflect::set(&context, &"this".into(), &JsValue::from_str(&this));
     let _ = Reflect::set(&context, &"model".into(), &JsValue::from_str(&model));
     let _ = Reflect::set(&context, &"origin".into(), &JsValue::from_str(&origin));
