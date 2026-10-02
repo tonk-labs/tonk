@@ -1367,6 +1367,25 @@ concept!: &site
       the: xyz.tonk.site/branch
       cardinality: one
       as: text
+    replica:
+      description: Currently active replica on this site.
+      the: xyz.tonk.site/replica
+      cardinality: one
+      as: entity
+    route:
+      description: Matched route of this site.
+      the: xyz.tonk.site/route
+      cardinality: one
+      as: entity
+    concept:
+      description: Matched route's concept (the model the shell mounts).
+      the: xyz.tonk.site/concept
+      cardinality: one
+      as: entity
+
+  # Old workers still stamp the fields above while a newer shared library
+  # syncs to them. These richer navigation fields must not gate the site row.
+  maybe:
     branch-entity:
       description: >
         The same branch as an entity, so a view can walk from where the
@@ -1384,21 +1403,6 @@ concept!: &site
       the: xyz.tonk.site/profile-branch
       cardinality: one
       as: text
-    replica:
-      description: Currently active replica on this site.
-      the: xyz.tonk.site/replica
-      cardinality: one
-      as: entity
-    route:
-      description: Matched route of this site.
-      the: xyz.tonk.site/route
-      cardinality: one
-      as: entity
-    concept:
-      description: Matched route's concept (the model the shell mounts).
-      the: xyz.tonk.site/concept
-      cardinality: one
-      as: entity
 
 # The site view: render the matched route concept on this same site entity.
 view!:
@@ -3054,10 +3058,11 @@ concept!: &space-chrome
       as: text
     profile-branch:
       description: >
-        The branch the profile is on, picked off the site entity: the
-        FAB and the access guidance talk to the profile, and the profile
-        is on its account's branch, not on `main`.
-      the: xyz.tonk.site/profile-branch
+        This route is stamped on the profile itself, so its site branch
+        is the active account branch. Read that original stamp rather
+        than profile-branch, which older workers do not write. The FAB
+        and access guidance must keep this account context, not main.
+      the: xyz.tonk.site/branch
       cardinality: one
       as: text
   maybe:

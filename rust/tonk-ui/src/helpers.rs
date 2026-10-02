@@ -240,7 +240,12 @@ mod native {
                 caps.set_headless()?;
             }
 
-            caps.add_arg("--host-resolver-rules=MAP tonk.network 127.0.0.1")?;
+            let hosts = if std::env::var_os("TONK_E2E_LOOPBACK_ONLY").is_some() {
+                "MAP tonk.network 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE localhost, EXCLUDE 127.0.0.1"
+            } else {
+                "MAP tonk.network 127.0.0.1"
+            };
+            caps.add_arg(&format!("--host-resolver-rules={hosts}"))?;
             caps.add_arg(&format!("--user-data-dir={}", profile.display()))?;
             caps.accept_insecure_certs(true)?;
             // Every origin the harness serves: a service worker registers

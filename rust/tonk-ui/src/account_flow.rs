@@ -18,6 +18,8 @@ pub(crate) mod tests {
 
     use crate::helpers::{TestEnvironment, driver_with_prf, driver_with_prf_authenticator, goto};
 
+    include!("account_flow_legacy.rs");
+
     fn assert_prompt_command(prompt: &str, origin: &url::Url, invite: &str) -> Result<()> {
         let loopback = matches!(origin.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
         let origin = origin.origin().ascii_serialization();
@@ -540,7 +542,9 @@ pub(crate) mod tests {
             let dressed = driver
                 .execute(
                     r#"const links = [...document.querySelectorAll('link[data-tonk-embed]')];
-                       return links.length > 0 && links.every((link) => link.sheet && link.sheet.cssRules.length);"#,
+                       return links.length > 0
+                           ? links.every((link) => link.sheet && link.sheet.cssRules.length)
+                           : [...document.styleSheets].some(sheet => sheet.cssRules.length > 0);"#,
                     Vec::new(),
                 )
                 .await?;
@@ -1247,9 +1251,17 @@ pub(crate) mod tests {
     /// which of the two runs, so signing in is the same control and the
     /// same field, answered differently.
     pub(crate) async fn run_cluster_login(driver: &WebDriver, email: &str) -> Result<()> {
+        run_cluster_login_with_action(driver, email, "log in with passkey").await
+    }
+
+    async fn run_cluster_login_with_action(
+        driver: &WebDriver,
+        email: &str,
+        action: &str,
+    ) -> Result<()> {
         await_register_dialog(driver).await?;
         type_into_register_dialog(driver, email).await?;
-        await_register_action(driver, "log in with passkey").await?;
+        await_register_action(driver, action).await?;
         let before = driver
             .execute("return performance.timeOrigin", Vec::new())
             .await?

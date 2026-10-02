@@ -1668,6 +1668,20 @@ concept!: &site
       the: xyz.tonk.site/replica
       cardinality: one
       as: entity
+    route:
+      description: Matched route of this site.
+      the: xyz.tonk.site/route
+      cardinality: one
+      as: entity
+    concept:
+      description: Matched route's concept (the model the shell mounts).
+      the: xyz.tonk.site/concept
+      cardinality: one
+      as: entity
+
+  # Old workers still stamp the fields above while a newer shared library
+  # syncs to them. These richer navigation fields must not gate the site row.
+  maybe:
     branch-entity:
       description: >
         The same branch as an entity, so a view can walk from where the
@@ -1683,16 +1697,6 @@ concept!: &site
       the: xyz.tonk.site/profile-branch
       cardinality: one
       as: text
-    route:
-      description: Matched route of this site.
-      the: xyz.tonk.site/route
-      cardinality: one
-      as: entity
-    concept:
-      description: Matched route's concept (the model the shell mounts).
-      the: xyz.tonk.site/concept
-      cardinality: one
-      as: entity
 
 # A site renders the route model it matched. The shell mounts a fixed
 # `<tonk-display entity=site:… model=tonk:site>`; this view nests into the
