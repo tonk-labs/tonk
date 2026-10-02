@@ -49,6 +49,28 @@ impl SiteOrigins {
     pub fn pattern(&self) -> String {
         format!("*{}.{}", self.suffix.as_deref().unwrap_or(""), self.host)
     }
+
+    /// Whether `host` is one these origins are for: the app's own, or one
+    /// of its sites'.
+    ///
+    /// A deployment can be reached under other names too. A pull request's
+    /// preview answers at its `workers.dev` alias as well as the name routed
+    /// to it, and a site framed by a page on the alias would refuse its
+    /// frame. On such a name the deployment names no site origins, and its
+    /// sites stay in sealed frames.
+    pub fn serves(&self, host: &str) -> bool {
+        let app = self
+            .app
+            .split_once("://")
+            .map_or(self.app.as_str(), |(_, rest)| rest);
+        if host == app.trim_end_matches('/') {
+            return true;
+        }
+        let Some(label) = host.strip_suffix(&format!(".{}", self.host)) else {
+            return false;
+        };
+        !label.contains('.') && label.ends_with(self.suffix.as_deref().unwrap_or(""))
+    }
 }
 
 #[cfg(test)]
@@ -124,6 +146,31 @@ mod tests {
         let read: SiteOrigins =
             serde_json::from_value(serde_json::to_value(&preview).unwrap()).unwrap();
         assert_eq!(read, preview);
+    }
+
+    #[test]
+    fn it_names_site_origins_only_under_its_own_names() {
+        let preview = SiteOrigins {
+            host: "tonk.foundation".into(),
+            suffix: Some("-pr33".into()),
+            app: "https://pr-33.tonk.foundation".into(),
+        };
+        assert!(preview.serves("pr-33.tonk.foundation"));
+        assert!(preview.serves("profile-pr33.tonk.foundation"));
+        assert!(preview.serves("b5uaspace-pr33.tonk.foundation"));
+        // Its alias, another preview's site, and a deeper name are not its own.
+        assert!(!preview.serves("pr-33-tonk-access-service-preview.tonk.workers.dev"));
+        assert!(!preview.serves("profile-pr34.tonk.foundation"));
+        assert!(!preview.serves("a.profile-pr33.tonk.foundation"));
+
+        let dev = SiteOrigins {
+            host: "tonk.foundation".into(),
+            suffix: None,
+            app: "https://tonk.foundation".into(),
+        };
+        assert!(dev.serves("tonk.foundation"));
+        assert!(dev.serves("profile.tonk.foundation"));
+        assert!(!dev.serves("tonk-access-service-dev.tonk.workers.dev"));
     }
 
     #[test]

@@ -192,15 +192,14 @@ APP_ORIGIN = "https://staging.tonk.xyz"
 # development branch. Its state is disjoint from staging and production, and
 # being off the tonk.network apex it mints its own passkey credentials.
 #
-# Its sites render on origins of their own, `{label}.tonk.foundation`. The
-# zone route needs a proxied wildcard DNS record (`*`) in the zone to reach
-# this worker; without one those origins do not resolve and every site
-# reports that it could not load.
+# Its sites render on origins of their own, `{label}.tonk.foundation`. Those
+# subdomains reach this worker through the site router
+# (`workers/site-router`), which owns the zone's wildcard route and also
+# gives each pull request's preview its names there. The route needs a
+# proxied wildcard DNS record (`*`) in the zone; without one those origins do
+# not resolve and every site reports that it could not load.
 [env.dev]
-routes = [
-  { pattern = "tonk.foundation", custom_domain = true },
-  { pattern = "*.tonk.foundation/*", zone_name = "tonk.foundation" },
-]
+routes = [{ pattern = "tonk.foundation", custom_domain = true }]
 
 [env.dev.build]
 command = "nix build --accept-flake-config .#tonk-cloudflare-preview-artifacts"
@@ -327,3 +326,11 @@ EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 # unresolvable: a preview that failed to wire itself has to break visibly rather
 # than quietly serve a real registry to browsers that trust `/.well-known/tonk`.
 ACCOUNT_SERVICE_URL = "https://accounts-preview.invalid"
+# A preview's app is `pr-{n}.tonk.foundation` and its sites
+# `{label}-pr{n}.tonk.foundation`, names the site router gives it in the dev
+# zone. The pull request's number is written in per upload. At its
+# `workers.dev` alias the preview names no site origins and keeps its sites in
+# sealed frames, so the checked-in values only have to be recognisably unset.
+SITE_HOST = "tonk.foundation"
+SITE_SUFFIX = "-prREPLACED-PER-PULL-REQUEST"
+APP_ORIGIN = "https://pr-REPLACED-PER-PULL-REQUEST.tonk.foundation"

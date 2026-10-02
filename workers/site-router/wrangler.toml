@@ -1,0 +1,21 @@
+# Routes the dev zone's subdomains: a pull request's preview and its sites to
+# that preview, everything else to the dev worker. See `worker.mjs`.
+#
+# The route needs a proxied wildcard DNS record (`*`) in the zone. The apex,
+# `tonk.foundation`, is the dev worker's own custom domain and never comes
+# through here.
+name = "tonk-site-router"
+main = "./worker.mjs"
+compatibility_date = "2026-01-01"
+workers_dev = false
+routes = [{ pattern = "*.tonk.foundation/*", zone_name = "tonk.foundation" }]
+
+# The dev deployment's own sites, `{label}.tonk.foundation`.
+[[services]]
+binding = "DEV"
+service = "tonk-access-service-dev"
+
+[vars]
+# A preview's alias, as `wrangler versions upload --preview-alias pr-{n}`
+# names it for the preview worker.
+PREVIEW_ORIGIN = "https://pr-{number}-tonk-access-service-preview.tonk.workers.dev"
