@@ -1,13 +1,14 @@
 // The service worker of a site origin (`{label}.{host}`), proof of concept.
 //
 // Each space renders at its own origin, and this worker controls that
-// origin. The profile renders on one too (`profile.{host}`), with no blobs.
+// origin. The profile renders on one too (`profile.{host}`), with no assets.
 // It answers these requests and refuses the rest:
 //
 // - Navigations get the static shell, carrying the space's CSP. The server
 //   hands out the same shell for any path, so a deep link with no worker yet
 //   still boots one.
-// - `/blob/{hash}` is read from the space's own database and served
+// - `/asset:{hash}`, an asset's own URI as a path, is read from the space's
+//   own database and served with the media type and size recorded for it,
 //   natively, so `<img>`, `<video>` and `<link>` just work.
 // - `/api/*` is answered by the space's own database: the Rust worker the
 //   host runs, opened on this origin's storage (see "The space's own
@@ -45,11 +46,11 @@ const WORKER_WASM_KEY = `${WORKER_WASM_URL}?${WORKER_WASM_HASH}`;
 const STATIC_PREFIXES = ["/guest/", "/styles-", "/images/", "/fonts/"];
 // A name that carries its content's hash never changes what it serves.
 const HASHED_NAME = /-[0-9a-f]{16}(?=\.)/;
-// A base58btc blob hash: the only thing a `/blob/` path may carry.
-const BLOB_PATH = /^\/blob\/([1-9A-HJ-NP-Za-km-z]+)$/;
+// An asset's entity, `asset:{hash}`, as a path: the hash is base58btc.
+const ASSET_PATH = /^\/asset:([1-9A-HJ-NP-Za-km-z]+)$/;
 // How long a client may take to broker a port, and the host to acknowledge a
 // request. A silent host is presumed restarted, not slow: it acknowledges
-// before reading anything, so a large blob does not trip this.
+// before reading anything, so a large reply does not trip this.
 const PORT_TIMEOUT_MS = 5_000;
 const ACK_TIMEOUT_MS = 3_000;
 // The contract between this worker and the shell (`space-origin.html`). The
@@ -69,7 +70,7 @@ self.addEventListener("install", event => {
 });
 
 // Claim right away: the shell waits for control before it asks the host for
-// its document, so the first load is served blobs too.
+// its document, so the first load is served assets too.
 self.addEventListener("activate", event => {
     event.waitUntil(Promise.all([self.clients.claim(), dropOtherWorkerWasm()]));
 });
@@ -565,13 +566,13 @@ async function serveShell() {
     return new Response(response.body, { status: response.status, headers });
 }
 
-// Read a blob from the space's own database, through the same route a page's
-// `/api/.../blob/...` read takes.
-async function readBlob(hash) {
+// Read an asset from the space's own database, through the same route a
+// page's `/api/.../blob/...` read takes.
+async function readAsset(hash) {
     const worker = await spaceWorker();
     const { space } = await heldGrant();
     const request = new Request(
-        new URL(`/api/repository/${space}/branch/main/blob/blob:${hash}`, self.location.origin),
+        new URL(`/api/repository/${space}/branch/main/blob/asset:${hash}`, self.location.origin),
     );
     const response = await worker.onfetch({
         request,
@@ -582,8 +583,8 @@ async function readBlob(hash) {
     return { status: response.status, headers: [...response.headers], body: await response.arrayBuffer() };
 }
 
-async function serveBlob(hash, request) {
-    const reply = await readBlob(hash);
+async function serveAsset(hash, request) {
+    const reply = await readAsset(hash);
     const headers = new Headers(reply.headers);
     headers.set("x-content-type-options", "nosniff");
     if (reply.status !== 200) {
@@ -625,11 +626,11 @@ self.addEventListener("fetch", event => {
         event.respondWith(serveShell());
         return;
     }
-    const blob = BLOB_PATH.exec(url.pathname);
-    if (blob && (event.request.method === "GET" || event.request.method === "HEAD")) {
+    const asset = ASSET_PATH.exec(url.pathname);
+    if (asset && (event.request.method === "GET" || event.request.method === "HEAD")) {
         event.respondWith(
-            serveBlob(blob[1], event.request).catch(error => {
-                log("blob read failed:", error);
+            serveAsset(asset[1], event.request).catch(error => {
+                log("asset read failed:", error);
                 return new Response(String(error.message), { status: 502 });
             }),
         );

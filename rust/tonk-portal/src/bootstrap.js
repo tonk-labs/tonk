@@ -88,13 +88,15 @@
     return url.indexOf("/api/repository/"+c.repo+"/")===0||
       url.split("?")[0]==="/api/language-server";
   }
-  // On an origin of its own, the app's static assets (the guest runtime, the
+  // On an origin of its own, the app's static files (the guest runtime, the
   // stylesheet, images, fonts) are this origin's too: its worker serves them
-  // and keeps them for offline, which a relayed fetch would go around.
+  // and keeps them for offline, which a relayed fetch would go around. So
+  // are the space's assets, `/asset:{hash}`, which that worker reads from
+  // the space's own database.
   function ownsStatic(url){
     if(location.origin==="null") return false;
     var path=url.indexOf(location.origin+"/")===0?url.slice(location.origin.length):url;
-    return /^\/(guest\/|styles-|images\/|fonts\/)/.test(path);
+    return /^\/(guest\/|styles-|images\/|fonts\/|asset:)/.test(path);
   }
   function nativeWithContext(input,init){
     var request=new Request(input,init);

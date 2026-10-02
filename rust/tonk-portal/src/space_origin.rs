@@ -16,8 +16,10 @@
 //! same bootstrap markup a sealed frame receives as `srcdoc`, so the bridge
 //! handshake and the runtime injection run unchanged.
 //!
-//! A space's worker serves `/blob/{hash}` itself, pulling the bytes from the
-//! host worker over a `MessagePort`. Only the top document can reach the host
+//! A space's worker serves `/asset:{hash}` itself, from the space's own
+//! database. What only the host has (the space's delegation, the snapshot a
+//! fresh replica seeds from) it asks the host worker for over a
+//! `MessagePort`. Only the top document can reach the host
 //! worker, so it mints every port, bound to the space and branch of the frame
 //! that asked. A nested frame's request travels up through each portal, and
 //! the top document grants it only if the asking portal's `allow` reaches the

@@ -85,7 +85,7 @@ This is what makes CSP enforceable. A service worker can return a fully syntheti
 What keeps it ours:
 
 1. **The service worker script fetch bypasses the active service worker.** A service worker never intercepts requests for service worker scripts. `register()` always goes to the network, so a compromised service worker cannot serve its own replacement. *(Verify in the spike — see Open questions.)*
-2. **The server never serves author bytes.** Every server response from a space origin is Tonk-authored HTML (see Catch-all bootstrap). `register('/blob/evil.js')` fetches from the network, gets `text/html`, fails the MIME check.
+2. **The server never serves author bytes.** Every server response from a space origin is Tonk-authored HTML (see Catch-all bootstrap). `register('/asset:evil.js')` fetches from the network, gets `text/html`, fails the MIME check.
 3. **`X-Content-Type-Options: nosniff`** on the catch-all, so nothing can coax sniffing into treating it as script.
 4. **`worker-src 'none'`** in the service-worker-served CSP, so `register()` from a space document fails closed regardless of what the network does. Registration is governed by the *registering document's* `worker-src`.
 
@@ -97,11 +97,11 @@ Rules 2 and 3 make the attack fail on content type. Rule 4 makes it fail on poli
 
 The server serves the same static Tonk-authored HTML page from any URI on a space origin.
 
-This is the self-healing mechanism: with the service worker gone, a deep link like `/blob/{hash}` must return something that boots and re-registers it, rather than a dead 404.
+This is the self-healing mechanism: with the service worker gone, a deep link like `/asset:{hash}` must return something that boots and re-registers it, rather than a dead 404.
 
-It means `/blob/{hash}` returns 200 `text/html` rather than 404, so the "no author bytes over the network" property rests on content type rather than on the path being empty. That is fine, given `nosniff` and `worker-src 'none'`, but it must be stated as a deliberate choice rather than left as an accident.
+It means `/asset:{hash}` returns 200 `text/html` rather than 404, so the "no author bytes over the network" property rests on content type rather than on the path being empty. That is fine, given `nosniff` and `worker-src 'none'`, but it must be stated as a deliberate choice rather than left as an accident.
 
-The bootstrap HTML must be **path-independent**, since it is served at arbitrary paths and relative asset references would resolve differently at `/blob/x` than at `/`.
+The bootstrap HTML must be **path-independent**, since it is served at arbitrary paths and relative asset references would resolve differently at `/asset:x` than at `/`.
 
 ### CSP
 
@@ -305,14 +305,14 @@ How it hangs together:
 - **The chrome has to be on a real origin too.** It is what nests the space frame, and a frame nested in an opaque (null-origin) frame inherits its sandbox and is opaque as well. The top document mounts the profile site with `origin`; a `<tonk-site>` inside a real-origin guest takes a real origin of its own. `<tonk-portal>` and the FAB's portal stay sealed `srcdoc` frames.
 - **Origins derive from the host's real origin**, which every guest is handed in its context, never from the current document. A site whose origin would equal its parent's falls back to `srcdoc`, since `allow-same-origin` on a same-origin child could lift its sandbox.
 - A site frame loads `/space-origin.html`, which registers `/space_worker.js`, waits for control, then asks its parent for its document. The parent sends the same markup a sealed frame gets as `srcdoc`, and the shell `document.write`s it. The bridge handshake and runtime injection then run unchanged.
-- The space database still lives on the host origin. The space worker serves `/blob/{hash}` by asking the host worker over a `MessagePort`. **Only the top document can reach the host worker, so it mints every port.** A nested frame's request goes up through the chrome, and the top document grants it only if the chrome portal's `allow` reaches the requested space. Queries and transactions still go through the existing bridge.
+- The space database still lives on the host origin. The space worker serves `/asset:{hash}` by asking the host worker over a `MessagePort`. **Only the top document can reach the host worker, so it mints every port.** A nested frame's request goes up through the chrome, and the top document grants it only if the chrome portal's `allow` reaches the requested space. Queries and transactions still go through the existing bridge.
 - The site worker passes the app's own `/images/` and `/fonts/` through to the server. A sealed frame used to reach them on the host origin; relative URLs now land on the site's origin.
 
 Verified in Chrome, on `/space/{did}` and from the hub:
 
 - Both workers register inside cross-site `sandbox="allow-scripts allow-same-origin"` frames, including the space frame nested in the chrome frame.
-- `<img src="/blob/{hash}">` loads natively. A `Range` request gets a correct `206`.
-- **The service worker script fetch bypasses the active worker.** `register('/blob/{hash}')` got the server's catch-all `text/html`, not the blob the space worker would have served, and was refused on MIME.
+- `<img src="/asset:{hash}">` loads natively. A `Range` request gets a correct `206`.
+- **The service worker script fetch bypasses the active worker.** `register('/asset:{hash}')` got the server's catch-all `text/html`, not the blob the space worker would have served, and was refused on MIME.
 - On a worker-served load, the CSP blocks external `img-src` and `connect-src`, and `worker-src` refuses `register()` before any fetch.
 - A stopped space worker recovers its port through its page and the relay in well under 100ms. A stopped host worker costs one ack timeout (3s) on the next read, then recovers.
 
