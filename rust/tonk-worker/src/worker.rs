@@ -2254,6 +2254,24 @@ impl TonkServiceWorker {
         })
     }
 
+    /// Mint an invite to `space`, as though its share control had been
+    /// clicked at `time`. For a space whose own worker was asked for one: a
+    /// delegation that worker issued would lapse with its own.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "inviteSpace")]
+    pub fn invite_space(&self, space: String, time: f64) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            use tonk_schema::prelude::DidExt as _;
+
+            let space: Did = space
+                .parse()
+                .map_err(|e| JsError::new(&format!("space: {e:?}")))?;
+            crate::router::repository::invite_space(&state, space.repo_key(), time).await;
+            Ok(JsValue::UNDEFINED)
+        })
+    }
+
     /// Where `space` syncs and which account this profile acts for, as its
     /// own worker last has to have taken them up. Resolves to
     /// `{ remote, account }`, the remote `null` for a space that only exists

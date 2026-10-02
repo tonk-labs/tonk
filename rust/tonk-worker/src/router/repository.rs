@@ -1139,13 +1139,42 @@ async fn execute_invite(env: crate::router::CommandEnv, request: InviteRequest) 
     }
     log!("command Invite repo={}", repo_name);
 
+    // A space's own worker holds the space under a delegation that lapses
+    // within hours, and an invite minted from it would lapse with it. The
+    // person's profile holds the lasting authority, so the space asks it to
+    // mint; what the mint leaves in the space comes back as a command.
+    let own_worker = {
+        let tonk = env.state().read().await;
+        matches!(super::account::acts_for(&tonk).await, Ok(Some(_)))
+    };
+    if own_worker {
+        if let Err(error) = space_reach::ask_profile(&serde_json::json!({ "invite": time })).await {
+            log!("Invite for repo '{repo_name}': the profile was not asked: {error}");
+        }
+        return;
+    }
+    mint_invite(&env, &repo_name, time).await;
+}
+
+/// Mint an invite to the space this worker's profile holds as `key`, as
+/// though its share control had been clicked at `time`. For a space whose own
+/// worker was asked for an invite and has passed the asking on.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn invite_space(state: &AppState, key: &str, time: f64) {
+    let env =
+        crate::router::CommandEnv::new(state.clone(), crate::router::CommandOrigin::default());
+    mint_invite(&env, key, time).await;
+}
+
+async fn mint_invite(env: &crate::router::CommandEnv, repo_name: &str, time: f64) {
+    let repo_name = repo_name.to_owned();
     // A pass that attached a remote leaves the space ready but
     // unminted, so run once more. Bounded to a single retry: the
     // second pass either mints or refuses for a reason attaching
     // cannot fix.
-    let outcome = run_invite(&env, &repo_name, time).await;
+    let outcome = run_invite(env, &repo_name, time).await;
     if let Ok(RunInvite::Attached) = outcome
-        && let Err(error) = run_invite(&env, &repo_name, time).await
+        && let Err(error) = run_invite(env, &repo_name, time).await
     {
         log!(
             "Invite for repo '{}' failed after attaching: {}",

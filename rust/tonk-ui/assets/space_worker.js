@@ -416,6 +416,14 @@ function bindSpacePort(port, { repo, branch }) {
                 port.postMessage({ id, space: repo, chain, expires: grant.expires }, [chain]);
                 return;
             }
+            // The space's worker was asked for an invite, which is this
+            // profile's to mint. What the mint leaves in the space goes back
+            // down this port as a command.
+            if (typeof data.invite === "number") {
+                await worker.inviteSpace(repo, data.invite);
+                port.postMessage({ id, invited: true });
+                return;
+            }
             // Where the space syncs and which account this profile acts
             // for, for the space's worker to compare with what it took up.
             if (data.terms === true) {
@@ -748,6 +756,10 @@ const GRANT_KEY = "/__space/grant";
 const GRANT_VERSION = 5;
 // Ask for a new delegation once the held one has less than this left.
 const RENEW_MARGIN_SECONDS = 60 * 60;
+
+// The Rust worker asks the person's profile through this, for what only the
+// profile can do: mint an invite to this space.
+if (!PROFILE) self.tonkAskProfile = request => askHost(request);
 
 // ---- Forgetting a space ---------------------------------------------------
 //

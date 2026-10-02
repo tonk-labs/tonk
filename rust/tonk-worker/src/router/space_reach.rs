@@ -190,3 +190,43 @@ pub(crate) async fn forget(space: &str) {
         let _ = space;
     }
 }
+
+/// Ask the person's profile, from a space's own worker, to do what only it
+/// can: mint an invite to this worker's space. The space's worker asks up
+/// the port it was handed its delegation over, through the `tonkAskProfile`
+/// hook its script defines. Fails on a host with one database, which has no
+/// profile but its own.
+pub(crate) async fn ask_profile(request: &serde_json::Value) -> Result<(), TonkWorkerError> {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        use js_sys::{Function, Promise, Reflect};
+        use wasm_bindgen::JsCast;
+        use wasm_bindgen_futures::JsFuture;
+
+        let unreachable =
+            |why: String| TonkWorkerError::Internal(format!("could not ask the profile: {why}"));
+        let global = js_sys::global();
+        let hook: Function = Reflect::get(&global, &"tonkAskProfile".into())
+            .ok()
+            .and_then(|hook| hook.dyn_into().ok())
+            .ok_or_else(|| unreachable("this worker answers to no profile".into()))?;
+        let request = js_sys::JSON::parse(&request.to_string())
+            .map_err(|error| unreachable(format!("{error:?}")))?;
+        let asked: Promise = hook
+            .call1(&global, &request)
+            .ok()
+            .and_then(|asked| asked.dyn_into().ok())
+            .ok_or_else(|| unreachable("the hook did not answer with a promise".into()))?;
+        JsFuture::from(asked)
+            .await
+            .map(|_| ())
+            .map_err(|error| unreachable(format!("{error:?}")))
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    {
+        let _ = request;
+        Err(TonkWorkerError::Internal(
+            "could not ask the profile: this host has one database".into(),
+        ))
+    }
+}
