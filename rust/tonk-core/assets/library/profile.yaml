@@ -2557,16 +2557,36 @@ element!: &hub-bar
           }
         }
       }
+    # Option (Alt) on "add an account" signs in through another Tonk: for
+    # that one click the link points at `/account?via`, and it is put back
+    # after. The window sees a click before the guest's relay at the
+    # document reads the link, so the click routes there the ordinary way.
+    option-account: |
+      (self, event) => {
+        if (!event.altKey) return;
+        const trigger = event.target?.closest?.('[data-account-trigger]');
+        if (!trigger || !self.contains(trigger)) return;
+        if (trigger.getAttribute('href') !== '/account') return;
+        trigger.setAttribute('href', '/account?via');
+        setTimeout(() => {
+          if (trigger.getAttribute('href') === '/account?via') trigger.setAttribute('href', '/account');
+        }, 0);
+      }
     connected: |
       (self) => {
         self.route();
         const moved = () => self.route();
         window.addEventListener('tonk:context', moved);
         self._moved = moved;
+        if (self._option) window.removeEventListener('click', self._option, true);
+        self._option = (event) => self.optionAccount(event);
+        window.addEventListener('click', self._option, true);
       }
     disconnected: |
       (self) => {
         if (self._moved) window.removeEventListener('tonk:context', self._moved);
+        if (self._option) window.removeEventListener('click', self._option, true);
+        self._option = null;
       }
     released: |
       (self) => self.disconnected()
@@ -5014,6 +5034,13 @@ element!: &account-settings
           && !target.username && !target.password && !target.hash;
         return deliverable ? target.origin : null;
       }
+    # A bare `via` on the location, naming no Tonk: asking which one to sign
+    # in through.
+    via-ask: |
+      (self) => {
+        const params = new URLSearchParams(self.context().search);
+        return params.has('via') && !(params.get('via') ?? '').trim();
+      }
     # This browser asking another deployment to sign it in, the browser's
     # `tonk account login --via`: `/settings/link?via=<origin>` asks, and
     # the same address with `request=` and a fragment is the answer coming
@@ -5370,10 +5397,11 @@ element!: &account-settings
       (self, reason) => {
         self.setAttribute('data-linking', 'true');
         self._shown = 'show';
+        self._linking = reason;
         self.place(reason);
       }
     unlink: |
-      (self) => { self._shown = null; self.setAttribute('data-linking', 'false'); }
+      (self) => { self._shown = null; self._linking = null; self.setAttribute('data-linking', 'false'); }
     # Pass the opener's bounds to the trusted top page. `reason`
     # distinguishes an opening from a move: a move must never reopen a
     # ceremony the person has just dismissed.
@@ -5418,8 +5446,18 @@ element!: &account-settings
         }
         if (changed && linked === 'true' && path === '/settings') self.connectionsRefresh();
         // Signing in through another deployment needs no passkey here, so
-        // its page raises no ceremony of its own.
-        if (account && self.unlinked() && !linking && !self.viaRequest()) self.link('needs-account');
+        // its page raises no ceremony of its own. A bare `?via` (Option on
+        // "add an account") raises the one that asks which Tonk to go
+        // through, in place of the email. One already up for the other
+        // gives way: a ceremony suspended on a route change must not come
+        // back as the face this visit did not ask for.
+        if (account && self.unlinked() && !self.viaRequest()) {
+          const via = self.viaAsk();
+          if (!linking || (self._linking === 'sign-in-via') !== via) {
+            if (via) self.link('sign-in-via');
+            else self.link('needs-account');
+          }
+        }
         // Route changes can suspend and restore the ceremony with its
         // typed address intact.
         const shown = account ? 'show' : 'suspend';

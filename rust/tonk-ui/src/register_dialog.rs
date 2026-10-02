@@ -148,9 +148,230 @@ const DIALOG_HTML: &str = r##"
 </div>
 "##;
 
+/// The face of the cluster that signs this browser in through another
+/// Tonk: in place of an email it asks which Tonk holds the account. The
+/// passkey is there, not here, so continuing sends the browser to that
+/// Tonk to approve it, and the answer brings it back.
+const VIA_HTML: &str = r##"
+<div class="ocol">
+  <div class="ostack" id="tonk-register-stack">
+    <div class="m-head mblk" id="tonk-register-head">
+      <span class="fabb-task-disc" aria-hidden="true"></span>
+      <span class="fabb-task-title">add an account</span>
+    </div>
+    <div class="orow mblk editing" id="tonk-register-via-row">
+      <span class="k">tonk address</span>
+      <span class="v"><input class="ed" id="tonk-register-via" type="url"
+            inputmode="url" enterkeyhint="go" autocomplete="url" spellcheck="false"
+            aria-label="tonk address" placeholder="tonk.network"></span>
+    </div>
+    <button class="obtn" id="tonk-register-action" disabled>continue</button>
+  </div>
+  <div class="oexp mblk">
+    <p id="tonk-register-status" aria-live="polite">Enter the address of the Tonk that holds your account. You’ll approve this browser there with your passkey.</p>
+  </div>
+  <button class="ghost" id="tonk-register-dismiss">cancel</button>
+</div>
+"##;
+
+const VIA_INPUT: &str = "#tonk-register-via";
+
 /// Raise the dialog. A no-op while one is already up.
 pub fn open() {
     open_with_return(None);
+}
+
+/// Raise the face that asks which Tonk to sign in through, for a guest's
+/// request. A cluster standing for the email, open or suspended on a route
+/// change, gives way to it; one already asking which Tonk is re-seated and
+/// shown, typed address and all.
+pub fn raise_sign_in_via(request: &Request, guest_restore: Option<Box<dyn FnOnce()>>) {
+    if stands() && !is_sign_in_via() {
+        give_way();
+    }
+    if stands() {
+        reanchor(request);
+        resume();
+        return;
+    }
+    open_sign_in_via(request, guest_restore);
+}
+
+/// Before raising the email face for a guest's request: a cluster standing
+/// to ask which Tonk gives way to it.
+pub fn leave_sign_in_via() {
+    if is_sign_in_via() {
+        give_way();
+    }
+}
+
+/// Whether a cluster stands in this document, open or suspended.
+pub fn stands() -> bool {
+    web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.get_element_by_id(DIALOG_ID))
+        .is_some()
+}
+
+/// Whether the standing cluster is the face asking which Tonk to sign in
+/// through.
+pub fn is_sign_in_via() -> bool {
+    web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.get_element_by_id(DIALOG_ID))
+        .and_then(|host| host.query_selector(VIA_INPUT).ok().flatten())
+        .is_some()
+}
+
+/// Take the standing cluster down so its other face can stand in its
+/// place. The guest that asked is not told a ceremony closed, since its
+/// ceremony goes on as the other face: the old opener's return is dropped
+/// rather than restored.
+fn give_way() {
+    RETURN_FOCUS.with(|held| held.borrow_mut().take());
+    close();
+}
+
+/// Raise the cluster to sign in through another Tonk, seated where the
+/// account ceremony it stands in for would be. A no-op while one is up.
+pub fn open_sign_in_via(request: &Request, guest_restore: Option<Box<dyn FnOnce()>>) {
+    let Some(host) = open_host(guest_restore, VIA_HTML) else {
+        return;
+    };
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        on_click(&host, ACTION, submit_via);
+        watch_via(&host);
+    }
+    if let Some(anchor) = &request.anchor
+        && let Some(host) = host.dyn_ref::<HtmlElement>()
+    {
+        let _ = host.set_attribute("data-anchored", "");
+        position_at(host, anchor);
+    }
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    open_when_upgraded(&host);
+}
+
+/// The origin of the Tonk typed into the via face, or what to say instead.
+///
+/// A bare host is read as https: a Tonk is only ever signed in through over
+/// https, and nobody types the scheme. `here` is this page's origin, which
+/// is never the Tonk to go through.
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+pub(crate) fn via_origin(typed: &str, here: &str) -> Result<String, &'static str> {
+    let typed = typed.trim();
+    if typed.is_empty() {
+        return Err("Enter the address of the Tonk that holds your account.");
+    }
+    let candidate = if typed.contains("://") {
+        typed.to_owned()
+    } else {
+        format!("https://{typed}")
+    };
+    let url = url::Url::parse(&candidate).map_err(|_| "That isn’t a web address.")?;
+    if url.scheme() != "https" || url.host_str().is_none_or(str::is_empty) {
+        return Err("A Tonk is signed in through over https.");
+    }
+    let origin = url.origin().ascii_serialization();
+    if origin == here {
+        return Err("That’s this Tonk. Use your email to sign in here instead.");
+    }
+    Ok(origin)
+}
+
+/// The `account/sign-in-via` claim: sign in through the Tonk at `origin`.
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+pub(crate) fn sign_in_via_claim(origin: &str) -> serde_json::Value {
+    serde_json::json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "description": "Sign this browser in through another deployment that holds the account.",
+                        "with": {
+                            "via": { "the": "xyz.tonk.command.sign-in-via/via", "as": "Text" }
+                        }
+                    }
+                },
+                "parameters": { "via": origin }
+            }
+        }]
+    })
+}
+
+/// Offer `continue` only for an address that names another Tonk, and take
+/// Enter as continuing.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn watch_via(host: &Element) {
+    let Some(field) = host.query_selector(VIA_INPUT).ok().flatten() else {
+        return;
+    };
+    let typed = Closure::<dyn FnMut()>::new(|| {
+        let ready = via_typed()
+            .map(|(typed, here)| via_origin(&typed, &here).is_ok())
+            .unwrap_or(false);
+        if let Some(action) = host_element()
+            .and_then(|host| host.query_selector(ACTION).ok().flatten())
+            .and_then(|action| action.dyn_into::<HtmlButtonElement>().ok())
+            && !ACTION_PENDING.with(Cell::get)
+        {
+            action.set_disabled(!ready);
+        }
+    });
+    let _ = field.add_event_listener_with_callback("input", typed.as_ref().unchecked_ref());
+    typed.forget();
+    let enter = Closure::<dyn FnMut(web_sys::Event)>::new(|event: web_sys::Event| {
+        let Some(event) = event.dyn_ref::<web_sys::KeyboardEvent>() else {
+            return;
+        };
+        if event.key() == "Enter" {
+            event.prevent_default();
+            submit_via();
+        }
+    });
+    let _ = field.add_event_listener_with_callback("keydown", enter.as_ref().unchecked_ref());
+    enter.forget();
+}
+
+/// What is typed into the via face, with this page's origin.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn via_typed() -> Option<(String, String)> {
+    let field = host_element()?.query_selector(VIA_INPUT).ok()??;
+    let typed = field.dyn_ref::<web_sys::HtmlInputElement>()?.value();
+    let here = web_sys::window()?.location().origin().ok()?;
+    Some((typed, here))
+}
+
+/// Ask the worker to start signing in through the typed Tonk. It records
+/// the request and sends this page there to be approved.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn submit_via() {
+    let Some((typed, here)) = via_typed() else {
+        return;
+    };
+    let origin = match via_origin(&typed, &here) {
+        Ok(origin) => origin,
+        Err(why) => {
+            set_status(why);
+            return;
+        }
+    };
+    if !begin_action() {
+        return;
+    }
+    set_status(&format!("Opening {origin} to approve this browser…"));
+    wasm_bindgen_futures::spawn_local(async move {
+        if crate::api::transact_profile(sign_in_via_claim(&origin))
+            .await
+            .is_err()
+        {
+            set_status("Couldn’t start signing in. Try again.");
+            finish_action();
+        }
+    });
 }
 
 /// Raise the dialog for a sealed-guest request and invoke `restore` only after
@@ -281,12 +502,44 @@ fn position_fabb_task(host: &Element, presentation: &tonk_portal::task::Presenta
 }
 
 fn open_with_return(guest_restore: Option<Box<dyn FnOnce()>>) {
-    if OPEN.with(|open| open.replace(true)) {
+    let Some(host) = open_host(guest_restore, DIALOG_HTML) else {
         return;
+    };
+
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    crate::account_observability::record_instant_success(
+        AccountAction::OpenRegistration,
+        tonk_analytics::account::Surface::RegistrationDialog,
+        tonk_analytics::account::Trigger::User,
+        tonk_analytics::account::AccountState::Unknown,
+        tonk_analytics::account::Stage::Input,
+    );
+
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    on_click(&host, ACTION, submit);
+    watch_address(&host);
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    commit_on_enter(&host);
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    focus_on_row_click(&host);
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    watch_answers(&host);
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    watch_setup_completion(&host);
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    open_when_upgraded(&host);
+}
+
+/// Raise the singleton cluster with `html` in it, wired the way every face
+/// of it is: dismissal, Escape, and focus kept inside. `None` while one is
+/// already up.
+fn open_host(guest_restore: Option<Box<dyn FnOnce()>>, html: &str) -> Option<Element> {
+    if OPEN.with(|open| open.replace(true)) {
+        return None;
     }
     let Some(document) = web_sys::window().and_then(|window| window.document()) else {
         OPEN.with(|open| open.set(false));
-        return;
+        return None;
     };
     let return_focus = match guest_restore {
         Some(restore) => Some(ReturnFocus::Guest(Some(restore))),
@@ -299,7 +552,7 @@ fn open_with_return(guest_restore: Option<Box<dyn FnOnce()>>) {
     let (Some(body), Ok(host)) = (document.body(), document.create_element("dialog")) else {
         OPEN.with(|open| open.set(false));
         RETURN_FOCUS.with(|held| *held.borrow_mut() = None);
-        return;
+        return None;
     };
     host.set_id(DIALOG_ID);
     host.set_class_name("tonk-ceremony tonk-cluster");
@@ -309,17 +562,8 @@ fn open_with_return(guest_restore: Option<Box<dyn FnOnce()>>) {
     if let Some(path) = current_local_space_link_path() {
         let _ = host.set_attribute(RETURN_PATH, &path);
     }
-    host.set_inner_html(DIALOG_HTML);
+    host.set_inner_html(html);
     let _ = body.append_child(&host);
-
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    crate::account_observability::record_instant_success(
-        AccountAction::OpenRegistration,
-        tonk_analytics::account::Surface::RegistrationDialog,
-        tonk_analytics::account::Trigger::User,
-        tonk_analytics::account::AccountState::Unknown,
-        tonk_analytics::account::Stage::Input,
-    );
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     on_click(&host, DISMISS, return_to_previous);
@@ -335,19 +579,7 @@ fn open_with_return(guest_restore: Option<Box<dyn FnOnce()>>) {
     let _ = host.add_event_listener_with_callback("cancel", cancel.as_ref().unchecked_ref());
     cancel.forget();
     contain_tab_focus(&host);
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    on_click(&host, ACTION, submit);
-    watch_address(&host);
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    commit_on_enter(&host);
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    focus_on_row_click(&host);
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    watch_answers(&host);
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    watch_setup_completion(&host);
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    open_when_upgraded(&host);
+    Some(host)
 }
 
 /// Raise the cluster: dim the page, show the column, seat the cursor.
@@ -380,7 +612,12 @@ fn open_when_upgraded(host: &Element) {
 /// Focus the address field.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn focus_address(host: &Element) {
-    let Some(field) = host.query_selector(EMAIL_INPUT).ok().flatten() else {
+    let Some(field) = host
+        .query_selector(EMAIL_INPUT)
+        .ok()
+        .flatten()
+        .or_else(|| host.query_selector(VIA_INPUT).ok().flatten())
+    else {
         return;
     };
     if let Some(element) = field.dyn_ref::<HtmlElement>() {
@@ -3080,6 +3317,52 @@ mod tests {
         host.remove();
     }
 
+    /// The face a guest asks for is the face that stands. An email cluster
+    /// suspended on a route change gives way when the face asking which
+    /// Tonk is asked for; that face, asked for again, keeps what was typed;
+    /// and it gives way in turn when the email is asked for.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_raises_the_face_each_request_asks_for() {
+        use wasm_bindgen::JsCast as _;
+
+        super::close();
+        super::open();
+        assert!(super::stands() && !super::is_sign_in_via());
+        super::suspend();
+        super::wait_ms(10).await;
+        assert!(!super::is_open(), "a route change suspends the email face");
+
+        let request = super::parse_request(r#"{"reason":"sign-in-via","space":""}"#);
+        super::raise_sign_in_via(&request, None);
+        assert!(
+            super::is_sign_in_via(),
+            "the suspended email face gave way to the one asking which Tonk"
+        );
+        let typed = || {
+            web_sys::window()
+                .unwrap()
+                .document()
+                .unwrap()
+                .query_selector(super::VIA_INPUT)
+                .unwrap()
+                .expect("the tonk address field")
+                .dyn_into::<web_sys::HtmlInputElement>()
+                .unwrap()
+        };
+        typed().set_value("tonk.network");
+        super::raise_sign_in_via(&request, None);
+        assert_eq!(
+            typed().value(),
+            "tonk.network",
+            "asked again, it keeps what was typed"
+        );
+
+        super::leave_sign_in_via();
+        assert!(!super::stands(), "it gives way when the email is asked for");
+        super::close();
+    }
+
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     #[wasm_bindgen_test::wasm_bindgen_test]
     fn tool_registration_does_not_queue_a_person_share() {
@@ -3481,6 +3764,43 @@ mod tests {
             "a registration must not carry the lookup's attribute",
         );
         assert_ne!(check, register, "the two commands are distinct transients",);
+
+        let via = sign_in_via_claim("https://tonk.network").to_string();
+        assert!(via.contains("xyz.tonk.command.sign-in-via/via"));
+        assert!(via.contains("https://tonk.network"));
+    }
+
+    /// What may be typed as the Tonk to sign in through: a bare host is
+    /// read as https and reduced to its origin; anything that is not an
+    /// https web address, and this Tonk itself, is refused with a reason.
+    #[test]
+    fn it_reads_the_tonk_to_sign_in_through() {
+        let here = "https://tonk.host";
+        assert_eq!(
+            via_origin("tonk.network", here).as_deref(),
+            Ok("https://tonk.network")
+        );
+        assert_eq!(
+            via_origin(" https://tonk.network/settings?from=here ", here).as_deref(),
+            Ok("https://tonk.network")
+        );
+        assert_eq!(
+            via_origin("https://127.0.0.1:8443", here).as_deref(),
+            Ok("https://127.0.0.1:8443")
+        );
+        for refused in [
+            "",
+            "   ",
+            "http://tonk.network",
+            "javascript:alert(1)",
+            "https://",
+            "tonk.host",
+        ] {
+            assert!(
+                via_origin(refused, here).is_err(),
+                "{refused:?} must not be signed in through"
+            );
+        }
     }
 }
 

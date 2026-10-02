@@ -91,6 +91,12 @@ pub(crate) async fn stored_display_name_from(
 /// A single unparseable subject is logged and dropped rather than failing
 /// the whole list.
 pub(crate) async fn real_space_keys(tonk: &TonkState) -> Vec<String> {
+    real_space_keys_on(tonk, &tonk.active_branch).await
+}
+
+/// [`real_space_keys`] for the profile branch `branch`, which need not be
+/// the active one.
+pub(crate) async fn real_space_keys_on(tonk: &TonkState, branch: &str) -> Vec<String> {
     use dialog_varsig::Did;
     use tonk_schema::{Replica, domain::replica::Profile as ProfileEntity};
 
@@ -100,7 +106,7 @@ pub(crate) async fn real_space_keys(tonk: &TonkState) -> Vec<String> {
     let session = match tonk
         .reactor
         .profile_repository()
-        .branch(&tonk.active_branch)
+        .branch(branch)
         .acquire(&tonk.operator)
         .await
     {

@@ -3565,6 +3565,111 @@ async fn remove_replica_from_profile(
     Ok(())
 }
 
+/// Move `subject`'s listing from the profile branch `from` onto the
+/// active one: every fact keyed on its replica entities, and the
+/// `xyz.tonk.space/` facts on its directory entity, the same set
+/// [`remove_replica_from_profile`] sweeps. Asserted here before it is
+/// retracted there, so an interruption leaves the space listed twice
+/// rather than nowhere.
+pub(crate) async fn carry_replica_rows(
+    tonk: &TonkState,
+    from: &str,
+    subject: &Did,
+) -> Result<(), RepositoryError> {
+    use dialog_artifacts::ArtifactSelector;
+    use futures_util::StreamExt as _;
+
+    let source = tonk
+        .reactor
+        .profile_repository()
+        .branch(from)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("open profile branch '{from}': {e}")))?;
+    let rows: Vec<Replica> = source
+        .handle()
+        .query()
+        .select(Query::<Replica> {
+            this: Term::var("this"),
+            subject: Term::from(tonk_schema::domain::replica::Subject(subject.this())),
+            profile: Term::var("profile"),
+            kind: Term::var("kind"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("replica rows query: {e:?}")))?;
+    let mut entities: Vec<(dialog_artifacts::Entity, Option<&str>)> =
+        rows.into_iter().map(|row| (row.this, None)).collect();
+    // The directory entity carries more than the space's own facts.
+    entities.push((subject.this(), Some("xyz.tonk.space/")));
+
+    let mut claims = Vec::new();
+    for (entity, namespace) in entities {
+        let stream = source
+            .handle()
+            .claims()
+            .select(ArtifactSelector::new().of(entity))
+            .perform(&tonk.operator)
+            .await
+            .map_err(|e| RepositoryError::Internal(format!("select listing claims: {e}")))?;
+        tokio::pin!(stream);
+        while let Some(artifact) = stream.next().await {
+            let artifact = artifact
+                .map_err(|e| RepositoryError::Internal(format!("read listing claim: {e}")))?
+                .to_owned()
+                .map_err(|e| RepositoryError::Internal(format!("read listing claim: {e}")))?;
+            if namespace.is_some_and(|namespace| !artifact.the.to_string().starts_with(namespace)) {
+                continue;
+            }
+            claims.push(artifact);
+        }
+    }
+    if claims.is_empty() {
+        return Ok(());
+    }
+
+    let mut here = tonk
+        .reactor
+        .profile_repository()
+        .branch(&tonk.active_branch)
+        .transaction();
+    let mut there = tonk.reactor.profile_repository().branch(from).transaction();
+    for artifact in claims {
+        here = here.assert(super::claim::RawClaim {
+            the: artifact.the.clone(),
+            of: artifact.of.clone(),
+            is: artifact.is.clone(),
+            unique: false,
+        });
+        there = there.retract(super::claim::RawClaim {
+            the: artifact.the,
+            of: artifact.of,
+            is: artifact.is,
+            unique: false,
+        });
+    }
+    let revision = here
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("list {subject} here: {e}")))?;
+    there
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("unlist {subject} from '{from}': {e}")))?;
+
+    broadcast(
+        "/api/profile",
+        &Notification {
+            branch: tonk.active_branch.clone(),
+            revision,
+        },
+    );
+    Ok(())
+}
+
 /// Delete a space's local storage: its IndexedDB database (archive,
 /// memory, credential, certificate object stores) and, best-effort, an
 /// OPFS blob subtree at `current/<key>` — the path dialog-storage's
@@ -6332,12 +6437,20 @@ pub(crate) async fn space_root_prefix(
     tonk: &TonkState,
     subject: &Did,
 ) -> Result<DelegationChain, TonkWorkerError> {
-    let bytes = tonk
-        .profile
+    space_root_prefix_of(&tonk.profile, subject).await
+}
+
+/// [`space_root_prefix`] as `profile` keeps it: each branch's peer keeps
+/// the chains of the spaces listed on that branch.
+pub(crate) async fn space_root_prefix_of(
+    profile: &crate::worker::DefaultProfile,
+    subject: &Did,
+) -> Result<DelegationChain, TonkWorkerError> {
+    let bytes = profile
         .secrets()
         .site(format!("{SPACE_ROOT_SITE_PREFIX}{subject}"))
         .load::<Vec<u8>>()
-        .perform(&tonk.profile)
+        .perform(profile)
         .await
         .map_err(|error| {
             if crate::credential::is_missing(&error) {

@@ -26,6 +26,8 @@ pub(crate) struct NavigateListener {
 /// Install a `navigator.serviceWorker` `message` listener that handles
 /// worker→page messages:
 /// - `{ type: "navigate", href }` — assigns `window.location`.
+/// - `{ type: "navigate", href, replace: true }` — loads `href` afresh in
+///   place of the current history entry.
 /// - `{ type: "sync" }` — dispatches `tonk:committed` on `window` so the
 ///   sync controller pushes immediately instead of waiting for the heartbeat.
 /// - `{ type: "profile-changed" }` — reloads the top-level document so it
@@ -46,7 +48,11 @@ pub(crate) fn install() -> Option<NavigateListener> {
 
 fn handle_worker_message(data: &JsValue) {
     if let Some(href) = navigate_href(data) {
-        navigate_to(&href);
+        if replaces(data) {
+            replace_page(&href);
+        } else {
+            navigate_to(&href);
+        }
     } else if is_sync_message(data) {
         dispatch_committed();
     } else if is_profile_changed_message(data) {
@@ -70,6 +76,15 @@ fn navigate_href(data: &JsValue) -> Option<String> {
         return None;
     }
     Some(href)
+}
+
+/// Whether a navigate message asks for a fresh load replacing the current
+/// history entry (`replace: true`) rather than a client-side route change.
+fn replaces(data: &JsValue) -> bool {
+    js_sys::Reflect::get(data, &JsValue::from_str("replace"))
+        .ok()
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
 }
 
 /// Return `true` for a `{ type: "sync" }` message.
@@ -197,6 +212,20 @@ pub fn reload_page() {
     }
 }
 
+/// Load `href` afresh in place of the current history entry.
+///
+/// For a worker command that switched this page's profile: the document
+/// has to load again to bind to the new one, and the address it was on
+/// (a sign-in callback, say) must not be reachable with Back.
+pub fn replace_page(href: &str) {
+    if crate::page_effect::forward("replace", href) {
+        return;
+    }
+    if let Some(win) = window() {
+        let _ = win.location().replace(href);
+    }
+}
+
 /// The page's `navigator.serviceWorker` container, if available.
 fn service_worker_container() -> Option<web_sys::ServiceWorkerContainer> {
     Some(window()?.navigator().service_worker())
@@ -296,6 +325,23 @@ mod tests {
         clear_tonk();
         assert_eq!(calls.length(), 1);
         assert_eq!(calls.get(0).as_string().as_deref(), Some(""));
+    }
+
+    /// A navigate that asks to replace loads the page afresh in place of the
+    /// current entry; a plain navigate stays a route change and replaces
+    /// nothing.
+    #[dialog_common::test]
+    async fn it_replaces_the_page_only_when_a_navigate_asks_to() {
+        let calls = install_effect_stub("replace");
+
+        let replacing = message("navigate", "/");
+        let _ = Reflect::set(&replacing, &JsValue::from_str("replace"), &JsValue::TRUE);
+        handle_worker_message(&replacing);
+        handle_worker_message(&message("navigate", "/space/abc"));
+
+        clear_tonk();
+        assert_eq!(calls.length(), 1);
+        assert_eq!(calls.get(0).as_string().as_deref(), Some("/"));
     }
 
     #[dialog_common::test]

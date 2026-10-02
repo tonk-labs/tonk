@@ -2048,6 +2048,62 @@ pub(crate) mod tests {
         let service = AccessServiceAddress::start(Default::default())
             .await
             .unwrap();
+        let root = Ed25519Signer::generate().await.unwrap();
+        // Hydration syncs the account space, which the access service
+        // serves only once its customer has confirmed the emailed
+        // activation link.
+        if activated {
+            service
+                .address
+                .activate_customer(&root, "worker-account-state@example.com")
+                .await
+                .unwrap();
+        } else {
+            service
+                .address
+                .enroll_customer(&root, "worker-account-state@example.com")
+                .await
+                .unwrap();
+        }
+        // The endpoint the account syncs against, not the service root:
+        // the remote is the address a link names, and that is `/ucan/`.
+        let remote = format!(
+            "{}/ucan/",
+            service.address.access_service_url.trim_end_matches('/')
+        );
+        let state = device_on(&root, &remote, passkey).await;
+        // The marker only exists once a hydration succeeded, and none
+        // can while the customer is still `Registered`: pre-setting it
+        // there would put the fixture in a state no real browser reaches.
+        if activated {
+            state
+                .profile
+                .secrets()
+                .site(
+                    crate::credential::branch_site(
+                        tonk_account::TRUSTED_BASE_CREDENTIAL_SITE,
+                        &state.active_branch,
+                    )
+                    .as_str(),
+                )
+                .save(root.did().as_str().as_bytes().to_vec())
+                .perform(&state.profile)
+                .await
+                .unwrap();
+        }
+
+        (state, service, root, remote)
+    }
+
+    /// A device on a fresh randomized profile, signed in to the account
+    /// `root` holds and linked to sync it at `remote`: a local root and
+    /// an account link, not yet hydrated.
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn device_on(
+        root: &Ed25519Signer,
+        remote: &str,
+        passkey: Option<tonk_worker_api::PasskeyMetadata>,
+    ) -> TonkState {
         let name = format!("account-state-worker-test-{}", rand::random::<u64>());
         let (storage, profile) =
             crate::device::open_profile_at(&name, dialog_effects::storage::Directory::Profile)
@@ -2085,42 +2141,33 @@ pub(crate) mod tests {
         crate::router::repository::bootstrap_profile(&state)
             .await
             .unwrap();
+        link_device(&state, root, remote, passkey).await;
+        state
+    }
 
-        let root = Ed25519Signer::generate().await.unwrap();
-        let root_signer = root.clone();
-        // Hydration syncs the account space, which the access service
-        // serves only once its customer has confirmed the emailed
-        // activation link.
-        if activated {
-            service
-                .address
-                .activate_customer(&root, "worker-account-state@example.com")
-                .await
-                .unwrap();
-        } else {
-            service
-                .address
-                .enroll_customer(&root, "worker-account-state@example.com")
-                .await
-                .unwrap();
-        }
-        // The endpoint the account syncs against, not the service root:
-        // the remote is the address a link names, and that is `/ucan/`.
-        let remote = format!(
-            "{}/ucan/",
-            service.address.access_service_url.trim_end_matches('/')
-        );
+    /// What a sign-in through `root` leaves on `state`: a fresh
+    /// `root -> device` grant persisted as the local root, and the account
+    /// link that names `remote`.
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn link_device(
+        state: &TonkState,
+        root: &Ed25519Signer,
+        remote: &str,
+        passkey: Option<tonk_worker_api::PasskeyMetadata>,
+    ) {
+        use dialog_varsig::Principal as _;
+
         let root_did = root.did().to_string();
         let credential_id = "account-state-test-credential".to_string();
         let delegation =
-            tonk_identity::delegation::mint_device_delegation(root, &state.profile.did())
+            tonk_identity::delegation::mint_device_delegation(root.clone(), &state.profile.did())
                 .await
                 .unwrap();
         let delegation_hex = hex::encode(delegation.to_bytes().unwrap());
         // The link attaches a provider to an already-persisted local root, so
         // the root has to exist before persist_link will accept it.
         crate::router::identity::persist_root(
-            &state,
+            state,
             tonk_worker_api::SaveRootRequest {
                 credential_id: credential_id.clone(),
                 delegation_hex: delegation_hex.clone(),
@@ -2131,39 +2178,18 @@ pub(crate) mod tests {
         .await
         .unwrap();
         crate::router::account::persist_link(
-            &state,
+            state,
             &tonk_worker_api::AccountLinkRequest {
                 provider: "https://accounts.example".to_string(),
                 root_did,
                 credential_id,
                 delegation_hex,
-                remote: remote.clone(),
+                remote: remote.to_string(),
                 initialize_name: false,
             },
         )
         .await
         .unwrap();
-        // The marker only exists once a hydration succeeded, and none
-        // can while the customer is still `Registered`: pre-setting it
-        // there would put the fixture in a state no real browser reaches.
-        if activated {
-            state
-                .profile
-                .secrets()
-                .site(
-                    crate::credential::branch_site(
-                        tonk_account::TRUSTED_BASE_CREDENTIAL_SITE,
-                        &state.active_branch,
-                    )
-                    .as_str(),
-                )
-                .save(root_signer.did().as_str().as_bytes().to_vec())
-                .perform(&state.profile)
-                .await
-                .unwrap();
-        }
-
-        (state, service, root_signer, remote)
     }
 
     /// Every passkey recorded for the ready account, through its envelopes.
@@ -2306,6 +2332,90 @@ pub(crate) mod tests {
         assert!(
             adopt_account_access(&state).await,
             "the second account's authority is adopted on {landing}",
+        );
+    }
+
+    /// A device that signs out and back in keeps pulling its account.
+    ///
+    /// A device joining an account in use retains its grant on a branch
+    /// whose tree has already grown past one leaf, so the grant's blob
+    /// record rides a buffer above the leaves. Sign-out retracts it there,
+    /// and its own push is then refused, since the branch no longer proves
+    /// the device. Signing back in pulls that unpushed retraction together
+    /// with what another device pushed meanwhile, and the pull's download
+    /// took the superseded record for a live one: it asked for the grant's
+    /// blob, which the tree no longer references, and failed with
+    /// "Revision references blob …, which is not present". Every pull
+    /// after that failed the same way, so nothing the account changed
+    /// elsewhere reached the device again.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_pulls_the_account_after_signing_out_and_back_in() {
+        use dialog_artifacts::{Artifact, Instruction, Value};
+        use dialog_varsig::Principal as _;
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        const RENAMED: &str = "Renamed on the other device";
+
+        let (home, _service, root, remote) = ready_account_state(None).await;
+        assert_eq!(ensure_account_state(&home).await, AccountStateStatus::Ready);
+
+        // An account in use: enough facts that its tree has an index node.
+        let facts: Vec<_> = (0..2048)
+            .map(|n| {
+                Instruction::Assert(Artifact {
+                    the: "test/fact".parse().expect("a valid attribute"),
+                    of: format!("test:{n}").parse().expect("a valid entity"),
+                    is: Value::UnsignedInt(n),
+                    cause: None,
+                })
+            })
+            .collect();
+        home.reactor
+            .profile_repository()
+            .branch(&home.active_branch)
+            .acquire(&home.operator)
+            .await
+            .unwrap()
+            .handle()
+            .commit(futures_util::stream::iter(facts))
+            .perform(&home.operator)
+            .await
+            .unwrap();
+        push_account_main(&home).await.unwrap();
+
+        // A second device signs in; its sweep retains its grant.
+        let device = device_on(&root, &remote, None).await;
+        let (status, swept) = ensure_account_state_swept(&device).await;
+        assert_eq!(status, AccountStateStatus::Ready);
+        swept.unwrap();
+
+        let device = Arc::new(RwLock::new(device));
+        super::super::profiles::sign_out(&device, None)
+            .await
+            .unwrap();
+
+        // The account changes on the first device.
+        rename_display_name(&home, RENAMED).await.unwrap();
+        let (_, swept) = ensure_account_state_swept(&home).await;
+        swept.unwrap();
+
+        // Signing back in returns to the branch that follows the account
+        // and links it again.
+        let device = super::super::profiles::for_account(device, &root.did(), None)
+            .await
+            .unwrap();
+        link_device(&device, &root, &remote, None).await;
+        let (status, swept) = ensure_account_state_swept(&device).await;
+        assert_eq!(status, AccountStateStatus::Ready);
+        swept.expect("the account pulls after signing back in");
+        assert_eq!(
+            super::super::account_devices::account_display_name(&device)
+                .await
+                .as_deref(),
+            Some(RENAMED),
+            "the rename made on the other device arrives",
         );
     }
 

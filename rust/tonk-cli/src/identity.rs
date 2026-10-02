@@ -5,12 +5,12 @@
 //! Support/dialog/` on macOS, `~/.local/share/dialog/` on
 //! Linux), under the subdirectory named [`PROFILE_NAME`].
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use dialog_effects::credential::CredentialError;
 use dialog_effects::storage::Directory;
-use dialog_peer::{Peer, Session};
+use dialog_peer::{OpenCredential, Peer, Session};
 use dialog_storage::provider::storage::NativeSpace;
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::DelegationChain;
@@ -192,14 +192,22 @@ pub async fn open() -> Result<Peer<NativeSpace>> {
 /// (`.tonk/`) the previous identity owned will be unreachable
 /// without re-delegation.
 pub async fn reset() -> Result<Peer<NativeSpace>> {
+    // The profile's key is kept in the credential store of the profile
+    // directory, beside the keys of everything else kept there, so a
+    // reset forgets that one key rather than removing a directory.
+    let (credentials, _) =
+        tonk_account::peer::open_system::<NativeSpace>(Directory::Profile).await?;
+    OpenCredential::forget(PROFILE_NAME)
+        .at(Directory::Profile)
+        .perform(&credentials)
+        .await
+        .context("failed to forget the profile's key")?;
+    // A profile from before its home was named by its DID keeps a space
+    // under its name, which goes with it.
     let dir = profile_dir()?;
-    // The profile's key is kept beside its space, in the credential store,
-    // so a reset removes both.
-    for dir in [credentials_dir(&dir), dir] {
-        if dir.is_dir() {
-            std::fs::remove_dir_all(&dir)
-                .with_context(|| format!("failed to remove profile directory {}", dir.display()))?;
-        }
+    if dir.is_dir() {
+        std::fs::remove_dir_all(&dir)
+            .with_context(|| format!("failed to remove profile directory {}", dir.display()))?;
     }
     open().await
 }
@@ -208,21 +216,20 @@ pub async fn reset() -> Result<Peer<NativeSpace>> {
 /// avoid creating a profile as a side effect of computing a hashed
 /// distinct id for a command that never touches the profile.
 pub fn exists() -> bool {
-    profile_dir().map(|dir| dir.is_dir()).unwrap_or(false)
+    profile_dir()
+        .map(|dir| {
+            let kept = dir
+                .parent()
+                .is_some_and(|keys| tonk_account::peer::kept_key_path(keys, PROFILE_NAME).exists());
+            kept || dir.is_dir()
+        })
+        .unwrap_or(false)
 }
 
-/// Filesystem path to the profile directory. `tonk identity
-/// --reset` calls `remove_dir_all` on this path; nothing else
-/// inside the crate depends on the on-disk layout.
+/// Filesystem path to the directory a profile from before its home was
+/// named by its DID keeps its space in. Its parent is the profile
+/// directory, where the credential store keeps the profile's key.
 fn profile_dir() -> Result<PathBuf> {
     let data_dir = dirs::data_dir().context("could not determine platform data directory")?;
     Ok(data_dir.join(STORAGE_NAMESPACE).join(PROFILE_NAME))
-}
-
-/// Where the credential store keeps the key of the profile at `dir`:
-/// beside it, under the profile's name with a `.credentials` suffix.
-fn credentials_dir(dir: &Path) -> PathBuf {
-    let mut name = dir.file_name().unwrap_or_default().to_os_string();
-    name.push(".credentials");
-    dir.with_file_name(name)
 }
