@@ -139,6 +139,21 @@ pub async fn evaluate(
     _headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<EvaluateResponse>, TonkWorkerError> {
+    if super::names_profile(&state, &path.repo).await {
+        let path = ProfileEvaluatePath {
+            branch: path.branch,
+        };
+        return evaluate_profile(
+            State(state),
+            Path(path),
+            axum::extract::Query(query),
+            client,
+            lifetime,
+            _headers,
+            body,
+        )
+        .await;
+    }
     log!("evaluate repo={}, branch={}", path.repo, path.branch);
     let (response, transients) = {
         // A READ lock, not a write lock. `tokio`'s `RwLock` is write-preferring, so
@@ -219,7 +234,7 @@ pub async fn evaluate(
     Ok(response)
 }
 
-/// `POST /api/profile/branch/{branch}/evaluate`
+/// `POST /api/repository/profile:tonk/branch/{branch}/evaluate`
 ///
 /// Profile-side counterpart to [`evaluate`]. The profile is its
 /// own repository but lives outside the named-repo namespace, so

@@ -570,8 +570,10 @@ mod route_for_tests {
             });
         let event = js_sys::Object::new();
         js_sys::Reflect::set(&event, &"waitUntil".into(), wait_until.as_ref()).unwrap();
-        let request =
-            Request::new_with_str("https://tonk.test/api/profile/branch/main/query").unwrap();
+        let request = Request::new_with_str(
+            "https://tonk.test/api/repository/profile:tonk/branch/main/query",
+        )
+        .unwrap();
         js_sys::Reflect::set(&event, &"request".into(), &request).unwrap();
         let scheduler = SyncScheduler::default();
 

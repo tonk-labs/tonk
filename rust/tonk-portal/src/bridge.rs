@@ -1962,18 +1962,25 @@ fn handle_host_fetch(state: &Rc<RefCell<PortalState>>, port: &MessagePort, data:
 }
 
 /// The repository reach a relayed path targets, if any:
-/// `/api/repository/{repo}`, `/api/profile/repository`,
-/// `/api/repository/{repo}/branch/{branch}/…`, or
-/// `/api/profile/branch/{branch}/…`. Non-data-plane paths (assets, the
-/// guest bundle, `/api/sync`, and repository control routes) return `None`.
+/// `/api/repository/{repo}` or `/api/repository/{repo}/branch/{branch}/…`.
+/// Non-data-plane paths (assets, the guest bundle, `/api/sync`, and
+/// repository control routes) return `None`.
 ///
-/// The profile endpoint is singular and its URL carries no name, so a
-/// profile path canonicalizes to the portal's own profile name when the
+/// A `profile:<name>` repository segment names the profile's own
+/// repository. The worker serves one profile whatever name the segment
+/// carries, so it canonicalizes to the portal's own profile name when the
 /// portal is profile-pinned, else the worker's default (`tonk`).
 fn data_plane_location(path: &str, state: &Rc<RefCell<PortalState>>) -> Option<Location> {
     use tonk_host::location::Repo;
     let path = path.split_once('?').map_or(path, |(path, _)| path);
-    if path == "/api/profile/repository" {
+    let rest = path.strip_prefix("/api/repository/")?;
+    let mut segments = rest.split('/');
+    let repo = segments.next().filter(|s| !s.is_empty())?;
+    let profile = repo.starts_with("profile:")
+        || repo
+            .get(..10)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("profile%3a"));
+    let repo = if profile {
         let name = state
             .borrow()
             .with
@@ -1983,47 +1990,19 @@ fn data_plane_location(path: &str, state: &Rc<RefCell<PortalState>>) -> Option<L
                 Repo::Named(_) => None,
             })
             .unwrap_or_else(|| "tonk".to_owned());
-        return Some(Location {
-            repo: Repo::Profile(name),
-            branch: Some("main".to_owned()),
-        });
-    }
-    if let Some(rest) = path.strip_prefix("/api/repository/") {
-        let mut segments = rest.split('/');
-        let repo = segments.next().filter(|s| !s.is_empty())?;
-        match segments.next() {
-            None => {
-                return Some(Location {
-                    repo: Repo::Named(repo.to_owned()),
-                    branch: Some("main".to_owned()),
-                });
-            }
-            Some("branch") => {}
-            _ => return None,
-        }
-        let branch = segments.next().filter(|s| !s.is_empty())?;
-        return Some(Location {
-            repo: Repo::Named(repo.to_owned()),
-            branch: Some(branch.to_owned()),
-        });
-    }
-    if let Some(rest) = path.strip_prefix("/api/profile/branch/") {
-        let branch = rest.split('/').next().filter(|s| !s.is_empty())?;
-        let name = state
-            .borrow()
-            .with
-            .as_ref()
-            .and_then(|own| match &own.repo {
-                Repo::Profile(name) => Some(name.clone()),
-                Repo::Named(_) => None,
-            })
-            .unwrap_or_else(|| "tonk".to_owned());
-        return Some(Location {
-            repo: Repo::Profile(name),
-            branch: Some(branch.to_owned()),
-        });
-    }
-    None
+        Repo::Profile(name)
+    } else {
+        Repo::Named(repo.to_owned())
+    };
+    let branch = match segments.next() {
+        None => "main",
+        Some("branch") => segments.next().filter(|s| !s.is_empty())?,
+        _ => return None,
+    };
+    Some(Location {
+        repo,
+        branch: Some(branch.to_owned()),
+    })
 }
 
 /// Build a `Request` for a relayed guest fetch from the envelope's
@@ -2813,7 +2792,7 @@ mod tests {
 
         let profile = routed_state(Some("main@profile:tonk"), "main@profile:tonk");
         assert_eq!(
-            data_plane_location("/api/profile/repository", &profile),
+            data_plane_location("/api/repository/profile:tonk", &profile),
             Some("main@profile:tonk".parse().unwrap()),
         );
     }

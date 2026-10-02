@@ -834,7 +834,7 @@ mod tests {
             async move {
                 let mut request = Request::builder()
                     .method("POST")
-                    .uri("/api/profile/branch/meta/query")
+                    .uri("/api/repository/profile:tonk/branch/meta/query")
                     .header("content-type", "application/json")
                     .body(Body::from(body))
                     .unwrap();
