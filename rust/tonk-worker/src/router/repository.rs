@@ -735,7 +735,14 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
                 ))
             } else {
                 let tonk = env.state().read().await;
-                duplication::prepare(&tonk, source).await
+                // Where the source's content is held by its own worker,
+                // there is nothing here to read: the copy is made between
+                // that worker and the new space's.
+                if tonk.spaces_elsewhere() {
+                    Ok(None)
+                } else {
+                    duplication::prepare(&tonk, source).await.map(Some)
+                }
             };
             match result {
                 Ok(copy) => Some(copy),
@@ -775,9 +782,10 @@ async fn execute_create_space(env: crate::router::CommandEnv, request: CreateSpa
     //    whether or not a remote was given (and never vanishes on
     //    a remote failure). The create mints a fresh identity and
     //    returns its routing key.
-    let created = match copy {
-        Some(copy) => duplication::create(env.state(), &name, copy).await,
-        None => create_space_inner(env.state(), &name, description.as_deref()).await,
+    let created = match (copy, &request.copy_from) {
+        (Some(Some(copy)), _) => duplication::create(env.state(), &name, copy).await,
+        (Some(None), Some(source)) => create_deferred_copy(env.state(), &name, source).await,
+        _ => create_space_inner(env.state(), &name, description.as_deref()).await,
     };
     let key = match created {
         Ok(key) => key,
@@ -908,16 +916,44 @@ async fn deferred_definitions(
     let subject: Did = key
         .parse()
         .map_err(|e| TonkWorkerError::Internal(format!("'{key}' is not a space: {e:?}")))?;
-    defer_definitions(
-        tonk,
-        &subject,
-        SeedDefinitions {
-            reference: reference.to_owned(),
-            template,
-        },
-    )
-    .await
-    .map_err(|e| TonkWorkerError::Internal(e.to_string()))
+    let definitions = SeedDefinitions {
+        reference: reference.to_owned(),
+        template,
+    };
+    amend_seed(tonk, &subject, |seed| seed.definitions = Some(definitions))
+        .await
+        .map_err(|e| TonkWorkerError::Internal(e.to_string()))
+}
+
+/// Create a space that is to be a copy of `source`, where each space's
+/// content is held by a worker of its own: this worker creates the new
+/// space's identity, and its own worker is handed `source`'s content by
+/// `source`'s worker and copies it in.
+async fn create_deferred_copy(
+    state: &AppState,
+    name: &str,
+    source: &str,
+) -> Result<String, RepositoryError> {
+    let source: Did = source
+        .parse()
+        .map_err(|e| RepositoryError::Internal(format!("duplicate space: {e:?}")))?;
+    {
+        let tonk = state.read().await;
+        // Do not create a copy of a typo, or of a subject that is no space.
+        require_real_space(&tonk, &source)
+            .await
+            .map_err(|e| RepositoryError::Internal(format!("duplicate space: {e}")))?;
+    }
+    let key = create_space_inner(state, name, None).await?;
+    let subject: Did = key
+        .parse()
+        .map_err(|e| RepositoryError::Internal(format!("'{key}' is not a space: {e:?}")))?;
+    let tonk = state.read().await;
+    amend_seed(&tonk, &subject, |seed| {
+        seed.copy_from = Some(source.to_string())
+    })
+    .await?;
+    Ok(key)
 }
 
 /// Fetch and check the seed at `reference` against the standard library a
@@ -5771,6 +5807,10 @@ pub struct SpaceSeed {
     /// library. `None` for a blank space.
     #[serde(default)]
     pub definitions: Option<SeedDefinitions>,
+    /// The space this one is a copy of. Its content then comes from that
+    /// space's own worker, in place of the standard library.
+    #[serde(default)]
+    pub copy_from: Option<String>,
 }
 
 /// Where the definitions a space is created with come from: a template the
@@ -5794,6 +5834,8 @@ struct PendingSeed {
     description: Option<String>,
     #[serde(default)]
     definitions: Option<SeedDefinitions>,
+    #[serde(default)]
+    copy_from: Option<String>,
 }
 
 fn pending_seed_site(subject: &Did) -> String {
@@ -5812,18 +5854,19 @@ async fn defer_seed(
         name: display_name.to_owned(),
         description: description.map(str::to_owned),
         definitions: None,
+        copy_from: None,
     };
     let bytes = serde_json::to_vec(&pending)
         .map_err(|e| RepositoryError::Internal(format!("space seed does not encode: {e}")))?;
     save_pending_seed(tonk, subject, bytes).await
 }
 
-/// Have `subject`'s own worker add `definitions` when it creates the space's
-/// content. For a space this worker created and left for that worker to fill.
-async fn defer_definitions(
+/// Change what `subject`'s own worker is to create the space's content from.
+/// For a space this worker created and left for that worker to fill.
+async fn amend_seed(
     tonk: &TonkState,
     subject: &Did,
-    definitions: SeedDefinitions,
+    amend: impl FnOnce(&mut PendingSeed),
 ) -> Result<(), RepositoryError> {
     let stored = tonk
         .profile
@@ -5835,7 +5878,7 @@ async fn defer_definitions(
         .map_err(|e| RepositoryError::Internal(format!("failed to load the space seed: {e}")))?;
     let mut pending: PendingSeed = serde_json::from_slice(&stored)
         .map_err(|e| RepositoryError::Internal(format!("stored space seed is invalid: {e}")))?;
-    pending.definitions = Some(definitions);
+    amend(&mut pending);
     let bytes = serde_json::to_vec(&pending)
         .map_err(|e| RepositoryError::Internal(format!("space seed does not encode: {e}")))?;
     save_pending_seed(tonk, subject, bytes).await
@@ -5892,6 +5935,7 @@ pub(crate) async fn pending_seed(
         founder: founder.to_string(),
         founder_name,
         definitions: pending.definitions,
+        copy_from: pending.copy_from,
     }))
 }
 
@@ -5971,6 +6015,70 @@ async fn create_content_with(
         );
     }
     Ok(())
+}
+
+/// Create `subject`'s content as a copy of another space's, in the worker
+/// that holds it: `content` and `revision` are that space's snapshot, from
+/// its own worker. Its blocks are stored here, read as they stood at that
+/// revision, and written under this space's own identity without the
+/// source's history or its records of itself. Then the founder's membership,
+/// as for any new space. Nothing is written over a `main` that has content.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn create_copy(
+    tonk: &TonkState,
+    subject: &Did,
+    seed: &SpaceSeed,
+    content: &[u8],
+    revision: &[u8],
+) -> Result<(), RepositoryError> {
+    use dialog_repository::{RepositoryExt as _, Revision, codec};
+
+    let failed = |what: &str, error: &dyn std::fmt::Display| {
+        RepositoryError::Internal(format!("duplicate space: {what}: {error}"))
+    };
+    let key = subject.repo_key();
+    let empty = tonk
+        .reactor
+        .repository(key)
+        .branch(CONTENT_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|e| failed("open", &e))?
+        .handle()
+        .revision()
+        .is_none();
+    if empty {
+        let repository = tonk
+            .profile
+            .space(key)
+            .load()
+            .perform(&tonk.operator)
+            .await
+            .map_err(|e| failed("load", &e))?;
+        let revision: Revision =
+            serde_json::from_slice(revision).map_err(|e| failed("revision", &e))?;
+        let items = codec::decode(content).map_err(|e| failed("snapshot", &e))?;
+        repository
+            .import(futures_util::stream::iter(items))
+            .perform(&tonk.operator)
+            .await
+            .map_err(|e| failed("store", &e))?;
+        let copy = duplication::collect(tonk, &repository.snapshot(revision)).await?;
+        duplication::write(tonk, subject, &seed.name, copy).await?;
+    }
+    let founder: Did = seed
+        .founder
+        .parse()
+        .map_err(|e| RepositoryError::Internal(format!("founder '{}': {e:?}", seed.founder)))?;
+    assert_membership(
+        tonk,
+        key,
+        subject,
+        founder,
+        MemberRole::FOUNDER,
+        seed.founder_name.clone(),
+    )
+    .await
 }
 
 /// Fetch `definitions` and add them to `key`'s content.

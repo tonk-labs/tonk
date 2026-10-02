@@ -21,7 +21,7 @@ use dialog_common::Blake3Hash;
 use dialog_credentials::DidKeyResolver;
 use dialog_effects::Use;
 use dialog_repository::schema::Session;
-use dialog_repository::{RepositoryExt as _, Revision, codec};
+use dialog_repository::{RepositoryExt as _, Revision, Upstream, codec};
 use dialog_ucan::UcanDelegation;
 use dialog_ucan_core::{
     Delegation, DelegationChain,
@@ -321,15 +321,15 @@ pub(crate) async fn snapshot(
         return Ok(None);
     };
     let root = Blake3Hash::from(*revision.tree.hash());
-    let content = codec::encode(
-        repository
-            .snapshot(revision.clone())
-            .export()
-            .perform(&tonk.operator),
-        vec![root],
-    )
-    .await
-    .map_err(|e| TonkWorkerError::Internal(format!("failed to snapshot {space}: {e}")))?;
+    // A branch that was pulled may hold only part of what its revision
+    // reaches. The rest comes from where it was pulled from.
+    let mut export = repository.snapshot(revision.clone()).export();
+    if let Some(Upstream::Remote { remote, .. }) = tonk_account::peer::upstream(&branch) {
+        export = export.download(remote);
+    }
+    let content = codec::encode(export.perform(&tonk.operator), vec![root])
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("failed to snapshot {space}: {e}")))?;
     let revision = serde_json::to_vec(&revision)
         .map_err(|e| TonkWorkerError::Internal(format!("failed to encode revision: {e}")))?;
     Ok(Some(Snapshot { content, revision }))

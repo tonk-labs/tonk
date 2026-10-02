@@ -66,7 +66,7 @@ const PORT_TIMEOUT_MS = 5_000;
 const ACK_TIMEOUT_MS = 3_000;
 // The contract between this worker and the shell (`space-origin.html`). The
 // shell replaces a worker that does not answer with the same number.
-const PROTOCOL = 1;
+const PROTOCOL = 2;
 
 // Which kind of site this origin is. A profile's label starts with
 // `profile`; a space's is its key in base32, which never does.
@@ -241,6 +241,7 @@ function adopt(port, frame) {
         const { data } = event;
         if (typeof data?.ping === "number") port.postMessage({ pong: data.ping });
         else if (typeof data?.call === "number") answer(port, data, frame);
+        else if (typeof data?.ask === "number") asked(port, data);
         else if (typeof data?.cancel === "number") answering.get(data.cancel)?.cancel().catch(() => {});
         else if (typeof data?.signal === "string") signalled(data.signal);
         else if (data?.message !== undefined) messaged(data.message, event.ports, frame);
@@ -292,6 +293,25 @@ async function answer(port, { call, request }, frame) {
         answering.delete(call);
         // Only a write can stamp a site.
         if (request.method !== "GET") sessionChanged();
+    }
+}
+
+// The profile's worker asks a space's for something no request carries: the
+// space as it stands, for another space to be made a copy of.
+async function asked(port, { ask, snapshot }) {
+    try {
+        if (PROFILE || snapshot !== true) throw new Error("unknown request");
+        const worker = await siteWorker();
+        const taken = await worker.snapshotSpace(await heldSpace());
+        if (!taken) {
+            port.postMessage({ answer: ask, empty: true });
+            return;
+        }
+        const content = taken.content.buffer;
+        const revision = taken.revision.buffer;
+        port.postMessage({ answer: ask, content, revision }, [content, revision]);
+    } catch (error) {
+        port.postMessage({ answer: ask, error: String(error?.message ?? error) });
     }
 }
 
@@ -396,6 +416,10 @@ function bindSpacePort(port, { repo, branch }) {
             space.probes.get(data.pong)?.();
             return;
         }
+        if (typeof data?.answer === "number") {
+            space.asks.get(data.answer)?.(data);
+            return;
+        }
         // An answer to something this worker passed on to the space's worker.
         if (typeof data?.call === "number") {
             spaceAnswered(space, data);
@@ -438,16 +462,34 @@ function bindSpacePort(port, { repo, branch }) {
                 port.postMessage({ id, settled: true });
                 return;
             }
-            if (data.snapshot === true) {
-                // A space this worker created and left for its own worker to
-                // fill comes with the seed to fill it from, whatever this
-                // worker's branch holds: a page's own writes may have put a
-                // revision on it since, with none of the space's content.
+            // What a space this worker created, and left for its own worker
+            // to fill, is to be filled from. Asked before any copy this
+            // worker holds: a page's own writes may have put a revision on
+            // its branch here since, with none of the space's content.
+            if (data.seed === true) {
                 const fresh = await worker.pendingSeed(repo);
-                if (fresh) {
+                if (!fresh) {
+                    port.postMessage({ id, none: true });
+                    return;
+                }
+                // A space made as a copy starts from the space it copies,
+                // as that space's own worker holds it now.
+                const source = JSON.parse(fresh).copy_from;
+                if (!source) {
                     port.postMessage({ id, fresh });
                     return;
                 }
+                const copy = await askSpaceWorker(spaceKey(source), { snapshot: true });
+                if (copy.empty) throw new Error("the space to copy is empty");
+                port.postMessage(
+                    { id, fresh, copy: { content: copy.content, revision: copy.revision } },
+                    [copy.content, copy.revision],
+                );
+                return;
+            }
+            // A copy of a space this worker held before spaces had origins
+            // of their own, for the space's worker to start from.
+            if (data.snapshot === true) {
                 const snapshot = await worker.snapshotSpace(repo);
                 if (!snapshot) {
                     port.postMessage({ id, empty: true });
@@ -467,7 +509,16 @@ function bindSpacePort(port, { repo, branch }) {
 
 function holdSpacePort(repo, port) {
     const key = spaceKey(repo);
-    const space = { key, port, calls: new Map(), probes: new Map(), probing: false, lost: false, idle: null };
+    const space = {
+        key,
+        port,
+        calls: new Map(),
+        asks: new Map(),
+        probes: new Map(),
+        probing: false,
+        lost: false,
+        idle: null,
+    };
     // A port replaces the last: the space's worker restarted, and whatever
     // it was still answering will never finish. Ask the new worker the same
     // things. A subscription carries on in the response already open: its
@@ -578,6 +629,27 @@ function restSpace(space) {
             page.postMessage({ type: "release-space-port", repo: `did:key:${space.key}`, branch: "main" });
         }
     }, SPACE_IDLE_MS);
+}
+
+// Ask the worker of the space `key` for something no request carries.
+async function askSpaceWorker(key, request) {
+    const held = await spacePort(key);
+    if (!held) throw new Error("the space's worker could not be reached");
+    const ask = nextSpaceCall++;
+    clearTimeout(held.idle);
+    try {
+        return await within(
+            new Promise((resolve, reject) => {
+                held.asks.set(ask, data => (data.error ? reject(new Error(data.error)) : resolve(data)));
+                held.port.postMessage({ ...request, ask });
+            }),
+            SPACE_ANSWER_WAIT_MS,
+            "the space's worker did not answer",
+        );
+    } finally {
+        held.asks.delete(ask);
+        restSpace(held);
+    }
 }
 
 // The space a request is about, when that space's own worker answers it.
@@ -1002,22 +1074,33 @@ async function ensureGrant(worker, { renew = false } = {}) {
     // kept. A space from before that is copied from the host's, once. Either
     // leaves a replica that already has content alone.
     if (!held?.seeded) {
-        const snapshot = await askHost({ snapshot: true }).catch(error => {
-            // A space that syncs fills from where it syncs. The profile
-            // holds only part of one it joined, which is no snapshot.
-            if (!terms.remote) throw error;
-            log("the profile has no copy to start from; the space will fill as it syncs:", error);
-            return { empty: true };
-        });
-        if (snapshot.fresh) {
-            await worker.createContent(grant.space, snapshot.fresh);
-            await askHost({ seeded: true });
-        } else if (!snapshot.empty) {
-            await worker.seedSpace(
+        const seed = await askHost({ seed: true });
+        if (seed.fresh && seed.copy) {
+            await worker.createCopy(
                 grant.space,
-                new Uint8Array(snapshot.content),
-                new Uint8Array(snapshot.revision),
+                seed.fresh,
+                new Uint8Array(seed.copy.content),
+                new Uint8Array(seed.copy.revision),
             );
+            await askHost({ seeded: true });
+        } else if (seed.fresh) {
+            await worker.createContent(grant.space, seed.fresh);
+            await askHost({ seeded: true });
+        } else {
+            const snapshot = await askHost({ snapshot: true }).catch(error => {
+                // A space that syncs fills from where it syncs. The profile
+                // holds only part of one it joined, which is no snapshot.
+                if (!terms.remote) throw error;
+                log("the profile has no copy to start from; the space will fill as it syncs:", error);
+                return { empty: true };
+            });
+            if (!snapshot.empty) {
+                await worker.seedSpace(
+                    grant.space,
+                    new Uint8Array(snapshot.content),
+                    new Uint8Array(snapshot.revision),
+                );
+            }
         }
     }
     const record = {

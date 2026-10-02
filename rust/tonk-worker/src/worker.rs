@@ -34,7 +34,9 @@ use wasm_bindgen_futures::future_to_promise;
 use web_sys::{FetchEvent, Request, Response};
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use crate::router::repository::{SpaceSeed, create_content, pending_seed, settle_seed};
+use crate::router::repository::{
+    SpaceSeed, create_content, create_copy, pending_seed, settle_seed,
+};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use crate::router::{Saved, space_worker};
 
@@ -2475,6 +2477,37 @@ impl TonkServiceWorker {
                 serde_json::from_str(&seed).map_err(|e| JsError::new(&format!("seed: {e}")))?;
             let tonk = state.read().await;
             create_content(&tonk, &space, &seed)
+                .await
+                .map_err(|e| JsError::new(&e.to_string()))?;
+            tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+            Ok(JsValue::UNDEFINED)
+        })
+    }
+
+    /// Create `space`'s content, in this worker, as a copy of another
+    /// space's: `seed` is what the person's profile handed over (JSON, as
+    /// [`pendingSeed`] gives it), `content` and `revision` the other space's
+    /// snapshot from its own worker.
+    ///
+    /// [`pendingSeed`]: Self::pending_seed
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "createCopy")]
+    pub fn create_copy(
+        &self,
+        space: String,
+        seed: String,
+        content: js_sys::Uint8Array,
+        revision: js_sys::Uint8Array,
+    ) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            let space: Did = space
+                .parse()
+                .map_err(|e| JsError::new(&format!("space: {e:?}")))?;
+            let seed: SpaceSeed =
+                serde_json::from_str(&seed).map_err(|e| JsError::new(&format!("seed: {e}")))?;
+            let tonk = state.read().await;
+            create_copy(&tonk, &space, &seed, &content.to_vec(), &revision.to_vec())
                 .await
                 .map_err(|e| JsError::new(&e.to_string()))?;
             tonk.reactor.run_scheduled_polls(&tonk.operator).await;
