@@ -186,12 +186,12 @@
       "variants": "Root missing; account ready/unhydrated/unconfigured; service online/offline."
     },
     {
-      "evidence": "Whole real-browser regression; asserts one device row.",
-      "gaps": "Offline logout, lost detach, reload during logout/login, concurrent revoke/delete, stale local grant.",
+      "evidence": "Whole real-browser regression; asserts one device row. Worker test: a space made while signed out is listed on the account's branch, re-rooted at the account, its seed sealed to the account, and the emptied workspace forgotten with its onboarding account retired; switching between two accounts carries nothing. Whole real-browser re-sign-in through another deployment: the space syncs to and is accepted by the account's deployment, and no signed-out workspace is left listed.",
+      "gaps": "Offline logout, lost detach, reload during logout/login, concurrent revoke/delete, stale local grant, a seed that fails to move (the workspace stays, both listing the space), the passkey sign-back-in carry in a whole browser.",
       "group": "Accounts: browser lifecycle",
       "id": "ACCT-B08",
-      "title": "Log out and sign back into the same account/profile.",
-      "variants": "Same root and server device row; local provider removed."
+      "title": "Log out and sign back into the same account/profile; what was made or joined while signed out joins the account.",
+      "variants": "Same root and server device row; local provider removed; spaces made or joined while signed out."
     },
     {
       "evidence": "Partial unit/flow logic.",
@@ -362,11 +362,11 @@
       "variants": "Empty, same-account, unrelated-account, or malformed-legacy CLI; person link; repeated bearer holders; independent issuers/invites; fresh/returning space; profile/space switch; restart; offline or revoked authority."
     },
     {
-      "evidence": "Worker unit and store tests for the request binding, grant install, and provisioning at the account's deployment; settings-element tests for the via pane (the answer waits for the bound display) and a web request's approval pane; whole real-browser flow across two deployments with separate access services: sign in, then a space made on the asking deployment provisions, pushes, and is recovered at home.",
+      "evidence": "Worker unit and store tests for the request binding, grant install, and provisioning at the account's deployment; settings-element tests for the via pane (the answer waits for the bound display), the Option press on the account cell, and a web request's approval pane; dialog tests for the Tonk address it accepts; whole real-browser flow across two deployments with separate access services: sign in with no passkey screen between approving and the passkey, then a space made on the asking deployment provisions, pushes, and is recovered at home.",
       "gaps": "Asking browser reloaded or closed mid-approval, service worker restarted between ask and answer, a space created before the account's encryption key has synced in, revoking the asking browser from the approving one, an approving deployment older than the asking one.",
       "group": "Accounts: CLI and browser handoff",
       "id": "ACCT-C15",
-      "title": "Sign a browser in through another deployment: open /settings/link?via=<origin> on a deployment that does not hold the account, approve there with its passkey, and come back signed in.",
+      "title": "Sign a browser in through another deployment: Option+click \"add an account\" (or open /account?via) on a deployment that does not hold the account, name the Tonk that does, approve there with its passkey in one step (\"approve with passkey\" brings up the passkey), and come back signed in. /settings/link?via=<origin> asks for a named Tonk directly.",
       "variants": "Unlinked asking browser; asking branch already following an account; approve/decline; answer replayed, crafted, or late."
     },
     {

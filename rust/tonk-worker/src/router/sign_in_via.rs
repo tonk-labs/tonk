@@ -336,6 +336,10 @@ async fn finish(
     super::account::finish_link(state)
         .await
         .map_err(|error| format!("the account did not finish linking: {error}"))?;
+    // What was made while signed out joins the account signed back in to.
+    if let Some(signed_out) = tonk.signed_out() {
+        super::rotation::carry_from(state, signed_out).await;
+    }
     if let Err(error) = super::account_state::push_account_main(state).await {
         log!("sign-in-via: the push behind the link did not land: {error}");
     }
@@ -378,7 +382,14 @@ impl dialog_capability::Provider<FinishSignInVia> for super::CommandEnv {
             Ok(()) => {
                 super::ceremony::report(&tonk, ceremony::SIGN_IN_VIA, ceremony_state::DONE, "")
                     .await;
-                super::navigate::notify_navigate(self.client(), "/");
+                // A load, not a route change: signing back in can switch
+                // the page onto the branch the account kept, and the page
+                // that asked is left out of the reload every other tab gets
+                // (see `profiles::promote`), so a route change would leave
+                // it bound to the branch it started on and refused. The
+                // callback, with the grant in its fragment, leaves the
+                // history too.
+                super::navigate::notify_replace(self.client(), "/");
             }
             Err(error) => {
                 super::ceremony::report(
