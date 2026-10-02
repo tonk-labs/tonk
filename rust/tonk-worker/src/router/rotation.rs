@@ -447,7 +447,7 @@ pub(crate) async fn migrate_membership_rows(
     onboarding: &Did,
     root: &Did,
 ) -> Result<(), TonkWorkerError> {
-    if tonk.site_origins.load(std::sync::atomic::Ordering::Relaxed) {
+    if tonk.spaces_elsewhere() {
         return Ok(());
     }
     let repo = space.repo_key();

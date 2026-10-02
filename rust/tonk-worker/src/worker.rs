@@ -466,6 +466,15 @@ pub struct TonkState {
 }
 
 impl TonkState {
+    /// Whether each space's content is held by a worker on the space's own
+    /// origin, and none of it by this one: this is the worker of a person's
+    /// profile where sites have origins of their own. What a command here
+    /// does to a space's content is then that worker's to do (see
+    /// [`space_reach`](crate::router::space_reach)).
+    pub(crate) fn spaces_elsewhere(&self) -> bool {
+        self.site_origins.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Enter the one-way retiring state and release every query stream.
     pub(crate) fn retire(&self) {
         self.retiring.store(true, Ordering::Release);

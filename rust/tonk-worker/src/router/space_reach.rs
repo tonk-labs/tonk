@@ -70,15 +70,65 @@ pub(crate) async fn ask(
     }
 }
 
-/// Commit `claims` (a transact request) on `space`'s content, in the space's
-/// own worker. A command among them runs there.
-pub(crate) async fn transact(
+/// Which of a space's own worker's branches a command is committed on.
+///
+/// That worker is this same crate under a profile of its own, so it has both
+/// vocabularies a worker has (see
+/// [`CommandProviders`](super::command::CommandProviders)).
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Surface {
+    /// The space's content branch, which runs the few commands that are a
+    /// space's own to run on itself.
+    Space,
+    /// That worker's own profile branch, which runs any command, naming the
+    /// space. For what is a device's and not the space's: whether this
+    /// device syncs it.
+    Profile,
+}
+
+/// A command as a transact request: one transient concept with `fields`
+/// (each a name, its attribute, and its type) applied to `parameters`.
+pub(crate) fn command(
+    fields: &[(&str, &str, &str)],
+    parameters: serde_json::Value,
+) -> serde_json::Value {
+    let with: serde_json::Map<String, serde_json::Value> = fields
+        .iter()
+        .map(|(name, the, as_)| {
+            (
+                (*name).to_owned(),
+                serde_json::json!({ "the": the, "as": as_ }),
+            )
+        })
+        .collect();
+    serde_json::json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": { "kind": "transient", "concept": { "with": with } },
+                "parameters": parameters
+            }
+        }]
+    })
+}
+
+/// Have `space`'s own worker run a command: commit `claims` (a transact
+/// request, see [`command`]) on the branch `surface` names.
+pub(crate) async fn run(
     space: &str,
+    surface: Surface,
     claims: &serde_json::Value,
 ) -> Result<(), TonkWorkerError> {
-    let path = format!("/api/repository/{space}/branch/{CONTENT_BRANCH}/transact");
+    let path = match surface {
+        Surface::Space => format!("/api/repository/{space}/branch/{CONTENT_BRANCH}/transact"),
+        Surface::Profile => format!("/api/profile/branch/{PROFILE_BRANCH}/transact"),
+    };
     ask(space, "POST", &path, Some(claims)).await.map(|_| ())
 }
+
+/// The branch a space's own worker keeps its profile on. It has one profile,
+/// made on its origin's first boot, and never another branch of it.
+const PROFILE_BRANCH: &str = "main";
 
 /// Tell the worker of `space`, or of every space with `None`, that what its
 /// profile told it has changed: where the space syncs, or which account the

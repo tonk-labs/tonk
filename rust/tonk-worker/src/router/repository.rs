@@ -41,6 +41,7 @@ use url::Url;
 use zeroize::Zeroizing;
 
 use super::AppState;
+use super::space_reach::{self, Surface};
 
 mod duplication;
 use crate::{Notification, RepositoryError, TonkWorkerError, broadcast, worker::TonkState};
@@ -2162,7 +2163,7 @@ async fn run_invite(
     // independently, the name as the invitation's historical fact ("you
     // were invited to a space called X", true after any rename).
     let mut meta = tonk_invite::home_address_meta(&remote_execution.access_url);
-    let elsewhere = tonk.site_origins.load(std::sync::atomic::Ordering::Relaxed);
+    let elsewhere = tonk.spaces_elsewhere();
     let name = if elsewhere {
         directory_space_name(&tonk, &repository.did()).await
     } else {
@@ -2241,8 +2242,9 @@ async fn run_invite(
             None => String::new(),
         };
         drop(tonk);
-        super::space_reach::transact(
+        space_reach::run(
             repo_name,
+            Surface::Space,
             &record_invite_claim(&proof, &union, &link, &seed),
         )
         .await?;
@@ -2536,31 +2538,15 @@ async fn record_invite(
 ///
 /// [`RecordInvite`]: tonk_schema::command::RecordInvite
 fn record_invite_claim(proof: &str, union: &str, link: &str, seed: &str) -> serde_json::Value {
-    let field = |name: &str| {
-        serde_json::json!({
-            "the": format!("xyz.tonk.command.record-invite/{name}"),
-            "as": "Text"
-        })
-    };
-    serde_json::json!({
-        "claims": [{
-            "op": "assert",
-            "application": {
-                "predicate": {
-                    "kind": "transient",
-                    "concept": {
-                        "with": {
-                            "proof": field("proof"),
-                            "union": field("union"),
-                            "link": field("link"),
-                            "seed": field("seed")
-                        }
-                    }
-                },
-                "parameters": { "proof": proof, "union": union, "link": link, "seed": seed }
-            }
-        }]
-    })
+    space_reach::command(
+        &[
+            ("proof", "xyz.tonk.command.record-invite/proof", "Text"),
+            ("union", "xyz.tonk.command.record-invite/union", "Text"),
+            ("link", "xyz.tonk.command.record-invite/link", "Text"),
+            ("seed", "xyz.tonk.command.record-invite/seed", "Text"),
+        ],
+        serde_json::json!({ "proof": proof, "union": union, "link": link, "seed": seed }),
+    )
 }
 
 /// Run the [`RecordInvite`] command: write, in the space this worker holds,
@@ -2787,6 +2773,23 @@ impl dialog_capability::Provider<tonk_schema::command::PauseSync> for crate::rou
         let branch = CONTENT_BRANCH.to_string();
         log!("command PauseSync repo={} branch={}", repo, branch);
 
+        // Whether a device syncs a space is kept by the worker that syncs
+        // it. Where that is a worker on the space's own origin, the toggle
+        // is that worker's to make, on its own profile's branch.
+        if self.from_profile() && self.state().read().await.spaces_elsewhere() {
+            let claim = space_reach::command(
+                &[
+                    ("time", "xyz.tonk.command.pause-sync/time", "Float"),
+                    ("space", "xyz.tonk.pause-sync/space", "Entity"),
+                ],
+                serde_json::json!({ "time": command.time.0, "space": repo }),
+            );
+            if let Err(error) = space_reach::run(&repo, Surface::Profile, &claim).await {
+                log!("PauseSync for repo '{}' failed: {}", repo, error);
+            }
+            return;
+        }
+
         if let Err(error) = run_pause_sync(self, &repo, &branch).await {
             log!("PauseSync for repo '{}' failed: {}", repo, error);
         }
@@ -2965,15 +2968,9 @@ async fn run_rename_repository(
     // Where sites have origins of their own, the name is the space's own
     // worker's to write: it holds the content, and runs this same command
     // on the space's branch. Only the directory below is this worker's.
-    let elsewhere = env.from_profile()
-        && env
-            .state()
-            .read()
-            .await
-            .site_origins
-            .load(std::sync::atomic::Ordering::Relaxed);
+    let elsewhere = env.from_profile() && env.state().read().await.spaces_elsewhere();
     if elsewhere {
-        super::space_reach::transact(repo, &rename_claim(repo, name))
+        space_reach::run(repo, Surface::Space, &rename_claim(repo, name))
             .await
             .map_err(|e| RepositoryError::Internal(e.to_string()))?;
     }
@@ -3037,29 +3034,13 @@ async fn run_rename_repository(
 ///
 /// [`RenameRepository`]: tonk_schema::command::RenameRepository
 fn rename_claim(space: &str, name: &str) -> serde_json::Value {
-    serde_json::json!({
-        "claims": [{
-            "op": "assert",
-            "application": {
-                "predicate": {
-                    "kind": "transient",
-                    "concept": {
-                        "with": {
-                            "name": {
-                                "the": "xyz.tonk.command.rename-repository/name",
-                                "as": "Text"
-                            },
-                            "space": {
-                                "the": "xyz.tonk.rename-repository/space",
-                                "as": "Entity"
-                            }
-                        }
-                    }
-                },
-                "parameters": { "space": space, "name": name }
-            }
-        }]
-    })
+    space_reach::command(
+        &[
+            ("name", "xyz.tonk.command.rename-repository/name", "Text"),
+            ("space", "xyz.tonk.rename-repository/space", "Entity"),
+        ],
+        serde_json::json!({ "space": space, "name": name }),
+    )
 }
 
 /// Run the [`RemoveSpace`] command: the user confirmed a Hub row's
@@ -3984,7 +3965,7 @@ async fn seed_and_initialize(
         // The space renders on an origin of its own, where its own worker
         // holds its content: leave the content for that worker to create,
         // and keep what it needs to do so until it asks.
-        if tonk.site_origins.load(std::sync::atomic::Ordering::Relaxed) {
+        if tonk.spaces_elsewhere() {
             defer_seed(&tonk, subject, display_name, description).await?;
             write_replica_status(&tonk, subject, Replica::initialized_status(), description)
                 .await?;
@@ -5661,7 +5642,7 @@ pub async fn create_repository(
     // The opener of a freshly created repo is its founder. Where the
     // space's own worker holds its content, the founder's membership is
     // written there with the rest of it (see [`SpaceSeed`]).
-    if tonk.site_origins.load(std::sync::atomic::Ordering::Relaxed) {
+    if tonk.spaces_elsewhere() {
         record_replica_meta(tonk, &repository, display_name, configuration).await?;
     } else {
         record_repository_meta(

@@ -1387,7 +1387,7 @@ pub async fn drain_sync(state: &AppState) {
     // none.
     let open: Vec<String> = {
         let tonk = state.read().await;
-        if tonk.site_origins.load(std::sync::atomic::Ordering::Relaxed) {
+        if tonk.spaces_elsewhere() {
             Vec::new()
         } else {
             tonk.reactor.repos().read().keys().cloned().collect()
