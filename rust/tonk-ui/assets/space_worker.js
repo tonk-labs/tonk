@@ -907,6 +907,11 @@ let rust;
 
 function siteWorker() {
     rust ??= (PROFILE ? moveIn() : Promise.resolve())
+        .then(async () => {
+            // The Rust worker makes links for people to follow, which lead
+            // to the app and not to this origin.
+            self.tonkAppOrigin = (await siteOrigins())?.app;
+        })
         .then(() => init({ module_or_path: workerWasm() }))
         .then(() => activate(PROFILE ? "profile" : "space", []))
         .then(async worker => {

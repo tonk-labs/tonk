@@ -1739,7 +1739,7 @@ async fn run_connection_invite_for(
         }
     }
     let origin = crate::axum::RequestOrigin::parse(
-        &worker_origin().unwrap_or_else(|| "https://tonk.network".into()),
+        &app_origin().unwrap_or_else(|| "https://tonk.network".into()),
     )
     .map_err(|_| TonkWorkerError::Internal("invalid connection origin".into()))?;
     let minted = super::agent_connections::mint(env.state().clone(), repo.to_owned(), origin).await;
@@ -2757,6 +2757,23 @@ pub(super) fn worker_origin() -> Option<String> {
     {
         None
     }
+}
+
+/// The origin of the app a person opens, for a link made for them to follow.
+///
+/// A worker on a site's own origin is not served from it: its script names
+/// the app through `tonkAppOrigin`, from the deployment's configuration.
+/// Elsewhere the worker's own origin is the app's.
+pub(super) fn app_origin() -> Option<String> {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    if let Some(app) = js_sys::Reflect::get(&js_sys::global(), &"tonkAppOrigin".into())
+        .ok()
+        .and_then(|app| app.as_string())
+        .filter(|app| !app.is_empty())
+    {
+        return Some(app);
+    }
+    worker_origin()
 }
 
 /// Assemble the long (un-shortened) invite URL.
