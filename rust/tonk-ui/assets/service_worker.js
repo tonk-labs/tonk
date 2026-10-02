@@ -907,6 +907,10 @@ async function workerWasmModule() {
 }
 
 async function activateWorker() {
+    // Where sites have origins of their own the profile's worker holds the
+    // database. Starting one here would open what was this origin's before
+    // the profile moved out, and write to a copy nothing else reads.
+    if (siteOrigins) throw new Error("this worker holds no database: the profile's worker does");
     if (tonkServiceWorkerResolves == null) {
         const now = Date.now();
         if (
@@ -1502,8 +1506,32 @@ const DEPLOYMENT_KEY = new URL(DEPLOYMENT_PATH, self.location.origin).href;
 // where nothing was kept.
 let siteOrigins = false;
 
+// Take up what the deployment's configuration says about sites. Only ever
+// towards origins of their own: a worker that learns of them stands its own
+// database down, and one that held none has none to go back to. A deployment
+// that stops naming them is taken up by the next worker, from what is kept.
 function noteSiteOrigins(config) {
-    siteOrigins = config?.sites != null;
+    if (config?.sites == null || siteOrigins) return;
+    siteOrigins = true;
+    standDown();
+}
+
+// This worker has just learned that sites have origins of their own, with its
+// own database possibly running: the deployment turned them on under a page
+// that was already open. The person's profile is about to be copied out of
+// this origin (see "A profile's move out of this origin"), so nothing here
+// may go on writing to it. Stop the sync loop and release every stream; the
+// pages ask again, and are answered by the profile's worker.
+function standDown() {
+    if (tonkServiceWorkerResolves == null) return;
+    const standing = tonkServiceWorkerResolves;
+    tonkServiceWorkerResolves = null;
+    standing
+        .then(async worker => {
+            await worker.onupdatefound?.();
+            log("Sites have origins of their own now: this worker's database stood down");
+        })
+        .catch(error => log("Could not stand this worker's database down:", error));
 }
 
 // Settles once the kept configuration has been read. Anything that would
@@ -1963,6 +1991,8 @@ async function flushSession() {
 }
 
 async function saveWhileDirty() {
+    // No database of this worker's, so no session of its own to save.
+    if (siteOrigins) sessionDirty = false;
     while (sessionDirty) {
         sessionDirty = false;
         try {
