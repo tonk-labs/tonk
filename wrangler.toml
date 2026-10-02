@@ -271,6 +271,14 @@ EMAIL_FROM = "tonk <accounts@tonk.xyz>"
 # this worker's presigned URLs, and neither of those belongs in an environment
 # someone else is testing against.
 [env.preview]
+# No `LIVE` here yet, and none of the top-level migrations, which named
+# environments inherit. Preview uploads each pull request as a version of
+# one shared worker, and a version cannot carry a Durable Object migration:
+# the migration has to land through a plain `wrangler deploy --env preview`
+# first, after which every version must keep the class. Until that is done
+# once from main, a preview has no sockets, and its clients sync over
+# requests as they do against any service without one.
+migrations = []
 workers_dev = true
 routes = []
 
@@ -288,12 +296,6 @@ enabled = true
 head_sampling_rate = 1
 invocation_logs = false
 
-# No `LIVE` here yet. Preview uploads each pull request as a version of
-# one shared worker, and a version cannot carry a Durable Object migration:
-# the migration has to land through a plain `wrangler deploy --env preview`
-# first, after which every version must keep the class. Until that is done
-# once from main, a preview has no sockets, and its clients sync over
-# requests as they do against any service without one.
 
 [[env.preview.r2_buckets]]
 binding = "BUCKET"
