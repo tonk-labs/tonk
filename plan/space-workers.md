@@ -313,18 +313,21 @@ How it hangs together:
 - **Requests go down a port, answers come back up it**: status and headers, then the body in pieces, so a subscription keeps flowing. The app's worker passes the profile's every `/api/` request; the profile's passes a space's everything under one of the space's branches.
 - **A port message does not wake a stopped worker.** While something is being answered the asking worker probes, and a silent worker's port is given up: the page is asked for a new one, and handing it over is what starts the worker again. What was being answered is asked again of the new worker.
 - **The profile's worker answers as its own frame.** A request from the app's page is answered as though the profile's frame in that tab had made it, so the site stamp has a live client, and what the worker tells "the page that asked" (go here, run this passkey ceremony) it tells that frame, which passes it up.
-- **What a command does to a space's content, the space's worker does.** A profile command that has such a part hands it over as a command on the space's branch: a rename forwards itself, an invite is minted by the profile and recorded by the space (`RecordInvite`).
-- **A space's worker is told its account and its remote with its delegation**, and told again when either changes. Signing in moves the space's own roster entry to the new account there.
-- **A person who was here before moves once.** The first time the profile's worker starts it copies in what the app's origin stored: every database record by record, and the files beside them. A key the browser will not export goes with its record. A space then moves on to its own origin the first time it is opened, from a snapshot the profile's worker makes of its copy.
+- **What a command does to a space's content, the space's worker does.** A profile command that has such a part hands it over as a command for the space's worker to run: a rename forwards itself, pausing sync runs on that worker's own profile branch, an invite is minted by the profile and recorded by the space (`RecordInvite`). The other way, a space asked for an invite by its own share button passes the asking up, since a delegation it issued would lapse with its own.
+- **A space's worker is told its account and its remote in its delegation**, signed, and told to take up a new one when either changes. Signing in moves the space's own roster entry to the new account there.
+- **A new space is filled by its own worker**: the standard library, the definitions of a template, or a copy of another space, which the profile fetches from that space's worker and passes along. A removed space is forgotten by its own origin, worker and all.
+- **A person who was here before moves once.** The worker that held their profile in the app's origin stands its database down the moment it reads that sites have origins. The first time the profile's worker starts it copies in what the app's origin stored: every database record by record, and the files beside them. A key the browser will not export goes with its record. A space then moves on to its own origin the first time it is opened, from a snapshot the profile's worker makes of its copy.
+- **Who is looking is a fact in the space.** Each worker says, in a space branch's session overlay, which account its session acts for, and the roster marks that member as you.
 - **Sessions survive a stopped worker.** Each worker saves what its site stamps were made from and restores them before serving.
 - **Assets are served natively**: `/asset:{hash}` with media type, size and ranges; `PUT /` stores one.
 
 Verified in headless Chrome against `dev:web` (two browser profiles for sharing):
 
-- A new person: profile, new space, rename, reload, offline reload, either worker stopped mid-session, an update of either worker.
+- A new person: profile, new space, rename, reload, offline reload, either worker stopped mid-session, an update of either worker, two tabs.
 - Creating an account with a passkey, activating it, and the space syncing from its own worker under the delegated chain.
-- Sharing: mint, short link, join on a second device, content and roster arriving through the remote.
-- A person from before: profile moved with the same identity, spaces listed, a space seeded into its own origin on first open.
+- Sharing: mint from the bar and from the space's own branch, short link, join on a second device, content and roster arriving through the remote.
+- A space from a template, with the template's app running under the space's policy. A duplicate. Pause and resume. Leaving a space.
+- A person from before: a browser running the single worker, reloaded once sites were named, with the profile moved under the same identity, its spaces listed, and a space seeded into its own origin on first open.
 
 Corrections to the design above:
 
@@ -336,17 +339,31 @@ Corrections to the design above:
 - **A key the browser will not export can still be handed to another origin** by `postMessage`, which is what makes the one-time move possible without touching custody.
 - **Web Awesome fetches its icons from `ka-f.fontawesome.com`.** `connect-src` blocks that, so those icons are missing. The icon set has to be served from our own origin.
 
+What a space's code can and cannot reach:
+
+A space's worker has a network and the space's author code has none, on the same origin, with the same storage. Closed so far: the remote and the account are read from the signed delegation, whose chain is checked from the space's key down; a space's page may ask its worker only for its own space's data, not for its remote, an invite, a join or anything of the worker's own profile; the shell takes a port before anything else in its document can; the kept wasm is checked against the worker's stamp on every load.
+
+Still open, and a hostile template is the case that matters:
+
+- **The worker fetches URLs a space names.** A space's recorded seed source is fetched to check for updates, and notation that is evaluated can include other documents. Either carries data out in the URL.
+- **The worker's storage is the page's storage.** IndexedDB and the cache are one per origin, so author code can read and write the worker's replica, its profile key (usable, not exportable) and its saved delegation. The delegation is for this one space, so the damage is to that space.
+
 Not done:
 
-- **Commands not yet split.** Promote, expel, pause sync, remove, duplicate, check update, forget invite, agent handoff and a space's own share button still act on the profile's copy of the space or mint from the space's worker. A join pulls into the profile's copy and pushes its claim from there, so a joined space is held twice until that copy is dropped.
-- **The profile's copy of a space is never deleted**, nor is what the app's origin stored before the move.
-- **`GET /api/repository/{space}`** still answers from the profile, members included. The roster itself reads the space by query.
-- **An origin per profile.** Every profile on a device shares `profile.{host}`.
-- **Links the worker makes for people** (the agent link) are made from the worker's own origin, which is now a site's.
+- **Commands not yet split.** Promote and expel read the chains the space retains and write its roster, and still do both on the profile's copy. So does the update check. The agent link is untested.
+- **A join pulls into the profile's copy** and pushes its claim from there, so a joined space is held twice. The profile's worker no longer follows it afterwards.
+- **Nothing old is deleted**: not the profile's copy of a space once its own origin has it, nor what the app's origin stored before the move. A deployment that stops naming sites goes back to that old copy.
+- **`GET /api/repository/{space}`** still answers from the profile, members included. Nothing in the bar reads its members any more; it is asked only whether the device holds the space.
+- **An origin per profile.** Every profile on a device shares `profile.{host}`. The roster of profiles and the active one would have to live with the app, and signing in to another account would have to carry the ceremony's result to another origin's worker.
 - **The server does not yet answer a site's hostname with the shell and its policy.**
-- Firefox and Safari. Two tabs. Pre-warming origins for offline creation.
+- **A request passed on is asked again when a port is replaced**, a write included, so a write can land twice.
+- Firefox and Safari. Pre-warming origins for offline creation.
 
-Known and not ours to fix here: an invite minted after signing in names the retired onboarding account as inviter, so the member graph cannot place the person who joins.
+Known and not from this work:
+
+- An invite minted after signing in names the retired onboarding account as inviter, so the member graph cannot place the person who joins.
+- In development a rebuild that changes nothing gives the app's worker the same build id with a different manifest hash, since the page's preload links come out in another order, and its install is refused. The worker in place is the same build, so nothing is lost.
+- The development proxy does not pass the requested host on, so the configuration names sites whatever name the app is opened by.
 
 ## Staging
 
