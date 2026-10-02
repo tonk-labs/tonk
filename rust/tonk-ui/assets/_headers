@@ -26,6 +26,17 @@
 /asset-manifest.json
   Cache-Control: no-store
 
+# A site origin's worker, and the shell that registers it. The shell is what
+# a site origin serves before its worker is in control, and a site's origin
+# sits under the app's domain, so it may not use the app's passkeys: author
+# code runs in the document the shell becomes.
+/space_worker.js
+  Cache-Control: no-store
+
+/space-origin.html
+  Cache-Control: no-cache
+  Permissions-Policy: publickey-credentials-get=(), publickey-credentials-create=()
+
 # Live build metadata must never be answered from a cache.
 /version.json
   Cache-Control: no-store

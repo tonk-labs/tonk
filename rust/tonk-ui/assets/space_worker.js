@@ -540,6 +540,11 @@ async function siteOrigins() {
 // which are compiled from strings; space code is untrusted by design, so the
 // boundary is this origin and its lack of network, not `script-src`. Without
 // the deployment's site origins nothing may frame this origin at all.
+// A site's origin may sit under the app's own domain (`{label}.tonk.foundation`
+// under `tonk.foundation`), where WebAuthn would let it ask for the app's
+// passkeys. No document on a site origin may use them.
+const NO_PASSKEYS = "publickey-credentials-get=(), publickey-credentials-create=()";
+
 function spacePolicy(sites, { framedBySelf = false } = {}) {
     const scheme = sites ? new URL(sites.app).protocol : null;
     const outer = sites ? `${sites.app} ${scheme}//profile.${sites.host}` : "'none'";
@@ -576,6 +581,7 @@ async function serveShell() {
     if (!response) return new Response("offline", { status: 503 });
     const headers = new Headers(response.headers);
     headers.set("content-security-policy", spacePolicy(await siteOrigins()));
+    headers.set("permissions-policy", NO_PASSKEYS);
     headers.set("x-content-type-options", "nosniff");
     return new Response(response.body, { status: response.status, headers });
 }
@@ -644,6 +650,7 @@ async function serveAsset(hash, request) {
             "content-security-policy",
             spacePolicy(await siteOrigins(), { framedBySelf: true }),
         );
+        headers.set("permissions-policy", NO_PASSKEYS);
     }
     if (reply.status !== 200) {
         return new Response(reply.body, { status: reply.status, headers });
