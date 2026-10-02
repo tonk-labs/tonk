@@ -1250,6 +1250,14 @@ pub struct SyncQueue {
     /// Repo name → instant its last sweep failed. Held apart from `dirty` on
     /// purpose: see [`requeue`](Self::requeue).
     retrying: std::sync::Mutex<HashMap<String, f64>>,
+    /// Repo name → instant a watch of its upstream said the upstream moved.
+    /// Held apart from `dirty`: another device's change is not this one's
+    /// un-pushed work, so it does not lift the hidden-tab interval.
+    moved: std::sync::Mutex<HashMap<String, f64>>,
+    /// Repo name → whether the watch of its upstream is running (`true`) or
+    /// only being begun (`false`). A watched repo is left out of the
+    /// polling sweep: its watch says when it has something to pull.
+    watching: std::sync::Mutex<HashMap<String, bool>>,
 }
 
 impl SyncQueue {
@@ -1293,8 +1301,56 @@ impl SyncQueue {
             repos.into_iter().map(|(repo, _)| repo).collect()
         }
         let mut repos = take(&self.dirty);
+        repos.extend(take(&self.moved));
         repos.extend(take(&self.retrying));
         repos
+    }
+
+    /// Record that a watch of `repo`'s upstream said it moved: the next
+    /// drain sweeps it.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    pub(crate) fn moved(&self, repo: &str, now: f64) {
+        if let Ok(mut moved) = self.moved.lock() {
+            moved.insert(repo.to_owned(), now);
+        }
+    }
+
+    /// Begin watching `repo`, answering `false` when a watch of it is
+    /// already begun.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    pub(crate) fn begin_watching(&self, repo: &str) -> bool {
+        let Ok(mut watching) = self.watching.lock() else {
+            return false;
+        };
+        if watching.contains_key(repo) {
+            return false;
+        }
+        watching.insert(repo.to_owned(), false);
+        true
+    }
+
+    /// The watch of `repo` is running: the sweep leaves `repo` to it.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    pub(crate) fn watched(&self, repo: &str) {
+        if let Ok(mut watching) = self.watching.lock() {
+            watching.insert(repo.to_owned(), true);
+        }
+    }
+
+    /// The watch of `repo` ended, or never began: the sweep pulls it again.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    pub(crate) fn end_watching(&self, repo: &str) {
+        if let Ok(mut watching) = self.watching.lock() {
+            watching.remove(repo);
+        }
+    }
+
+    /// Whether a running watch of `repo` says when it has something to pull.
+    pub(crate) fn is_watched(&self, repo: &str) -> bool {
+        self.watching
+            .lock()
+            .map(|watching| watching.get(repo).copied().unwrap_or(false))
+            .unwrap_or(false)
     }
 
     /// Queue `repo` for a retry after a failed sweep.
@@ -1327,6 +1383,9 @@ impl SyncQueue {
         }
         if let Ok(mut retrying) = self.retrying.lock() {
             retrying.remove(repo);
+        }
+        if let Ok(mut moved) = self.moved.lock() {
+            moved.remove(repo);
         }
     }
 }
@@ -1379,10 +1438,14 @@ pub async fn drain_sync(state: &AppState) {
 
     // Every currently-open repository — the pull population. Read the reactor's
     // cached repo map; a repo only appears once acquired, which every rendered
-    // space has done.
+    // space has done. A watched repo is left to its watch.
     let open: Vec<String> = {
         let tonk = state.read().await;
-        tonk.reactor.spaces()
+        tonk.reactor
+            .spaces()
+            .into_iter()
+            .filter(|repo| !tonk.sync_queue.is_watched(repo))
+            .collect()
     };
 
     // Union, pending-first, de-duplicated while preserving order.
@@ -1425,6 +1488,110 @@ pub async fn drain_sync(state: &AppState) {
             && let Err(error) = swept
         {
             log!("drain_sync: account state did not fully reconcile: {error}");
+        }
+    }
+}
+
+/// Watch the upstream of every open repository not watched yet, so a
+/// change another device makes is pulled when it lands rather than when
+/// the next sweep comes round.
+///
+/// A repository whose `main` pulls from exactly one branch, at a service
+/// that can follow it, is watched; any other, and one whose watch ends,
+/// is left to the sweep, which tries the watch again on its next tick. A
+/// delivered head marks the repository [`moved`](SyncQueue::moved) and
+/// calls `drain`, which syncs it through the same reconciliation as a
+/// sweep.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn watch_open_repos(state: &AppState, drain: std::rc::Rc<dyn Fn()>) {
+    let open: Vec<(String, std::sync::Arc<dialog_reactor::BranchState>)> = {
+        let tonk = state.read().await;
+        let repos = tonk.reactor.repos().read();
+        repos
+            .iter()
+            .filter_map(|(name, repo)| {
+                let branch = repo.branches().read().get("main").cloned()?;
+                Some((name.clone(), branch))
+            })
+            .collect()
+    };
+    for (repo, branch) in open {
+        let operator = {
+            let tonk = state.read().await;
+            if !is_sync_enabled(&tonk, &repo, "main").await
+                || !tonk.sync_queue.begin_watching(&repo)
+            {
+                continue;
+            }
+            tonk.operator.clone()
+        };
+        let state = state.clone();
+        let drain = drain.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            watch_repo(&state, &repo, &branch, &operator, drain.as_ref()).await;
+            state.read().await.sync_queue.end_watching(&repo);
+        });
+    }
+}
+
+/// Follow `repo`'s upstream until the watch ends, marking the repository
+/// moved and calling `drain` for each head that is ahead of the one known.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn watch_repo(
+    state: &AppState,
+    repo: &str,
+    branch: &std::sync::Arc<dialog_reactor::BranchState>,
+    operator: &crate::worker::DefaultOperator,
+    drain: &dyn Fn(),
+) {
+    use dialog_repository::{Observation, Upstream};
+    use futures_util::{StreamExt as _, pin_mut};
+
+    let upstreams = branch.branch.pulls();
+    let mut each = upstreams.iter();
+    let (
+        Some(Upstream::Remote {
+            remote,
+            branch: name,
+            ..
+        }),
+        None,
+    ) = (each.next(), each.next())
+    else {
+        return;
+    };
+    let Ok(upstream) = remote.branch(name.clone()).open().perform(operator).await else {
+        return;
+    };
+    let observations = match upstream.watch().perform(operator).await {
+        Ok(observations) => observations,
+        Err(error) => {
+            log!("{repo} is not watched, the sweep pulls it: {error}");
+            return;
+        }
+    };
+    pin_mut!(observations);
+    state.read().await.sync_queue.watched(repo);
+    while let Some(observed) = observations.next().await {
+        // A profile switch rebuilds the reactor, and removing the space
+        // evicts it: this watch then answers to a branch nobody holds.
+        let current = {
+            let tonk = state.read().await;
+            let repos = tonk.reactor.repos().read();
+            repos
+                .get(repo)
+                .and_then(|held| held.branches().read().get("main").cloned())
+        };
+        if !current.is_some_and(|current| std::sync::Arc::ptr_eq(&current, branch)) {
+            return;
+        }
+        match observed {
+            Ok(Observation::Advanced(_) | Observation::Diverged) => {
+                state.read().await.sync_queue.moved(repo, current_millis());
+                drain();
+            }
+            Ok(Observation::Stale) => {}
+            Err(error) => log!("{repo}: a watched head was not recorded: {error}"),
         }
     }
 }
