@@ -1833,9 +1833,9 @@ function releaseProfileCalls(reason) {
 // opens it. Once the profile's worker has all of it, it says so and this
 // origin's copy is removed.
 
-// The databases a profile is kept in: its own, its credentials', and one for
-// each space it holds.
-const PROFILE_DATABASE = /^(tonk[.-]|did:)/;
+// The databases a profile is kept in: the one its keys are kept in, its own
+// (a space under its DID) and one for each space it holds.
+const PROFILE_DATABASE = /^(dialog\.credential$|did:)/;
 
 async function answerProfile(port, { id, stored }) {
     // Acknowledged before it is answered, so the profile's worker can tell a

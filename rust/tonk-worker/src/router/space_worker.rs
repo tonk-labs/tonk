@@ -413,8 +413,10 @@ mod tests {
 
     use ::axum::body::Body;
     use ::axum::http::{Request, StatusCode};
+    use dialog_credentials::Ed25519Signer;
     use dialog_repository::{RepositoryExt as _, Revision};
     use dialog_varsig::Did;
+    use dialog_varsig::Principal as _;
     use tower::ServiceExt;
 
     use super::{
@@ -433,6 +435,12 @@ mod tests {
     /// replica the host never mounted.
     async fn space_origin() -> TonkState {
         test_state_without_root().await
+    }
+
+    /// A space nothing has mounted: a key of its own. A profile's DID will
+    /// not do, since a profile is a space under its DID and holds content.
+    async fn unmounted_space() -> Did {
+        Ed25519Signer::generate().await.unwrap().did()
     }
 
     /// The `main` revision `tonk` holds for `space`, if any.
@@ -562,7 +570,7 @@ mod tests {
         let worker = space_origin().await;
         // A replica nothing has mounted yet, standing in for the space as a
         // fresh origin holds it.
-        let replica = space_origin().await.profile.did();
+        let replica = unmounted_space().await;
         mount_replica(&worker, &replica, None, None).await.unwrap();
         assert!(
             main_revision(&worker, &replica).await.is_none(),
@@ -620,7 +628,7 @@ mod tests {
             .await
             .unwrap();
         adopt(&worker, &space, &grant.chain).await.unwrap();
-        let replica = space_origin().await.profile.did();
+        let replica = unmounted_space().await;
         mount_replica(&worker, &replica, None, None).await.unwrap();
 
         assert!(!name_member(&worker, &replica, "Ada").await.unwrap());

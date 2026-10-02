@@ -897,9 +897,12 @@ async function forgetSite() {
 // never replaced. A copy that was cut short is thrown away and made again.
 
 const MOVED_KEY = "/__profile/moved";
-// The databases a profile is kept in: its own, its credentials', and one for
-// each space it holds.
-const PROFILE_DATABASE = /^(tonk[.-]|did:)/;
+// The databases a profile is kept in: the one its keys are kept in, its own
+// (a space under its DID) and one for each space it holds.
+const PROFILE_DATABASE = /^(dialog\.credential$|did:)/;
+// The database a profile's keys are kept in. An origin with one holds a
+// profile.
+const PROFILE_STORE = "dialog.credential";
 const MOVED_BATCH = 128;
 const MOVED_CHUNK = 8 * 1024 * 1024;
 
@@ -917,12 +920,12 @@ async function moveIn() {
     const mark = state =>
         cache.put(MOVED_KEY, new Response(JSON.stringify({ state, at: new Date().toISOString() })));
     const own = (await indexedDB.databases()).filter(({ name }) => PROFILE_DATABASE.test(name));
-    if (!marker && own.some(({ name }) => name === "tonk.profile")) {
+    if (!marker && own.some(({ name }) => name === PROFILE_STORE)) {
         await mark("kept");
         return;
     }
     const { databases, files } = await askHost({ stored: "list" });
-    if (!databases.some(({ name }) => name === "tonk.profile")) {
+    if (!databases.some(({ name }) => name === PROFILE_STORE)) {
         await mark("none");
         return;
     }
