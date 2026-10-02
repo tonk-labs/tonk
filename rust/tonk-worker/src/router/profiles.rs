@@ -608,6 +608,9 @@ async fn promote(
         active.context_generation.fetch_add(1, Ordering::AcqRel);
     }
     super::navigate::notify_profile_changed(source);
+    // A space's own worker acts for the account its profile does, and was
+    // told so by the profile this one replaces.
+    super::space_reach::changed(None);
 
     // Catch up on whatever account the swapped-in profile is attached
     // to, exactly as a boot would. Fire-and-forget: account-service
