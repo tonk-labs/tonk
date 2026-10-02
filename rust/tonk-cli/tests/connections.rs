@@ -319,7 +319,7 @@ async fn connection_import_preserves_identity_private_credentials_and_offline_ed
     assert_eq!(binding.recipient, recipient);
     assert!(!root.join("main").exists());
     assert!(root.join("data/main").is_dir());
-    let key = root.join("credentials/invitation.credentials/credential/key/self");
+    let key = root.join("credentials/dialog.credential/credential/key/invitation");
     assert_eq!(std::fs::metadata(&key)?.permissions().mode() & 0o777, 0o600);
     assert_eq!(
         std::fs::metadata(root.join("credentials"))?
@@ -435,7 +435,7 @@ async fn connection_rejects_legacy_opens_binding_loss_and_missing_credentials() 
             .is_err()
     );
     std::fs::remove_dir(root.join("main"))?;
-    let key = root.join("credentials/invitation.credentials/credential/key/self");
+    let key = root.join("credentials/dialog.credential/credential/key/invitation");
     std::fs::remove_file(&key)?;
     assert!(
         connections::open_bound(&root, &binding, config.account_store.clone())

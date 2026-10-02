@@ -20,6 +20,24 @@ use tonk_common::log;
 /// redirect is lost, and the user can navigate from the Hub.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) fn notify_navigate(client: Option<&crate::router::ClientId>, href: &str) {
+    post_navigate(client, href, false);
+}
+
+/// [`notify_navigate`] as a fresh load that replaces the page's current
+/// history entry (`{ type: "navigate", href, replace: true }`), rather than
+/// a client-side route change.
+///
+/// For a command that switched the page's profile: a document bound to the
+/// profile it started on is refused until it loads again, so a route change
+/// would leave it showing errors. Replacing the entry also keeps the
+/// address it came from out of the history.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) fn notify_replace(client: Option<&crate::router::ClientId>, href: &str) {
+    post_navigate(client, href, true);
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn post_navigate(client: Option<&crate::router::ClientId>, href: &str, replace: bool) {
     use wasm_bindgen::{JsCast, JsValue};
     use wasm_bindgen_futures::{JsFuture, spawn_local};
 
@@ -71,6 +89,9 @@ pub(crate) fn notify_navigate(client: Option<&crate::router::ClientId>, href: &s
             &JsValue::from_str("href"),
             &JsValue::from_str(&href),
         );
+        if replace {
+            let _ = js_sys::Reflect::set(&message, &JsValue::from_str("replace"), &JsValue::TRUE);
+        }
         if let Err(e) = client.post_message(&message) {
             log!("navigate: post_message(navigate) failed: {e:?}");
         }
@@ -86,6 +107,12 @@ pub(crate) fn notify_navigate(client: Option<&crate::router::ClientId>, href: &s
 pub(crate) fn notify_navigate(client: Option<&crate::router::ClientId>, href: &str) {
     let _ = client;
     log!("navigate: no page on this host; the target was {href}");
+}
+
+/// No page on this host either; see [`notify_navigate`].
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub(crate) fn notify_replace(client: Option<&crate::router::ClientId>, href: &str) {
+    notify_navigate(client, href);
 }
 
 /// Ask every other top-level document to reload after the active browser

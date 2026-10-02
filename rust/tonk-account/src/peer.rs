@@ -48,6 +48,18 @@ pub fn custodian_name(branch: &str) -> String {
     }
 }
 
+/// Where the credential store of the directory at `directory` keeps the
+/// key named `name` on the filesystem, for the few places that must look
+/// without opening it: whether a key was ever kept, and what its file's
+/// permissions are.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn kept_key_path(directory: &std::path::Path, name: &str) -> std::path::PathBuf {
+    directory
+        .join("dialog.credential")
+        .join("credential/key")
+        .join(name)
+}
+
 /// Open the key of the system tonk runs as, from the credential store in
 /// `directory`, and the store, owned by that system.
 pub async fn open_system<S>(
@@ -120,11 +132,12 @@ where
         .map_err(|error| failed(error.to_string()))
 }
 
-/// Open the peer a profile is: its key opened from `credentials`, its home
-/// space at `location` in `storage`, its records in the home's
-/// [`ACCESS_BRANCH`], granted the storage by `system`, spaces it names
-/// resolving against `base`, and [onboarded](onboard). With `create`
-/// false, a profile that holds no key is refused rather than given one.
+/// Open the peer a profile is: its key opened from `credentials` under the
+/// name `location` gives, its [home](home) space in `storage`, its records
+/// in the home's [`ACCESS_BRANCH`], granted the storage by `system`,
+/// spaces it names resolving against `base`, and [onboarded](onboard).
+/// With `create` false, a profile that holds no key is refused rather
+/// than given one.
 pub async fn open_peer<S>(
     location: Location,
     base: Directory,
@@ -169,8 +182,9 @@ where
 {
     let credential = open_credential(&location, credentials, &storage, create).await?;
     record_location(&credential.did(), &location);
+    let home = home(&location, &base, &credential.did(), &storage).await?;
     let peer = Peer::new(credential.clone())
-        .at(location)
+        .at(home)
         .base(base)
         .space(Repository::from(credential.did()).branch(branch))
         .with(storage)
@@ -183,8 +197,44 @@ where
     Ok(peer)
 }
 
-/// Where each profile opened in this process lives, by its DID: its
-/// space, and the directory the keys kept beside it are in.
+/// Where the home space of the profile `profile` is: among the spaces it
+/// names, under its own DID, like any other space. The profile's name
+/// finds its key, and the key says where its space is.
+///
+/// A profile from before that keeps its home under its name, at
+/// `location`, and goes on living there: a store cannot be renamed, and
+/// what the profile holds is in it. A space of that name that is another
+/// key's is not this profile's home, and is left alone.
+async fn home<S>(
+    location: &Location,
+    base: &Directory,
+    profile: &dialog_varsig::Did,
+    storage: &Storage<S>,
+) -> Result<Location, PeerError>
+where
+    S: PeerSpace + Resource<Location, Error: Display>,
+{
+    let named = Subject::from(did!("local:storage"))
+        .attenuate(storage_fx::Storage)
+        .attenuate(location.clone())
+        .load()
+        .perform(storage)
+        .await;
+    match named {
+        Ok(held) if held.did() == *profile => Ok(location.clone()),
+        Ok(_) | Err(storage_fx::StorageError::NotFound(_)) => {
+            Ok(Location::new(base.clone(), profile.to_string()))
+        }
+        Err(error) => Err(PeerError::Open(format!(
+            "failed to look for the profile's space: {error}"
+        ))),
+    }
+}
+
+/// Where each profile opened in this process was opened from, by its DID:
+/// the name its key is kept under, and the directory the keys kept beside
+/// it are in. A profile from before homes were named by DID has its space
+/// there too.
 fn locations() -> &'static std::sync::Mutex<std::collections::HashMap<String, Location>> {
     static LOCATIONS: std::sync::OnceLock<
         std::sync::Mutex<std::collections::HashMap<String, Location>>,
@@ -649,6 +699,107 @@ mod tests {
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_dedicated_worker);
+
+    /// The names of what `directory` holds.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn entries(directory: &std::path::Path) -> Vec<String> {
+        std::fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// A new profile's home is a space like any other: stored under the
+    /// profile's DID among the spaces it names, not under the name its key
+    /// is kept by. Opening it again by that name finds the same home.
+    ///
+    /// Native only, for the temporary directory it reads back: the browser
+    /// keeps the same layout as databases, which the worker's
+    /// `it_takes_a_new_space_into_custody_on_a_device_linked_without_a_key`
+    /// opens a profile through.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_keeps_a_new_profile_home_under_its_did() -> anyhow::Result<()> {
+        use dialog_storage::provider::storage::NativeSpace;
+
+        let keys = tempfile::tempdir()?;
+        let spaces = tempfile::tempdir()?;
+        let directory = Directory::At(keys.path().to_string_lossy().into_owned());
+        let base = Directory::At(spaces.path().to_string_lossy().into_owned());
+        let open = || async {
+            let (credentials, system) = open_system::<NativeSpace>(directory.clone()).await?;
+            open_peer(
+                Location::new(directory.clone(), "tonk"),
+                base.clone(),
+                Storage::<NativeSpace>::default().owned_by(system.did()),
+                &credentials,
+                &system,
+                true,
+            )
+            .await
+        };
+
+        let peer = open().await?;
+        assert_eq!(entries(spaces.path()), vec![peer.did().to_string()]);
+        assert!(
+            !entries(keys.path()).contains(&"tonk".to_string()),
+            "the profile got a space under its name: {:?}",
+            entries(keys.path())
+        );
+
+        let again = open().await?;
+        assert_eq!(again.did(), peer.did());
+        assert_eq!(again.authority().await?, peer.authority().await?);
+        assert_eq!(entries(spaces.path()), vec![peer.did().to_string()]);
+        Ok(())
+    }
+
+    /// A profile from before homes were named by DID keeps its home under
+    /// its name: it opens as the identity it had, in the space that holds
+    /// what it kept, and gets no second home under its DID.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[dialog_common::test]
+    async fn it_keeps_a_profile_home_that_was_named() -> anyhow::Result<()> {
+        use dialog_storage::provider::storage::NativeSpace;
+        use dialog_storage::resource::Resource as _;
+
+        let keys = tempfile::tempdir()?;
+        let spaces = tempfile::tempdir()?;
+        let directory = Directory::At(keys.path().to_string_lossy().into_owned());
+        let base = Directory::At(spaces.path().to_string_lossy().into_owned());
+        let location = Location::new(directory.clone(), "tonk");
+
+        // What a release before the credential store left: the profile's
+        // key in the space under its name.
+        let key = Ed25519Signer::generate().await?;
+        let held = Credential::Signer(SignerCredential::from(key.clone()));
+        Subject::from(key.did())
+            .credential()
+            .key(credential_fx::SELF)
+            .save(held)
+            .perform(&NativeSpace::open(&location).await?)
+            .await?;
+
+        let (credentials, system) = open_system::<NativeSpace>(directory.clone()).await?;
+        let peer = open_peer(
+            location,
+            base,
+            Storage::<NativeSpace>::default().owned_by(system.did()),
+            &credentials,
+            &system,
+            false,
+        )
+        .await?;
+
+        assert_eq!(peer.did(), key.did());
+        assert!(entries(keys.path()).contains(&"tonk".to_string()));
+        assert!(
+            entries(spaces.path()).is_empty(),
+            "the profile got a second home: {:?}",
+            entries(spaces.path())
+        );
+        Ok(())
+    }
 
     fn service(endpoint: &str) -> SiteAddress {
         SiteAddress::from(dialog_remote_ucan::UcanAddress::new(endpoint))
