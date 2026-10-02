@@ -524,6 +524,7 @@ pub async fn connect<Env: PeersEnv>(
     subject: dialog_varsig::Did,
     env: &Env,
 ) -> Result<ConnectedReplica, ConnectReplicaError> {
+    let address = with_socket(address);
     let name = service_name(&address)?;
     if let Ok(replica) = contact(name.as_str())
         .connect()
@@ -547,6 +548,32 @@ pub async fn connect<Env: PeersEnv>(
         .open()
         .perform(env)
         .await?)
+}
+
+/// `address` with its service's socket: the endpoint itself over `wss`,
+/// or `ws` for a plain `http` one, where a tonk access service keeps each
+/// space's socket. An address that names a socket keeps it, and one that
+/// is not a service's is left as it is.
+///
+/// A service without a socket is still reached: what would have gone
+/// over it goes as requests, and a watch there is refused, so the host
+/// checks on its own schedule instead.
+pub fn with_socket(address: SiteAddress) -> SiteAddress {
+    let SiteAddress::Ucan(ucan) = &address else {
+        return address;
+    };
+    if ucan.socket().is_some() {
+        return address;
+    }
+    let endpoint = ucan.endpoint();
+    let socket = if let Some(rest) = endpoint.strip_prefix("https://") {
+        format!("wss://{rest}")
+    } else if let Some(rest) = endpoint.strip_prefix("http://") {
+        format!("ws://{rest}")
+    } else {
+        return address;
+    };
+    SiteAddress::Ucan(ucan.clone().with_socket(socket))
 }
 
 /// Why [`connect`] could not reach a replica.
@@ -829,6 +856,30 @@ mod tests {
         Ok(())
     }
 
+    /// A service is reached at its endpoint's socket too: over `wss` for
+    /// an `https` endpoint and `ws` for a plain `http` one, on the same
+    /// path. A socket an address names already is kept.
+    #[dialog_common::test]
+    fn it_reaches_a_service_at_its_socket_too() {
+        let socket_of = |address: SiteAddress| match with_socket(address) {
+            SiteAddress::Ucan(ucan) => ucan.socket().map(str::to_string),
+            _ => None,
+        };
+        assert_eq!(
+            socket_of(service("https://tonk.network/ucan/")),
+            Some("wss://tonk.network/ucan/".into())
+        );
+        assert_eq!(
+            socket_of(service("http://localhost:8090/ucan/")),
+            Some("ws://localhost:8090/ucan/".into())
+        );
+        let named = SiteAddress::Ucan(
+            dialog_remote_ucan::UcanAddress::new("https://tonk.network/ucan/")
+                .with_socket("wss://elsewhere.example/"),
+        );
+        assert_eq!(socket_of(named), Some("wss://elsewhere.example/".into()));
+    }
+
     /// Every repository at a service is reached through one contact,
     /// looked up by the service's name and recorded under its `did:web`;
     /// connecting again records nothing new.
@@ -876,8 +927,8 @@ mod tests {
             .open()
             .perform(&peer)
             .await?;
-        assert!(by_name.addresses().contains(&ucan));
-        assert!(by_name.addresses().contains(&sync));
+        assert!(by_name.addresses().contains(&with_socket(ucan.clone())));
+        assert!(by_name.addresses().contains(&with_socket(sync.clone())));
         let by_did = peer
             .contact(service_did(&ucan)?)
             .connect()
