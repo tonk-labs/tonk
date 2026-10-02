@@ -240,6 +240,7 @@ fn profile_commands() -> CommandRegistry<CommandEnv> {
         .command::<tonk_schema::command::SwitchProfile>()
         .command::<tonk_schema::command::SignOut>()
         .command::<tonk_schema::command::Home>()
+        .command::<tonk_schema::command::InstallComponent>()
         // The bar's own acts: each records a request on the asking tab's
         // site, which that tab's bar performs (see `site_request`).
         .command::<tonk_schema::command::AddAccount>()

@@ -1403,6 +1403,22 @@ pub mod command {
         }
 
         /// `member/expel` — revoke a member's access to a space.
+        /// `library/install` — add a library component to the space.
+        pub mod install_component {
+            use dialog_artifacts::Entity;
+            use dialog_query::Attribute;
+
+            /// The component (`tonk:library/<name>`): which library file.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("xyz.tonk.command.install-component")]
+            pub struct Component(pub Entity);
+
+            /// The moment it was asked, so installing twice re-fires.
+            #[derive(Attribute, Clone, PartialEq, PartialOrd)]
+            #[domain("xyz.tonk.command.install-component")]
+            pub struct Time(pub f64);
+        }
+
         pub mod expel_member {
             use dialog_artifacts::Entity;
             use dialog_query::Attribute;

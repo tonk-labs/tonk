@@ -5283,6 +5283,22 @@ fn embedded_standard_library(url: &str) -> Result<String, TonkWorkerError> {
         PROFILE_LIBRARY_URL => {
             Ok(include_str!("../../../tonk-core/assets/library/profile.yaml").to_owned())
         }
+        // The components a space can install (`library::COMPONENTS`).
+        "/library/issue.yaml" => {
+            Ok(include_str!("../../../tonk-core/assets/library/issue.yaml").to_owned())
+        }
+        "/library/meta.yaml" => {
+            Ok(include_str!("../../../tonk-core/assets/library/meta.yaml").to_owned())
+        }
+        "/library/notebook.yaml" => {
+            Ok(include_str!("../../../tonk-core/assets/library/notebook.yaml").to_owned())
+        }
+        "/library/prose.yaml" => {
+            Ok(include_str!("../../../tonk-core/assets/library/prose.yaml").to_owned())
+        }
+        "/library/table.yaml" => {
+            Ok(include_str!("../../../tonk-core/assets/library/table.yaml").to_owned())
+        }
         other => Err(TonkWorkerError::Internal(format!(
             "no embedded library for '{other}'"
         ))),

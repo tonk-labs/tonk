@@ -130,6 +130,62 @@ fn parsed(parsed: tonk_notation::Parsed) -> Result<Syntax, TonkWorkerError> {
         .ok_or_else(|| TonkWorkerError::Internal("library is empty".to_owned()))
 }
 
+/// The library's components a space can install from the palette
+/// (`library/install`): every library document but the two each branch is
+/// seeded with, `core.yaml` (every space) and `profile.yaml` (the profile
+/// branch). Only these: a component names a library file by its name, so
+/// the list is what keeps an install to the library.
+pub(super) const COMPONENTS: [&str; 5] = ["issue", "meta", "notebook", "prose", "table"];
+
+/// The library file a component entity (`tonk:library/<name>`) names, when
+/// it is one of [`COMPONENTS`].
+pub(super) fn component_url(component: &str) -> Option<String> {
+    let name = component.strip_prefix("tonk:library/")?;
+    COMPONENTS
+        .contains(&name)
+        .then(|| format!("/library/{name}.yaml"))
+}
+
+/// Install a library component into the space it was asked in: evaluate
+/// its document, includes inlined, into that branch. Additive, like a
+/// reseed of one file: nothing is retracted, and the space's installed
+/// seed is neither recorded nor replaced, so installing twice re-asserts
+/// the same definitions.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl dialog_capability::Provider<tonk_schema::command::InstallComponent>
+    for crate::router::CommandEnv
+{
+    async fn execute(&self, command: tonk_schema::command::InstallComponent) {
+        let component = command.component.0.to_string();
+        let Some(url) = component_url(&component) else {
+            tonk_common::log!("library/install: '{component}' is not a library component");
+            return;
+        };
+        if self.from_profile() {
+            tonk_common::log!("library/install: components install into a space, not the profile");
+            return;
+        }
+        let (repo, branch) = (self.origin().repo.clone(), self.origin().branch.clone());
+        let tonk = self.state().read().await;
+        let installed = async {
+            let text = super::repository::fetch_standard_library(&url).await?;
+            let syntax = parse(&text).await?;
+            super::evaluate::seed_syntax_on_branch(
+                &tonk,
+                tonk.reactor.repository(&repo).branch(&branch),
+                syntax,
+            )
+            .await
+        }
+        .await;
+        match installed {
+            Ok(_) => tonk_common::log!("library/install: {url} installed in {repo}"),
+            Err(error) => tonk_common::log!("library/install: {url} into {repo} failed: {error}"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

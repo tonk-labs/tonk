@@ -612,6 +612,25 @@ impl Command for Home {
     type Output = ();
 }
 
+/// `library/install`: add one of the library's components (notebook,
+/// table, …) to the space it is said in. Additive: the component's
+/// definitions are evaluated into the branch beside what is there, and the
+/// space's installed seed is neither recorded nor replaced.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct InstallComponent {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// Which component: `tonk:library/<name>`.
+    pub component: crate::domain::command::current::install_component::Component,
+    /// The moment it was asked.
+    pub time: crate::domain::command::current::install_component::Time,
+}
+
+impl Command for InstallComponent {
+    type Input = Self;
+    type Output = ();
+}
+
 /// `tonk:sign-in-via`: sign this browser in through another deployment.
 ///
 /// The browser-side `tonk account login --via`: the worker sends the page
