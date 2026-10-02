@@ -19,22 +19,35 @@ const NOTEBOOK: &str = include_str!("../../../tonk-core/assets/library/notebook.
 const PROFILE: &str = include_str!("../../../tonk-core/assets/library/profile.yaml");
 
 /// The core library leaves the space's rename unsaid (the profile's says
-/// it); say it here, so a rule-handled command runs end to end.
+/// it); say it here, so a rule-handled command runs end to end: the
+/// command's name, the roles of its fields (re-declaring an attribute
+/// with a role is the same attribute), and a rule offering the space as
+/// what is renamed.
 const RENAME: &str = r#"
+attribute!: &rename-repository/subject
+  description: The repository being renamed.
+  the: xyz.tonk.rename-repository/subject
+  as: entity
+  role: object
+
+attribute!: &rename-repository/name
+  description: The new name.
+  the: xyz.tonk.rename-repository/name
+  as: text
+  role: goal
+
 intent/action!:
   this: tonk/rename-repository
   name: "rename"
 
-intent/argument!:
-  command: tonk/rename-repository
-  field: rename-repository/subject
-  role: intent/object
-  noun: tonk/repository
-
-intent/argument!:
-  command: tonk/rename-repository
-  field: rename-repository/name
-  role: intent/goal
+rule!:
+  description: The space is what a rename from its palette renames.
+  assert: rename-repository/subject
+  when:
+    - assert: intent
+      where: { this: ?this, command: tonk/rename-repository }
+    - assert: tonk/repository
+      where: { this: ?subject }
 "#;
 
 async fn send(app: &Router, method: &str, uri: &str, kind: &str, body: String) -> Value {
@@ -108,8 +121,22 @@ async fn it_suggests_from_a_seeded_space_and_runs_what_it_suggests() {
     )
     .await;
 
-    // An empty argument is labelled by its noun, and nothing runs yet.
-    let rows = suggest(&app, &key, "expel", &subject).await;
+    // The palette interprets each line in a tab (its site), then reads the
+    // readings back.
+    let space = format!("/api/repository/{key}/branch/main");
+    let page = "site:0b6e9a7c-1d2f-4e3a-8b5c-6d7e8f9a0b1c";
+    let expression = "intent:test-suggest";
+    let read = |input: &'static str, time: f64| {
+        let (app, space, subject) = (&app, &space, &subject);
+        async move {
+            interpreted(app, space, expression, input, page, time).await;
+            readings(app, space, expression, subject).await
+        }
+    };
+
+    // An empty argument is labelled by its field, and nothing runs yet:
+    // the space has no members for a rule to offer.
+    let rows = read("expel", 1.0).await;
     let expel = rows
         .iter()
         .find(|row| field(row, "text") == "expel (member)")
@@ -118,11 +145,11 @@ async fn it_suggests_from_a_seeded_space_and_runs_what_it_suggests() {
     assert_eq!(field(expel, "rank"), 0);
 
     // Typing a verb's start completes it, up to the first empty argument.
-    let rows = suggest(&app, &key, "ren", &subject).await;
+    let rows = read("ren", 2.0).await;
     assert_eq!(field(&rows[0], "completion"), "rename Budget to ");
 
     // "this" is the space; the goal is typed text.
-    let rows = suggest(&app, &key, "rename this to Q3", &subject).await;
+    let rows = read("rename this to Q3", 3.0).await;
     let top = &rows[0];
     assert_eq!(field(top, "text"), "rename [Budget] to [Q3]");
     let claim = field(top, "claim")
@@ -131,7 +158,7 @@ async fn it_suggests_from_a_seeded_space_and_runs_what_it_suggests() {
     send(
         &app,
         "POST",
-        &format!("/api/repository/{key}/branch/main/transact"),
+        &format!("{space}/transact"),
         "application/json",
         claim.into(),
     )
@@ -140,7 +167,7 @@ async fn it_suggests_from_a_seeded_space_and_runs_what_it_suggests() {
     let renamed = send(
         &app,
         "POST",
-        &format!("/api/repository/{key}/branch/main/query"),
+        &format!("{space}/query"),
         "application/json",
         json!({
             "predicate": { "with": {
@@ -158,16 +185,15 @@ async fn it_suggests_from_a_seeded_space_and_runs_what_it_suggests() {
 
     // With nothing typed: what can be done without saying more. Rename
     // wants a name and expel a member, so neither is offered.
-    let menu = suggest(&app, &key, "", &subject).await;
+    let menu = read("", 4.0).await;
     assert!(
         menu.iter().all(|row| field(row, "claim").is_string()),
         "the menu offers only what runs as it is: {menu:?}"
     );
 }
 
-/// A command whose fields say their own role, with no `intent/argument`
-/// facts: the field's attribute carries `role: goal`, so typed text after
-/// "to" fills it.
+/// A command whose fields say their own role: the field's attribute
+/// carries `role: goal`, so typed text after "to" fills it.
 const RETITLE: &str = r#"
 command!: &test/retitle
   description: "Retitle the test thing"

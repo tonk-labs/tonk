@@ -258,9 +258,11 @@ attribute!: &rename-space/space
   description: The target space DID.
   the: xyz.tonk.rename-repository/space
   as: entity
+  role: object
 
 command!: &tonk/rename-repository
   description: Rename a space from the profile Hub.
+  action: ["rename", "rename space"]
   with:
     name: rename-space/name
     space: rename-space/space
@@ -1208,10 +1210,12 @@ attribute!: &pause-sync/space
   description: The target space DID — the replica whose auto-sync is flipped.
   the: xyz.tonk.pause-sync/space
   as: entity
+  role: object
 
 command!: &tonk/pause-sync
   this: tonk:pause-sync
   description: Toggle auto-sync (pause ⇄ resume) for a space.
+  action: ["pause sync", "resume sync"]
   with:
     time: pause-sync/time
     space: pause-sync/space
@@ -1225,6 +1229,7 @@ attribute!: &home/time
 command!: &tonk/home
   this: tonk:home
   description: Take the page back to the hub.
+  action: ["home", "go home", "go to tonk home"]
   with:
     time: home/time
 
@@ -1238,6 +1243,7 @@ attribute!: &add-account/time
 
 command!: &account/add
   description: Start adding an account to this profile, from the bar.
+  action: ["add an account"]
   with:
     time: add-account/time
 
@@ -1249,6 +1255,7 @@ attribute!: &share-link/time
 
 command!: &space/share-link
   description: Copy a link that invites someone into this space, from the bar.
+  action: ["copy share link", "share"]
   with:
     time: share-link/time
 
@@ -1260,6 +1267,7 @@ attribute!: &view-members/time
 
 command!: &space/view-members
   description: Show who is in this space, in the bar.
+  action: ["view members", "members"]
   with:
     time: view-members/time
 
@@ -1271,6 +1279,7 @@ attribute!: &connect-agent/time
 
 command!: &agent/connect
   description: Invite an agent to work in this space, from the bar.
+  action: ["connect agent", "copy agent link"]
   with:
     time: connect-agent/time
 
@@ -1285,6 +1294,7 @@ attribute!: &connect-space/time
 # offers neither.
 command!: &space/connect
   description: Connect this space, or confirm the email that would, from the bar.
+  action: ["connect this space", "confirm your email"]
   with:
     time: connect-space/time
 
@@ -5753,8 +5763,8 @@ element!: &account-settings
       (self) => self.disconnected()
 
 # The command palette's schema, as in the core library: this library lowers
-# on its own, so it declares the same four concepts (same attributes, so the
-# same concepts) for the profile's commands. See core.yaml for the prose.
+# on its own, so it declares the same concepts (same attributes, so the same
+# concepts) for the profile's commands. See core.yaml for the prose.
 concept!: &intent/action
   description: Words that say a command. Asserted on the command itself.
   with:
@@ -5764,53 +5774,6 @@ concept!: &intent/action
       cardinality: many
       as: text
 
-concept!: &intent/noun
-  description: Words for a kind of thing. Asserted on the concept itself.
-  with:
-    name:
-      description: A word naming the concept, shown for an empty argument.
-      the: tonk.dialog.intent.noun/name
-      cardinality: many
-      as: text
-
-concept!: &intent/role
-  description: A grammatical role an argument can play.
-  with:
-    name:
-      description: The role's name in the grammar (object, goal, source, ...).
-      the: tonk.dialog.intent.role/name
-      cardinality: one
-      as: text
-
-concept!: &intent/argument
-  description: How one field of a command is filled from what was typed.
-  with:
-    command:
-      description: The command the field belongs to.
-      the: tonk.dialog.intent.argument/command
-      cardinality: one
-      as: entity
-    field:
-      description: The field's attribute.
-      the: tonk.dialog.intent.argument/field
-      cardinality: one
-      as: entity
-    role:
-      description: The role that fills it.
-      the: tonk.dialog.intent.argument/role
-      cardinality: one
-      as: entity
-  maybe:
-    noun:
-      description: The concept whose rows may fill it. Absent for text fields.
-      the: tonk.dialog.intent.argument/noun
-      cardinality: one
-      as: entity
-
-# Suggestion memory, as Ubiquity kept it: which command was run for which
-# verb words. One fact per run rather than a counter, so runs on two devices
-# both count; the palette counts them. Kept on the profile, because it is
-# the person's habit, not the space's.
 concept!: &intent/choice
   description: A command run from the palette, and the words typed for its verb.
   with:
@@ -5899,106 +5862,34 @@ concept!: &intent
       cardinality: one
       as: entity
 
-intent/role!: &intent/object
-  name: "object"
-
-intent/role!: &intent/goal
-  name: "goal"
-
-# Not a grammatical role: the moment the command is run. Nothing typed
-# fills it; the palette does, the way an event's `.timeStamp` fills a
-# button's command. For the nonce fields that keep two runs distinct.
-intent/role!: &intent/now
-  name: "now"
-
 # The directory row IS the repository's own entity (its subject DID), which
-# is what the space commands below take — so `space` is their noun as is.
+# is what the space commands take: a space's label is what names it there.
 view!:
   this: space
   show:
     label: |
       {name}
 
-intent/noun!:
-  this: space
-  name: "space"
+# What the space commands can be said of: the spaces on this account. On a
+# space's page the parser takes that space, the one the page shows; anywhere
+# else, a space has to be named.
+rule!:
+  description: A space on this account is one "pause sync" from the palette can name.
+  assert: pause-sync/space
+  when:
+    - assert: intent
+      where: { this: ?this, command: tonk/pause-sync }
+    - assert: space
+      where: { this: ?space }
 
-# The FABB's commands.
-intent/action!:
-  this: tonk/pause-sync
-  name: "pause sync"
-
-intent/action!:
-  this: tonk/pause-sync
-  name: "resume sync"
-
-intent/argument!:
-  command: tonk/pause-sync
-  field: pause-sync/space
-  role: intent/object
-  noun: space
-
-intent/action!:
-  this: tonk/rename-repository
-  name: "rename"
-
-intent/action!:
-  this: tonk/rename-repository
-  name: "rename space"
-
-intent/argument!:
-  command: tonk/rename-repository
-  field: rename-space/space
-  role: intent/object
-  noun: space
-
-intent/action!:
-  this: tonk/home
-  name: "home"
-
-intent/action!:
-  this: tonk/home
-  name: "go home"
-
-intent/action!:
-  this: tonk/home
-  name: "go to tonk home"
-
-intent/action!:
-  this: account/add
-  name: "add an account"
-
-intent/action!:
-  this: space/share-link
-  name: "copy share link"
-
-intent/action!:
-  this: space/share-link
-  name: "share"
-
-intent/action!:
-  this: space/view-members
-  name: "view members"
-
-intent/action!:
-  this: space/view-members
-  name: "members"
-
-intent/action!:
-  this: agent/connect
-  name: "connect agent"
-
-intent/action!:
-  this: agent/connect
-  name: "copy agent link"
-
-intent/action!:
-  this: space/connect
-  name: "connect this space"
-
-intent/action!:
-  this: space/connect
-  name: "confirm your email"
+rule!:
+  description: A space on this account is one "rename space" from the palette can name.
+  assert: rename-space/space
+  when:
+    - assert: intent
+      where: { this: ?this, command: tonk/rename-repository }
+    - assert: space
+      where: { this: ?space }
 
 # The command palette is the FABB's command mode. Cmd/Ctrl+K (or
 # Cmd/Ctrl+Shift+P) puts the bar in it (`commanding` on `<tonk-fab>`): the
@@ -6016,10 +5907,11 @@ intent/action!:
 # `intent/suggest` — `{input, this, now}` in, one row per reading out —
 # asked of the space branch and of the profile, whose readings are merged by
 # score. On a page with no space (the hub, settings, join) the bar is
-# `latent`, hidden until the chord, and only the profile is asked. Running one transacts its `claim` on the branch it came from, as a
-# button bound to that command would, and records a `intent/choice` on the
-# profile. What can be said is data (`intent/action`, `intent/argument`,
-# `intent/role`, `intent/noun`); the query reads it.
+# `latent`, hidden until the chord, and only the profile is asked. Running
+# one transacts its `claim` on the branch it came from, as a button bound to
+# that command would, and records a `intent/choice` on the profile. What
+# can be said is what commands declare (`action:`, `role:`) and what rules
+# derive for their fields; the query reads it.
 #
 # Keys pressed inside the space's own frame are relayed to this document by
 # the portal bridge, so the shortcut works wherever focus is.

@@ -1,11 +1,12 @@
 //! The command palette's glue between tonk's data and `dialog-lingo`.
 //!
-//! The rows of `intent/action`, `intent/argument`, `intent/role`,
-//! `intent/noun`, the attributes those arguments name, and the rows and
-//! `label` facet of every noun concept come in as [`Source`]s; this crate
-//! joins them into a [`dialog_lingo::Registry`], parses the input, and
-//! answers with ranked proposals, each carrying the transient claim that
-//! runs it.
+//! What commands declare — their names (`action:`) and the role each
+//! field plays (`role:`), with the attributes those fields name — what
+//! rules derived for their entity fields, and the rows and `label` facet
+//! of the concepts that label those values come in as [`Source`]s; this
+//! crate joins them into a [`dialog_lingo::Registry`], parses the input,
+//! and answers with ranked proposals, each carrying the transient claim
+//! that runs it.
 //!
 //! Nothing here reads a store. `intent/suggest` (in `dialog-reactor`)
 //! reads the rows with ordinary concept queries and calls in here, so the
@@ -59,20 +60,16 @@ pub struct Source {
     /// `intent/action` rows: `this` is the command, `name` a word for it.
     #[serde(default)]
     pub verbs: Vec<Row>,
-    /// `intent/argument` rows: `command`, `field`, `role`, `noun`.
+    /// The fields commands declare a role for: `command`, `field` (the
+    /// field's attribute entity) and `role` (`object`, `goal`, …, `now`).
     #[serde(default)]
     pub arguments: Vec<Row>,
-    /// `intent/role` rows: `name`.
-    #[serde(default)]
-    pub roles: Vec<Row>,
-    /// `intent/noun` rows: `this` is the concept, `name` a word for it.
-    #[serde(default)]
-    pub nouns: Vec<Row>,
     /// Attribute rows for argument fields: `id` (the selector) and
     /// `type` (the value type).
     #[serde(default)]
     pub attributes: Vec<Row>,
-    /// Noun concepts, by entity.
+    /// Concepts with a `label` facet, by entity: what labels the values
+    /// rules derive.
     #[serde(default)]
     pub concepts: BTreeMap<String, ConceptRows>,
     /// Values rules derived for a command's fields from where the palette
@@ -341,15 +338,9 @@ fn registry(sources: &[Source]) -> (Registry, Fields) {
     // Candidates already taken, per concept: a row on two branches is
     // offered once.
     let mut seen: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    // Fields with derived values: their own noun, the concept whose rows
-    // still name them, and the values.
-    let mut derivations: Vec<(String, Option<String>, Vec<Candidate>)> = Vec::new();
+    // Fields with derived values: their own noun, and the values.
+    let mut derivations: Vec<(String, Vec<Candidate>)> = Vec::new();
     for source in sources {
-        let roles: BTreeMap<&str, &str> = source
-            .roles
-            .iter()
-            .filter_map(|row| Some((row.this.as_str(), row.text("name")?)))
-            .collect();
         let attributes: BTreeMap<&str, Field> = source
             .attributes
             .iter()
@@ -363,16 +354,6 @@ fn registry(sources: &[Source]) -> (Registry, Fields) {
                 ))
             })
             .collect();
-        let mut noun_words: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
-        for row in &source.nouns {
-            if let Some(name) = row.text("name") {
-                noun_words
-                    .entry(row.this.as_str())
-                    .or_default()
-                    .insert(name);
-            }
-        }
-
         let mut names: BTreeMap<&str, Vec<String>> = BTreeMap::new();
         for row in &source.verbs {
             if let Some(name) = row.text("name") {
@@ -395,14 +376,8 @@ fn registry(sources: &[Source]) -> (Registry, Fields) {
             {
                 let (Some(field), Some(role)) = (
                     row.text("field").and_then(|field| attributes.get(field)),
-                    // A role entity (`intent/argument`), or a role named on
-                    // the attribute itself.
-                    row.text("role").and_then(|role| {
-                        roles
-                            .get(role)
-                            .copied()
-                            .or((ROLES.contains(&role) || role == NOW).then_some(role))
-                    }),
+                    row.text("role")
+                        .filter(|role| ROLES.contains(role) || *role == NOW),
                 ) else {
                     continue;
                 };
@@ -418,12 +393,8 @@ fn registry(sources: &[Source]) -> (Registry, Fields) {
                 if !seen.insert(role) {
                     continue;
                 }
-                let noun = row.text("noun");
-                let label = noun
-                    .and_then(|noun| noun_words.get(noun))
-                    .and_then(|words| words.iter().next())
-                    .map(|word| (*word).to_owned())
-                    .unwrap_or_else(|| field_name(&field.selector).to_owned());
+                // An empty argument shows the field's own name.
+                let label = field_name(&field.selector).to_owned();
                 let attribute = row.text("field");
                 let derived: Vec<Candidate> = source
                     .fragments
@@ -440,20 +411,16 @@ fn registry(sources: &[Source]) -> (Registry, Fields) {
                         })
                     })
                     .collect();
-                let noun = if derived.is_empty() {
-                    match noun {
-                        Some(concept) => Noun::Concept(concept.to_owned()),
-                        // An entity field that names no concept takes only
-                        // what is derived for it: typed text is no entity.
-                        None if field.kind == "Entity" => {
-                            Noun::Concept(format!("{id}{JOIN}{}", field.selector))
-                        }
-                        None => Noun::Text,
-                    }
-                } else {
+                // An entity field takes only what rules derive for it:
+                // typed text is no entity. Its candidates are its own noun.
+                let noun = if field.kind == "Entity" {
                     let key = format!("{id}{JOIN}{}", field.selector);
-                    derivations.push((key.clone(), noun.map(str::to_owned), derived));
+                    if !derived.is_empty() {
+                        derivations.push((key.clone(), derived));
+                    }
                     Noun::Concept(key)
+                } else {
+                    Noun::Text
                 };
                 arguments.push(Argument {
                     role: role.to_owned(),
@@ -488,36 +455,36 @@ fn registry(sources: &[Source]) -> (Registry, Fields) {
             }
         }
     }
-    for (key, concept, derived) in derivations {
-        let rows: Vec<Candidate> = concept
-            .map(|concept| registry.candidates(&concept).to_vec())
-            .unwrap_or_default();
-        // A derived value is shown by its concept row's label when it has
-        // one; otherwise by what was derived with it, or the entity itself.
+    // Every labelled row, by entity: what shows a derived value.
+    let labels: BTreeMap<String, String> = registry
+        .candidates
+        .values()
+        .flatten()
+        .map(|row| (row.entity.clone(), row.label.clone()))
+        .collect();
+    for (key, derived) in derivations {
+        // A derived value is shown by the label of the row it is, when it
+        // is one; otherwise by what was derived with it, or the entity.
+        let mut seen = BTreeSet::new();
         let derived: Vec<Candidate> = derived
             .into_iter()
+            .filter(|candidate| seen.insert(candidate.entity.clone()))
             .map(|mut candidate| {
-                if let Some(row) = rows.iter().find(|row| row.entity == candidate.entity) {
-                    candidate.label = row.label.clone();
+                if let Some(label) = labels.get(&candidate.entity) {
+                    candidate.label = label.clone();
                 } else if candidate.label.is_empty() {
                     candidate.label = candidate.entity.clone();
                 }
                 candidate
             })
             .collect();
-        if let Some(first) = derived.first() {
-            registry.defaults.insert(key.clone(), first.clone());
+        // One value is the default. Of several, the parser takes the one
+        // the page shows when it is among them, and otherwise none: which
+        // of several was meant is for the user to say.
+        if let [only] = derived.as_slice() {
+            registry.defaults.insert(key.clone(), only.clone());
         }
-        let mut candidates = derived;
-        for row in rows {
-            if !candidates
-                .iter()
-                .any(|candidate| candidate.entity == row.entity)
-            {
-                candidates.push(row);
-            }
-        }
-        registry.candidates.insert(key, candidates);
+        registry.candidates.insert(key, derived);
     }
     (registry, fields)
 }

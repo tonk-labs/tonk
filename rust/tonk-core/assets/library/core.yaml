@@ -846,15 +846,17 @@ concept!: &member
 # construction, so the name can just say what it means.
 #
 # The field is a named attribute rather than an inline one so the palette's
-# `intent/argument` below can point at it. The descriptor is the same, so
-# the command's identity is unchanged.
+# rule below can conclude it. The descriptor is the same, so the command's
+# identity is unchanged.
 attribute!: &expel-member/member
   description: The DID of the member to remove.
   the: xyz.tonk.command.expel-member/member
   as: entity
+  role: object
 
 command!: &member/expel
   description: Remove a member from this space.
+  action: ["expel", "remove member"]
   with:
     member: expel-member/member
 
@@ -2612,21 +2614,22 @@ element!: &drag-frame
 
 # The command palette.
 #
-# `<command-palette>` reads four relations and parses typed text against
-# them, the way Ubiquity's Parser 2 did:
+# `<command-palette>` parses typed text against what commands declare, the
+# way Ubiquity's Parser 2 did:
 #
-# - `intent/action` — words that say a command, asserted on the command
-#   itself, one assertion per word.
-# - `intent/argument` — which grammatical role fills one of a command's
-#   fields (the field is its attribute), and which concept's rows may
-#   fill it. An argument without a noun takes typed text.
-# - `intent/noun` — words for a concept, shown for an empty argument
-#   ("expel [member]").
-# - `intent/role` — the grammar's slots. The words that introduce them
-#   ("to" for goal) belong to the parser's grammar for a language.
+# - `action:` on a `command!:` — the words that say it (one, or a list),
+#   each an `intent/action` fact on the command.
+# - `role:` on a command's field — the grammatical slot it fills (object,
+#   goal, source, location, time, instrument, format, modifier, alias; or
+#   `now` for the moment it runs). The words that introduce a slot ("to"
+#   for goal) belong to the parser's grammar for a language. An empty
+#   slot shows the field's name ("expel [member]").
+# - Rules — what can fill an entity field: a rule concludes the field's
+#   attribute on the palette's `intent` (an attribute is a concept with
+#   one field). Typed words match those values by the `label` facet of
+#   the concept they are rows of. A text field takes what is typed.
 #
-# A noun's rows are matched by their `label` facet, so every concept an
-# argument names needs one. See plan/command-palette-sketch.md.
+# See plan/command-palette-sketch.md.
 concept!: &intent/action
   description: Words that say a command. Asserted on the command itself.
   with:
@@ -2635,49 +2638,6 @@ concept!: &intent/action
       the: tonk.dialog.intent.action/name
       cardinality: many
       as: text
-
-concept!: &intent/noun
-  description: Words for a kind of thing. Asserted on the concept itself.
-  with:
-    name:
-      description: A word naming the concept, shown for an empty argument.
-      the: tonk.dialog.intent.noun/name
-      cardinality: many
-      as: text
-
-concept!: &intent/role
-  description: A grammatical role an argument can play.
-  with:
-    name:
-      description: The role's name in the grammar (object, goal, source, ...).
-      the: tonk.dialog.intent.role/name
-      cardinality: one
-      as: text
-
-concept!: &intent/argument
-  description: How one field of a command is filled from what was typed.
-  with:
-    command:
-      description: The command the field belongs to.
-      the: tonk.dialog.intent.argument/command
-      cardinality: one
-      as: entity
-    field:
-      description: The field's attribute.
-      the: tonk.dialog.intent.argument/field
-      cardinality: one
-      as: entity
-    role:
-      description: The role that fills it.
-      the: tonk.dialog.intent.argument/role
-      cardinality: one
-      as: entity
-  maybe:
-    noun:
-      description: The concept whose rows may fill it. Absent for text fields.
-      the: tonk.dialog.intent.argument/noun
-      cardinality: one
-      as: entity
 
 # The command palette's interpretation of what was typed, as session facts.
 # The palette makes an `expression` per opening and sends
@@ -2748,33 +2708,6 @@ concept!: &intent
       cardinality: one
       as: entity
 
-intent/role!: &intent/object
-  name: "object"
-
-intent/role!: &intent/goal
-  name: "goal"
-
-intent/role!: &intent/source
-  name: "source"
-
-intent/role!: &intent/location
-  name: "location"
-
-intent/role!: &intent/time
-  name: "time"
-
-intent/role!: &intent/instrument
-  name: "instrument"
-
-intent/role!: &intent/format
-  name: "format"
-
-intent/role!: &intent/modifier
-  name: "modifier"
-
-intent/role!: &intent/alias
-  name: "alias"
-
 # A member as the account `member/expel` wants. A roster row is the
 # membership, derived from (space, account); the command takes the
 # account's DID, which is the row's `member` field. This concept's rows
@@ -2802,27 +2735,15 @@ view!:
     label: |
       {name}
 
-intent/noun!:
-  this: member/account
-  name: "member"
-
-intent/noun!:
-  this: tonk/repository
-  name: "space"
-
-intent/action!:
-  this: member/expel
-  name: "expel"
-
-intent/action!:
-  this: member/expel
-  name: "remove member"
-
-intent/argument!:
-  command: member/expel
-  field: expel-member/member
-  role: intent/object
-  noun: member/account
+# What "expel" can be said of: this space's members.
+rule!:
+  description: A member of this space is someone an expel from its palette can name.
+  assert: expel-member/member
+  when:
+    - assert: intent
+      where: { this: ?this, command: member/expel }
+    - assert: member/account
+      where: { this: ?member }
 
 # `tonk/rename-repository` has no verb here: the profile's own rename
 # (`rename space`, the FABB's) says the same thing, and the palette reads

@@ -10,7 +10,22 @@ fn row(this: &str, fields: serde_json::Value) -> Row {
     }
 }
 
-/// The rows a space branch seeded with the library would deliver.
+/// What rules derive for a command's entity field: one value each.
+fn derived(command: &str, field: &str, values: &[&str]) -> Vec<Row> {
+    values
+        .iter()
+        .map(|value| {
+            row(
+                "",
+                json!({ "command": command, "field": field, "value": value }),
+            )
+        })
+        .collect()
+}
+
+/// The rows a space branch seeded with the library would deliver, with
+/// what its rules derive: every member for expel's member, and the space
+/// itself for rename's subject.
 fn space() -> Source {
     Source {
         branch: "main@did:key:space".into(),
@@ -25,8 +40,7 @@ fn space() -> Source {
                 json!({
                     "command": "concept:expel",
                     "field": "the:expel-member",
-                    "role": "role:object",
-                    "noun": "concept:account",
+                    "role": "object",
                 }),
             ),
             row(
@@ -34,8 +48,7 @@ fn space() -> Source {
                 json!({
                     "command": "concept:rename",
                     "field": "the:rename-subject",
-                    "role": "role:object",
-                    "noun": "concept:repository",
+                    "role": "object",
                 }),
             ),
             row(
@@ -43,15 +56,10 @@ fn space() -> Source {
                 json!({
                     "command": "concept:rename",
                     "field": "the:rename-name",
-                    "role": "role:goal",
+                    "role": "goal",
                 }),
             ),
         ],
-        roles: vec![
-            row("role:object", json!({ "name": "object" })),
-            row("role:goal", json!({ "name": "goal" })),
-        ],
-        nouns: vec![row("concept:account", json!({ "name": "member" }))],
         attributes: vec![
             row(
                 "the:expel-member",
@@ -85,7 +93,15 @@ fn space() -> Source {
                 },
             ),
         ]),
-        fragments: Vec::new(),
+        fragments: [
+            derived(
+                "concept:expel",
+                "the:expel-member",
+                &["did:key:alice", "did:key:bob"],
+            ),
+            derived("concept:rename", "the:rename-subject", &["did:key:space"]),
+        ]
+        .concat(),
     }
 }
 
@@ -108,29 +124,30 @@ fn request(input: &str) -> Request {
 }
 
 #[test]
-fn it_fills_a_field_from_a_value_derived_for_it() {
-    // The context offers Alice for expel's member: she is the field's
+fn it_fills_a_field_from_the_one_value_derived_for_it() {
+    // Rules offer only Alice for expel's member: she is the field's
     // default, shown by her concept row's label, and the reading runs.
     let mut source = space();
-    source.fragments = vec![row(
-        "",
-        json!({ "command": "concept:expel", "field": "the:expel-member", "value": "did:key:alice" }),
-    )];
+    source.fragments = derived("concept:expel", "the:expel-member", &["did:key:alice"]);
     let mut asked = request("expel");
     asked.sources = vec![source];
     let top = &propose(&asked)[0];
     assert_eq!(top.parse.display_text(), "expel [Alice]");
     assert!(top.claim.is_some(), "a derived value completes the reading");
 
-    // Another member can still be named.
+    // What rules do not derive cannot be named: Bob is no candidate here.
     asked.input = "expel bob".into();
-    assert_eq!(propose(&asked)[0].parse.display_text(), "expel [Bob]");
+    assert!(
+        propose(&asked)
+            .iter()
+            .all(|proposal| proposal.parse.display_text() != "expel [Bob]")
+    );
 }
 
 #[test]
-fn it_fills_a_field_with_no_noun_from_a_value_derived_for_it() {
-    // A field that names no concept takes the derived value as is, shown
-    // by the label it was derived with.
+fn it_shows_a_derived_value_by_the_label_derived_with_it() {
+    // A value no labelled concept has as a row is shown by the label it
+    // was derived with.
     let mut source = space();
     source
         .verbs
@@ -230,7 +247,7 @@ fn it_reads_this_as_the_entity_the_page_shows() {
 }
 
 #[test]
-fn it_labels_an_empty_argument_by_its_noun_and_withholds_the_claim() {
+fn it_labels_an_empty_argument_by_its_field_and_withholds_the_claim() {
     let proposals = propose(&request("expel"));
     let top = &proposals[0];
     assert_eq!(top.parse.display_text(), "expel (member)");
@@ -259,21 +276,25 @@ fn it_fills_the_now_role_from_the_callers_clock_without_asking_for_it() {
     profile.arguments = vec![
         row(
             "argument:pause-space",
-            json!({
-                "command": "concept:pause",
-                "field": "the:pause-space",
-                "role": "role:object",
-                "noun": "concept:repository",
-            }),
+            json!({ "command": "concept:pause", "field": "the:pause-space", "role": "object" }),
         ),
         row(
             "argument:pause-time",
-            json!({ "command": "concept:pause", "field": "the:pause-time", "role": "role:now" }),
+            json!({ "command": "concept:pause", "field": "the:pause-time", "role": "now" }),
         ),
     ];
+    // Rules offer every space on the account; the page shows Budget.
+    profile.fragments = derived(
+        "concept:pause",
+        "the:pause-space",
+        &["did:key:space", "did:key:plans"],
+    );
     profile
-        .roles
-        .push(row("role:now", json!({ "name": "now" })));
+        .concepts
+        .get_mut("concept:repository")
+        .expect("spaces")
+        .rows
+        .push(row("did:key:plans", json!({ "name": "Plans" })));
     profile.attributes = vec![
         row(
             "the:pause-space",
@@ -287,11 +308,23 @@ fn it_fills_the_now_role_from_the_callers_clock_without_asking_for_it() {
     let mut request = request("pause");
     request.sources = vec![profile];
     let top = &propose(&request)[0];
-    // The space defaults to the one the page shows; time is not shown.
+    // Of the spaces derived, the field takes the one the page shows; time
+    // is not shown.
     assert_eq!(top.parse.display_text(), "pause sync [Budget]");
     assert_eq!(
         top.claim.as_ref().unwrap()["claims"][0]["application"]["parameters"],
         json!({ "space": "did:key:space", "time": 1_000.5 })
+    );
+
+    // Off a space's page, which of several is for the user to say.
+    request.context.this = None;
+    let top = &propose(&request)[0];
+    assert_eq!(top.parse.display_text(), "pause sync (space)");
+    assert_eq!(top.claim, None);
+    request.input = "pause plans".into();
+    assert_eq!(
+        propose(&request)[0].parse.display_text(),
+        "pause sync [Plans]"
     );
 }
 
@@ -402,16 +435,23 @@ fn it_lists_what_can_be_done_without_saying_more() {
 fn it_scales_with_candidates() {
     for count in [10, 100, 1_000, 10_000] {
         let mut request = request("");
-        let members = &mut request.sources[0]
-            .concepts
-            .get_mut("concept:account")
-            .expect("members")
-            .rows;
+        let source = &mut request.sources[0];
         for n in 0..count {
-            members.push(row(
-                &format!("did:key:member{n}"),
-                json!({ "name": format!("Member {n} of the budget team") }),
+            let member = format!("did:key:member{n}");
+            source.fragments.extend(derived(
+                "concept:expel",
+                "the:expel-member",
+                &[member.as_str()],
             ));
+            source
+                .concepts
+                .get_mut("concept:account")
+                .expect("members")
+                .rows
+                .push(row(
+                    &member,
+                    json!({ "name": format!("Member {n} of the budget team") }),
+                ));
         }
         for input in [
             "ex",

@@ -220,7 +220,8 @@ fn walk_value(
                 }
             }
         }
-        FieldValue::Literal(_) => {}
+        // A list's items are literals (`action:` names), painted as text.
+        FieldValue::Literal(_) | FieldValue::List(_) => {}
     }
 }
 

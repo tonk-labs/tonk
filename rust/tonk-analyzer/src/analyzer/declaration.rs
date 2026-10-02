@@ -297,10 +297,10 @@ pub(crate) struct ConceptBody {
     /// and `db.meta/description` claims so the attribute is
     /// queryable via `attribute:` after the `concept!` commits.
     pub inline_attributes: Vec<AttributeBody>,
-    /// The command's name in the palette (`action:`), lowered to an
-    /// `intent/action` fact on the concept by [`action_application`].
-    /// More names are separate `intent/action!` assertions.
-    pub action: Option<String>,
+    /// The command's names in the palette (`action:`, one name or a
+    /// list), each lowered to an `intent/action` fact on the concept by
+    /// [`action_application`].
+    pub action: Vec<String>,
 }
 
 pub(crate) fn parse_concept_body(
@@ -309,7 +309,7 @@ pub(crate) fn parse_concept_body(
 ) -> Result<ConceptBody, AnalyzeError> {
     let mut description: Option<String> = None;
     let mut transient: bool = false;
-    let mut action: Option<String> = None;
+    let mut action: Vec<String> = Vec::new();
     // Each entry: (field name, definition, optional). `with:` fields
     // are required; `maybe:` fields are optional.
     let mut fields: Vec<(String, AttributeDefinition, bool)> = Vec::new();
@@ -348,14 +348,25 @@ pub(crate) fn parse_concept_body(
                 transient = parse_transient_tag(field)?;
             }
             "action" => {
-                let name = stringify_simple_value(field)?;
-                if name.trim().is_empty() {
+                let names = match &field.value {
+                    FieldValue::List(items) => items
+                        .iter()
+                        .map(|value| {
+                            stringify_simple_value(&tonk_notation::Field {
+                                value: value.clone(),
+                                ..field.clone()
+                            })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?,
+                    _ => vec![stringify_simple_value(field)?],
+                };
+                if names.is_empty() || names.iter().any(|name| name.trim().is_empty()) {
                     return Err(AnalyzeErrorKind::InvalidConceptBody {
-                        reason: "`action:` names the command; it can't be empty".into(),
+                        reason: "`action:` names the command; a name can't be empty".into(),
                     }
                     .into());
                 }
-                action = Some(name);
+                action = names;
             }
             "with" => {
                 parse_concept_field_block(
@@ -1075,6 +1086,13 @@ fn stringify_simple_value(field: &tonk_notation::Field) -> Result<String, Analyz
             return Err(
                 super::field::unexpanded_include(include, None).with_range(field.value_range)
             );
+        }
+        FieldValue::List(_) => {
+            return Err(AnalyzeErrorKind::UnsupportedFieldValue {
+                field: field.name.clone(),
+                form: "a list (only a command's `action:` takes one)",
+            }
+            .into());
         }
         FieldValue::Variable(_)
         | FieldValue::Blank

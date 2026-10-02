@@ -868,7 +868,7 @@ impl Graph {
                         })
                         .chain(
                             plan.action
-                                .as_deref()
+                                .iter()
                                 .map(|name| action_application(&entity, name)),
                         )
                         .collect();
@@ -924,6 +924,25 @@ impl Graph {
                         )
                     })?;
                     if let Some(def) = found {
+                        scope.record_concept(Some(name), def);
+                        continue;
+                    }
+                    // No concept by that name: an attribute is a concept
+                    // with one field (see `scope::attribute_concept`).
+                    let attribute = match scope.attribute(name) {
+                        Some(attribute) => Some(attribute),
+                        None => resolver.attribute(name).await.map_err(|e| {
+                            AnalyzeError::at(
+                                AnalyzeErrorKind::ResolverFailed {
+                                    context: format!("attribute {name:?}"),
+                                    reason: e.to_string(),
+                                },
+                                *range,
+                            )
+                        })?,
+                    };
+                    if let Some(def) = attribute.as_ref().and_then(super::scope::attribute_concept)
+                    {
                         scope.record_concept(Some(name), def);
                     }
                 }

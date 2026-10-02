@@ -71,6 +71,11 @@ pub async fn suggest<Env: SelectProvider>(
             let selection = expression_selection(branch, env, &expression).await?;
             let intents = intents(branch, env, &expression).await?;
             source.fragments = fragments(branch, env, &source, &intents).await?;
+            // What labels the derived values: the concepts with a `label`
+            // facet. Read only when there is something to label.
+            if !source.fragments.is_empty() {
+                source.concepts = labelled(branch, env).await?;
+            }
             let commands: BTreeSet<String> =
                 intents.into_iter().map(|(_, command)| command).collect();
             (input, selection, Some(commands))
@@ -187,25 +192,8 @@ async fn load<Env: SelectProvider>(
         ..Source::default()
     };
     source.verbs = rows(branch, env, named("tonk.dialog.intent.action/name", "many")).await?;
-    source.nouns = rows(branch, env, named("tonk.dialog.intent.noun/name", "many")).await?;
-    source.roles = rows(branch, env, named("tonk.dialog.intent.role/name", "one")).await?;
     source.attributes = rows(branch, env, attributes()).await?;
-    source.arguments = rows(branch, env, arguments()).await?;
-    source
-        .arguments
-        .extend(attribute_arguments(branch, env).await?);
-    let nouns: Vec<String> = source
-        .arguments
-        .iter()
-        .filter_map(|row| row.fields.get("noun")?.as_str().map(str::to_owned))
-        .collect();
-    for concept in nouns {
-        if source.concepts.contains_key(&concept) {
-            continue;
-        }
-        let rows = noun(branch, env, &concept).await?;
-        source.concepts.insert(concept, rows);
-    }
+    source.arguments = arguments(branch, env).await?;
     let memory = rows(branch, env, choices()).await?;
     Ok((source, memory))
 }
@@ -239,6 +227,36 @@ async fn expression_selection<Env: SelectProvider>(
     )
     .await?
     .filter(|text| !text.is_empty()))
+}
+
+/// Every concept with a `label` facet, with its rows: what shows a value
+/// a rule derived for a command's field.
+async fn labelled<Env: SelectProvider>(
+    branch: &Branch,
+    env: &Env,
+) -> Result<BTreeMap<String, ConceptRows>, FormulaError> {
+    let concepts: BTreeSet<String> = rows(
+        branch,
+        env,
+        json!({
+            "predicate": { "with": { "show": {
+                "the": { "domain": "xyz.tonk.view", "keyed": "dictionary" },
+                "as": "Text", "cardinality": "one"
+            } } },
+            "terms": { "this": var("this"), "show": var("show"), "show/key": var("show/key") }
+        }),
+    )
+    .await?
+    .into_iter()
+    .filter(|row| row.fields.get("show/key").and_then(Json::as_str) == Some("label"))
+    .map(|row| row.this)
+    .collect();
+    let mut labelled = BTreeMap::new();
+    for concept in concepts {
+        let rows = noun(branch, env, &concept).await?;
+        labelled.insert(concept, rows);
+    }
+    Ok(labelled)
 }
 
 /// The one text value of `the` on `this`, if any.
@@ -457,7 +475,7 @@ fn entity(the: &str, optional: bool) -> Json {
     field
 }
 
-/// `intent/action`, `intent/noun`, `intent/role`: an entity and its words.
+/// `intent/action`: a command and the words that say it.
 fn named(the: &str, cardinality: &str) -> Json {
     json!({
         "predicate": { "with": { "name": text(the, cardinality) } },
@@ -480,26 +498,10 @@ fn attributes() -> Json {
     })
 }
 
-/// `intent/argument`.
-fn arguments() -> Json {
-    json!({
-        "predicate": { "with": {
-            "command": entity("tonk.dialog.intent.argument/command", false),
-            "field": entity("tonk.dialog.intent.argument/field", false),
-            "role": entity("tonk.dialog.intent.argument/role", false),
-            "noun": entity("tonk.dialog.intent.argument/noun", true)
-        } },
-        "terms": {
-            "this": var("this"), "command": var("command"), "field": var("field"),
-            "role": var("role"), "noun": var("noun")
-        }
-    })
-}
-
-/// Arguments declared on the attributes themselves: every concept field
-/// whose attribute carries a `tonk.dialog.intent.attribute/role`, as an
-/// `intent/argument` row (`command`, `field`, `role` by name).
-async fn attribute_arguments<Env: SelectProvider>(
+/// The arguments commands declare: every concept field whose attribute
+/// carries a role (`role:`, as `tonk.dialog.intent.attribute/role`), as a
+/// row of `command`, `field` (the attribute entity) and `role` by name.
+async fn arguments<Env: SelectProvider>(
     branch: &Branch,
     env: &Env,
 ) -> Result<Vec<Row>, FormulaError> {

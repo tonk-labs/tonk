@@ -1662,15 +1662,15 @@ attribute!: &rename/name
         assert_eq!(entity(&plain), entity(&with_role));
     }
 
-    /// A command's `action:` is asserted as its palette name, on the
-    /// command's own entity.
+    /// Each of a command's `action:` names is asserted as a palette name,
+    /// on the command's own entity.
     #[dialog_common::test]
     async fn it_asserts_a_commands_action_on_the_command() {
         let syntax = must_parse(
             r#"
 command!: &notebook/retitle
   description: "Rename a notebook"
-  action: "rename"
+  action: ["rename", "retitle"]
   with:
     title:
       description: "The new title"
@@ -1708,7 +1708,30 @@ command!: &notebook/retitle
                 _ => None,
             })
             .collect();
-        assert_eq!(actions, vec!["rename".to_owned()]);
+        let mut actions = actions;
+        actions.sort();
+        assert_eq!(actions, vec!["rename".to_owned(), "retitle".to_owned()]);
+    }
+
+    /// A list is a command's several names; anywhere else the parser
+    /// refuses it rather than reading it as one value.
+    #[dialog_common::test]
+    fn it_refuses_a_list_outside_action() {
+        let parsed = parse(
+            r#"
+attribute!: &rename/name
+  description: ["The new name", "or another"]
+  the:         xyz.tonk.rename/name
+  as:          Text
+"#,
+        );
+        assert!(
+            parsed.diagnostics.iter().any(|diagnostic| diagnostic
+                .message
+                .contains("Sequence values are not supported")),
+            "diagnostics: {:#?}",
+            parsed.diagnostics
+        );
     }
 
     /// A role nothing knows is an error, not a silent fact.
