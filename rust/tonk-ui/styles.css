@@ -3154,7 +3154,27 @@ tonk-notebook-index {
 
   /* In-space account work is a trusted modal occupying the FABB's translated
      seat. The guest chrome remains mounted for restoration but is hidden. */
-  #tonk-register[data-fabb-task] { overflow: hidden; }
+  #tonk-register[data-fabb-task] {
+    overflow: hidden;
+    /* It stands in for the FABB, so it wears the FABB's twin: the bright
+       one, over a dark space as over a light page. The ceremony's rules read
+       the page's names, which the dark swap repoints, so they are pinned
+       here to the `--fabb-*` light column. The washes are restated because
+       `:root` already resolved them against the page's ink. `--dim` is left
+       alone: the backdrop dims the page in the page's own scheme. */
+    color-scheme: light;
+    --ink: var(--fabb-ink);
+    --on-ink: var(--fabb-on-ink);
+    --soft: var(--fabb-ink-soft);
+    --ring: var(--fabb-ring);
+    --sep: var(--fabb-sep);
+    --wash: var(--fabb-hover);
+    --wash-2: var(--fabb-press);
+    --wash-p: color-mix(in srgb, var(--fabb-on-ink) 16%, transparent);
+    --page: #e8e6e4;
+    --card: #fcfbfb;
+    --modal: var(--fabb-panel);
+  }
   #tonk-register[data-fabb-task] .ocol {
     position: absolute;
     margin: 0;
