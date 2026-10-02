@@ -1829,7 +1829,9 @@ function releaseProfileCalls(reason) {
 // the files beside them. A key the browser will not export goes with its
 // record, and stays one the browser will not export.
 //
-// Nothing here is changed or removed. This worker no longer opens it.
+// Nothing here is changed while it is copied, and this worker no longer
+// opens it. Once the profile's worker has all of it, it says so and this
+// origin's copy is removed.
 
 // The databases a profile is kept in: its own, its credentials', and one for
 // each space it holds.
@@ -1847,6 +1849,9 @@ async function answerProfile(port, { id, stored }) {
         } else if (Array.isArray(stored?.file)) {
             const bytes = await storedBytes(stored);
             port.postMessage({ id, bytes }, [bytes]);
+        } else if (stored === "moved") {
+            await forgetStored();
+            port.postMessage({ id, forgotten: true });
         } else {
             throw new Error("unknown request");
         }
@@ -1943,6 +1948,42 @@ async function storedBytes({ file, offset, length }) {
     const handle = await directory.getFileHandle(file[file.length - 1]);
     return (await handle.getFile()).slice(offset, offset + length).arrayBuffer();
 }
+
+// Remove what this origin stored of the profile, once the profile's worker
+// says it holds all of it: a profile is held once on a device. Only where
+// sites have origins of their own, where this worker opens none of it.
+//
+// That it is to go is kept, and acted on again each time this worker starts:
+// a database the stood-down instance still has open cannot be deleted until
+// that instance has gone, and a delete it asked for goes with it.
+const MOVED_KEY = new URL("./__tonk/moved", self.location.href).href;
+
+async function forgetStored() {
+    if (!siteOrigins) throw new Error("this worker still holds the profile");
+    const cache = await caches.open(DEPLOYMENT_CACHE);
+    await cache.put(MOVED_KEY, new Response(new Date().toISOString()));
+    await forgetIfMoved();
+}
+
+async function forgetIfMoved() {
+    // Read without opening: opening a cache makes it.
+    if (!siteOrigins || !(await caches.match(MOVED_KEY, { cacheName: DEPLOYMENT_CACHE }))) return;
+    const cache = await caches.open(DEPLOYMENT_CACHE);
+    const databases = (await indexedDB.databases()).filter(({ name }) => PROFILE_DATABASE.test(name));
+    const root = await navigator.storage.getDirectory();
+    const files = [];
+    for await (const name of root.keys()) files.push(name);
+    if (databases.length === 0 && files.length === 0) {
+        await cache.delete(MOVED_KEY);
+        log("The profile moved to its own origin; this origin's copy is removed");
+        return;
+    }
+    // Not waited for: see above.
+    for (const { name } of databases) indexedDB.deleteDatabase(name);
+    for (const name of files) await root.removeEntry(name, { recursive: true }).catch(() => {});
+}
+
+sitesKnown.then(forgetIfMoved).catch(error => log("Could not remove the moved profile:", error));
 
 // ---- The session, across restarts -------------------------------------
 //

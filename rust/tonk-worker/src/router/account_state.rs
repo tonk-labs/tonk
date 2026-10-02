@@ -1463,6 +1463,15 @@ async fn project_member_names(
     name: &str,
     republish: bool,
 ) {
+    // Where each space has an origin of its own, its own worker holds its
+    // roster and writes the name there: it is told the name with its
+    // delegation, and takes up a new one when told that changed.
+    if tonk.spaces_elsewhere() {
+        if republish {
+            super::space_reach::changed(None);
+        }
+        return;
+    }
     for key in crate::router::profile_name::real_space_keys(tonk).await {
         let changed = match crate::router::profile_name::project_member_name(
             tonk, &key, member, name,

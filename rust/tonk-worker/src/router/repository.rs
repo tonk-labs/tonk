@@ -3627,6 +3627,173 @@ async fn delete_space_storage_for(key: &str) {
     }
 }
 
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
+export async function release_space_content(name) {
+    const database = await new Promise((resolve, reject) => {
+        const request = indexedDB.open(name);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+    });
+    // The worker's own connection adds an object store by upgrading the
+    // database, which waits on every other connection.
+    database.onversionchange = () => database.close();
+    try {
+        const names = [...database.objectStoreNames];
+        const stores = names.filter((store) => store === 'memory' || store.startsWith('archive/'));
+        if (stores.length > 0) {
+            await new Promise((resolve, reject) => {
+                const transaction = database.transaction(stores, 'readwrite');
+                transaction.oncomplete = () => resolve();
+                transaction.onabort = transaction.onerror = () => reject(transaction.error);
+                for (const store of stores) {
+                    if (store === 'memory') {
+                        transaction.objectStore(store).delete(IDBKeyRange.bound('branch/', 'branch/\uffff'));
+                    } else {
+                        transaction.objectStore(store).clear();
+                    }
+                }
+            });
+        }
+    } finally {
+        database.close();
+    }
+    const empty = async (directory) => {
+        for await (const [entry, handle] of directory.entries()) {
+            if (handle.kind === 'directory') await empty(handle);
+            else await directory.removeEntry(entry);
+        }
+    };
+    await navigator.storage.getDirectory()
+        .then((root) => root.getDirectoryHandle('current'))
+        .then((spaces) => spaces.getDirectoryHandle(name))
+        .then(empty)
+        .catch(() => {});
+}
+"#)]
+extern "C" {
+    /// Empty a space's storage of its branches: every block, every blob, and
+    /// each branch's head and how far it has synced, in one transaction. The
+    /// space's identity and the certificates kept with it stay, and so does
+    /// the database, which the worker has open. Rejects if the transaction
+    /// does; a blob that would not go is left behind.
+    fn release_space_content(name: &str) -> js_sys::Promise;
+}
+
+/// Whether this worker holds anything on the `main` of the space `key`.
+pub(crate) async fn holds_content(tonk: &TonkState, key: &str) -> bool {
+    let Ok(repository) = tonk.profile.space(key).load().perform(&tonk.operator).await else {
+        return false;
+    };
+    match repository
+        .branch(CONTENT_BRANCH)
+        .open()
+        .perform(&tonk.operator)
+        .await
+    {
+        Ok(branch) => branch.revision().is_some(),
+        Err(_) => false,
+    }
+}
+
+/// Keep none of `subject`'s content in this worker's storage: its own origin
+/// holds it now, and a space is to be held once on a device.
+///
+/// Where each space has an origin of its own, this worker is the person's
+/// profile's. It can still come to hold a space's content: it held every
+/// space before spaces had origins, and a join pulls a space here to read the
+/// invitation's roster and commit its claim. What it needs of a space
+/// afterwards is what a replica that was never filled has: the space's
+/// public identity, the certificates this profile acts on it with, and where
+/// it syncs. So the storage stays and is emptied of its branches, and where
+/// it syncs is recorded again.
+///
+/// `push_first` is for a space whose own worker filled from the remote and
+/// not from here: what this copy holds that the remote does not would be
+/// lost with it, so it is pushed, and kept if that fails.
+///
+/// Answers whether anything was released. Leaves alone a space with nothing
+/// on `main` here, and one another profile on this browser may share the
+/// storage of, as removing a space does.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn release_content(
+    state: &AppState,
+    subject: &Did,
+    push_first: bool,
+) -> Result<bool, TonkWorkerError> {
+    let key = subject.repo_key();
+    let (configuration, synced) = {
+        let tonk = state.read().await;
+        if !tonk.spaces_elsewhere() {
+            return Ok(false);
+        }
+        require_real_space(&tonk, subject).await?;
+        if !holds_content(&tonk, key).await {
+            return Ok(false);
+        }
+        let Ok(repository) = tonk.profile.space(key).load().perform(&tonk.operator).await else {
+            return Ok(false);
+        };
+        let shared = tonk
+            .registry
+            .read_roster(&tonk.storage, &tonk.operator)
+            .await
+            .map_or(true, |roster| roster.len() > 1);
+        if shared {
+            log!("keeping the content of '{key}': another profile on this browser may share it");
+            return Ok(false);
+        }
+        let info = build_repository_info(&tonk, key, &repository).await;
+        let synced = !info.remote.is_empty();
+        let configuration = RepositoryConfiguration {
+            remote: info.remote,
+            branch: info
+                .branch
+                .into_iter()
+                .map(|(name, branch)| {
+                    (
+                        name,
+                        BranchConfiguration {
+                            upstream: branch.upstream,
+                            revision: None,
+                        },
+                    )
+                })
+                .collect(),
+        };
+        (configuration, synced)
+    };
+    if push_first {
+        if !synced {
+            // Nowhere to push to, and its own worker did not take it from
+            // here: this is the only copy.
+            return Ok(false);
+        }
+        super::sync::sync_repository(state, key)
+            .await
+            .map_err(|error| {
+                TonkWorkerError::Internal(format!("'{key}' is kept until it has synced: {error}"))
+            })?;
+    }
+    let tonk = state.write().await;
+    {
+        let _admission_mutation = tonk.admission.mutation(key);
+        tonk.reactor.evict(key);
+        tonk.sync_queue.forget(key);
+        wasm_bindgen_futures::JsFuture::from(release_space_content(key))
+            .await
+            .map_err(|error| {
+                TonkWorkerError::Internal(format!("'{key}' could not be emptied: {error:?}"))
+            })?;
+        tonk.reactor.evict(key);
+    }
+    // Where the space syncs was recorded in what just went. Record it again.
+    // Stopped before this, the next mount records it from the directory.
+    super::join::mount_replica_with_configuration(&tonk, subject, configuration).await?;
+    log!("released the content of '{key}': its own origin holds it");
+    Ok(true)
+}
+
 /// Delete the storage a legacy hidden account repository left behind.
 /// Its content synced with the same remote profile main now follows, so
 /// everything it held is recoverable by pulling.
@@ -10827,6 +10994,79 @@ mod tests {
             Some("renamed-garden"),
             "the rename lands in the account directory so unreplicated \
              devices can label the space"
+        );
+    }
+
+    /// A space is held once on a device. Where its own origin holds it, the
+    /// profile lets go of what it held of it: the space stays mounted and
+    /// listed, with nothing on `main`.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[dialog_common::test]
+    async fn it_lets_go_of_a_space_its_own_origin_holds() {
+        use super::{holds_content, release_content};
+        use crate::router::join::find_replica_for_subject;
+        use dialog_repository::RepositoryExt as _;
+        use std::sync::atomic::Ordering;
+
+        let (_app, state, key) = fresh_repo("let-go").await;
+        let subject: dialog_varsig::Did = key.parse().unwrap();
+        assert!(
+            !release_content(&state, &subject, false).await.unwrap(),
+            "a worker that holds every space lets go of none"
+        );
+
+        state
+            .read()
+            .await
+            .site_origins
+            .store(true, Ordering::Relaxed);
+        assert!(holds_content(&*state.read().await, &key).await);
+        let before = {
+            let tonk = state.read().await;
+            let repository = tonk
+                .profile
+                .space(key.as_str())
+                .load()
+                .perform(&tonk.operator)
+                .await
+                .unwrap();
+            super::build_repository_info(&tonk, &key, &repository).await
+        };
+        assert!(release_content(&state, &subject, false).await.unwrap());
+
+        {
+            let tonk = state.read().await;
+            assert!(
+                !holds_content(&tonk, &key).await,
+                "nothing of the space's content is left here"
+            );
+            assert!(
+                find_replica_for_subject(&tonk, &subject).await.unwrap(),
+                "the space is still one of this profile's"
+            );
+            let repository = tonk
+                .profile
+                .space(key.as_str())
+                .load()
+                .perform(&tonk.operator)
+                .await
+                .expect("the space is still mounted");
+            let after = super::build_repository_info(&tonk, &key, &repository).await;
+            assert_eq!(
+                (
+                    after.remote.keys().collect::<Vec<_>>(),
+                    after.branch.keys().collect::<Vec<_>>()
+                ),
+                (
+                    before.remote.keys().collect::<Vec<_>>(),
+                    before.branch.keys().collect::<Vec<_>>()
+                ),
+                "where the space syncs and its branches are recorded again"
+            );
+        }
+        assert!(
+            !release_content(&state, &subject, false).await.unwrap(),
+            "there is nothing left to let go of"
         );
     }
 

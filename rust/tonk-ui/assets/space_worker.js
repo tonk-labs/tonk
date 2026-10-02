@@ -452,14 +452,22 @@ function bindSpacePort(port, { repo, branch }) {
             // for, for the space's worker to compare with what it took up.
             if (data.terms === true) {
                 const terms = await worker.spaceTerms(repo);
-                port.postMessage({ id, remote: terms.remote, account: terms.account });
+                port.postMessage({ id, remote: terms.remote, account: terms.account, name: terms.name });
+                // The space's worker holds the space. Anything of it still
+                // held here goes, once the remote has what only this copy
+                // had.
+                if (data.holds === true) releaseSpace(worker, repo, true);
                 return;
             }
-            // The space's worker has created the content it was handed the
-            // seed for.
+            // The space's worker holds the space's content: created from the
+            // seed it was handed, or taken from the copy this worker held.
             if (data.seeded === true) {
                 await worker.settleSeed(repo);
                 port.postMessage({ id, settled: true });
+                // A space is held once on a device, and its own worker now
+                // holds this one. What it did not take from here is pushed
+                // before this copy goes.
+                releaseSpace(worker, repo, data.from === "remote");
                 return;
             }
             // What a space this worker created, and left for its own worker
@@ -806,6 +814,18 @@ function spaceAnswered(space, data) {
     else if (data.error) call.fail(new Error(data.error));
 }
 
+// Let go of what this worker holds of `repo`, one release of a space at a
+// time: its worker says that it holds the space more than once, and a release
+// that syncs first would fetch again what the one before it let go of.
+const releasing = new Map();
+function releaseSpace(worker, repo, pushFirst) {
+    const released = (releasing.get(repo) ?? Promise.resolve())
+        .then(() => worker.releaseSpace(repo, pushFirst))
+        .catch(error => log(`still holding a copy of ${repo}:`, error));
+    releasing.set(repo, released);
+    return released;
+}
+
 // End everything passed on to a space's worker, so that nothing this worker
 // streams outlives its retirement. Whoever was asking asks its successor.
 function releaseSpaceReads(reason) {
@@ -942,6 +962,20 @@ async function copyFile(root, { path, size }) {
     }
 }
 
+// A profile is held once on a device. Once this worker has opened the
+// profile it copied in, the app's origin is told to let go of its copy: not
+// before, so a copy that does not open leaves the original where it was.
+async function settleMove() {
+    const cache = await caches.open(SHELL_CACHE);
+    const marker = await (await cache.match(MOVED_KEY))?.json();
+    if (marker?.state !== "moved") return;
+    await askHost({ stored: "moved" });
+    await cache.put(
+        MOVED_KEY,
+        new Response(JSON.stringify({ state: "settled", at: new Date().toISOString() })),
+    );
+}
+
 // Make `database` here as the app's origin has it, and fill it.
 async function copyDatabase({ name, version, stores }) {
     const opening = indexedDB.open(name, version);
@@ -1006,6 +1040,9 @@ function siteWorker() {
                 // holds their content: this one creates a space's identity
                 // and leaves the rest to that worker.
                 await worker.setSiteOrigins(true);
+                settleMove().catch(error =>
+                    log("the app's origin still holds what was moved:", error),
+                );
             } else {
                 const grant = await ensureGrant(worker);
                 // Who this worker acts for is kept, but where a view reads it
@@ -1064,13 +1101,42 @@ function renewIfDue() {
 async function keepTerms(worker) {
     const held = await heldGrant();
     if (!held) return;
-    const terms = await askHost({ terms: true });
-    if ((terms.remote ?? null) === (held.remote ?? null) && terms.account === held.account) return;
+    // Said with what this worker holds, so a profile that could not let go
+    // of its own copy when this one was made tries again.
+    const terms = await askHost({ terms: true, holds: held.seeded === true });
+    const same =
+        (terms.remote ?? null) === (held.remote ?? null) &&
+        terms.account === held.account &&
+        (terms.name ?? null) === (held.name ?? null);
+    if (same) {
+        await nameMember(worker, held);
+        return;
+    }
     log("what the profile holds for this space changed; taking up a new delegation");
     await ensureGrant(worker, { renew: true });
 }
 
-async function ensureGrant(worker, { renew = false } = {}) {
+// The roster of a space shows the name its person goes by. This worker holds
+// the space, so it is the one to write it there, from what the delegation it
+// took up says. A space still filling has no roster to write to yet, so this
+// is asked on every start.
+async function nameMember(worker, held) {
+    if (!held.name) return;
+    await worker.nameMember(held.space, held.name).catch(error => log("the roster was not named:", error));
+}
+
+// The delegation this worker holds for its space, asking for one when it
+// holds none that will do. One is taken up at a time: the profile says that
+// its terms changed as often as they do, and two taken up at once would both
+// write where the space syncs.
+let granting = Promise.resolve();
+function ensureGrant(worker, options) {
+    const granted = granting.then(() => takeGrant(worker, options));
+    granting = granted.catch(() => {});
+    return granted;
+}
+
+async function takeGrant(worker, { renew = false } = {}) {
     const held = await heldGrant();
     const now = Date.now() / 1000;
     if (!renew && held?.version === GRANT_VERSION && held.expires - now > RENEW_MARGIN_SECONDS) {
@@ -1089,6 +1155,9 @@ async function ensureGrant(worker, { renew = false } = {}) {
     // leaves a replica that already has content alone.
     if (!held?.seeded) {
         const seed = await askHost({ seed: true });
+        // Where this worker's content came from, for the profile to know
+        // what it may let go of: a space is held once on a device.
+        let from = "seed";
         if (seed.fresh && seed.copy) {
             await worker.createCopy(
                 grant.space,
@@ -1096,16 +1165,16 @@ async function ensureGrant(worker, { renew = false } = {}) {
                 new Uint8Array(seed.copy.content),
                 new Uint8Array(seed.copy.revision),
             );
-            await askHost({ seeded: true });
         } else if (seed.fresh) {
             await worker.createContent(grant.space, seed.fresh);
-            await askHost({ seeded: true });
         } else {
+            from = "snapshot";
             const snapshot = await askHost({ snapshot: true }).catch(error => {
                 // A space that syncs fills from where it syncs. The profile
                 // holds only part of one it joined, which is no snapshot.
                 if (!terms.remote) throw error;
                 log("the profile has no copy to start from; the space will fill as it syncs:", error);
+                from = "remote";
                 return { empty: true };
             });
             if (!snapshot.empty) {
@@ -1116,17 +1185,20 @@ async function ensureGrant(worker, { renew = false } = {}) {
                 );
             }
         }
+        await askHost({ seeded: true, from });
     }
     const record = {
         space: grant.space,
         expires: grant.expires,
         remote: terms.remote,
         account: terms.account,
+        name: terms.name,
         seeded: true,
         version: GRANT_VERSION,
     };
     const cache = await caches.open(SHELL_CACHE);
     await cache.put(GRANT_KEY, new Response(JSON.stringify(record)));
+    await nameMember(worker, record);
     log(`holding a delegation for ${grant.space} until ${new Date(grant.expires * 1000).toISOString()}`);
     return record;
 }

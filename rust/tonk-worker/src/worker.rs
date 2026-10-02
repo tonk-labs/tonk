@@ -2256,6 +2256,24 @@ impl TonkServiceWorker {
         })
     }
 
+    /// Keep none of `space`'s content here: its own origin's worker has said
+    /// it holds it. `push_first` when that worker filled from the remote and
+    /// not from this one. Resolves to whether anything was released.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "releaseSpace")]
+    pub fn release_space(&self, space: String, push_first: bool) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            let space: Did = space
+                .parse()
+                .map_err(|e| JsError::new(&format!("space: {e:?}")))?;
+            let released = crate::router::repository::release_content(&state, &space, push_first)
+                .await
+                .map_err(|e| JsError::new(&e.to_string()))?;
+            Ok(JsValue::from_bool(released))
+        })
+    }
+
     /// Mint an invite to `space`, as though its share control had been
     /// clicked at `time`. For a space whose own worker was asked for one: a
     /// delegation that worker issued would lapse with its own.
@@ -2276,7 +2294,7 @@ impl TonkServiceWorker {
 
     /// Where `space` syncs and which account this profile acts for, as its
     /// own worker last has to have taken them up. Resolves to
-    /// `{ remote, account }`, the remote `null` for a space that only exists
+    /// `{ remote, account, name }`, the remote `null` for a space that only exists
     /// here.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     #[wasm_bindgen(js_name = "spaceTerms")]
@@ -2300,6 +2318,10 @@ impl TonkServiceWorker {
                 &"account".into(),
                 &terms.account.to_string().into(),
             );
+            let name = terms
+                .name
+                .map_or(JsValue::NULL, |name| JsValue::from_str(&name));
+            let _ = js_sys::Reflect::set(&result, &"name".into(), &name);
             Ok(result.into())
         })
     }
@@ -2356,7 +2378,7 @@ impl TonkServiceWorker {
 
     /// Take up a delegation for `space` issued by the person's profile: save
     /// its chain and mount the space as a replica syncing where the chain
-    /// was signed to say. Resolves to the `{ remote, account }` taken up.
+    /// was signed to say. Resolves to the `{ remote, account, name }` taken up.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     #[wasm_bindgen(js_name = "adoptSpace")]
     pub fn adopt_space(&self, space: String, chain: js_sys::Uint8Array) -> Promise {
@@ -2380,7 +2402,30 @@ impl TonkServiceWorker {
                 &"account".into(),
                 &terms.account.to_string().into(),
             );
+            let name = terms
+                .name
+                .map_or(JsValue::NULL, |name| JsValue::from_str(&name));
+            let _ = js_sys::Reflect::set(&result, &"name".into(), &name);
             Ok(result.into())
+        })
+    }
+
+    /// Put `name` on the roster entry of the account this worker acts for
+    /// in `space`, which it holds. Resolves to whether the roster changed.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "nameMember")]
+    pub fn name_member(&self, space: String, name: String) -> Promise {
+        let state = self.state.clone();
+        future_to_promise(async move {
+            let space: Did = space
+                .parse()
+                .map_err(|e| JsError::new(&format!("space: {e:?}")))?;
+            let tonk = state.read().await;
+            let named = space_worker::name_member(&tonk, &space, &name)
+                .await
+                .map_err(|e| JsError::new(&e.to_string()))?;
+            tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+            Ok(JsValue::from_bool(named))
         })
     }
 

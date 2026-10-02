@@ -39,6 +39,9 @@ use super::account::{act_for, acts_for, member_did};
 use super::adopt::ensure_space_mounted;
 use super::create_invite::{ConfiguredRemoteRequirement, resolve_configured_remote_url_with};
 use super::join::mount_replica;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use super::profile_name::project_member_name;
+use super::profile_name::resolve_display_name;
 use super::repository::{CONTENT_BRANCH, record_initialized_replica_in_profile};
 use super::sync::publish_session_account;
 use crate::{TonkWorkerError, worker::TonkState};
@@ -92,18 +95,24 @@ pub(crate) async fn delegate(
 }
 
 /// What a space's worker is told with its delegation, and has to take up
-/// again when it changes: where the space syncs, and which account the
-/// person's profile acts for.
+/// again when it changes: where the space syncs, which account the person's
+/// profile acts for, and the name it goes by.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Terms {
     /// The space's upstream, `None` for a space that only exists here.
     pub(crate) remote: Option<String>,
     /// The account the person's profile acts for.
     pub(crate) account: Did,
+    /// The name the person goes by, which the space's roster shows. `None`
+    /// in a delegation from before it carried one.
+    pub(crate) name: Option<String>,
 }
 
 /// The delegation meta naming the account the issuing profile acts for.
 const ACTS_FOR: &str = "acts.for";
+
+/// The delegation meta saying the name the issuing profile goes by.
+const ACTS_AS: &str = "acts.as";
 
 impl Terms {
     /// These terms as the meta of the delegation that carries them: the
@@ -112,6 +121,9 @@ impl Terms {
     fn signed(&self) -> Result<BTreeMap<String, Ipld>, TonkWorkerError> {
         let mut meta =
             BTreeMap::from([(ACTS_FOR.to_owned(), Ipld::String(self.account.to_string()))]);
+        if let Some(name) = &self.name {
+            meta.insert(ACTS_AS.to_owned(), Ipld::String(name.clone()));
+        }
         if let Some(remote) = &self.remote {
             let remote = Url::parse(remote)
                 .map_err(|e| TonkWorkerError::Internal(format!("remote '{remote}': {e}")))?;
@@ -140,7 +152,15 @@ impl Terms {
             }
             None => None,
         };
-        Ok(Self { remote, account })
+        let name = match leaf.meta().get(ACTS_AS) {
+            Some(Ipld::String(name)) => Some(name.clone()),
+            _ => None,
+        };
+        Ok(Self {
+            remote,
+            account,
+            name,
+        })
     }
 }
 
@@ -165,7 +185,12 @@ pub(crate) async fn terms(tonk: &TonkState, space: &Did) -> Result<Terms, TonkWo
         ConfiguredRemoteRequirement::Refused(_) => None,
     };
     let account = member_did(tonk).await?;
-    Ok(Terms { remote, account })
+    let name = Some(resolve_display_name(tonk).await);
+    Ok(Terms {
+        remote,
+        account,
+        name,
+    })
 }
 
 /// Check that `chain` is what it has to be to be taken up for `space` by this
@@ -252,6 +277,43 @@ pub(crate) async fn resume(tonk: &TonkState, space: &Did) -> Result<(), TonkWork
         return Ok(());
     }
     publish_session_account(tonk, space.repo_key(), CONTENT_BRANCH).await
+}
+
+/// Put `name` on the roster entry of the account this worker acts for: the
+/// name the person goes by, as their profile's delegation says it. Written
+/// here because this worker holds the space. Each start asks, and writes only
+/// a name the roster does not show yet. A space with nothing on `main` is
+/// left alone: it is still to be filled, and a write would stand in the way.
+///
+/// Answers whether anything was written.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn name_member(
+    tonk: &TonkState,
+    space: &Did,
+    name: &str,
+) -> Result<bool, TonkWorkerError> {
+    let Some(account) = acts_for(tonk).await? else {
+        return Ok(false);
+    };
+    let key = space.repo_key();
+    let filled = tonk
+        .reactor
+        .repository(key)
+        .branch(CONTENT_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|e| TonkWorkerError::NotFound(format!("{space} main: {e}")))?
+        .handle()
+        .revision()
+        .is_some();
+    if !filled {
+        return Ok(false);
+    }
+    let named = project_member_name(tonk, key, &account, name).await?;
+    if named {
+        tonk.sync_queue.mark_dirty(key, js_sys::Date::now());
+    }
+    Ok(named)
 }
 
 /// A space's `main` as the host holds it: the snapshot of everything its
@@ -355,7 +417,9 @@ mod tests {
     use dialog_varsig::Did;
     use tower::ServiceExt;
 
-    use super::{DelegationChain, adopt, delegate, member_did, resume, seed, snapshot, terms};
+    use super::{
+        DelegationChain, adopt, delegate, member_did, name_member, resume, seed, snapshot, terms,
+    };
     use crate::TonkWorkerError;
     use crate::helpers::state::{test_state, test_state_without_root};
     use crate::router::join::{find_replica_for_subject, mount_replica};
@@ -517,6 +581,50 @@ mod tests {
             main_revision(&host, &space).await,
             "the replica holds the host's revision"
         );
+    }
+
+    /// The roster of a space shows the name its person goes by. The space's
+    /// worker holds the roster, so it writes the name the delegation says.
+    #[dialog_common::test]
+    async fn it_names_its_member_on_the_roster() {
+        let (host, space) = host_with_space().await;
+        let host = host.read().await;
+        let worker = space_origin().await;
+        let grant = delegate(&host, &space, &worker.profile.did())
+            .await
+            .unwrap();
+        let taken = adopt(&worker, &space, &grant.chain).await.unwrap();
+        assert!(
+            taken.name.is_some(),
+            "the delegation says the name the person goes by"
+        );
+
+        assert!(
+            name_member(&worker, &space, "Ada").await.unwrap(),
+            "a name the roster does not show is written"
+        );
+        assert!(
+            !name_member(&worker, &space, "Ada").await.unwrap(),
+            "a name the roster shows is not written again"
+        );
+    }
+
+    /// A space still to be filled has no roster. A name written to it would
+    /// put a revision on `main`, and a replica with one is never seeded.
+    #[dialog_common::test]
+    async fn it_leaves_the_roster_of_an_empty_space_alone() {
+        let (host, space) = host_with_space().await;
+        let host = host.read().await;
+        let worker = space_origin().await;
+        let grant = delegate(&host, &space, &worker.profile.did())
+            .await
+            .unwrap();
+        adopt(&worker, &space, &grant.chain).await.unwrap();
+        let replica = space_origin().await.profile.did();
+        mount_replica(&worker, &replica, None, None).await.unwrap();
+
+        assert!(!name_member(&worker, &replica, "Ada").await.unwrap());
+        assert!(main_revision(&worker, &replica).await.is_none());
     }
 
     #[dialog_common::test]

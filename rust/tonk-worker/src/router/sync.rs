@@ -1441,6 +1441,17 @@ pub async fn drain_sync(state: &AppState) {
         .collect();
 
     for repo in &order {
+        // A space this worker holds nothing of has nothing to push, and a
+        // pull would fetch what its own worker already holds.
+        {
+            let tonk = state.read().await;
+            if tonk.spaces_elsewhere()
+                && !super::account_state::is_account_key(&tonk, repo).await
+                && !super::repository::holds_content(&tonk, repo).await
+            {
+                continue;
+            }
+        }
         if let Err(e) = sync_repository(state, repo).await {
             // Push didn't fully land — re-mark so the next heartbeat retries.
             log!("drain_sync: {repo} did not fully reconcile: {e}");
